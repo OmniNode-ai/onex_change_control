@@ -6,4 +6,6 @@ This package provides:
 - Local, no-network validation tooling
 """
 
-__version__: str = "0.1.0"
+from typing import Final
+
+__version__: Final[str] = "0.1.0"
