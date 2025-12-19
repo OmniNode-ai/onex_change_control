@@ -234,5 +234,3 @@ Phase 3 integration:
 - **M3 (Repo CI hardening)**: purity + naming + determinism checks enforced
 - **M4 (First downstream pilot)**: 1 repo adopts “contract exists + schema validates”
 - **M5 (Enforcement expansion)**: diff compliance + evidence enforcement
-
-

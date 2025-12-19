@@ -1,0 +1,76 @@
+# ONEX Change Control Pre-commit Configuration
+# Mirrors ONEX ecosystem settings for consistency
+#
+# PERFORMANCE OPTIMIZATION:
+# =========================
+# Two-stage validation strategy for optimal developer experience:
+#
+# PRE-COMMIT (target: <15 seconds):
+#   - Formatting (ruff format/fix)
+#   - Basic file checks (whitespace, large files, merge conflicts)
+#
+# PRE-PUSH (quick validation before sharing):
+#   - mypy type checking (changed files only)
+#
+# Note: ruff replaces both black and isort (10-100x faster)
+#
+# USAGE:
+#   pre-commit install                    # Install pre-commit hooks
+#   pre-commit install --hook-type pre-push  # Install pre-push hooks
+#   pre-commit run --all-files            # Run all pre-commit hooks
+repos:
+  # Essential file formatting (standard across ecosystem)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: ^\.github/workflows/
+      - id: end-of-file-fixer
+        exclude: ^\.github/workflows/
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+  # ONEX Python Development Hooks
+  # Order: ruff format → ruff check (formatting before linting)
+  # Note: ruff replaces both black and isort (10-100x faster)
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format (auto-format)
+        entry: poetry run ruff format
+        language: system
+        types: [python]
+        stages: [pre-commit]
+      - id: ruff-fix
+        name: ruff check (auto-fix linting + import sorting)
+        entry: poetry run ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types: [python]
+        stages: [pre-commit]
+        # Note: --exit-non-zero-on-fix ensures pre-commit fails if files were modified,
+        # forcing you to re-stage the changes. This keeps pre-commit and CI in sync.
+      - id: mypy-type-check
+        name: mypy (type checking)
+        entry: bash -c 'poetry run mypy "$@" --show-error-codes --no-error-summary' --
+        language: system
+        types: [python]
+        files: ^src/onex_change_control/.*\.py$
+        exclude: ^tests/.*\.py$
+        pass_filenames: true # Only check changed files, not entire codebase
+        stages: [pre-push] # Moved to pre-push: ~1-5s for changed files only
+
+# Configuration
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+fail_fast: false
+
+# CI configuration
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes for onex_change_control
+
+    for more information, see https://pre-commit.ci
+  autofix_prs: true
+  autoupdate_schedule: weekly
+  submodules: false

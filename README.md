@@ -25,5 +25,3 @@ See: `omnibase_core/docs/conventions/NAMING_CONVENTIONS.md` for full details.
 - `docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md`
 - `docs/design/DECISION_LOG.md`
 - `docs/planning/IMPLEMENTATION_PLAN.md`
-
-
