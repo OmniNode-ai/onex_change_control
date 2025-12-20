@@ -10,4 +10,4 @@ def test_package_imports() -> None:
     # Verify __version__ exists and has valid semver format
     assert hasattr(onex_change_control, "__version__")
     assert isinstance(onex_change_control.__version__, str)
-    assert re.match(r"^\d+\.\d+\.\d+", onex_change_control.__version__) is not None
+    assert re.match(r"^\d+\.\d+\.\d+$", onex_change_control.__version__) is not None
