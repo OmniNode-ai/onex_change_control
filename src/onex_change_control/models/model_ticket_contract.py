@@ -5,10 +5,14 @@ Pydantic schema model for ticket contracts.
 
 import re
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
 from onex_change_control.enums.enum_interface_surface import EnumInterfaceSurface
+
+# Security constraints to prevent DoS attacks
+_MAX_STRING_LENGTH = 10000  # Max length for string fields
+_MAX_LIST_ITEMS = 1000  # Max items in lists
 
 # SemVer pattern for schema_version validation
 # Note: This pattern supports basic SemVer (major.minor.patch) only.
@@ -20,25 +24,34 @@ _SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 class ModelEvidenceRequirement(BaseModel):
     """Evidence requirement in ticket contract."""
 
+    model_config = ConfigDict(frozen=True)
+
     kind: EnumEvidenceKind = Field(..., description="Type of evidence")
-    description: str = Field(..., description="What evidence must exist")
+    description: str = Field(
+        ..., description="What evidence must exist", max_length=_MAX_STRING_LENGTH
+    )
     command: str | None = Field(
         default=None,
         description="How to reproduce, if applicable",
+        max_length=_MAX_STRING_LENGTH,
     )
 
 
 class ModelEmergencyBypass(BaseModel):
     """Emergency bypass configuration in ticket contract."""
 
+    model_config = ConfigDict(frozen=True)
+
     enabled: bool = Field(..., description="Whether bypass is enabled")
     justification: str = Field(
         default="",
         description="Justification for bypass (required if enabled)",
+        max_length=_MAX_STRING_LENGTH,
     )
     follow_up_ticket_id: str = Field(
         default="",
         description="Follow-up ticket ID (required if enabled)",
+        max_length=50,  # Ticket IDs are typically short (e.g., "OMN-962")
     )
 
     @model_validator(mode="after")
@@ -59,13 +72,31 @@ class ModelTicketContract(BaseModel):
 
     Represents machine-checkable acceptance criteria and enforcement hooks
     for a single ticket.
+
+    Immutability:
+        This model is frozen (immutable) after creation to ensure:
+        1. Ticket contracts cannot be modified after creation
+        2. Thread-safe access from multiple readers
+        3. Safe use as dictionary keys or cache entries
+
+    Interface Change Validation:
+        - If interface_change=False, interfaces_touched must be empty
+        - If interface_change=True, interfaces_touched may be empty temporarily
+          (e.g., during initial contract creation before categorization is complete)
+          but should be populated before the ticket is considered complete.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     schema_version: str = Field(
-        ..., description="Schema version (SemVer format, e.g., '1.0.0')"
+        ..., description="Schema version (SemVer format, e.g., '1.0.0')", max_length=20
     )
-    ticket_id: str = Field(..., description="Ticket identifier (e.g., 'OMN-962')")
-    summary: str = Field(..., description="One-line summary")
+    ticket_id: str = Field(
+        ..., description="Ticket identifier (e.g., 'OMN-962')", max_length=50
+    )
+    summary: str = Field(
+        ..., description="One-line summary", max_length=_MAX_STRING_LENGTH
+    )
     is_seam_ticket: bool = Field(
         ...,
         description="Whether this ticket touches cross-repo interfaces",
@@ -77,10 +108,12 @@ class ModelTicketContract(BaseModel):
     interfaces_touched: list[EnumInterfaceSurface] = Field(
         default_factory=list,
         description="Interface surfaces touched by this ticket",
+        max_length=_MAX_LIST_ITEMS,
     )
     evidence_requirements: list[ModelEvidenceRequirement] = Field(
         default_factory=list,
         description="Evidence requirements",
+        max_length=_MAX_LIST_ITEMS,
     )
     emergency_bypass: ModelEmergencyBypass = Field(
         ...,
@@ -102,9 +135,14 @@ class ModelTicketContract(BaseModel):
 
         Enforces:
         - If interface_change is False, interfaces_touched must be empty
-        - If interface_change is True, interfaces_touched should not be empty
-          (though empty list is allowed for cases where interfaces are changed
-          but not yet categorized)
+        - If interface_change is True, interfaces_touched may be empty temporarily
+          (e.g., during initial contract creation before categorization is complete)
+          but should be populated before the ticket is considered complete.
+
+        Steady State vs Temporary:
+        - Steady state: interface_change=True should have non-empty interfaces_touched
+        - Temporary: Empty interfaces_touched is allowed during contract creation
+          but should be treated as incomplete until populated
         """
         if not self.interface_change and self.interfaces_touched:
             msg = (
@@ -113,5 +151,6 @@ class ModelTicketContract(BaseModel):
             )
             raise ValueError(msg)
         # Note: We allow interface_change=True with empty interfaces_touched
-        # to support cases where interfaces are changed but categorization is pending
+        # to support cases where interfaces are changed but categorization is pending.
+        # This is a temporary state and should be resolved before ticket completion.
         return self

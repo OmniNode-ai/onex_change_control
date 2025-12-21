@@ -73,6 +73,32 @@ class TestModelDayClose:
                 ),
             )
 
+    def test_invalid_calendar_date(self) -> None:
+        """Test calendar-invalid dates (e.g., February 30th)."""
+        with pytest.raises(ValueError, match="Invalid calendar date"):
+            ModelDayClose(
+                schema_version="1.0.0",
+                date="2025-02-30",  # Invalid: February only has 28/29 days
+                invariants_checked=ModelDayCloseInvariantsChecked(
+                    reducers_pure=EnumInvariantStatus.UNKNOWN,
+                    orchestrators_no_io=EnumInvariantStatus.UNKNOWN,
+                    effects_do_io_only=EnumInvariantStatus.PASS,
+                    real_infra_proof_progressing=EnumInvariantStatus.UNKNOWN,
+                ),
+            )
+
+        with pytest.raises(ValueError, match="Invalid calendar date"):
+            ModelDayClose(
+                schema_version="1.0.0",
+                date="2025-13-01",  # Invalid: month 13 doesn't exist
+                invariants_checked=ModelDayCloseInvariantsChecked(
+                    reducers_pure=EnumInvariantStatus.UNKNOWN,
+                    orchestrators_no_io=EnumInvariantStatus.UNKNOWN,
+                    effects_do_io_only=EnumInvariantStatus.PASS,
+                    real_infra_proof_progressing=EnumInvariantStatus.UNKNOWN,
+                ),
+            )
+
     def test_complete_day_close(self) -> None:
         """Test creating a complete day close report."""
         day_close = ModelDayClose(
@@ -188,6 +214,66 @@ class TestModelTicketContract:
         with pytest.raises(ValueError, match="Invalid schema_version format"):
             ModelTicketContract(
                 schema_version="invalid",
+                ticket_id="OMN-962",
+                summary="Test",
+                is_seam_ticket=False,
+                interface_change=False,
+                emergency_bypass=ModelEmergencyBypass(enabled=False),
+            )
+
+    def test_semver_edge_cases(self) -> None:
+        """Test SemVer edge cases and boundary conditions."""
+        # Valid: basic SemVer
+        contract = ModelTicketContract(
+            schema_version="0.0.0",
+            ticket_id="OMN-962",
+            summary="Test",
+            is_seam_ticket=False,
+            interface_change=False,
+            emergency_bypass=ModelEmergencyBypass(enabled=False),
+        )
+        assert contract.schema_version == "0.0.0"
+
+        # Valid: large version numbers
+        contract = ModelTicketContract(
+            schema_version="999.999.999",
+            ticket_id="OMN-962",
+            summary="Test",
+            is_seam_ticket=False,
+            interface_change=False,
+            emergency_bypass=ModelEmergencyBypass(enabled=False),
+        )
+        assert contract.schema_version == "999.999.999"
+
+        # Note: Leading zeros are accepted by our basic pattern (e.g., "01.0.0")
+        # This is a limitation of the basic SemVer pattern. Standard SemVer doesn't
+        # allow leading zeros, but our pattern uses \d+ which matches them.
+        # If strict SemVer compliance is needed, use a SemVer library.
+        contract = ModelTicketContract(
+            schema_version="01.0.0",  # Accepted by basic pattern (limitation)
+            ticket_id="OMN-962",
+            summary="Test",
+            is_seam_ticket=False,
+            interface_change=False,
+            emergency_bypass=ModelEmergencyBypass(enabled=False),
+        )
+        assert contract.schema_version == "01.0.0"
+
+        # Invalid: missing components
+        with pytest.raises(ValueError, match="Invalid schema_version format"):
+            ModelTicketContract(
+                schema_version="1.0",
+                ticket_id="OMN-962",
+                summary="Test",
+                is_seam_ticket=False,
+                interface_change=False,
+                emergency_bypass=ModelEmergencyBypass(enabled=False),
+            )
+
+        # Invalid: pre-release (not supported by basic pattern)
+        with pytest.raises(ValueError, match="Invalid schema_version format"):
+            ModelTicketContract(
+                schema_version="1.0.0-alpha",
                 ticket_id="OMN-962",
                 summary="Test",
                 is_seam_ticket=False,
