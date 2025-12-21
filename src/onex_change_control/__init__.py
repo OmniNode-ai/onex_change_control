@@ -8,6 +8,12 @@ This package provides:
 
 from typing import Final
 
+from onex_change_control.models import ModelDayClose, ModelTicketContract
+
 __version__: Final[str] = "0.1.0"
 
-__all__ = ["__version__"]
+__all__ = [
+    "ModelDayClose",
+    "ModelTicketContract",
+    "__version__",
+]
