@@ -1,6 +1,7 @@
 """Tests for Pydantic schema models."""
 
 import pytest
+from pydantic import ValidationError
 
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
@@ -133,6 +134,35 @@ class TestModelDayClose:
         assert len(day_close.corrections_for_tomorrow) == 1
         assert len(day_close.risks) == 1
 
+    def test_pr_number_validation(self) -> None:
+        """Test that PR numbers must be >= 1."""
+        # Valid PR number
+        pr = ModelDayClosePR(
+            pr=1,
+            title="Test PR",
+            state=EnumPRState.OPEN,
+            notes="Test",
+        )
+        assert pr.pr == 1
+
+        # Invalid PR number (0)
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            ModelDayClosePR(
+                pr=0,
+                title="Test PR",
+                state=EnumPRState.OPEN,
+                notes="Test",
+            )
+
+        # Invalid PR number (negative)
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            ModelDayClosePR(
+                pr=-1,
+                title="Test PR",
+                state=EnumPRState.OPEN,
+                notes="Test",
+            )
+
 
 class TestModelTicketContract:
     """Tests for ModelTicketContract."""
@@ -223,3 +253,21 @@ class TestModelTicketContract:
         expected_interfaces_count = 2
         assert len(contract.interfaces_touched) == expected_interfaces_count
         assert len(contract.evidence_requirements) == 1
+
+    def test_interface_change_true_with_empty_interfaces(self) -> None:
+        """Test that interface_change=True with empty interfaces_touched is allowed.
+
+        This is intentionally allowed to support cases where interfaces are changed
+        but categorization is pending.
+        """
+        contract = ModelTicketContract(
+            schema_version="1.0.0",
+            ticket_id="OMN-962",
+            summary="Test ticket",
+            is_seam_ticket=False,
+            interface_change=True,
+            interfaces_touched=[],  # Empty is allowed when interface_change=True
+            emergency_bypass=ModelEmergencyBypass(enabled=False),
+        )
+        assert contract.interface_change is True
+        assert len(contract.interfaces_touched) == 0

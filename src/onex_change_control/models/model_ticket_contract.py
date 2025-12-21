@@ -4,7 +4,6 @@ Pydantic schema model for ticket contracts.
 """
 
 import re
-from typing import Annotated
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -12,6 +11,9 @@ from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
 from onex_change_control.enums.enum_interface_surface import EnumInterfaceSurface
 
 # SemVer pattern for schema_version validation
+# Note: This pattern supports basic SemVer (major.minor.patch) only.
+# Pre-release versions (e.g., "1.0.0-alpha") and build metadata (e.g., "1.0.0+build")
+# are not supported. If full SemVer support is needed, consider using a SemVer library.
 _SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 
 
@@ -59,13 +61,9 @@ class ModelTicketContract(BaseModel):
     for a single ticket.
     """
 
-    schema_version: Annotated[
-        str,
-        Field(
-            ...,
-            description="Schema version (SemVer format, e.g., '1.0.0')",
-        ),
-    ] = Field(..., description="Schema version (SemVer format)")
+    schema_version: str = Field(
+        ..., description="Schema version (SemVer format, e.g., '1.0.0')"
+    )
     ticket_id: str = Field(..., description="Ticket identifier (e.g., 'OMN-962')")
     summary: str = Field(..., description="One-line summary")
     is_seam_ticket: bool = Field(
@@ -100,11 +98,20 @@ class ModelTicketContract(BaseModel):
 
     @model_validator(mode="after")
     def validate_interface_constraints(self) -> "ModelTicketContract":
-        """Validate interface change constraints."""
+        """Validate interface change constraints.
+
+        Enforces:
+        - If interface_change is False, interfaces_touched must be empty
+        - If interface_change is True, interfaces_touched should not be empty
+          (though empty list is allowed for cases where interfaces are changed
+          but not yet categorized)
+        """
         if not self.interface_change and self.interfaces_touched:
             msg = (
                 "interfaces_touched must be empty when interface_change is false. "
                 "If no interfaces are touched, set interfaces_touched to []"
             )
             raise ValueError(msg)
+        # Note: We allow interface_change=True with empty interfaces_touched
+        # to support cases where interfaces are changed but categorization is pending
         return self

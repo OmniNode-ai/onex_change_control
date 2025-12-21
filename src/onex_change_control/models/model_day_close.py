@@ -4,7 +4,6 @@ Pydantic schema model for daily close reports.
 """
 
 import re
-from typing import Annotated
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,7 +12,13 @@ from onex_change_control.enums.enum_invariant_status import EnumInvariantStatus
 from onex_change_control.enums.enum_pr_state import EnumPRState
 
 # SemVer pattern for schema_version validation
+# Note: This pattern supports basic SemVer (major.minor.patch) only.
+# Pre-release versions (e.g., "1.0.0-alpha") and build metadata (e.g., "1.0.0+build")
+# are not supported. If full SemVer support is needed, consider using a SemVer library.
 _SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+
+# ISO date pattern (YYYY-MM-DD) - compiled at module level for performance
+_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class ModelDayCloseProcessChange(BaseModel):
@@ -91,13 +96,9 @@ class ModelDayClose(BaseModel):
     Represents a daily reconciliation of plan vs actual work across repos.
     """
 
-    schema_version: Annotated[
-        str,
-        Field(
-            ...,
-            description="Schema version (SemVer format, e.g., '1.0.0')",
-        ),
-    ] = Field(..., description="Schema version (SemVer format)")
+    schema_version: str = Field(
+        ..., description="Schema version (SemVer format, e.g., '1.0.0')"
+    )
     date: str = Field(..., description="ISO date (YYYY-MM-DD)")
     process_changes_today: list[ModelDayCloseProcessChange] = Field(
         default_factory=list,
@@ -139,9 +140,12 @@ class ModelDayClose(BaseModel):
     @field_validator("date")
     @classmethod
     def validate_date(cls, v: str) -> str:
-        """Validate date is ISO format (YYYY-MM-DD)."""
-        date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-        if not date_pattern.match(v):
+        """Validate date is ISO format (YYYY-MM-DD).
+
+        Note: This validates format only, not calendar validity.
+        Invalid dates like "2025-02-30" will pass format validation.
+        """
+        if not _DATE_PATTERN.match(v):
             msg = f"Invalid date format: {v}. Expected ISO format (YYYY-MM-DD)"
             raise ValueError(msg)
         return v

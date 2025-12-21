@@ -16,7 +16,7 @@ class EnumInvariantStatus(str, Enum):
     - unknown: Invariant status cannot be determined (requires follow-up)
     """
 
-    PASS = "pass"  # noqa: S105
+    PASS = "pass"  # noqa: S105 - Not a password, it's an invariant status value
     """Invariant is satisfied."""
 
     FAIL = "fail"

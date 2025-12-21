@@ -2,16 +2,20 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from onex_change_control.models.model_day_close import ModelDayClose
 from onex_change_control.models.model_ticket_contract import ModelTicketContract
 
+# Path to test YAML file
+YAML_PATH = Path(__file__).parent.parent / "drift" / "day_close" / "2025-12-19.yaml"
 
+
+@pytest.mark.skipif(not YAML_PATH.exists(), reason="YAML fixture not present")
 def test_parse_existing_day_close_yaml() -> None:
     """Test parsing existing day_close.yaml file."""
-    yaml_path = Path(__file__).parent.parent / "drift" / "day_close" / "2025-12-19.yaml"
-    with yaml_path.open() as f:
+    with YAML_PATH.open() as f:
         data = yaml.safe_load(f)
 
     # Parse with Pydantic model
