@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from onex_change_control.enums.enum_invariant_status import EnumInvariantStatus
 from onex_change_control.models.model_day_close import (
+    _MAX_LIST_ITEMS,
+    _MAX_STRING_LENGTH,
     ModelDayClose,
     ModelDayCloseInvariantsChecked,
     ModelDayClosePlanItem,
@@ -13,10 +15,6 @@ from onex_change_control.models.model_ticket_contract import (
     ModelEmergencyBypass,
     ModelTicketContract,
 )
-
-# Security constraint limits
-_MAX_STRING_LENGTH = 10000
-_MAX_LIST_ITEMS = 1000
 
 
 class TestStringLengthConstraints:

@@ -6,7 +6,7 @@ Pydantic schema model for daily close reports.
 import re
 from datetime import date
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory
 from onex_change_control.enums.enum_invariant_status import EnumInvariantStatus
@@ -58,17 +58,6 @@ class ModelDayClosePlanItem(BaseModel):
     summary: str = Field(
         ..., description="Summary of the requirement", max_length=_MAX_STRING_LENGTH
     )
-
-    @model_validator(mode="after")
-    def validate_string_lengths(self) -> "ModelDayClosePlanItem":
-        """Validate string lengths to prevent DoS attacks."""
-        if len(self.requirement_id) > _MAX_STRING_LENGTH:
-            msg = f"requirement_id exceeds max length of {_MAX_STRING_LENGTH}"
-            raise ValueError(msg)
-        if len(self.summary) > _MAX_STRING_LENGTH:
-            msg = f"summary exceeds max length of {_MAX_STRING_LENGTH}"
-            raise ValueError(msg)
-        return self
 
 
 class ModelDayClosePR(BaseModel):
