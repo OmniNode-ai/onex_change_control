@@ -229,10 +229,14 @@ Phase 3 integration:
 ### 11) Milestones (aligned with design phases)
 
 - **M0 (Bootstrap)**: Poetry package + structure + CI skeleton
+  - Test coverage threshold: 10% (bootstrap phase with minimal code)
 - **M1 (Schemas v1)**: Pydantic models + exported JSON schemas + templates + manifest
+  - Test coverage threshold: 40% (schema validation tests added)
 - **M2 (Local validator)**: validate YAML against pinned schemas (no network)
+  - Test coverage threshold: 60% (validation logic tests added)
 - **M3 (Repo CI hardening)**: purity + naming + determinism checks enforced
-- **M4 (First downstream pilot)**: 1 repo adopts “contract exists + schema validates”
+  - Test coverage threshold: 80% (full test suite for all functionality)
+- **M4 (First downstream pilot)**: 1 repo adopts "contract exists + schema validates"
 - **M5 (Enforcement expansion)**: diff compliance + evidence enforcement
 
-
+**Coverage Tracking**: Coverage thresholds increase with each milestone as functionality is added. Update `pyproject.toml` `--cov-fail-under` value when reaching each milestone.

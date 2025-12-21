@@ -20,10 +20,33 @@ All schema models in this repo **MUST** follow `omnibase_core` naming convention
 
 See: `omnibase_core/docs/conventions/NAMING_CONVENTIONS.md` for full details.
 
+### Development Setup
+
+1. **Install Poetry** (if not already installed):
+   ```bash
+   curl -sSL https://install.python-poetry.org | python3 -
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   poetry install
+   ```
+
+3. **Install pre-commit hooks** (requires Poetry environment):
+   ```bash
+   poetry run pre-commit install
+   poetry run pre-commit install --hook-type pre-push
+   ```
+
+   **Note**: Pre-commit hooks require Poetry to be installed and dependencies available, as they use `poetry run` to execute ruff, mypy, etc.
+
+4. **Run tests**:
+   ```bash
+   poetry run pytest
+   ```
+
 ### Where to start
 
 - `docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md`
 - `docs/design/DECISION_LOG.md`
 - `docs/planning/IMPLEMENTATION_PLAN.md`
-
-
