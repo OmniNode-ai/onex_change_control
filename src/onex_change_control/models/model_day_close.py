@@ -11,13 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory
 from onex_change_control.enums.enum_invariant_status import EnumInvariantStatus
 from onex_change_control.enums.enum_pr_state import EnumPRState
-
-# SemVer pattern for schema_version validation
-# Note: This pattern supports basic SemVer (major.minor.patch) only.
-# Pre-release versions (e.g., "1.0.0-alpha") and build metadata (e.g., "1.0.0+build")
-# are not supported. If full SemVer support is needed, consider using a SemVer library.
-# Pattern rejects leading zeros (e.g., "01.0.0" is invalid) per SemVer spec.
-_SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+from onex_change_control.validation.patterns import SEMVER_PATTERN
 
 # ISO date pattern (YYYY-MM-DD) - compiled at module level for performance
 # Used for format validation before calendar validation
@@ -152,6 +146,12 @@ class ModelDayClose(BaseModel):
 
     Represents a daily reconciliation of plan vs actual work across repos.
 
+    Schema Version:
+        The schema_version field uses basic SemVer format (major.minor.patch) only.
+        Pre-release versions (e.g., "1.0.0-alpha") and build metadata
+        (e.g., "1.0.0+build") are not supported. Leading zeros are rejected
+        per SemVer specification.
+
     Immutability:
         This model is frozen (immutable) after creation to ensure:
         1. Historical drift reports cannot be modified after creation
@@ -202,8 +202,13 @@ class ModelDayClose(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def validate_schema_version(cls, v: str) -> str:
-        """Validate schema_version is SemVer format."""
-        if not _SEMVER_PATTERN.match(v):
+        """Validate schema_version is SemVer format.
+
+        Note: Only basic SemVer (major.minor.patch) is supported.
+        Pre-release versions and build metadata are not supported.
+        Leading zeros are rejected per SemVer specification.
+        """
+        if not SEMVER_PATTERN.match(v):
             msg = f"Invalid schema_version format: {v}. Expected SemVer (e.g., '1.0.0')"
             raise ValueError(msg)
         return v

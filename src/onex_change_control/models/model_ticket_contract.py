@@ -3,23 +3,15 @@
 Pydantic schema model for ticket contracts.
 """
 
-import re
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
 from onex_change_control.enums.enum_interface_surface import EnumInterfaceSurface
+from onex_change_control.validation.patterns import SEMVER_PATTERN
 
 # Security constraints to prevent DoS attacks
 _MAX_STRING_LENGTH = 10000  # Max length for string fields
 _MAX_LIST_ITEMS = 1000  # Max items in lists
-
-# SemVer pattern for schema_version validation
-# Note: This pattern supports basic SemVer (major.minor.patch) only.
-# Pre-release versions (e.g., "1.0.0-alpha") and build metadata (e.g., "1.0.0+build")
-# are not supported. If full SemVer support is needed, consider using a SemVer library.
-# Pattern rejects leading zeros (e.g., "01.0.0" is invalid) per SemVer spec.
-_SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 class ModelEvidenceRequirement(BaseModel):
@@ -57,12 +49,16 @@ class ModelEmergencyBypass(BaseModel):
 
     @model_validator(mode="after")
     def validate_bypass_fields(self) -> "ModelEmergencyBypass":
-        """Validate bypass fields are complete if enabled."""
+        """Validate bypass fields are complete if enabled.
+
+        Rejects whitespace-only strings for justification and follow_up_ticket_id
+        when bypass is enabled, as these are not meaningful values.
+        """
         if self.enabled:
-            if not self.justification:
+            if not self.justification.strip():
                 msg = "justification is required when bypass is enabled"
                 raise ValueError(msg)
-            if not self.follow_up_ticket_id:
+            if not self.follow_up_ticket_id.strip():
                 msg = "follow_up_ticket_id is required when bypass is enabled"
                 raise ValueError(msg)
         return self
@@ -73,6 +69,12 @@ class ModelTicketContract(BaseModel):
 
     Represents machine-checkable acceptance criteria and enforcement hooks
     for a single ticket.
+
+    Schema Version:
+        The schema_version field uses basic SemVer format (major.minor.patch) only.
+        Pre-release versions (e.g., "1.0.0-alpha") and build metadata
+        (e.g., "1.0.0+build") are not supported. Leading zeros are rejected
+        per SemVer specification.
 
     Immutability:
         This model is frozen (immutable) after creation to ensure:
@@ -124,8 +126,13 @@ class ModelTicketContract(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def validate_schema_version(cls, v: str) -> str:
-        """Validate schema_version is SemVer format."""
-        if not _SEMVER_PATTERN.match(v):
+        """Validate schema_version is SemVer format.
+
+        Note: Only basic SemVer (major.minor.patch) is supported.
+        Pre-release versions and build metadata are not supported.
+        Leading zeros are rejected per SemVer specification.
+        """
+        if not SEMVER_PATTERN.match(v):
             msg = f"Invalid schema_version format: {v}. Expected SemVer (e.g., '1.0.0')"
             raise ValueError(msg)
         return v

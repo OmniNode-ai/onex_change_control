@@ -453,11 +453,17 @@ class TestModelTicketContract:
         )
         assert bypass_disabled.enabled is False
 
-        # Edge case: enabled=True with whitespace-only strings (should pass - not empty)
-        bypass_whitespace = ModelEmergencyBypass(
-            enabled=True,
-            justification="   ",  # Whitespace only - not empty, should pass
-            follow_up_ticket_id="OMN-963",
-        )
-        assert bypass_whitespace.enabled is True
-        assert bypass_whitespace.justification == "   "
+        # Edge case: enabled=True with whitespace-only strings (should fail)
+        with pytest.raises(ValueError, match="justification is required"):
+            ModelEmergencyBypass(
+                enabled=True,
+                justification="   ",  # Whitespace only - should be rejected
+                follow_up_ticket_id="OMN-963",
+            )
+
+        with pytest.raises(ValueError, match="follow_up_ticket_id is required"):
+            ModelEmergencyBypass(
+                enabled=True,
+                justification="Emergency fix",
+                follow_up_ticket_id="   ",  # Whitespace only - should be rejected
+            )
