@@ -18,7 +18,8 @@ _MAX_LIST_ITEMS = 1000  # Max items in lists
 # Note: This pattern supports basic SemVer (major.minor.patch) only.
 # Pre-release versions (e.g., "1.0.0-alpha") and build metadata (e.g., "1.0.0+build")
 # are not supported. If full SemVer support is needed, consider using a SemVer library.
-_SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+# Pattern rejects leading zeros (e.g., "01.0.0" is invalid) per SemVer spec.
+_SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 class ModelEvidenceRequirement(BaseModel):
@@ -154,3 +155,25 @@ class ModelTicketContract(BaseModel):
         # to support cases where interfaces are changed but categorization is pending.
         # This is a temporary state and should be resolved before ticket completion.
         return self
+
+    @property
+    def is_complete(self) -> bool:
+        """Check if the ticket contract is in a complete state.
+
+        A contract is considered complete when:
+        - If interface_change=True, interfaces_touched must be non-empty
+        - Emergency bypass is either disabled or properly configured (if enabled)
+
+        Returns:
+            True if the contract is in a steady, complete state; False otherwise.
+
+        """
+        # Check interface change completeness
+        # Contract is complete if:
+        # - interface_change is False (no interfaces to categorize), OR
+        # - interface_change is True AND interfaces_touched is non-empty
+        # Emergency bypass completeness is already validated by ModelEmergencyBypass.
+        # If enabled, it must have justification and follow_up_ticket_id (enforced
+        # by validator). So if we get here, bypass is either disabled or properly
+        # configured.
+        return not self.interface_change or bool(self.interfaces_touched)

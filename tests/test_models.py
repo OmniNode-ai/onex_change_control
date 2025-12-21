@@ -245,19 +245,49 @@ class TestModelTicketContract:
         )
         assert contract.schema_version == "999.999.999"
 
-        # Note: Leading zeros are accepted by our basic pattern (e.g., "01.0.0")
-        # This is a limitation of the basic SemVer pattern. Standard SemVer doesn't
-        # allow leading zeros, but our pattern uses \d+ which matches them.
-        # If strict SemVer compliance is needed, use a SemVer library.
+        # Invalid: leading zeros (rejected per SemVer spec)
+        with pytest.raises(ValueError, match="Invalid schema_version format"):
+            ModelTicketContract(
+                schema_version="01.0.0",  # Leading zero - invalid
+                ticket_id="OMN-962",
+                summary="Test",
+                is_seam_ticket=False,
+                interface_change=False,
+                emergency_bypass=ModelEmergencyBypass(enabled=False),
+            )
+
+        # Invalid: leading zeros in minor version
+        with pytest.raises(ValueError, match="Invalid schema_version format"):
+            ModelTicketContract(
+                schema_version="1.00.0",  # Leading zero in minor - invalid
+                ticket_id="OMN-962",
+                summary="Test",
+                is_seam_ticket=False,
+                interface_change=False,
+                emergency_bypass=ModelEmergencyBypass(enabled=False),
+            )
+
+        # Invalid: leading zeros in patch version
+        with pytest.raises(ValueError, match="Invalid schema_version format"):
+            ModelTicketContract(
+                schema_version="1.0.01",  # Leading zero in patch - invalid
+                ticket_id="OMN-962",
+                summary="Test",
+                is_seam_ticket=False,
+                interface_change=False,
+                emergency_bypass=ModelEmergencyBypass(enabled=False),
+            )
+
+        # Valid: zero is allowed (not a leading zero)
         contract = ModelTicketContract(
-            schema_version="01.0.0",  # Accepted by basic pattern (limitation)
+            schema_version="0.0.0",  # Zero is valid (not a leading zero)
             ticket_id="OMN-962",
             summary="Test",
             is_seam_ticket=False,
             interface_change=False,
             emergency_bypass=ModelEmergencyBypass(enabled=False),
         )
-        assert contract.schema_version == "01.0.0"
+        assert contract.schema_version == "0.0.0"
 
         # Invalid: missing components
         with pytest.raises(ValueError, match="Invalid schema_version format"):
@@ -357,3 +387,77 @@ class TestModelTicketContract:
         )
         assert contract.interface_change is True
         assert len(contract.interfaces_touched) == 0
+        # Contract with empty interfaces_touched is incomplete
+        assert contract.is_complete is False
+
+    def test_is_complete_property(self) -> None:
+        """Test the is_complete property for ticket contracts."""
+        # Complete: interface_change=True with non-empty interfaces_touched
+        complete_contract = ModelTicketContract(
+            schema_version="1.0.0",
+            ticket_id="OMN-962",
+            summary="Test ticket",
+            is_seam_ticket=True,
+            interface_change=True,
+            interfaces_touched=[EnumInterfaceSurface.EVENTS],
+            emergency_bypass=ModelEmergencyBypass(enabled=False),
+        )
+        assert complete_contract.is_complete is True
+
+        # Incomplete: interface_change=True with empty interfaces_touched
+        incomplete_contract = ModelTicketContract(
+            schema_version="1.0.0",
+            ticket_id="OMN-962",
+            summary="Test ticket",
+            is_seam_ticket=False,
+            interface_change=True,
+            interfaces_touched=[],  # Empty - incomplete
+            emergency_bypass=ModelEmergencyBypass(enabled=False),
+        )
+        assert incomplete_contract.is_complete is False
+
+        # Complete: interface_change=False (no interfaces to categorize)
+        no_interface_contract = ModelTicketContract(
+            schema_version="1.0.0",
+            ticket_id="OMN-962",
+            summary="Test ticket",
+            is_seam_ticket=False,
+            interface_change=False,
+            interfaces_touched=[],
+            emergency_bypass=ModelEmergencyBypass(enabled=False),
+        )
+        assert no_interface_contract.is_complete is True
+
+    def test_emergency_bypass_edge_cases(self) -> None:
+        """Test edge cases for emergency bypass validation."""
+        # Edge case: enabled=True with empty strings (should fail)
+        with pytest.raises(ValueError, match="justification is required"):
+            ModelEmergencyBypass(
+                enabled=True,
+                justification="",  # Empty - should fail
+                follow_up_ticket_id="OMN-963",
+            )
+
+        with pytest.raises(ValueError, match="follow_up_ticket_id is required"):
+            ModelEmergencyBypass(
+                enabled=True,
+                justification="Emergency fix",
+                follow_up_ticket_id="",  # Empty - should fail
+            )
+
+        # Edge case: enabled=False with empty strings (should pass)
+        bypass_disabled = ModelEmergencyBypass(
+            enabled=False,
+            justification="",  # Empty is OK when disabled
+            follow_up_ticket_id="",  # Empty is OK when disabled
+        )
+        assert bypass_disabled.enabled is False
+
+        # Edge case: enabled=True with whitespace-only strings (should pass - not empty)
+        bypass_whitespace = ModelEmergencyBypass(
+            enabled=True,
+            justification="   ",  # Whitespace only - not empty, should pass
+            follow_up_ticket_id="OMN-963",
+        )
+        assert bypass_whitespace.enabled is True
+        assert bypass_whitespace.justification == "   "

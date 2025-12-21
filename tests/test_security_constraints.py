@@ -34,39 +34,26 @@ class TestStringLengthConstraints:
     def test_excessive_string_length(self) -> None:
         """Test that strings exceeding limit are rejected.
 
-        Note: max_length constraints are set on all string fields, but Pydantic v2
-        may not enforce them in all cases. This test documents the expected behavior.
-        If max_length enforcement is critical, consider adding custom validators.
+        Pydantic v2 enforces max_length constraints on string fields.
+        This test verifies that enforcement is working correctly.
         """
         # Create a string exceeding the limit
         too_long_string = "x" * (_MAX_STRING_LENGTH + 1)
 
-        # Note: This test may fail if Pydantic doesn't enforce max_length.
-        # The constraint is set on the field definition, but enforcement
-        # may depend on Pydantic version and configuration.
-        # TODO: Verify max_length enforcement or add custom validator if needed
-        try:
-            item = ModelDayClosePlanItem(
+        # Pydantic v2 should reject strings exceeding max_length
+        with pytest.raises(ValidationError) as exc_info:
+            ModelDayClosePlanItem(
                 requirement_id="TEST",
                 summary=too_long_string,
             )
-            # If validation passes, log a warning but don't fail the test
-            # This documents that max_length may not be enforced
-            chars = len(item.summary)
-            limit = _MAX_STRING_LENGTH
-            msg = (
-                f"max_length constraint not enforced: accepted {chars} chars "
-                f"(limit: {limit})"
-            )
-            pytest.skip(msg)
-        except (ValidationError, ValueError) as e:
-            # If validation fails, that's the expected behavior
-            error_str = str(e).lower()
-            assert (
-                "max length" in error_str
-                or "too long" in error_str
-                or "at most" in error_str
-            )
+
+        # Verify the error message indicates the length constraint
+        error_str = str(exc_info.value).lower()
+        assert (
+            "max length" in error_str
+            or "too long" in error_str
+            or "at most" in error_str
+        )
 
 
 class TestListLengthConstraints:

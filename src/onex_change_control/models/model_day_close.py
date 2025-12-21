@@ -16,7 +16,8 @@ from onex_change_control.enums.enum_pr_state import EnumPRState
 # Note: This pattern supports basic SemVer (major.minor.patch) only.
 # Pre-release versions (e.g., "1.0.0-alpha") and build metadata (e.g., "1.0.0+build")
 # are not supported. If full SemVer support is needed, consider using a SemVer library.
-_SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+# Pattern rejects leading zeros (e.g., "01.0.0" is invalid) per SemVer spec.
+_SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 # ISO date pattern (YYYY-MM-DD) - compiled at module level for performance
 # Used for format validation before calendar validation
