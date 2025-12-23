@@ -45,6 +45,28 @@ See: `omnibase_core/docs/conventions/NAMING_CONVENTIONS.md` for full details.
    poetry run pytest
    ```
 
+### Schema Export
+
+The repository includes a JSON schema export script that generates JSON schemas from Pydantic models:
+
+```bash
+poetry run python scripts/export_json_schema.py
+```
+
+**If CI Schema Determinism Check Fails:**
+If the CI job `schema-determinism` fails, it means the exported schemas are out of sync with the Pydantic models. To fix:
+
+1. Run the export script locally:
+   ```bash
+   poetry run python scripts/export_json_schema.py
+   ```
+
+2. Commit the updated schema files:
+   ```bash
+   git add schemas/
+   git commit -m "chore: update exported JSON schemas"
+   ```
+
 ### Where to start
 
 - `docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md`
