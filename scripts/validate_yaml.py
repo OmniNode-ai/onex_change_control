@@ -66,7 +66,7 @@ def detect_schema_type(file_path: Path, data: dict) -> str:
     Detection logic:
     1. Path-based: If path contains 'day_close' -> day_close
     2. Path-based: If path contains 'contract' -> ticket_contract
-    3. Content-based: If 'date' and 'plan_summary' fields exist -> day_close
+    3. Content-based: If 'date' and 'invariants_checked' fields exist -> day_close
     4. Content-based: If 'ticket_id' field exists -> ticket_contract
     5. Default: Fail with error
 
@@ -91,7 +91,7 @@ def detect_schema_type(file_path: Path, data: dict) -> str:
 
     # Content-based detection
     if isinstance(data, dict):
-        if "date" in data and "plan_summary" in data:
+        if "date" in data and "invariants_checked" in data:
             return "day_close"
         if "ticket_id" in data:
             return "ticket_contract"

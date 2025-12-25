@@ -134,19 +134,22 @@ class TestInvalidFileDetection:
     def test_validation_error_shows_path_and_reason(self, tmp_path: Path) -> None:
         """Test that validation errors show field path and reason."""
         invalid_file = tmp_path / "invalid_day_close.yaml"
+        # Uses correct ModelDayClose schema structure but with invalid date
         invalid_file.write_text(
             """
 schema_version: "1.0.0"
 date: "not-a-valid-date"
-plan_summary: "test"
+process_changes_today: []
+plan: []
+actual_by_repo: []
+drift_detected: []
 invariants_checked:
-  schema_version_present: "true"
-  date_format_valid: "true"
-process_changes_today:
-  planned_items: []
-  unplanned_items: []
-  blocked_items: []
-  correction_for_tomorrow: []
+  reducers_pure: "pass"
+  orchestrators_no_io: "pass"
+  effects_do_io_only: "pass"
+  real_infra_proof_progressing: "unknown"
+corrections_for_tomorrow: []
+risks: []
 """
         )
 
