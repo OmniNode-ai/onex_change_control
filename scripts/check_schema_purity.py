@@ -257,7 +257,8 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
         )
         return violations
 
-    for node in ast.walk(tree):
+    # Check only top-level classes (not nested)
+    for node in tree.body:
         if isinstance(node, ast.ClassDef):
             class_name = node.name
             # Flag non-prefixed classes (allow private classes starting with _)
