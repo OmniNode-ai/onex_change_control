@@ -2,8 +2,10 @@
 
 This package provides:
 - Versioned Pydantic schema models for drift-control artifacts
-- Deterministic JSON Schema exports for CI consumption
 - Local, no-network validation tooling
+
+Downstream packages can import and use the models directly:
+    from onex_change_control import ModelDayClose, ModelTicketContract
 """
 
 from typing import Final
