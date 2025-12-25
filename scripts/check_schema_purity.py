@@ -204,17 +204,19 @@ class PurityChecker(ast.NodeVisitor):
         return None
 
 
-def check_naming_conventions(file_path: Path) -> list[Violation]:
-    """Check file and class naming conventions.
+def check_file(file_path: Path) -> list[Violation]:
+    """Check a file for both purity and naming convention violations.
+
+    Parses the file once and performs all checks in a single pass.
 
     Args:
         file_path: Path to the Python file to check
 
     Returns:
-        List of naming convention violations
+        List of all violations (purity and naming)
 
     """
-    violations: list[Violation] = []
+    all_violations: list[Violation] = []
     file_name = file_path.name
 
     # Determine expected prefix based on directory
@@ -225,15 +227,15 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
         expected_file_prefix = "enum_"
         expected_class_prefix = "Enum"
     else:
-        return violations  # Not a schema module
+        return all_violations  # Not a schema module
 
     # Skip __init__.py
     if file_name == "__init__.py":
-        return violations
+        return all_violations
 
-    # Check file naming
+    # Check file naming (doesn't require parsing)
     if not file_name.startswith(expected_file_prefix):
-        violations.append(
+        all_violations.append(
             Violation(
                 file=file_path,
                 line=1,
@@ -242,12 +244,25 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
             )
         )
 
-    # Parse file and check class names
+    # Read and parse file once
     try:
         with file_path.open("r", encoding="utf-8") as f:
-            tree = ast.parse(f.read(), filename=str(file_path))
+            source = f.read()
+    except OSError as e:
+        all_violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"Cannot read file: {e}",
+            )
+        )
+        return all_violations
+
+    try:
+        tree = ast.parse(source, filename=str(file_path))
     except SyntaxError as e:
-        violations.append(
+        all_violations.append(
             Violation(
                 file=file_path,
                 line=e.lineno or 1,
@@ -255,9 +270,9 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
                 message=f"Syntax error: {e.msg}",
             )
         )
-        return violations
+        return all_violations
 
-    # Check only top-level classes (not nested)
+    # Check naming conventions (top-level classes only)
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
             class_name = node.name
@@ -265,7 +280,7 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
             if not class_name.startswith(
                 expected_class_prefix
             ) and not class_name.startswith("_"):
-                violations.append(
+                all_violations.append(
                     Violation(
                         file=file_path,
                         line=node.lineno,
@@ -277,47 +292,12 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
                     )
                 )
 
-    return violations
-
-
-def check_purity(file_path: Path) -> list[Violation]:
-    """Check a file for purity violations.
-
-    Args:
-        file_path: Path to the Python file to check
-
-    Returns:
-        List of purity violations
-
-    """
-    try:
-        with file_path.open("r", encoding="utf-8") as f:
-            source = f.read()
-    except OSError as e:
-        return [
-            Violation(
-                file=file_path,
-                line=1,
-                category="file_error",
-                message=f"Cannot read file: {e}",
-            )
-        ]
-
-    try:
-        tree = ast.parse(source, filename=str(file_path))
-    except SyntaxError as e:
-        return [
-            Violation(
-                file=file_path,
-                line=e.lineno or 1,
-                category="syntax_error",
-                message=f"Syntax error: {e.msg}",
-            )
-        ]
-
+    # Check purity (visits entire AST)
     checker = PurityChecker(file_path)
     checker.visit(tree)
-    return checker.violations
+    all_violations.extend(checker.violations)
+
+    return all_violations
 
 
 def find_schema_files(project_root: Path) -> list[Path]:
@@ -364,13 +344,9 @@ def main() -> int:
     print()  # noqa: T201
 
     for file_path in schema_files:
-        # Check purity
-        purity_violations = check_purity(file_path)
-        all_violations.extend(purity_violations)
-
-        # Check naming conventions
-        naming_violations = check_naming_conventions(file_path)
-        all_violations.extend(naming_violations)
+        # Check both purity and naming in a single parse
+        violations = check_file(file_path)
+        all_violations.extend(violations)
 
     if all_violations:
         print(f"❌ Found {len(all_violations)} violation(s):")  # noqa: T201
