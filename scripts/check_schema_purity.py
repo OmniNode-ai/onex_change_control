@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Check schema module purity and naming conventions.
 
 This script enforces:
@@ -15,13 +14,9 @@ Exit codes:
 """
 
 import ast
-import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
-
-# CLI script version
-CLI_VERSION = "1.0.0"
 
 # Directories to scan for schema modules
 SCHEMA_MODULE_PATHS = [
@@ -29,63 +24,50 @@ SCHEMA_MODULE_PATHS = [
     "src/onex_change_control/enums",
 ]
 
-# Forbidden module imports for purity
-# These modules can access environment, filesystem, network, or system time
-FORBIDDEN_IMPORTS = frozenset({
-    # Environment access
-    "os",
-    "os.environ",
-    "dotenv",
-    # Filesystem access (beyond basic path manipulation)
-    "shutil",
-    "tempfile",
-    "glob",
-    # Network access
-    "socket",
-    "urllib",
-    "urllib.request",
-    "urllib.parse",
-    "requests",
-    "httpx",
-    "aiohttp",
-    # System time (dynamic, non-deterministic)
-    "time",
-    # Process/system info
-    "subprocess",
-    "multiprocessing",
-    "threading",
-    "signal",
-    # Random (non-deterministic)
-    "random",
-    "secrets",
-    # Locale (environment-dependent)
-    "locale",
-})
+# Forbidden module imports for purity.
+# These modules can access environment, filesystem, network, or system time.
+FORBIDDEN_IMPORTS = frozenset(
+    {
+        "os",
+        "os.environ",
+        "dotenv",
+        "shutil",
+        "tempfile",
+        "glob",
+        "socket",
+        "urllib",
+        "urllib.request",
+        "urllib.parse",
+        "requests",
+        "httpx",
+        "aiohttp",
+        "time",
+        "subprocess",
+        "multiprocessing",
+        "threading",
+        "signal",
+        "random",
+        "secrets",
+        "locale",
+    }
+)
 
-# Forbidden function calls that access environment or current time
-FORBIDDEN_CALLS = frozenset({
-    # datetime dynamic access
-    "datetime.now",
-    "datetime.today",
-    "datetime.utcnow",
-    "date.today",
-    # os environment access
-    "os.environ.get",
-    "os.getenv",
-    "os.getcwd",
-    "os.path.expanduser",
-    "os.path.expandvars",
-    # Path environment access
-    "Path.home",
-    "Path.cwd",
-})
-
-# Allowed datetime usage (parsing, not dynamic time access)
-ALLOWED_DATETIME_USAGE = frozenset({
-    "date.fromisoformat",
-    "datetime.fromisoformat",
-    "timedelta",
-})
+# Forbidden function calls that access environment or current time.
+FORBIDDEN_CALLS = frozenset(
+    {
+        "datetime.now",
+        "datetime.today",
+        "datetime.utcnow",
+        "date.today",
+        "os.environ.get",
+        "os.getenv",
+        "os.getcwd",
+        "os.path.expanduser",
+        "os.path.expandvars",
+        "Path.home",
+        "Path.cwd",
+    }
+)
 
 
 class Violation(NamedTuple):
@@ -111,7 +93,7 @@ class PurityChecker(ast.NodeVisitor):
         self.violations: list[Violation] = []
         self._imported_names: dict[str, str] = {}  # alias -> full module name
 
-    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+    def visit_Import(self, node: ast.Import) -> None:
         """Check import statements for forbidden modules."""
         for alias in node.names:
             module_name = alias.name
@@ -131,7 +113,7 @@ class PurityChecker(ast.NodeVisitor):
                 )
         self.generic_visit(node)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         """Check from-import statements for forbidden modules."""
         if node.module is None:
             self.generic_visit(node)
@@ -156,7 +138,7 @@ class PurityChecker(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
-    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+    def visit_Call(self, node: ast.Call) -> None:
         """Check function calls for forbidden patterns."""
         call_name = self._get_call_name(node)
         if call_name:
@@ -171,7 +153,7 @@ class PurityChecker(ast.NodeVisitor):
                     )
                 )
             # Check for os.environ access patterns
-            elif call_name.startswith("os.environ") or call_name.startswith("environ."):
+            elif call_name.startswith(("os.environ", "environ.")):
                 self.violations.append(
                     Violation(
                         file=self.file_path,
@@ -182,27 +164,28 @@ class PurityChecker(ast.NodeVisitor):
                 )
         self.generic_visit(node)
 
-    def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
+    def visit_Attribute(self, node: ast.Attribute) -> None:
         """Check attribute access for forbidden patterns."""
         attr_chain = self._get_attribute_chain(node)
-        if attr_chain:
-            # Check for os.environ direct access
-            if attr_chain == "os.environ" or attr_chain.startswith("os.environ."):
-                self.violations.append(
-                    Violation(
-                        file=self.file_path,
-                        line=node.lineno,
-                        category="forbidden_access",
-                        message=f"Environment access: '{attr_chain}' (violates purity)",
-                    )
+        # Check for os.environ direct access
+        if attr_chain and (
+            attr_chain == "os.environ" or attr_chain.startswith("os.environ.")
+        ):
+            self.violations.append(
+                Violation(
+                    file=self.file_path,
+                    line=node.lineno,
+                    category="forbidden_access",
+                    message=f"Environment access: '{attr_chain}' (violates purity)",
                 )
+            )
         self.generic_visit(node)
 
     def _get_call_name(self, node: ast.Call) -> str | None:
         """Get the full name of a function call."""
         if isinstance(node.func, ast.Name):
             return node.func.id
-        elif isinstance(node.func, ast.Attribute):
+        if isinstance(node.func, ast.Attribute):
             return self._get_attribute_chain(node.func)
         return None
 
@@ -255,9 +238,7 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
                 file=file_path,
                 line=1,
                 category="naming_file",
-                message=(
-                    f"File name '{file_name}' should start with '{expected_file_prefix}'"
-                ),
+                message=f"File '{file_name}' needs prefix '{expected_file_prefix}'",
             )
         )
 
@@ -279,21 +260,21 @@ def check_naming_conventions(file_path: Path) -> list[Violation]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             class_name = node.name
-            # Check if it's a top-level class (not nested)
-            if not class_name.startswith(expected_class_prefix):
-                # Allow private classes (starting with _)
-                if not class_name.startswith("_"):
-                    violations.append(
-                        Violation(
-                            file=file_path,
-                            line=node.lineno,
-                            category="naming_class",
-                            message=(
-                                f"Class '{class_name}' should start with "
-                                f"'{expected_class_prefix}'"
-                            ),
-                        )
+            # Flag non-prefixed classes (allow private classes starting with _)
+            if not class_name.startswith(
+                expected_class_prefix
+            ) and not class_name.startswith("_"):
+                violations.append(
+                    Violation(
+                        file=file_path,
+                        line=node.lineno,
+                        category="naming_class",
+                        message=(
+                            f"Class '{class_name}' should start with "
+                            f"'{expected_class_prefix}'"
+                        ),
                     )
+                )
 
     return violations
 
@@ -413,4 +394,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

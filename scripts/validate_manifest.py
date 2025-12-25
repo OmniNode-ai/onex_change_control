@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate manifest.json hashes and tool version traceability.
 
 This script verifies that:
@@ -21,9 +20,6 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-
-# CLI script version
-CLI_VERSION = "1.0.0"
 
 # Schema version to validate (must match export script)
 SCHEMA_VERSION = "1.0.0"
@@ -63,10 +59,12 @@ def print_success(message: str) -> None:
 
 def print_info(message: str) -> None:
     """Print info message to stdout."""
-    print(f"ℹ️  {message}")  # noqa: T201
+    print(f"[INFO] {message}")  # noqa: T201
 
 
-def validate_manifest(manifest_path: Path, schemas_dir: Path) -> tuple[bool, list[str]]:
+def validate_manifest(  # noqa: C901, PLR0912
+    manifest_path: Path, schemas_dir: Path
+) -> tuple[bool, list[str]]:
     """Validate manifest.json contents and hashes.
 
     Args:
@@ -121,7 +119,9 @@ def validate_manifest(manifest_path: Path, schemas_dir: Path) -> tuple[bool, lis
     # Validate each schema entry
     for schema_entry in schemas:
         if not isinstance(schema_entry, dict):
-            errors.append(f"Schema entry should be dict, got {type(schema_entry).__name__}")
+            errors.append(
+                f"Schema entry should be dict, got {type(schema_entry).__name__}"
+            )
             continue
 
         file_name = schema_entry.get("file")
@@ -169,7 +169,9 @@ def main() -> int:
     # Check manifest exists
     if not manifest_path.exists():
         print_error(f"Manifest not found: {manifest_path}")
-        print_info("Run 'poetry run python scripts/export_json_schema.py' to generate it")
+        print_info(
+            "Run 'poetry run python scripts/export_json_schema.py' to generate it"
+        )
         return EXIT_USAGE_ERROR
 
     # Validate manifest
@@ -199,4 +201,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

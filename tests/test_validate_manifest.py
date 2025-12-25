@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+from scripts.validate_manifest import calculate_file_hash, validate_manifest
 
 
 def run_manifest_validation(*args: str) -> subprocess.CompletedProcess[str]:
@@ -23,7 +23,7 @@ def run_manifest_validation(*args: str) -> subprocess.CompletedProcess[str]:
 
     """
     cmd = [sys.executable, "scripts/validate_manifest.py", *args]
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603
         cmd,
         cwd=Path(__file__).parent.parent,
         capture_output=True,
@@ -65,8 +65,6 @@ class TestManifestValidationLogic:
 
     def test_validates_correct_manifest(self, tmp_path: Path) -> None:
         """Test that a correct manifest passes validation."""
-        from scripts.validate_manifest import validate_manifest
-
         # Create a valid manifest and schema file
         schemas_dir = tmp_path / "schemas"
         schemas_dir.mkdir()
@@ -92,8 +90,6 @@ class TestManifestValidationLogic:
 
     def test_detects_missing_schema_file(self, tmp_path: Path) -> None:
         """Test that missing schema files are detected."""
-        from scripts.validate_manifest import validate_manifest
-
         schemas_dir = tmp_path / "schemas"
         schemas_dir.mkdir()
 
@@ -111,8 +107,6 @@ class TestManifestValidationLogic:
 
     def test_detects_hash_mismatch(self, tmp_path: Path) -> None:
         """Test that hash mismatches are detected."""
-        from scripts.validate_manifest import validate_manifest
-
         schemas_dir = tmp_path / "schemas"
         schemas_dir.mkdir()
 
@@ -134,8 +128,6 @@ class TestManifestValidationLogic:
 
     def test_detects_missing_required_fields(self, tmp_path: Path) -> None:
         """Test that missing required fields are detected."""
-        from scripts.validate_manifest import validate_manifest
-
         schemas_dir = tmp_path / "schemas"
         schemas_dir.mkdir()
 
@@ -153,8 +145,6 @@ class TestManifestValidationLogic:
 
     def test_detects_empty_export_script_version(self, tmp_path: Path) -> None:
         """Test that empty export_script_version is detected (traceability)."""
-        from scripts.validate_manifest import validate_manifest
-
         schemas_dir = tmp_path / "schemas"
         schemas_dir.mkdir()
 
@@ -177,8 +167,6 @@ class TestManifestValidationLogic:
 
     def test_detects_empty_schemas_list(self, tmp_path: Path) -> None:
         """Test that empty schemas list is detected."""
-        from scripts.validate_manifest import validate_manifest
-
         schemas_dir = tmp_path / "schemas"
         schemas_dir.mkdir()
 
@@ -196,8 +184,6 @@ class TestManifestValidationLogic:
 
     def test_detects_invalid_json(self, tmp_path: Path) -> None:
         """Test that invalid JSON is detected."""
-        from scripts.validate_manifest import validate_manifest
-
         schemas_dir = tmp_path / "schemas"
         schemas_dir.mkdir()
 
@@ -214,8 +200,6 @@ class TestHashCalculation:
 
     def test_calculate_file_hash(self, tmp_path: Path) -> None:
         """Test that file hashes are calculated correctly."""
-        from scripts.validate_manifest import calculate_file_hash
-
         test_file = tmp_path / "test.txt"
         content = "Hello, World!\n"
         test_file.write_text(content)
@@ -227,8 +211,6 @@ class TestHashCalculation:
 
     def test_hash_is_deterministic(self, tmp_path: Path) -> None:
         """Test that hash calculation is deterministic."""
-        from scripts.validate_manifest import calculate_file_hash
-
         test_file = tmp_path / "test.txt"
         test_file.write_text("consistent content")
 
@@ -236,4 +218,3 @@ class TestHashCalculation:
         hash2 = calculate_file_hash(test_file)
 
         assert hash1 == hash2
-
