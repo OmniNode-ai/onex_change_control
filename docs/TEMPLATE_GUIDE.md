@@ -139,7 +139,9 @@ The Ticket Contract template (`ticket_contract.template.yaml`) is used to create
 - **Rules**:
   - If `interface_change=false`, this must be empty: `[]`
   - If `interface_change=true`, this should list all affected surfaces
-- **Unknown Handling**: If unsure which interfaces are affected, set `interface_change=true` and leave this empty temporarily. **NOTE**: The `contract.is_complete` property will return `False` until `interfaces_touched` is populated. Populate before ticket completion.
+- **Unknown Handling**: If unsure which interfaces are affected, set `interface_change=true` and leave this empty temporarily. Populate before ticket completion.
+
+> **⚠️ IMPORTANT**: Leaving `interfaces_touched` empty when `interface_change=true` will cause `contract.is_complete` to return `False`, blocking ticket completion. This ensures interface changes are always documented before closing.
 
 #### `evidence_requirements`
 - **Type**: List of objects
