@@ -15,6 +15,55 @@ TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 YAML_PATH = Path(__file__).parent.parent / "drift" / "day_close" / "2025-12-19.yaml"
 
 
+# Common test fixtures to reduce duplication
+@pytest.fixture
+def minimal_emergency_bypass() -> dict[str, str | bool]:
+    """Fixture for minimal emergency bypass configuration (disabled)."""
+    return {
+        "enabled": False,
+        "justification": "",
+        "follow_up_ticket_id": "",
+    }
+
+
+@pytest.fixture
+def minimal_day_close_data() -> dict[str, str | list | dict]:
+    """Fixture for minimal valid day close data."""
+    return {
+        "schema_version": "1.0.0",
+        "date": "2025-12-21",
+        "process_changes_today": [],
+        "plan": [],
+        "actual_by_repo": [],
+        "drift_detected": [],
+        "invariants_checked": {
+            "reducers_pure": "pass",
+            "orchestrators_no_io": "pass",
+            "effects_do_io_only": "pass",
+            "real_infra_proof_progressing": "pass",
+        },
+        "corrections_for_tomorrow": [],
+        "risks": [],
+    }
+
+
+@pytest.fixture
+def minimal_ticket_contract_data(
+    minimal_emergency_bypass: dict[str, str | bool],
+) -> dict[str, str | bool | list | dict]:
+    """Fixture for minimal valid ticket contract data."""
+    return {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-999",
+        "summary": "Test ticket summary",
+        "is_seam_ticket": False,
+        "interface_change": False,
+        "interfaces_touched": [],
+        "evidence_requirements": [],
+        "emergency_bypass": minimal_emergency_bypass,
+    }
+
+
 @pytest.mark.skipif(not YAML_PATH.exists(), reason="YAML fixture not present")
 def test_parse_existing_day_close_yaml() -> None:
     """Test parsing existing day_close.yaml file."""
@@ -36,7 +85,9 @@ def test_parse_existing_day_close_yaml() -> None:
     assert len(day_close.risks) == expected_risks_count
 
 
-def test_parse_ticket_contract_template() -> None:
+def test_parse_ticket_contract_template(
+    minimal_emergency_bypass: dict[str, str | bool],
+) -> None:
     """Test parsing ticket contract template.
 
     Note: The template contains placeholder values that need to be replaced
@@ -59,11 +110,7 @@ def test_parse_ticket_contract_template() -> None:
                 "command": None,
             }
         ],
-        "emergency_bypass": {
-            "enabled": False,
-            "justification": "",
-            "follow_up_ticket_id": "",
-        },
+        "emergency_bypass": minimal_emergency_bypass,
     }
 
     # Parse with Pydantic model
@@ -77,7 +124,9 @@ def test_parse_ticket_contract_template() -> None:
     assert contract.emergency_bypass.enabled is False
 
 
-def test_template_day_close_minimal_valid() -> None:
+def test_template_day_close_minimal_valid(
+    minimal_day_close_data: dict[str, str | list | dict],
+) -> None:
     """Test that day_close template can be filled with minimal valid values.
 
     This test validates the template structure by creating a minimal valid
@@ -85,22 +134,7 @@ def test_template_day_close_minimal_valid() -> None:
     and valid according to the schema.
     """
     # Minimal valid day close based on template
-    data = {
-        "schema_version": "1.0.0",
-        "date": "2025-12-21",  # Valid ISO date
-        "process_changes_today": [],  # Empty list is valid
-        "plan": [],  # Empty list is valid
-        "actual_by_repo": [],  # Empty list is valid
-        "drift_detected": [],  # Empty list is valid
-        "invariants_checked": {
-            "reducers_pure": "pass",
-            "orchestrators_no_io": "pass",
-            "effects_do_io_only": "pass",
-            "real_infra_proof_progressing": "pass",
-        },
-        "corrections_for_tomorrow": [],  # Empty list is valid
-        "risks": [],  # Empty list is valid
-    }
+    data = minimal_day_close_data.copy()
 
     # Parse with Pydantic model - should not raise
     day_close = ModelDayClose.model_validate(data)
@@ -116,7 +150,9 @@ def test_template_day_close_minimal_valid() -> None:
     assert len(day_close.risks) == 0
 
 
-def test_template_ticket_contract_minimal_valid() -> None:
+def test_template_ticket_contract_minimal_valid(
+    minimal_ticket_contract_data: dict[str, str | bool | list | dict],
+) -> None:
     """Test that ticket_contract template can be filled with minimal valid values.
 
     This test validates the template structure by creating a minimal valid
@@ -124,20 +160,7 @@ def test_template_ticket_contract_minimal_valid() -> None:
     and valid according to the schema.
     """
     # Minimal valid ticket contract based on template
-    data = {
-        "schema_version": "1.0.0",
-        "ticket_id": "OMN-999",
-        "summary": "Test ticket summary",
-        "is_seam_ticket": False,
-        "interface_change": False,
-        "interfaces_touched": [],  # Must be empty when interface_change=False
-        "evidence_requirements": [],  # Empty list is valid
-        "emergency_bypass": {
-            "enabled": False,
-            "justification": "",
-            "follow_up_ticket_id": "",
-        },
-    }
+    data = minimal_ticket_contract_data.copy()
 
     # Parse with Pydantic model - should not raise
     contract = ModelTicketContract.model_validate(data)
@@ -152,7 +175,9 @@ def test_template_ticket_contract_minimal_valid() -> None:
     assert contract.emergency_bypass.enabled is False
 
 
-def test_template_ticket_contract_with_evidence_requirements() -> None:
+def test_template_ticket_contract_with_evidence_requirements(
+    minimal_emergency_bypass: dict[str, str | bool],
+) -> None:
     """Test ticket contract template with evidence requirements filled.
 
     Validates that evidence requirements can be properly specified using
@@ -192,11 +217,7 @@ def test_template_ticket_contract_with_evidence_requirements() -> None:
                 "command": None,
             },
         ],
-        "emergency_bypass": {
-            "enabled": False,
-            "justification": "",
-            "follow_up_ticket_id": "",
-        },
+        "emergency_bypass": minimal_emergency_bypass,
     }
 
     contract = ModelTicketContract.model_validate(data)
@@ -211,7 +232,9 @@ def test_template_ticket_contract_with_evidence_requirements() -> None:
     assert contract.evidence_requirements[4].kind == "manual"
 
 
-def test_template_ticket_contract_unknown_handling() -> None:
+def test_template_ticket_contract_unknown_handling(
+    minimal_emergency_bypass: dict[str, str | bool],
+) -> None:
     """Test ticket contract template with unknown handling scenarios.
 
     Validates that templates support 'unknown' status for invariants and
@@ -226,11 +249,7 @@ def test_template_ticket_contract_unknown_handling() -> None:
         "interface_change": True,
         "interfaces_touched": [],  # Temporarily empty - allowed but incomplete
         "evidence_requirements": [],
-        "emergency_bypass": {
-            "enabled": False,
-            "justification": "",
-            "follow_up_ticket_id": "",
-        },
+        "emergency_bypass": minimal_emergency_bypass,
     }
 
     contract = ModelTicketContract.model_validate(data)
@@ -273,28 +292,22 @@ def test_template_ticket_contract_emergency_bypass() -> None:
     assert contract.emergency_bypass.follow_up_ticket_id == "OMN-1000"
 
 
-def test_template_day_close_unknown_invariant_statuses() -> None:
+def test_template_day_close_unknown_invariant_statuses(
+    minimal_day_close_data: dict[str, str | list | dict],
+) -> None:
     """Test that day_close template supports 'unknown' for invariant statuses.
 
     This test validates the unknown handling guidance in the template,
     ensuring that 'unknown' is a valid value for invariant status fields
     when the status cannot be determined.
     """
-    data = {
-        "schema_version": "1.0.0",
-        "date": "2025-12-21",
-        "process_changes_today": [],
-        "plan": [],
-        "actual_by_repo": [],
-        "drift_detected": [],
-        "invariants_checked": {
-            "reducers_pure": "unknown",  # Status cannot be determined yet
-            "orchestrators_no_io": "unknown",
-            "effects_do_io_only": "unknown",
-            "real_infra_proof_progressing": "unknown",
-        },
-        "corrections_for_tomorrow": [],
-        "risks": [],
+    data = minimal_day_close_data.copy()
+    # Override invariants_checked to use "unknown" status
+    data["invariants_checked"] = {
+        "reducers_pure": "unknown",  # Status cannot be determined yet
+        "orchestrators_no_io": "unknown",
+        "effects_do_io_only": "unknown",
+        "real_infra_proof_progressing": "unknown",
     }
 
     day_close = ModelDayClose.model_validate(data)
@@ -305,7 +318,10 @@ def test_template_day_close_unknown_invariant_statuses() -> None:
     assert day_close.invariants_checked.real_infra_proof_progressing == "unknown"
 
 
-def test_template_files_parse_with_minimal_replacements() -> None:
+def test_template_files_parse_with_minimal_replacements(
+    minimal_day_close_data: dict[str, str | list | dict],
+    minimal_ticket_contract_data: dict[str, str | bool | list | dict],
+) -> None:
     """Test that template files can be parsed with minimal placeholder replacements.
 
     This test validates that the template files themselves are schema-aligned
@@ -318,20 +334,8 @@ def test_template_files_parse_with_minimal_replacements() -> None:
         with day_close_template_path.open() as f:
             day_close_data = yaml.safe_load(f)
 
-        # Replace placeholders with minimal valid values
-        day_close_data["date"] = "2025-12-21"
-        day_close_data["process_changes_today"] = []
-        day_close_data["plan"] = []
-        day_close_data["actual_by_repo"] = []
-        day_close_data["drift_detected"] = []
-        day_close_data["invariants_checked"] = {
-            "reducers_pure": "pass",
-            "orchestrators_no_io": "pass",
-            "effects_do_io_only": "pass",
-            "real_infra_proof_progressing": "pass",
-        }
-        day_close_data["corrections_for_tomorrow"] = []
-        day_close_data["risks"] = []
+        # Replace placeholders with minimal valid values using fixture
+        day_close_data.update(minimal_day_close_data)
 
         # Should parse without errors
         day_close = ModelDayClose.model_validate(day_close_data)
@@ -344,18 +348,8 @@ def test_template_files_parse_with_minimal_replacements() -> None:
         with ticket_contract_template_path.open() as f:
             contract_data = yaml.safe_load(f)
 
-        # Replace placeholders with minimal valid values
-        contract_data["ticket_id"] = "OMN-999"
-        contract_data["summary"] = "Test ticket"
-        contract_data["is_seam_ticket"] = False
-        contract_data["interface_change"] = False
-        contract_data["interfaces_touched"] = []
-        contract_data["evidence_requirements"] = []
-        contract_data["emergency_bypass"] = {
-            "enabled": False,
-            "justification": "",
-            "follow_up_ticket_id": "",
-        }
+        # Replace placeholders with minimal valid values using fixture
+        contract_data.update(minimal_ticket_contract_data)
 
         # Should parse without errors
         contract = ModelTicketContract.model_validate(contract_data)
