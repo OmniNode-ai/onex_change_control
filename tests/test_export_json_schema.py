@@ -54,9 +54,9 @@ def test_schema_files_are_valid_json() -> None:
 
     # Verify structure
     assert isinstance(day_close_data, dict), "day_close schema should be a dict"
-    assert isinstance(ticket_contract_data, dict), (
-        "ticket_contract schema should be a dict"
-    )
+    assert isinstance(
+        ticket_contract_data, dict
+    ), "ticket_contract schema should be a dict"
     assert isinstance(manifest_data, dict), "manifest should be a dict"
 
     # Verify manifest structure
@@ -91,9 +91,9 @@ def test_manifest_contains_hashes() -> None:
 
     for schema_item in manifest_data["schemas"]:
         assert "sha256" in schema_item
-        assert len(schema_item["sha256"]) == _SHA256_HEX_LENGTH, (
-            f"SHA256 hash should be {_SHA256_HEX_LENGTH} characters"
-        )
+        assert (
+            len(schema_item["sha256"]) == _SHA256_HEX_LENGTH
+        ), f"SHA256 hash should be {_SHA256_HEX_LENGTH} characters"
 
 
 def test_schema_contains_export_metadata() -> None:

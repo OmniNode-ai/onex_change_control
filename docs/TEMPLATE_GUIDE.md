@@ -219,4 +219,3 @@ Both templates are schema-aligned with their corresponding Pydantic models:
 - Ticket Contract → `ModelTicketContract`
 
 See `src/onex_change_control/models/` for the model definitions.
-
