@@ -209,12 +209,22 @@ All list fields accept empty lists (`[]`) as valid values. Use empty lists when:
 
 ### Validation
 
-After filling out a template, validate it against the schema using pytest:
-```bash
-# Validate day_close templates
-poetry run pytest tests/test_yaml_parsing.py -k day_close
+After filling out a template, validate it against the schema:
 
-# Validate ticket_contract templates
+**Option 1: CLI Tool (Recommended)**
+```bash
+# Validate one or more files
+poetry run python scripts/validate_yaml.py drift/day_close/2025-12-21.yaml
+poetry run python scripts/validate_yaml.py contracts/*.yaml
+
+# Validate all day_close files
+poetry run python scripts/validate_yaml.py drift/day_close/*.yaml
+```
+
+**Option 2: Pytest**
+```bash
+# Run template validation tests
+poetry run pytest tests/test_yaml_parsing.py -k day_close
 poetry run pytest tests/test_yaml_parsing.py -k ticket_contract
 ```
 
