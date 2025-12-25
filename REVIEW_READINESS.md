@@ -156,4 +156,3 @@ for contract_file in contract_dir.glob("*.yaml"):
 2. **Version policy**: What's the relationship between package version and schema version?
 3. **CLI naming**: `validate-yaml` or `onex-validate-yaml`?
 4. **Schema discovery**: Should we provide a function to list available schema versions?
-
