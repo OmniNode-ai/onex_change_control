@@ -31,41 +31,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-try:
-    from colorama import Fore, Style, init
-
-    COLORAMA_AVAILABLE = True
-except ImportError:
-    # Fallback if colorama is not available
-    COLORAMA_AVAILABLE = False
-
-    # Create dummy color objects for type checking
-    # Use different names to avoid mypy "already defined" error
-    class _ForeFallback:  # noqa: N801
-        """Dummy Fore class when colorama is not available."""
-
-        RED = ""
-        GREEN = ""
-        YELLOW = ""
-        CYAN = ""
-        RESET = ""
-
-    class _StyleFallback:  # noqa: N801
-        """Dummy Style class when colorama is not available."""
-
-        RESET_ALL = ""
-
-    # Assign to expected names for compatibility
-    Fore = _ForeFallback  # type: ignore[assignment, misc]
-    Style = _StyleFallback  # type: ignore[assignment, misc]
-
-    def init(  # type: ignore[no-redef]
-        autoreset: bool = False,
-        convert: bool | None = None,
-        strip: bool | None = None,
-        wrap: bool = True,
-    ) -> None:
-        """No-op if colorama is not available."""
+from colorama import Fore, Style, init
 
 
 # Directories to scan for schema modules
@@ -630,7 +596,7 @@ def main() -> int:  # noqa: C901
 
     # Initialize colorama (auto-detects if TTY is available)
     use_color = not args.no_color
-    if COLORAMA_AVAILABLE and use_color:
+    if use_color:
         # Auto-detect if we're in a TTY (terminal) or CI environment
         # If not a TTY, colorama will disable colors automatically
         init(autoreset=True, strip=False)
