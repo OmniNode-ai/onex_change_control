@@ -249,8 +249,8 @@ class TestPurityViolationDetection:
 
     def test_detects_environment_dict_access(self, tmp_path: Path) -> None:
         """Test that environment variable access via dictionary syntax is detected."""
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
+        models_dir = tmp_path / "src" / "onex_change_control" / "models"
+        models_dir.mkdir(parents=True)
         test_file = models_dir / "model_test.py"
         test_file.write_text(
             textwrap.dedent("""
@@ -260,11 +260,30 @@ class TestPurityViolationDetection:
         )
 
         violations = check_file(test_file)
-        # Should detect both the import and the environ access
-        assert len(violations) >= 1
+        # Should detect both the import and the environ access via subscript
+        assert len(violations) >= 2
+        assert any(v.category == "forbidden_import" for v in violations)
         assert any(
-            v.category in ("forbidden_import", "forbidden_access") for v in violations
+            v.category == "forbidden_access" and "subscript" in v.message.lower()
+            for v in violations
         )
+
+    def test_detects_syntax_error(self, tmp_path: Path) -> None:
+        """Test that syntax errors are detected and reported."""
+        models_dir = tmp_path / "src" / "onex_change_control" / "models"
+        models_dir.mkdir(parents=True)
+        test_file = models_dir / "model_test.py"
+        # Create a file with a syntax error (missing colon)
+        test_file.write_text(
+            textwrap.dedent("""
+            class ModelTest
+                pass
+            """)
+        )
+
+        violations = check_file(test_file)
+        assert len(violations) >= 1
+        assert any(v.category == "syntax_error" for v in violations)
 
     def test_allows_path_basic_operations(self, tmp_path: Path) -> None:
         """Test that basic Path operations are allowed."""

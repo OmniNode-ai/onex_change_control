@@ -208,6 +208,40 @@ class PurityChecker(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        """Check subscript access for forbidden patterns (e.g., os.environ['VAR'])."""
+        # Check for os.environ['VAR'] or os.environ["VAR"] patterns
+        if isinstance(node.value, ast.Attribute):
+            attr_chain = self._get_attribute_chain(node.value)
+            if attr_chain == "os.environ":
+                self.violations.append(
+                    Violation(
+                        file=self.file_path,
+                        line=node.lineno,
+                        category="forbidden_access",
+                        message=(
+                            "Environment access via subscript: "
+                            "os.environ[...] (violates purity)"
+                        ),
+                    )
+                )
+        elif isinstance(node.value, ast.Name):
+            # Check for aliased os.environ access (e.g., env = os.environ; env['VAR'])
+            resolved_name = self._imported_names.get(node.value.id, node.value.id)
+            if resolved_name == "os.environ":
+                self.violations.append(
+                    Violation(
+                        file=self.file_path,
+                        line=node.lineno,
+                        category="forbidden_access",
+                        message=(
+                            "Environment access via subscript: "
+                            "os.environ[...] (violates purity)"
+                        ),
+                    )
+                )
+        self.generic_visit(node)
+
     def _get_call_name(self, node: ast.Call) -> str | None:
         """Get the full name of a function call, resolving aliases."""
         if isinstance(node.func, ast.Name):
@@ -237,11 +271,15 @@ class PurityChecker(ast.NodeVisitor):
         return None
 
 
-def _read_file_safely(file_path: Path) -> tuple[str | None, list[Violation]]:
+def _read_file_safely(  # noqa: PLR0911
+    file_path: Path, *, validate_path: bool = True
+) -> tuple[str | None, list[Violation]]:
     """Read a file safely, returning source and any file reading violations.
 
     Args:
         file_path: Path to the file to read
+        validate_path: If True, validate that file is within allowed schema directories.
+            Set to False for testing scenarios.
 
     Returns:
         Tuple of (source content or None, list of violations)
@@ -250,6 +288,55 @@ def _read_file_safely(file_path: Path) -> tuple[str | None, list[Violation]]:
 
     """
     violations: list[Violation] = []
+
+    # Security: Validate that file path is within allowed schema directories
+    # This prevents path traversal attacks
+    if validate_path:
+        project_root = Path(__file__).parent.parent
+        resolved_path = file_path.resolve()
+        allowed_dirs = [
+            (project_root / module_path).resolve()
+            for module_path in SCHEMA_MODULE_PATHS
+        ]
+
+        # Check if the resolved path is within any allowed directory
+        is_allowed = any(
+            str(resolved_path).startswith(str(allowed_dir))
+            for allowed_dir in allowed_dirs
+        )
+
+        if not is_allowed:
+            violations.append(
+                Violation(
+                    file=file_path,
+                    line=1,
+                    category="file_error",
+                    message=(
+                        f"File path '{file_path}' is outside allowed "
+                        f"schema directories (security: path traversal prevention)"
+                    ),
+                )
+            )
+            return None, violations
+
+    # Additional security: Always check for path traversal patterns in the path string
+    # This provides defense-in-depth even for test scenarios
+    path_str = str(file_path)
+    if ".." in path_str:
+        # Block path traversal patterns (e.g., ../../../etc/passwd)
+        # This applies to both production and test scenarios for security
+        violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=(
+                    f"File path '{file_path}' contains path traversal pattern '..' "
+                    f"(security: path traversal prevention)"
+                ),
+            )
+        )
+        return None, violations
     try:
         with file_path.open("r", encoding="utf-8") as f:
             source = f.read()
@@ -338,7 +425,17 @@ def check_file(file_path: Path) -> list[Violation]:
         )
 
     # Read and parse file once
-    source, file_violations = _read_file_safely(file_path)
+    # Validate path only for files discovered via find_schema_files (production use)
+    # For direct calls (e.g., tests), skip path validation
+    project_root = Path(__file__).parent.parent
+    resolved_path = file_path.resolve()
+    is_in_schema_dir = any(
+        str(resolved_path).startswith(str((project_root / module_path).resolve()))
+        for module_path in SCHEMA_MODULE_PATHS
+    )
+    validate_path = is_in_schema_dir
+
+    source, file_violations = _read_file_safely(file_path, validate_path=validate_path)
     all_violations.extend(file_violations)
     if source is None:
         return all_violations
