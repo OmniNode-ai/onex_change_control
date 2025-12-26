@@ -213,6 +213,30 @@ class TestPurityViolationDetection:
         assert any(v.category == "forbidden_import" for v in violations)
         assert any("time" in v.message for v in violations)
 
+    def test_nested_alias_call_pattern(self, tmp_path: Path) -> None:
+        """Test nested alias call pattern (e.g., dt.datetime.now()).
+
+        This documents current behavior: the import itself is caught, but
+        deeply nested alias patterns may not be fully detected.
+        """
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        test_file = models_dir / "model_test.py"
+        # datetime is allowed (pure), but datetime.now() is forbidden
+        test_file.write_text(
+            textwrap.dedent("""
+            import datetime as dt
+            x = dt.datetime.now()
+            """)
+        )
+
+        violations = check_file(test_file)
+        # datetime import is allowed (pure module), but the call should be caught
+        # Current implementation should catch this via simplified pattern matching
+        assert len(violations) >= 1
+        # Should detect the forbidden call
+        assert any("now" in v.message.lower() for v in violations)
+
     def test_allows_future_imports(self, tmp_path: Path) -> None:
         """Test that from __future__ imports are allowed."""
         models_dir = tmp_path / "models"

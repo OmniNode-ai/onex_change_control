@@ -11,6 +11,14 @@ Usage:
 Exit codes:
     0: All checks passed
     1: One or more violations found
+
+Alias Detection Limitations:
+    The script tracks imported aliases and resolves them for attribute chains.
+    However, deeply nested alias patterns (e.g.,
+    `import datetime as dt; dt.datetime.now()`) may not be fully detected.
+    The import itself will be caught if the module is forbidden, providing
+    defense-in-depth. This limitation is acceptable for schema modules where
+    such patterns are uncommon.
 """
 
 import ast
@@ -229,7 +237,7 @@ class PurityChecker(ast.NodeVisitor):
         return None
 
 
-def check_file(file_path: Path) -> list[Violation]:
+def check_file(file_path: Path) -> list[Violation]:  # noqa: C901, PLR0911, PLR0912
     """Check a file for both purity and naming convention violations.
 
     Parses the file once and performs all checks in a single pass.
@@ -273,6 +281,36 @@ def check_file(file_path: Path) -> list[Violation]:
     try:
         with file_path.open("r", encoding="utf-8") as f:
             source = f.read()
+    except FileNotFoundError as e:
+        all_violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"File not found: {e}",
+            )
+        )
+        return all_violations
+    except PermissionError as e:
+        all_violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"Permission denied: {e}",
+            )
+        )
+        return all_violations
+    except UnicodeDecodeError as e:
+        all_violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"Unicode decode error: {e}",
+            )
+        )
+        return all_violations
     except OSError as e:
         all_violations.append(
             Violation(
