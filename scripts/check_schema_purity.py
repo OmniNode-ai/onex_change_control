@@ -142,7 +142,7 @@ class PurityChecker(ast.NodeVisitor):
         """Check function calls for forbidden patterns."""
         call_name = self._get_call_name(node)
         if call_name:
-            # Check against forbidden calls
+            # Check against forbidden calls (exact match)
             if call_name in FORBIDDEN_CALLS:
                 self.violations.append(
                     Violation(
@@ -152,8 +152,23 @@ class PurityChecker(ast.NodeVisitor):
                         message=f"Forbidden call: '{call_name}' (violates purity)",
                     )
                 )
+            # Check for patterns like datetime.datetime.now -> datetime.now
+            elif "." in call_name:
+                parts = call_name.split(".")
+                # Try simplified versions (e.g., datetime.datetime.now -> datetime.now)
+                if len(parts) >= 3:
+                    simplified = f"{parts[-2]}.{parts[-1]}"
+                    if simplified in FORBIDDEN_CALLS:
+                        self.violations.append(
+                            Violation(
+                                file=self.file_path,
+                                line=node.lineno,
+                                category="forbidden_call",
+                                message=f"Forbidden call: '{call_name}' (violates purity)",
+                            )
+                        )
             # Check for os.environ access patterns
-            elif call_name.startswith(("os.environ", "environ.")):
+            if call_name.startswith(("os.environ", "environ.")):
                 self.violations.append(
                     Violation(
                         file=self.file_path,
@@ -182,15 +197,17 @@ class PurityChecker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _get_call_name(self, node: ast.Call) -> str | None:
-        """Get the full name of a function call."""
+        """Get the full name of a function call, resolving aliases."""
         if isinstance(node.func, ast.Name):
-            return node.func.id
+            # Resolve alias if present
+            resolved = self._imported_names.get(node.func.id, node.func.id)
+            return resolved
         if isinstance(node.func, ast.Attribute):
             return self._get_attribute_chain(node.func)
         return None
 
     def _get_attribute_chain(self, node: ast.Attribute) -> str | None:
-        """Get the full attribute chain (e.g., 'datetime.datetime.now')."""
+        """Get the full attribute chain (e.g., 'datetime.datetime.now'), resolving aliases."""
         parts: list[str] = []
         current: ast.expr = node
 
@@ -199,7 +216,9 @@ class PurityChecker(ast.NodeVisitor):
             current = current.value
 
         if isinstance(current, ast.Name):
-            parts.append(current.id)
+            # Resolve alias if present
+            resolved_name = self._imported_names.get(current.id, current.id)
+            parts.append(resolved_name)
             return ".".join(reversed(parts))
         return None
 
