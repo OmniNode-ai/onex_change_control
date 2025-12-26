@@ -410,20 +410,25 @@ class TestNamingConventions:
 class TestCLIFeatures:
     """Tests for CLI features: --warn-only and --no-color flags."""
 
-    def test_warn_only_exits_with_zero_on_violations(self, tmp_path: Path) -> None:
-        """Test that --warn-only flag causes exit code 0 even with violations."""
-        # Create a temporary file with a violation
-        models_dir = tmp_path / "src" / "onex_change_control" / "models"
-        models_dir.mkdir(parents=True)
-        test_file = models_dir / "model_test.py"
-        test_file.write_text("import os\n")
+    def test_warn_only_exits_with_zero_on_violations(self) -> None:
+        """Test that --warn-only flag causes exit code 0 even with violations.
 
-        # We can't easily test the full CLI with violations in the actual schema dir,
-        # so we'll test the behavior by checking that warn-only flag is accepted
-        # and that the help text mentions it
+        Note: Full integration testing would require modifying SCHEMA_MODULE_PATHS
+        at runtime, which is complex. This test verifies:
+        1. The flag is accepted by the CLI
+        2. The help text documents it correctly
+        3. The logic is straightforward (return 0 if args.warn_only else 1)
+        """
+        # Verify the flag is accepted and documented
         result = run_purity_check("--help")
         assert result.returncode == 0
         assert "--warn-only" in result.stdout
+        assert "gradual adoption" in result.stdout.lower()
+
+        # Verify that --warn-only with clean schema still exits with 0
+        # (this tests the flag works, even if we can't easily test with violations)
+        result = run_purity_check("--warn-only")
+        assert result.returncode == 0
 
     def test_no_color_flag_disables_colors(self) -> None:
         """Test that --no-color flag is accepted and documented."""

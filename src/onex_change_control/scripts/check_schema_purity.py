@@ -33,7 +33,6 @@ from typing import NamedTuple
 
 from colorama import Fore, Style, init
 
-
 # Directories to scan for schema modules
 SCHEMA_MODULE_PATHS = [
     "src/onex_change_control/models",
@@ -545,7 +544,7 @@ def _get_category_color(category: str, *, use_color: bool) -> str:
         "syntax_error": Fore.RED,
         "file_error": Fore.RED,
     }
-    return color_map.get(category, "") or ""
+    return color_map.get(category, "")
 
 
 def print_violation(v: Violation, *, use_color: bool = True) -> None:
@@ -597,8 +596,8 @@ def main() -> int:  # noqa: C901
     # Initialize colorama (auto-detects if TTY is available)
     use_color = not args.no_color
     if use_color:
-        # Auto-detect if we're in a TTY (terminal) or CI environment
-        # If not a TTY, colorama will disable colors automatically
+        # colorama automatically detects TTY and disables colors in non-TTY environments
+        # (e.g., CI). Setting strip=False preserves ANSI codes for TTY detection.
         init(autoreset=True, strip=False)
 
     # Find project root: scripts are in src/onex_change_control/scripts/
