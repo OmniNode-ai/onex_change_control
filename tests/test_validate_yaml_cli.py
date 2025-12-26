@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-# Path to the CLI script
-CLI_SCRIPT = Path(__file__).parent.parent / "scripts" / "validate_yaml.py"
+# Use the CLI entrypoint instead of direct script path
+CLI_ENTRYPOINT = "validate-yaml"
 
 # Path to test fixtures
 FIXTURES_DIR = Path(__file__).parent.parent / "drift" / "day_close"
@@ -31,7 +31,7 @@ MIN_FILES_FOR_MULTI_TEST = 2
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run the validate_yaml.py CLI with given arguments.
+    """Run the validate-yaml CLI with given arguments.
 
     Args:
         *args: CLI arguments
@@ -40,8 +40,10 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         CompletedProcess with stdout, stderr, and returncode
 
     """
+    # Use the module path directly since it's installed as a package
     return subprocess.run(  # noqa: S603
-        [sys.executable, str(CLI_SCRIPT), *args],
+        [sys.executable, "-m", "onex_change_control.scripts.validate_yaml", *args],
+        cwd=Path(__file__).parent.parent,
         capture_output=True,
         text=True,
         check=False,
@@ -56,7 +58,9 @@ class TestCliHelp:
         result = run_cli("--help")
         assert result.returncode == 0
         assert "Usage:" in result.stdout
-        assert "validate_yaml.py" in result.stdout
+        assert (
+            "validate-yaml" in result.stdout or "Validate YAML files" in result.stdout
+        )
 
     def test_h_flag_shows_usage(self) -> None:
         """Test that -h shows usage information."""

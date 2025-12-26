@@ -45,27 +45,26 @@ See: `omnibase_core/docs/conventions/NAMING_CONVENTIONS.md` for full details.
    poetry run pytest
    ```
 
-### Schema Export
+### Downstream Usage
 
-The repository includes a JSON schema export script that generates JSON schemas from Pydantic models:
+This package exports Pydantic models that can be used directly for validation:
 
-```bash
-poetry run python scripts/export_json_schema.py
+```python
+from onex_change_control import ModelDayClose, ModelTicketContract
+import yaml
+
+# Validate a YAML file
+with open("contracts/OMN-123.yaml") as f:
+    data = yaml.safe_load(f)
+
+ModelTicketContract.model_validate(data)  # Raises ValidationError if invalid
 ```
 
-**If CI Schema Determinism Check Fails:**
-If the CI job `schema-determinism` fails, it means the exported schemas are out of sync with the Pydantic models. To fix:
+For CLI validation, use the `validate_yaml.py` script:
 
-1. Run the export script locally:
-   ```bash
-   poetry run python scripts/export_json_schema.py
-   ```
-
-2. Commit the updated schema files:
-   ```bash
-   git add schemas/
-   git commit -m "chore: update exported JSON schemas"
-   ```
+```bash
+poetry run python scripts/validate_yaml.py contracts/OMN-123.yaml
+```
 
 ### Where to start
 
