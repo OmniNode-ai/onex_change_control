@@ -630,12 +630,13 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    # Initialize colorama (auto-detects if TTY is available)
+    # Initialize colorama for colored output
     # Only use colors if --no-color is not set AND we're in a TTY
+    # We check isatty() explicitly to avoid colors in CI/non-interactive environments
     use_color = not args.no_color and sys.stdout.isatty()
     if use_color:
-        # colorama automatically detects TTY and disables colors in non-TTY environments
-        # (e.g., CI). Setting strip=False preserves ANSI codes for TTY detection.
+        # Initialize colorama with autoreset (automatically reset after each print)
+        # and strip=False (preserve ANSI codes for proper color rendering)
         init(autoreset=True, strip=False)
 
     # Find project root: scripts are in src/onex_change_control/scripts/
