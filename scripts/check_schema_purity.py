@@ -210,7 +210,10 @@ class PurityChecker(ast.NodeVisitor):
         return None
 
     def _get_attribute_chain(self, node: ast.Attribute) -> str | None:
-        """Get the full attribute chain (e.g., 'datetime.datetime.now'), resolving aliases."""
+        """Get the full attribute chain, resolving aliases.
+
+        Example: 'datetime.datetime.now' -> 'datetime.datetime.now'
+        """
         parts: list[str] = []
         current: ast.expr = node
 
