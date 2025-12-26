@@ -77,6 +77,13 @@ FORBIDDEN_CALLS = frozenset(
     }
 )
 
+# Minimum number of parts in a call name needed for simplification.
+# Used to detect nested alias patterns like `dt.datetime.now()` where
+# `datetime` is imported as `dt`. We simplify `datetime.datetime.now` to
+# `datetime.now` for matching against FORBIDDEN_CALLS.
+# Requires at least 3 parts: module.class.method (e.g., datetime.datetime.now)
+_MIN_PARTS_FOR_CALL_SIMPLIFICATION = 3
+
 
 class Violation(NamedTuple):
     """Represents a single purity or naming violation."""
@@ -160,13 +167,21 @@ class PurityChecker(ast.NodeVisitor):
                         message=f"Forbidden call: '{call_name}' (violates purity)",
                     )
                 )
-            # Check for patterns like datetime.datetime.now -> datetime.now
+            # Check for nested alias patterns (e.g., dt.datetime.now -> datetime.now)
+            # This handles cases where modules are imported with aliases and then
+            # accessed via nested attributes. For example, when datetime is imported
+            # as dt, the call dt.datetime.now() resolves to 'datetime.datetime.now'.
+            # We simplify 'datetime.datetime.now' to 'datetime.now' by taking the
+            # last two parts (class.method) and matching against FORBIDDEN_CALLS.
+            # This pattern matching is necessary because the full call name may not
+            # match FORBIDDEN_CALLS directly, but the simplified version will.
             elif "." in call_name:
                 parts = call_name.split(".")
-                # Try simplified versions (e.g., datetime.datetime.now -> datetime.now)
-                # Minimum 3 parts needed: module.class.method
-                min_parts_for_simplification = 3
-                if len(parts) >= min_parts_for_simplification:
+                # Only attempt simplification if we have enough parts to extract
+                # a meaningful class.method pattern (requires at least 3 parts:
+                # module.class.method)
+                if len(parts) >= _MIN_PARTS_FOR_CALL_SIMPLIFICATION:
+                    # Extract the last two parts (class.method) for matching
                     simplified = f"{parts[-2]}.{parts[-1]}"
                     if simplified in FORBIDDEN_CALLS:
                         self.violations.append(
