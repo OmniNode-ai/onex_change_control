@@ -60,11 +60,35 @@ with open("contracts/OMN-123.yaml") as f:
 ModelTicketContract.model_validate(data)  # Raises ValidationError if invalid
 ```
 
-For CLI validation, use the `validate_yaml.py` script:
+For CLI validation, use the `validate-yaml` command:
 
 ```bash
-poetry run python scripts/validate_yaml.py contracts/OMN-123.yaml
+poetry run validate-yaml contracts/OMN-123.yaml
 ```
+
+### Schema Purity Checking
+
+The package includes a CLI tool to enforce schema module purity and naming conventions:
+
+```bash
+# Check all schema files (exits with code 1 on violations)
+poetry run check-schema-purity
+
+# Warn-only mode (useful for gradual adoption in CI)
+poetry run check-schema-purity --warn-only
+
+# Disable colored output (useful for CI environments)
+poetry run check-schema-purity --no-color
+```
+
+**What it checks:**
+- **Purity (D-008)**: No env/fs/network/time usage in schema modules
+- **Naming conventions**: `Model*`/`model_*`, `Enum*`/`enum_*`
+- **No environment-dependent defaults**
+
+**CLI Options:**
+- `--warn-only`: Print violations but exit with code 0 (for gradual adoption)
+- `--no-color`: Disable colored output (useful for CI environments)
 
 ### Where to start
 
