@@ -237,7 +237,67 @@ class PurityChecker(ast.NodeVisitor):
         return None
 
 
-def check_file(file_path: Path) -> list[Violation]:  # noqa: C901, PLR0911, PLR0912
+def _read_file_safely(file_path: Path) -> tuple[str | None, list[Violation]]:
+    """Read a file safely, returning source and any file reading violations.
+
+    Args:
+        file_path: Path to the file to read
+
+    Returns:
+        Tuple of (source content or None, list of violations)
+        If reading fails, returns (None, violations).
+        If successful, returns (source, []).
+
+    """
+    violations: list[Violation] = []
+    try:
+        with file_path.open("r", encoding="utf-8") as f:
+            source = f.read()
+    except FileNotFoundError as e:
+        violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"File not found: {e}",
+            )
+        )
+        return None, violations
+    except PermissionError as e:
+        violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"Permission denied: {e}",
+            )
+        )
+        return None, violations
+    except UnicodeDecodeError as e:
+        violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"Unicode decode error: {e}",
+            )
+        )
+        return None, violations
+    except OSError as e:
+        violations.append(
+            Violation(
+                file=file_path,
+                line=1,
+                category="file_error",
+                message=f"Cannot read file ({type(e).__name__}): {e}",
+            )
+        )
+        return None, violations
+    else:
+        return source, violations
+
+
+def check_file(file_path: Path) -> list[Violation]:
     """Check a file for both purity and naming convention violations.
 
     Parses the file once and performs all checks in a single pass.
@@ -278,48 +338,9 @@ def check_file(file_path: Path) -> list[Violation]:  # noqa: C901, PLR0911, PLR0
         )
 
     # Read and parse file once
-    try:
-        with file_path.open("r", encoding="utf-8") as f:
-            source = f.read()
-    except FileNotFoundError as e:
-        all_violations.append(
-            Violation(
-                file=file_path,
-                line=1,
-                category="file_error",
-                message=f"File not found: {e}",
-            )
-        )
-        return all_violations
-    except PermissionError as e:
-        all_violations.append(
-            Violation(
-                file=file_path,
-                line=1,
-                category="file_error",
-                message=f"Permission denied: {e}",
-            )
-        )
-        return all_violations
-    except UnicodeDecodeError as e:
-        all_violations.append(
-            Violation(
-                file=file_path,
-                line=1,
-                category="file_error",
-                message=f"Unicode decode error: {e}",
-            )
-        )
-        return all_violations
-    except OSError as e:
-        all_violations.append(
-            Violation(
-                file=file_path,
-                line=1,
-                category="file_error",
-                message=f"Cannot read file ({type(e).__name__}): {e}",
-            )
-        )
+    source, file_violations = _read_file_safely(file_path)
+    all_violations.extend(file_violations)
+    if source is None:
         return all_violations
 
     try:
