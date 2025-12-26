@@ -261,7 +261,7 @@ class TestPurityViolationDetection:
 
         violations = check_file(test_file)
         # Should detect both the import and the environ access via subscript
-        assert len(violations) >= 2
+        # Explicitly check for each expected violation type (clearer than magic number)
         assert any(v.category == "forbidden_import" for v in violations)
         assert any(
             v.category == "forbidden_access" and "subscript" in v.message.lower()
