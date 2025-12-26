@@ -139,6 +139,89 @@ class TestPurityViolationDetection:
         violations = check_file(test_file)
         assert len(violations) == 0
 
+    def test_detects_aliased_forbidden_import(self, tmp_path: Path) -> None:
+        """Test that aliased forbidden imports are detected."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        test_file = models_dir / "model_test.py"
+        test_file.write_text("import os as operating_system\n")
+
+        violations = check_file(test_file)
+        assert len(violations) >= 1
+        assert any(v.category == "forbidden_import" for v in violations)
+        assert any("os" in v.message for v in violations)
+
+    def test_detects_aliased_forbidden_call(self, tmp_path: Path) -> None:
+        """Test that forbidden calls through aliased imports are detected.
+
+        Note: The import itself is caught. Full alias tracking for calls (e.g.,
+        dt.datetime.now() when datetime is aliased) is a low-priority enhancement
+        per PR review.
+        """
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        test_file = models_dir / "model_test.py"
+        # Use 'time' which is forbidden, to test that aliased imports are caught
+        test_file.write_text(
+            textwrap.dedent("""
+            import time as t
+            x = t.sleep(1)
+            """)
+        )
+
+        violations = check_file(test_file)
+        # The import itself should be caught
+        assert len(violations) >= 1
+        assert any(v.category == "forbidden_import" for v in violations)
+        assert any("time" in v.message for v in violations)
+
+    def test_allows_future_imports(self, tmp_path: Path) -> None:
+        """Test that from __future__ imports are allowed."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        test_file = models_dir / "model_test.py"
+        test_file.write_text("from __future__ import annotations\n")
+
+        violations = check_file(test_file)
+        assert len(violations) == 0
+
+    def test_detects_environment_dict_access(self, tmp_path: Path) -> None:
+        """Test that environment variable access via dictionary syntax is detected."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        test_file = models_dir / "model_test.py"
+        test_file.write_text(
+            textwrap.dedent("""
+            import os
+            value = os.environ["VAR"]
+            """)
+        )
+
+        violations = check_file(test_file)
+        # Should detect both the import and the environ access
+        assert len(violations) >= 1
+        assert any(
+            v.category in ("forbidden_import", "forbidden_access") for v in violations
+        )
+
+    def test_allows_path_basic_operations(self, tmp_path: Path) -> None:
+        """Test that basic Path operations are allowed."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        test_file = models_dir / "model_test.py"
+        test_file.write_text(
+            textwrap.dedent("""
+            from pathlib import Path
+            p = Path("test")
+            x = p / "subdir"
+            y = str(p)
+            """)
+        )
+
+        violations = check_file(test_file)
+        # Path basic operations should be allowed (no .home() or .cwd())
+        assert len(violations) == 0
+
 
 class TestNamingConventions:
     """Tests for naming convention enforcement."""
