@@ -149,7 +149,7 @@ class PurityChecker(ast.NodeVisitor):
                         file=self.file_path,
                         line=node.lineno,
                         category="forbidden_call",
-                        message=f"Forbidden call: '{call_name}' (non-deterministic)",
+                        message=f"Forbidden call: '{call_name}' (violates purity)",
                     )
                 )
             # Check for os.environ access patterns
@@ -254,7 +254,7 @@ def check_file(file_path: Path) -> list[Violation]:
                 file=file_path,
                 line=1,
                 category="file_error",
-                message=f"Cannot read file: {e}",
+                message=f"Cannot read file ({type(e).__name__}): {e}",
             )
         )
         return all_violations
@@ -332,6 +332,19 @@ def main() -> int:
 
     """
     project_root = Path(__file__).parent.parent
+
+    # Validate that schema directories exist
+    missing_dirs: list[str] = []
+    for module_path in SCHEMA_MODULE_PATHS:
+        full_path = project_root / module_path
+        if not full_path.exists():
+            missing_dirs.append(module_path)
+
+    if missing_dirs:
+        print(f"⚠️  Schema directories not found: {', '.join(missing_dirs)}")  # noqa: T201
+        print("   This may indicate a configuration error.")  # noqa: T201
+        return 1
+
     schema_files = find_schema_files(project_root)
 
     if not schema_files:

@@ -47,6 +47,44 @@ class TestPurityCheckIntegration:
         assert "Checking" in result.stdout
         assert "schema files" in result.stdout
 
+    def test_validates_directory_existence(self, tmp_path: Path) -> None:
+        """Test that missing schema directories are detected as errors."""
+        # Create a temporary project structure without schema directories
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        scripts_dir = project_root / "scripts"
+        scripts_dir.mkdir()
+
+        # Copy the script to temp location and modify SCHEMA_MODULE_PATHS
+        script_path = (
+            Path(__file__).parent.parent / "scripts" / "check_schema_purity.py"
+        )
+        script_content = script_path.read_text()
+        # Replace SCHEMA_MODULE_PATHS with non-existent paths
+        old_paths = (
+            'SCHEMA_MODULE_PATHS = [\n    "src/onex_change_control/models",\n'
+            '    "src/onex_change_control/enums",\n]'
+        )
+        new_paths = (
+            'SCHEMA_MODULE_PATHS = [\n    "nonexistent/models",\n'
+            '    "nonexistent/enums",\n]'
+        )
+        script_content = script_content.replace(old_paths, new_paths)
+        (scripts_dir / "check_schema_purity.py").write_text(script_content)
+
+        # Run the modified script
+        cmd = [sys.executable, str(scripts_dir / "check_schema_purity.py")]
+        result = subprocess.run(  # noqa: S603
+            cmd,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 1
+        assert "not found" in result.stdout or "not found" in result.stderr
+
 
 class TestPurityViolationDetection:
     """Tests for detecting purity violations."""
