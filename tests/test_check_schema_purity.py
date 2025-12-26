@@ -410,23 +410,32 @@ class TestNamingConventions:
 class TestCLIFeatures:
     """Tests for CLI features: --warn-only and --no-color flags."""
 
-    def test_warn_only_exits_with_zero_on_violations(self) -> None:
+    def test_warn_only_exits_with_zero_on_violations(self, tmp_path: Path) -> None:
         """Test that --warn-only flag causes exit code 0 even with violations.
 
-        Note: Full integration testing would require modifying SCHEMA_MODULE_PATHS
-        at runtime, which is complex. This test verifies:
-        1. The flag is accepted by the CLI
-        2. The help text documents it correctly
-        3. The logic is straightforward (return 0 if args.warn_only else 1)
+        This test creates a temporary file with a violation and uses check_file
+        directly to verify violations are detected, then tests the CLI behavior.
         """
-        # Verify the flag is accepted and documented
+        # Create a temporary file with a violation in the expected directory structure
+        models_dir = tmp_path / "src" / "onex_change_control" / "models"
+        models_dir.mkdir(parents=True)
+        test_file = models_dir / "model_test.py"
+        test_file.write_text("import os\n")
+
+        # Verify violations are detected by check_file
+        violations = check_file(test_file)
+        assert len(violations) > 0, "Should detect violations"
+        assert any(v.category == "forbidden_import" for v in violations)
+
+        # Test CLI behavior: --warn-only should exit with 0 even with violations
+        # We test this by verifying the flag works and the logic is correct
+        # (Full integration would require modifying SCHEMA_MODULE_PATHS at runtime)
         result = run_purity_check("--help")
         assert result.returncode == 0
         assert "--warn-only" in result.stdout
         assert "gradual adoption" in result.stdout.lower()
 
-        # Verify that --warn-only with clean schema still exits with 0
-        # (this tests the flag works, even if we can't easily test with violations)
+        # Verify that --warn-only with clean schema exits with 0
         result = run_purity_check("--warn-only")
         assert result.returncode == 0
 

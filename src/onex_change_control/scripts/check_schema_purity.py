@@ -547,6 +547,43 @@ def _get_category_color(category: str, *, use_color: bool) -> str:
     return color_map.get(category, "")
 
 
+def _print_violations_report(
+    all_violations: list[Violation],
+    *,
+    use_color: bool,
+    warn_only: bool,
+) -> None:
+    """Print violations grouped by category.
+
+    Args:
+        all_violations: List of all violations found
+        use_color: Whether to use colored output
+        warn_only: Whether warn-only mode is enabled
+
+    """
+    error_color = Fore.RED if use_color else ""
+    reset = Style.RESET_ALL if use_color else ""
+    warn_only_msg = " (warn-only mode: exiting with code 0)" if warn_only else ""
+    violation_count = len(all_violations)
+    print(  # noqa: T201
+        f"{error_color}❌ Found {violation_count} violation(s):{warn_only_msg}{reset}"
+    )
+    print()  # noqa: T201
+
+    # Group by category
+    by_category: dict[str, list[Violation]] = {}
+    for v in all_violations:
+        by_category.setdefault(v.category, []).append(v)
+
+    for category, violations in sorted(by_category.items()):
+        category_color = _get_category_color(category, use_color=use_color)
+        reset = Style.RESET_ALL if use_color else ""
+        print(f"  {category_color}{category} ({len(violations)}):{reset}")  # noqa: T201
+        for v in violations:
+            print_violation(v, use_color=use_color)
+        print()  # noqa: T201
+
+
 def print_violation(v: Violation, *, use_color: bool = True) -> None:
     """Print a violation in a readable format.
 
@@ -563,7 +600,7 @@ def print_violation(v: Violation, *, use_color: bool = True) -> None:
     )
 
 
-def main() -> int:  # noqa: C901
+def main() -> int:
     """Run purity and naming checks on schema modules.
 
     Returns:
@@ -594,7 +631,8 @@ def main() -> int:  # noqa: C901
     args = parser.parse_args()
 
     # Initialize colorama (auto-detects if TTY is available)
-    use_color = not args.no_color
+    # Only use colors if --no-color is not set AND we're in a TTY
+    use_color = not args.no_color and sys.stdout.isatty()
     if use_color:
         # colorama automatically detects TTY and disables colors in non-TTY environments
         # (e.g., CI). Setting strip=False preserves ANSI codes for TTY detection.
@@ -643,31 +681,9 @@ def main() -> int:  # noqa: C901
         all_violations.extend(violations)
 
     if all_violations:
-        error_color = Fore.RED if use_color else ""
-        reset = Style.RESET_ALL if use_color else ""
-        warn_only_msg = (
-            " (warn-only mode: exiting with code 0)" if args.warn_only else ""
+        _print_violations_report(
+            all_violations, use_color=use_color, warn_only=args.warn_only
         )
-        violation_count = len(all_violations)
-        print(  # noqa: T201
-            f"{error_color}❌ Found {violation_count} violation(s):"
-            f"{warn_only_msg}{reset}"
-        )
-        print()  # noqa: T201
-
-        # Group by category
-        by_category: dict[str, list[Violation]] = {}
-        for v in all_violations:
-            by_category.setdefault(v.category, []).append(v)
-
-        for category, violations in sorted(by_category.items()):
-            category_color = _get_category_color(category, use_color=use_color)
-            reset = Style.RESET_ALL if use_color else ""
-            print(f"  {category_color}{category} ({len(violations)}):{reset}")  # noqa: T201
-            for v in violations:
-                print_violation(v, use_color=use_color)
-            print()  # noqa: T201
-
         # Return 0 if --warn-only is set, otherwise 1
         return 0 if args.warn_only else 1
 
