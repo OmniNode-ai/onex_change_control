@@ -6,7 +6,7 @@ This script enforces:
 3. No environment-dependent defaults
 
 Usage:
-    poetry run python scripts/check_schema_purity.py
+    poetry run check-schema-purity
 
 Exit codes:
     0: All checks passed
@@ -527,7 +527,10 @@ def main() -> int:
         Exit code: 0 if all checks pass, 1 if violations found
 
     """
-    project_root = Path(__file__).parent.parent
+    # Find project root: scripts are in src/onex_change_control/scripts/
+    # so we need to go up 3 levels to get to project root
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent.parent.parent
 
     # Validate that schema directories exist
     missing_dirs: list[str] = []

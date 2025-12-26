@@ -8,7 +8,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-from scripts.check_schema_purity import check_file
+from onex_change_control.scripts.check_schema_purity import check_file
 
 
 def run_purity_check(*args: str) -> subprocess.CompletedProcess[str]:
@@ -21,7 +21,12 @@ def run_purity_check(*args: str) -> subprocess.CompletedProcess[str]:
         CompletedProcess with captured stdout and stderr
 
     """
-    cmd = [sys.executable, "scripts/check_schema_purity.py", *args]
+    cmd = [
+        sys.executable,
+        "-m",
+        "onex_change_control.scripts.check_schema_purity",
+        *args,
+    ]
     return subprocess.run(  # noqa: S603
         cmd,
         cwd=Path(__file__).parent.parent,
@@ -57,7 +62,11 @@ class TestPurityCheckIntegration:
 
         # Copy the script to temp location and modify SCHEMA_MODULE_PATHS
         script_path = (
-            Path(__file__).parent.parent / "scripts" / "check_schema_purity.py"
+            Path(__file__).parent.parent
+            / "src"
+            / "onex_change_control"
+            / "scripts"
+            / "check_schema_purity.py"
         )
         script_content = script_path.read_text()
         # Replace SCHEMA_MODULE_PATHS with non-existent paths

@@ -6,9 +6,9 @@ the canonical Pydantic models. It provides actionable error messages with paths
 and reasons for validation failures.
 
 Usage:
-    poetry run python scripts/validate_yaml.py <file1.yaml> [file2.yaml ...]
-    poetry run python scripts/validate_yaml.py drift/day_close/2025-12-21.yaml
-    poetry run python scripts/validate_yaml.py contracts/*.yaml
+    poetry run validate-yaml <file1.yaml> [file2.yaml ...]
+    poetry run validate-yaml drift/day_close/2025-12-21.yaml
+    poetry run validate-yaml contracts/*.yaml
 
 Exit codes:
     0: All files valid
@@ -22,9 +22,6 @@ from typing import NoReturn
 
 import yaml
 from pydantic import ValidationError
-
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from onex_change_control.models import ModelDayClose, ModelTicketContract
 
