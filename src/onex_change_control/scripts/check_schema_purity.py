@@ -40,7 +40,8 @@ except ImportError:
     COLORAMA_AVAILABLE = False
 
     # Create dummy color objects for type checking
-    class Fore:
+    # Use different names to avoid mypy "already defined" error
+    class _ForeFallback:  # noqa: N801
         """Dummy Fore class when colorama is not available."""
 
         RED = ""
@@ -49,12 +50,21 @@ except ImportError:
         CYAN = ""
         RESET = ""
 
-    class Style:
+    class _StyleFallback:  # noqa: N801
         """Dummy Style class when colorama is not available."""
 
         RESET_ALL = ""
 
-    def init(*args: object, **kwargs: object) -> None:
+    # Assign to expected names for compatibility
+    Fore = _ForeFallback  # type: ignore[assignment, misc]
+    Style = _StyleFallback  # type: ignore[assignment, misc]
+
+    def init(  # type: ignore[no-redef]
+        autoreset: bool = False,
+        convert: bool | None = None,
+        strip: bool | None = None,
+        wrap: bool = True,
+    ) -> None:
         """No-op if colorama is not available."""
 
 
@@ -560,7 +570,7 @@ def _get_category_color(category: str, *, use_color: bool) -> str:
     if not use_color:
         return ""
 
-    color_map = {
+    color_map: dict[str, str] = {
         "forbidden_import": Fore.RED,
         "forbidden_call": Fore.RED,
         "forbidden_access": Fore.RED,
@@ -569,7 +579,7 @@ def _get_category_color(category: str, *, use_color: bool) -> str:
         "syntax_error": Fore.RED,
         "file_error": Fore.RED,
     }
-    return color_map.get(category, "")
+    return color_map.get(category, "") or ""
 
 
 def print_violation(v: Violation, *, use_color: bool = True) -> None:
@@ -686,7 +696,7 @@ def main() -> int:  # noqa: C901
             by_category.setdefault(v.category, []).append(v)
 
         for category, violations in sorted(by_category.items()):
-            category_color = _get_category_color(category, use_color)
+            category_color = _get_category_color(category, use_color=use_color)
             reset = Style.RESET_ALL if use_color else ""
             print(f"  {category_color}{category} ({len(violations)}):{reset}")  # noqa: T201
             for v in violations:
