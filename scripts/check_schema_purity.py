@@ -156,7 +156,9 @@ class PurityChecker(ast.NodeVisitor):
             elif "." in call_name:
                 parts = call_name.split(".")
                 # Try simplified versions (e.g., datetime.datetime.now -> datetime.now)
-                if len(parts) >= 3:
+                # Minimum 3 parts needed: module.class.method
+                min_parts_for_simplification = 3
+                if len(parts) >= min_parts_for_simplification:
                     simplified = f"{parts[-2]}.{parts[-1]}"
                     if simplified in FORBIDDEN_CALLS:
                         self.violations.append(
@@ -164,7 +166,9 @@ class PurityChecker(ast.NodeVisitor):
                                 file=self.file_path,
                                 line=node.lineno,
                                 category="forbidden_call",
-                                message=f"Forbidden call: '{call_name}' (violates purity)",
+                                message=(
+                                    f"Forbidden call: '{call_name}' (violates purity)"
+                                ),
                             )
                         )
             # Check for os.environ access patterns
@@ -200,8 +204,7 @@ class PurityChecker(ast.NodeVisitor):
         """Get the full name of a function call, resolving aliases."""
         if isinstance(node.func, ast.Name):
             # Resolve alias if present
-            resolved = self._imported_names.get(node.func.id, node.func.id)
-            return resolved
+            return self._imported_names.get(node.func.id, node.func.id)
         if isinstance(node.func, ast.Attribute):
             return self._get_attribute_chain(node.func)
         return None
