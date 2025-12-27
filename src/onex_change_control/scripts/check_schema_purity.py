@@ -6,11 +6,15 @@ This script enforces:
 3. No environment-dependent defaults
 
 Usage:
-    poetry run check-schema-purity
+    poetry run check-schema-purity [--warn-only] [--no-color]
+
+Options:
+    --warn-only    Print violations but exit with code 0 (for gradual adoption)
+    --no-color     Disable colored output (useful for CI environments)
 
 Exit codes:
-    0: All checks passed
-    1: One or more violations found
+    0: All checks passed (or --warn-only flag is set)
+    1: One or more violations found (unless --warn-only is set)
 
 Alias Detection Limitations:
     The script tracks imported aliases and resolves them for attribute chains.
@@ -21,10 +25,13 @@ Alias Detection Limitations:
     such patterns are uncommon.
 """
 
+import argparse
 import ast
 import sys
 from pathlib import Path
 from typing import NamedTuple
+
+from colorama import Fore, Style, init
 
 # Directories to scan for schema modules
 SCHEMA_MODULE_PATHS = [
@@ -514,19 +521,124 @@ def find_schema_files(project_root: Path) -> list[Path]:
     return sorted(files)
 
 
-def print_violation(v: Violation) -> None:
-    """Print a violation in a readable format."""
+def _get_category_color(category: str, *, use_color: bool) -> str:
+    """Get color code for a violation category.
+
+    Args:
+        category: Violation category name
+        use_color: Whether to use colors
+
+    Returns:
+        Color code string (empty if use_color is False)
+
+    """
+    if not use_color:
+        return ""
+
+    color_map: dict[str, str] = {
+        "forbidden_import": Fore.RED,
+        "forbidden_call": Fore.RED,
+        "forbidden_access": Fore.RED,
+        "naming_file": Fore.YELLOW,
+        "naming_class": Fore.YELLOW,
+        "syntax_error": Fore.RED,
+        "file_error": Fore.RED,
+    }
+    return color_map.get(category, "")
+
+
+def _print_violations_report(
+    all_violations: list[Violation],
+    *,
+    use_color: bool,
+    warn_only: bool,
+) -> None:
+    """Print violations grouped by category.
+
+    Args:
+        all_violations: List of all violations found
+        use_color: Whether to use colored output
+        warn_only: Whether warn-only mode is enabled
+
+    """
+    error_color = Fore.RED if use_color else ""
+    reset = Style.RESET_ALL if use_color else ""
+    warn_only_msg = " (warn-only mode: exiting with code 0)" if warn_only else ""
+    violation_count = len(all_violations)
+    print(  # noqa: T201
+        f"{error_color}❌ Found {violation_count} violation(s):{warn_only_msg}{reset}"
+    )
+    print()  # noqa: T201
+
+    # Group by category
+    by_category: dict[str, list[Violation]] = {}
+    for v in all_violations:
+        by_category.setdefault(v.category, []).append(v)
+
+    for category, violations in sorted(by_category.items()):
+        category_color = _get_category_color(category, use_color=use_color)
+        reset = Style.RESET_ALL if use_color else ""
+        print(f"  {category_color}{category} ({len(violations)}):{reset}")  # noqa: T201
+        for v in violations:
+            print_violation(v, use_color=use_color)
+        print()  # noqa: T201
+
+
+def print_violation(v: Violation, *, use_color: bool = True) -> None:
+    """Print a violation in a readable format.
+
+    Args:
+        v: Violation to print
+        use_color: Whether to use colored output
+
+    """
     relative_path = v.file.relative_to(Path.cwd()) if v.file.is_absolute() else v.file
-    print(f"  {relative_path}:{v.line}: [{v.category}] {v.message}")  # noqa: T201
+    category_color = _get_category_color(v.category, use_color=use_color)
+    reset = Style.RESET_ALL if use_color else ""
+    print(  # noqa: T201
+        f"  {category_color}{relative_path}:{v.line}: [{v.category}]{reset} {v.message}"
+    )
 
 
 def main() -> int:
     """Run purity and naming checks on schema modules.
 
     Returns:
-        Exit code: 0 if all checks pass, 1 if violations found
+        Exit code: 0 if all checks pass (or --warn-only), 1 if violations found
 
     """
+    parser = argparse.ArgumentParser(
+        description="Check schema module purity and naming conventions.",
+        epilog=(
+            "Example: poetry run check-schema-purity --warn-only "
+            "(for gradual adoption in CI)"
+        ),
+    )
+    parser.add_argument(
+        "--warn-only",
+        action="store_true",
+        help=(
+            "Print violations but exit with code 0. "
+            "Useful for gradual adoption in downstream repositories."
+        ),
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output (useful for CI environments).",
+    )
+
+    args = parser.parse_args()
+
+    # Initialize colorama for colored output
+    # Only use colors if --no-color is not set AND we're in a TTY
+    # We check isatty() explicitly to avoid colors in CI/non-interactive environments
+    use_color = not args.no_color and sys.stdout.isatty()
+    if use_color:
+        # Initialize colorama with autoreset (automatically reset after each print)
+        # and strip=False (preserve ANSI codes for proper color rendering)
+        init(autoreset=True, strip=False)
+
     # Find project root: scripts are in src/onex_change_control/scripts/
     # so we need to go up 3 levels to get to project root
     script_dir = Path(__file__).parent
@@ -540,19 +652,28 @@ def main() -> int:
             missing_dirs.append(module_path)
 
     if missing_dirs:
-        print(f"⚠️  Schema directories not found: {', '.join(missing_dirs)}")  # noqa: T201
+        warning_color = Fore.YELLOW if use_color else ""
+        reset = Style.RESET_ALL if use_color else ""
+        print(  # noqa: T201
+            f"{warning_color}⚠️  Schema directories not found: "
+            f"{', '.join(missing_dirs)}{reset}"
+        )
         print("   This may indicate a configuration error.")  # noqa: T201
         return 1
 
     schema_files = find_schema_files(project_root)
 
     if not schema_files:
-        print("⚠️  No schema files found to check")  # noqa: T201
+        warning_color = Fore.YELLOW if use_color else ""
+        reset = Style.RESET_ALL if use_color else ""
+        print(f"{warning_color}⚠️  No schema files found to check{reset}")  # noqa: T201
         return 0
 
     all_violations: list[Violation] = []
 
-    print(f"Checking {len(schema_files)} schema files...")  # noqa: T201
+    info_color = Fore.CYAN if use_color else ""
+    reset = Style.RESET_ALL if use_color else ""
+    print(f"{info_color}Checking {len(schema_files)} schema files...{reset}")  # noqa: T201
     print()  # noqa: T201
 
     for file_path in schema_files:
@@ -561,23 +682,18 @@ def main() -> int:
         all_violations.extend(violations)
 
     if all_violations:
-        print(f"❌ Found {len(all_violations)} violation(s):")  # noqa: T201
-        print()  # noqa: T201
+        _print_violations_report(
+            all_violations, use_color=use_color, warn_only=args.warn_only
+        )
+        # Return 0 if --warn-only is set, otherwise 1
+        return 0 if args.warn_only else 1
 
-        # Group by category
-        by_category: dict[str, list[Violation]] = {}
-        for v in all_violations:
-            by_category.setdefault(v.category, []).append(v)
-
-        for category, violations in sorted(by_category.items()):
-            print(f"  {category} ({len(violations)}):")  # noqa: T201
-            for v in violations:
-                print_violation(v)
-            print()  # noqa: T201
-
-        return 1
-
-    print(f"✅ All {len(schema_files)} schema files passed purity and naming checks")  # noqa: T201
+    success_color = Fore.GREEN if use_color else ""
+    reset = Style.RESET_ALL if use_color else ""
+    print(  # noqa: T201
+        f"{success_color}✅ All {len(schema_files)} schema files passed "
+        f"purity and naming checks{reset}"
+    )
     return 0
 
 
