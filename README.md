@@ -127,6 +127,10 @@ Add to your CI workflow:
 
 ```yaml
 # .github/workflows/validate.yml
+- name: Install Poetry
+  uses: snok/install-poetry@v1
+- name: Install dependencies
+  run: poetry install
 - name: Validate contracts
   run: poetry run python scripts/validate_contracts.py
 ```
@@ -151,7 +155,10 @@ Add to your `pyproject.toml`:
 
 ```toml
 [tool.poetry.dependencies]
-onex-change-control = "^1.0.0"  # Pin to major version for stability
+# Current (pre-release):
+onex-change-control = "^0.1.0"
+# After 1.0.0 release:
+# onex-change-control = "^1.0.0"  # Pin to major version for stability
 ```
 
 Then install:

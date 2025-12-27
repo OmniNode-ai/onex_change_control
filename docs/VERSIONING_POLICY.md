@@ -93,6 +93,5 @@ This ensures:
 ## References
 
 - [Semantic Versioning 2.0.0](https://semver.org/)
-- [Implementation Plan](../planning/IMPLEMENTATION_PLAN.md)
-- [Design Document](../design/DESIGN_DRIFT_CONTROL_SYSTEM.md)
-
+- [Implementation Plan](planning/IMPLEMENTATION_PLAN.md)
+- [Design Document](design/DESIGN_DRIFT_CONTROL_SYSTEM.md)
