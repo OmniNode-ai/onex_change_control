@@ -142,7 +142,7 @@ class TestPurityViolationDetection:
             textwrap.dedent("""
             from datetime import datetime
             x = datetime.now()
-            """)
+            """),
         )
 
         violations = check_file(test_file)
@@ -158,7 +158,7 @@ class TestPurityViolationDetection:
             textwrap.dedent("""
             from datetime import date
             x = date.fromisoformat("2025-01-01")
-            """)
+            """),
         )
 
         violations = check_file(test_file)
@@ -213,7 +213,7 @@ class TestPurityViolationDetection:
             textwrap.dedent("""
             import time as t
             x = t.sleep(1)
-            """)
+            """),
         )
 
         violations = check_file(test_file)
@@ -236,7 +236,7 @@ class TestPurityViolationDetection:
             textwrap.dedent("""
             import datetime as dt
             x = dt.datetime.now()
-            """)
+            """),
         )
 
         violations = check_file(test_file)
@@ -265,7 +265,7 @@ class TestPurityViolationDetection:
             textwrap.dedent("""
             import os
             value = os.environ["VAR"]
-            """)
+            """),
         )
 
         violations = check_file(test_file)
@@ -287,7 +287,7 @@ class TestPurityViolationDetection:
             textwrap.dedent("""
             class ModelTest
                 pass
-            """)
+            """),
         )
 
         violations = check_file(test_file)
@@ -305,7 +305,7 @@ class TestPurityViolationDetection:
             p = Path("test")
             x = p / "subdir"
             y = str(p)
-            """)
+            """),
         )
 
         violations = check_file(test_file)
@@ -358,7 +358,7 @@ class TestNamingConventions:
         enums_dir.mkdir()
         test_file = enums_dir / "enum_test.py"
         test_file.write_text(
-            "from enum import Enum\nclass WrongClassName(Enum): pass\n"
+            "from enum import Enum\nclass WrongClassName(Enum): pass\n",
         )
 
         violations = check_file(test_file)

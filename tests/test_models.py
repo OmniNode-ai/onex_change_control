@@ -109,13 +109,13 @@ class TestModelDayClose:
                     change="Introduce structured daily close",
                     rationale="Need explicit reconciliation",
                     replaces="Implicit tracking",
-                )
+                ),
             ],
             plan=[
                 ModelDayClosePlanItem(
                     requirement_id="MVP-2WAY-REGISTRATION",
                     summary="2-way registration workflow",
-                )
+                ),
             ],
             actual_by_repo=[
                 ModelDayCloseActualRepo(
@@ -126,9 +126,9 @@ class TestModelDayClose:
                             title="Canonical message envelope model",
                             state=EnumPRState.MERGED,
                             notes="Required for routing",
-                        )
+                        ),
                     ],
-                )
+                ),
             ],
             drift_detected=[
                 ModelDayCloseDriftDetected(
@@ -137,7 +137,7 @@ class TestModelDayClose:
                     evidence="Cross-repo drift",
                     impact="Risk of rework",
                     correction_for_tomorrow="Keep daily close discipline",
-                )
+                ),
             ],
             invariants_checked=ModelDayCloseInvariantsChecked(
                 reducers_pure=EnumInvariantStatus.UNKNOWN,
@@ -150,7 +150,7 @@ class TestModelDayClose:
                 ModelDayCloseRisk(
                     risk="Infra flake",
                     mitigation="Prioritize deterministic harness",
-                )
+                ),
             ],
         )
         assert len(day_close.process_changes_today) == 1
@@ -360,7 +360,7 @@ class TestModelTicketContract:
                     kind=EnumEvidenceKind.TESTS,
                     description="Unit tests for core structural validation",
                     command="poetry run pytest tests/test_models.py",
-                )
+                ),
             ],
             emergency_bypass=ModelEmergencyBypass(enabled=False),
         )

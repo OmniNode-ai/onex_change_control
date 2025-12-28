@@ -33,7 +33,9 @@ class ModelDayCloseProcessChange(BaseModel):
         max_length=_MAX_STRING_LENGTH,
     )
     rationale: str = Field(
-        ..., description="Why we changed it", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="Why we changed it",
+        max_length=_MAX_STRING_LENGTH,
     )
     replaces: str = Field(
         ...,
@@ -48,10 +50,14 @@ class ModelDayClosePlanItem(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     requirement_id: str = Field(
-        ..., description="Requirement identifier", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="Requirement identifier",
+        max_length=_MAX_STRING_LENGTH,
     )
     summary: str = Field(
-        ..., description="Summary of the requirement", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="Summary of the requirement",
+        max_length=_MAX_STRING_LENGTH,
     )
 
 
@@ -81,7 +87,9 @@ class ModelDayCloseActualRepo(BaseModel):
         max_length=_MAX_STRING_LENGTH,
     )
     prs: list[ModelDayClosePR] = Field(
-        default_factory=list, description="List of PRs", max_length=_MAX_LIST_ITEMS
+        default_factory=list,
+        description="List of PRs",
+        max_length=_MAX_LIST_ITEMS,
     )
 
 
@@ -91,7 +99,9 @@ class ModelDayCloseDriftDetected(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     drift_id: str = Field(
-        ..., description="Unique drift identifier", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="Unique drift identifier",
+        max_length=_MAX_STRING_LENGTH,
     )
     category: EnumDriftCategory = Field(..., description="Drift category")
     evidence: str = Field(
@@ -100,7 +110,9 @@ class ModelDayCloseDriftDetected(BaseModel):
         max_length=_MAX_STRING_LENGTH,
     )
     impact: str = Field(
-        ..., description="Why it matters", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="Why it matters",
+        max_length=_MAX_STRING_LENGTH,
     )
     correction_for_tomorrow: str = Field(
         ...,
@@ -115,16 +127,20 @@ class ModelDayCloseInvariantsChecked(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     reducers_pure: EnumInvariantStatus = Field(
-        ..., description="Reducers are pure (no I/O)"
+        ...,
+        description="Reducers are pure (no I/O)",
     )
     orchestrators_no_io: EnumInvariantStatus = Field(
-        ..., description="Orchestrators perform no I/O"
+        ...,
+        description="Orchestrators perform no I/O",
     )
     effects_do_io_only: EnumInvariantStatus = Field(
-        ..., description="Effects perform I/O only"
+        ...,
+        description="Effects perform I/O only",
     )
     real_infra_proof_progressing: EnumInvariantStatus = Field(
-        ..., description="Real infrastructure proof is progressing"
+        ...,
+        description="Real infrastructure proof is progressing",
     )
 
 
@@ -134,10 +150,14 @@ class ModelDayCloseRisk(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     risk: str = Field(
-        ..., description="Short risk description", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="Short risk description",
+        max_length=_MAX_STRING_LENGTH,
     )
     mitigation: str = Field(
-        ..., description="Short mitigation description", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="Short mitigation description",
+        max_length=_MAX_STRING_LENGTH,
     )
 
 
@@ -162,7 +182,9 @@ class ModelDayClose(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: str = Field(
-        ..., description="Schema version (SemVer format, e.g., '1.0.0')", max_length=20
+        ...,
+        description="Schema version (SemVer format, e.g., '1.0.0')",
+        max_length=20,
     )
     date: str = Field(..., description="ISO date (YYYY-MM-DD)")
     process_changes_today: list[ModelDayCloseProcessChange] = Field(
@@ -186,7 +208,8 @@ class ModelDayClose(BaseModel):
         max_length=_MAX_LIST_ITEMS,
     )
     invariants_checked: ModelDayCloseInvariantsChecked = Field(
-        ..., description="Invariants checked status"
+        ...,
+        description="Invariants checked status",
     )
     corrections_for_tomorrow: list[str] = Field(
         default_factory=list,
