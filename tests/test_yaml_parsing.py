@@ -108,7 +108,7 @@ def test_parse_ticket_contract_template(
                 "kind": "tests",
                 "description": "Unit tests required",
                 "command": None,
-            }
+            },
         ],
         "emergency_bypass": minimal_emergency_bypass,
     }

@@ -21,7 +21,9 @@ class ModelEvidenceRequirement(BaseModel):
 
     kind: EnumEvidenceKind = Field(..., description="Type of evidence")
     description: str = Field(
-        ..., description="What evidence must exist", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="What evidence must exist",
+        max_length=_MAX_STRING_LENGTH,
     )
     command: str | None = Field(
         default=None,
@@ -92,13 +94,19 @@ class ModelTicketContract(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: str = Field(
-        ..., description="Schema version (SemVer format, e.g., '1.0.0')", max_length=20
+        ...,
+        description="Schema version (SemVer format, e.g., '1.0.0')",
+        max_length=20,
     )
     ticket_id: str = Field(
-        ..., description="Ticket identifier (e.g., 'OMN-962')", max_length=50
+        ...,
+        description="Ticket identifier (e.g., 'OMN-962')",
+        max_length=50,
     )
     summary: str = Field(
-        ..., description="One-line summary", max_length=_MAX_STRING_LENGTH
+        ...,
+        description="One-line summary",
+        max_length=_MAX_STRING_LENGTH,
     )
     is_seam_ticket: bool = Field(
         ...,

@@ -169,7 +169,7 @@ def _load_yaml_file(file_path: Path) -> dict | None:
     if not isinstance(data, dict):
         type_name = type(data).__name__
         print_error(
-            f"Invalid YAML structure in '{file_path}': expected dict, got {type_name}"
+            f"Invalid YAML structure in '{file_path}': expected dict, got {type_name}",
         )
         return None
 

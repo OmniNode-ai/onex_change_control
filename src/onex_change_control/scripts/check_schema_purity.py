@@ -64,7 +64,7 @@ FORBIDDEN_IMPORTS = frozenset(
         "random",
         "secrets",
         "locale",
-    }
+    },
 )
 
 # Forbidden function calls that access environment or current time.
@@ -81,7 +81,7 @@ FORBIDDEN_CALLS = frozenset(
         "os.path.expandvars",
         "Path.home",
         "Path.cwd",
-    }
+    },
 )
 
 # Minimum number of parts in a call name needed for simplification.
@@ -131,7 +131,7 @@ class PurityChecker(ast.NodeVisitor):
                         line=node.lineno,
                         category="forbidden_import",
                         message=f"Forbidden import: '{module_name}' (violates purity)",
-                    )
+                    ),
                 )
         self.generic_visit(node)
 
@@ -156,7 +156,7 @@ class PurityChecker(ast.NodeVisitor):
                     line=node.lineno,
                     category="forbidden_import",
                     message=f"Forbidden import from: '{module_name}' (violates purity)",
-                )
+                ),
             )
         self.generic_visit(node)
 
@@ -172,7 +172,7 @@ class PurityChecker(ast.NodeVisitor):
                         line=node.lineno,
                         category="forbidden_call",
                         message=f"Forbidden call: '{call_name}' (violates purity)",
-                    )
+                    ),
                 )
             # Check for nested alias patterns (e.g., dt.datetime.now -> datetime.now)
             # This handles cases where modules are imported with aliases and then
@@ -199,7 +199,7 @@ class PurityChecker(ast.NodeVisitor):
                                 message=(
                                     f"Forbidden call: '{call_name}' (violates purity)"
                                 ),
-                            )
+                            ),
                         )
             # Check for os.environ access patterns
             if call_name.startswith(("os.environ", "environ.")):
@@ -209,7 +209,7 @@ class PurityChecker(ast.NodeVisitor):
                         line=node.lineno,
                         category="forbidden_call",
                         message=f"Environment access: '{call_name}' (violates purity)",
-                    )
+                    ),
                 )
         self.generic_visit(node)
 
@@ -226,7 +226,7 @@ class PurityChecker(ast.NodeVisitor):
                     line=node.lineno,
                     category="forbidden_access",
                     message=f"Environment access: '{attr_chain}' (violates purity)",
-                )
+                ),
             )
         self.generic_visit(node)
 
@@ -245,7 +245,7 @@ class PurityChecker(ast.NodeVisitor):
                             "Environment access via subscript: "
                             "os.environ[...] (violates purity)"
                         ),
-                    )
+                    ),
                 )
         elif isinstance(node.value, ast.Name):
             # Check for aliased os.environ access (e.g., env = os.environ; env['VAR'])
@@ -260,7 +260,7 @@ class PurityChecker(ast.NodeVisitor):
                             "Environment access via subscript: "
                             "os.environ[...] (violates purity)"
                         ),
-                    )
+                    ),
                 )
         self.generic_visit(node)
 
@@ -294,7 +294,9 @@ class PurityChecker(ast.NodeVisitor):
 
 
 def _read_file_safely(  # noqa: PLR0911
-    file_path: Path, *, validate_path: bool = True
+    file_path: Path,
+    *,
+    validate_path: bool = True,
 ) -> tuple[str | None, list[Violation]]:
     """Read a file safely, returning source and any file reading violations.
 
@@ -337,7 +339,7 @@ def _read_file_safely(  # noqa: PLR0911
                         f"File path '{file_path}' is outside allowed "
                         f"schema directories (security: path traversal prevention)"
                     ),
-                )
+                ),
             )
             return None, violations
 
@@ -356,7 +358,7 @@ def _read_file_safely(  # noqa: PLR0911
                     f"File path '{file_path}' contains path traversal pattern '..' "
                     f"(security: path traversal prevention)"
                 ),
-            )
+            ),
         )
         return None, violations
     try:
@@ -369,7 +371,7 @@ def _read_file_safely(  # noqa: PLR0911
                 line=1,
                 category="file_error",
                 message=f"File not found: {e}",
-            )
+            ),
         )
         return None, violations
     except PermissionError as e:
@@ -379,7 +381,7 @@ def _read_file_safely(  # noqa: PLR0911
                 line=1,
                 category="file_error",
                 message=f"Permission denied: {e}",
-            )
+            ),
         )
         return None, violations
     except UnicodeDecodeError as e:
@@ -389,7 +391,7 @@ def _read_file_safely(  # noqa: PLR0911
                 line=1,
                 category="file_error",
                 message=f"Unicode decode error: {e}",
-            )
+            ),
         )
         return None, violations
     except OSError as e:
@@ -399,7 +401,7 @@ def _read_file_safely(  # noqa: PLR0911
                 line=1,
                 category="file_error",
                 message=f"Cannot read file ({type(e).__name__}): {e}",
-            )
+            ),
         )
         return None, violations
     else:
@@ -443,7 +445,7 @@ def check_file(file_path: Path) -> list[Violation]:
                 line=1,
                 category="naming_file",
                 message=f"File '{file_name}' needs prefix '{expected_file_prefix}'",
-            )
+            ),
         )
 
     # Read and parse file once
@@ -471,7 +473,7 @@ def check_file(file_path: Path) -> list[Violation]:
                 line=e.lineno or 1,
                 category="syntax_error",
                 message=f"Syntax error: {e.msg}",
-            )
+            ),
         )
         return all_violations
 
@@ -481,7 +483,7 @@ def check_file(file_path: Path) -> list[Violation]:
             class_name = node.name
             # Flag non-prefixed classes (allow private classes starting with _)
             if not class_name.startswith(
-                expected_class_prefix
+                expected_class_prefix,
             ) and not class_name.startswith("_"):
                 all_violations.append(
                     Violation(
@@ -492,7 +494,7 @@ def check_file(file_path: Path) -> list[Violation]:
                             f"Class '{class_name}' should start with "
                             f"'{expected_class_prefix}'"
                         ),
-                    )
+                    ),
                 )
 
     # Check purity (visits entire AST)
@@ -566,7 +568,7 @@ def _print_violations_report(
     warn_only_msg = " (warn-only mode: exiting with code 0)" if warn_only else ""
     violation_count = len(all_violations)
     print(  # noqa: T201
-        f"{error_color}❌ Found {violation_count} violation(s):{warn_only_msg}{reset}"
+        f"{error_color}❌ Found {violation_count} violation(s):{warn_only_msg}{reset}",
     )
     print()  # noqa: T201
 
@@ -596,7 +598,8 @@ def print_violation(v: Violation, *, use_color: bool = True) -> None:
     category_color = _get_category_color(v.category, use_color=use_color)
     reset = Style.RESET_ALL if use_color else ""
     print(  # noqa: T201
-        f"  {category_color}{relative_path}:{v.line}: [{v.category}]{reset} {v.message}"
+        f"  {category_color}{relative_path}:{v.line}: [{v.category}]{reset} "
+        f"{v.message}",
     )
 
 
@@ -656,7 +659,7 @@ def main() -> int:
         reset = Style.RESET_ALL if use_color else ""
         print(  # noqa: T201
             f"{warning_color}⚠️  Schema directories not found: "
-            f"{', '.join(missing_dirs)}{reset}"
+            f"{', '.join(missing_dirs)}{reset}",
         )
         print("   This may indicate a configuration error.")  # noqa: T201
         return 1
@@ -683,7 +686,9 @@ def main() -> int:
 
     if all_violations:
         _print_violations_report(
-            all_violations, use_color=use_color, warn_only=args.warn_only
+            all_violations,
+            use_color=use_color,
+            warn_only=args.warn_only,
         )
         # Return 0 if --warn-only is set, otherwise 1
         return 0 if args.warn_only else 1
@@ -692,7 +697,7 @@ def main() -> int:
     reset = Style.RESET_ALL if use_color else ""
     print(  # noqa: T201
         f"{success_color}✅ All {len(schema_files)} schema files passed "
-        f"purity and naming checks{reset}"
+        f"purity and naming checks{reset}",
     )
     return 0
 

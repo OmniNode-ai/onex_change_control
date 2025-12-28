@@ -154,7 +154,7 @@ invariants_checked:
   real_infra_proof_progressing: "unknown"
 corrections_for_tomorrow: []
 risks: []
-"""
+""",
         )
 
         result = run_cli(str(invalid_file))
@@ -188,7 +188,7 @@ invariants_checked:
   real_infra_proof_progressing: "unknown"
 corrections_for_tomorrow: []
 risks: []
-"""
+""",
         )
 
         result = run_cli(str(test_file))
@@ -213,7 +213,7 @@ emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
-"""
+""",
         )
 
         result = run_cli(str(test_file))
@@ -236,7 +236,7 @@ emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
-"""
+""",
         )
 
         result = run_cli(str(test_file))
@@ -250,7 +250,7 @@ emergency_bypass:
             """
 foo: bar
 baz: 123
-"""
+""",
         )
 
         result = run_cli(str(test_file))

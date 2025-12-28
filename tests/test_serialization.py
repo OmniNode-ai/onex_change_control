@@ -38,7 +38,7 @@ class TestModelDayCloseSerialization:
                 ModelDayClosePlanItem(
                     requirement_id="MVP-2WAY-REGISTRATION",
                     summary="2-way registration workflow",
-                )
+                ),
             ],
             invariants_checked=ModelDayCloseInvariantsChecked(
                 reducers_pure=EnumInvariantStatus.PASS,
@@ -74,7 +74,7 @@ class TestModelDayCloseSerialization:
                     evidence="Test evidence",
                     impact="Test impact",
                     correction_for_tomorrow="Test correction",
-                )
+                ),
             ],
             invariants_checked=ModelDayCloseInvariantsChecked(
                 reducers_pure=EnumInvariantStatus.PASS,
@@ -119,9 +119,9 @@ class TestModelDayCloseSerialization:
                             title="Test PR",
                             state=EnumPRState.MERGED,
                             notes="Test notes",
-                        )
+                        ),
                     ],
-                )
+                ),
             ],
             invariants_checked=ModelDayCloseInvariantsChecked(
                 reducers_pure=EnumInvariantStatus.PASS,
@@ -172,7 +172,7 @@ class TestModelTicketContractSerialization:
                     kind=EnumEvidenceKind.TESTS,
                     description="Unit tests required",
                     command="pytest tests/",
-                )
+                ),
             ],
             emergency_bypass=ModelEmergencyBypass(enabled=False),
         )
@@ -244,7 +244,7 @@ class TestModelTicketContractSerialization:
                     kind=EnumEvidenceKind.DOCS,
                     description="Documentation required",
                     command=None,
-                )
+                ),
             ],
             emergency_bypass=ModelEmergencyBypass(enabled=False),
         )
