@@ -156,11 +156,7 @@ class _DocstringVisitor(ast.NodeVisitor):
                 return SUPPRESSION_MARKER in lines[lineno - 1]
             return False
 
-        return (
-            _check(def_lineno)
-            or _check(docstring_lineno)
-            or _check(def_lineno - 1)
-        )
+        return _check(def_lineno) or _check(docstring_lineno) or _check(def_lineno - 1)
 
     # ------------------------------------------------------------------
     # Docstring checker
@@ -459,7 +455,9 @@ def main(argv: list[str] | None = None) -> int:
     # Filter by severity
     if not args.report:
         all_violations = [
-            v for v in all_violations if v.severity in (SEVERITY_ERROR, SEVERITY_WARNING)
+            v
+            for v in all_violations
+            if v.severity in (SEVERITY_ERROR, SEVERITY_WARNING)
         ]
 
     if args.json_output:
