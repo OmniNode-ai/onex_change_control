@@ -26,7 +26,10 @@ class ModelGoldenPathAssertion(BaseModel, frozen=True):
 
     field: str = Field(
         ...,
-        description="Dot-separated field path on the output event (e.g., 'status' or 'data.result')",
+        description=(
+            "Dot-separated field path on the output event "
+            "(e.g., 'status' or 'data.result')"
+        ),
         max_length=_MAX_STRING_LENGTH,
     )
     op: Literal["eq", "neq", "gte", "lte", "in", "contains"] = Field(
@@ -87,8 +90,9 @@ class ModelGoldenPathOutput(BaseModel, frozen=True):
         default=None,
         description=(
             "Optional Pydantic model class name for output validation. "
-            "When present and importable, the runner validates the output event against "
-            "this schema. When not importable, schema_validation_status is set to 'skipped'."
+            "When present and importable, the runner validates the output event "
+            "against this schema. When not importable, "
+            "schema_validation_status is set to 'skipped'."
         ),
         max_length=_MAX_STRING_LENGTH,
     )
@@ -128,10 +132,15 @@ class ModelGoldenPath(BaseModel, frozen=True):
     )
     infra: Literal["real", "mock"] = Field(
         default="real",
-        description="Infrastructure mode: 'real' uses live Kafka, 'mock' uses an in-process stub",
+        description=(
+            "Infrastructure mode: 'real' uses live Kafka, "
+            "'mock' uses an in-process stub"
+        ),
     )
     test_file: str | None = Field(
         default=None,
-        description="Optional path to the pytest golden path file relative to the repo root",
+        description=(
+            "Optional path to the pytest golden path file relative to the repo root"
+        ),
         max_length=_MAX_STRING_LENGTH,
     )

@@ -24,9 +24,18 @@ from onex_change_control.models.model_ticket_contract import (
     ModelTicketContract,
 )
 
+# Named constants for timeout values (avoids PLR2004 magic value warnings)
+_DEFAULT_TIMEOUT_MS = 30000
+_CUSTOM_TIMEOUT_MS = 60000
+_FAST_TIMEOUT_MS = 15000
+_LONG_TIMEOUT_MS = 45000
+_EXPECTED_ASSERTIONS_COUNT_2 = 2
+_EXPECTED_ASSERTIONS_COUNT_3 = 3
+_EXPECTED_ASSERTIONS_COUNT_1 = 1
+
 
 def _make_input(**kwargs: object) -> ModelGoldenPathInput:
-    """Helper: create a minimal ModelGoldenPathInput."""
+    """Create a minimal ModelGoldenPathInput for testing."""
     defaults: dict[str, object] = {
         "topic": "onex.cmd.myservice.myevent.v1",
         "fixture": "tests/fixtures/golden/my_fixture.json",
@@ -36,7 +45,7 @@ def _make_input(**kwargs: object) -> ModelGoldenPathInput:
 
 
 def _make_output(**kwargs: object) -> ModelGoldenPathOutput:
-    """Helper: create a minimal ModelGoldenPathOutput."""
+    """Create a minimal ModelGoldenPathOutput for testing."""
     defaults: dict[str, object] = {
         "topic": "onex.evt.myservice.myevent.v1",
     }
@@ -45,7 +54,7 @@ def _make_output(**kwargs: object) -> ModelGoldenPathOutput:
 
 
 def _make_golden_path(**kwargs: object) -> ModelGoldenPath:
-    """Helper: create a minimal ModelGoldenPath."""
+    """Create a minimal ModelGoldenPath for testing."""
     defaults: dict[str, object] = {
         "input": _make_input(),
         "output": _make_output(),
@@ -55,7 +64,7 @@ def _make_golden_path(**kwargs: object) -> ModelGoldenPath:
 
 
 def _make_contract(**kwargs: object) -> ModelTicketContract:
-    """Helper: create a minimal ModelTicketContract."""
+    """Create a minimal ModelTicketContract for testing."""
     defaults: dict[str, object] = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-2980",
@@ -140,7 +149,7 @@ class TestModelGoldenPathOutput:
                 ModelGoldenPathAssertion(field="count", op="gte", value=1),
             ]
         )
-        assert len(out.assertions) == 2
+        assert len(out.assertions) == _EXPECTED_ASSERTIONS_COUNT_2
 
     @pytest.mark.unit
     def test_immutable(self) -> None:
@@ -219,7 +228,7 @@ class TestModelGoldenPath:
     def test_minimal_golden_path(self) -> None:
         """Test creating a minimal ModelGoldenPath with defaults."""
         gp = _make_golden_path()
-        assert gp.timeout_ms == 30000
+        assert gp.timeout_ms == _DEFAULT_TIMEOUT_MS
         assert gp.infra == "real"
         assert gp.test_file is None
 
@@ -227,7 +236,7 @@ class TestModelGoldenPath:
     def test_timeout_ms_default_is_30000(self) -> None:
         """Test that timeout_ms defaults to 30000 (single source of truth)."""
         gp = _make_golden_path()
-        assert gp.timeout_ms == 30000
+        assert gp.timeout_ms == _DEFAULT_TIMEOUT_MS
 
         # Verify it's not on input or output
         assert not hasattr(gp.input, "timeout_ms")
@@ -236,8 +245,8 @@ class TestModelGoldenPath:
     @pytest.mark.unit
     def test_custom_timeout_ms(self) -> None:
         """Test setting a custom timeout_ms."""
-        gp = _make_golden_path(timeout_ms=60000)
-        assert gp.timeout_ms == 60000
+        gp = _make_golden_path(timeout_ms=_CUSTOM_TIMEOUT_MS)
+        assert gp.timeout_ms == _CUSTOM_TIMEOUT_MS
 
     @pytest.mark.unit
     def test_timeout_ms_minimum_1(self) -> None:
@@ -310,15 +319,15 @@ class TestModelGoldenPath:
                     ),
                 ],
             ),
-            timeout_ms=45000,
+            timeout_ms=_LONG_TIMEOUT_MS,
             infra="real",
             test_file="tests/golden/test_mynode_golden.py",
         )
 
         assert gp.input.topic == "onex.cmd.mynode.process.v1"
         assert gp.output.schema_name == "ModelMyNodeOutput"
-        assert len(gp.output.assertions) == 3
-        assert gp.timeout_ms == 45000
+        assert len(gp.output.assertions) == _EXPECTED_ASSERTIONS_COUNT_3
+        assert gp.timeout_ms == _LONG_TIMEOUT_MS
         assert gp.infra == "real"
         assert gp.test_file == "tests/golden/test_mynode_golden.py"
 
@@ -344,9 +353,9 @@ class TestModelGoldenPath:
             "test_file": None,
         }
         gp = ModelGoldenPath.model_validate(yaml_data)
-        assert gp.timeout_ms == 30000
+        assert gp.timeout_ms == _DEFAULT_TIMEOUT_MS
         assert gp.output.schema_name is None
-        assert len(gp.output.assertions) == 1
+        assert len(gp.output.assertions) == _EXPECTED_ASSERTIONS_COUNT_1
 
     @pytest.mark.unit
     def test_immutable(self) -> None:
@@ -377,7 +386,7 @@ class TestModelTicketContractWithGoldenPath:
         gp = _make_golden_path()
         contract = _make_contract(golden_path=gp)
         assert contract.golden_path is not None
-        assert contract.golden_path.timeout_ms == 30000
+        assert contract.golden_path.timeout_ms == _DEFAULT_TIMEOUT_MS
 
     @pytest.mark.unit
     def test_contract_with_full_golden_path(self) -> None:
@@ -396,7 +405,7 @@ class TestModelTicketContractWithGoldenPath:
                     ),
                 ],
             ),
-            timeout_ms=15000,
+            timeout_ms=_FAST_TIMEOUT_MS,
             infra="mock",
             test_file="tests/golden/test_action_golden.py",
         )
@@ -404,7 +413,7 @@ class TestModelTicketContractWithGoldenPath:
 
         assert contract.golden_path is not None
         assert contract.golden_path.infra == "mock"
-        assert contract.golden_path.timeout_ms == 15000
+        assert contract.golden_path.timeout_ms == _FAST_TIMEOUT_MS
         assert contract.golden_path.output.schema_name == "ModelActionResult"
 
     @pytest.mark.unit
@@ -436,4 +445,4 @@ class TestModelTicketContractWithGoldenPath:
         restored = ModelTicketContract.model_validate(data)
         assert restored == contract
         assert restored.golden_path is not None
-        assert restored.golden_path.timeout_ms == 30000
+        assert restored.golden_path.timeout_ms == _DEFAULT_TIMEOUT_MS
