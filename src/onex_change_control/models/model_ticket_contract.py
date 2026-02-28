@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
 from onex_change_control.enums.enum_interface_surface import EnumInterfaceSurface
+from onex_change_control.models.model_golden_path import ModelGoldenPath
 from onex_change_control.validation.patterns import SEMVER_PATTERN
 
 # Security constraints to prevent DoS attacks
@@ -129,6 +130,14 @@ class ModelTicketContract(BaseModel):
     emergency_bypass: ModelEmergencyBypass = Field(
         ...,
         description="Emergency bypass configuration",
+    )
+    golden_path: ModelGoldenPath | None = Field(
+        default=None,
+        description=(
+            "Optional golden path event chain test declaration. "
+            "When present, declares an input-to-output contract test for the "
+            "node pipeline associated with this ticket."
+        ),
     )
 
     @field_validator("schema_version")
