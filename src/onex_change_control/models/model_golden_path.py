@@ -7,7 +7,7 @@ output event, enabling automated contract verification of node pipelines.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 # Security constraints to prevent DoS attacks
 _MAX_STRING_LENGTH = 10000  # Max length for string fields
@@ -21,8 +21,6 @@ class ModelGoldenPathAssertion(BaseModel, frozen=True):
     Assertions are evaluated against the output event produced by running
     the golden path test.
     """
-
-    model_config = ConfigDict(frozen=True)
 
     field: str = Field(
         ...,
@@ -48,8 +46,6 @@ class ModelGoldenPathInput(BaseModel, frozen=True):
     Describes the Kafka topic and fixture file to use as the input event.
     """
 
-    model_config = ConfigDict(frozen=True)
-
     topic: str = Field(
         ...,
         description="Kafka topic to publish the input event to",
@@ -73,8 +69,6 @@ class ModelGoldenPathOutput(BaseModel, frozen=True):
     Describes the Kafka topic to listen on for the output event, with optional
     schema validation and field-level assertions.
     """
-
-    model_config = ConfigDict(frozen=True)
 
     topic: str = Field(
         ...,
@@ -114,8 +108,6 @@ class ModelGoldenPath(BaseModel, frozen=True):
     of truth for the test timeout. The infra field controls whether real Kafka or
     a mock is used.
     """
-
-    model_config = ConfigDict(frozen=True)
 
     input: ModelGoldenPathInput = Field(
         ...,
