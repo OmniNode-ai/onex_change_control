@@ -1,7 +1,4 @@
-"""ONEX Change Control Enums.
-
-This module provides enumerations for drift control artifacts.
-"""
+"""ONEX Change Control Enums."""
 
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
