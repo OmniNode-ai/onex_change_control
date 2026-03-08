@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+# Reusable composite action: validate-contract
+#
+# Validates ONEX ticket contracts in the calling repository.
+# Callable via:
+#   uses: OmniNode-ai/onex_change_control/.github/actions/validate-contract@main
+#
+# Inputs:
+#   branch-name:    The branch name to extract the ticket ID from (e.g., jonahgabriel/omn-1234-fix-foo)
+#   contracts-path: Path in the calling repo where ticket contracts live (default: contracts/)
+#
+# Outputs:
+#   ticket-id:         Extracted OMN-XXXX ticket ID (empty string if not found)
+#   validation-status: "passed", "failed", or "skipped"
+
+name: "ONEX Contract Validation"
+description: >
+  Validate ONEX ticket contracts against canonical schema models.
+  Extracts the ticket ID from the branch name, resolves the contract file,
+  and validates it using onex_change_control schema validators.
+
+inputs:
+  branch-name:
+    description: >
+      Branch name to extract the OMN-XXXX ticket ID from.
+      Supports formats like 'jonahgabriel/omn-1234-description' or 'omn-1234-fix'.
+    required: true
+  contracts-path:
+    description: >
+      Path within the calling repository where ticket contract YAML files live.
+      Relative to the repository root.
+    required: false
+    default: "contracts"
+
+outputs:
+  ticket-id:
+    description: "Extracted OMN-XXXX ticket ID, or empty string if not found."
+    value: ${{ steps.extract-ticket-id.outputs.ticket_id }}
+  validation-status:
+    description: "Outcome of contract validation: 'passed', 'failed', or 'skipped'."
+    value: ${{ steps.validate.outputs.validation_status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout calling repository
+      uses: actions/checkout@v4
+      with:
+        # Checkout the branch that triggered the workflow
+        ref: ${{ github.sha }}
+
+    - name: Checkout onex_change_control validators
+      uses: actions/checkout@v4
+      with:
+        repository: OmniNode-ai/onex_change_control
+        ref: main
+        path: .onex_change_control_validators
+        # No token needed — public repo
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install onex_change_control validators
+      shell: bash
+      run: |
+        cd .onex_change_control_validators
+        pip install --quiet poetry
+        poetry install --only main --no-interaction --no-ansi
+
+    - name: Extract ticket ID from branch name
+      id: extract-ticket-id
+      shell: bash
+      run: |
+        BRANCH="${{ inputs.branch-name }}"
+        # Extract OMN-XXXX (case-insensitive) from anywhere in the branch name
+        TICKET_ID=$(echo "$BRANCH" | grep -oiE 'OMN-[0-9]+' | head -1 | tr '[:lower:]' '[:upper:]')
+        if [[ -z "$TICKET_ID" ]]; then
+          echo "ticket_id=" >> "$GITHUB_OUTPUT"
+          echo "::notice::No OMN-XXXX ticket ID found in branch name: $BRANCH"
+        else
+          echo "ticket_id=$TICKET_ID" >> "$GITHUB_OUTPUT"
+          echo "::notice::Extracted ticket ID: $TICKET_ID from branch: $BRANCH"
+        fi
+
+    - name: Resolve contract file path
+      id: resolve-contract
+      shell: bash
+      run: |
+        TICKET_ID="${{ steps.extract-ticket-id.outputs.ticket_id }}"
+        CONTRACTS_PATH="${{ inputs.contracts-path }}"
+
+        if [[ -z "$TICKET_ID" ]]; then
+          echo "contract_path=" >> "$GITHUB_OUTPUT"
+          echo "contract_exists=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::Skipping contract resolution — no ticket ID extracted."
+          exit 0
+        fi
+
+        # Support both OMN-1234.yaml and omn-1234.yaml casing
+        CONTRACT_UPPER="$CONTRACTS_PATH/$TICKET_ID.yaml"
+        CONTRACT_LOWER="$CONTRACTS_PATH/$(echo $TICKET_ID | tr '[:upper:]' '[:lower:]').yaml"
+
+        if [[ -f "$CONTRACT_UPPER" ]]; then
+          echo "contract_path=$CONTRACT_UPPER" >> "$GITHUB_OUTPUT"
+          echo "contract_exists=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Found contract at $CONTRACT_UPPER"
+        elif [[ -f "$CONTRACT_LOWER" ]]; then
+          echo "contract_path=$CONTRACT_LOWER" >> "$GITHUB_OUTPUT"
+          echo "contract_exists=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Found contract at $CONTRACT_LOWER"
+        else
+          echo "contract_path=" >> "$GITHUB_OUTPUT"
+          echo "contract_exists=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::No contract file found for $TICKET_ID in $CONTRACTS_PATH/ — skipping validation."
+        fi
+
+    - name: Validate contract
+      id: validate
+      shell: bash
+      run: |
+        TICKET_ID="${{ steps.extract-ticket-id.outputs.ticket_id }}"
+        CONTRACT_EXISTS="${{ steps.resolve-contract.outputs.contract_exists }}"
+        CONTRACT_PATH="${{ steps.resolve-contract.outputs.contract_path }}"
+
+        # Case 1: No ticket ID found — skip gracefully
+        if [[ -z "$TICKET_ID" ]]; then
+          echo "validation_status=skipped" >> "$GITHUB_OUTPUT"
+          echo "::notice::Contract validation skipped — no ticket ID in branch name."
+          exit 0
+        fi
+
+        # Case 2: Ticket ID found but no contract file — skip (contract is optional)
+        if [[ "$CONTRACT_EXISTS" != "true" ]]; then
+          echo "validation_status=skipped" >> "$GITHUB_OUTPUT"
+          echo "::notice::Contract validation skipped — no contract file found for $TICKET_ID."
+          exit 0
+        fi
+
+        # Case 3: Contract file found — validate it
+        echo "::group::Validating contract: $CONTRACT_PATH"
+        cd .onex_change_control_validators
+        if poetry run validate-yaml "../$CONTRACT_PATH"; then
+          echo "::endgroup::"
+          echo "validation_status=passed" >> "$GITHUB_OUTPUT"
+          echo "::notice::Contract validation passed for $TICKET_ID"
+        else
+          echo "::endgroup::"
+          echo "validation_status=failed" >> "$GITHUB_OUTPUT"
+          echo "::error::Contract validation FAILED for $TICKET_ID — see above for details."
+          exit 1
+        fi
