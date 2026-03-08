@@ -10,7 +10,13 @@ Downstream packages can import and use the models directly:
     from onex_change_control import ModelGoldenPathInput, ModelGoldenPathOutput
 """
 
-from typing import Final
+# Do not hardcode versions here; version is sourced from distribution metadata.
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("onex-change-control")
+except PackageNotFoundError:
+    __version__ = "0.0.0-dev"
 
 from onex_change_control.models import (
     ModelDayClose,
@@ -20,8 +26,6 @@ from onex_change_control.models import (
     ModelGoldenPathOutput,
     ModelTicketContract,
 )
-
-__version__: Final[str] = "0.1.0"
 
 __all__ = [
     "ModelDayClose",
