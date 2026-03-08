@@ -253,38 +253,62 @@ Consequences:
 
 ### D-005 Contract location model (central vs per repo vs hybrid)
 
-Decision: D-005 Contract location model (central vs per repo vs hybrid)
-Status: Proposed
+Decision: D-005 Central Contract Location in onex_change_control
+Status: Accepted
 Owner: OmniNode / ONEX
-Date: 2025-12-19
+Date: 2026-03-08
+Supersedes: Provisional per-repo decision recorded 2025-12-19
+References: OMN-4039, OMN-4040, OMN-4041, OMN-4042, OMN-4043
 
 Context:
-CI gates run inside each repo, but contracts may need to be shared across repos for seam changes.
+CI gates run inside each repo, but contracts must be validated against a canonical schema
+that is versioned, auditable, and evolves independently of product repos.
 
-This decision determines how contracts are discovered, versioned, and validated across repos, and has direct impact on CI complexity.
+The original provisional decision (per-repo contracts, Option B) was adopted to enable
+rapid prototyping. After completing the enforcement pilot via the OMN-4039 epic, Option A
+(central contract location in `onex_change_control`) was validated as the correct long-term
+model. This decision supersedes the provisional per-repo approach.
+
+The key drivers for the revision:
+- D-001 already designates `onex_change_control` as the governance and distribution authority.
+- D-006 confirms that canonical schema models live in `onex_change_control`.
+- Per-repo contracts create duplication and make cross-repo seam enforcement fragile.
+- The reusable composite action (OMN-4040) makes central validation cheap to wire into any repo.
 
 Options considered:
-- A) Central-only contracts in `onex_change_control`
-- B) Per-repo contracts (each repo stores only its own)
+- A) Central-only contracts in `onex_change_control` — **chosen**
+- B) Per-repo contracts (each repo stores only its own) — provisional, now superseded
 - C) Hybrid: central schema + per-repo contracts + optional “cross-repo” aggregation
 
 Decision:
-Provisionally adopt Option B (per-repo contracts) for the enforcement prototype.
+Option A. Contract schema models and the canonical validation tooling live centrally in
+`onex_change_control`. Per-repo CI wires in the reusable composite action
+(`OmniNode-ai/onex_change_control/.github/actions/validate-contract@main`) rather than
+embedding validation logic or schema copies in each repo.
 
 Enforcement implications:
-- CI MUST look for ticket contracts locally within the repo under a fixed path (e.g. `contracts/<ticket_id>.yaml`).
-- CI MUST NOT require network access to validate contracts.
-- Cross-repo seam changes, if any, MUST be represented via explicit references, not implicit discovery.
+- `onex_change_control` is the single source of truth for contract schemas and validation.
+- CI in each consuming repo MUST call the reusable composite action to validate contracts.
+- Contract YAML files live in the calling repo under `contracts/<ticket_id>.yaml` and are
+  validated remotely against the central schema (the composite action checks out validators
+  from `onex_change_control@main` at validation time).
+- Per-repo schema copies are PROHIBITED — repos consume the composite action, not schema code.
+- Cross-repo seam contracts reference the central schema version via the composite action's
+  `@main` or `@<tag>` pin.
 
 Consequences:
 - Positive:
-  - Simplifies CI wiring and reduces sources of nondeterminism.
-  - Enables rapid prototyping of enforcement with minimal tooling.
+  - Schema evolution is auditable in one place (onex_change_control commit history).
+  - Consuming repos get schema updates by bumping their composite action pin (not copying models).
+  - Cross-repo seam enforcement is achievable without per-repo tooling duplication.
+  - Aligns with D-001 (governance authority) and D-006 (schema model location).
 - Negative / costs:
-  - Cross-repo seams require explicit coordination rather than implicit sharing.
+  - CI in each repo requires network access to GitHub Actions to pull the composite action.
+  - Schema changes in onex_change_control may require coordinated re-validation across repos.
 - Follow-ups:
-  - Define a hybrid extension for cross-repo seam contracts if needed.
-  - Revisit this decision after one full enforcement pilot.
+  - Define a semver tagging policy for onex_change_control releases so repos can pin
+    `@v1.x.x` instead of `@main` for stability.
+  - Add a compatibility matrix documenting which schema version each consuming repo pins.
 
 ---
 
