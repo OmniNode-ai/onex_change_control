@@ -3,15 +3,12 @@
 
 """Tests for CrossSchemaCoherenceValidator v1 (OMN-4344)."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest
 import yaml
 
 from onex_change_control.validators.cross_schema_coherence import (
-    CoherenceResult,
     CrossSchemaCoherenceValidator,
     EnumCoherenceLevel,
 )
@@ -19,6 +16,7 @@ from onex_change_control.validators.cross_schema_coherence import (
 
 @pytest.mark.unit
 def test_no_interfaces_provided_not_required(tmp_path: Path) -> None:
+    """Tickets with no interfaces_provided do not require a seam contract."""
     v = CrossSchemaCoherenceValidator(contracts_dir=tmp_path)
     result = v.check("OMN-100", {"interfaces_provided": []})
     assert result.passed is True
@@ -27,6 +25,7 @@ def test_no_interfaces_provided_not_required(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_interfaces_provided_missing_seam_contract_fails(tmp_path: Path) -> None:
+    """Tickets with interfaces_provided but no seam contract are incoherent."""
     v = CrossSchemaCoherenceValidator(contracts_dir=tmp_path)
     result = v.check("OMN-200", {"interfaces_provided": [{"name": "FooProtocol"}]})
     assert result.passed is False
@@ -35,6 +34,7 @@ def test_interfaces_provided_missing_seam_contract_fails(tmp_path: Path) -> None
 
 @pytest.mark.unit
 def test_seam_contract_is_seam_ticket_true_passes(tmp_path: Path) -> None:
+    """A seam contract with is_seam_ticket: true satisfies v1 coherence."""
     seam: dict[str, object] = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-300",
@@ -57,6 +57,7 @@ def test_seam_contract_is_seam_ticket_true_passes(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_seam_contract_is_seam_ticket_false_fails(tmp_path: Path) -> None:
+    """A seam contract with is_seam_ticket: false is incoherent."""
     seam: dict[str, object] = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-400",

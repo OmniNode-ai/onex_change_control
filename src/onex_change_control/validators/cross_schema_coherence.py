@@ -25,13 +25,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 from typing import Any
 
 import yaml
 
 
 class EnumCoherenceLevel(str, Enum):
+    """Coherence level for a cross-schema coherence check result."""
+
     NOT_REQUIRED = "not_required"
     V1_SEAM_PRESENT = "v1_seam_present"
     INCOHERENT = "incoherent"
@@ -39,14 +41,19 @@ class EnumCoherenceLevel(str, Enum):
 
 @dataclass
 class CoherenceResult:
+    """Result of a cross-schema coherence check."""
+
     passed: bool
     level: EnumCoherenceLevel
     message: str
 
 
 class CrossSchemaCoherenceValidator:
-    """Validates cross-schema coherence between omnibase_core ticket contracts
-    and onex_change_control seam contracts.
+    """Validates cross-schema coherence for omnibase_core ticket contracts.
+
+    Checks that onex_change_control seam contracts exist and are marked
+    ``is_seam_ticket: true`` for any ticket that declares
+    ``interfaces_provided``.
 
     Uses filename-based lookup: the canonical seam contract path is
     ``contracts/{TICKET_ID}.yaml``. This is a deliberate invariant — if the
@@ -54,9 +61,12 @@ class CrossSchemaCoherenceValidator:
     """
 
     def __init__(self, contracts_dir: Path) -> None:
+        """Initialise with the directory containing seam contracts."""
         self.contracts_dir = contracts_dir
 
-    def check(self, ticket_id: str, omnibase_contract: dict[str, Any]) -> CoherenceResult:
+    def check(
+        self, ticket_id: str, omnibase_contract: dict[str, Any]
+    ) -> CoherenceResult:
         """Check v1 coherence for a ticket.
 
         Args:
@@ -65,36 +75,45 @@ class CrossSchemaCoherenceValidator:
 
         Returns:
             CoherenceResult with passed=True when coherent or not required.
+
         """
         if not omnibase_contract.get("interfaces_provided"):
             return CoherenceResult(
-                True,
-                EnumCoherenceLevel.NOT_REQUIRED,
-                "No interfaces_provided — seam contract not required.",
+                passed=True,
+                level=EnumCoherenceLevel.NOT_REQUIRED,
+                message="No interfaces_provided — seam contract not required.",
             )
 
         seam_path = self.contracts_dir / f"{ticket_id}.yaml"
         if not seam_path.exists():
             return CoherenceResult(
-                False,
-                EnumCoherenceLevel.INCOHERENT,
-                f"{ticket_id}: interfaces_provided declared but no seam contract at "
-                f"{seam_path}. Run generate-ticket-contract with is_seam_ticket: true.",
+                passed=False,
+                level=EnumCoherenceLevel.INCOHERENT,
+                message=(
+                    f"{ticket_id}: interfaces_provided declared but no seam "
+                    f"contract at {seam_path}. Run generate-ticket-contract "
+                    "with is_seam_ticket: true."
+                ),
             )
 
         seam_data: dict[str, Any] = yaml.safe_load(seam_path.read_text()) or {}
         if not seam_data.get("is_seam_ticket", False):
             return CoherenceResult(
-                False,
-                EnumCoherenceLevel.INCOHERENT,
-                f"{ticket_id}: seam contract exists but is_seam_ticket: false. "
-                "Set is_seam_ticket: true.",
+                passed=False,
+                level=EnumCoherenceLevel.INCOHERENT,
+                message=(
+                    f"{ticket_id}: seam contract exists but is_seam_ticket: "
+                    "false. Set is_seam_ticket: true."
+                ),
             )
 
         return CoherenceResult(
-            True,
-            EnumCoherenceLevel.V1_SEAM_PRESENT,
-            f"{ticket_id}: v1 coherent (seam contract present, is_seam_ticket: true).",
+            passed=True,
+            level=EnumCoherenceLevel.V1_SEAM_PRESENT,
+            message=(
+                f"{ticket_id}: v1 coherent (seam contract present, "
+                "is_seam_ticket: true)."
+            ),
         )
 
 
