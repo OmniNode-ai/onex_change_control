@@ -112,6 +112,17 @@ Other repos consume this package for:
 
 See `README.md` for full integration examples.
 
+## SPDX Headers
+
+All source files in `src/`, `tests/`, `scripts/`, `examples/` require MIT SPDX headers.
+Canonical spec: `omnibase_core/docs/conventions/FILE_HEADERS.md`
+
+- Stamp missing headers: `poetry run onex spdx fix src tests scripts examples`
+- Check without writing: `poetry run onex spdx fix --check src tests scripts examples`
+- Bypass a file: add `# spdx-skip: <reason>` in the first 10 lines
+
+> **Note**: This repo uses Poetry, so use `poetry run onex` (not `uv run onex`).
+
 ## Key Documentation
 
 - `docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md` — enforcement model and rollout phases

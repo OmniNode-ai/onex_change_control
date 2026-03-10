@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
 """ONEX Change Control Enums."""
 
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory

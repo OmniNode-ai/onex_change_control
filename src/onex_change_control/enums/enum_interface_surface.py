@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
 """Interface Surface Enum.
 
 Categories of interface surfaces that can be touched by changes.

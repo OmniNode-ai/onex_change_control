@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
 """ONEX Change Control Models.
 
 Exports ModelGoldenPath, ModelTicketContract, ModelDayClose, and related
