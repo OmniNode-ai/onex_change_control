@@ -51,39 +51,38 @@ All schema modules follow `omnibase_core` conventions:
 ## Development Commands
 
 ```bash
-# Install dependencies (this repo uses Poetry, not uv)
-poetry install
+# Install dependencies
+uv sync --all-groups
 
 # Run all tests
-poetry run pytest
+uv run pytest
 
 # Run single test file
-poetry run pytest tests/path/to/test_file.py -v
+uv run pytest tests/path/to/test_file.py -v
 
 # Type checking
-poetry run mypy src/ --strict
+uv run mypy src/ --strict
 
 # Lint and format
-poetry run ruff check src/ tests/
-poetry run ruff format src/ tests/
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
 
 # Validate a YAML artifact
-poetry run validate-yaml contracts/OMN-123.yaml
+uv run validate-yaml contracts/OMN-123.yaml
 
 # Validate multiple YAML files
-poetry run validate-yaml drift/day_close/*.yaml
+uv run validate-yaml drift/day_close/*.yaml
 
 # Check schema purity (enforces D-008)
-poetry run check-schema-purity
+uv run check-schema-purity
 
 # Warn-only mode (for gradual CI adoption)
-poetry run check-schema-purity --warn-only
+uv run check-schema-purity --warn-only
 
 # Pre-commit hooks
+pre-commit install
 pre-commit run --all-files
 ```
-
-> **Note**: This repo uses **Poetry** for dependency management, not `uv`. Use `poetry run` instead of `uv run`.
 
 ## Schema Purity Rule (D-008)
 
@@ -117,11 +116,9 @@ See `README.md` for full integration examples.
 All source files in `src/`, `tests/`, `scripts/`, `examples/` require MIT SPDX headers.
 Canonical spec: `omnibase_core/docs/conventions/FILE_HEADERS.md`
 
-- Stamp missing headers: `poetry run onex spdx fix src tests scripts examples`
-- Check without writing: `poetry run onex spdx fix --check src tests scripts examples`
+- Stamp missing headers: `uv run onex spdx fix src tests scripts examples`
+- Check without writing: `uv run onex spdx fix --check src tests scripts examples`
 - Bypass a file: add `# spdx-skip: <reason>` in the first 10 lines
-
-> **Note**: This repo uses Poetry, so use `poetry run onex` (not `uv run onex`).
 
 ## Key Documentation
 
