@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
 """Validation patterns for schema models.
 
 Shared regex patterns used across multiple model files to ensure consistency.

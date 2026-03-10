@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
 """Tests for the check_schema_purity.py script.
 
 These tests verify that the purity and naming convention enforcement works correctly.

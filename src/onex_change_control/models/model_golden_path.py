@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
 """Golden Path Model.
 
 Pydantic schema model for golden path event chain test declarations.
