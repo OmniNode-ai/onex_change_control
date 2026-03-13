@@ -63,7 +63,7 @@ def test_no_cross_service_violations(
     ]
     if _REGISTRY.exists():
         cmd.extend(["--registry", str(_REGISTRY)])
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
@@ -84,7 +84,7 @@ def test_exceptions_registry_valid() -> None:
     if not registry.exists():
         pytest.skip(f"Registry not found: {registry}")
 
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         [  # noqa: S607
             "uv",
             "run",

@@ -30,7 +30,7 @@ def run_purity_check(*args: str) -> subprocess.CompletedProcess[str]:
         "onex_change_control.scripts.check_schema_purity",
         *args,
     ]
-    return subprocess.run(  # noqa: S603
+    return subprocess.run(
         cmd,
         cwd=Path(__file__).parent.parent,
         capture_output=True,
@@ -86,7 +86,7 @@ class TestPurityCheckIntegration:
 
         # Run the modified script
         cmd = [sys.executable, str(scripts_dir / "check_schema_purity.py")]
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             cmd,
             cwd=project_root,
             capture_output=True,

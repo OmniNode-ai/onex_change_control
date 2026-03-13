@@ -44,7 +44,7 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
 
     """
     # Use the module path directly since it's installed as a package
-    return subprocess.run(  # noqa: S603
+    return subprocess.run(
         [sys.executable, "-m", "onex_change_control.scripts.validate_yaml", *args],
         cwd=Path(__file__).parent.parent,
         capture_output=True,
