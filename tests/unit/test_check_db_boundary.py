@@ -125,6 +125,25 @@ class TestCrossServiceImportDetection:
         )
         assert len(violations) == 1
 
+    def test_shared_library_import_not_flagged(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Shared library (omnibase_core) imports produce 0 violations.
+
+        omnibase_core, omnibase_spi, and onex_change_control are shared
+        packages with no DB boundary -- importing from them is always allowed.
+        """
+        p = _write_py(
+            tmp_path,
+            "from omnibase_core.models.contracts import ModelContract\n",
+        )
+        violations = check_file_for_cross_service_imports(
+            p,
+            "omniintelligence",
+        )
+        assert len(violations) == 0
+
     def test_type_checking_import_exempted(
         self,
         tmp_path: Path,

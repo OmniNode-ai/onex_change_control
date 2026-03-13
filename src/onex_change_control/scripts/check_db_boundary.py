@@ -57,17 +57,15 @@ SHARED_ENV_ALLOWLIST: frozenset[str] = frozenset(
     },
 )
 
-# Known service package names for import detection
-KNOWN_SERVICE_PACKAGES: frozenset[str] = frozenset(
+# Service packages that own a database -- cross-imports between these are violations.
+# Shared packages (omnibase_core, omnibase_spi, onex_change_control, omniclaude) have
+# no DB boundary and are always safe to import from any service.
+SERVICE_PACKAGES: frozenset[str] = frozenset(
     {
         "omniintelligence",
         "omnimemory",
         "omnibase_infra",
         "omnidash",
-        "omniclaude",
-        "omnibase_core",
-        "omnibase_spi",
-        "onex_change_control",
         "omninode_infra",
     },
 )
@@ -209,9 +207,7 @@ def _is_cross_service_db_import(
     if len(parts) < 2:  # noqa: PLR2004
         return False
     pkg, submodule = parts[0], parts[1]
-    return (
-        pkg in KNOWN_SERVICE_PACKAGES and pkg != service and submodule in DB_SUBMODULES
-    )
+    return pkg in SERVICE_PACKAGES and pkg != service and submodule in DB_SUBMODULES
 
 
 def check_file_for_cross_service_imports(
@@ -337,27 +333,72 @@ def validate_exceptions_yaml(
     return violations
 
 
+def _load_exception_keys(
+    registry_path: Path | None,
+    service: str,
+) -> set[tuple[str, str]]:
+    """Load (repo, relative_file) keys for APPROVED exceptions.
+
+    Args:
+        registry_path: Path to exceptions YAML, or None to skip
+        service: Current service name to filter by
+
+    Returns:
+        Set of (repo, file) tuples for approved exceptions
+
+    """
+    if registry_path is None or not registry_path.exists():
+        return set()
+    try:
+        data = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+        registry = ModelDbBoundaryExceptionsRegistry.model_validate(
+            data or {"exceptions": []},
+        )
+    except (OSError, yaml.YAMLError, ValidationError):
+        return set()
+    return {
+        (exc.repo, exc.file)
+        for exc in registry.exceptions
+        if exc.repo == service and exc.status.value == "APPROVED"
+    }
+
+
+def _relative_file(repo_path: Path, file_path: Path) -> str:
+    """Return the repo-relative file path as a string."""
+    try:
+        return str(file_path.relative_to(repo_path))
+    except ValueError:
+        return str(file_path)
+
+
 def _scan_repo(
     repo_path: Path,
     service: str,
+    *,
+    exception_keys: set[tuple[str, str]] | None = None,
 ) -> list[Violation]:
     """Scan all Python files in a repo for DB boundary violations.
 
     Args:
         repo_path: Path to the repository root
         service: Service name (e.g., "omniintelligence")
+        exception_keys: Set of (repo, file) tuples to skip (registered exceptions)
 
     Returns:
-        List of all violations found
+        List of all violations found (excluding registered exceptions)
 
     """
     violations: list[Violation] = []
     src_dir = repo_path / "src"
+    exc_keys = exception_keys or set()
 
     if not src_dir.exists():
         return violations
 
     for py_file in sorted(src_dir.rglob("*.py")):
+        rel = _relative_file(repo_path, py_file)
+        if (service, rel) in exc_keys:
+            continue
         violations.extend(
             check_file_for_cross_service_env(py_file, service),
         )
@@ -424,7 +465,11 @@ def main() -> int:
                 use_color=use_color,
             )
             return 1
-        all_violations.extend(_scan_repo(repo_path, args.repo))
+        registry_path = Path(args.registry) if args.registry else None
+        exc_keys = _load_exception_keys(registry_path, args.repo)
+        all_violations.extend(
+            _scan_repo(repo_path, args.repo, exception_keys=exc_keys),
+        )
 
     # Registry validation mode
     if args.validate_all and args.registry:
