@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 import yaml
@@ -16,9 +16,6 @@ from onex_change_control.scripts.check_db_boundary import (
     check_file_for_cross_service_imports,
     validate_exceptions_yaml,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _write_py(tmp_path: Path, code: str) -> Path:
@@ -222,11 +219,13 @@ class TestCheckDbBoundaryCli:
 
     def test_help_exits_zero(self) -> None:
         """check-db-boundary --help exits 0."""
+        # Use the repo root (two levels up from tests/unit/)
+        repo_root = Path(__file__).resolve().parents[2]
         result = subprocess.run(
             ["uv", "run", "check-db-boundary", "--help"],  # noqa: S607
             capture_output=True,
             text=True,
-            cwd="/Volumes/PRO-G40/Code/omni_worktrees/OMN-4815/onex_change_control",
+            cwd=str(repo_root),
             check=False,
         )
         assert result.returncode == 0
