@@ -3,6 +3,10 @@
 
 """ONEX Change Control Enums."""
 
+from onex_change_control.enums.enum_db_boundary import (
+    EnumDbBoundaryExceptionStatus,
+    EnumDbBoundaryReasonCategory,
+)
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
 from onex_change_control.enums.enum_interface_surface import EnumInterfaceSurface
@@ -10,6 +14,8 @@ from onex_change_control.enums.enum_invariant_status import EnumInvariantStatus
 from onex_change_control.enums.enum_pr_state import EnumPRState
 
 __all__ = [
+    "EnumDbBoundaryExceptionStatus",
+    "EnumDbBoundaryReasonCategory",
     "EnumDriftCategory",
     "EnumEvidenceKind",
     "EnumInterfaceSurface",
