@@ -3,10 +3,16 @@
 
 """Tests for YAML parsing with Pydantic models."""
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
+
+if TYPE_CHECKING:
+    from typing import Any
 
 from onex_change_control.models.model_day_close import ModelDayClose
 from onex_change_control.models.model_ticket_contract import ModelTicketContract
@@ -30,7 +36,7 @@ def minimal_emergency_bypass() -> dict[str, str | bool]:
 
 
 @pytest.fixture
-def minimal_day_close_data() -> dict[str, str | list | dict]:
+def minimal_day_close_data() -> dict[str, Any]:
     """Fixture for minimal valid day close data."""
     return {
         "schema_version": "1.0.0",
@@ -53,7 +59,7 @@ def minimal_day_close_data() -> dict[str, str | list | dict]:
 @pytest.fixture
 def minimal_ticket_contract_data(
     minimal_emergency_bypass: dict[str, str | bool],
-) -> dict[str, str | bool | list | dict]:
+) -> dict[str, Any]:
     """Fixture for minimal valid ticket contract data."""
     return {
         "schema_version": "1.0.0",
@@ -128,7 +134,7 @@ def test_parse_ticket_contract_template(
 
 
 def test_template_day_close_minimal_valid(
-    minimal_day_close_data: dict[str, str | list | dict],
+    minimal_day_close_data: dict[str, Any],
 ) -> None:
     """Test that day_close template can be filled with minimal valid values.
 
@@ -154,7 +160,7 @@ def test_template_day_close_minimal_valid(
 
 
 def test_template_ticket_contract_minimal_valid(
-    minimal_ticket_contract_data: dict[str, str | bool | list | dict],
+    minimal_ticket_contract_data: dict[str, Any],
 ) -> None:
     """Test that ticket_contract template can be filled with minimal valid values.
 
@@ -296,7 +302,7 @@ def test_template_ticket_contract_emergency_bypass() -> None:
 
 
 def test_template_day_close_unknown_invariant_statuses(
-    minimal_day_close_data: dict[str, str | list | dict],
+    minimal_day_close_data: dict[str, Any],
 ) -> None:
     """Test that day_close template supports 'unknown' for invariant statuses.
 
@@ -322,8 +328,8 @@ def test_template_day_close_unknown_invariant_statuses(
 
 
 def test_template_files_parse_with_minimal_replacements(
-    minimal_day_close_data: dict[str, str | list | dict],
-    minimal_ticket_contract_data: dict[str, str | bool | list | dict],
+    minimal_day_close_data: dict[str, Any],
+    minimal_ticket_contract_data: dict[str, Any],
 ) -> None:
     """Test that template files can be parsed with minimal placeholder replacements.
 

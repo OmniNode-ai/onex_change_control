@@ -44,7 +44,7 @@ def _make_input(**kwargs: object) -> ModelGoldenPathInput:
         "fixture": "tests/fixtures/golden/my_fixture.json",
     }
     defaults.update(kwargs)
-    return ModelGoldenPathInput(**defaults)  # type: ignore[arg-type]
+    return ModelGoldenPathInput(**defaults)
 
 
 def _make_output(**kwargs: object) -> ModelGoldenPathOutput:
@@ -53,7 +53,7 @@ def _make_output(**kwargs: object) -> ModelGoldenPathOutput:
         "topic": "onex.evt.myservice.myevent.v1",
     }
     defaults.update(kwargs)
-    return ModelGoldenPathOutput(**defaults)  # type: ignore[arg-type]
+    return ModelGoldenPathOutput(**defaults)
 
 
 def _make_golden_path(**kwargs: object) -> ModelGoldenPath:
@@ -63,7 +63,7 @@ def _make_golden_path(**kwargs: object) -> ModelGoldenPath:
         "output": _make_output(),
     }
     defaults.update(kwargs)
-    return ModelGoldenPath(**defaults)  # type: ignore[arg-type]
+    return ModelGoldenPath(**defaults)
 
 
 def _make_contract(**kwargs: object) -> ModelTicketContract:
@@ -77,7 +77,7 @@ def _make_contract(**kwargs: object) -> ModelTicketContract:
         "emergency_bypass": ModelEmergencyBypass(enabled=False),
     }
     defaults.update(kwargs)
-    return ModelTicketContract(**defaults)  # type: ignore[arg-type]
+    return ModelTicketContract(**defaults)
 
 
 class TestModelGoldenPathInput:
@@ -183,14 +183,14 @@ class TestModelGoldenPathAssertion:
     @pytest.mark.parametrize("op", ["eq", "neq", "gte", "lte", "in", "contains"])
     def test_all_ops_valid(self, op: str) -> None:
         """Test that all assertion ops are valid and round-trip correctly."""
-        assertion = ModelGoldenPathAssertion(field="status", op=op, value="anything")  # type: ignore[arg-type]
+        assertion = ModelGoldenPathAssertion(field="status", op=op, value="anything")
         assert assertion.op == op
 
     @pytest.mark.unit
     @pytest.mark.parametrize("op", ["eq", "neq", "gte", "lte", "in", "contains"])
     def test_ops_round_trip_through_model_validate(self, op: str) -> None:
         """Test that all ops round-trip through model_validate."""
-        original = ModelGoldenPathAssertion(field="status", op=op, value=42)  # type: ignore[arg-type]
+        original = ModelGoldenPathAssertion(field="status", op=op, value=42)
         data = original.model_dump()
         restored = ModelGoldenPathAssertion.model_validate(data)
         assert restored == original
@@ -199,7 +199,7 @@ class TestModelGoldenPathAssertion:
     def test_invalid_op(self) -> None:
         """Test that an invalid op raises ValidationError."""
         with pytest.raises(ValidationError):
-            ModelGoldenPathAssertion(field="status", op="invalid_op", value="x")  # type: ignore[arg-type]
+            ModelGoldenPathAssertion(field="status", op="invalid_op", value="x")
 
     @pytest.mark.unit
     def test_various_value_types(self) -> None:
@@ -276,7 +276,7 @@ class TestModelGoldenPath:
     def test_infra_invalid(self) -> None:
         """Test that an invalid infra value raises ValidationError."""
         with pytest.raises(ValidationError):
-            _make_golden_path(infra="kubernetes")  # type: ignore[arg-type]
+            _make_golden_path(infra="kubernetes")
 
     @pytest.mark.unit
     def test_test_file_optional(self) -> None:

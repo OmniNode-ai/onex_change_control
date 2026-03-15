@@ -52,7 +52,7 @@ class TestModelDbBoundaryException:
                 repo="omnimemory",
                 file="src/omnimemory/fixtures/seed.py",
                 usage="test",
-                reason_category="INVALID_CATEGORY",  # type: ignore[arg-type]
+                reason_category="INVALID_CATEGORY",
                 justification="test",
                 owner="jonah",
                 approved_by="jonah",

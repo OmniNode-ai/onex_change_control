@@ -284,7 +284,7 @@ class TestFrozenModels:
 
         # Attempting to modify should raise ValidationError
         with pytest.raises(ValidationError):
-            day_close.date = "2025-12-21"  # type: ignore[assignment, misc]
+            day_close.date = "2025-12-21"  # type: ignore[misc]
 
     def test_ticket_contract_is_frozen(self) -> None:
         """Test that ModelTicketContract is immutable after creation."""
@@ -299,4 +299,4 @@ class TestFrozenModels:
 
         # Attempting to modify should raise ValidationError
         with pytest.raises(ValidationError):
-            contract.ticket_id = "OMN-963"  # type: ignore[assignment, misc]
+            contract.ticket_id = "OMN-963"  # type: ignore[misc]

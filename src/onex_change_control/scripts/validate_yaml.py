@@ -60,7 +60,7 @@ def print_info(message: str) -> None:
     _print_stdout(f"[INFO] {message}")
 
 
-def detect_schema_type(file_path: Path, data: dict) -> str:
+def detect_schema_type(file_path: Path, data: dict[str, object]) -> str:
     """Detect whether the YAML file is a day_close or ticket_contract.
 
     Detection logic:
@@ -140,7 +140,7 @@ def format_validation_error(error: ValidationError) -> str:
     return "\n".join(lines)
 
 
-def _load_yaml_file(file_path: Path) -> dict | None:
+def _load_yaml_file(file_path: Path) -> dict[str, object] | None:
     """Load and parse a YAML file.
 
     Args:
