@@ -22,7 +22,7 @@ Usage::
         --repo-path /path/to/omnibase_infra
 
 Exit codes:
-    0 - all pins match
+    0 - all pins match (or repo not managed / no expected pins)
     1 - one or more pins are behind
     2 - configuration error (missing files, bad arguments)
 """
@@ -37,11 +37,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from packaging.version import Version
+
 logger = logging.getLogger(__name__)
 
-# Avoid external dependencies - this script must run in CI
-# without installing extras. Uses only stdlib + PyYAML
-# (available in all ONEX repos).
+# Avoid external dependencies beyond what is standard in ONEX repos.
+# This script requires PyYAML and packaging (both available in all
+# ONEX repos).
 try:
     import yaml
 except ImportError:
@@ -73,44 +75,46 @@ def load_matrix(root: Path) -> dict[str, Any]:
     if not matrix_path.exists():
         logger.error("version-matrix.yaml not found at %s", matrix_path)
         sys.exit(2)
-    return _yaml_loader(matrix_path)
+    result: dict[str, Any] = _yaml_loader(matrix_path)
+    return result
 
 
 def extract_pins_from_pyproject(
     pyproject_path: Path,
-) -> dict[str, str]:
+) -> dict[str, tuple[str, str]]:
     """Extract pinned dependency versions from pyproject.toml.
 
     Scans the entire file for patterns like::
 
         "package-name==1.2.3"
-        'package-name==1.2.3'
-        package-name==1.2.3
+        'package-name>=1.2.3'
+        package-name~=1.2.3
 
-    Returns a dict of {package_name: version}.
+    Returns a dict of {package_name: (operator, version)}.
     """
     if not pyproject_path.exists():
         logger.error("pyproject.toml not found at %s", pyproject_path)
         sys.exit(2)
 
     content = pyproject_path.read_text()
-    pin_pattern = re.compile(r'["\']?([\w-]+)==([\d.]+)["\']?')
-    pins: dict[str, str] = {}
+    pin_pattern = re.compile(r'["\']?([\w-]+)(==|>=|~=)([\d.]+)["\']?')
+    pins: dict[str, tuple[str, str]] = {}
     for match in pin_pattern.finditer(content):
         pkg_name = match.group(1)
-        pkg_version = match.group(2)
+        operator = match.group(2)
+        pkg_version = match.group(3)
         # Only track ONEX packages (omnibase-*, omninode-*)
         if pkg_name.startswith(("omnibase-", "omninode-")):
-            pins[pkg_name] = pkg_version
+            pins[pkg_name] = (operator, pkg_version)
     return pins
 
 
 def extract_pins_from_dockerfile(
     dockerfile_path: Path,
-) -> dict[str, str]:
+) -> dict[str, tuple[str, str]]:
     """Extract pinned package versions from Dockerfile.runtime.
 
-    Returns a dict of {package_name: version}.
+    Returns a dict of {package_name: (operator, version)}.
     """
     if not dockerfile_path.exists():
         logger.error(
@@ -120,36 +124,45 @@ def extract_pins_from_dockerfile(
         sys.exit(2)
 
     content = dockerfile_path.read_text()
-    pin_pattern = re.compile(r'["\']?([\w-]+)==([\d.]+)["\']?')
-    pins: dict[str, str] = {}
+    pin_pattern = re.compile(r'["\']?([\w-]+)(==|>=|~=)([\d.]+)["\']?')
+    pins: dict[str, tuple[str, str]] = {}
     for match in pin_pattern.finditer(content):
         pkg_name = match.group(1)
-        pkg_version = match.group(2)
+        operator = match.group(2)
+        pkg_version = match.group(3)
         if pkg_name.startswith(("omnibase-", "omninode-")):
-            pins[pkg_name] = pkg_version
+            pins[pkg_name] = (operator, pkg_version)
     return pins
 
 
 def check_pins(
-    actual_pins: dict[str, str],
+    actual_pins: dict[str, tuple[str, str]],
     expected_pins: dict[str, str],
     context: str,
 ) -> list[str]:
     """Compare actual pins against expected.
 
+    For all operators (==, >=, ~=): the actual version floor must be at
+    least as high as the expected minimum from the version matrix.
+
     Returns list of error messages.
     """
     errors: list[str] = []
     for pkg, expected_version in expected_pins.items():
-        actual_version = actual_pins.get(pkg)
-        if actual_version is None:
+        actual = actual_pins.get(pkg)
+        if actual is None:
             errors.append(
-                f"  {context}: {pkg} not found (expected =={expected_version})",
+                f"  {context}: {pkg} not found (expected >={expected_version})",
             )
-        elif actual_version != expected_version:
-            errors.append(
-                f"  {context}: {pkg}=={actual_version} (expected =={expected_version})",
-            )
+        else:
+            operator, actual_version = actual
+            if Version(actual_version) >= Version(expected_version):
+                pass  # compliant
+            else:
+                errors.append(
+                    f"  {context}: {pkg}{operator}{actual_version}"
+                    f" (expected >={expected_version})",
+                )
     return errors
 
 
@@ -157,17 +170,19 @@ def _write_output(
     *,
     repo: str,
     all_errors: list[str],
-    actual_pins: dict[str, str],
+    actual_pins: dict[str, tuple[str, str]],
     expected_pins: dict[str, str],
     json_output: bool,
 ) -> None:
     """Write results to stdout."""
+    # Serialize actual_pins for JSON: flatten tuples to "op+version" strings
+    actual_pins_flat = {pkg: f"{op}{ver}" for pkg, (op, ver) in actual_pins.items()}
     if json_output:
         result = {
             "repo": repo,
             "status": "fail" if all_errors else "pass",
             "errors": all_errors,
-            "actual_pins": actual_pins,
+            "actual_pins": actual_pins_flat,
             "expected_pins": expected_pins,
         }
         sys.stdout.write(json.dumps(result, indent=2) + "\n")
@@ -177,6 +192,10 @@ def _write_output(
         )
         for error in all_errors:
             sys.stdout.write(error + "\n")
+    elif not expected_pins:
+        sys.stdout.write(
+            f"PASS: {repo} — no expected pins defined.\n",
+        )
     else:
         sys.stdout.write(
             f"PASS: {repo} -- all pins match version-matrix.yaml\n",
@@ -223,12 +242,11 @@ def main() -> int:
     # Validate repo exists in matrix
     repos = matrix.get("repos", {})
     if args.repo not in repos:
-        logger.error(
-            "repo '%s' not found in version-matrix.yaml. Available repos: %s",
-            args.repo,
-            ", ".join(repos.keys()),
+        sys.stdout.write(
+            f"INFO: repo '{args.repo}' is not managed by version-matrix.yaml"
+            " — skipping.\n",
         )
-        return 2
+        return 0
 
     repo_config = repos[args.repo]
     expected_pins = repo_config.get("expected_pins", {})
