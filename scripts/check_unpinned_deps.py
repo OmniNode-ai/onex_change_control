@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""check_version_pins.py — Scan repos for unpinned dependencies in pyproject.toml.
+"""check_unpinned_deps.py — Scan repos for unpinned dependencies in pyproject.toml.
 
 Usage:
-    python3 scripts/check_version_pins.py --root /path/to/omni_home
+    python3 scripts/check_unpinned_deps.py --root /path/to/omni_home
 
 Checks every pyproject.toml found one level deep under --root for dependencies
 that lack version constraints (no ==, >=, ~=, <, >, != operators).
