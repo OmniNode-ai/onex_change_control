@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _write_contract(tmp_path: Path, subdir: str, data: dict) -> None:
+def _write_contract(tmp_path: Path, subdir: str, data: dict[str, Any]) -> None:
     """Write a contract.yaml in a subdirectory."""
     node_dir = tmp_path / subdir
     node_dir.mkdir(parents=True, exist_ok=True)
