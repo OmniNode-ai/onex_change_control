@@ -13,9 +13,16 @@ if [[ ! -f "$INDEX_FILE" ]]; then
   exit 0
 fi
 
-# Extract listener names defined in projectionBridgeListeners object
-# Pattern: "    listenerName: (event..." at the start of a property
-defined=$(grep -E '^\s+\w+:\s*\(' "$INDEX_FILE" | sed 's/^[[:space:]]*//; s/:.*//' | sort)
+# Extract listener names defined in projectionBridgeListeners object.
+# Scope: only lines between the opening `projectionBridgeListeners = {`
+# and its closing `};`, to avoid false positives from other `name: (`
+# patterns elsewhere in the file (e.g. express.json verify callback).
+defined=$(
+  sed -n '/projectionBridgeListeners *= *{/,/^[[:space:]]*};/p' "$INDEX_FILE" \
+    | grep -E '^\s+\w+:\s*\(' \
+    | sed 's/^[[:space:]]*//; s/:.*//' \
+    | sort
+)
 
 # Extract listener names wired via .on() calls
 wired=$(grep -oE "eventConsumer\.on\('[^']+'" "$INDEX_FILE" | sed "s/eventConsumer.on('//; s/'//" | sort)
