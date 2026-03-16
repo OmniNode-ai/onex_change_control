@@ -6,6 +6,8 @@
 Pydantic schema model for ticket contracts.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
@@ -68,6 +70,78 @@ class ModelEmergencyBypass(BaseModel):
                 msg = "follow_up_ticket_id is required when bypass is enabled"
                 raise ValueError(msg)
         return self
+
+
+class ModelDodCheck(BaseModel):
+    """A single executable check for a DoD evidence item.
+
+    Each check has a type that determines how check_value is interpreted:
+    - test_exists: check_value is a glob pattern for test files
+    - test_passes: check_value is a pytest marker or path to run
+    - file_exists: check_value is a glob pattern for expected files
+    - grep: check_value is a dict with 'pattern' and 'path' keys
+    - command: check_value is a shell command (exit 0 = pass)
+    - endpoint: check_value is a URL or path to check
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    check_type: Literal[
+        "test_exists",
+        "test_passes",
+        "file_exists",
+        "grep",
+        "command",
+        "endpoint",
+    ] = Field(..., description="Type of executable check")
+    check_value: str | dict[str, str] = Field(
+        ...,
+        description="Check-type-specific value (glob, command, URL, or pattern dict)",
+    )
+
+
+class ModelDodEvidenceItem(BaseModel):
+    """A single DoD evidence item mapping a requirement to executable checks.
+
+    Each item represents one Definition of Done bullet point from the ticket,
+    along with one or more executable checks that verify the requirement is met.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(
+        ...,
+        description="Unique identifier within the contract (e.g., 'dod-001')",
+        max_length=50,
+    )
+    description: str = Field(
+        ...,
+        description="Human-readable description of the DoD requirement",
+        max_length=_MAX_STRING_LENGTH,
+    )
+    source: Literal["linear", "manual", "generated"] = Field(
+        default="generated",
+        description="Where this DoD item originated",
+    )
+    linear_dod_text: str | None = Field(
+        default=None,
+        description="Original DoD text from Linear, if sourced from Linear",
+        max_length=_MAX_STRING_LENGTH,
+    )
+    checks: list[ModelDodCheck] = Field(
+        ...,
+        description="Executable checks that verify this DoD item",
+        max_length=_MAX_LIST_ITEMS,
+    )
+    status: Literal["pending", "verified", "failed", "skipped"] = Field(
+        default="pending",
+        description="Current verification status of this DoD item",
+    )
+    evidence_artifact: str | None = Field(
+        default=None,
+        description="Path to evidence artifact (e.g., test output, screenshot)",
+        max_length=_MAX_STRING_LENGTH,
+    )
 
 
 class ModelTicketContract(BaseModel):
@@ -141,6 +215,14 @@ class ModelTicketContract(BaseModel):
             "When present, declares an input-to-output contract test for the "
             "node pipeline associated with this ticket."
         ),
+    )
+    dod_evidence: list[ModelDodEvidenceItem] = Field(
+        default_factory=list,
+        description=(
+            "Definition of Done evidence items. Maps Linear DoD bullets "
+            "to executable checks for automated verification."
+        ),
+        max_length=_MAX_LIST_ITEMS,
     )
 
     @field_validator("schema_version")
