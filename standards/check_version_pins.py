@@ -75,7 +75,8 @@ def load_matrix(root: Path) -> dict[str, Any]:
     if not matrix_path.exists():
         logger.error("version-matrix.yaml not found at %s", matrix_path)
         sys.exit(2)
-    return _yaml_loader(matrix_path)
+    result: dict[str, Any] = _yaml_loader(matrix_path)
+    return result
 
 
 def extract_pins_from_pyproject(
