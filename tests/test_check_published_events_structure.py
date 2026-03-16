@@ -4,25 +4,30 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 from scripts.validation.check_published_events_structure import check_contract
 
 
 @pytest.fixture
-def write_contract(tmp_path: Path):
+def write_contract(tmp_path: Path) -> Callable[..., Path]:
     """Helper to write a contract.yaml with given published_events."""
 
     def _write(
-        published_events: list | dict | None = None, extra: dict | None = None
+        published_events: list[Any] | dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> Path:
-        data: dict = {"name": "test_node", "node_type": "ORCHESTRATOR_GENERIC"}
+        data: dict[str, Any] = {
+            "name": "test_node",
+            "node_type": "ORCHESTRATOR_GENERIC",
+        }
         if published_events is not None:
             data["published_events"] = published_events
         if extra:
@@ -37,7 +42,7 @@ def write_contract(tmp_path: Path):
 class TestCleanContracts:
     """Contracts that should pass validation."""
 
-    def test_valid_single_entry(self, write_contract):
+    def test_valid_single_entry(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -48,7 +53,7 @@ class TestCleanContracts:
         )
         assert check_contract(path) == []
 
-    def test_valid_multiple_entries(self, write_contract):
+    def test_valid_multiple_entries(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -67,15 +72,19 @@ class TestCleanContracts:
         )
         assert check_contract(path) == []
 
-    def test_no_published_events_section(self, write_contract):
+    def test_no_published_events_section(
+        self, write_contract: Callable[..., Path]
+    ) -> None:
         path = write_contract(None)
         assert check_contract(path) == []
 
-    def test_empty_published_events(self, write_contract):
+    def test_empty_published_events(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract([])
         assert check_contract(path) == []
 
-    def test_entry_with_optional_description(self, write_contract):
+    def test_entry_with_optional_description(
+        self, write_contract: Callable[..., Path]
+    ) -> None:
         path = write_contract(
             [
                 {
@@ -91,7 +100,7 @@ class TestCleanContracts:
 class TestDuplicateEventTypes:
     """Contracts with duplicate event_type values."""
 
-    def test_duplicate_event_type(self, write_contract):
+    def test_duplicate_event_type(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -113,19 +122,19 @@ class TestDuplicateEventTypes:
 class TestMissingFields:
     """Contracts with missing required fields."""
 
-    def test_missing_topic(self, write_contract):
+    def test_missing_topic(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract([{"event_type": "NodeRegistered"}])
         violations = check_contract(path)
         assert len(violations) == 1
         assert "missing required field 'topic'" in violations[0]
 
-    def test_missing_event_type(self, write_contract):
+    def test_missing_event_type(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract([{"topic": "onex.evt.platform.node-registered.v1"}])
         violations = check_contract(path)
         assert len(violations) == 1
         assert "missing required field 'event_type'" in violations[0]
 
-    def test_missing_both_fields(self, write_contract):
+    def test_missing_both_fields(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract([{}])
         violations = check_contract(path)
         assert len(violations) == 2
@@ -136,7 +145,7 @@ class TestMissingFields:
 class TestMalformedTopic:
     """Contracts with topic format violations."""
 
-    def test_non_onex_topic(self, write_contract):
+    def test_non_onex_topic(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -149,7 +158,7 @@ class TestMalformedTopic:
         assert len(violations) == 1
         assert "does not match ONEX 5-segment format" in violations[0]
 
-    def test_missing_version_segment(self, write_contract):
+    def test_missing_version_segment(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -162,7 +171,7 @@ class TestMalformedTopic:
         assert len(violations) == 1
         assert "does not match ONEX 5-segment format" in violations[0]
 
-    def test_invalid_kind(self, write_contract):
+    def test_invalid_kind(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -179,7 +188,7 @@ class TestMalformedTopic:
 class TestNonPascalCase:
     """Contracts with non-PascalCase event_type values."""
 
-    def test_snake_case_event_type(self, write_contract):
+    def test_snake_case_event_type(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -192,7 +201,7 @@ class TestNonPascalCase:
         assert len(violations) == 1
         assert "not PascalCase" in violations[0]
 
-    def test_camel_case_event_type(self, write_contract):
+    def test_camel_case_event_type(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -205,7 +214,7 @@ class TestNonPascalCase:
         assert len(violations) == 1
         assert "not PascalCase" in violations[0]
 
-    def test_single_char_event_type(self, write_contract):
+    def test_single_char_event_type(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(
             [
                 {
@@ -222,7 +231,9 @@ class TestNonPascalCase:
 class TestMultipleViolations:
     """Contracts with multiple violation types."""
 
-    def test_multiple_violations_in_one_contract(self, write_contract):
+    def test_multiple_violations_in_one_contract(
+        self, write_contract: Callable[..., Path]
+    ) -> None:
         path = write_contract(
             [
                 {
@@ -242,13 +253,15 @@ class TestMultipleViolations:
         # bad topic + non-PascalCase + missing topic + duplicate event_type
         assert len(violations) == 4
 
-    def test_non_list_published_events(self, write_contract):
+    def test_non_list_published_events(
+        self, write_contract: Callable[..., Path]
+    ) -> None:
         path = write_contract({"not": "a list"})
         violations = check_contract(path)
         assert len(violations) == 1
         assert "must be a list" in violations[0]
 
-    def test_non_dict_entry(self, write_contract):
+    def test_non_dict_entry(self, write_contract: Callable[..., Path]) -> None:
         path = write_contract(["just a string"])
         violations = check_contract(path)
         assert len(violations) == 1
