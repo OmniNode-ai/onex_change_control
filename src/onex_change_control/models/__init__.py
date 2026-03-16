@@ -18,12 +18,18 @@ from onex_change_control.models.model_golden_path import (
     ModelGoldenPathInput,
     ModelGoldenPathOutput,
 )
-from onex_change_control.models.model_ticket_contract import ModelTicketContract
+from onex_change_control.models.model_ticket_contract import (
+    ModelDodCheck,
+    ModelDodEvidenceItem,
+    ModelTicketContract,
+)
 
 __all__ = [
     "ModelDayClose",
     "ModelDbBoundaryException",
     "ModelDbBoundaryExceptionsRegistry",
+    "ModelDodCheck",
+    "ModelDodEvidenceItem",
     "ModelGoldenPath",
     "ModelGoldenPathAssertion",
     "ModelGoldenPathInput",
