@@ -192,6 +192,26 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     remaining = [v for v in violations if not (fix_mode and v.fixable)]
 
+    # Emit cosmetic compliance event (best-effort — never blocks CLI exit)
+    from onex_change_control.kafka.governance_emitter import (
+        emit_cosmetic_compliance_scored,
+    )
+
+    total = len(violations)
+    failed = len(remaining)
+    passed_count = total - failed
+    score = (passed_count / total) if total > 0 else 1.0
+    emit_cosmetic_compliance_scored(
+        target=str(args.target),
+        score=score,
+        total_checks=total,
+        passed_checks=passed_count,
+        failed_checks=failed,
+        violations=[
+            {"check": v.check, "path": v.path, "message": v.message} for v in remaining
+        ],
+    )
+
     if remaining:
         raise SystemExit(1)
     raise SystemExit(0)

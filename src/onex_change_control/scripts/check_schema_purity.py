@@ -693,6 +693,18 @@ def main() -> int:
             use_color=use_color,
             warn_only=args.warn_only,
         )
+        # Emit governance event (best-effort)
+        from onex_change_control.kafka.governance_emitter import (
+            emit_governance_check_completed,
+        )
+
+        emit_governance_check_completed(
+            check_type="schema-purity",
+            target=str(project_root),
+            passed=False,
+            violation_count=len(all_violations),
+            details={"schema_files_checked": len(schema_files)},
+        )
         # Return 0 if --warn-only is set, otherwise 1
         return 0 if args.warn_only else 1
 
@@ -701,6 +713,19 @@ def main() -> int:
     print(  # noqa: T201
         f"{success_color}✅ All {len(schema_files)} schema files passed "
         f"purity and naming checks{reset}",
+    )
+
+    # Emit governance event (best-effort)
+    from onex_change_control.kafka.governance_emitter import (
+        emit_governance_check_completed,
+    )
+
+    emit_governance_check_completed(
+        check_type="schema-purity",
+        target=str(project_root),
+        passed=True,
+        violation_count=0,
+        details={"schema_files_checked": len(schema_files)},
     )
     return 0
 

@@ -26,6 +26,7 @@ from typing import NoReturn
 import yaml
 from pydantic import ValidationError
 
+from onex_change_control.kafka.governance_emitter import emit_governance_check_completed
 from onex_change_control.models import ModelDayClose, ModelTicketContract
 
 # CLI version (increment when CLI logic changes)
@@ -245,15 +246,26 @@ def main() -> NoReturn:
     # Summary
     valid_count = sum(results)
     total_count = len(results)
+    invalid_count = total_count - valid_count
 
     _print_stdout("")
-    if all(results):
+    passed = all(results)
+    if passed:
         print_success(f"All {total_count} file(s) valid")
-        sys.exit(0)
     else:
-        invalid_count = total_count - valid_count
         print_error(f"{invalid_count}/{total_count} file(s) invalid")
-        sys.exit(1)
+
+    # Emit governance event (best-effort — never blocks CLI exit)
+
+    emit_governance_check_completed(
+        check_type="yaml-validation",
+        target=", ".join(str(f) for f in files),
+        passed=passed,
+        violation_count=invalid_count,
+        details={"total_files": total_count, "valid_files": valid_count},
+    )
+
+    sys.exit(0 if passed else 1)
 
 
 if __name__ == "__main__":
