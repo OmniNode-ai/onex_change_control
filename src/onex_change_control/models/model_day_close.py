@@ -145,6 +145,10 @@ class ModelDayCloseInvariantsChecked(BaseModel):
         ...,
         description="Real infrastructure proof is progressing",
     )
+    integration_sweep: EnumInvariantStatus = Field(
+        default=EnumInvariantStatus.UNKNOWN,
+        description="Integration sweep result from /integration-sweep artifact",
+    )
 
 
 class ModelDayCloseRisk(BaseModel):
