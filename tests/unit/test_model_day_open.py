@@ -133,7 +133,9 @@ def full_day_open_data() -> dict[str, object]:
 class TestModelDayOpenMinimal:
     """Test minimal valid construction."""
 
-    def test_minimal_construction(self, minimal_day_open_data: dict) -> None:
+    def test_minimal_construction(
+        self, minimal_day_open_data: dict[str, object]
+    ) -> None:
         model = ModelDayOpen.model_validate(minimal_day_open_data)
         assert model.schema_version == "1.0.0"
         assert model.date == "2026-03-18"
@@ -163,7 +165,7 @@ class TestModelDayOpenMinimal:
 class TestModelDayOpenFull:
     """Test fully populated construction."""
 
-    def test_full_construction(self, full_day_open_data: dict) -> None:
+    def test_full_construction(self, full_day_open_data: dict[str, object]) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         assert len(model.yesterday_corrections) == 2
         assert len(model.repo_sync_status) == 2
@@ -173,7 +175,9 @@ class TestModelDayOpenFull:
         assert len(model.recommended_focus_areas) == 2
         assert model.total_duration_seconds == 120.5
 
-    def test_repo_sync_entry_fields(self, full_day_open_data: dict) -> None:
+    def test_repo_sync_entry_fields(
+        self, full_day_open_data: dict[str, object]
+    ) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         entry = model.repo_sync_status[0]
         assert entry.repo == "omniclaude"
@@ -182,7 +186,9 @@ class TestModelDayOpenFull:
         assert entry.head_sha == "a1b2c3d4e5f6"
         assert entry.error is None
 
-    def test_infra_service_with_error(self, full_day_open_data: dict) -> None:
+    def test_infra_service_with_error(
+        self, full_day_open_data: dict[str, object]
+    ) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         redpanda = model.infra_health[1]
         assert redpanda.service == "redpanda"
@@ -190,7 +196,9 @@ class TestModelDayOpenFull:
         assert redpanda.port_responding is False
         assert redpanda.error == "Connection refused on port 19092"
 
-    def test_probe_result_completed(self, full_day_open_data: dict) -> None:
+    def test_probe_result_completed(
+        self, full_day_open_data: dict[str, object]
+    ) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         probe = model.probe_results[0]
         assert probe.probe_name == "list_prs"
@@ -198,13 +206,13 @@ class TestModelDayOpenFull:
         assert probe.finding_count == 3
         assert probe.duration_seconds == 12.5
 
-    def test_probe_result_failed(self, full_day_open_data: dict) -> None:
+    def test_probe_result_failed(self, full_day_open_data: dict[str, object]) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         probe = model.probe_results[1]
         assert probe.status == EnumProbeStatus.FAILED
         assert probe.error == "Skill not available"
 
-    def test_finding_fields(self, full_day_open_data: dict) -> None:
+    def test_finding_fields(self, full_day_open_data: dict[str, object]) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         finding = model.aggregated_findings[0]
         assert finding.finding_id == "list_prs:ci_failing:omniclaude/PR-701"
@@ -273,7 +281,7 @@ class TestDateValidation:
 class TestFrozenImmutability:
     """Test that all models are frozen (immutable)."""
 
-    def test_day_open_frozen(self, minimal_day_open_data: dict) -> None:
+    def test_day_open_frozen(self, minimal_day_open_data: dict[str, object]) -> None:
         model = ModelDayOpen.model_validate(minimal_day_open_data)
         with pytest.raises(ValidationError):
             model.date = "2026-01-01"  # type: ignore[misc]
@@ -371,19 +379,19 @@ class TestListConstraints:
 class TestSerializationRoundtrip:
     """Test model_dump / model_validate roundtrip."""
 
-    def test_roundtrip(self, full_day_open_data: dict) -> None:
+    def test_roundtrip(self, full_day_open_data: dict[str, object]) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         dumped = model.model_dump()
         restored = ModelDayOpen.model_validate(dumped)
         assert restored == model
 
-    def test_json_roundtrip(self, full_day_open_data: dict) -> None:
+    def test_json_roundtrip(self, full_day_open_data: dict[str, object]) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         json_str = model.model_dump_json()
         restored = ModelDayOpen.model_validate_json(json_str)
         assert restored == model
 
-    def test_enum_serialization(self, full_day_open_data: dict) -> None:
+    def test_enum_serialization(self, full_day_open_data: dict[str, object]) -> None:
         model = ModelDayOpen.model_validate(full_day_open_data)
         dumped = model.model_dump()
         # Enums serialize to their string values
