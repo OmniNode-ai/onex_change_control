@@ -33,7 +33,7 @@ from onex_change_control.models.model_day_open import (
 
 
 @pytest.fixture
-def minimal_day_open_data() -> dict:
+def minimal_day_open_data() -> dict[str, object]:
     """Minimal valid ModelDayOpen data."""
     return {
         "schema_version": "1.0.0",
@@ -43,7 +43,7 @@ def minimal_day_open_data() -> dict:
 
 
 @pytest.fixture
-def full_day_open_data() -> dict:
+def full_day_open_data() -> dict[str, object]:
     """Fully populated ModelDayOpen data."""
     return {
         "schema_version": "1.0.0",
@@ -321,7 +321,7 @@ class TestEnumValues:
         with pytest.raises(ValidationError):
             ModelDayOpenFinding(
                 finding_id="test:cat:key",
-                severity="unknown_severity",  # type: ignore[arg-type]
+                severity="unknown_severity",
                 source_probe="test",
                 title="Test",
             )
@@ -330,7 +330,7 @@ class TestEnumValues:
         with pytest.raises(ValidationError):
             ModelDayOpenProbeResult(
                 probe_name="test",
-                status="invalid_status",  # type: ignore[arg-type]
+                status="invalid_status",
             )
 
 
