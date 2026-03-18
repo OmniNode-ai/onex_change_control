@@ -8,6 +8,13 @@ supporting types used for drift detection and governance workflows.
 """
 
 from onex_change_control.models.model_day_close import ModelDayClose
+from onex_change_control.models.model_day_open import (
+    ModelDayOpen,
+    ModelDayOpenFinding,
+    ModelDayOpenInfraService,
+    ModelDayOpenProbeResult,
+    ModelDayOpenRepoSyncEntry,
+)
 from onex_change_control.models.model_db_boundary_exception import (
     ModelDbBoundaryException,
     ModelDbBoundaryExceptionsRegistry,
@@ -26,6 +33,11 @@ from onex_change_control.models.model_ticket_contract import (
 
 __all__ = [
     "ModelDayClose",
+    "ModelDayOpen",
+    "ModelDayOpenFinding",
+    "ModelDayOpenInfraService",
+    "ModelDayOpenProbeResult",
+    "ModelDayOpenRepoSyncEntry",
     "ModelDbBoundaryException",
     "ModelDbBoundaryExceptionsRegistry",
     "ModelDodCheck",

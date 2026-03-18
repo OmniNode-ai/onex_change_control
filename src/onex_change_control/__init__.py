@@ -23,6 +23,7 @@ except PackageNotFoundError:
 
 from onex_change_control.models import (
     ModelDayClose,
+    ModelDayOpen,
     ModelGoldenPath,
     ModelGoldenPathAssertion,
     ModelGoldenPathInput,
@@ -32,6 +33,7 @@ from onex_change_control.models import (
 
 __all__ = [
     "ModelDayClose",
+    "ModelDayOpen",
     "ModelGoldenPath",
     "ModelGoldenPathAssertion",
     "ModelGoldenPathInput",
