@@ -10,9 +10,11 @@ from onex_change_control.enums.enum_db_boundary import (
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
 from onex_change_control.enums.enum_finding_severity import EnumFindingSeverity
+from onex_change_control.enums.enum_integration_surface import EnumIntegrationSurface
 from onex_change_control.enums.enum_interface_surface import EnumInterfaceSurface
 from onex_change_control.enums.enum_invariant_status import EnumInvariantStatus
 from onex_change_control.enums.enum_pr_state import EnumPRState
+from onex_change_control.enums.enum_probe_reason import EnumProbeReason
 from onex_change_control.enums.enum_probe_status import EnumProbeStatus
 
 __all__ = [
@@ -21,8 +23,10 @@ __all__ = [
     "EnumDriftCategory",
     "EnumEvidenceKind",
     "EnumFindingSeverity",
+    "EnumIntegrationSurface",
     "EnumInterfaceSurface",
     "EnumInvariantStatus",
     "EnumPRState",
+    "EnumProbeReason",
     "EnumProbeStatus",
 ]
