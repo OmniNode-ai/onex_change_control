@@ -32,8 +32,10 @@ class TestEnumProbeReason:
 
     def test_is_str_subclass(self) -> None:
         """EnumProbeReason members are str instances."""
-        for member in EnumProbeReason:
-            assert isinstance(member, str)
+        assert isinstance(EnumProbeReason.NO_CONTRACT, str)
+        assert isinstance(EnumProbeReason.PROBE_UNAVAILABLE, str)
+        assert isinstance(EnumProbeReason.INCONCLUSIVE, str)
+        assert isinstance(EnumProbeReason.NOT_APPLICABLE, str)
 
     def test_roundtrip_from_value(self) -> None:
         """Can construct members from their string values."""

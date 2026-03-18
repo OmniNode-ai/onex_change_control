@@ -36,8 +36,12 @@ class TestEnumIntegrationSurface:
 
     def test_is_str_subclass(self) -> None:
         """EnumIntegrationSurface members are str instances."""
-        for member in EnumIntegrationSurface:
-            assert isinstance(member, str)
+        assert isinstance(EnumIntegrationSurface.KAFKA, str)
+        assert isinstance(EnumIntegrationSurface.DB, str)
+        assert isinstance(EnumIntegrationSurface.CI, str)
+        assert isinstance(EnumIntegrationSurface.PLUGIN, str)
+        assert isinstance(EnumIntegrationSurface.GITHUB_CI, str)
+        assert isinstance(EnumIntegrationSurface.SCRIPT, str)
 
     def test_roundtrip_from_value(self) -> None:
         """Can construct members from their string values."""
