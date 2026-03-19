@@ -570,10 +570,10 @@ def _print_violations_report(
     reset = Style.RESET_ALL if use_color else ""
     warn_only_msg = " (warn-only mode: exiting with code 0)" if warn_only else ""
     violation_count = len(all_violations)
-    print(  # noqa: T201
+    print(
         f"{error_color}❌ Found {violation_count} violation(s):{warn_only_msg}{reset}",
     )
-    print()  # noqa: T201
+    print()
 
     # Group by category
     by_category: dict[str, list[Violation]] = {}
@@ -583,10 +583,10 @@ def _print_violations_report(
     for category, violations in sorted(by_category.items()):
         category_color = _get_category_color(category, use_color=use_color)
         reset = Style.RESET_ALL if use_color else ""
-        print(f"  {category_color}{category} ({len(violations)}):{reset}")  # noqa: T201
+        print(f"  {category_color}{category} ({len(violations)}):{reset}")
         for v in violations:
             print_violation(v, use_color=use_color)
-        print()  # noqa: T201
+        print()
 
 
 def print_violation(v: Violation, *, use_color: bool = True) -> None:
@@ -600,7 +600,7 @@ def print_violation(v: Violation, *, use_color: bool = True) -> None:
     relative_path = v.file.relative_to(Path.cwd()) if v.file.is_absolute() else v.file
     category_color = _get_category_color(v.category, use_color=use_color)
     reset = Style.RESET_ALL if use_color else ""
-    print(  # noqa: T201
+    print(
         f"  {category_color}{relative_path}:{v.line}: [{v.category}]{reset} "
         f"{v.message}",
     )
@@ -660,11 +660,11 @@ def main() -> int:
     if missing_dirs:
         warning_color = Fore.YELLOW if use_color else ""
         reset = Style.RESET_ALL if use_color else ""
-        print(  # noqa: T201
+        print(
             f"{warning_color}⚠️  Schema directories not found: "
             f"{', '.join(missing_dirs)}{reset}",
         )
-        print("   This may indicate a configuration error.")  # noqa: T201
+        print("   This may indicate a configuration error.")
         return 1
 
     schema_files = find_schema_files(project_root)
@@ -672,15 +672,15 @@ def main() -> int:
     if not schema_files:
         warning_color = Fore.YELLOW if use_color else ""
         reset = Style.RESET_ALL if use_color else ""
-        print(f"{warning_color}⚠️  No schema files found to check{reset}")  # noqa: T201
+        print(f"{warning_color}⚠️  No schema files found to check{reset}")
         return 0
 
     all_violations: list[Violation] = []
 
     info_color = Fore.CYAN if use_color else ""
     reset = Style.RESET_ALL if use_color else ""
-    print(f"{info_color}Checking {len(schema_files)} schema files...{reset}")  # noqa: T201
-    print()  # noqa: T201
+    print(f"{info_color}Checking {len(schema_files)} schema files...{reset}")
+    print()
 
     for file_path in schema_files:
         # Check both purity and naming in a single parse
@@ -710,7 +710,7 @@ def main() -> int:
 
     success_color = Fore.GREEN if use_color else ""
     reset = Style.RESET_ALL if use_color else ""
-    print(  # noqa: T201
+    print(
         f"{success_color}✅ All {len(schema_files)} schema files passed "
         f"purity and naming checks{reset}",
     )

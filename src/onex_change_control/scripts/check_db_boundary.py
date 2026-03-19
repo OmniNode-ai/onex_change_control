@@ -490,7 +490,7 @@ def main() -> int:
 
     success_color = Fore.GREEN if use_color else ""
     reset = Style.RESET_ALL if use_color else ""
-    print(  # noqa: T201
+    print(
         f"{success_color}check-db-boundary: all checks passed{reset}",
     )
     return 0
@@ -500,7 +500,7 @@ def _print_error(msg: str, *, use_color: bool) -> None:
     """Print an error message."""
     error_color = Fore.RED if use_color else ""
     reset = Style.RESET_ALL if use_color else ""
-    print(f"{error_color}Error: {msg}{reset}")  # noqa: T201
+    print(f"{error_color}Error: {msg}{reset}")
 
 
 def _print_violations(
@@ -511,12 +511,12 @@ def _print_violations(
     """Print violations report."""
     error_color = Fore.RED if use_color else ""
     reset = Style.RESET_ALL if use_color else ""
-    print(  # noqa: T201
+    print(
         f"{error_color}Found {len(violations)} violation(s):{reset}",
     )
     for v in violations:
         cat_color = Fore.YELLOW if use_color else ""
-        print(  # noqa: T201
+        print(
             f"  {cat_color}{v.file}:{v.line}: [{v.category}]{reset} {v.message}",
         )
 

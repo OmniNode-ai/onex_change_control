@@ -47,14 +47,12 @@ def main() -> int:
             all_violations.extend(check_file(path))
     if all_violations:
         for v in all_violations:
-            print(v)  # noqa: T201
-        print(  # noqa: T201
+            print(v)
+        print(
             f"\n{len(all_violations)} violation(s)."
             " Replace dict[str, Any] with TypedDict."
         )
-        print(  # noqa: T201
-            "If intentional, add: # ONEX_EXCLUDE: dict_str_any - <reason>"
-        )
+        print("If intentional, add: # ONEX_EXCLUDE: dict_str_any - <reason>")
         return 1
     return 0
 

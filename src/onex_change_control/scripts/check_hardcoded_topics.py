@@ -106,8 +106,8 @@ def main() -> int:
         all_violations.extend(check_file(path))
     if all_violations:
         for v in all_violations:
-            print(v)  # noqa: T201
-        print(  # noqa: T201
+            print(v)
+        print(
             f"\n{len(all_violations)} violation(s)."
             " Move topic strings to an approved constant file."
         )

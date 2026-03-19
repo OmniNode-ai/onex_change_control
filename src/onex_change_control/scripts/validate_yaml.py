@@ -38,12 +38,12 @@ _MAX_INPUT_DISPLAY_LENGTH = 50
 
 def _print_stderr(message: str) -> None:
     """Print message to stderr."""
-    print(message, file=sys.stderr)  # noqa: T201
+    print(message, file=sys.stderr)
 
 
 def _print_stdout(message: str) -> None:
     """Print message to stdout."""
-    print(message)  # noqa: T201
+    print(message)
 
 
 def print_error(message: str) -> None:
