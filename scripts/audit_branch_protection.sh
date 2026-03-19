@@ -15,7 +15,7 @@ set -euo pipefail
 
 ORG="OmniNode-ai"
 
-# All 10 repos
+# All 11 repos
 REPOS=(
   omniclaude
   omnibase_core
@@ -25,12 +25,13 @@ REPOS=(
   omniintelligence
   omnimemory
   omninode_infra
+  omnistream
   omniweb
   onex_change_control
 )
 
 # Private repos where Merge Queue rulesets are not expected
-PRIVATE_REPOS=(omninode_infra omniweb)
+PRIVATE_REPOS=(omninode_infra omnistream omniweb)
 
 BRANCH="main"
 FAILURES=0
