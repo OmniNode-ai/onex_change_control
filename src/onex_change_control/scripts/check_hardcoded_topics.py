@@ -29,6 +29,7 @@ APPROVED_BASENAMES: frozenset[str] = frozenset(
         "topics.py",
         "topics.ts",
         "contract.yaml",
+        "handler_contract.yaml",
         "topics.yaml",
         "contract_topic_extractor.py",
         "check_topic_drift.py",
@@ -57,36 +58,26 @@ def _is_comment_line(line: str) -> bool:
     return stripped.startswith(_COMMENT_PREFIXES)
 
 
-def check_file(path: str) -> list[str]:
-    """Return violations for a single file."""
-    basename = Path(path).name
-    if basename in APPROVED_BASENAMES:
-        return []
-    if _is_test_file(path):
-        return []
-
+def _scan_lines(text: str, path: str) -> list[str]:
+    """Scan *text* line-by-line and return violation messages."""
     violations: list[str] = []
-    try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-
     in_docstring = False
-    docstring_delim = '"""'
-    alt_delim = "'''"
+    in_block_comment = False
 
     for lineno, line in enumerate(text.splitlines(), 1):
         stripped = line.lstrip()
 
-        # Track triple-quote docstrings (simple heuristic).
-        for delim in (docstring_delim, alt_delim):
-            count = stripped.count(delim)
-            if count == 1:
-                in_docstring = not in_docstring
-            # count >= 2 means open+close on same line; state unchanged.
+        # Track JS/TS/CSS block comments: /* ... */
+        in_block_comment = _update_block_comment(stripped, in_block=in_block_comment)
+        if in_block_comment or (stripped.startswith("*/") and not in_block_comment):
+            # Inside block or on the closing */ line — skip.
+            continue
 
+        # Track triple-quote docstrings (simple heuristic).
+        in_docstring = _update_docstring(stripped, in_docstring=in_docstring)
         if in_docstring:
             continue
+
         if _is_comment_line(line):
             continue
 
@@ -96,6 +87,39 @@ def check_file(path: str) -> list[str]:
                 " -- use a constant from the canonical topic registry"
             )
     return violations
+
+
+def _update_block_comment(stripped: str, *, in_block: bool) -> bool:
+    """Return updated ``in_block_comment`` state for a single line."""
+    if in_block:
+        return "*/" not in stripped
+    return "/*" in stripped and (
+        "*/" not in stripped or stripped.index("/*") > stripped.index("*/")
+    )
+
+
+def _update_docstring(stripped: str, *, in_docstring: bool) -> bool:
+    """Return updated ``in_docstring`` state for a single line."""
+    for delim in ('"""', "'''"):
+        count = stripped.count(delim)
+        if count == 1:
+            in_docstring = not in_docstring
+        # count >= 2 means open+close on same line; state unchanged.
+    return in_docstring
+
+
+def check_file(path: str) -> list[str]:
+    """Return violations for a single file."""
+    basename = Path(path).name
+    if basename in APPROVED_BASENAMES or _is_test_file(path):
+        return []
+
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    return _scan_lines(text, path)
 
 
 def main() -> int:
