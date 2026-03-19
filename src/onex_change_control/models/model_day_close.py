@@ -125,17 +125,40 @@ class ModelDayCloseDriftDetected(BaseModel):
 
 
 class ModelDayCloseInvariantsChecked(BaseModel):
-    """Invariants checked in daily close report."""
+    """Invariants checked in daily close report.
+
+    Each invariant field maps to a distinct check in check_arch_invariants.py:
+
+    - ``reducers_pure`` / ``orchestrators_no_io``: Check 1 (I/O import scan)
+    - ``topic_governance``: Check 2 (raw topic literal scan, OMN-3342)
+    - ``effects_do_io_only``: Architectural convention (manual or future check)
+    - ``real_infra_proof_progressing``: Golden-path artifact probe
+    - ``integration_sweep``: /integration-sweep artifact result
+
+    Prior to OMN-5471, Check 1 and Check 2 shared a single exit code.
+    When Check 2 (topic governance) failed, it falsely reported Check 1
+    (reducers_pure / orchestrators_no_io) as FAIL. The ``topic_governance``
+    field was added to separate these concerns.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     reducers_pure: EnumInvariantStatus = Field(
         ...,
-        description="Reducers are pure (no I/O)",
+        description="Reducers are pure (no I/O) — check_arch_invariants.py Check 1",
     )
     orchestrators_no_io: EnumInvariantStatus = Field(
         ...,
-        description="Orchestrators perform no I/O",
+        description="Orchestrators perform no I/O — check_arch_invariants.py Check 1",
+    )
+    topic_governance: EnumInvariantStatus = Field(
+        default=EnumInvariantStatus.UNKNOWN,
+        description=(
+            "No raw topic literals in production code "
+            "(check_arch_invariants.py Check 2, OMN-3342). "
+            "Added in OMN-5471 to decouple from "
+            "reducers_pure/orchestrators_no_io."
+        ),
     )
     effects_do_io_only: EnumInvariantStatus = Field(
         ...,
