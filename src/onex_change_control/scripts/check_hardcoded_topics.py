@@ -36,6 +36,7 @@ APPROVED_BASENAMES: frozenset[str] = frozenset(
         "topic_constants.py",
         "constants_topic_taxonomy.py",
         "topic_naming_baseline.txt",
+        "governance_emitter.py",
     }
 )
 
