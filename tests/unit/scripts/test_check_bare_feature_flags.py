@@ -148,6 +148,37 @@ def test_test_file_path_no_violation(tmp_path: Path) -> None:
     assert violations == []
 
 
+@pytest.mark.unit
+def test_relative_tests_path_no_violation(tmp_path: Path) -> None:
+    """Pre-commit passes relative paths like tests/unit/..."""
+    tests_dir = tmp_path / "tests" / "unit"
+    tests_dir.mkdir(parents=True)
+    f = tests_dir / "test_flags.py"
+    f.write_text('x = os.getenv("ENABLE_FOO")\n')
+    violations = check_file(f"tests/unit/{f.name}")
+    assert violations == []
+
+
+@pytest.mark.unit
+def test_dunder_tests_path_no_violation(tmp_path: Path) -> None:
+    """TypeScript __tests__ directories are also exempt."""
+    tests_dir = tmp_path / "__tests__"
+    tests_dir.mkdir()
+    f = tests_dir / "index.test.ts"
+    f.write_text("const x = process.env.ENABLE_FOO;\n")
+    violations = check_file(str(f))
+    assert violations == []
+
+
+@pytest.mark.unit
+def test_test_basename_no_violation(tmp_path: Path) -> None:
+    """Files named test_* are exempt regardless of directory."""
+    f = tmp_path / "test_feature_flags.py"
+    f.write_text('x = os.getenv("ENABLE_FOO")\n')
+    violations = check_file(str(f))
+    assert violations == []
+
+
 # ---------------------------------------------------------------------------
 # Approved path patterns
 # ---------------------------------------------------------------------------

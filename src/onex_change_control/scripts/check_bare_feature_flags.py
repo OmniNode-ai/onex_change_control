@@ -55,7 +55,6 @@ APPROVED_BASENAMES: frozenset[str] = frozenset(
 )
 
 APPROVED_PATH_SEGMENTS: tuple[str, ...] = (
-    "/tests/",
     "/capabilities/",
     "/config_discovery/",
 )
@@ -79,9 +78,21 @@ class _ScanResult:
 # ---------------------------------------------------------------------------
 
 
+def _is_test_file(path: str) -> bool:
+    """Return True if *path* looks like a test file or test directory."""
+    basename = Path(path).name
+    if basename.startswith("test_") or basename.endswith(
+        ("_test.py", ".test.ts", ".test.js")
+    ):
+        return True
+    return "/tests/" in path or path.startswith("tests/") or "/__tests__/" in path
+
+
 def _is_approved_path(path: str) -> bool:
     basename = Path(path).name
     if basename in APPROVED_BASENAMES:
+        return True
+    if _is_test_file(path):
         return True
     return any(seg in path for seg in APPROVED_PATH_SEGMENTS)
 
