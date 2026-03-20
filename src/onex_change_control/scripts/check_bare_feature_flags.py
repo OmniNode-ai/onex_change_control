@@ -58,6 +58,7 @@ APPROVED_PATH_SEGMENTS: tuple[str, ...] = (
     "/tests/",
     "/capabilities/",
     "/config_discovery/",
+    "/contracts/",  # service-level feature flag declarations
 )
 
 _COMMENT_PREFIXES = ("#", "//")
