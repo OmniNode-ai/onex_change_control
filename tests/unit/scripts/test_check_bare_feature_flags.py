@@ -173,6 +173,37 @@ def test_config_discovery_path_no_violation(tmp_path: Path) -> None:
     assert violations == []
 
 
+@pytest.mark.unit
+def test_contracts_event_bus_path_no_violation(tmp_path: Path) -> None:
+    contracts_dir = tmp_path / "contracts" / "services"
+    contracts_dir.mkdir(parents=True)
+    f = contracts_dir / "event_bus.contract.yaml"
+    f.write_text('env_var: "ENABLE_CONSUMER_HEALTH_EMITTER"\n')
+    violations = check_file(str(f))
+    assert violations == []
+
+
+@pytest.mark.unit
+def test_contracts_runtime_path_no_violation(tmp_path: Path) -> None:
+    contracts_dir = tmp_path / "contracts" / "services"
+    contracts_dir.mkdir(parents=True)
+    f = contracts_dir / "runtime.contract.yaml"
+    f.write_text('env_var: "ENABLE_RUNTIME_LOG_BRIDGE"\n')
+    violations = check_file(str(f))
+    assert violations == []
+
+
+@pytest.mark.unit
+def test_non_contracts_path_is_violation(tmp_path: Path) -> None:
+    """Python files outside /contracts/ are still flagged."""
+    src_dir = tmp_path / "src" / "services"
+    src_dir.mkdir(parents=True)
+    f = src_dir / "service.py"
+    f.write_text('x = os.getenv("ENABLE_FOO")\n')
+    violations = check_file(str(f))
+    assert len(violations) == 1
+
+
 # ---------------------------------------------------------------------------
 # Comments — never flagged
 # ---------------------------------------------------------------------------
