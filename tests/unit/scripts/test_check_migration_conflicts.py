@@ -6,9 +6,9 @@
 from pathlib import Path
 
 import pytest
-from omnibase_core.enums.enum_migration_conflict_type import EnumMigrationConflictType
 
 from onex_change_control.scripts.check_migration_conflicts import (
+    EnumMigrationConflictType,
     detect_conflicts,
     extract_tables_from_sql,
 )

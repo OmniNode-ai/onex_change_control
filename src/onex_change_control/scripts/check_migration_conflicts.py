@@ -26,11 +26,24 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from enum import Enum, unique
 from pathlib import Path
 from typing import NamedTuple
 
 from colorama import Fore, Style, init
-from omnibase_core.enums.enum_migration_conflict_type import EnumMigrationConflictType
+
+
+@unique
+class EnumMigrationConflictType(str, Enum):
+    """Migration conflict type discriminators.
+
+    Mirrors omnibase_core.enums.EnumMigrationConflictType without
+    requiring a cross-package dependency.
+    """
+
+    NAME_CONFLICT = "name_conflict"
+    EXACT_DUPLICATE = "exact_duplicate"
+
 
 # Regex to extract CREATE TABLE statements and their columns
 CREATE_TABLE_RE = re.compile(
@@ -206,7 +219,7 @@ def format_conflicts(conflicts: list[MigrationConflict]) -> str:
 
         if conflict.conflict_type == EnumMigrationConflictType.NAME_CONFLICT:
             # Show column diff
-            all_columns = set()
+            all_columns: set[str] = set()
             for defn in conflict.definitions:
                 all_columns |= defn.columns
             for defn in conflict.definitions:
