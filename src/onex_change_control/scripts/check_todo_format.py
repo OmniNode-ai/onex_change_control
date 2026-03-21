@@ -22,17 +22,18 @@ import re
 import sys
 from pathlib import Path
 
-# A properly formatted TODO/FIXME/HACK with a real ticket number.
-VALID_TODO = re.compile(r"#\s*(?:TODO|FIXME|HACK)\(OMN-\d+\):")
-
-# Any bare TODO/FIXME/HACK marker (catches those missing ticket refs).
-BARE_MARKER = re.compile(r"#\s*(?:TODO|FIXME|HACK)[\s:(]")
+# Any TODO/FIXME/HACK marker NOT immediately followed by (OMN-<digits>):
+# This single pattern detects bare markers even when a valid marker is also present.
+INVALID_MARKER = re.compile(r"\b(?:TODO|FIXME|HACK)\b(?!\(OMN-\d+\):)")
 
 # Exemption marker: allows legacy TODOs to survive with a stated reason.
 EXEMPT = re.compile(r"#\s*TODO_FORMAT_EXEMPT:\s*\S")
 
 # Path segments that are excluded from scanning.
-EXCLUDED_SEGMENTS = ("/tests/", "/docs/", "/examples/", "/fixtures/", "/vendored/")
+# Use bare directory names so both absolute (/tests/) and relative (tests/) paths match.
+EXCLUDED_SEGMENTS: frozenset[str] = frozenset(
+    {"tests", "docs", "examples", "fixtures", "vendored"}
+)
 
 # Basenames that are excluded (this script itself, for example).
 EXCLUDED_BASENAMES: frozenset[str] = frozenset({"check_todo_format.py"})
@@ -127,12 +128,14 @@ def _scan_lines(text: str, path: str) -> list[str]:
         if comment is None:
             continue
 
-        # Check the full line for exemption first.
-        if EXEMPT.search(line):
+        # Check the comment text for exemption (not full line, to avoid
+        # false matches when TODO_FORMAT_EXEMPT appears in string literals).
+        if EXEMPT.search(comment):
             continue
 
-        # Check if the comment has a bare marker but not a valid one.
-        if BARE_MARKER.search(comment) and not VALID_TODO.search(comment):
+        # Flag any TODO/FIXME/HACK not followed by (OMN-XXXX): -- catches
+        # bare markers even when a valid marker is also present on the line.
+        if INVALID_MARKER.search(comment):
             violations.append(
                 f"{path}:{lineno}: bare TODO/FIXME/HACK without ticket reference"
                 " -- use format: # TODO(OMN-XXXX): description"
@@ -149,10 +152,10 @@ def check_file(path: str) -> list[str]:
     if basename in EXCLUDED_BASENAMES:
         return []
 
-    # Skip excluded path segments.
-    for segment in EXCLUDED_SEGMENTS:
-        if segment in path:
-            return []
+    # Skip excluded path segments (works for both absolute and relative paths).
+    path_parts = Path(path).parts
+    if any(segment in path_parts for segment in EXCLUDED_SEGMENTS):
+        return []
 
     # Only scan Python files.
     if not path.endswith(".py"):

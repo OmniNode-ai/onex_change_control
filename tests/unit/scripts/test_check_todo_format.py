@@ -220,6 +220,15 @@ def test_mixed_valid_and_invalid(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_mixed_valid_and_bare_same_comment(tmp_path: Path) -> None:
+    """A valid marker does not mask a bare marker on the same line."""
+    f = tmp_path / "service.py"
+    f.write_text("# TODO(OMN-100): valid TODO: but also bare\n")
+    violations = check_file(str(f))
+    assert len(violations) == 1
+
+
+@pytest.mark.unit
 def test_self_exclusion(tmp_path: Path) -> None:
     """The script itself is excluded by basename."""
     f = tmp_path / "check_todo_format.py"
