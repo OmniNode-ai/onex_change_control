@@ -4,10 +4,16 @@
 """ONEX Change Control Models.
 
 Exports ModelGoldenPath, ModelTicketContract, ModelDayClose,
-ModelIntegrationRecord, and related supporting types used for drift
-detection and governance workflows.
+ModelIntegrationRecord, ModelAutopilotCycleRecord, and related
+supporting types used for drift detection and governance workflows.
 """
 
+from onex_change_control.models.model_autopilot_cycle import (
+    EnumAutopilotCycleStatus,
+    EnumAutopilotStepStatus,
+    ModelAutopilotCycleRecord,
+    ModelAutopilotStepResult,
+)
 from onex_change_control.models.model_day_close import ModelDayClose
 from onex_change_control.models.model_day_open import (
     ModelDayOpen,
@@ -37,6 +43,10 @@ from onex_change_control.models.model_ticket_contract import (
 )
 
 __all__ = [
+    "EnumAutopilotCycleStatus",
+    "EnumAutopilotStepStatus",
+    "ModelAutopilotCycleRecord",
+    "ModelAutopilotStepResult",
     "ModelDayClose",
     "ModelDayOpen",
     "ModelDayOpenFinding",
