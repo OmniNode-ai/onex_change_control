@@ -22,6 +22,8 @@ class EnumIntegrationSurface(str, Enum):
     - PLUGIN: omniclaude plugin and hook probes
     - GITHUB_CI: GitHub Actions workflow and runner probes
     - SCRIPT: Shell script and automation probes
+    - CONTAINER_HEALTH: Docker container state probes (unconditional)
+    - RUNTIME_HEALTH: Runtime service HTTP health endpoint probes (unconditional)
     """
 
     KAFKA = "kafka"
@@ -41,6 +43,12 @@ class EnumIntegrationSurface(str, Enum):
 
     SCRIPT = "script"
     """Shell script and automation probes."""
+
+    CONTAINER_HEALTH = "container_health"
+    """Docker container state probes — expected containers running and healthy."""
+
+    RUNTIME_HEALTH = "runtime_health"
+    """Runtime service HTTP health endpoint probes."""
 
     def __str__(self) -> str:
         """Return the string value for serialization."""
