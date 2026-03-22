@@ -36,6 +36,10 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
 
 try:
     import yaml
@@ -70,7 +74,7 @@ def _linear_request(
     query: str,
     variables: dict[str, object],
     api_key: str,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Execute a Linear GraphQL query using stdlib urllib."""
     payload = json.dumps({"query": query, "variables": variables}).encode()
     req = urllib.request.Request(  # noqa: S310 -- URL is a constant HTTPS endpoint
@@ -106,9 +110,9 @@ def fetch_completed_tickets(
             variables["after"] = cursor
 
         result = _linear_request(_TICKETS_QUERY, variables, api_key)
-        data = result.get("data", {})
-        issues = data.get("issues", {})  # type: ignore[union-attr]
-        nodes = issues.get("nodes", [])  # type: ignore[union-attr]
+        data: dict[str, Any] = result.get("data", {})
+        issues: dict[str, Any] = data.get("issues", {})
+        nodes: list[dict[str, Any]] = issues.get("nodes", [])
 
         for node in nodes:
             tickets.append(
@@ -119,7 +123,7 @@ def fetch_completed_tickets(
                 }
             )
 
-        page_info = issues.get("pageInfo", {})  # type: ignore[union-attr]
+        page_info: dict[str, Any] = issues.get("pageInfo", {})
         if page_info.get("hasNextPage"):
             cursor = page_info.get("endCursor")
         else:

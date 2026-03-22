@@ -211,7 +211,7 @@ class TestSummaryFormatting:
 
     def test_summary_includes_counts(self) -> None:
         """Summary includes passed/failed/exempt counts."""
-        results = [
+        results: list[dict[str, object]] = [
             {"ticket_id": "OMN-1", "title": "T1", "status": "PASS", "details": "ok"},
             {"ticket_id": "OMN-2", "title": "T2", "status": "FAIL", "details": "bad"},
         ]
