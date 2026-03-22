@@ -3,6 +3,10 @@
 
 """ONEX Change Control Enums."""
 
+from onex_change_control.enums.enum_autopilot import (
+    EnumAutopilotCycleStatus,
+    EnumAutopilotStepStatus,
+)
 from onex_change_control.enums.enum_db_boundary import (
     EnumDbBoundaryExceptionStatus,
     EnumDbBoundaryReasonCategory,
@@ -18,6 +22,8 @@ from onex_change_control.enums.enum_probe_reason import EnumProbeReason
 from onex_change_control.enums.enum_probe_status import EnumProbeStatus
 
 __all__ = [
+    "EnumAutopilotCycleStatus",
+    "EnumAutopilotStepStatus",
     "EnumDbBoundaryExceptionStatus",
     "EnumDbBoundaryReasonCategory",
     "EnumDriftCategory",

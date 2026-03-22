@@ -7,38 +7,12 @@ Tracks per-step completion status for each autopilot close-out cycle.
 Enables detection of hollow cycles where steps were skipped.
 """
 
-from enum import Enum, unique
-
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-
-@unique
-class EnumAutopilotStepStatus(str, Enum):
-    """Status of a single autopilot pipeline step."""
-
-    COMPLETED = "completed"
-    SKIPPED = "skipped"
-    FAILED = "failed"
-    NOT_RUN = "not_run"
-
-    def __str__(self) -> str:
-        return self.value
-
-
-@unique
-class EnumAutopilotCycleStatus(str, Enum):
-    """Overall status of an autopilot close-out cycle.
-
-    Closed status set — no free-form string states.
-    """
-
-    COMPLETE = "complete"
-    INCOMPLETE = "incomplete"
-    HALTED = "halted"
-    CIRCUIT_BREAKER = "circuit_breaker"
-
-    def __str__(self) -> str:
-        return self.value
+from onex_change_control.enums.enum_autopilot import (
+    EnumAutopilotCycleStatus,
+    EnumAutopilotStepStatus,
+)
 
 
 class ModelAutopilotStepResult(BaseModel):
