@@ -11,6 +11,7 @@ from onex_change_control.enums.enum_db_boundary import (
     EnumDbBoundaryExceptionStatus,
     EnumDbBoundaryReasonCategory,
 )
+from onex_change_control.enums.enum_dod_sweep_check import EnumDodSweepCheck
 from onex_change_control.enums.enum_drift_category import EnumDriftCategory
 from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
 from onex_change_control.enums.enum_finding_severity import EnumFindingSeverity
@@ -26,6 +27,7 @@ __all__ = [
     "EnumAutopilotStepStatus",
     "EnumDbBoundaryExceptionStatus",
     "EnumDbBoundaryReasonCategory",
+    "EnumDodSweepCheck",
     "EnumDriftCategory",
     "EnumEvidenceKind",
     "EnumFindingSeverity",
