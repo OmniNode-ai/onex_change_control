@@ -426,3 +426,112 @@ class TestBundledManifest:
             assert topic_pattern.match(entry.topic_name), (
                 f"Topic does not match ONEX format: {entry.topic_name}"
             )
+
+
+class TestCheckSchemas:
+    """Tests for event_schema existence validation (OMN-5773)."""
+
+    def test_detects_missing_schema_class(self, tmp_path: Path) -> None:
+        """event_schema references a class that doesn't exist in producer repo."""
+        from onex_change_control.scripts.check_boundary_parity import check_schemas
+
+        # Create producer repo with no matching class
+        producer = tmp_path / "repo_a" / "src"
+        producer.mkdir(parents=True)
+        (producer / "models.py").write_text("class UnrelatedModel:\n    pass\n")
+
+        boundaries = [
+            BoundaryEntry(
+                topic_name="onex.evt.test.topic.v1",
+                producer_repo="repo_a",
+                consumer_repo="repo_b",
+                producer_file="src/models.py",
+                consumer_file="consumer.py",
+                topic_pattern="topic",
+                event_schema="ModelDoesNotExist",
+            )
+        ]
+
+        result = check_schemas(boundaries, tmp_path)
+        assert len(result.errors) == 1
+        assert result.errors[0].kind == "SCHEMA_NOT_FOUND"
+
+    def test_warns_on_missing_field_in_consumer(self, tmp_path: Path) -> None:
+        """Producer model has field 'session_id' but consumer doesn't reference it."""
+        from onex_change_control.scripts.check_boundary_parity import check_schemas
+
+        # Create producer repo with model class
+        producer = tmp_path / "repo_a" / "src"
+        producer.mkdir(parents=True)
+        (producer / "models.py").write_text(
+            "class ModelTestPayload:\n"
+            "    session_id: str\n"
+            "    correlation_id: str\n"
+            "    timestamp: float\n"
+        )
+
+        # Create consumer that only references some fields
+        consumer = tmp_path / "repo_b"
+        consumer.mkdir(parents=True)
+        (consumer / "handler.py").write_text(
+            "# Consumer handler\ndata.correlation_id\ndata.timestamp\n"
+        )
+
+        boundaries = [
+            BoundaryEntry(
+                topic_name="onex.evt.test.topic.v1",
+                producer_repo="repo_a",
+                consumer_repo="repo_b",
+                producer_file="src/models.py",
+                consumer_file="handler.py",
+                topic_pattern="topic",
+                event_schema="ModelTestPayload",
+            )
+        ]
+
+        result = check_schemas(boundaries, tmp_path)
+        assert len(result.warnings) >= 1
+        assert result.warnings[0].kind == "FIELD_REFERENCE_DRIFT"
+
+    def test_schema_not_found_is_error_not_warning(self, tmp_path: Path) -> None:
+        """SCHEMA_NOT_FOUND must be ERROR level, never WARNING."""
+        from onex_change_control.scripts.check_boundary_parity import check_schemas
+
+        # Empty producer repo
+        (tmp_path / "repo_a").mkdir()
+
+        boundaries = [
+            BoundaryEntry(
+                topic_name="onex.evt.test.topic.v1",
+                producer_repo="repo_a",
+                consumer_repo="repo_b",
+                producer_file="src/models.py",
+                consumer_file="handler.py",
+                topic_pattern="topic",
+                event_schema="ModelMissing",
+            )
+        ]
+
+        result = check_schemas(boundaries, tmp_path)
+        assert all(f.kind == "SCHEMA_NOT_FOUND" for f in result.errors)
+        assert "SCHEMA_NOT_FOUND" not in [w.kind for w in result.warnings]
+
+    def test_empty_event_schema_skipped(self, tmp_path: Path) -> None:
+        """Boundaries with empty event_schema are skipped."""
+        from onex_change_control.scripts.check_boundary_parity import check_schemas
+
+        boundaries = [
+            BoundaryEntry(
+                topic_name="onex.evt.test.topic.v1",
+                producer_repo="repo_a",
+                consumer_repo="repo_b",
+                producer_file="src/models.py",
+                consumer_file="handler.py",
+                topic_pattern="topic",
+                event_schema="",
+            )
+        ]
+
+        result = check_schemas(boundaries, tmp_path)
+        assert len(result.errors) == 0
+        assert len(result.warnings) == 0

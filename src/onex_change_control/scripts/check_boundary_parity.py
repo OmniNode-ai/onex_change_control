@@ -237,6 +237,203 @@ def format_report(report: ParityReport) -> str:
     return "\n".join(lines)
 
 
+## ---------------------------------------------------------------------------
+## Schema existence validation (OMN-5773)
+## ---------------------------------------------------------------------------
+
+
+@dataclass
+class SchemaFinding:
+    """A single schema validation finding."""
+
+    kind: str  # "SCHEMA_NOT_FOUND" or "FIELD_REFERENCE_DRIFT"
+    boundary: BoundaryEntry
+    message: str
+
+
+@dataclass
+class SchemaCheckResult:
+    """Results from --check-schemas validation."""
+
+    errors: list[SchemaFinding] = field(default_factory=list)
+    warnings: list[SchemaFinding] = field(default_factory=list)
+
+
+def _find_class_in_repo(
+    repos_root: Path,
+    repo_name: str,
+    class_name: str,
+) -> tuple[Path | None, str]:
+    """Search for a Python class definition in a repo.
+
+    Returns:
+        (file_path, class_body) if found, (None, "") if not found.
+    """
+    repo_dir = repos_root / repo_name
+    if not repo_dir.is_dir():
+        return None, ""
+
+    class_re = re.compile(
+        rf"^class\s+{re.escape(class_name)}\s*[\(:]",
+        re.MULTILINE,
+    )
+
+    for py_file in repo_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text()
+        except OSError:
+            continue
+
+        match = class_re.search(content)
+        if match:
+            # Extract class body: find the colon ending the class line,
+            # then collect indented lines until next top-level definition
+            rest = content[match.start() :]
+            lines = rest.split("\n")
+            body_lines: list[str] = []
+            # Skip the class definition line(s) — find first ":"
+            found_colon = False
+            for _i, line in enumerate(lines):
+                if not found_colon:
+                    if ":" in line:
+                        found_colon = True
+                    continue
+                # After colon: collect indented lines
+                if line and not line[0].isspace() and line[0] != "#":
+                    break
+                body_lines.append(line)
+            return py_file, "\n".join(body_lines)
+
+    return None, ""
+
+
+def _extract_field_names_from_class(body: str) -> set[str]:
+    """Extract field names from a Pydantic/dataclass class body.
+
+    Matches patterns like:
+        field_name: type
+        field_name = value
+        field_name: type = value
+    """
+    field_re = re.compile(r"^\s+(\w+)\s*[:=]", re.MULTILINE)
+    fields: set[str] = set()
+    # Filter out methods, class vars, and dunder attributes
+    skip_prefixes = {"def ", "class ", "@", "#", "_"}
+    for match in field_re.finditer(body):
+        name = match.group(1)
+        line_start = body.rfind("\n", 0, match.start()) + 1
+        line = body[line_start : match.end()].strip()
+        if any(line.startswith(p) for p in skip_prefixes):
+            continue
+        if name.startswith("__"):
+            continue
+        fields.add(name)
+    return fields
+
+
+def check_schemas(
+    boundaries: list[BoundaryEntry],
+    repos_root: Path,
+) -> SchemaCheckResult:
+    """Validate event_schema references in boundary entries.
+
+    Two finding severities:
+    1. SCHEMA_NOT_FOUND (ERROR): declared class doesn't exist in producer repo
+    2. FIELD_REFERENCE_DRIFT (WARNING): producer fields not referenced in consumer
+    """
+    result = SchemaCheckResult()
+
+    for entry in boundaries:
+        if not entry.event_schema:
+            continue
+
+        # Check if class exists in producer repo
+        class_path, class_body = _find_class_in_repo(
+            repos_root, entry.producer_repo, entry.event_schema
+        )
+
+        if class_path is None:
+            result.errors.append(
+                SchemaFinding(
+                    kind="SCHEMA_NOT_FOUND",
+                    boundary=entry,
+                    message=(
+                        f"event_schema '{entry.event_schema}' not found in "
+                        f"producer repo '{entry.producer_repo}'"
+                    ),
+                )
+            )
+            continue
+
+        # Class found — check for field reference drift in consumer
+        producer_fields = _extract_field_names_from_class(class_body)
+        if not producer_fields:
+            continue
+
+        consumer_path = repos_root / entry.consumer_repo / entry.consumer_file
+        if not consumer_path.is_file():
+            continue
+
+        try:
+            consumer_content = consumer_path.read_text()
+        except OSError:
+            continue
+
+        missing_fields: list[str] = []
+        for field_name in producer_fields:
+            # Check both snake_case and camelCase variants
+            camel = re.sub(r"_([a-z])", lambda m: m.group(1).upper(), field_name)
+            if field_name not in consumer_content and camel not in consumer_content:
+                missing_fields.append(field_name)
+
+        if missing_fields:
+            result.warnings.append(
+                SchemaFinding(
+                    kind="FIELD_REFERENCE_DRIFT",
+                    boundary=entry,
+                    message=(
+                        f"Producer '{entry.event_schema}' has fields not referenced "
+                        f"in consumer '{entry.consumer_repo}/{entry.consumer_file}': "
+                        f"{', '.join(sorted(missing_fields))}"
+                    ),
+                )
+            )
+
+    return result
+
+
+def format_schema_report(result: SchemaCheckResult) -> str:
+    """Format schema check results for human-readable output."""
+    lines: list[str] = []
+    lines.append("")
+    lines.append("=" * 72)
+    lines.append("Schema Existence Report")
+    lines.append("=" * 72)
+    lines.append("")
+
+    if result.errors:
+        lines.append(f"ERRORS: {len(result.errors)}")
+        for finding in result.errors:
+            lines.append(f"  [ERROR] SCHEMA_NOT_FOUND: {finding.boundary.topic_name}")
+            lines.append(f"          {finding.message}")
+        lines.append("")
+
+    if result.warnings:
+        lines.append(f"WARNINGS: {len(result.warnings)}")
+        for finding in result.warnings:
+            lines.append(
+                f"  [WARN]  FIELD_REFERENCE_DRIFT: {finding.boundary.topic_name}"
+            )
+            lines.append(f"          {finding.message}")
+        lines.append("")
+
+    if not result.errors and not result.warnings:
+        lines.append("All schema references validated successfully.")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def _resolve_manifest_path(explicit: str | None) -> Path:
     """Resolve the manifest path, defaulting to the bundled YAML."""
     if explicit:
@@ -268,6 +465,11 @@ def main(argv: list[str] | None = None) -> int:
         dest="json_output",
         help="Output results as JSON instead of human-readable text",
     )
+    parser.add_argument(
+        "--check-schemas",
+        action="store_true",
+        help="Also validate event_schema references in boundary entries (OMN-5773).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -286,11 +488,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     report = run_parity_check(manifest_path, repos_root)
+    has_errors = report.has_mismatches
+
+    # Run schema checks if requested
+    schema_result: SchemaCheckResult | None = None
+    if args.check_schemas:
+        entries = load_manifest(manifest_path)
+        schema_result = check_schemas(entries, repos_root)
+        # SCHEMA_NOT_FOUND is ERROR-level — contributes to exit code
+        if schema_result.errors:
+            has_errors = True
+        # FIELD_REFERENCE_DRIFT is WARNING-level — does NOT affect exit code
 
     if args.json_output:
         import json
 
-        output = {
+        output: dict[str, object] = {
             "total": len(report.results),
             "ok": sum(1 for r in report.results if r.producer_ok and r.consumer_ok),
             "mismatches": report.mismatch_count,
@@ -306,11 +519,30 @@ def main(argv: list[str] | None = None) -> int:
                 for r in report.results
             ],
         }
+        if schema_result is not None:
+            output["schema_errors"] = [
+                {
+                    "kind": f.kind,
+                    "topic": f.boundary.topic_name,
+                    "message": f.message,
+                }
+                for f in schema_result.errors
+            ]
+            output["schema_warnings"] = [
+                {
+                    "kind": f.kind,
+                    "topic": f.boundary.topic_name,
+                    "message": f.message,
+                }
+                for f in schema_result.warnings
+            ]
         print(json.dumps(output, indent=2))
     else:
         print(format_report(report))
+        if schema_result is not None:
+            print(format_schema_report(schema_result))
 
-    return 1 if report.has_mismatches else 0
+    return 1 if has_errors else 0
 
 
 if __name__ == "__main__":

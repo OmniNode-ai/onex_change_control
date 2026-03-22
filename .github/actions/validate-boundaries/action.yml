@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+# Reusable composite action: validate-boundaries
+#
+# Runs cross-repo boundary validation checks (Kafka parity, migration conflicts)
+# in the calling repository's CI.
+#
+# Callable via:
+#   uses: OmniNode-ai/onex_change_control/.github/actions/validate-boundaries@main
+#
+# OMN-5770: Cross-Artifact Seam Verification
+
+name: "ONEX Boundary Validation"
+description: >
+  Run cross-repo boundary checks (Kafka parity, migration conflicts) to detect
+  seam regressions before merge.  Clones peer repos, runs selected checks, and
+  aggregates results.
+
+inputs:
+  checks:
+    description: >
+      Comma-separated list of checks to run.
+      Available: boundary-parity, migration-conflicts
+    required: false
+    default: "boundary-parity,migration-conflicts"
+  warn-only:
+    description: >
+      If "true", exit 0 even when violations are found (CI warning mode).
+    required: false
+    default: "true"
+  repos:
+    description: >
+      Comma-separated list of peer repos to clone.  Defaults to all ONEX repos
+      with boundary seams.
+    required: false
+    default: "omniclaude,omnidash,omniintelligence,omnibase_infra,omnibase_core,omnimemory"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout calling repository
+      uses: actions/checkout@v6
+
+    - name: Checkout onex_change_control validators
+      uses: actions/checkout@v6
+      with:
+        repository: OmniNode-ai/onex_change_control
+        ref: main
+        path: .onex_change_control
+        sparse-checkout: |
+          src/
+          pyproject.toml
+          uv.lock
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+
+    - name: Install onex_change_control
+      shell: bash
+      run: |
+        cd .onex_change_control
+        uv sync --no-group dev
+
+    - name: Clone peer repos
+      id: clone
+      shell: bash
+      run: |
+        mkdir -p /tmp/omni_repos
+        DEGRADED=""
+        IFS=',' read -ra REPOS <<< "${{ inputs.repos }}"
+        for repo in "${REPOS[@]}"; do
+          repo=$(echo "$repo" | xargs)  # trim whitespace
+          if git clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "/tmp/omni_repos/${repo}" 2>/dev/null; then
+            echo "Cloned ${repo}"
+          else
+            echo "::warning::Boundary verification DEGRADED: could not clone ${repo}. Seam parity NOT confirmed."
+            DEGRADED="${DEGRADED}${repo},"
+          fi
+        done
+        echo "degraded=${DEGRADED}" >> "$GITHUB_OUTPUT"
+
+    - name: Run boundary checks
+      shell: bash
+      run: |
+        FAILURE_COUNT=0
+
+        # Check for degraded clone state
+        DEGRADED="${{ steps.clone.outputs.degraded }}"
+        if [[ -n "$DEGRADED" ]]; then
+          echo "::warning::Some peer repos could not be cloned: ${DEGRADED}"
+          echo "::warning::Boundary verification is DEGRADED — seam parity NOT fully confirmed."
+          FAILURE_COUNT=$((FAILURE_COUNT + 1))
+        fi
+
+        IFS=',' read -ra CHECKS <<< "${{ inputs.checks }}"
+        for check in "${CHECKS[@]}"; do
+          check=$(echo "$check" | xargs)
+          case "$check" in
+            boundary-parity)
+              echo "::group::Running boundary-parity check"
+              cd .onex_change_control
+              if uv run check-boundary-parity --repos-root /tmp/omni_repos; then
+                echo "::endgroup::"
+                echo "boundary-parity: PASSED"
+              else
+                echo "::endgroup::"
+                echo "::warning::boundary-parity: FAILED — see above for details"
+                FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              fi
+              cd ..
+              ;;
+            migration-conflicts)
+              echo "::group::Running migration-conflicts check"
+              cd .onex_change_control
+              if uv run check-migration-conflicts --repos-root /tmp/omni_repos --check-columns --warn-only; then
+                echo "::endgroup::"
+                echo "migration-conflicts: PASSED"
+              else
+                echo "::endgroup::"
+                echo "::warning::migration-conflicts: FAILED — see above for details"
+                FAILURE_COUNT=$((FAILURE_COUNT + 1))
+              fi
+              cd ..
+              ;;
+            *)
+              echo "::warning::Unknown check: ${check}"
+              ;;
+          esac
+        done
+
+        echo ""
+        echo "=============================="
+        echo "Boundary check summary: ${FAILURE_COUNT} failure(s)"
+        echo "=============================="
+
+        if [[ "${{ inputs.warn-only }}" == "true" ]]; then
+          echo "warn-only mode: exiting 0 regardless of failures"
+          exit 0
+        fi
+
+        if [[ "$FAILURE_COUNT" -gt 0 ]]; then
+          exit "$FAILURE_COUNT"
+        fi
