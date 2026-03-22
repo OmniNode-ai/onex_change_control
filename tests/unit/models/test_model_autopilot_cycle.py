@@ -6,9 +6,11 @@
 import pytest
 import yaml
 
-from onex_change_control.models.model_autopilot_cycle import (
+from onex_change_control.enums.enum_autopilot import (
     EnumAutopilotCycleStatus,
     EnumAutopilotStepStatus,
+)
+from onex_change_control.models.model_autopilot_cycle import (
     ModelAutopilotCycleRecord,
     ModelAutopilotStepResult,
 )
