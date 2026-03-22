@@ -147,3 +147,29 @@ class TestModelIntegrationRecord:
         assert record.tickets[0].reason == EnumProbeReason.NO_CONTRACT
         assert record.tickets[0].status == EnumInvariantStatus.UNKNOWN
         assert record.overall_status == EnumInvariantStatus.UNKNOWN
+
+    def test_container_health_probe_result_roundtrip(self) -> None:
+        """New CONTAINER_HEALTH surface accepted in probe result."""
+        result = ModelIntegrationProbeResult(
+            surface=EnumIntegrationSurface.CONTAINER_HEALTH,
+            status=EnumInvariantStatus.FAIL,
+            detail="omninode-runtime stuck in Created state",
+            checked_at="2026-03-22",
+        )
+        assert result.surface == EnumIntegrationSurface.CONTAINER_HEALTH
+        assert result.status == EnumInvariantStatus.FAIL
+
+    def test_overall_fail_when_container_health_fails(self) -> None:
+        """Record with CONTAINER_HEALTH FAIL drives overall_status to FAIL."""
+        record = ModelIntegrationRecord(
+            **_BASE,
+            tickets=[
+                _probe(EnumIntegrationSurface.CI, EnumInvariantStatus.PASS),
+                ModelIntegrationProbeResult(
+                    surface=EnumIntegrationSurface.CONTAINER_HEALTH,
+                    status=EnumInvariantStatus.FAIL,
+                    detail="2 containers not running",
+                ),
+            ],
+        )
+        assert record.overall_status == EnumInvariantStatus.FAIL
