@@ -28,6 +28,11 @@ from onex_change_control.models.model_db_boundary_exception import (
     ModelDbBoundaryException,
     ModelDbBoundaryExceptionsRegistry,
 )
+from onex_change_control.models.model_dod_sweep import (
+    ModelDodSweepCheckResult,
+    ModelDodSweepResult,
+    ModelDodSweepTicketResult,
+)
 from onex_change_control.models.model_golden_path import (
     ModelGoldenPath,
     ModelGoldenPathAssertion,
@@ -59,6 +64,9 @@ __all__ = [
     "ModelDbBoundaryExceptionsRegistry",
     "ModelDodCheck",
     "ModelDodEvidenceItem",
+    "ModelDodSweepCheckResult",
+    "ModelDodSweepResult",
+    "ModelDodSweepTicketResult",
     "ModelGoldenPath",
     "ModelGoldenPathAssertion",
     "ModelGoldenPathInput",
