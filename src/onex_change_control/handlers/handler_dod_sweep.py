@@ -46,7 +46,7 @@ except ImportError:
 # Linear GraphQL client (stdlib-only, lifted from scripts/check_dod_compliance.py)
 # ---------------------------------------------------------------------------
 
-LINEAR_API_URL = "https://linear.app/graphql"
+LINEAR_API_URL = "https://api.linear.app/graphql"
 
 _TICKETS_QUERY = """
 query CompletedTickets($after: String, $filter: IssueFilter!) {
