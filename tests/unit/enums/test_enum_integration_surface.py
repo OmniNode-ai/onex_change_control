@@ -23,10 +23,11 @@ class TestEnumIntegrationSurface:
         assert EnumIntegrationSurface.CONTAINER_HEALTH is not None
         assert EnumIntegrationSurface.RUNTIME_HEALTH is not None
         assert EnumIntegrationSurface.CROSS_REPO_BOUNDARY is not None
+        assert EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL is not None
 
     def test_value_count(self) -> None:
-        """Exactly nine members defined."""
-        assert len(EnumIntegrationSurface) == 9
+        """Exactly ten members defined."""
+        assert len(EnumIntegrationSurface) == 10
 
     def test_cross_repo_boundary_surface_exists(self) -> None:
         """CROSS_REPO_BOUNDARY member has correct value."""
@@ -80,6 +81,28 @@ class TestEnumIntegrationSurface:
             EnumIntegrationSurface("runtime_health")
             is EnumIntegrationSurface.RUNTIME_HEALTH
         )
+
+    def test_playwright_behavioral_surface_exists(self) -> None:
+        """PLAYWRIGHT_BEHAVIORAL member has correct value."""
+        assert hasattr(EnumIntegrationSurface, "PLAYWRIGHT_BEHAVIORAL")
+        assert (
+            EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL.value
+            == "playwright_behavioral"
+        )
+        assert (
+            str(EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL) == "playwright_behavioral"
+        )
+
+    def test_playwright_behavioral_roundtrip(self) -> None:
+        """Can construct PLAYWRIGHT_BEHAVIORAL from its string value."""
+        assert (
+            EnumIntegrationSurface("playwright_behavioral")
+            is EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL
+        )
+
+    def test_playwright_behavioral_is_str(self) -> None:
+        """PLAYWRIGHT_BEHAVIORAL is a str instance."""
+        assert isinstance(EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL, str)
 
     def test_importable_from_enums_package(self) -> None:
         """EnumIntegrationSurface is accessible via the enums package __init__."""
