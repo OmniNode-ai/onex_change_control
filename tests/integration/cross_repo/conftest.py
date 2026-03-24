@@ -41,7 +41,8 @@ def omni_home() -> Path:
     convention path only when derivation succeeds unambiguously — i.e. the
     derived candidate contains an ``omniclaude`` subdirectory.
 
-    Raises RuntimeError with a clear message if neither strategy resolves.
+    Calls pytest.skip() with a clear message if neither strategy resolves,
+    so tests that depend on this fixture are skipped rather than erroring in CI.
     """
     env_path = os.environ.get("OMNI_HOME")
     if env_path:
@@ -55,10 +56,9 @@ def omni_home() -> Path:
     if (candidate / "omniclaude").exists():
         return candidate
 
-    msg = (
+    pytest.skip(
         "Cannot locate omni_home. Set the OMNI_HOME environment variable "
         "to the absolute path of the omni_home registry directory. "
         f"Attempted derivation resolved to '{candidate}' but no 'omniclaude' "
         "subdirectory was found there."
     )
-    raise RuntimeError(msg)
