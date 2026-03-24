@@ -390,9 +390,32 @@ def main() -> int:
         default=7,
         help="Look-back window in days (default: 7)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output ModelDodSweepResult as JSON instead of markdown table",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("LINEAR_API_KEY", "")
+
+    if args.json:
+        from onex_change_control.enums.enum_invariant_status import (
+            EnumInvariantStatus,
+        )
+        from onex_change_control.handlers.handler_dod_sweep import (
+            run_dod_sweep,
+        )
+
+        result = run_dod_sweep(
+            contracts_dir=args.contracts_dir,
+            since_days=args.since_days,
+            exemptions_path=args.exemptions if args.exemptions.exists() else None,
+            api_key=api_key,
+        )
+        print(result.model_dump_json(indent=2))
+        return 1 if result.overall_status == EnumInvariantStatus.FAIL else 0
+
     cutoff_date, exempt_ids = load_exemptions(args.exemptions)
 
     since_date = (datetime.now(tz=UTC) - timedelta(days=args.since_days)).strftime(
