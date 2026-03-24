@@ -26,6 +26,7 @@ class EnumIntegrationSurface(str, Enum):
     - RUNTIME_HEALTH: Runtime service HTTP health endpoint probes (unconditional)
     - CROSS_REPO_BOUNDARY: Cross-repo schema round-trip and topic constant matching
     - PLAYWRIGHT_BEHAVIORAL: Playwright end-to-end data-flow and UI behavioral probes
+    - SCHEMA_PARITY: Static schema-to-migration governance (ORM vs DDL agreement)
     """
 
     KAFKA = "kafka"
@@ -60,6 +61,9 @@ class EnumIntegrationSurface(str, Enum):
 
     WIRING_VERIFICATION = "wiring_verification"
     """Structural topology probe for declared emitter/consumer/writer completeness."""
+
+    SCHEMA_PARITY = "schema_parity"
+    """Static schema-to-migration governance — validates ORM declarations match DDL."""
 
     def __str__(self) -> str:
         """Return the string value for serialization."""
