@@ -22,10 +22,17 @@ class TestEnumIntegrationSurface:
         assert EnumIntegrationSurface.SCRIPT is not None
         assert EnumIntegrationSurface.CONTAINER_HEALTH is not None
         assert EnumIntegrationSurface.RUNTIME_HEALTH is not None
+        assert EnumIntegrationSurface.CROSS_REPO_BOUNDARY is not None
 
     def test_value_count(self) -> None:
-        """Exactly eight members defined."""
-        assert len(EnumIntegrationSurface) == 8
+        """Exactly nine members defined."""
+        assert len(EnumIntegrationSurface) == 9
+
+    def test_cross_repo_boundary_surface_exists(self) -> None:
+        """CROSS_REPO_BOUNDARY member has correct value."""
+        assert hasattr(EnumIntegrationSurface, "CROSS_REPO_BOUNDARY")
+        assert EnumIntegrationSurface.CROSS_REPO_BOUNDARY.value == "cross_repo_boundary"
+        assert str(EnumIntegrationSurface.CROSS_REPO_BOUNDARY) == "cross_repo_boundary"
 
     def test_container_health_exists(self) -> None:
         """CONTAINER_HEALTH member has correct value."""

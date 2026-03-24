@@ -24,6 +24,7 @@ class EnumIntegrationSurface(str, Enum):
     - SCRIPT: Shell script and automation probes
     - CONTAINER_HEALTH: Docker container state probes (unconditional)
     - RUNTIME_HEALTH: Runtime service HTTP health endpoint probes (unconditional)
+    - CROSS_REPO_BOUNDARY: Cross-repo schema round-trip and topic constant matching
     """
 
     KAFKA = "kafka"
@@ -49,6 +50,9 @@ class EnumIntegrationSurface(str, Enum):
 
     RUNTIME_HEALTH = "runtime_health"
     """Runtime service HTTP health endpoint probes."""
+
+    CROSS_REPO_BOUNDARY = "cross_repo_boundary"
+    """Cross-repo Kafka schema round-trip and topic constant matching probes."""
 
     def __str__(self) -> str:
         """Return the string value for serialization."""
