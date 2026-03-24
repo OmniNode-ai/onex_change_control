@@ -126,7 +126,9 @@ SCHEMA_TEST_DATA: dict[str, dict] = {  # type: ignore[type-arg]
 # grows (regression) or shrinks without update (coverage improved, update needed).
 # NOTE: event_schema labels in kafka_boundaries.yaml are informational and may
 # not match importable Python class names 1:1 — some labels are placeholders.
-KNOWN_COVERAGE_GAP = 24  # All 24 unique omniclaude boundary schemas pending coverage
+KNOWN_COVERAGE_GAP = (
+    24  # 24 unique omniclaude boundary event_schema labels pending coverage
+)
 
 
 @pytest.mark.integration
