@@ -129,6 +129,28 @@ jobs:
         # --check-columns: Validates Python SQL references match migration DDL (OMN-5769)
         run: uv run check-migration-conflicts --repos-root /tmp/omni_repos --check-columns --warn-only
 
+  migration-inventory:
+    name: Migration Inventory Sync
+    runs-on: ubuntu-latest
+    needs: [pre-commit]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Clone peer repos
+        run: |
+          mkdir -p /tmp/repos
+          for repo in omnibase_infra omnidash omniintelligence omnimemory omninode_infra omniclaude omniweb; do
+            git clone --depth=1 https://github.com/OmniNode-ai/$repo.git /tmp/repos/$repo 2>/dev/null || true
+          done
+          ln -s $GITHUB_WORKSPACE /tmp/repos/onex_change_control
+      - name: Validate inventory
+        # warn-only: Soft-fail until manifest is complete for all repos and
+        # clone/input path is reliably observable in CI (all repos clone
+        # successfully in 3+ consecutive runs).
+        run: uv run check-migration-inventory --repos-root /tmp/repos --warn-only
+
   kafka-boundary-parity:
     name: Kafka Boundary Parity
     runs-on: ubuntu-latest
@@ -174,7 +196,7 @@ jobs:
   ci-summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [pre-commit, type-check, schema-purity, context-integrity-contracts, migration-conflicts, kafka-boundary-parity, seam-contract-coverage]
+    needs: [pre-commit, type-check, schema-purity, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, seam-contract-coverage]
     if: always()
     steps:
       - name: Check all jobs passed
