@@ -26,8 +26,8 @@ class TestEnumIntegrationSurface:
         assert EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL is not None
 
     def test_value_count(self) -> None:
-        """Exactly ten members defined."""
-        assert len(EnumIntegrationSurface) == 10
+        """Exactly eleven members defined."""
+        assert len(EnumIntegrationSurface) == 11
 
     def test_cross_repo_boundary_surface_exists(self) -> None:
         """CROSS_REPO_BOUNDARY member has correct value."""

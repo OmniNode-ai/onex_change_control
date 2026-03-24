@@ -58,6 +58,9 @@ class EnumIntegrationSurface(str, Enum):
     PLAYWRIGHT_BEHAVIORAL = "playwright_behavioral"
     """Playwright end-to-end data-flow and UI behavioral verification probes."""
 
+    WIRING_VERIFICATION = "wiring_verification"
+    """Structural topology probe for declared emitter/consumer/writer completeness."""
+
     def __str__(self) -> str:
         """Return the string value for serialization."""
         return self.value
