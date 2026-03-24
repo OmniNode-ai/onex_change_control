@@ -34,8 +34,8 @@ class TestTopicConstantsMatch:
 
     def test_producer_files_contain_topic(
         self,
-        boundary_manifest: list[dict],
-        omni_home: Path,  # type: ignore[type-arg]
+        boundary_manifest: list[dict[str, str]],
+        omni_home: Path,
     ) -> None:
         """Each boundary's producer_file must contain the topic_pattern."""
         failures = []
@@ -64,8 +64,8 @@ class TestTopicConstantsMatch:
 
     def test_consumer_files_contain_topic(
         self,
-        boundary_manifest: list[dict],
-        omni_home: Path,  # type: ignore[type-arg]
+        boundary_manifest: list[dict[str, str]],
+        omni_home: Path,
     ) -> None:
         """Each boundary's consumer_file must contain the topic_pattern."""
         failures = []
@@ -94,8 +94,8 @@ class TestTopicConstantsMatch:
 
     def test_no_orphaned_boundaries(
         self,
-        boundary_manifest: list[dict],
-        omni_home: Path,  # type: ignore[type-arg]
+        boundary_manifest: list[dict[str, str]],
+        omni_home: Path,
     ) -> None:
         """Every boundary should have both producer and consumer files present."""
         orphans = []
