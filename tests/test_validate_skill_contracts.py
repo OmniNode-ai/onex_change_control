@@ -5,19 +5,15 @@
 
 from __future__ import annotations
 
-import sys
 import textwrap
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-# Add scripts/ to path so we can import the validation module.
-sys.path.insert(
-    0,
-    str(Path(__file__).resolve().parents[2] / "scripts"),
-)
+if TYPE_CHECKING:
+    from pathlib import Path
 
-from validation.validate_skill_contracts import (
+from scripts.validation.validate_skill_contracts import (
     check_args_parity,
     check_duplicate_frontmatter,
     check_spec_prompt_predicates,
