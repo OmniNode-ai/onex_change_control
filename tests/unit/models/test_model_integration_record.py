@@ -173,3 +173,49 @@ class TestModelIntegrationRecord:
             ],
         )
         assert record.overall_status == EnumInvariantStatus.FAIL
+
+    # -----------------------------------------------------------------------
+    # PLAYWRIGHT_BEHAVIORAL surface compatibility [OMN-6305]
+    # -----------------------------------------------------------------------
+
+    def test_playwright_behavioral_probe_result_pass(self) -> None:
+        """PLAYWRIGHT_BEHAVIORAL surface accepted in probe result with PASS."""
+        result = ModelIntegrationProbeResult(
+            surface=EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL,
+            status=EnumInvariantStatus.PASS,
+            detail="All 5 data-flow + 12 behavioral tests passed",
+            checked_at="2026-03-24",
+        )
+        assert result.surface == EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL
+        assert result.status == EnumInvariantStatus.PASS
+
+    def test_overall_pass_with_playwright_behavioral(self) -> None:
+        """Record with all PASS including PLAYWRIGHT_BEHAVIORAL derives overall PASS."""
+        record = ModelIntegrationRecord(
+            **_BASE,
+            tickets=[
+                _probe(EnumIntegrationSurface.KAFKA, EnumInvariantStatus.PASS),
+                _probe(EnumIntegrationSurface.CI, EnumInvariantStatus.PASS),
+                _probe(
+                    EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL,
+                    EnumInvariantStatus.PASS,
+                ),
+            ],
+        )
+        assert record.overall_status == EnumInvariantStatus.PASS
+
+    def test_overall_fail_when_playwright_behavioral_fails(self) -> None:
+        """Record with PLAYWRIGHT_BEHAVIORAL FAIL drives overall_status to FAIL."""
+        record = ModelIntegrationRecord(
+            **_BASE,
+            tickets=[
+                _probe(EnumIntegrationSurface.KAFKA, EnumInvariantStatus.PASS),
+                _probe(EnumIntegrationSurface.CI, EnumInvariantStatus.PASS),
+                ModelIntegrationProbeResult(
+                    surface=EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL,
+                    status=EnumInvariantStatus.FAIL,
+                    detail="2/5 data-flow tests failed: /events empty",
+                ),
+            ],
+        )
+        assert record.overall_status == EnumInvariantStatus.FAIL

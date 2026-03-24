@@ -25,6 +25,7 @@ class EnumIntegrationSurface(str, Enum):
     - CONTAINER_HEALTH: Docker container state probes (unconditional)
     - RUNTIME_HEALTH: Runtime service HTTP health endpoint probes (unconditional)
     - CROSS_REPO_BOUNDARY: Cross-repo schema round-trip and topic constant matching
+    - PLAYWRIGHT_BEHAVIORAL: Playwright end-to-end data-flow and UI behavioral probes
     """
 
     KAFKA = "kafka"
@@ -53,6 +54,9 @@ class EnumIntegrationSurface(str, Enum):
 
     CROSS_REPO_BOUNDARY = "cross_repo_boundary"
     """Cross-repo Kafka schema round-trip and topic constant matching probes."""
+
+    PLAYWRIGHT_BEHAVIORAL = "playwright_behavioral"
+    """Playwright end-to-end data-flow and UI behavioral verification probes."""
 
     def __str__(self) -> str:
         """Return the string value for serialization."""

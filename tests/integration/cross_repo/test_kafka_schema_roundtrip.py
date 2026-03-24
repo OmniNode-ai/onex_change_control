@@ -127,7 +127,7 @@ SCHEMA_TEST_DATA: dict[str, dict] = {  # type: ignore[type-arg]
 # NOTE: event_schema labels in kafka_boundaries.yaml are informational and may
 # not match importable Python class names 1:1 — some labels are placeholders.
 KNOWN_COVERAGE_GAP = (
-    23  # 23 unique omniclaude boundary schemas pending coverage (1 covered by OMN-6284)
+    24  # 24 unique omniclaude boundary event_schema labels pending coverage
 )
 
 
