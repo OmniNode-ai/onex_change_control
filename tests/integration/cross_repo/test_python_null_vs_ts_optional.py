@@ -32,10 +32,9 @@ FIXTURE_SCHEMA_MAP = {
 # Known violations that exist in omnidash main and are tracked for fix.
 # These fields use .optional() in the Zod schema but Python emits null.
 # Tracked by OMN-6405 — remove entries as omnidash schemas are fixed.
-KNOWN_VIOLATIONS: dict[str, set[str]] = {
-    "NodeIntrospectionPayloadSchema": {"event_bus"},
-    "NodeHeartbeatPayloadSchema": {"cpu_usage_percent", "memory_usage_mb"},
-}
+# All original violations (event_bus, cpu_usage_percent, memory_usage_mb)
+# have been fixed in omnidash. Keep the dict for future use.
+KNOWN_VIOLATIONS: dict[str, set[str]] = {}
 
 
 def _resolve_omnidash_schema_file() -> Path | None:
