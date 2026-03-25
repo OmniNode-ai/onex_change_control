@@ -24,10 +24,11 @@ class TestEnumIntegrationSurface:
         assert EnumIntegrationSurface.RUNTIME_HEALTH is not None
         assert EnumIntegrationSurface.CROSS_REPO_BOUNDARY is not None
         assert EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL is not None
+        assert EnumIntegrationSurface.SCHEMA_PARITY is not None
 
     def test_value_count(self) -> None:
-        """Exactly eleven members defined."""
-        assert len(EnumIntegrationSurface) == 11
+        """Exactly twelve members defined."""
+        assert len(EnumIntegrationSurface) == 12
 
     def test_cross_repo_boundary_surface_exists(self) -> None:
         """CROSS_REPO_BOUNDARY member has correct value."""
@@ -53,6 +54,7 @@ class TestEnumIntegrationSurface:
         assert str(EnumIntegrationSurface.SCRIPT) == "script"
         assert str(EnumIntegrationSurface.CONTAINER_HEALTH) == "container_health"
         assert str(EnumIntegrationSurface.RUNTIME_HEALTH) == "runtime_health"
+        assert str(EnumIntegrationSurface.SCHEMA_PARITY) == "schema_parity"
 
     def test_is_str_subclass(self) -> None:
         """EnumIntegrationSurface members are str instances."""
@@ -64,6 +66,7 @@ class TestEnumIntegrationSurface:
         assert isinstance(EnumIntegrationSurface.SCRIPT, str)
         assert isinstance(EnumIntegrationSurface.CONTAINER_HEALTH, str)
         assert isinstance(EnumIntegrationSurface.RUNTIME_HEALTH, str)
+        assert isinstance(EnumIntegrationSurface.SCHEMA_PARITY, str)
 
     def test_roundtrip_from_value(self) -> None:
         """Can construct members from their string values."""
@@ -80,6 +83,10 @@ class TestEnumIntegrationSurface:
         assert (
             EnumIntegrationSurface("runtime_health")
             is EnumIntegrationSurface.RUNTIME_HEALTH
+        )
+        assert (
+            EnumIntegrationSurface("schema_parity")
+            is EnumIntegrationSurface.SCHEMA_PARITY
         )
 
     def test_playwright_behavioral_surface_exists(self) -> None:
