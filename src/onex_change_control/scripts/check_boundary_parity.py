@@ -41,6 +41,7 @@ class BoundaryEntry:
     consumer_file: str
     topic_pattern: str
     event_schema: str
+    status: str = "active"  # "active" | "pending"
 
 
 @dataclass
@@ -90,6 +91,7 @@ def load_manifest(manifest_path: Path) -> list[BoundaryEntry]:
                 consumer_file=item["consumer_file"],
                 topic_pattern=item["topic_pattern"],
                 event_schema=item.get("event_schema", ""),
+                status=item.get("status", "active"),
             )
         )
     return entries
@@ -181,6 +183,10 @@ def run_parity_check(
     report = ParityReport()
 
     for entry in entries:
+        if entry.status == "pending":
+            msg = f"  SKIP (pending): {entry.topic_name}"
+            print(msg)
+            continue
         result = check_boundary(entry, repos_root)
         report.results.append(result)
 
