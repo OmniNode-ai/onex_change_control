@@ -80,17 +80,15 @@ def test_contract_description_extractable(repo: str, contract_dir: Path) -> None
 
 
 @pytest.mark.integration
-def test_infra_contracts_parse_through_introspection_service() -> None:
-    """omnibase_infra contracts must fully parse through ServiceNodeIntrospection.
+def test_all_contracts_parse_through_introspection_service() -> None:
+    """ALL repos' contracts must parse through ServiceNodeIntrospection.
 
-    This is the deeper check — not just that the YAML has a description field,
-    but that the introspection service can actually extract it end-to-end.
-    Only runs for omnibase_infra since ServiceNodeIntrospection lives there.
+    The introspection pipeline runs in omnibase_infra but loads contracts
+    from ANY repo deployed to the runtime. If a contract can't be parsed,
+    its description/node_type won't appear on the omnidash registry.
+
+    Skips when omnibase_infra is not importable (CI needs it as a dep).
     """
-    infra_path = OMNI_HOME / "omnibase_infra"
-    if not infra_path.is_dir():
-        pytest.skip("omnibase_infra not found")
-
     try:
         from omnibase_infra.services.service_node_introspection import (  # type: ignore[import-not-found]
             ServiceNodeIntrospection,
@@ -98,11 +96,20 @@ def test_infra_contracts_parse_through_introspection_service() -> None:
     except ImportError:
         pytest.skip("omnibase_infra not importable")
 
-    contracts = [d.parent for d in sorted(infra_path.rglob("nodes/*/contract.yaml"))]
-    assert len(contracts) > 0, "No contracts found in omnibase_infra"
+    all_contract_dirs: list[tuple[str, Path]] = []
+    for repo in CONTRACT_REPOS:
+        repo_path = OMNI_HOME / repo
+        if not repo_path.is_dir():
+            continue
+        for contract_yaml in sorted(
+            repo_path.rglob("nodes/*/contract.yaml"),
+        ):
+            all_contract_dirs.append((repo, contract_yaml.parent))
+
+    assert len(all_contract_dirs) > 0, "No contracts found across repos"
 
     failures = []
-    for contract_dir in contracts:
+    for repo, contract_dir in all_contract_dirs:
         svc = ServiceNodeIntrospection.from_contract_dir(
             contracts_dir=contract_dir,
             event_bus=None,
@@ -110,12 +117,18 @@ def test_infra_contracts_parse_through_introspection_service() -> None:
         )
         has_description = svc._description_override is not None or (
             svc._introspection_contract is not None
-            and getattr(svc._introspection_contract, "description", None) is not None
+            and getattr(
+                svc._introspection_contract,
+                "description",
+                None,
+            )
+            is not None
         )
         if not has_description:
-            failures.append(contract_dir.name)
+            failures.append(f"{repo}/{contract_dir.name}")
 
     assert not failures, (
-        f"{len(failures)} omnibase_infra contracts failed introspection parsing "
-        f"(description=None): {failures}. This is the OMN-6405 bug class."
+        f"{len(failures)} contracts failed introspection parsing "
+        f"(description=None): {failures}. "
+        f"This is the OMN-6405 bug class."
     )
