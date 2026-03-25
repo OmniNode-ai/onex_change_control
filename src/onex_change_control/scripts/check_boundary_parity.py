@@ -25,9 +25,12 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 
 import yaml
+
+PENDING_GRACE_PERIOD_DAYS = 14
 
 
 @dataclass
@@ -42,6 +45,8 @@ class BoundaryEntry:
     topic_pattern: str
     event_schema: str
     status: str = "active"  # "active" | "pending"
+    pending_since: str = ""  # ISO date string, e.g. "2026-03-24"
+    pending_reason: str = ""
 
 
 @dataclass
@@ -92,6 +97,8 @@ def load_manifest(manifest_path: Path) -> list[BoundaryEntry]:
                 topic_pattern=item["topic_pattern"],
                 event_schema=item.get("event_schema", ""),
                 status=item.get("status", "active"),
+                pending_since=item.get("pending_since", ""),
+                pending_reason=item.get("pending_reason", ""),
             )
         )
     return entries
@@ -174,6 +181,30 @@ def check_boundary(
     )
 
 
+def _is_pending_within_grace(entry: BoundaryEntry) -> bool:
+    """Check if a pending entry is within its grace period.
+
+    Returns True if the entry should be skipped (within grace period).
+    Returns False if the entry is expired (grace period exceeded) or not pending.
+    """
+    if entry.status != "pending":
+        return False
+    if not entry.pending_since:
+        return False
+
+    from datetime import datetime
+
+    try:
+        pending_date = datetime.strptime(entry.pending_since, "%Y-%m-%d").replace(
+            tzinfo=UTC
+        )
+    except ValueError:
+        return False  # unparseable date — treat as active (don't skip)
+
+    elapsed_days = (datetime.now(tz=UTC) - pending_date).days
+    return elapsed_days <= PENDING_GRACE_PERIOD_DAYS
+
+
 def run_parity_check(
     manifest_path: Path,
     repos_root: Path,
@@ -184,9 +215,38 @@ def run_parity_check(
 
     for entry in entries:
         if entry.status == "pending":
-            msg = f"  SKIP (pending): {entry.topic_name}"
-            print(msg)
+            if _is_pending_within_grace(entry):
+                # Within grace period — skip with informational note
+                print(
+                    f"  PENDING (grace): {entry.topic_name} "
+                    f"({entry.producer_repo} -> {entry.consumer_repo}) "
+                    f"— {entry.pending_reason or 'no reason given'}"
+                )
+                continue
+
+            # Grace period expired — treat as an error
+            from datetime import datetime
+
+            pending_date = datetime.strptime(entry.pending_since, "%Y-%m-%d").replace(
+                tzinfo=UTC
+            )
+            elapsed_days = (datetime.now(tz=UTC) - pending_date).days
+            result = ParityResult(
+                boundary=entry,
+                producer_ok=False,
+                consumer_ok=False,
+                producer_file_exists=True,
+                consumer_file_exists=False,
+                error=(
+                    f"EXPIRED PENDING: {entry.topic_name} has been pending for "
+                    f"{elapsed_days} days (since {entry.pending_since}, "
+                    f"grace period is {PENDING_GRACE_PERIOD_DAYS} days). "
+                    f"Reason: {entry.pending_reason or 'none'}"
+                ),
+            )
+            report.results.append(result)
             continue
+
         result = check_boundary(entry, repos_root)
         report.results.append(result)
 
