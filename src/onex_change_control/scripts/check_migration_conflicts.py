@@ -35,6 +35,7 @@ from enum import Enum, unique
 from pathlib import Path
 from typing import NamedTuple
 
+import yaml
 from colorama import Fore, Style, init
 
 
@@ -92,6 +93,45 @@ class MigrationConflict(NamedTuple):
     conflict_type: EnumMigrationConflictType
     table_name: str
     definitions: list[TableDefinition]
+
+
+def load_suppressions(suppressions_path: Path) -> set[str]:
+    """Load suppressed table names from a YAML suppressions file.
+
+    Returns a set of table names (lowercased) that should be excluded
+    from conflict reporting.
+    """
+    if not suppressions_path.is_file():
+        return set()
+
+    with suppressions_path.open() as f:
+        data = yaml.safe_load(f)
+
+    if not data or "suppressions" not in data:
+        return set()
+
+    suppressed: set[str] = set()
+    for entry in data["suppressions"]:
+        table = entry.get("table", "").lower()
+        if table:
+            suppressed.add(table)
+
+    return suppressed
+
+
+def filter_suppressed_conflicts(
+    conflicts: list[MigrationConflict],
+    suppressed_tables: set[str],
+) -> tuple[list[MigrationConflict], list[MigrationConflict]]:
+    """Split conflicts into unsuppressed and suppressed lists."""
+    unsuppressed = []
+    suppressed = []
+    for conflict in conflicts:
+        if conflict.table_name in suppressed_tables:
+            suppressed.append(conflict)
+        else:
+            unsuppressed.append(conflict)
+    return unsuppressed, suppressed
 
 
 def extract_tables_from_sql(sql_path: Path, repo_name: str) -> list[TableDefinition]:
@@ -638,10 +678,8 @@ def format_column_violations(result: ColumnReferenceResult) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    """CLI entry point."""
-    init()  # Initialize colorama
-
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description="Check for migration conflicts across repositories."
     )
@@ -667,8 +705,24 @@ def main() -> None:
         action="store_true",
         help="Also check that Python SQL references match migration DDL columns.",
     )
+    parser.add_argument(
+        "--suppressions-file",
+        type=Path,
+        default=None,
+        help="YAML file listing known intentional conflicts to suppress.",
+    )
+    parser.add_argument(
+        "--warn-columns",
+        action="store_true",
+        help="Treat column-reference violations as warnings (exit 0).",
+    )
+    return parser
 
-    args = parser.parse_args()
+
+def main() -> None:
+    """CLI entry point."""
+    init()  # Initialize colorama
+    args = _build_parser().parse_args()
 
     if not args.repos_root.is_dir():
         print(
@@ -678,20 +732,33 @@ def main() -> None:
         )
         sys.exit(1)
 
-    has_issues = False
+    suppressed_tables = (
+        load_suppressions(args.suppressions_file) if args.suppressions_file else set()
+    )
 
-    conflicts = detect_conflicts(args.repos_root, args.repos)
+    all_conflicts = detect_conflicts(args.repos_root, args.repos)
+    conflicts, suppressed = filter_suppressed_conflicts(
+        all_conflicts, suppressed_tables
+    )
+
     print(format_conflicts(conflicts))
-    if conflicts:
-        has_issues = True
 
+    if suppressed:
+        print(
+            f"{Fore.CYAN}Suppressed {len(suppressed)} known conflict(s) "
+            f"via suppressions file.{Style.RESET_ALL}\n"
+        )
+
+    has_column_issues = False
     if args.check_columns:
         col_result = check_column_references(args.repos_root, args.repos)
         print(format_column_violations(col_result))
-        if col_result.violations:
-            has_issues = True
+        has_column_issues = bool(col_result.violations)
 
-    if has_issues and not args.warn_only:
+    if args.warn_only:
+        return
+
+    if conflicts or (has_column_issues and not args.warn_columns):
         sys.exit(1)
 
 
