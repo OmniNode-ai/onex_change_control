@@ -10,7 +10,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -18,7 +17,10 @@ from typing import Any
 
 import yaml
 
-from onex_change_control.handlers.handler_drift_analysis import analyze_drift
+from onex_change_control.handlers.handler_drift_analysis import (
+    analyze_drift,
+    compute_canonical_hash,
+)
 from onex_change_control.models.model_contract_drift_input import (
     ModelContractDriftInput,
 )
@@ -32,12 +34,6 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         print(f"Error: {path} does not contain a YAML mapping", file=sys.stderr)
         sys.exit(1)
     return data
-
-
-def _canonical_hash(data: dict[str, Any]) -> str:
-    """Compute SHA-256 hex digest of canonicalized YAML content."""
-    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def main() -> None:
@@ -71,7 +67,7 @@ def main() -> None:
     drift_input = ModelContractDriftInput(
         contract_name=args.current.stem,
         current_contract=current,
-        pinned_hash=_canonical_hash(baseline),
+        pinned_hash=compute_canonical_hash(baseline),
     )
 
     result = analyze_drift(drift_input)
