@@ -87,14 +87,16 @@ def test_all_contracts_parse_through_introspection_service() -> None:
     from ANY repo deployed to the runtime. If a contract can't be parsed,
     its description/node_type won't appear on the omnidash registry.
 
-    Skips when omnibase_infra is not importable (CI needs it as a dep).
+    Skips only when omnibase_infra repo is not present. If the repo exists
+    but the import fails, that's a real regression and should surface as an error.
     """
-    try:
-        from omnibase_infra.services.service_node_introspection import (  # type: ignore[import-not-found]
-            ServiceNodeIntrospection,
-        )
-    except ImportError:
-        pytest.skip("omnibase_infra not importable")
+    omnibase_infra_path = OMNI_HOME / "omnibase_infra"
+    if not omnibase_infra_path.is_dir():
+        pytest.skip("omnibase_infra repo not found at expected path")
+
+    from omnibase_infra.services.service_node_introspection import (  # type: ignore[import-not-found]
+        ServiceNodeIntrospection,
+    )
 
     all_contract_dirs: list[tuple[str, Path]] = []
     for repo in CONTRACT_REPOS:

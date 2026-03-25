@@ -55,10 +55,7 @@ def _resolve_omnidash_schema_file() -> Path | None:
         candidates.append(Path(env) / "omnidash" / _SCHEMA_RELPATH)
 
     # Sibling of repo root (CI layout: ../omnidash alongside checkout)
-    candidates.append(_REPO_ROOT.parent / "omnidash" / _SCHEMA_RELPATH)
-
-    # omni_home canonical layout (repo root is inside omni_home)
-    # e.g. /Volumes/.../omni_home/onex_change_control -> parent is omni_home
+    # Also covers omni_home canonical layout where repo root parent IS omni_home.
     candidates.append(_REPO_ROOT.parent / "omnidash" / _SCHEMA_RELPATH)
 
     for c in candidates:
@@ -125,6 +122,7 @@ class TestPythonNullVsTsOptional:
 
     @pytest.fixture
     def ts_source(self) -> str:
+        """Load the omnidash event-envelope.ts Zod schema source text."""
         schema_file = _resolve_omnidash_schema_file()
         if schema_file is None:
             pytest.skip(
@@ -139,6 +137,7 @@ class TestPythonNullVsTsOptional:
     def test_null_fields_are_nullable_not_optional(
         self, ts_source: str, fixture_name: str, schema_name: str
     ) -> None:
+        """Assert null-valued fixture fields use .nullable() not .optional() in Zod."""
         fixture_path = FIXTURES_DIR / fixture_name
         if not fixture_path.exists():
             pytest.skip(
