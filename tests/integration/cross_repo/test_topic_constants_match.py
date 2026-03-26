@@ -125,6 +125,7 @@ class TestTopicConstantsMatch:
         It prevents future over-reliance on these tests as proof of live wiring.
         """
         # Simulate a file where the topic appears only in a comment and dead code
+        # TODO_FORMAT_EXEMPT: string literal below simulates dead-code comment
         dead_code_content = textwrap.dedent("""
             # TODO: remove this old topic: onex.evt.omniclaude.deprecated-topic.v1
             #
