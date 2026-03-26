@@ -26,7 +26,7 @@ class TestNodeContractDriftEffect:
         assert node is not None
 
     @pytest.mark.skip(
-        reason="Effect subcontract not loaded — "
+        reason="Effect subcontract not loaded (OMN-6689) — "
         "contract-driven routing not yet wired for external repos"
     )
     def test_effect_contract_loads_topic(self, container: MagicMock) -> None:

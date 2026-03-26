@@ -46,14 +46,14 @@ class TestNodeContractDriftReducer:
         assert node is not None
 
     @pytest.mark.skip(
-        reason="FSM runtime not yet wired for external nodes — "
+        reason="FSM runtime not yet wired for external nodes (OMN-6689) — "
         "clean->drifted transition requires NodeReducer.process() + FSM contract wiring"
     )
     def test_reducer_clean_to_drifted(self, container: MagicMock) -> None:
         """BREAKING drift into clean reducer -> drifted."""
 
     @pytest.mark.skip(
-        reason="FSM runtime not yet wired for external nodes — "
+        reason="FSM runtime not yet wired for external nodes (OMN-6689) — "
         "drifted->clean transition requires NodeReducer.process() + FSM contract wiring"
     )
     def test_reducer_drifted_to_clean(self, container: MagicMock) -> None:
