@@ -35,6 +35,17 @@ from onex_change_control.models.model_db_boundary_exception import (
     ModelDbBoundaryException,
     ModelDbBoundaryExceptionsRegistry,
 )
+from onex_change_control.models.model_doc_cross_ref_check import (
+    ModelDocCrossRefCheck,
+)
+from onex_change_control.models.model_doc_freshness_result import (
+    ModelDocFreshnessResult,
+)
+from onex_change_control.models.model_doc_freshness_sweep_report import (
+    ModelDocFreshnessSweepReport,
+    ModelRepoDocSummary,
+)
+from onex_change_control.models.model_doc_reference import ModelDocReference
 from onex_change_control.models.model_dod_sweep import (
     ModelDodSweepCheckResult,
     ModelDodSweepResult,
@@ -71,6 +82,10 @@ __all__ = [
     "ModelDayOpenRepoSyncEntry",
     "ModelDbBoundaryException",
     "ModelDbBoundaryExceptionsRegistry",
+    "ModelDocCrossRefCheck",
+    "ModelDocFreshnessResult",
+    "ModelDocFreshnessSweepReport",
+    "ModelDocReference",
     "ModelDodCheck",
     "ModelDodEvidenceItem",
     "ModelDodSweepCheckResult",
@@ -83,5 +98,6 @@ __all__ = [
     "ModelGoldenPathOutput",
     "ModelIntegrationProbeResult",
     "ModelIntegrationRecord",
+    "ModelRepoDocSummary",
     "ModelTicketContract",
 ]
