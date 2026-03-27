@@ -16,6 +16,10 @@ from onex_change_control.models.model_autopilot_cycle import (
     ModelAutopilotCycleRecord,
     ModelAutopilotStepResult,
 )
+from onex_change_control.models.model_compliance_sweep_report import (
+    ModelComplianceSweepReport,
+    ModelRepoComplianceBreakdown,
+)
 from onex_change_control.models.model_contract_drift_input import (
     ModelContractDriftInput,
 )
@@ -70,9 +74,16 @@ from onex_change_control.models.model_golden_path import (
     ModelGoldenPathInput,
     ModelGoldenPathOutput,
 )
+from onex_change_control.models.model_handler_compliance_result import (
+    ModelHandlerComplianceResult,
+)
 from onex_change_control.models.model_integration_record import (
     ModelIntegrationProbeResult,
     ModelIntegrationRecord,
+)
+from onex_change_control.models.model_migration_spec import (
+    ModelMigrationSpec,
+    ModelMigrationValidationResult,
 )
 from onex_change_control.models.model_ticket_contract import (
     ModelDodCheck,
@@ -85,6 +96,7 @@ __all__ = [
     "EnumAutopilotStepStatus",
     "ModelAutopilotCycleRecord",
     "ModelAutopilotStepResult",
+    "ModelComplianceSweepReport",
     "ModelContractDriftInput",
     "ModelContractDriftOutput",
     "ModelDayClose",
@@ -116,8 +128,12 @@ __all__ = [
     "ModelGoldenPathAssertion",
     "ModelGoldenPathInput",
     "ModelGoldenPathOutput",
+    "ModelHandlerComplianceResult",
     "ModelIntegrationProbeResult",
     "ModelIntegrationRecord",
+    "ModelMigrationSpec",
+    "ModelMigrationValidationResult",
+    "ModelRepoComplianceBreakdown",
     "ModelRepoDocSummary",
     "ModelTicketContract",
 ]
