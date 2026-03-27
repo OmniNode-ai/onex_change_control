@@ -6,9 +6,15 @@
 Migration plan for a single handler's imperative-to-declarative transition.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from __future__ import annotations
 
-from onex_change_control.enums.enum_compliance_violation import EnumComplianceViolation
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from onex_change_control.enums.enum_compliance_violation import (  # noqa: TC001
+    EnumComplianceViolation,
+)
 from onex_change_control.enums.enum_migration_status import EnumMigrationStatus
 
 
@@ -103,3 +109,25 @@ class ModelMigrationValidationResult(BaseModel):
         ...,
         description="Overall pass/fail: all tests passed and dispatch loads",
     )
+
+    @model_validator(mode="after")
+    def check_consistency(self) -> Self:
+        """Enforce test count and passed-flag invariants."""
+        if self.tests_passed + self.tests_failed != self.test_inputs_count:
+            msg = (
+                f"tests_passed ({self.tests_passed}) "
+                f"+ tests_failed ({self.tests_failed}) "
+                f"!= test_inputs_count ({self.test_inputs_count})"
+            )
+            raise ValueError(msg)
+        if self.passed and (
+            not self.contract_dispatch_loads
+            or self.tests_failed != 0
+            or self.tests_passed != self.test_inputs_count
+        ):
+            msg = (
+                "passed=True requires contract_dispatch_loads=True, "
+                "tests_failed=0, and all tests passed"
+            )
+            raise ValueError(msg)
+        return self

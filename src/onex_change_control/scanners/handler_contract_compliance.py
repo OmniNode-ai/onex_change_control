@@ -47,24 +47,15 @@ _BARE_TOPIC_NAMES: frozenset[str] = frozenset(
 
 # --- Transport detection ---
 
-# Import-level transport indicators
-_TRANSPORT_IMPORT_MAP: dict[str, str] = {
-    "psycopg": "DATABASE",
-    "asyncpg": "DATABASE",
-    "sqlalchemy": "DATABASE",
-    "httpx": "HTTP",
-    "requests": "HTTP",
-    "aiohttp": "HTTP",
-    "aiokafka": "KAFKA",
-    "confluent_kafka": "KAFKA",
-    "qdrant_client": "QDRANT",
-    "consul": "CONSUL",
-}
-
-# Call-site transport indicators (more precise than imports)
+# Call-site transport indicators (precise call-site detection only)
 _TRANSPORT_CALLSITE_PATTERNS: dict[str, str] = {
     "session.execute": "DATABASE",
     "session.query": "DATABASE",
+    "asyncpg.connect": "DATABASE",
+    "asyncpg.create_pool": "DATABASE",
+    "psycopg.connect": "DATABASE",
+    "create_engine": "DATABASE",
+    "create_async_engine": "DATABASE",
     "AsyncClient": "HTTP",
     "httpx.get": "HTTP",
     "httpx.post": "HTTP",
@@ -191,11 +182,11 @@ def scan_handler_topics(handler_path: Path) -> list[str]:
 def scan_handler_transports(handler_path: Path) -> list[str]:
     """Detect transport usage in handler via AST.
 
-    Two-tier detection:
-    1. Import-level: detects library imports (produces warnings)
-    2. Call-site: detects actual usage calls (produces violations)
+    Only returns transports confirmed by call-site usage, not bare imports.
+    Import-only references (including TYPE_CHECKING guards) are excluded
+    to avoid false positives.
 
-    Returns deduplicated list of transport types found.
+    Returns deduplicated list of transport types found at call sites.
     """
     source = handler_path.read_text(encoding="utf-8")
     try:
@@ -203,26 +194,12 @@ def scan_handler_transports(handler_path: Path) -> list[str]:
     except SyntaxError:
         return []
 
-    transports: set[str] = set()
+    callsite_transports: set[str] = set()
 
     for node in ast.walk(tree):
-        _check_import_transports(node, transports)
-        _check_callsite_transports(node, transports)
+        _check_callsite_transports(node, callsite_transports)
 
-    return sorted(transports)
-
-
-def _check_import_transports(node: ast.AST, transports: set[str]) -> None:
-    """Check import nodes for transport library usage."""
-    if isinstance(node, ast.Import):
-        for alias in node.names:
-            module_name = alias.name.split(".")[0]
-            if module_name in _TRANSPORT_IMPORT_MAP:
-                transports.add(_TRANSPORT_IMPORT_MAP[module_name])
-    elif isinstance(node, ast.ImportFrom) and node.module:
-        module_name = node.module.split(".")[0]
-        if module_name in _TRANSPORT_IMPORT_MAP:
-            transports.add(_TRANSPORT_IMPORT_MAP[module_name])
+    return sorted(callsite_transports)
 
 
 def _check_callsite_transports(node: ast.AST, transports: set[str]) -> None:
@@ -304,7 +281,7 @@ def cross_reference(
             node_dir=node_dir,
             repo=repo,
             contract_ctx=contract_ctx,
-            node_logic=node_logic if hf == handler_files[0] else [],
+            node_logic=node_logic,
             allowlisted_paths=allowlisted_paths,
         )
         for hf in handler_files
@@ -404,11 +381,17 @@ def _collect_violations(
     violations: list[EnumComplianceViolation] = []
     details: list[str] = []
 
-    # Check 1: Topic compliance
+    # Check 1: Topic compliance — any hardcoded topic literal is a violation,
+    # even if declared in the contract. Declaration and hardcoding are orthogonal:
+    # handlers should use contract-driven dispatch, not string literals.
     used_topics = scan_handler_topics(handler_file)
     for topic in used_topics:
-        if topic not in contract_ctx["declared_topics"]:
-            violations.append(EnumComplianceViolation.HARDCODED_TOPIC)
+        violations.append(EnumComplianceViolation.HARDCODED_TOPIC)
+        if topic in contract_ctx["declared_topics"]:
+            details.append(
+                f"hardcoded topic '{topic}' (declared but should use contract dispatch)"
+            )
+        else:
             details.append(f"hardcoded topic '{topic}' not in contract")
 
     # Check 2: Transport compliance

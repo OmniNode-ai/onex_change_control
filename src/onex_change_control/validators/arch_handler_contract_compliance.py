@@ -29,6 +29,7 @@ import yaml
 if TYPE_CHECKING:
     from pathlib import Path
 
+from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
 from onex_change_control.scanners.handler_contract_compliance import cross_reference
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,11 @@ def run_scan(
     # Count violations
     new_violations = [r for r in all_results if r.violations and not r.allowlisted]
 
-    compliant = sum(1 for r in all_results if not r.violations)
+    compliant = sum(
+        1
+        for r in all_results
+        if not r.violations and r.verdict == EnumComplianceVerdict.COMPLIANT
+    )
     allowlisted_count = sum(1 for r in all_results if r.allowlisted)
     total = len(all_results)
 

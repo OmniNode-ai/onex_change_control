@@ -8,7 +8,7 @@ Aggregated sweep report across all handlers in one or more repos.
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from onex_change_control.models.model_handler_compliance_result import (
     ModelHandlerComplianceResult,
@@ -55,8 +55,6 @@ class ModelComplianceSweepReport(BaseModel):
     compliant_pct: float = Field(
         ...,
         description="Percentage of compliant handlers (0-100)",
-        ge=0.0,
-        le=100.0,
     )
     violation_histogram: dict[str, int] = Field(
         default_factory=dict,
@@ -74,9 +72,3 @@ class ModelComplianceSweepReport(BaseModel):
         default_factory=list,
         description="Handlers that gained violations since last sweep",
     )
-
-    @field_validator("compliant_pct")
-    @classmethod
-    def clamp_percentage(cls, v: float) -> float:
-        """Ensure percentage is clamped between 0 and 100."""
-        return max(0.0, min(100.0, v))

@@ -185,7 +185,7 @@ class TestModelComplianceSweepReport:
         assert report.total_handlers == 0
         assert report.compliant_pct == 0.0
 
-    def test_percentage_clamped(self) -> None:
+    def test_percentage_accepts_boundary_values(self) -> None:
         report = ModelComplianceSweepReport(
             timestamp=datetime.now(tz=UTC),
             total_handlers=10,
@@ -197,6 +197,18 @@ class TestModelComplianceSweepReport:
             compliant_pct=100.0,
         )
         assert report.compliant_pct == 100.0
+
+        zero_report = ModelComplianceSweepReport(
+            timestamp=datetime.now(tz=UTC),
+            total_handlers=0,
+            compliant_count=0,
+            imperative_count=0,
+            hybrid_count=0,
+            allowlisted_count=0,
+            missing_contract_count=0,
+            compliant_pct=0.0,
+        )
+        assert zero_report.compliant_pct == 0.0
 
     def test_frozen(self) -> None:
         report = ModelComplianceSweepReport(
@@ -342,3 +354,25 @@ class TestModelMigrationValidationResult:
         parsed = json.loads(json_str)
         restored = ModelMigrationValidationResult.model_validate(parsed)
         assert restored == result
+
+    def test_count_mismatch_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="test_inputs_count"):
+            ModelMigrationValidationResult(
+                handler_path="x",
+                contract_dispatch_loads=True,
+                test_inputs_count=5,
+                tests_passed=3,
+                tests_failed=1,
+                passed=False,
+            )
+
+    def test_passed_requires_all_green(self) -> None:
+        with pytest.raises(ValidationError, match="passed=True requires"):
+            ModelMigrationValidationResult(
+                handler_path="x",
+                contract_dispatch_loads=False,
+                test_inputs_count=5,
+                tests_passed=5,
+                tests_failed=0,
+                passed=True,
+            )
