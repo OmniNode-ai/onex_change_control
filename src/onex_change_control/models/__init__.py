@@ -40,6 +40,19 @@ from onex_change_control.models.model_dod_sweep import (
     ModelDodSweepResult,
     ModelDodSweepTicketResult,
 )
+from onex_change_control.models.model_eval_report import (
+    ModelEvalReport,
+    ModelEvalSummary,
+)
+from onex_change_control.models.model_eval_run import (
+    ModelEvalMetric,
+    ModelEvalRun,
+    ModelEvalRunPair,
+)
+from onex_change_control.models.model_eval_task import (
+    ModelEvalSuite,
+    ModelEvalTask,
+)
 from onex_change_control.models.model_golden_path import (
     ModelGoldenPath,
     ModelGoldenPathAssertion,
@@ -76,6 +89,13 @@ __all__ = [
     "ModelDodSweepCheckResult",
     "ModelDodSweepResult",
     "ModelDodSweepTicketResult",
+    "ModelEvalMetric",
+    "ModelEvalReport",
+    "ModelEvalRun",
+    "ModelEvalRunPair",
+    "ModelEvalSuite",
+    "ModelEvalSummary",
+    "ModelEvalTask",
     "ModelFieldChange",
     "ModelGoldenPath",
     "ModelGoldenPathAssertion",
