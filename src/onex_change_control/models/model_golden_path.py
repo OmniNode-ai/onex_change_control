@@ -8,7 +8,7 @@ A golden path test verifies that a specific input event produces the expected
 output event, enabling automated contract verification of node pipelines.
 """
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,7 +37,7 @@ class ModelGoldenPathAssertion(BaseModel, frozen=True):
         ...,
         description="Comparison operator: eq | neq | gte | lte | in | contains",
     )
-    value: Any = Field(
+    value: str | int | float | bool | list[object] | dict[str, object] | None = Field(
         ...,
         description="Expected value to compare against",
     )

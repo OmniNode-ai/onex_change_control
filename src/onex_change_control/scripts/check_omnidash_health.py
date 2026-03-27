@@ -26,7 +26,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -129,7 +128,7 @@ def _load_baseline(path: Path) -> dict[str, int]:
     if not path.exists():
         return {}
     try:
-        data: Any = json.loads(path.read_text(encoding="utf-8"))
+        data: object = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return {k: int(v) for k, v in data.items()}
     except (json.JSONDecodeError, ValueError):
@@ -163,7 +162,7 @@ class Finding:
         self.baseline = baseline
         self.current = current
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int]:
         return {
             "table": self.table,
             "level": self.level,

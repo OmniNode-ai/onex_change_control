@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from onex_change_control.enums.enum_drift_severity import (
@@ -21,8 +19,12 @@ class ModelFieldChange(BaseModel):
 
     path: str = Field(description="Dot-separated path to the changed field.")
     change_type: str = Field(description="One of: 'added', 'removed', 'modified'.")
-    old_value: Any = Field(default=None, description="Value in the pinned contract.")
-    new_value: Any = Field(default=None, description="Value in the current contract.")
+    old_value: str | int | float | bool | list[object] | dict[str, object] | None = (
+        Field(default=None, description="Value in the pinned contract.")
+    )
+    new_value: str | int | float | bool | list[object] | dict[str, object] | None = (
+        Field(default=None, description="Value in the current contract.")
+    )
     is_breaking: bool = Field(
         description="True when this change is likely to break existing consumers."
     )
