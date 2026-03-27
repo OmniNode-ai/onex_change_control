@@ -28,7 +28,7 @@ def _make_task(task_id: str = "eval-001-fix-import", **kwargs: object) -> ModelE
         "tags": ["import", "bug-fix"],
     }
     defaults.update(kwargs)
-    return ModelEvalTask(**defaults)  # type: ignore[arg-type]
+    return ModelEvalTask(**defaults)
 
 
 SAMPLE_TASKS = [
@@ -53,7 +53,7 @@ class TestModelEvalTask:
 
     def test_extra_forbid(self) -> None:
         with pytest.raises(ValidationError):
-            _make_task(unknown_field="bad")  # type: ignore[arg-type]
+            _make_task(unknown_field="bad")
 
     def test_max_duration_bounds(self) -> None:
         task = _make_task(max_duration_seconds=7200)
