@@ -1,3 +1,19 @@
+## v0.3.0 (2026-03-28)
+
+### Added
+- feat: permanent version skew prevention [OMN-6692] (#125)
+- feat(ci): add auto-merge-on-open workflow [OMN-6571] (#124)
+- feat: generate compliance allowlists for 4 repos [OMN-6840] (#123)
+- feat: handler contract compliance scanner and models (#122)
+- feat: eval A/B framework models, enums, and comparator [OMN-6770-6778] (#121)
+- feat: add doc freshness scanner models, enums, and modules (#120)
+
+### Changed
+- chore(deps): pin omnibase-core==0.34.0
+
+### Dependencies
+- omnibase-core >=0.30.2 -> ==0.34.0
+
 ## v0.2.0 (2026-03-27)
 
 ### Added
