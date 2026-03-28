@@ -182,6 +182,26 @@ class TestParseContractTopics:
         assert publish == []
         assert subscribe == []
 
+    def test_dict_format_topics(self, tmp_node_dir: Path) -> None:
+        """Topics can be dicts with a 'topic' key (extended format)."""
+        contract = tmp_node_dir / "contract.yaml"
+        contract.write_text(
+            """
+name: "node_test"
+node_type: "EFFECT_GENERIC"
+event_bus:
+  publish_topics:
+    - name: "run_evaluated"
+      topic: "onex.evt.test.run-evaluated.v1"
+      description: "Emitted after evaluation"
+  subscribe_topics:
+    - "onex.evt.test.requested.v1"
+"""
+        )
+        publish, subscribe = parse_contract_topics(contract)
+        assert "onex.evt.test.run-evaluated.v1" in publish
+        assert "onex.evt.test.requested.v1" in subscribe
+
 
 # --- parse_contract_transports ---
 
@@ -354,3 +374,47 @@ class TestCrossReference:
         assert len(imperative) == 1
         assert imperative[0].verdict == EnumComplianceVerdict.ALLOWLISTED
         assert imperative[0].allowlisted is True
+
+
+class TestAllowlistRoundTrip:
+    """Verify allowlist generation produces YAML that makes the validator pass."""
+
+    def test_generated_allowlist_makes_validator_pass(
+        self,
+        tmp_node_dir: Path,
+        compliant_contract: Path,  # noqa: ARG002
+        imperative_handler: Path,  # noqa: ARG002
+    ) -> None:
+        import yaml
+
+        from onex_change_control.validators.arch_handler_contract_compliance import (
+            run_scan,
+        )
+
+        repo_root = tmp_node_dir.parent.parent.parent.parent
+        # First run: should fail (violations, no allowlist)
+        exit_code = run_scan(repo_root)
+        assert exit_code == 1
+
+        # Generate allowlist
+        import io
+        import sys
+
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+        run_scan(repo_root, generate_allowlist=True)
+        sys.stdout = old_stdout
+        allowlist_yaml = buf.getvalue()
+
+        # Write to file
+        allowlist_path = tmp_node_dir / "allowlist.yaml"
+        allowlist_path.write_text(allowlist_yaml)
+
+        # Verify it parses
+        data = yaml.safe_load(allowlist_yaml)
+        assert "allowlisted_handlers" in data
+
+        # Second run with allowlist: should pass
+        exit_code = run_scan(repo_root, allowlist_path=allowlist_path)
+        assert exit_code == 0

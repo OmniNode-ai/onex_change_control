@@ -71,6 +71,17 @@ _TRANSPORT_CALLSITE_PATTERNS: dict[str, str] = {
 _IMPERATIVE_VIOLATION_THRESHOLD = 2
 
 
+def _normalize_topic_list(raw: list[Any]) -> list[str]:
+    """Normalize a topic list that may contain strings or dicts with a 'topic' key."""
+    result: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            result.append(item)
+        elif isinstance(item, dict) and "topic" in item:
+            result.append(str(item["topic"]))
+    return result
+
+
 def parse_contract_topics(contract_path: Path) -> tuple[list[str], list[str]]:
     """Extract publish and subscribe topics from contract.yaml.
 
@@ -82,9 +93,9 @@ def parse_contract_topics(contract_path: Path) -> tuple[list[str], list[str]]:
         return [], []
 
     event_bus = data.get("event_bus", {}) or {}
-    publish = event_bus.get("publish_topics", []) or []
-    subscribe = event_bus.get("subscribe_topics", []) or []
-    return list(publish), list(subscribe)
+    publish = _normalize_topic_list(event_bus.get("publish_topics", []) or [])
+    subscribe = _normalize_topic_list(event_bus.get("subscribe_topics", []) or [])
+    return publish, subscribe
 
 
 def parse_contract_transports(contract_path: Path) -> list[str]:
