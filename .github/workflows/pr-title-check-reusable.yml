@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# Reusable PR title check — enforces OMN-XXXX ticket linkage.
+#
+# Usage in a caller repo:
+#
+#   jobs:
+#     pr-title:
+#       uses: OmniNode-ai/onex_change_control/.github/workflows/pr-title-check-reusable.yml@main
+#       permissions:
+#         pull-requests: read
+#
+# OMN-6912
+
+name: PR Title Check (Reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title for ticket reference
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          # Guard: workflow_call must be triggered by a pull_request event
+          if [[ -z "$PR_TITLE" ]]; then
+            echo "[FAIL] PR_TITLE is empty — this workflow must be called from a pull_request event."
+            exit 1
+          fi
+
+          # Exempt categories (case-insensitive matching)
+          # SYNC NOTE: exempt prefixes must match _EXEMPT_TITLE_PREFIXES in:
+          #   - omniclaude/src/omniclaude/nodes/node_git_effect/models/model_git_request.py
+          #   - omnibase_infra/scripts/generate_deep_dive.py
+          TITLE_LOWER=$(echo "$PR_TITLE" | tr '[:upper:]' '[:lower:]')
+
+          # 1. Any GitHub App bot (catches dependabot, renovate, coderabbit, snyk, etc.)
+          if [[ "$PR_AUTHOR" == *"[bot]" ]]; then
+            echo "[PASS] Exempt: GitHub App bot ($PR_AUTHOR)"
+            exit 0
+          fi
+
+          # 2. Dep bump titles (manual or non-bot)
+          if [[ "$TITLE_LOWER" =~ ^(chore\(deps|build\(deps|bump ) ]]; then
+            echo "[PASS] Exempt: dependency bump"
+            exit 0
+          fi
+
+          # 3. Release PRs
+          if [[ "$TITLE_LOWER" =~ ^(chore:\ release|chore\(release\)|release:) ]]; then
+            echo "[PASS] Exempt: release PR"
+            exit 0
+          fi
+
+          # 4. Check for OMN-XXXX pattern
+          if echo "$PR_TITLE" | grep -qE 'OMN-[0-9]+'; then
+            echo "[PASS] PR title contains ticket reference: $(echo "$PR_TITLE" | grep -oE 'OMN-[0-9]+')"
+            exit 0
+          fi
+
+          # Fail
+          echo "[FAIL] PR title must contain an OMN-XXXX ticket reference."
+          echo ""
+          echo "Title: $PR_TITLE"
+          echo ""
+          echo "Exempt categories (no ticket needed):"
+          echo "  - Any GitHub App bot (author ends with [bot])"
+          echo "  - Titles starting with: chore(deps, build(deps, Bump"
+          echo "  - Titles starting with: chore: release, chore(release), release:"
+          echo ""
+          echo "To fix: add [OMN-XXXX] or OMN-XXXX to the PR title."
+          exit 1
