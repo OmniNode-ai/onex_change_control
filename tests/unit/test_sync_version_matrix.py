@@ -21,6 +21,21 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 import sync_version_matrix  # noqa: E402
 
 
+def _init_git_repo(repo: Path) -> None:
+    """Initialize a git repo with user config for CI compatibility."""
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
+
+
 @pytest.mark.unit
 class TestGetLatestTag:
     """Tests for get_latest_tag()."""
@@ -29,7 +44,7 @@ class TestGetLatestTag:
         """A repo with semver tags should return the latest one."""
         repo = tmp_path / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        _init_git_repo(repo)
         subprocess.run(
             ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "init"],
             check=True,
@@ -58,7 +73,7 @@ class TestGetLatestTag:
         """A repo with no tags should return None."""
         repo = tmp_path / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        _init_git_repo(repo)
         subprocess.run(
             ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "init"],
             check=True,
@@ -77,7 +92,7 @@ class TestGetLatestTag:
         """Tags that aren't semver should be skipped."""
         repo = tmp_path / "repo"
         repo.mkdir()
-        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        _init_git_repo(repo)
         subprocess.run(
             ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "init"],
             check=True,
@@ -113,7 +128,7 @@ class TestMain:
     def _make_repo_with_tag(self, root: Path, name: str, tag: str) -> None:
         repo = root / name
         repo.mkdir()
-        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        _init_git_repo(repo)
         subprocess.run(
             ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "init"],
             check=True,

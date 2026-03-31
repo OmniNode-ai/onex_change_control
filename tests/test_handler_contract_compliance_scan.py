@@ -43,6 +43,10 @@ def _create_node_dir(  # noqa: PLR0913
 ) -> Path:
     """Create a synthetic node directory for testing.
 
+    Uses a src/ layout so _infer_module_path resolves correctly:
+      tmp_path/src/test_pkg/nodes/node_test/handlers/handler_example.py
+      -> module: test_pkg.nodes.node_test.handlers.handler_example
+
     Args:
         tmp_path: Pytest tmp_path fixture.
         contract_yaml: Contents of contract.yaml. If None, no contract is created.
@@ -56,8 +60,9 @@ def _create_node_dir(  # noqa: PLR0913
     Returns:
         Path to the node directory.
     """
-    node_dir = tmp_path / "node_test"
-    node_dir.mkdir()
+    node_dir = tmp_path / "src" / "test_pkg" / "nodes" / "node_test"
+    node_dir.mkdir(parents=True)
+    module_prefix = "test_pkg.nodes.node_test"
 
     if contract_yaml is not None:
         yaml_content = textwrap.dedent(contract_yaml)
@@ -66,8 +71,9 @@ def _create_node_dir(  # noqa: PLR0913
                 handler_routing:
                   routing_strategy: "operation_match"
                   handlers:
-                    - handler_class: "HandlerExample"
-                      handler_module: "node_test.handlers.{handler_module}"
+                    - handler:
+                        name: "HandlerExample"
+                        module: "{module_prefix}.handlers.{handler_module}"
                       operation: "example"
             """)
         (node_dir / "contract.yaml").write_text(yaml_content)
@@ -77,11 +83,15 @@ def _create_node_dir(  # noqa: PLR0913
     (handlers_dir / "__init__.py").write_text("")
     (handlers_dir / f"{handler_module}.py").write_text(textwrap.dedent(handler_code))
 
-    node_py_content = node_code or textwrap.dedent("""\
+    node_py_content = (
+        textwrap.dedent(node_code)
+        if node_code
+        else textwrap.dedent("""\
         class NodeTest:
             def __init__(self, container):
                 super().__init__(container)
     """)
+    )
     (node_dir / "node.py").write_text(node_py_content)
 
     return node_dir
@@ -239,13 +249,16 @@ class TestComplianceVerdictAllowlisted:
                     self.publish(TOPIC, data)
             """,
         )
-        # The allowlist uses the handler_path as it appears in the result
-        # which is the path relative to CWD. Use the full path to match.
-        handler_path = str(node_dir / "handlers" / "handler_example.py")
+        # The allowlist uses rel_path as computed by _audit_handler:
+        # relative to node_dir.parent.parent.parent (base_dir).
+        base_dir = node_dir.parent.parent.parent
+        rel_handler = str(
+            (node_dir / "handlers" / "handler_example.py").relative_to(base_dir)
+        )
         results = cross_reference(
             node_dir,
             repo="test_repo",
-            allowlisted_paths=frozenset({handler_path}),
+            allowlisted_paths=frozenset({rel_handler}),
         )
         assert len(results) == 1
         assert results[0].verdict == EnumComplianceVerdict.ALLOWLISTED
