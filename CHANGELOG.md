@@ -1,3 +1,11 @@
+## v0.4.0 (2026-03-31)
+
+### Added
+- feat(ci): add reusable PR title check workflow [OMN-6913] (#128)
+
+### Fixed
+- fix(ci): add continue-on-error to auto-merge step [OMN-6489] (#126)
+
 ## v0.3.0 (2026-03-28)
 
 ### Added
