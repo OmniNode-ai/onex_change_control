@@ -1,0 +1,255 @@
+---
+# Standard Eval Suite v1.0.0
+#
+# 10 tasks for A/B testing ONEX pipeline effectiveness.
+# Categories: 3 bug-fix, 2 refactor, 2 feature, 2 review, 1 documentation.
+#
+# Each task defines:
+#   - setup_commands: prepare the environment before each run
+#   - success_criteria: machine-checkable pass/fail conditions
+#   - expected_files_changed: files that should be modified
+#
+# Ticket: OMN-6775
+
+suite_id: standard-eval-suite-v1
+name: Standard Evaluation Suite v1
+description: >-
+  Baseline evaluation suite for measuring ONEX pipeline effectiveness. Contains 10 representative tasks
+  across 5 categories to provide statistically meaningful A/B comparison data.
+version: "1.0.0"
+created_at: "2026-04-01T00:00:00Z"
+
+tasks:
+  # --- Bug Fix Tasks (3) ---
+
+  - task_id: eval-001-fix-import-error
+    name: Fix broken import in handler module
+    category: bug-fix
+    prompt: >-
+      The file src/omnibase_infra/nodes/node_registration_orchestrator/handlers/handler_node_introspected.py
+      has a broken import that causes an ImportError at runtime. Find and fix the import error so that
+      all unit tests in the handlers directory pass.
+    repo: omnibase_infra
+    setup_commands:
+      - "git checkout -- ."
+      - "git apply eval_patches/eval-001-broken-import.patch"
+    expected_files_changed:
+      - "src/omnibase_infra/nodes/node_registration_orchestrator/handlers/handler_node_introspected.py"
+    success_criteria:
+      - "uv run pytest tests/unit/ -x --tb=short -q exits with code 0"
+      - "uv run ruff check src/ exits with code 0"
+    max_duration_seconds: 300
+    tags:
+      - bug-fix
+      - import-error
+      - handler
+
+  - task_id: eval-002-fix-pydantic-validation
+    name: Fix Pydantic model validation error
+    category: bug-fix
+    prompt: >-
+      The ModelEvalRun model fails validation when env_snapshot contains None values. Fix the model definition
+      so that None values in env_snapshot are filtered out during construction, and the existing tests
+      pass.
+    repo: onex_change_control
+    setup_commands:
+      - "git checkout -- ."
+      - "git apply eval_patches/eval-002-pydantic-validation.patch"
+    expected_files_changed:
+      - "src/onex_change_control/models/model_eval_run.py"
+    success_criteria:
+      - "uv run pytest tests/ -x --tb=short -q exits with code 0"
+      - "uv run mypy src/ --strict exits with code 0"
+    max_duration_seconds: 300
+    tags:
+      - bug-fix
+      - pydantic
+      - validation
+
+  - task_id: eval-003-fix-kafka-topic-typo
+    name: Fix Kafka topic name typo causing message loss
+    category: bug-fix
+    prompt: >-
+      Messages are not reaching the DLQ consumer. The topic name in the publisher has a typo (onex.evt.platform.dlq-mesage.v1
+      instead of dlq-message). Fix the topic reference so messages flow correctly. Do NOT hardcode the
+      topic string; reference it from the contract or topics.yaml.
+    repo: omnibase_infra
+    setup_commands:
+      - "git checkout -- ."
+      - "git apply eval_patches/eval-003-kafka-topic-typo.patch"
+    expected_files_changed:
+      - "src/omnibase_infra/services/topics.yaml"
+    success_criteria:
+      - "uv run pytest tests/unit/ -x --tb=short -q exits with code 0"
+      - "grep -q 'dlq-message' src/omnibase_infra/services/topics.yaml"
+    max_duration_seconds: 300
+    tags:
+      - bug-fix
+      - kafka
+      - topic
+
+  # --- Refactor Tasks (2) ---
+
+  - task_id: eval-004-extract-shared-validation
+    name: Extract duplicated validation logic into shared helper
+    category: refactor
+    prompt: >-
+      The pattern validation logic (SEMVER_PATTERN, TICKET_ID_PATTERN) is duplicated across model_ticket_contract.py
+      and model_day_close.py. Extract the shared validation into a common validation helper module and
+      update both files to use the shared implementation. Ensure all existing tests still pass.
+    repo: onex_change_control
+    setup_commands:
+      - "git checkout -- ."
+    expected_files_changed:
+      - "src/onex_change_control/validation/patterns.py"
+      - "src/onex_change_control/models/model_ticket_contract.py"
+      - "src/onex_change_control/models/model_day_close.py"
+    success_criteria:
+      - "uv run pytest tests/ -x --tb=short -q exits with code 0"
+      - "uv run ruff check src/ exits with code 0"
+      - "uv run mypy src/ --strict exits with code 0"
+    max_duration_seconds: 600
+    tags:
+      - refactor
+      - deduplication
+      - validation
+
+  - task_id: eval-005-rename-enum-values
+    name: Rename enum values to follow naming convention
+    category: refactor
+    prompt: >-
+      The EnumEvalMetricType enum values use lowercase_with_underscores but the project convention is
+      SCREAMING_SNAKE_CASE for enum members. Rename all enum values to follow the convention (e.g., latency_ms
+      -> LATENCY_MS) and update all references across the codebase.
+    repo: onex_change_control
+    setup_commands:
+      - "git checkout -- ."
+      - "git apply eval_patches/eval-005-enum-lowercase.patch"
+    expected_files_changed:
+      - "src/onex_change_control/enums/enum_eval_metric_type.py"
+      - "src/onex_change_control/eval/comparator.py"
+    success_criteria:
+      - "uv run pytest tests/ -x --tb=short -q exits with code 0"
+      - "uv run mypy src/ --strict exits with code 0"
+    max_duration_seconds: 600
+    tags:
+      - refactor
+      - enum
+      - naming-convention
+
+  # --- Feature Tasks (2) ---
+
+  - task_id: eval-006-add-eval-suite-loader
+    name: Add YAML eval suite loader with validation
+    category: feature
+    prompt: >-
+      Create a function load_eval_suite(path: Path) -> ModelEvalSuite that loads and validates an eval
+      suite from a YAML file. The function should: 1. Read the YAML file 2. Validate it against the ModelEvalSuite
+      schema 3. Return the validated ModelEvalSuite instance 4. Raise ValueError with a clear message
+      if validation fails Include a unit test.
+    repo: onex_change_control
+    setup_commands:
+      - "git checkout -- ."
+    expected_files_changed:
+      - "src/onex_change_control/eval/suite_loader.py"
+      - "tests/unit/eval/test_suite_loader.py"
+    success_criteria:
+      - "uv run pytest tests/unit/eval/ -x --tb=short -q exits with code 0"
+      - "uv run mypy src/ --strict exits with code 0"
+      - "python -c 'from onex_change_control.eval.suite_loader import load_eval_suite'"
+    max_duration_seconds: 600
+    tags:
+      - feature
+      - yaml
+      - loader
+
+  - task_id: eval-007-add-eval-report-export
+    name: Add JSON and Markdown export for eval reports
+    category: feature
+    prompt: >-
+      Add export functions for ModelEvalReport: 1. export_eval_report_json(report: ModelEvalReport, path:
+      Path) -> None 2. export_eval_report_markdown(report: ModelEvalReport, path: Path) -> None The JSON
+      export should use model_dump(mode="json"). The Markdown export should include a summary table and
+      per-task results. Include unit tests.
+    repo: onex_change_control
+    setup_commands:
+      - "git checkout -- ."
+    expected_files_changed:
+      - "src/onex_change_control/eval/report_exporter.py"
+      - "tests/unit/eval/test_report_exporter.py"
+    success_criteria:
+      - "uv run pytest tests/unit/eval/ -x --tb=short -q exits with code 0"
+      - "uv run mypy src/ --strict exits with code 0"
+    max_duration_seconds: 600
+    tags:
+      - feature
+      - export
+      - report
+
+  # --- Review Tasks (2) ---
+
+  - task_id: eval-008-review-handler-compliance
+    name: Review handler for no-publish constraint compliance
+    category: review
+    prompt: >-
+      Review all handler files in src/omnibase_infra/nodes/*/handlers/ for compliance with the handler
+      no-publish constraint. Handlers MUST NOT have direct event bus access. Report any violations found,
+      specifying the file, line number, and nature of the violation. Output the review as a JSON array
+      of {file, line, violation} objects.
+    repo: omnibase_infra
+    setup_commands:
+      - "git checkout -- ."
+    expected_files_changed: []
+    success_criteria:
+      - "output is valid JSON array"
+      - "each item has file, line, violation keys"
+    max_duration_seconds: 600
+    tags:
+      - review
+      - compliance
+      - handler
+
+  - task_id: eval-009-review-error-handling
+    name: Review error handling in service modules
+    category: review
+    prompt: >-
+      Review all service_*.py files in src/omnibase_infra/services/ for proper error handling. Check that:
+      (1) all external calls use try/except, (2) error context uses ModelInfraErrorContext.with_correlation(),
+      (3) no bare except clauses exist. Report findings as a JSON array of {file, line, issue, severity}
+      objects where severity is "critical", "warning", or "info".
+    repo: omnibase_infra
+    setup_commands:
+      - "git checkout -- ."
+    expected_files_changed: []
+    success_criteria:
+      - "output is valid JSON array"
+      - "each item has file, line, issue, severity keys"
+    max_duration_seconds: 600
+    tags:
+      - review
+      - error-handling
+      - service
+
+  # --- Documentation Task (1) ---
+
+  - task_id: eval-010-document-eval-models
+    name: Document eval model hierarchy and usage
+    category: documentation
+    prompt: >-
+      Create comprehensive docstrings for all eval models in src/onex_change_control/models/model_eval_*.py.
+      Each class should have a clear docstring explaining its purpose, relationship to other eval models,
+      and usage examples. Also create a docs/EVAL_MODELS.md file with a model hierarchy diagram and field
+      reference.
+    repo: onex_change_control
+    setup_commands:
+      - "git checkout -- ."
+    expected_files_changed:
+      - "docs/EVAL_MODELS.md"
+    success_criteria:
+      - "test -f docs/EVAL_MODELS.md"
+      - "wc -l docs/EVAL_MODELS.md | awk '{print ($1 > 50)}' outputs 1"
+    max_duration_seconds: 600
+    tags:
+      - documentation
+      - models
+      - eval
