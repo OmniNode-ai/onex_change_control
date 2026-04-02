@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,24 @@ from onex_change_control.testing.wire_schema_test_generator import (
     generate_test_cases_for_contract,
     pytest_params_from_contracts,
 )
+
+
+def _find_omnibase_infra() -> Path | None:
+    """Locate omnibase_infra via env var or well-known candidate paths."""
+    env_root = os.environ.get("OMNI_HOME")
+    candidates = []
+    if env_root:
+        candidates.append(Path(env_root) / "omnibase_infra")
+    candidates.extend(
+        [
+            Path("/Volumes/PRO-G40/Code/omni_home/omnibase_infra"),
+            Path("/Users/jonah/Code/omni_home/omnibase_infra"),
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _make_contract(**overrides: object) -> dict[str, Any]:
@@ -134,23 +153,16 @@ class TestRoutingDecisionV1Compatibility:
     """Verify the generator works with the existing routing_decision_v1.yaml."""
 
     def test_generates_passing_tests_for_routing_decision(self) -> None:
-        # Search for the contract in any available omni_home location
-        candidate_dirs = [
-            Path("/Volumes/PRO-G40/Code/omni_home/omnibase_infra"),
-            Path("/Users/jonah/Code/omni_home/omnibase_infra"),
-        ]
-        contracts_dir = None
-        for candidate in candidate_dirs:
-            subdir = (
-                candidate
-                / "src/omnibase_infra/services/observability/agent_actions/contracts"
-            )
-            if subdir.exists():
-                contracts_dir = subdir
-                break
+        infra_root = _find_omnibase_infra()
+        if infra_root is None:
+            pytest.skip("omnibase_infra not available (set OMNI_HOME env var)")
 
-        if contracts_dir is None:
-            pytest.skip("omnibase_infra not available")
+        contracts_dir = (
+            infra_root
+            / "src/omnibase_infra/services/observability/agent_actions/contracts"
+        )
+        if not contracts_dir.exists():
+            pytest.skip("contracts directory not found in omnibase_infra")
 
         cases = generate_all_test_cases([contracts_dir])
         routing_cases = [c for c in cases if "routing-decision" in c.contract.topic]

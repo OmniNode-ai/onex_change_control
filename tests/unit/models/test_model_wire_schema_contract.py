@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -222,11 +223,16 @@ class TestRoutingDecisionV1Compatibility:
     """Validate that the model can parse the existing routing_decision_v1.yaml."""
 
     def test_parse_routing_decision_contract(self) -> None:
-        # Search for the contract in any available omni_home location
-        candidates = [
-            Path("/Volumes/PRO-G40/Code/omni_home/omnibase_infra"),
-            Path("/Users/jonah/Code/omni_home/omnibase_infra"),
-        ]
+        env_root = os.environ.get("OMNI_HOME")
+        candidates: list[Path] = []
+        if env_root:
+            candidates.append(Path(env_root) / "omnibase_infra")
+        candidates.extend(
+            [
+                Path("/Volumes/PRO-G40/Code/omni_home/omnibase_infra"),
+                Path("/Users/jonah/Code/omni_home/omnibase_infra"),
+            ]
+        )
         yaml_path: Path | None = None
         for candidate in candidates:
             p = (
@@ -239,7 +245,9 @@ class TestRoutingDecisionV1Compatibility:
                 break
 
         if yaml_path is None:
-            pytest.skip("routing_decision_v1.yaml not available in this env")
+            pytest.skip(
+                "routing_decision_v1.yaml not available (set OMNI_HOME env var)"
+            )
 
         with yaml_path.open() as f:
             data = yaml.safe_load(f)

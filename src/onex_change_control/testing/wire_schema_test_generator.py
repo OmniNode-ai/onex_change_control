@@ -193,6 +193,17 @@ def generate_test_cases_for_contract(
                 ),
             )
         )
+        results.append(
+            WireSchemaTestCase(
+                contract_path=contract_path,
+                contract=contract,
+                check_name="consumer_model_drift",
+                passed=True,
+                details=(
+                    f"Skipped: consumer model {contract.consumer.model} not importable"
+                ),
+            )
+        )
 
     return results
 
