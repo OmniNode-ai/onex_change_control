@@ -5,18 +5,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from onex_change_control.models.model_wire_schema_contract import (
-    ModelWireSchemaContract,
     load_wire_schema_contract,
 )
 
 
-def _minimal_contract(**overrides: object) -> dict:
+def _minimal_contract(**overrides: object) -> dict[str, Any]:
     """Build a minimal valid wire schema contract dict."""
-    base: dict = {
+    base: dict[str, Any] = {
         "topic": "onex.evt.test.event.v1",
         "schema_version": "1.0.0",
         "producer": {
@@ -71,9 +74,7 @@ class TestModelWireSchemaContractValid:
         )
         contract = load_wire_schema_contract(data)
         assert len(contract.renamed_fields) == 1
-        assert contract.active_renamed_fields == {
-            "confidence": "confidence_score"
-        }
+        assert contract.active_renamed_fields == {"confidence": "confidence_score"}
 
     def test_contract_with_collapsed_fields(self) -> None:
         data = _minimal_contract(
@@ -148,25 +149,25 @@ class TestModelWireSchemaContractInvalid:
     def test_missing_required_fields_section(self) -> None:
         data = _minimal_contract()
         del data["required_fields"]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             load_wire_schema_contract(data)
 
     def test_missing_topic(self) -> None:
         data = _minimal_contract()
         del data["topic"]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             load_wire_schema_contract(data)
 
     def test_missing_producer(self) -> None:
         data = _minimal_contract()
         del data["producer"]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             load_wire_schema_contract(data)
 
     def test_missing_consumer(self) -> None:
         data = _minimal_contract()
         del data["consumer"]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             load_wire_schema_contract(data)
 
     def test_duplicate_required_field_names(self) -> None:
@@ -207,7 +208,7 @@ class TestModelWireSchemaContractInvalid:
                 {"name": "id", "type": "invalid_type"},
             ]
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             load_wire_schema_contract(data)
 
     def test_empty_required_fields_is_valid(self) -> None:
@@ -227,7 +228,7 @@ class TestRoutingDecisionV1Compatibility:
             "routing_decision_v1.yaml"
         )
         try:
-            with open(yaml_path) as f:
+            with Path(yaml_path).open() as f:
                 data = yaml.safe_load(f)
         except FileNotFoundError:
             pytest.skip("routing_decision_v1.yaml not available in this env")

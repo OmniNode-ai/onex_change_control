@@ -14,27 +14,13 @@ Precedent: omnibase_infra routing_decision_v1.yaml (OMN-3425)
 
 from __future__ import annotations
 
-from enum import Enum, unique
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
-@unique
-class EnumWireFieldType(str, Enum):
-    """Allowed field types in wire schema contracts."""
-
-    UUID = "uuid"
-    STRING = "string"
-    FLOAT = "float"
-    INTEGER = "integer"
-    DATETIME = "datetime"
-    BOOLEAN = "boolean"
-    ARRAY = "array"
-    OBJECT = "object"
-
-    def __str__(self) -> str:
-        return self.value
+from onex_change_control.enums.enum_wire_field_type import (
+    EnumWireFieldType,  # noqa: TC001 - Pydantic needs runtime access
+)
 
 
 class ModelWireFieldConstraints(BaseModel):
@@ -80,9 +66,7 @@ class ModelWireRenamedField(BaseModel):
 
     producer_name: str = Field(..., description="Name emitted by the producer")
     canonical_name: str = Field(..., description="Canonical name in the contract")
-    shim_status: str = Field(
-        ..., description="active or retired"
-    )
+    shim_status: str = Field(..., description="active or retired")
     retirement_ticket: str = Field(
         default="", description="Ticket tracking shim retirement"
     )
@@ -147,12 +131,8 @@ class ModelWireSchemaContract(BaseModel):
     ticket: str = Field(default="", description="Originating ticket")
     description: str = Field(default="", description="Contract description")
 
-    producer: ModelWireProducer = Field(
-        ..., description="Producer declaration"
-    )
-    consumer: ModelWireConsumer = Field(
-        ..., description="Consumer declaration"
-    )
+    producer: ModelWireProducer = Field(..., description="Producer declaration")
+    consumer: ModelWireConsumer = Field(..., description="Consumer declaration")
 
     required_fields: list[ModelWireRequiredField] = Field(
         ..., description="Required fields the producer MUST emit"
@@ -178,21 +158,18 @@ class ModelWireSchemaContract(BaseModel):
 
         req_dupes = [n for n in required_names if required_names.count(n) > 1]
         if req_dupes:
-            raise ValueError(
-                f"Duplicate required_fields names: {sorted(set(req_dupes))}"
-            )
+            msg = f"Duplicate required_fields names: {sorted(set(req_dupes))}"
+            raise ValueError(msg)
 
         opt_dupes = [n for n in optional_names if optional_names.count(n) > 1]
         if opt_dupes:
-            raise ValueError(
-                f"Duplicate optional_fields names: {sorted(set(opt_dupes))}"
-            )
+            msg = f"Duplicate optional_fields names: {sorted(set(opt_dupes))}"
+            raise ValueError(msg)
 
         overlap = set(required_names) & set(optional_names)
         if overlap:
-            raise ValueError(
-                f"Field names appear in both required and optional: {sorted(overlap)}"
-            )
+            msg = f"Field names appear in both required and optional: {sorted(overlap)}"
+            raise ValueError(msg)
 
         return self
 

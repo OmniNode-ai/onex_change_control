@@ -33,6 +33,7 @@ from onex_change_control.enums.enum_migration_status import EnumMigrationStatus
 from onex_change_control.enums.enum_pr_state import EnumPRState
 from onex_change_control.enums.enum_probe_reason import EnumProbeReason
 from onex_change_control.enums.enum_probe_status import EnumProbeStatus
+from onex_change_control.enums.enum_wire_field_type import EnumWireFieldType
 
 __all__ = [
     "EnumAutopilotCycleStatus",
@@ -59,4 +60,5 @@ __all__ = [
     "EnumPRState",
     "EnumProbeReason",
     "EnumProbeStatus",
+    "EnumWireFieldType",
 ]
