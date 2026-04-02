@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class ModelWireSchemaViolation:
     """A single wire schema compliance violation."""
 
-    __slots__ = ("topic", "field_name", "side", "detail", "violation_type")
+    __slots__ = ("detail", "field_name", "side", "topic", "violation_type")
 
     def __init__(
         self,
@@ -41,7 +41,9 @@ class ModelWireSchemaViolation:
         field_name: str,
         side: str,
         detail: str,
-        violation_type: EnumComplianceViolation = EnumComplianceViolation.WIRE_SCHEMA_MISMATCH,
+        violation_type: EnumComplianceViolation = (
+            EnumComplianceViolation.WIRE_SCHEMA_MISMATCH
+        ),
     ) -> None:
         self.topic = topic
         self.field_name = field_name
@@ -50,7 +52,11 @@ class ModelWireSchemaViolation:
         self.violation_type = violation_type
 
     def __repr__(self) -> str:
-        return f"WireSchemaViolation({self.topic}, {self.field_name}, {self.side}: {self.detail})"
+        return (
+            f"WireSchemaViolation("
+            f"{self.topic}, {self.field_name}, "
+            f"{self.side}: {self.detail})"
+        )
 
 
 def _load_contract_yaml(path: Path) -> dict[str, Any] | None:
@@ -58,11 +64,12 @@ def _load_contract_yaml(path: Path) -> dict[str, Any] | None:
     try:
         with path.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
+    except (yaml.YAMLError, OSError):
+        return None
+    else:
         if not isinstance(data, dict):
             return None
         return data
-    except (yaml.YAMLError, OSError):
-        return None
 
 
 def _is_wire_schema_contract(data: dict[str, Any]) -> bool:
@@ -94,14 +101,18 @@ def discover_wire_schema_contracts(
             try:
                 contract = load_wire_schema_contract(data)
                 contracts.append((yaml_path, contract))
-            except Exception:
-                logger.warning("Failed to parse wire schema contract: %s", yaml_path)
+            except (ValueError, TypeError, KeyError):
+                logger.warning(
+                    "Failed to parse wire schema contract: %s",
+                    yaml_path,
+                )
     return contracts
 
 
 def _resolve_model_fields(model_fqn: str) -> set[str] | None:
-    """Attempt to import a Pydantic model and extract its field names via model_json_schema().
+    """Attempt to import a Pydantic model and extract field names.
 
+    Uses model_json_schema() to resolve field names.
     Returns None if the model cannot be resolved (e.g. not installed).
     """
     parts = model_fqn.rsplit(".", 1)
@@ -114,7 +125,7 @@ def _resolve_model_fields(model_fqn: str) -> set[str] | None:
         schema = cls.model_json_schema()
         props = schema.get("properties", {})
         return set(props.keys())
-    except Exception:
+    except (ImportError, AttributeError, TypeError):
         return None
 
 
@@ -195,14 +206,21 @@ def _check_side(
                     topic=contract.topic,
                     field_name=field_name,
                     side=side,
-                    detail=f"Required field '{field_name}' in contract but missing from {side} model",
+                    detail=(
+                        f"Required field '{field_name}' in contract "
+                        f"but missing from {side} model"
+                    ),
                 )
             )
 
     # Check: model field not in contract (undeclared emission/consumption)
     # Exclude internal Pydantic fields
-    _PYDANTIC_INTERNAL = {"model_config", "model_fields", "model_computed_fields"}
-    for field_name in sorted(model_fields - _PYDANTIC_INTERNAL):
+    pydantic_internal = {
+        "model_config",
+        "model_fields",
+        "model_computed_fields",
+    }
+    for field_name in sorted(model_fields - pydantic_internal):
         if field_name in contract_all:
             continue
         # Allow renamed producer names
@@ -213,7 +231,9 @@ def _check_side(
                 topic=contract.topic,
                 field_name=field_name,
                 side=side,
-                detail=f"Field '{field_name}' in {side} model but not declared in contract",
+                detail=(
+                    f"Field '{field_name}' in {side} model but not declared in contract"
+                ),
             )
         )
 

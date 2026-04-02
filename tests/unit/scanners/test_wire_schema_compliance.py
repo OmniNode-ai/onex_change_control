@@ -9,22 +9,21 @@ Ticket: OMN-7362
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-import pytest
 import yaml
 
 from onex_change_control.models.model_wire_schema_contract import (
     load_wire_schema_contract,
 )
 from onex_change_control.scanners.wire_schema_compliance import (
-    ModelWireSchemaViolation,
     check_wire_schema_mismatch,
     discover_wire_schema_contracts,
 )
 
 
-def _make_contract(**overrides: object) -> dict:
-    base: dict = {
+def _make_contract(**overrides: object) -> dict[str, Any]:
+    base: dict[str, Any] = {
         "topic": "onex.evt.test.event.v1",
         "schema_version": "1.0.0",
         "producer": {

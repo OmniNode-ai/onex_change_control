@@ -8,19 +8,18 @@ Ticket: OMN-7365
 
 from __future__ import annotations
 
-import pytest
+from typing import Any
 
 from onex_change_control.models.model_wire_schema_contract import (
     load_wire_schema_contract,
 )
 from onex_change_control.scanners.model_dump_drift import (
-    ModelDumpDriftViolation,
     check_model_dump_drift,
 )
 
 
-def _make_contract(**overrides: object) -> dict:
-    base: dict = {
+def _make_contract(**overrides: object) -> dict[str, Any]:
+    base: dict[str, Any] = {
         "topic": "onex.evt.test.event.v1",
         "schema_version": "1.0.0",
         "producer": {
@@ -47,11 +46,11 @@ def _make_contract(**overrides: object) -> dict:
 
 
 def _make_json_schema(
-    properties: dict[str, dict],
+    properties: dict[str, dict[str, Any]],
     required: list[str] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Build a minimal JSON schema dict."""
-    schema: dict = {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
         "title": "TestModel",

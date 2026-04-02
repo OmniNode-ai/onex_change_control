@@ -16,13 +16,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from onex_change_control.enums.enum_compliance_violation import EnumComplianceViolation
-from onex_change_control.models.model_wire_schema_contract import (
-    EnumWireFieldType,
-    ModelWireSchemaContract,
-)
 
 if TYPE_CHECKING:
-    pass
+    from onex_change_control.models.model_wire_schema_contract import (
+        ModelWireSchemaContract,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +45,16 @@ _PYDANTIC_INTERNAL: frozenset[str] = frozenset(
 class ModelDumpDriftViolation:
     """A single model dump drift violation."""
 
-    __slots__ = ("topic", "field_name", "detail", "violation_type")
+    __slots__ = ("detail", "field_name", "topic", "violation_type")
 
     def __init__(
         self,
         topic: str,
         field_name: str,
         detail: str,
-        violation_type: EnumComplianceViolation = EnumComplianceViolation.MODEL_DUMP_DRIFT,
+        violation_type: EnumComplianceViolation = (
+            EnumComplianceViolation.MODEL_DUMP_DRIFT
+        ),
     ) -> None:
         self.topic = topic
         self.field_name = field_name
@@ -62,7 +62,9 @@ class ModelDumpDriftViolation:
         self.violation_type = violation_type
 
     def __repr__(self) -> str:
-        return f"ModelDumpDriftViolation({self.topic}, {self.field_name}: {self.detail})"
+        return (
+            f"ModelDumpDriftViolation({self.topic}, {self.field_name}: {self.detail})"
+        )
 
 
 def _get_json_schema_type(prop: dict[str, Any]) -> str | None:
@@ -103,7 +105,9 @@ def check_model_dump_drift(
             ModelDumpDriftViolation(
                 topic=contract.topic,
                 field_name=field_name,
-                detail=f"Field '{field_name}' in model schema but not declared in contract",
+                detail=(
+                    f"Field '{field_name}' in model schema but not declared in contract"
+                ),
             )
         )
 
@@ -113,7 +117,10 @@ def check_model_dump_drift(
             ModelDumpDriftViolation(
                 topic=contract.topic,
                 field_name=field_name,
-                detail=f"Field '{field_name}' declared in contract but missing from model schema",
+                detail=(
+                    f"Field '{field_name}' declared in contract "
+                    f"but missing from model schema"
+                ),
             )
         )
 
