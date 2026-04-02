@@ -222,16 +222,27 @@ class TestRoutingDecisionV1Compatibility:
     """Validate that the model can parse the existing routing_decision_v1.yaml."""
 
     def test_parse_routing_decision_contract(self) -> None:
-        yaml_path = (
-            "/Users/jonah/Code/omni_home/omnibase_infra/src/omnibase_infra/"
-            "services/observability/agent_actions/contracts/"
-            "routing_decision_v1.yaml"
-        )
-        try:
-            with Path(yaml_path).open() as f:
-                data = yaml.safe_load(f)
-        except FileNotFoundError:
+        # Search for the contract in any available omni_home location
+        candidates = [
+            Path("/Volumes/PRO-G40/Code/omni_home/omnibase_infra"),
+            Path("/Users/jonah/Code/omni_home/omnibase_infra"),
+        ]
+        yaml_path: Path | None = None
+        for candidate in candidates:
+            p = (
+                candidate
+                / "src/omnibase_infra/services/observability/agent_actions/contracts"
+                / "routing_decision_v1.yaml"
+            )
+            if p.exists():
+                yaml_path = p
+                break
+
+        if yaml_path is None:
             pytest.skip("routing_decision_v1.yaml not available in this env")
+
+        with yaml_path.open() as f:
+            data = yaml.safe_load(f)
 
         contract = load_wire_schema_contract(data)
         assert contract.topic == "onex.evt.omniclaude.routing-decision.v1"

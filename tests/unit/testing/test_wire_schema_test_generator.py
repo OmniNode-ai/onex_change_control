@@ -10,14 +10,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from onex_change_control.models.model_wire_schema_contract import (
+    load_wire_schema_contract,
+)
 from onex_change_control.testing.wire_schema_test_generator import (
-    WireSchemaTestCase,
     generate_all_test_cases,
     generate_test_cases_for_contract,
     pytest_params_from_contracts,
-)
-from onex_change_control.models.model_wire_schema_contract import (
-    load_wire_schema_contract,
 )
 
 
@@ -96,15 +95,11 @@ class TestGenerateAllTestCases:
         assert len(cases) >= 2  # At least contract_valid + no_duplicate_fields
 
     def test_skips_non_contract_yaml(self, tmp_path: Path) -> None:
-        (tmp_path / "not_a_contract_v1.yaml").write_text(
-            yaml.dump({"key": "value"})
-        )
+        (tmp_path / "not_a_contract_v1.yaml").write_text(yaml.dump({"key": "value"}))
         cases = generate_all_test_cases([tmp_path])
         assert len(cases) == 0
 
-    def test_multiple_contracts_generate_separate_cases(
-        self, tmp_path: Path
-    ) -> None:
+    def test_multiple_contracts_generate_separate_cases(self, tmp_path: Path) -> None:
         data1 = _make_contract(topic="onex.evt.test.a.v1")
         data2 = _make_contract(topic="onex.evt.test.b.v1")
         (tmp_path / "a_v1.yaml").write_text(yaml.dump(data1))
@@ -138,17 +133,26 @@ class TestRoutingDecisionV1Compatibility:
     """Verify the generator works with the existing routing_decision_v1.yaml."""
 
     def test_generates_passing_tests_for_routing_decision(self) -> None:
-        yaml_path = Path(
-            "/Users/jonah/Code/omni_home/omnibase_infra/src/omnibase_infra/"
-            "services/observability/agent_actions/contracts/"
-        )
-        if not yaml_path.exists():
+        # Search for the contract in any available omni_home location
+        candidate_dirs = [
+            Path("/Volumes/PRO-G40/Code/omni_home/omnibase_infra"),
+            Path("/Users/jonah/Code/omni_home/omnibase_infra"),
+        ]
+        contracts_dir = None
+        for candidate in candidate_dirs:
+            subdir = (
+                candidate
+                / "src/omnibase_infra/services/observability/agent_actions/contracts"
+            )
+            if subdir.exists():
+                contracts_dir = subdir
+                break
+
+        if contracts_dir is None:
             pytest.skip("omnibase_infra not available")
 
-        cases = generate_all_test_cases([yaml_path])
-        routing_cases = [
-            c for c in cases if "routing-decision" in c.contract.topic
-        ]
+        cases = generate_all_test_cases([contracts_dir])
+        routing_cases = [c for c in cases if "routing-decision" in c.contract.topic]
         assert len(routing_cases) >= 2
         for case in routing_cases:
             if case.check_name in ("contract_valid", "no_duplicate_fields"):

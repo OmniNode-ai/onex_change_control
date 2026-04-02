@@ -29,6 +29,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Internal Pydantic fields to exclude from compliance checks
+_PYDANTIC_INTERNAL: frozenset[str] = frozenset(
+    {"model_config", "model_fields", "model_computed_fields"}
+)
+
 
 class ModelWireSchemaViolation:
     """A single wire schema compliance violation."""
@@ -212,13 +217,7 @@ def _check_side(
             )
 
     # Check: model field not in contract (undeclared emission/consumption)
-    # Exclude internal Pydantic fields
-    pydantic_internal = {
-        "model_config",
-        "model_fields",
-        "model_computed_fields",
-    }
-    for field_name in sorted(model_fields - pydantic_internal):
+    for field_name in sorted(model_fields - _PYDANTIC_INTERNAL):
         if field_name in contract_all:
             continue
         # Allow renamed producer names

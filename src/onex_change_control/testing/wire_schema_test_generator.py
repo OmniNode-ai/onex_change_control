@@ -18,19 +18,19 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-import yaml
-
-from onex_change_control.models.model_wire_schema_contract import (
-    ModelWireSchemaContract,
-    load_wire_schema_contract,
-)
 from onex_change_control.scanners.model_dump_drift import check_model_dump_drift
 from onex_change_control.scanners.wire_schema_compliance import (
     check_wire_schema_mismatch,
     discover_wire_schema_contracts,
 )
+
+if TYPE_CHECKING:
+    from onex_change_control.models.model_wire_schema_contract import (
+        ModelWireSchemaContract,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +38,14 @@ logger = logging.getLogger(__name__)
 class WireSchemaTestCase:
     """A single generated test case from a wire schema contract."""
 
-    __slots__ = ("contract_path", "contract", "check_name", "passed", "details")
+    __slots__ = ("check_name", "contract", "contract_path", "details", "passed")
 
     def __init__(
         self,
         contract_path: str,
         contract: ModelWireSchemaContract,
         check_name: str,
+        *,
         passed: bool,
         details: str,
     ) -> None:
@@ -56,20 +57,24 @@ class WireSchemaTestCase:
 
     def __repr__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
-        return f"WireSchemaTestCase({self.contract.topic}::{self.check_name} [{status}])"
+        return (
+            f"WireSchemaTestCase({self.contract.topic}::{self.check_name} [{status}])"
+        )
 
 
-def _resolve_model_json_schema(module_path: str, class_name: str) -> dict[str, Any] | None:
+def _resolve_model_json_schema(
+    module_path: str, class_name: str
+) -> dict[str, Any] | None:
     """Import a model and return its JSON schema, or None if not resolvable."""
     try:
         mod = importlib.import_module(module_path)
         cls = getattr(mod, class_name)
-        return cls.model_json_schema()
-    except Exception:
+        return cls.model_json_schema()  # type: ignore[no-any-return]
+    except (ImportError, AttributeError, TypeError):
         return None
 
 
-def _infer_module_from_file(file_path: str, model_name: str) -> str | None:
+def _infer_module_from_file(file_path: str) -> str | None:
     """Infer a Python module path from a contract's file path.
 
     E.g., "src/omnibase_infra/models/model_foo.py" -> "omnibase_infra.models.model_foo"
@@ -134,9 +139,7 @@ def generate_test_cases_for_contract(
 
     # Test 3+4: Producer/consumer field matching (Check 5)
     # Try to resolve models
-    consumer_module = _infer_module_from_file(
-        contract.consumer.file, contract.consumer.model
-    )
+    consumer_module = _infer_module_from_file(contract.consumer.file)
     consumer_schema = None
     if consumer_module:
         consumer_schema = _resolve_model_json_schema(
@@ -185,7 +188,9 @@ def generate_test_cases_for_contract(
                 contract=contract,
                 check_name="consumer_fields_match",
                 passed=True,
-                details=f"Skipped: consumer model {contract.consumer.model} not importable",
+                details=(
+                    f"Skipped: consumer model {contract.consumer.model} not importable"
+                ),
             )
         )
 
@@ -193,7 +198,7 @@ def generate_test_cases_for_contract(
 
 
 def generate_all_test_cases(
-    search_dirs: list,
+    search_dirs: list[Path],
 ) -> list[WireSchemaTestCase]:
     """Discover all wire schema contracts and generate test cases.
 
@@ -203,8 +208,6 @@ def generate_all_test_cases(
     Returns:
         List of all generated test cases across all contracts.
     """
-    from pathlib import Path
-
     contracts = discover_wire_schema_contracts(
         [Path(d) if not isinstance(d, Path) else d for d in search_dirs]
     )
@@ -216,7 +219,7 @@ def generate_all_test_cases(
 
 
 def pytest_params_from_contracts(
-    search_dirs: list,
+    search_dirs: list[Path],
 ) -> list[tuple[str, str, bool, str]]:
     """Generate pytest parametrize-friendly tuples from wire schema contracts.
 
