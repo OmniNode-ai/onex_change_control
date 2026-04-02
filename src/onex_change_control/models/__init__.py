@@ -90,6 +90,10 @@ from onex_change_control.models.model_ticket_contract import (
     ModelDodEvidenceItem,
     ModelTicketContract,
 )
+from onex_change_control.models.model_wire_schema_contract import (
+    ModelWireSchemaContract,
+    load_wire_schema_contract,
+)
 
 __all__ = [
     "EnumAutopilotCycleStatus",
@@ -136,4 +140,6 @@ __all__ = [
     "ModelRepoComplianceBreakdown",
     "ModelRepoDocSummary",
     "ModelTicketContract",
+    "ModelWireSchemaContract",
+    "load_wire_schema_contract",
 ]
