@@ -41,6 +41,12 @@ class EnumComplianceViolation(str, Enum):
     UNREGISTERED_HANDLER = "unregistered_handler"
     """Handler file in handlers/ directory but not importable or registered."""
 
+    WIRE_SCHEMA_MISMATCH = "wire_schema_mismatch"
+    """Producer/consumer field name does not match wire schema contract."""
+
+    MODEL_DUMP_DRIFT = "model_dump_drift"
+    """Pydantic model schema has drifted from wire schema contract declaration."""
+
     def __str__(self) -> str:
         """Return the string value for serialization."""
         return self.value

@@ -49,7 +49,7 @@ class TestEnumComplianceVerdict:
 
 class TestEnumComplianceViolation:
     def test_all_values(self) -> None:
-        assert len(EnumComplianceViolation) == 8
+        assert len(EnumComplianceViolation) == 10
 
     def test_str_serialization(self) -> None:
         assert str(EnumComplianceViolation.HARDCODED_TOPIC) == "hardcoded_topic"
