@@ -14,7 +14,7 @@ Precedent: omnibase_infra routing_decision_v1.yaml (OMN-3425)
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -66,7 +66,9 @@ class ModelWireRenamedField(BaseModel):
 
     producer_name: str = Field(..., description="Name emitted by the producer")
     canonical_name: str = Field(..., description="Canonical name in the contract")
-    shim_status: str = Field(..., description="active or retired")
+    shim_status: Literal["active", "retired"] = Field(
+        ..., description="Lifecycle state of the rename shim"
+    )
     retirement_ticket: str = Field(
         default="", description="Ticket tracking shim retirement"
     )

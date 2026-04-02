@@ -192,14 +192,12 @@ def _check_side(
     # Check: required contract field missing from model
     for field_name in sorted(contract_required):
         if field_name not in model_fields:
-            # For producers, the renamed producer_name is also acceptable
-            if side == "producer" and any(
-                canonical == field_name for canonical in active_renames.values()
-            ):
-                producer_name = next(
+            # For producers, any active alias for this canonical field is acceptable
+            if side == "producer":
+                active_aliases = {
                     pn for pn, cn in active_renames.items() if cn == field_name
-                )
-                if producer_name in model_fields:
+                }
+                if active_aliases & model_fields:
                     continue
             violations.append(
                 ModelWireSchemaViolation(
@@ -245,7 +243,8 @@ def scan_wire_schema_compliance(
 ) -> list[ModelWireSchemaViolation]:
     """Run Check 5 across all discovered wire schema contracts.
 
-    This function discovers contracts and attempts to resolve models.
+    This function discovers contracts and attempts to resolve producer and consumer
+    models via their fully-qualified names inferred from contract declarations.
     For cross-repo scanning, models may not be importable — in those cases
     the check is skipped for that side.
     """
@@ -253,7 +252,25 @@ def scan_wire_schema_compliance(
     all_violations: list[ModelWireSchemaViolation] = []
 
     for _path, contract in contracts:
-        violations = check_wire_schema_mismatch(contract)
+        # Derive FQNs from contract file paths: src/<module>/path.py -> <module>.path
+        def _file_to_fqn(file_path: str, model_name: str) -> str | None:
+            path = file_path
+            if path.startswith("src/"):
+                path = path[4:]
+            if path.endswith(".py"):
+                path = path[:-3]
+            module = path.replace("/", ".")
+            return f"{module}.{model_name}"
+
+        producer_fqn = _file_to_fqn(
+            contract.producer.file, contract.producer.function or ""
+        )
+        consumer_fqn = _file_to_fqn(contract.consumer.file, contract.consumer.model)
+        violations = check_wire_schema_mismatch(
+            contract,
+            producer_model_fqn=producer_fqn,
+            consumer_model_fqn=consumer_fqn,
+        )
         all_violations.extend(violations)
 
     return all_violations
