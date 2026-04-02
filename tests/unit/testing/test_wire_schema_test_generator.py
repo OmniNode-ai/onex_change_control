@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -20,8 +21,8 @@ from onex_change_control.testing.wire_schema_test_generator import (
 )
 
 
-def _make_contract(**overrides: object) -> dict:
-    base: dict = {
+def _make_contract(**overrides: object) -> dict[str, Any]:
+    base: dict[str, Any] = {
         "topic": "onex.evt.test.event.v1",
         "schema_version": "1.0.0",
         "producer": {
