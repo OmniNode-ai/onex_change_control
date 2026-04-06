@@ -124,6 +124,5 @@ Canonical spec: `omnibase_core/docs/conventions/FILE_HEADERS.md`
 
 - `docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md` — enforcement model and rollout phases
 - `docs/design/DECISION_LOG.md` — architectural decisions and rationale
-- `docs/planning/IMPLEMENTATION_PLAN.md` — roadmap
 - `docs/VERSIONING_POLICY.md` — schema immutability rules
 - `docs/TEMPLATE_GUIDE.md` — how to author YAML artifacts from templates
