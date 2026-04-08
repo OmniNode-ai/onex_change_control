@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Input model for contract dependency computation."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
