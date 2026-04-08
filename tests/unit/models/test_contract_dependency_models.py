@@ -3,12 +3,12 @@
 """Tests for contract dependency models."""
 
 import pytest
+from pydantic import ValidationError
+
 from onex_change_control.models.model_contract_dependency_input import (
     ModelContractEntry,
     ModelDbTableRef,
 )
-from pydantic import ValidationError
-
 from onex_change_control.models.model_contract_dependency_output import (
     ModelContractDependencyOutput,
     ModelDependencyEdge,

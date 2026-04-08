@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Scan contract.yaml files across repos to extract dependency entries."""
+
 from __future__ import annotations
 
 import logging
@@ -24,12 +25,14 @@ def scan_contracts(nodes_dir: Path, repo_name: str) -> list[ModelContractEntry]:
         try:
             with open(contract_path) as f:  # noqa: PTH123
                 data = yaml.safe_load(f)
-        except Exception as exc:
+        except (OSError, yaml.YAMLError) as exc:
             logger.warning("Skipping unreadable contract %s: %s", contract_path, exc)
             continue
 
         if not isinstance(data, dict):
-            logger.warning("Skipping malformed contract %s: not a mapping", contract_path)
+            logger.warning(
+                "Skipping malformed contract %s: not a mapping", contract_path
+            )
             continue
 
         data = data or {}
@@ -42,17 +45,27 @@ def scan_contracts(nodes_dir: Path, repo_name: str) -> list[ModelContractEntry]:
         if event_bus is not None and not isinstance(event_bus, dict):
             logger.warning(
                 "Skipping contract %s: 'event_bus' has unexpected shape (got %s)",
-                contract_path, type(event_bus).__name__,
+                contract_path,
+                type(event_bus).__name__,
             )
             continue
         event_bus = event_bus or {}
         db_io = data.get("db_io", {}) or {}
 
-        # Topics may be plain strings OR rich dicts with a 'name' key — normalize to strings
+        # Topics may be plain strings OR rich dicts with a
+        # 'name' key — normalize to strings
         raw_subscribe = event_bus.get("subscribe_topics", []) or []
         raw_publish = event_bus.get("publish_topics", []) or []
-        subscribe_topics = [t if isinstance(t, str) else t.get("name", "") for t in raw_subscribe if isinstance(t, (str, dict))]
-        publish_topics = [t if isinstance(t, str) else t.get("name", "") for t in raw_publish if isinstance(t, (str, dict))]
+        subscribe_topics = [
+            t if isinstance(t, str) else t.get("name", "")
+            for t in raw_subscribe
+            if isinstance(t, (str, dict))
+        ]
+        publish_topics = [
+            t if isinstance(t, str) else t.get("name", "")
+            for t in raw_publish
+            if isinstance(t, (str, dict))
+        ]
         subscribe_topics = [t for t in subscribe_topics if t]
         publish_topics = [t for t in publish_topics if t]
 
@@ -67,18 +80,21 @@ def scan_contracts(nodes_dir: Path, repo_name: str) -> list[ModelContractEntry]:
             if isinstance(t, dict) and "name" in t
         ]
 
-        # protocols is left empty — no contract currently declares explicit protocol surfaces.
-        # Topic overlap is captured via subscribe_topics/publish_topics directly.
+        # protocols is left empty — no contract currently declares
+        # explicit protocol surfaces. Topic overlap is captured
+        # via subscribe_topics/publish_topics directly.
         protocols: list[str] = []
 
-        entries.append(ModelContractEntry(
-            repo=repo_name,
-            node_name=node_name,
-            subscribe_topics=subscribe_topics,
-            publish_topics=publish_topics,
-            protocols=protocols,
-            db_tables=db_tables,
-        ))
+        entries.append(
+            ModelContractEntry(
+                repo=repo_name,
+                node_name=node_name,
+                subscribe_topics=subscribe_topics,
+                publish_topics=publish_topics,
+                protocols=protocols,
+                db_tables=db_tables,
+            )
+        )
 
     return entries
 
@@ -113,6 +129,8 @@ def main() -> None:
 
     omni_home = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
     entries = scan_all_repos(omni_home)
-    print(f"Scanned {len(entries)} contracts from {omni_home}")  # noqa: T201
+    print(f"Scanned {len(entries)} contracts from {omni_home}")
     for entry in entries:
-        print(f"  {entry.repo}/{entry.node_name}: {len(entry.subscribe_topics)} sub, {len(entry.publish_topics)} pub")  # noqa: T201
+        sub = len(entry.subscribe_topics)
+        pub = len(entry.publish_topics)
+        print(f"  {entry.repo}/{entry.node_name}: {sub} sub, {pub} pub")
