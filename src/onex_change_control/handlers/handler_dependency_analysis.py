@@ -22,6 +22,8 @@ from onex_change_control.models.model_contract_dependency_output import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from onex_change_control.models.model_contract_dependency_input import (
         ModelContractDependencyInput,
         ModelContractEntry,
@@ -112,7 +114,7 @@ class _EdgeAccumulator:
 
 def _accumulate_topic_overlap(
     topic_index: dict[str, list[ModelContractEntry]],
-    get_or_create: callable,
+    get_or_create: Callable[[ModelContractEntry, ModelContractEntry], _EdgeAccumulator],
 ) -> None:
     """Accumulate topic overlap edges into pair accumulators."""
     for topic, group in topic_index.items():
@@ -129,7 +131,7 @@ def _accumulate_topic_overlap(
 
 def _accumulate_db_overlap(
     db_index: dict[str, list[ModelContractEntry]],
-    get_or_create: callable,
+    get_or_create: Callable[[ModelContractEntry, ModelContractEntry], _EdgeAccumulator],
 ) -> None:
     """Accumulate DB table overlap edges into pair accumulators."""
     for table_name, group in db_index.items():
@@ -148,7 +150,7 @@ def _accumulate_db_overlap(
 
 def _accumulate_protocol_overlap(
     protocol_index: dict[str, list[ModelContractEntry]],
-    get_or_create: callable,
+    get_or_create: Callable[[ModelContractEntry, ModelContractEntry], _EdgeAccumulator],
 ) -> None:
     """Accumulate protocol overlap edges into pair accumulators."""
     for proto, group in protocol_index.items():
@@ -186,7 +188,7 @@ def _compute_edges(
         for proto in entry.protocols:
             protocol_index[proto].append(entry)
 
-    pair_accumulators: dict[tuple[str, str], _EdgeAccumulator] = {}
+    pair_accumulators: dict[tuple[str, ...], _EdgeAccumulator] = {}
 
     def _get_or_create(
         a: ModelContractEntry, b: ModelContractEntry
