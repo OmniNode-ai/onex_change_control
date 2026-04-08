@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Tests for dependency history model."""
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 
 from onex_change_control.models.model_dependency_history import (
     ModelDependencyHistory,
@@ -20,7 +21,7 @@ class TestModelDependencyHistory:
 
     def test_snapshot_records_counts(self) -> None:
         snap = ModelDependencySnapshot(
-            observed_at=datetime.now(timezone.utc),
+            observed_at=datetime.now(UTC),
             edge_count=5,
             wave_count=3,
             hotspot_count=1,
