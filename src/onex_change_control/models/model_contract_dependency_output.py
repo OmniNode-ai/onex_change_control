@@ -1,13 +1,16 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Output model for contract dependency computation."""
+
 from __future__ import annotations
 
 import uuid
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
-from onex_change_control.models.model_contract_dependency_input import ModelContractEntry
+from onex_change_control.models.model_contract_dependency_input import (  # noqa: TC001
+    ModelContractEntry,
+)
 
 _EDGE_NAMESPACE = uuid.UUID("c3d4e5f6-a7b8-9012-cdef-234567890abc")
 
@@ -18,7 +21,8 @@ class ModelDependencyEdge(BaseModel):
     overlap_type values: "topic_producer_consumer", "topic_co_consumer",
         "topic_co_producer", "db_table_shared_write", "db_table_read_write",
         "protocol", "mixed"
-    direction values: "producer_to_consumer", "co_consumer", "co_producer", "bidirectional"
+    direction values: "producer_to_consumer", "co_consumer", "co_producer",
+        "bidirectional"
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -31,16 +35,22 @@ class ModelDependencyEdge(BaseModel):
     shared_protocols: list[str]
     shared_db_tables: list[str] = []
     overlap_type: str  # see docstring for valid values
-    direction: str  # "producer_to_consumer", "co_consumer", "co_producer", "bidirectional"
+    direction: (
+        str  # "producer_to_consumer", "co_consumer", "co_producer", "bidirectional"
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def edge_id(self) -> uuid.UUID:
-        pair = sorted([
-            f"{self.node_a_repo}/{self.node_a_name}",
-            f"{self.node_b_repo}/{self.node_b_name}",
-        ])
-        surfaces = sorted(self.shared_topics + self.shared_protocols + self.shared_db_tables)
+        pair = sorted(
+            [
+                f"{self.node_a_repo}/{self.node_a_name}",
+                f"{self.node_b_repo}/{self.node_b_name}",
+            ]
+        )
+        surfaces = sorted(
+            self.shared_topics + self.shared_protocols + self.shared_db_tables
+        )
         key = f"{pair[0]}|{pair[1]}|{self.direction}|{','.join(surfaces)}"
         return uuid.uuid5(_EDGE_NAMESPACE, key)
 
@@ -69,7 +79,7 @@ class ModelHotspotTopic(BaseModel):
 
 
 class ModelContractDependencyOutput(BaseModel):
-    """Contract overlap graph with dependency edges and conservative parallel wave groups."""
+    """Contract overlap graph with dependency edges and parallel wave groups."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Tests for contract dependency models."""
+
 import pytest
+from pydantic import ValidationError
 
 from onex_change_control.models.model_contract_dependency_input import (
-    ModelContractDependencyInput,
     ModelContractEntry,
     ModelDbTableRef,
 )
@@ -47,23 +48,27 @@ class TestModelContractEntry:
             publish_topics=[],
             protocols=[],
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             entry.repo = "omnidash"  # type: ignore[misc]
 
 
 class TestModelDependencyEdge:
     def test_edge_has_deterministic_id(self) -> None:
         edge1 = ModelDependencyEdge(
-            node_a_repo="omnimarket", node_a_name="node_projection_delegation",
-            node_b_repo="omnimarket", node_b_name="node_projection_registration",
+            node_a_repo="omnimarket",
+            node_a_name="node_projection_delegation",
+            node_b_repo="omnimarket",
+            node_b_name="node_projection_registration",
             shared_topics=["onex.evt.platform.node-heartbeat.v1"],
             shared_protocols=[],
             overlap_type="topic_co_consumer",
             direction="co_consumer",
         )
         edge2 = ModelDependencyEdge(
-            node_a_repo="omnimarket", node_a_name="node_projection_delegation",
-            node_b_repo="omnimarket", node_b_name="node_projection_registration",
+            node_a_repo="omnimarket",
+            node_a_name="node_projection_delegation",
+            node_b_repo="omnimarket",
+            node_b_name="node_projection_registration",
             shared_topics=["onex.evt.platform.node-heartbeat.v1"],
             shared_protocols=[],
             overlap_type="topic_co_consumer",
@@ -73,16 +78,24 @@ class TestModelDependencyEdge:
 
     def test_edge_id_is_order_independent(self) -> None:
         edge1 = ModelDependencyEdge(
-            node_a_repo="omnimarket", node_a_name="node_a",
-            node_b_repo="omnimarket", node_b_name="node_b",
-            shared_topics=["topic.v1"], shared_protocols=[],
-            overlap_type="topic_co_consumer", direction="co_consumer",
+            node_a_repo="omnimarket",
+            node_a_name="node_a",
+            node_b_repo="omnimarket",
+            node_b_name="node_b",
+            shared_topics=["topic.v1"],
+            shared_protocols=[],
+            overlap_type="topic_co_consumer",
+            direction="co_consumer",
         )
         edge2 = ModelDependencyEdge(
-            node_a_repo="omnimarket", node_a_name="node_b",
-            node_b_repo="omnimarket", node_b_name="node_a",
-            shared_topics=["topic.v1"], shared_protocols=[],
-            overlap_type="topic_co_consumer", direction="co_consumer",
+            node_a_repo="omnimarket",
+            node_a_name="node_b",
+            node_b_repo="omnimarket",
+            node_b_name="node_a",
+            shared_topics=["topic.v1"],
+            shared_protocols=[],
+            overlap_type="topic_co_consumer",
+            direction="co_consumer",
         )
         assert edge1.edge_id == edge2.edge_id
 
@@ -93,10 +106,14 @@ class TestModelContractDependencyOutput:
             entries=[],
             edges=[
                 ModelDependencyEdge(
-                    node_a_repo="omnimarket", node_a_name="node_a",
-                    node_b_repo="omnimarket", node_b_name="node_b",
-                    shared_topics=["shared.v1"], shared_protocols=[],
-                    overlap_type="topic_co_consumer", direction="co_consumer",
+                    node_a_repo="omnimarket",
+                    node_a_name="node_a",
+                    node_b_repo="omnimarket",
+                    node_b_name="node_b",
+                    shared_topics=["shared.v1"],
+                    shared_protocols=[],
+                    overlap_type="topic_co_consumer",
+                    direction="co_consumer",
                 ),
             ],
             waves=[
