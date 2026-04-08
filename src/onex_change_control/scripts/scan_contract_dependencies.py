@@ -48,8 +48,13 @@ def scan_contracts(nodes_dir: Path, repo_name: str) -> list[ModelContractEntry]:
         event_bus = event_bus or {}
         db_io = data.get("db_io", {}) or {}
 
-        subscribe_topics = event_bus.get("subscribe_topics", []) or []
-        publish_topics = event_bus.get("publish_topics", []) or []
+        # Topics may be plain strings OR rich dicts with a 'name' key — normalize to strings
+        raw_subscribe = event_bus.get("subscribe_topics", []) or []
+        raw_publish = event_bus.get("publish_topics", []) or []
+        subscribe_topics = [t if isinstance(t, str) else t.get("name", "") for t in raw_subscribe if isinstance(t, (str, dict))]
+        publish_topics = [t if isinstance(t, str) else t.get("name", "") for t in raw_publish if isinstance(t, (str, dict))]
+        subscribe_topics = [t for t in subscribe_topics if t]
+        publish_topics = [t for t in publish_topics if t]
 
         # Extract db_tables with access mode from db_io declarations
         raw_db_tables = db_io.get("db_tables", []) or []
