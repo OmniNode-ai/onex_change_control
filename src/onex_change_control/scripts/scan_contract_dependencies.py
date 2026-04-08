@@ -67,10 +67,9 @@ def scan_contracts(nodes_dir: Path, repo_name: str) -> list[ModelContractEntry]:
             if isinstance(t, dict) and "name" in t
         ]
 
-        # Infer protocol surfaces — only from explicitly declared contract surfaces.
+        # protocols is left empty — no contract currently declares explicit protocol surfaces.
+        # Topic overlap is captured via subscribe_topics/publish_topics directly.
         protocols: list[str] = []
-        if subscribe_topics or publish_topics:
-            protocols.append("TOPICS")
 
         entries.append(ModelContractEntry(
             repo=repo_name,
