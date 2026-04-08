@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Dependency history — accumulated state from dependency reducer."""
+
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime  # noqa: TC003
 
 from pydantic import BaseModel, ConfigDict
 
-from onex_change_control.models.model_contract_dependency_output import (
+from onex_change_control.models.model_contract_dependency_output import (  # noqa: TC001
     ModelContractDependencyOutput,
     ModelHotspotTopic,
 )
@@ -31,5 +32,7 @@ class ModelDependencyHistory(BaseModel):
 
     state: str  # "stable" or "hotspot_detected"
     snapshots: list[ModelDependencySnapshot]
-    persistent_hotspots: list[ModelHotspotTopic]  # topics that are hotspots in 3+ consecutive snapshots
+    persistent_hotspots: list[
+        ModelHotspotTopic
+    ]  # topics that are hotspots in 3+ consecutive snapshots
     latest: ModelContractDependencyOutput | None = None
