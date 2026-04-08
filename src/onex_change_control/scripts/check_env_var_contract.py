@@ -191,9 +191,9 @@ def _extract_required_vars(line: str) -> list[str]:
         vars_found.append(m.group(1))
 
     # Check markdown required tables
-    m = _MD_REQUIRED_TABLE.search(line)
-    if m:
-        vars_found.append(m.group(1))
+    md_match: re.Match[str] | None = _MD_REQUIRED_TABLE.search(line)
+    if md_match:
+        vars_found.append(md_match.group(1))
 
     # Check shell required params
     for m in _SH_REQUIRED_PARAM.finditer(line):
