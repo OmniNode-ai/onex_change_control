@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Tests for contract dependency analysis handler."""
+import pytest
 
 from onex_change_control.handlers.handler_dependency_analysis import (
     compute_dependency_graph,
@@ -17,18 +18,14 @@ class TestComputeDependencyGraph:
         """Two nodes subscribing to the same topic should produce an edge."""
         entries = [
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_projection_delegation",
+                repo="omnimarket", node_name="node_projection_delegation",
                 subscribe_topics=["onex.evt.omniclaude.task-delegated.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_projection_savings",
+                repo="omnimarket", node_name="node_projection_savings",
                 subscribe_topics=["onex.evt.omniclaude.task-delegated.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
         ]
         inp = ModelContractDependencyInput(entries=entries)
@@ -41,18 +38,14 @@ class TestComputeDependencyGraph:
         """A node publishing to a topic that another subscribes to creates an edge."""
         entries = [
             ModelContractEntry(
-                repo="omniclaude",
-                node_name="node_emit_hook",
-                subscribe_topics=[],
-                protocols=[],
+                repo="omniclaude", node_name="node_emit_hook",
+                subscribe_topics=[], protocols=[],
                 publish_topics=["onex.evt.omniclaude.task-delegated.v1"],
             ),
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_projection_delegation",
+                repo="omnimarket", node_name="node_projection_delegation",
                 subscribe_topics=["onex.evt.omniclaude.task-delegated.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
         ]
         inp = ModelContractDependencyInput(entries=entries)
@@ -65,18 +58,14 @@ class TestComputeDependencyGraph:
     def test_no_overlap_produces_no_edges(self) -> None:
         entries = [
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_a",
+                repo="omnimarket", node_name="node_a",
                 subscribe_topics=["topic.a.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_b",
+                repo="omnimarket", node_name="node_b",
                 subscribe_topics=["topic.b.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
         ]
         inp = ModelContractDependencyInput(entries=entries)
@@ -86,28 +75,22 @@ class TestComputeDependencyGraph:
         assert len(result.waves) == 1  # all in wave 0
 
     def test_waves_separate_overlapping_nodes(self) -> None:
-        """Nodes with overlap must be in different waves (conservative grouping)."""
+        """Nodes with overlap must be in different waves (conservative overlap-based grouping)."""
         entries = [
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_a",
+                repo="omnimarket", node_name="node_a",
                 subscribe_topics=["shared.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_b",
+                repo="omnimarket", node_name="node_b",
                 subscribe_topics=["shared.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
             ModelContractEntry(
-                repo="omnidash",
-                node_name="node_c",
+                repo="omnidash", node_name="node_c",
                 subscribe_topics=["other.v1"],
-                publish_topics=[],
-                protocols=[],
+                publish_topics=[], protocols=[],
             ),
         ]
         inp = ModelContractDependencyInput(entries=entries)
@@ -124,13 +107,7 @@ class TestComputeDependencyGraph:
     def test_hotspot_topics_detected(self) -> None:
         """Topics appearing in 3+ nodes should be flagged as hotspots."""
         entries = [
-            ModelContractEntry(
-                repo="r",
-                node_name=f"node_{i}",
-                subscribe_topics=["hot.v1"],
-                publish_topics=[],
-                protocols=[],
-            )
+            ModelContractEntry(repo="r", node_name=f"node_{i}", subscribe_topics=["hot.v1"], publish_topics=[], protocols=[])
             for i in range(4)
         ]
         inp = ModelContractDependencyInput(entries=entries)
@@ -144,19 +121,13 @@ class TestComputeDependencyGraph:
         """Two nodes writing to the same DB table should produce an edge."""
         entries = [
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_a",
-                subscribe_topics=[],
-                publish_topics=[],
-                protocols=[],
+                repo="omnimarket", node_name="node_a",
+                subscribe_topics=[], publish_topics=[], protocols=[],
                 db_tables=[ModelDbTableRef(name="delegation_events", access="write")],
             ),
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_b",
-                subscribe_topics=[],
-                publish_topics=[],
-                protocols=[],
+                repo="omnimarket", node_name="node_b",
+                subscribe_topics=[], publish_topics=[], protocols=[],
                 db_tables=[ModelDbTableRef(name="delegation_events", access="write")],
             ),
         ]
@@ -178,18 +149,12 @@ class TestComputeDependencyGraph:
         """Two nodes declaring the same protocol surface should produce an edge."""
         entries = [
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_a",
-                subscribe_topics=[],
-                publish_topics=[],
-                protocols=["PUBLIC_API"],
+                repo="omnimarket", node_name="node_a",
+                subscribe_topics=[], publish_topics=[], protocols=["PUBLIC_API"],
             ),
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_b",
-                subscribe_topics=[],
-                publish_topics=[],
-                protocols=["PUBLIC_API"],
+                repo="omnimarket", node_name="node_b",
+                subscribe_topics=[], publish_topics=[], protocols=["PUBLIC_API"],
             ),
         ]
         inp = ModelContractDependencyInput(entries=entries)
@@ -199,22 +164,16 @@ class TestComputeDependencyGraph:
         assert result.edges[0].overlap_type == "protocol"
 
     def test_mixed_overlap_produces_single_edge_with_both_dimensions(self) -> None:
-        """A pair sharing a topic AND a db_table should produce one 'mixed' edge."""
+        """A pair sharing both a topic AND a db_table should produce a single 'mixed' edge, not two separate edges."""
         entries = [
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_a",
-                subscribe_topics=["shared.v1"],
-                publish_topics=[],
-                protocols=[],
+                repo="omnimarket", node_name="node_a",
+                subscribe_topics=["shared.v1"], publish_topics=[], protocols=[],
                 db_tables=[ModelDbTableRef(name="shared_table", access="write")],
             ),
             ModelContractEntry(
-                repo="omnimarket",
-                node_name="node_b",
-                subscribe_topics=["shared.v1"],
-                publish_topics=[],
-                protocols=[],
+                repo="omnimarket", node_name="node_b",
+                subscribe_topics=["shared.v1"], publish_topics=[], protocols=[],
                 db_tables=[ModelDbTableRef(name="shared_table", access="write")],
             ),
         ]

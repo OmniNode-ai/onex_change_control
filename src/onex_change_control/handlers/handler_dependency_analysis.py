@@ -6,13 +6,15 @@ Computes protocol-level dependency graph from contract declarations.
 Detects overlap in topics, protocols, and DB tables between nodes.
 Outputs edges and conservative overlap-based waves for parallel execution grouping.
 """
-
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
+from onex_change_control.models.model_contract_dependency_input import (
+    ModelContractDependencyInput,
+    ModelContractEntry,
+)
 from onex_change_control.models.model_contract_dependency_output import (
     ModelContractDependencyOutput,
     ModelDependencyEdge,
@@ -20,20 +22,9 @@ from onex_change_control.models.model_contract_dependency_output import (
     ModelHotspotTopic,
 )
 
-if TYPE_CHECKING:
-    from onex_change_control.models.model_contract_dependency_input import (
-        ModelContractDependencyInput,
-        ModelContractEntry,
-    )
-
 
 def _node_ref(entry: ModelContractEntry) -> str:
     return f"{entry.repo}/{entry.node_name}"
-
-
-def _pair_key(a: ModelContractEntry, b: ModelContractEntry) -> tuple[str, str]:
-    ra, rb = _node_ref(a), _node_ref(b)
-    return (ra, rb) if ra <= rb else (rb, ra)
 
 
 def _topic_direction(a: ModelContractEntry, b: ModelContractEntry, topic: str) -> str:
@@ -62,9 +53,7 @@ def _topic_overlap_type(direction: str) -> str:
     return mapping.get(direction, "topic_co_consumer")
 
 
-def _db_overlap_type(
-    a: ModelContractEntry, b: ModelContractEntry, table_name: str
-) -> str:
+def _db_overlap_type(a: ModelContractEntry, b: ModelContractEntry, table_name: str) -> str:
     """Determine DB table overlap type based on access modes."""
     a_access = next((t.access for t in a.db_tables if t.name == table_name), None)
     b_access = next((t.access for t in b.db_tables if t.name == table_name), None)
@@ -93,100 +82,19 @@ class _EdgeAccumulator:
         else:
             direction = "bidirectional"
 
-        overlap_type = (
-            "mixed"
-            if len(self.overlap_types) > 1
-            else (next(iter(self.overlap_types)) if self.overlap_types else "mixed")
+        overlap_type = "mixed" if len(self.overlap_types) > 1 else (
+            next(iter(self.overlap_types)) if self.overlap_types else "mixed"
         )
 
         return ModelDependencyEdge(
-            node_a_repo=self.a.repo,
-            node_a_name=self.a.node_name,
-            node_b_repo=self.b.repo,
-            node_b_name=self.b.node_name,
+            node_a_repo=self.a.repo, node_a_name=self.a.node_name,
+            node_b_repo=self.b.repo, node_b_name=self.b.node_name,
             shared_topics=sorted(self.shared_topics),
             shared_protocols=sorted(self.shared_protocols),
             shared_db_tables=sorted(self.shared_db_tables),
             overlap_type=overlap_type,
             direction=direction,
         )
-
-
-def _build_indexes(
-    entries: list[ModelContractEntry],
-) -> tuple[
-    dict[str, list[ModelContractEntry]],
-    dict[str, list[ModelContractEntry]],
-    dict[str, list[ModelContractEntry]],
-]:
-    """Build topic, db, and protocol indexes from entries."""
-    topic_index: dict[str, list[ModelContractEntry]] = defaultdict(list)
-    db_index: dict[str, list[ModelContractEntry]] = defaultdict(list)
-    protocol_index: dict[str, list[ModelContractEntry]] = defaultdict(list)
-    for entry in entries:
-        all_topics = set(entry.subscribe_topics) | set(entry.publish_topics)
-        for topic in all_topics:
-            topic_index[topic].append(entry)
-        for table_ref in entry.db_tables:
-            db_index[table_ref.name].append(entry)
-        for proto in entry.protocols:
-            protocol_index[proto].append(entry)
-    return topic_index, db_index, protocol_index
-
-
-def _accumulate_topic_overlap(
-    topic_index: dict[str, list[ModelContractEntry]],
-    accumulators: dict[tuple[str, str], _EdgeAccumulator],
-) -> None:
-    for topic, group in topic_index.items():
-        for i, a in enumerate(group):
-            for b in group[i + 1 :]:
-                pair = _pair_key(a, b)
-                if pair not in accumulators:
-                    accumulators[pair] = _EdgeAccumulator(a=a, b=b)
-                acc = accumulators[pair]
-                if topic not in acc.shared_topics:
-                    acc.shared_topics.append(topic)
-                direction = _topic_direction(a, b, topic)
-                if direction not in acc.directions:
-                    acc.directions.append(direction)
-                acc.overlap_types.add(_topic_overlap_type(direction))
-
-
-def _accumulate_db_overlap(
-    db_index: dict[str, list[ModelContractEntry]],
-    accumulators: dict[tuple[str, str], _EdgeAccumulator],
-) -> None:
-    for table_name, group in db_index.items():
-        for i, a in enumerate(group):
-            for b in group[i + 1 :]:
-                pair = _pair_key(a, b)
-                if pair not in accumulators:
-                    accumulators[pair] = _EdgeAccumulator(a=a, b=b)
-                acc = accumulators[pair]
-                if table_name not in acc.shared_db_tables:
-                    acc.shared_db_tables.append(table_name)
-                acc.overlap_types.add(_db_overlap_type(a, b, table_name))
-                if not acc.directions:
-                    acc.directions.append("bidirectional")
-
-
-def _accumulate_protocol_overlap(
-    protocol_index: dict[str, list[ModelContractEntry]],
-    accumulators: dict[tuple[str, str], _EdgeAccumulator],
-) -> None:
-    for proto, group in protocol_index.items():
-        for i, a in enumerate(group):
-            for b in group[i + 1 :]:
-                pair = _pair_key(a, b)
-                if pair not in accumulators:
-                    accumulators[pair] = _EdgeAccumulator(a=a, b=b)
-                acc = accumulators[pair]
-                if proto not in acc.shared_protocols:
-                    acc.shared_protocols.append(proto)
-                acc.overlap_types.add("protocol")
-                if not acc.directions:
-                    acc.directions.append("bidirectional")
 
 
 def _compute_edges(
@@ -197,12 +105,67 @@ def _compute_edges(
     Each node pair produces at most one edge, even if they overlap on multiple
     dimensions (topic + db_table). Multi-dimension pairs get overlap_type="mixed".
     """
-    topic_index, db_index, protocol_index = _build_indexes(entries)
-    accumulators: dict[tuple[str, str], _EdgeAccumulator] = {}
-    _accumulate_topic_overlap(topic_index, accumulators)
-    _accumulate_db_overlap(db_index, accumulators)
-    _accumulate_protocol_overlap(protocol_index, accumulators)
-    return [acc.to_edge() for acc in accumulators.values()]
+    # Index: surface_value -> list of entries that touch it
+    topic_index: dict[str, list[ModelContractEntry]] = defaultdict(list)
+    db_index: dict[str, list[ModelContractEntry]] = defaultdict(list)
+    protocol_index: dict[str, list[ModelContractEntry]] = defaultdict(list)
+
+    for entry in entries:
+        all_topics = set(entry.subscribe_topics) | set(entry.publish_topics)
+        for topic in all_topics:
+            topic_index[topic].append(entry)
+        for table_ref in entry.db_tables:
+            db_index[table_ref.name].append(entry)
+        for proto in entry.protocols:
+            protocol_index[proto].append(entry)
+
+    # Accumulate all overlap dimensions per pair before building edges
+    pair_accumulators: dict[tuple[str, str], _EdgeAccumulator] = {}
+
+    def _get_or_create(a: ModelContractEntry, b: ModelContractEntry) -> _EdgeAccumulator:
+        pair = tuple(sorted([_node_ref(a), _node_ref(b)]))
+        if pair not in pair_accumulators:
+            pair_accumulators[pair] = _EdgeAccumulator(a=a, b=b)
+        return pair_accumulators[pair]
+
+    # Topic overlap
+    for topic, group in topic_index.items():
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                acc = _get_or_create(a, b)
+                if topic not in acc.shared_topics:
+                    acc.shared_topics.append(topic)
+                direction = _topic_direction(a, b, topic)
+                if direction not in acc.directions:
+                    acc.directions.append(direction)
+                acc.overlap_types.add(_topic_overlap_type(direction))
+
+    # DB table overlap
+    for table_name, group in db_index.items():
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                acc = _get_or_create(a, b)
+                if table_name not in acc.shared_db_tables:
+                    acc.shared_db_tables.append(table_name)
+                db_type = _db_overlap_type(a, b, table_name)
+                acc.overlap_types.add(db_type)
+                # Only set bidirectional if topic analysis hasn't already set a direction
+                if not acc.directions:
+                    acc.directions.append("bidirectional")
+
+    # Protocol overlap
+    for proto, group in protocol_index.items():
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                acc = _get_or_create(a, b)
+                if proto not in acc.shared_protocols:
+                    acc.shared_protocols.append(proto)
+                acc.overlap_types.add("protocol")
+                # Only set bidirectional if topic analysis hasn't already set a direction
+                if not acc.directions:
+                    acc.directions.append("bidirectional")
+
+    return [acc.to_edge() for acc in pair_accumulators.values()]
 
 
 def _compute_waves(
@@ -227,9 +190,7 @@ def _compute_waves(
     wave_assignment: dict[str, int] = {}
     for entry in entries:
         ref = _node_ref(entry)
-        used_waves = {
-            wave_assignment[n] for n in neighbors[ref] if n in wave_assignment
-        }
+        used_waves = {wave_assignment[n] for n in neighbors[ref] if n in wave_assignment}
         w = 0
         while w in used_waves:
             w += 1
@@ -257,9 +218,7 @@ def _compute_hotspots(
 
     return sorted(
         [
-            ModelHotspotTopic(
-                topic=topic, overlap_count=len(refs), node_refs=sorted(refs)
-            )
+            ModelHotspotTopic(topic=topic, overlap_count=len(refs), node_refs=sorted(refs))
             for topic, refs in topic_nodes.items()
             if len(refs) >= min_count
         ],
