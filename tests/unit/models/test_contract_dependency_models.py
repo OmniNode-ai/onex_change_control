@@ -48,7 +48,7 @@ class TestModelContractEntry:
             publish_topics=[],
             protocols=[],
         )
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="frozen"):
             entry.repo = "omnidash"  # type: ignore[misc]
 
 

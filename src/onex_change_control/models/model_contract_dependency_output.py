@@ -21,8 +21,8 @@ class ModelDependencyEdge(BaseModel):
     overlap_type values: "topic_producer_consumer", "topic_co_consumer",
         "topic_co_producer", "db_table_shared_write", "db_table_read_write",
         "protocol", "mixed"
-    direction values: "producer_to_consumer", "co_consumer", "co_producer",
-        "bidirectional"
+    direction values: "producer_to_consumer", "co_consumer",
+        "co_producer", "bidirectional"
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -35,9 +35,7 @@ class ModelDependencyEdge(BaseModel):
     shared_protocols: list[str]
     shared_db_tables: list[str] = []
     overlap_type: str  # see docstring for valid values
-    direction: (
-        str  # "producer_to_consumer", "co_consumer", "co_producer", "bidirectional"
-    )
+    direction: str  # "producer_to_consumer", "co_consumer", "co_producer", "bidirectional"  # noqa: E501
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -79,7 +77,7 @@ class ModelHotspotTopic(BaseModel):
 
 
 class ModelContractDependencyOutput(BaseModel):
-    """Contract overlap graph with dependency edges and parallel wave groups."""
+    """Contract overlap graph: dependency edges and parallel wave groups."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
