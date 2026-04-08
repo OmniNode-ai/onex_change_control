@@ -149,7 +149,8 @@ def _compute_edges(
                     acc.shared_db_tables.append(table_name)
                 db_type = _db_overlap_type(a, b, table_name)
                 acc.overlap_types.add(db_type)
-                if "bidirectional" not in acc.directions:
+                # Only set bidirectional if topic analysis hasn't already set a direction
+                if not acc.directions:
                     acc.directions.append("bidirectional")
 
     # Protocol overlap
@@ -160,7 +161,8 @@ def _compute_edges(
                 if proto not in acc.shared_protocols:
                     acc.shared_protocols.append(proto)
                 acc.overlap_types.add("protocol")
-                if "bidirectional" not in acc.directions:
+                # Only set bidirectional if topic analysis hasn't already set a direction
+                if not acc.directions:
                     acc.directions.append("bidirectional")
 
     return [acc.to_edge() for acc in pair_accumulators.values()]
