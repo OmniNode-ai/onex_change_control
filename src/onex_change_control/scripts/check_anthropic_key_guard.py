@@ -65,6 +65,7 @@ EXEMPT_PATH_PATTERNS = [
     re.compile(r"""env-master-template"""),
     re.compile(r"""validate_env\.py$"""),  # KNOWN_VARS inventory
     re.compile(r"""examples/demo/"""),
+    re.compile(r"""check_anthropic_key_guard\.py$"""),  # this script
 ]
 
 
