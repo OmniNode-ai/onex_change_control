@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """Tests for contract dependency scanner."""
+
 from pathlib import Path
 
 from onex_change_control.scripts.scan_contract_dependencies import (
@@ -72,3 +73,27 @@ db_io:
         assert len(entries[0].db_tables) == 1
         assert entries[0].db_tables[0].name == "delegation_events"
         assert entries[0].db_tables[0].access == "write"
+
+    def test_protocols_always_empty_no_catch_all_topics(self, tmp_path: Path) -> None:
+        """OMN-7931: scanner must not assign catch-all TOPICS.
+
+        Assigning protocols=["TOPICS"] to every topic-declaring
+        node creates C(n,2) noise edges in the compute step.
+        Scanner must leave protocols=[] and let topic overlap
+        be captured via subscribe_topics/publish_topics.
+        """
+        contract = tmp_path / "node_with_topics" / "contract.yaml"
+        contract.parent.mkdir()
+        contract.write_text("""
+name: node_with_topics
+event_bus:
+  subscribe_topics:
+    - onex.evt.omniclaude.task-delegated.v1
+  publish_topics:
+    - onex.evt.omnimarket.foo-completed.v1
+""")
+        entries = scan_contracts(tmp_path, repo_name="omnimarket")
+        assert len(entries) == 1
+        assert entries[0].protocols == []
+        assert entries[0].subscribe_topics == ["onex.evt.omniclaude.task-delegated.v1"]
+        assert entries[0].publish_topics == ["onex.evt.omnimarket.foo-completed.v1"]
