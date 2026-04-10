@@ -1,0 +1,148 @@
+---
+# Dogfood Scorecard Contract
+# Declares the schema, validation rules, and regression detection thresholds
+# for ModelDogfoodScorecard in onex_change_control.
+#
+# Scorecards are stored in .onex_state/dogfood/ as timestamped YAML files.
+# The regression detector compares against the last N runs.
+
+schema_name: ModelDogfoodScorecard
+schema_version: "1.0.0"
+description: >
+  Platform dogfood health scorecard. Captures readiness dimensions, golden chain health, endpoint health,
+  delegation health, and infrastructure health in a single timestamped artifact. Produced by /platform_readiness
+  and the dogfood cron. #magic___^_^___line
+storage:
+  path: ".onex_state/dogfood/"
+  filename_pattern: "scorecard_{run_id}.yaml"
+  retention_runs: 10
+
+sub_models:
+  - name: ModelReadinessDimension
+    description: Per-dimension PASS/WARN/FAIL verdict with supporting evidence
+    fields:
+      - name: name
+        type: string
+        required: true
+      - name: status
+        type: EnumDogfoodStatus
+        required: true
+        allowed_values: [pass, warn, fail, unknown]
+      - name: evidence
+        type: string
+        required: false
+        default: ""
+
+  - name: ModelGoldenChainHealth
+    description: Row count and status for a named Kafka→DB golden chain
+    fields:
+      - name: chain_name
+        type: string
+        required: true
+      - name: topic
+        type: string
+        required: true
+      - name: table
+        type: string
+        required: true
+      - name: row_count
+        type: integer
+        required: true
+        min: 0
+      - name: status
+        type: EnumDogfoodStatus
+        required: true
+
+  - name: ModelEndpointHealth
+    description: HTTP endpoint probe result with data presence and schema validity
+    fields:
+      - name: path
+        type: string
+        required: true
+      - name: http_code
+        type: integer
+        required: true
+        min: 100
+        max: 599
+      - name: has_data
+        type: boolean
+        required: true
+      - name: response_schema_valid
+        type: boolean
+        required: true
+      - name: status
+        type: EnumDogfoodStatus
+        required: true
+
+  - name: ModelDelegationHealth
+    description: Classifier coverage and per-task-type routing health
+    fields:
+      - name: task_type_coverage
+        type: dict[string, EnumDogfoodStatus]
+        required: false
+        default: {}
+      - name: classifier_coverage_pct
+        type: float
+        required: true
+        min: 0.0
+        max: 100.0
+      - name: model_health
+        type: EnumDogfoodStatus
+        required: true
+      - name: status
+        type: EnumDogfoodStatus
+        required: true
+
+  - name: ModelInfrastructureHealth
+    description: Kafka, PostgreSQL, Docker, and consumer group health
+    fields:
+      - name: kafka
+        type: EnumDogfoodStatus
+        required: true
+      - name: postgres
+        type: EnumDogfoodStatus
+        required: true
+      - name: docker
+        type: EnumDogfoodStatus
+        required: true
+      - name: consumer_groups
+        type: EnumDogfoodStatus
+        required: true
+      - name: status
+        type: EnumDogfoodStatus
+        required: true
+
+regression_detection:
+  thresholds:
+    - name: golden_chain_zero_rows
+      dimension: golden_chains
+      field: row_count
+      condition: "was > 0 and healthy, now == 0"
+      severity: critical
+      description: >
+        A previously healthy chain with non-zero rows has dropped to 0 rows. Indicates a broken consumer
+        or failed migration. #magic___^_^___line
+    - name: endpoint_data_loss
+      dimension: endpoints
+      field: has_data
+      condition: "was true, now false"
+      severity: warn
+      description: >
+        An endpoint that previously returned data now returns an empty response. May indicate a broken
+        handler or empty projection table. #magic___^_^___line
+    - name: delegation_coverage_drop
+      dimension: delegation
+      field: classifier_coverage_pct
+      condition: "current < previous"
+      severity: warn
+      description: >
+        Delegation classifier coverage has decreased since the last run. May indicate a removed task type
+        handler or model degradation. #magic___^_^___line
+    - name: row_count_drop_20pct
+      dimension: golden_chains
+      field: row_count
+      condition: "drop > 20%"
+      severity: warn
+      description: >
+        A chain's row count has dropped more than 20% without a known cause. May indicate backfill issues,
+        dropped messages, or consumer lag.
