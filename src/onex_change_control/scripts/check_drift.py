@@ -85,6 +85,16 @@ def main() -> None:
         if not result.drift_detected:
             print("No drift detected.")
 
+    if result.drift_detected:
+        from onex_change_control.kafka.governance_emitter import emit_drift_detected
+
+        emit_drift_detected(
+            ticket_id=result.contract_name,
+            drift_kind=result.severity.value,
+            description=result.summary,
+            severity="error" if result.breaking_changes else "warning",
+        )
+
     sys.exit(1 if result.drift_detected else 0)
 
 

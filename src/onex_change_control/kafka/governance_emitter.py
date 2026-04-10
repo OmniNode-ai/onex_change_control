@@ -9,7 +9,7 @@ installed, the CLI continues normally without raising.
 
 Topics emitted:
   - onex.evt.onex-change-control.governance-check-completed.v1
-  - onex.evt.onex-change-control.drift-detected.v1
+  - onex.evt.onex-change-control.contract-drift-detected.v1
   - onex.evt.onex-change-control.cosmetic-compliance-scored.v1
 
 Kafka bootstrap servers are read from the KAFKA_BOOTSTRAP_SERVERS env var.
@@ -27,7 +27,7 @@ from typing import Any
 TOPIC_GOVERNANCE_CHECK_COMPLETED = (
     "onex.evt.onex-change-control.governance-check-completed.v1"
 )
-TOPIC_DRIFT_DETECTED = "onex.evt.onex-change-control.drift-detected.v1"
+TOPIC_DRIFT_DETECTED = "onex.evt.onex-change-control.contract-drift-detected.v1"
 TOPIC_COSMETIC_COMPLIANCE_SCORED = (
     "onex.evt.onex-change-control.cosmetic-compliance-scored.v1"
 )
