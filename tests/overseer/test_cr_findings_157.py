@@ -190,7 +190,7 @@ class TestCRFinding4MajorSessionContractPhasesRequired:
         )
 
         with pytest.raises((ValidationError, TypeError)):
-            ModelSessionContract(
+            ModelSessionContract(  # type: ignore[call-arg]
                 session_id="test",
                 created_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
@@ -225,7 +225,7 @@ class TestCRFinding5MajorTaskStateEnvelopeTaskIdRequired:
         )
 
         with pytest.raises((ValidationError, TypeError)):
-            ModelTaskStateEnvelope(
+            ModelTaskStateEnvelope(  # type: ignore[call-arg]
                 status=EnumTaskStatus.PENDING,
                 domain="test",
                 node_id="node-1",
