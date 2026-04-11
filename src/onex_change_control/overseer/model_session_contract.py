@@ -63,7 +63,7 @@ class ModelSessionContract(BaseModel):
     # Expected phases in order.
     # No default — phases must be supplied explicitly (from session contract YAML
     # or template). Operational defaults live in session_contract.template.yaml.
-    phases: tuple[ModelSessionPhaseSpec, ...] = Field(default_factory=tuple)
+    phases: tuple[ModelSessionPhaseSpec, ...] = Field(..., min_length=1)
 
     # Halt conditions
     halt_conditions: tuple[ModelSessionHaltCondition, ...] = Field(

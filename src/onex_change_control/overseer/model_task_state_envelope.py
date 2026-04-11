@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -37,7 +36,7 @@ class ModelTaskStateEnvelope(BaseModel, frozen=True, extra="forbid"):
     and routing engine. Frozen and extra-forbid for schema safety.
     """
 
-    task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    task_id: str = Field(..., description="Task identifier from upstream task record.")
     status: EnumTaskStatus
     domain: str
     node_id: str

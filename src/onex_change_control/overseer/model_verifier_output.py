@@ -3,14 +3,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from onex_change_control.overseer.enum_failure_class import (  # noqa: TC001
+    EnumFailureClass,
+)
 from onex_change_control.overseer.enum_verifier_verdict import EnumVerifierVerdict
-
-if TYPE_CHECKING:
-    from onex_change_control.overseer.enum_failure_class import EnumFailureClass
 
 
 class ModelVerifierCheckResult(BaseModel):

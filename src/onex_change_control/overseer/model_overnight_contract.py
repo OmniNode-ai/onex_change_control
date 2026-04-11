@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from onex_change_control.overseer.model_dispatch_item import (
     ModelDispatchItem,  # noqa: TC001
@@ -104,23 +104,34 @@ class ModelOvernightContract(BaseModel):
     # or template). Operational defaults live in overnight_contract.template.yaml.
     phases: tuple[ModelOvernightPhaseSpec, ...]
 
-    # Halt conditions
+    # Halt conditions — populated by model_validator when not provided.
     halt_conditions: tuple[ModelOvernightHaltCondition, ...] = Field(
-        default_factory=lambda: (
-            ModelOvernightHaltCondition(
-                condition_id="cost_ceiling",
-                description="Stop if accumulated cost exceeds ceiling",
-                check_type="cost_ceiling",
-                threshold=5.0,
-            ),
-            ModelOvernightHaltCondition(
-                condition_id="phase_failure_limit",
-                description="Stop after 3 consecutive phase failures",
-                check_type="phase_failure_count",
-                threshold=3.0,
+        default_factory=tuple
+    )
+
+    @model_validator(mode="after")
+    def _apply_default_halt_conditions(self) -> ModelOvernightContract:
+        if self.halt_conditions:
+            return self
+        object.__setattr__(
+            self,
+            "halt_conditions",
+            (
+                ModelOvernightHaltCondition(
+                    condition_id="cost_ceiling",
+                    description="Stop if accumulated cost exceeds ceiling",
+                    check_type="cost_ceiling",
+                    threshold=self.max_cost_usd,
+                ),
+                ModelOvernightHaltCondition(
+                    condition_id="phase_failure_limit",
+                    description="Stop after 3 consecutive phase failures",
+                    check_type="phase_failure_count",
+                    threshold=3.0,
+                ),
             ),
         )
-    )
+        return self
 
     # Standing orders (replaces nightly-loop-decisions.md)
     standing_orders: tuple[str, ...] = Field(default_factory=tuple)

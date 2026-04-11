@@ -37,6 +37,7 @@ from onex_change_control.overseer.model_completion_report import (
     ModelCompletionReport,
 )
 from onex_change_control.overseer.model_context_bundle import (
+    ModelContextBundle,
     ModelContextBundleL0,
     ModelContextBundleL1,
     ModelContextBundleL2,
@@ -99,6 +100,7 @@ __all__ = [
     "EnumTicketServiceAction",
     "EnumVerifierVerdict",
     "ModelCompletionReport",
+    "ModelContextBundle",
     "ModelContextBundleL0",
     "ModelContextBundleL1",
     "ModelContextBundleL2",

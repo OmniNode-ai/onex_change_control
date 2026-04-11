@@ -176,7 +176,7 @@ class ModelWorkerContract(BaseModel):
     )
 
 
-def load_worker_contract(data: dict[str, Any]) -> ModelWorkerContract:
+def load_worker_contract(data: Mapping[str, Any]) -> ModelWorkerContract:
     """Validate a ``ModelWorkerContract`` from an already-parsed mapping.
 
     Callers are responsible for reading and parsing the ``contract.yaml``
@@ -188,10 +188,10 @@ def load_worker_contract(data: dict[str, Any]) -> ModelWorkerContract:
     Raises ``pydantic.ValidationError`` if the content does not validate,
     and ``TypeError`` if ``data`` is not a mapping.
     """
-    if not isinstance(data, dict):
+    if not isinstance(data, Mapping):
         msg = f"worker contract data must be a mapping, got {type(data).__name__}"
         raise TypeError(msg)
-    return ModelWorkerContract.model_validate(data)
+    return ModelWorkerContract.model_validate(dict(data))
 
 
 __all__ = [

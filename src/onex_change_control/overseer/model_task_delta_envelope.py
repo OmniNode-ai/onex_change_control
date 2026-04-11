@@ -3,16 +3,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping  # noqa: TC003
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-    from onex_change_control.overseer.model_task_state_envelope import EnumTaskStatus
+from onex_change_control.overseer.model_task_state_envelope import (  # noqa: TC001
+    EnumTaskStatus,
+)
 
 
 class ModelTaskDeltaEnvelope(BaseModel, frozen=True, extra="forbid"):
