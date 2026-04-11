@@ -250,9 +250,9 @@ class TestCRFinding6MinorModelContextBundleExported:
     """CR#6 (Minor): ModelContextBundle not exported from overseer/__init__.py."""
 
     def test_model_context_bundle_importable_from_overseer_package(self) -> None:
-        from onex_change_control.overseer import ModelContextBundle
+        import onex_change_control.overseer as pkg
 
-        assert ModelContextBundle is not None
+        assert pkg.ModelContextBundle is not None
 
     def test_model_context_bundle_in_all(self) -> None:
         import onex_change_control.overseer as pkg
