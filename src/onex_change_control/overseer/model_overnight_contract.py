@@ -59,6 +59,26 @@ class ModelOvernightHaltCondition(BaseModel):
     # required_outcome_missing → outcome name that must not be absent.
     outcome: str | None = None
 
+    @model_validator(mode="after")
+    def _enforce_conditional_fields(self) -> ModelOvernightHaltCondition:
+        if self.on_halt == "dispatch_skill" and not self.skill:
+            msg = "skill is required when on_halt='dispatch_skill'"
+            raise ValueError(msg)
+        if self.check_type == "pr_blocked_too_long":
+            if self.pr is None:
+                msg = "pr is required when check_type='pr_blocked_too_long'"
+                raise ValueError(msg)
+            if self.threshold_minutes is None:
+                msg = (
+                    "threshold_minutes is required"
+                    " when check_type='pr_blocked_too_long'"
+                )
+                raise ValueError(msg)
+        if self.check_type == "required_outcome_missing" and not self.outcome:
+            msg = "outcome is required when check_type='required_outcome_missing'"
+            raise ValueError(msg)
+        return self
+
 
 class ModelOvernightPhaseSpec(BaseModel):
     """Specification for a single overnight phase."""

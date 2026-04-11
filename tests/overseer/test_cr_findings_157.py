@@ -9,6 +9,7 @@ CR#4 (Major): model_session_contract — phases defaults to empty tuple
 CR#5 (Major): model_task_state_envelope — task_id auto-generated
 CR#6 (Minor): overseer/__init__.py — ModelContextBundle not exported
 CR#7 (Minor): model_worker_contract — load_worker_contract rejects Mapping types
+CR#8 (Major): model_overnight_contract — HaltCondition missing conditional validators
 """
 
 from __future__ import annotations
@@ -285,3 +286,111 @@ class TestCRFinding7MinorWorkerContractLoadAcceptsMapping:
 
         with pytest.raises(TypeError):
             load_worker_contract("not-a-mapping")  # type: ignore[arg-type]
+
+
+class TestCRFinding8MajorOvernightHaltConditionConditionalFields:
+    """CR#8 (Major): ModelOvernightHaltCondition missing conditional field validators.
+
+    Comments document: skill required when on_halt='dispatch_skill',
+    pr+threshold_minutes required when check_type='pr_blocked_too_long',
+    outcome required when check_type='required_outcome_missing'. No validators
+    enforce these, so invalid structs pass schema validation silently.
+    """
+
+    def test_dispatch_skill_requires_skill_field(self) -> None:
+        from pydantic import ValidationError
+
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
+        with pytest.raises(ValidationError, match="skill is required"):
+            ModelOvernightHaltCondition(
+                condition_id="test",
+                description="test",
+                check_type="cost_ceiling",
+                on_halt="dispatch_skill",
+                skill=None,
+            )
+
+    def test_dispatch_skill_accepts_skill_field(self) -> None:
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
+        cond = ModelOvernightHaltCondition(
+            condition_id="test",
+            description="test",
+            check_type="cost_ceiling",
+            on_halt="dispatch_skill",
+            skill="onex:pr_polish",
+        )
+        assert cond.skill == "onex:pr_polish"
+
+    def test_pr_blocked_requires_pr_and_threshold_minutes(self) -> None:
+        from pydantic import ValidationError
+
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
+        with pytest.raises(ValidationError, match="pr is required"):
+            ModelOvernightHaltCondition(
+                condition_id="test",
+                description="test",
+                check_type="pr_blocked_too_long",
+                pr=None,
+                threshold_minutes=60.0,
+            )
+
+        with pytest.raises(ValidationError, match="threshold_minutes is required"):
+            ModelOvernightHaltCondition(
+                condition_id="test",
+                description="test",
+                check_type="pr_blocked_too_long",
+                pr=157,
+                threshold_minutes=None,
+            )
+
+    def test_pr_blocked_accepts_valid_fields(self) -> None:
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
+        cond = ModelOvernightHaltCondition(
+            condition_id="test",
+            description="test",
+            check_type="pr_blocked_too_long",
+            pr=157,
+            threshold_minutes=60.0,
+        )
+        assert cond.pr == 157
+        assert cond.threshold_minutes == 60.0
+
+    def test_required_outcome_missing_requires_outcome(self) -> None:
+        from pydantic import ValidationError
+
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
+        with pytest.raises(ValidationError, match="outcome is required"):
+            ModelOvernightHaltCondition(
+                condition_id="test",
+                description="test",
+                check_type="required_outcome_missing",
+                outcome=None,
+            )
+
+    def test_required_outcome_missing_accepts_outcome(self) -> None:
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
+        cond = ModelOvernightHaltCondition(
+            condition_id="test",
+            description="test",
+            check_type="required_outcome_missing",
+            outcome="merge_sweep_completed",
+        )
+        assert cond.outcome == "merge_sweep_completed"
