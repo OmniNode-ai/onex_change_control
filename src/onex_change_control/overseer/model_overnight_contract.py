@@ -9,14 +9,14 @@ requirements. Replaces the markdown-only standing orders pattern.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from datetime import datetime  # noqa: TC003
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-if TYPE_CHECKING:
-    from datetime import datetime
-
-    from onex_change_control.overseer.model_dispatch_item import ModelDispatchItem
+from onex_change_control.overseer.model_dispatch_item import (
+    ModelDispatchItem,  # noqa: TC001
+)
 
 
 class ModelOvernightHaltCondition(BaseModel):

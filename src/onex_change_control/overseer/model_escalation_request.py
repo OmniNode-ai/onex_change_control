@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -12,9 +12,9 @@ from onex_change_control.overseer.enum_capability_tier import EnumCapabilityTier
 from onex_change_control.overseer.enum_context_bundle_level import (
     EnumContextBundleLevel,
 )
-
-if TYPE_CHECKING:
-    from onex_change_control.overseer.enum_failure_class import EnumFailureClass
+from onex_change_control.overseer.enum_failure_class import (
+    EnumFailureClass,  # noqa: TC001
+)
 
 
 class ModelEscalationRequest(BaseModel, frozen=True, extra="forbid"):
