@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from onex_change_control.overseer.enum_failure_class import (  # noqa: TC001
+from onex_change_control.overseer.enum_failure_class import (
     EnumFailureClass,
 )
 from onex_change_control.overseer.enum_verifier_verdict import EnumVerifierVerdict
