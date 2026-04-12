@@ -24,13 +24,11 @@ import time
 import uuid
 from typing import Any
 
-TOPIC_GOVERNANCE_CHECK_COMPLETED = (
-    "onex.evt.onex-change-control.governance-check-completed.v1"
-)
-TOPIC_DRIFT_DETECTED = "onex.evt.onex-change-control.contract-drift-detected.v1"
-TOPIC_COSMETIC_COMPLIANCE_SCORED = (
-    "onex.evt.onex-change-control.cosmetic-compliance-scored.v1"
-)
+from onex_change_control.kafka.topics import GovernanceTopic
+
+TOPIC_GOVERNANCE_CHECK_COMPLETED: str = GovernanceTopic.GOVERNANCE_CHECK_COMPLETED
+TOPIC_DRIFT_DETECTED: str = GovernanceTopic.CONTRACT_DRIFT_DETECTED
+TOPIC_COSMETIC_COMPLIANCE_SCORED: str = GovernanceTopic.COSMETIC_COMPLIANCE_SCORED
 
 _DEFAULT_BOOTSTRAP = "localhost:19092"
 
