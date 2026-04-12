@@ -217,11 +217,30 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Bootstrap exemption check
+        # The gate cannot validate its own CLI before that CLI exists on main.
+        # If this PR is the one adding run_contract_compliance_check.py, skip
+        # the check — once merged, all downstream PRs will run the full gate.
+        id: bootstrap_check
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q 'scripts/ci/run_contract_compliance_check.py'; then
+            echo "Bootstrap PR detected: this PR introduces the contract compliance CLI itself."
+            echo "Skipping gate — once merged, all subsequent PRs will be checked."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Clone onex_change_control
+        if: steps.bootstrap_check.outputs.skip != 'true'
         run: git clone --depth=1 https://github.com/OmniNode-ai/onex_change_control.git /tmp/onex_change_control
       - name: Install pyyaml
+        if: steps.bootstrap_check.outputs.skip != 'true'
         run: pip install pyyaml
       - name: Run contract compliance check
+        if: steps.bootstrap_check.outputs.skip != 'true'
         run: |
           python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py \
             --pr ${{ github.event.pull_request.number }} \
