@@ -13,7 +13,7 @@ from onex_change_control.overseer.enum_context_bundle_level import (
     EnumContextBundleLevel,
 )
 from onex_change_control.overseer.enum_failure_class import (
-    EnumFailureClass,  # noqa: TC001
+    EnumFailureClass,
 )
 
 

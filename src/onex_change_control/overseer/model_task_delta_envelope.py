@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping  # noqa: TC003
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from onex_change_control.overseer.model_task_state_envelope import (  # noqa: TC001
+from onex_change_control.overseer.model_task_state_envelope import (
     EnumTaskStatus,
 )
 
