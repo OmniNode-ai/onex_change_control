@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts" / "ci"))
 from run_contract_compliance_check import (  # type: ignore[import-not-found]
     _RESULT_BLOCK,
     _RESULT_PASS,
+    _RESULT_WARN,
     _check_command,
     _check_file_exists,
     _check_grep,
@@ -150,21 +151,43 @@ def test_check_command_block(tmp_path: Path) -> None:
 
 
 def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
-    """Placeholders {pr} and {repo} must be substituted before execution."""
-    # echo the args; grep for the expected values in the output
-    result, _detail = _check_command(
-        "echo pr={pr} repo={repo}",
-        tmp_path,
-        pr_number=586,
-        repo="OmniNode-ai/omnidash",
-    )
+    """Placeholders {pr} and {repo} must be substituted with actual values."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:  # noqa: ARG001
+        captured.append(cmd)
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command(
+            "gh pr view {pr} --repo {repo} --json state",
+            tmp_path,
+            pr_number=586,
+            repo="OmniNode-ai/omnidash",
+        )
+
     assert result == _RESULT_PASS
+    executed = " ".join(captured[0])
+    assert "586" in executed, f"PR number not substituted; got: {executed}"
+    assert "OmniNode-ai/omnidash" in executed, f"repo not substituted; got: {executed}"
+    assert "{pr}" not in executed, "Literal {pr} placeholder was not replaced"
+    assert "{repo}" not in executed, "Literal {repo} placeholder was not replaced"
+
+
+def test_check_command_invalid_repo_blocks(tmp_path: Path) -> None:
+    """Adversarial repo value must be rejected before shell substitution."""
+    result, detail = _check_command(
+        "gh pr view {pr} --repo {repo}",
+        tmp_path,
+        pr_number=1,
+        repo="evil; rm -rf /",
+    )
+    assert result == _RESULT_BLOCK
+    assert "Invalid" in detail
 
 
 def test_check_command_precommit_missing_warns(tmp_path: Path) -> None:
     """When pre-commit is absent, demote to WARN rather than BLOCK."""
-    from run_contract_compliance_check import _RESULT_WARN
-
     with patch(
         "run_contract_compliance_check._run",
         side_effect=[
@@ -173,7 +196,17 @@ def test_check_command_precommit_missing_warns(tmp_path: Path) -> None:
     ):
         result, detail = _check_command("pre-commit run --all-files", tmp_path)
     assert result == _RESULT_WARN
-    assert "not installed" in detail
+    assert "skipped" in detail
+
+
+def test_check_command_precommit_skipped_in_ci(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In CI=true, pre-commit is always skipped regardless of installation."""
+    monkeypatch.setenv("CI", "true")
+    result, detail = _check_command("pre-commit run --all-files", tmp_path)
+    assert result == _RESULT_WARN
+    assert "CI" in detail or "skipped" in detail
 
 
 # ---------------------------------------------------------------------------

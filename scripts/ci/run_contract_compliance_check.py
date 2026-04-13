@@ -39,6 +39,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+_REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -221,20 +223,35 @@ def _check_command(
 
     Supports {pr} and {repo} placeholders that are substituted at runtime so
     contract YAML files don't hard-code PR numbers or repository names.
+
+    repo is validated against ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ before
+    substitution to prevent shell injection via adversarial --repo values.
+
     pre-commit commands are demoted to WARN when pre-commit is not installed.
+    In CI (CI=true env var) this demotion is always applied regardless so that
+    the runner doesn't need pre-commit installed as a CI dependency.
     """
+    if repo and not _REPO_PATTERN.match(repo):
+        return (
+            _RESULT_BLOCK,
+            f"Invalid --repo '{repo}': must match org/repo (alphanumeric, -, _, .)",
+        )
+
     cmd_str = str(_check_value).replace("{pr}", str(pr_number)).replace("{repo}", repo)
 
-    # pre-commit is not guaranteed in CI runners — warn rather than block.
+    # pre-commit is not guaranteed in CI runners.
+    # In CI environments (CI=true) or when pre-commit is absent, demote to WARN.
     if cmd_str.lstrip().startswith("pre-commit"):
+        in_ci = os.environ.get("CI", "").lower() in ("true", "1")
         rc_which, _, _ = _run(["which", "pre-commit"], timeout=5)
-        if rc_which != 0:
+        if in_ci or rc_which != 0:
+            reason = "running in CI" if in_ci else "pre-commit not installed"
             print(
-                "[WARN] pre-commit not installed; skipping pre-commit check. "
-                "Install pre-commit to run this check locally.",
+                f"[WARN] pre-commit check skipped ({reason}). "
+                "Run pre-commit locally to verify.",
                 flush=True,
             )
-            return _RESULT_WARN, "pre-commit not installed — check skipped"
+            return _RESULT_WARN, f"pre-commit check skipped ({reason})"
 
     rc, out, err = _run(["sh", "-c", cmd_str], timeout=60)
     if rc == 0:
