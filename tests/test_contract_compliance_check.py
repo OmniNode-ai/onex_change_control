@@ -214,8 +214,11 @@ def test_check_command_invalid_repo_blocks(tmp_path: Path) -> None:
     assert "Invalid" in detail
 
 
-def test_check_command_precommit_missing_not_ci_warns(tmp_path: Path) -> None:
+def test_check_command_precommit_missing_not_ci_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When pre-commit is absent outside CI, demote to WARN."""
+    monkeypatch.delenv("CI", raising=False)
     with patch(
         "run_contract_compliance_check._run",
         side_effect=[
@@ -224,7 +227,7 @@ def test_check_command_precommit_missing_not_ci_warns(tmp_path: Path) -> None:
     ):
         result, detail = _check_command("pre-commit run --all-files", tmp_path)
     assert result == _RESULT_WARN
-    assert "skipped" in detail
+    assert detail == "pre-commit check skipped (pre-commit not installed)"
 
 
 def test_check_command_precommit_absent_and_ci_warns(
@@ -248,15 +251,21 @@ def test_check_command_precommit_present_in_ci_enforces(
 ) -> None:
     """pre-commit installed + CI=true must still run the check (no blanket demotion)."""
     monkeypatch.setenv("CI", "true")
-    with patch(
-        "run_contract_compliance_check._run",
-        side_effect=[
-            (0, "/usr/bin/pre-commit", ""),  # which pre-commit → installed
-            (0, "", ""),  # actual pre-commit run → passes
-        ],
-    ):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        calls.append(cmd)
+        if cmd == ["which", "pre-commit"]:
+            return 0, "/usr/bin/pre-commit", ""
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
         result, _ = _check_command("pre-commit run --all-files", tmp_path)
     assert result == _RESULT_PASS
+    assert calls == [
+        ["which", "pre-commit"],
+        ["sh", "-c", "pre-commit run --all-files"],
+    ]
 
 
 # ---------------------------------------------------------------------------
