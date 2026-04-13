@@ -149,6 +149,33 @@ def test_check_command_block(tmp_path: Path) -> None:
     assert result == _RESULT_BLOCK
 
 
+def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
+    """Placeholders {pr} and {repo} must be substituted before execution."""
+    # echo the args; grep for the expected values in the output
+    result, _detail = _check_command(
+        "echo pr={pr} repo={repo}",
+        tmp_path,
+        pr_number=586,
+        repo="OmniNode-ai/omnidash",
+    )
+    assert result == _RESULT_PASS
+
+
+def test_check_command_precommit_missing_warns(tmp_path: Path) -> None:
+    """When pre-commit is absent, demote to WARN rather than BLOCK."""
+    from run_contract_compliance_check import _RESULT_WARN
+
+    with patch(
+        "run_contract_compliance_check._run",
+        side_effect=[
+            (1, "", "not found"),  # which pre-commit → not installed
+        ],
+    ):
+        result, detail = _check_command("pre-commit run --all-files", tmp_path)
+    assert result == _RESULT_WARN
+    assert "not installed" in detail
+
+
 # ---------------------------------------------------------------------------
 # Emergency bypass
 # ---------------------------------------------------------------------------

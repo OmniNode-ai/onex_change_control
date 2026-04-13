@@ -211,9 +211,31 @@ def _check_grep(check_value: Any, workspace: Path) -> tuple[str, str]:
     return _RESULT_BLOCK, f"Pattern '{pattern}' not found under '{search_path}'"
 
 
-def _check_command(_check_value: Any, _workspace: Path) -> tuple[str, str]:
-    """check_type=command: check_value is a shell command; exit 0 = pass."""
-    cmd_str = str(_check_value)
+def _check_command(
+    _check_value: Any,
+    _workspace: Path,
+    pr_number: int = 0,
+    repo: str = "",
+) -> tuple[str, str]:
+    """check_type=command: check_value is a shell command; exit 0 = pass.
+
+    Supports {pr} and {repo} placeholders that are substituted at runtime so
+    contract YAML files don't hard-code PR numbers or repository names.
+    pre-commit commands are demoted to WARN when pre-commit is not installed.
+    """
+    cmd_str = str(_check_value).replace("{pr}", str(pr_number)).replace("{repo}", repo)
+
+    # pre-commit is not guaranteed in CI runners — warn rather than block.
+    if cmd_str.lstrip().startswith("pre-commit"):
+        rc_which, _, _ = _run(["which", "pre-commit"], timeout=5)
+        if rc_which != 0:
+            print(
+                "[WARN] pre-commit not installed; skipping pre-commit check. "
+                "Install pre-commit to run this check locally.",
+                flush=True,
+            )
+            return _RESULT_WARN, "pre-commit not installed — check skipped"
+
     rc, out, err = _run(["sh", "-c", cmd_str], timeout=60)
     if rc == 0:
         return _RESULT_PASS, f"Command succeeded: {cmd_str[:80]}"
@@ -293,7 +315,7 @@ def _run_single_check(
     runner = _CHECK_RUNNERS.get(check_type)
     if runner is None:
         return check_type, _RESULT_WARN, f"Unknown check_type '{check_type}'"
-    if check_type == "test_passes":
+    if check_type in ("test_passes", "command"):
         result, detail = runner(check_value, workspace, pr_number, repo)
     else:
         result, detail = runner(check_value, workspace)
