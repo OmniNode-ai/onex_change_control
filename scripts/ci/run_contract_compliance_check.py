@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 """run_contract_compliance_check.py -- Mandatory CI gate for ModelTicketContract DoD.
