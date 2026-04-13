@@ -151,10 +151,10 @@ def test_check_command_block(tmp_path: Path) -> None:
 
 
 def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
-    """Placeholders {pr} and {repo} must be substituted with actual values."""
+    """Placeholders {pr} and {repo} must be substituted before sh -c is called."""
     captured: list[list[str]] = []
 
-    def fake_run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:  # noqa: ARG001
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
         captured.append(cmd)
         return 0, "", ""
 
@@ -167,11 +167,39 @@ def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
         )
 
     assert result == _RESULT_PASS
-    executed = " ".join(captured[0])
-    assert "586" in executed, f"PR number not substituted; got: {executed}"
-    assert "OmniNode-ai/omnidash" in executed, f"repo not substituted; got: {executed}"
-    assert "{pr}" not in executed, "Literal {pr} placeholder was not replaced"
-    assert "{repo}" not in executed, "Literal {repo} placeholder was not replaced"
+    assert captured, "No subprocess call captured — _run was never invoked"
+    # The final sh -c call must contain the substituted shell string
+    shell_cmd = captured[-1]
+    assert shell_cmd[0] == "sh", f"Unexpected command: {shell_cmd}"
+    assert shell_cmd[1] == "-c", f"Unexpected command: {shell_cmd}"
+    shell_str = shell_cmd[2]
+    assert "586" in shell_str, f"PR number not substituted in shell cmd: {shell_str!r}"
+    assert "OmniNode-ai/omnidash" in shell_str, f"repo not substituted: {shell_str!r}"
+    assert "{pr}" not in shell_str, f"Literal {{pr}} not replaced: {shell_str!r}"
+    assert "{repo}" not in shell_str, f"Literal {{repo}} not replaced: {shell_str!r}"
+    expected = "gh pr view 586 --repo OmniNode-ai/omnidash --json state"
+    assert shell_str == expected, f"Unexpected shell cmd: {shell_str!r}"
+
+
+def test_check_command_workspace_passed_as_cwd(tmp_path: Path) -> None:
+    """_check_command must pass workspace as cwd to subprocess."""
+    captured_cwd: list[Path | None] = []
+
+    def fake_run(
+        _cmd: list[str], cwd: Path | None = None, **_kwargs: object
+    ) -> tuple[int, str, str]:
+        captured_cwd.append(cwd)
+        return 0, "", ""
+
+    workspace = tmp_path / "my_workspace"
+    workspace.mkdir()
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command("echo hello", workspace)
+
+    assert result == _RESULT_PASS
+    assert captured_cwd[-1] == workspace, (
+        f"Expected cwd={workspace}, got cwd={captured_cwd[-1]}"
+    )
 
 
 def test_check_command_invalid_repo_blocks(tmp_path: Path) -> None:
@@ -186,8 +214,8 @@ def test_check_command_invalid_repo_blocks(tmp_path: Path) -> None:
     assert "Invalid" in detail
 
 
-def test_check_command_precommit_missing_warns(tmp_path: Path) -> None:
-    """When pre-commit is absent, demote to WARN rather than BLOCK."""
+def test_check_command_precommit_missing_not_ci_warns(tmp_path: Path) -> None:
+    """When pre-commit is absent outside CI, demote to WARN."""
     with patch(
         "run_contract_compliance_check._run",
         side_effect=[
@@ -199,14 +227,36 @@ def test_check_command_precommit_missing_warns(tmp_path: Path) -> None:
     assert "skipped" in detail
 
 
-def test_check_command_precommit_skipped_in_ci(
+def test_check_command_precommit_absent_and_ci_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """In CI=true, pre-commit is always skipped regardless of installation."""
+    """Binary absent + CI=true demotes to WARN."""
     monkeypatch.setenv("CI", "true")
-    result, detail = _check_command("pre-commit run --all-files", tmp_path)
+    with patch(
+        "run_contract_compliance_check._run",
+        side_effect=[
+            (1, "", "not found"),  # which pre-commit → not installed
+        ],
+    ):
+        result, detail = _check_command("pre-commit run --all-files", tmp_path)
     assert result == _RESULT_WARN
-    assert "CI" in detail or "skipped" in detail
+    assert "skipped" in detail
+
+
+def test_check_command_precommit_present_in_ci_enforces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pre-commit installed + CI=true must still run the check (no blanket demotion)."""
+    monkeypatch.setenv("CI", "true")
+    with patch(
+        "run_contract_compliance_check._run",
+        side_effect=[
+            (0, "/usr/bin/pre-commit", ""),  # which pre-commit → installed
+            (0, "", ""),  # actual pre-commit run → passes
+        ],
+    ):
+        result, _ = _check_command("pre-commit run --all-files", tmp_path)
+    assert result == _RESULT_PASS
 
 
 # ---------------------------------------------------------------------------
