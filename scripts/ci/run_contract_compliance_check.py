@@ -194,7 +194,7 @@ def _check_grep(check_value: Any, workspace: Path) -> tuple[str, str]:
         )
 
     pattern = check_value.get("pattern", "")
-    search_path = check_value.get("path", ".")
+    search_path = check_value.get("path") or check_value.get("file") or "."
     if not pattern:
         return _RESULT_BLOCK, "grep check_value missing 'pattern' key"
 
