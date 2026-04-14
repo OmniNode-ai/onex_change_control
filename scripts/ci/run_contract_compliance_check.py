@@ -57,7 +57,10 @@ _RESULT_BLOCK = "BLOCK"
 
 
 def _run(
-    cmd: list[str], timeout: int = 30, cwd: Path | None = None
+    cmd: list[str],
+    timeout: int = 30,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run a subprocess and return (returncode, stdout, stderr)."""
     try:
@@ -68,6 +71,7 @@ def _run(
             timeout=timeout,
             check=False,
             cwd=cwd,
+            env=env,
         )
         return result.returncode, result.stdout.strip(), result.stderr.strip()
     except subprocess.TimeoutExpired:
@@ -264,7 +268,13 @@ def _check_command(
             )
             return _RESULT_WARN, "pre-commit check skipped (pre-commit not installed)"
 
-    rc, out, err = _run(["sh", "-c", cmd_str], timeout=60, cwd=workspace)
+    # Inject GH_REPO so `gh pr view` works in CI detached-HEAD checkouts.
+    # gh honours GH_REPO as the default repo context when git can't resolve it.
+    gh_env: dict[str, str] | None = None
+    if repo and "gh " in cmd_str:
+        gh_env = {**os.environ, "GH_REPO": repo}
+
+    rc, out, err = _run(["sh", "-c", cmd_str], timeout=60, cwd=workspace, env=gh_env)
     if rc == 0:
         return _RESULT_PASS, f"Command succeeded: {cmd_str[:80]}"
     output_snippet = (out + err)[:200]
