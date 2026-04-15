@@ -219,9 +219,13 @@ def _validate_contract_schema(
     try:
         ModelTicketContract.model_validate(data)
     except ValidationError as e:
-        first_error = e.errors()[0] if e.errors() else {}
-        field = ".".join(str(p) for p in first_error.get("loc", []))
-        msg = first_error.get("msg", str(e))
+        errors = e.errors()
+        if errors:
+            field = ".".join(str(p) for p in errors[0]["loc"])
+            msg = errors[0]["msg"]
+        else:
+            field = ""
+            msg = str(e)
         return "FAIL", f"Contract schema invalid — {field}: {msg}"
 
     return None
