@@ -46,7 +46,7 @@ def sweep(base_dir: Path) -> int:
         try:
             try:
                 data: dict[str, object] = json.loads(f.read_text())
-            except (OSError, json.JSONDecodeError):
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 f.unlink(missing_ok=True)
                 reaped += 1
                 continue
@@ -54,7 +54,7 @@ def sweep(base_dir: Path) -> int:
                 f.unlink(missing_ok=True)
                 reaped += 1
         except OSError:
-            pass
+            pass  # Concurrent deletion between glob and unlink is fine; skip.
     return reaped
 
 
