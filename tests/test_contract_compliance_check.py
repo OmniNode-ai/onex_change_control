@@ -269,6 +269,85 @@ def test_check_command_precommit_present_in_ci_enforces(
 
 
 # ---------------------------------------------------------------------------
+# GH_REPO injection — detached-HEAD CI context
+# ---------------------------------------------------------------------------
+
+
+def test_check_command_injects_gh_repo_env_when_repo_set(tmp_path: Path) -> None:
+    """GH_REPO is injected when repo is set and cmd contains 'gh '.
+
+    Regression for OMN-8830: gh cannot infer branch in detached-HEAD CI
+    checkouts; GH_REPO injection provides the repo context it needs.
+    """
+    captured_envs: list[dict | None] = []
+
+    def fake_run(
+        *_args: object, env: dict | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command(
+            "gh pr checks {pr} --repo {repo}",
+            tmp_path,
+            pr_number=42,
+            repo="OmniNode-ai/omnimarket",
+        )
+
+    assert result == _RESULT_PASS
+    assert captured_envs, "No subprocess call captured"
+    env = captured_envs[-1]
+    assert env is not None, "env must be set when repo is provided and gh is in cmd"
+    assert env.get("GH_REPO") == "OmniNode-ai/omnimarket", (
+        f"GH_REPO not injected or wrong value: {env.get('GH_REPO')!r}"
+    )
+
+
+def test_check_command_no_gh_repo_when_no_gh_in_cmd(tmp_path: Path) -> None:
+    """GH_REPO must NOT be injected when the command doesn't contain 'gh '."""
+    captured_envs: list[dict | None] = []
+
+    def fake_run(
+        *_args: object, env: dict | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command(
+            "echo hello",
+            tmp_path,
+            pr_number=1,
+            repo="OmniNode-ai/omnimarket",
+        )
+
+    assert result == _RESULT_PASS
+    env = captured_envs[-1] if captured_envs else None
+    assert env is None, (
+        f"GH_REPO env was injected unnecessarily for non-gh command: {env!r}"
+    )
+
+
+def test_check_command_no_gh_repo_when_no_repo_arg(tmp_path: Path) -> None:
+    """GH_REPO must NOT be injected when repo arg is empty."""
+    captured_envs: list[dict | None] = []
+
+    def fake_run(
+        *_args: object, env: dict | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command("gh pr checks 1", tmp_path)
+
+    assert result == _RESULT_PASS
+    env = captured_envs[-1] if captured_envs else None
+    assert env is None, f"GH_REPO env was injected when repo was empty: {env!r}"
+
+
+# ---------------------------------------------------------------------------
 # Emergency bypass
 # ---------------------------------------------------------------------------
 
