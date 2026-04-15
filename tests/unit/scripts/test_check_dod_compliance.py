@@ -132,8 +132,19 @@ class TestArtifactChecks:
     """Tests for the 3 artifact checks."""
 
     def test_contract_exists_pass(self, tmp_contracts: Path) -> None:
-        """Check 1 passes when contract YAML exists."""
-        (tmp_contracts / "OMN-2000.yaml").write_text("ticket_id: OMN-2000")
+        """Check 1 passes when a schema-valid contract YAML exists."""
+        (tmp_contracts / "OMN-2000.yaml").write_text(
+            "ticket_id: OMN-2000\n"
+            'schema_version: "1.0.0"\n'
+            'summary: "Test ticket"\n'
+            "is_seam_ticket: false\n"
+            "interface_change: false\n"
+            "emergency_bypass:\n"
+            "  enabled: false\n"
+            '  justification: ""\n'
+            '  follow_up_ticket_id: ""\n'
+            "dod_evidence: []\n"
+        )
         status, _ = check_dod_compliance.check_contract_exists(
             "OMN-2000", tmp_contracts
         )

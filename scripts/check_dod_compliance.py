@@ -38,6 +38,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
+from onex_change_control.models import ModelTicketContract
+
 if TYPE_CHECKING:
     from typing import Any
 
@@ -193,12 +197,55 @@ def is_exempt(
 # ---------------------------------------------------------------------------
 
 
+def _validate_contract_schema(
+    contract_path: Path,
+) -> tuple[str, str] | None:
+    """Validate contract YAML against ModelTicketContract.
+
+    Returns (status, detail) on failure, None on success.
+    """
+    if yaml is None:
+        return None  # Skip schema validation when pyyaml unavailable
+
+    try:
+        with contract_path.open() as f:
+            data = yaml.safe_load(f)
+    except Exception as e:  # noqa: BLE001
+        return "FAIL", f"Contract unreadable: {e}"
+
+    if not isinstance(data, dict):
+        return "FAIL", f"Contract is not a YAML mapping: {contract_path}"
+
+    try:
+        ModelTicketContract.model_validate(data)
+    except ValidationError as e:
+        errors = e.errors()
+        if errors:
+            field = ".".join(str(p) for p in errors[0]["loc"])
+            msg = errors[0]["msg"]
+        else:
+            field = ""
+            msg = str(e)
+        return "FAIL", f"Contract schema invalid — {field}: {msg}"
+
+    return None
+
+
 def check_contract_exists(ticket_id: str, contracts_dir: Path) -> tuple[str, str]:
-    """Check 1: Contract YAML exists. Returns (status, detail)."""
+    """Check 1: Contract YAML exists and passes ModelTicketContract validation.
+
+    Catches malformed contracts that pass existence check but fail schema
+    validation (OMN-8808; motivated by OMN-8606 incident).
+    """
     contract_path = contracts_dir / f"{ticket_id}.yaml"
-    if contract_path.exists():
-        return "PASS", f"Contract found: {contract_path}"
-    return "FAIL", f"No contract at {contract_path}"
+    if not contract_path.exists():
+        return "FAIL", f"No contract at {contract_path}"
+
+    schema_result = _validate_contract_schema(contract_path)
+    if schema_result is not None:
+        return schema_result
+
+    return "PASS", f"Contract valid: {contract_path}"
 
 
 def check_receipt_exists(ticket_id: str, contracts_dir: Path) -> tuple[str, str]:
