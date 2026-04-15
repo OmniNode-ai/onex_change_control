@@ -12,6 +12,11 @@ from onex_change_control.enums.enum_autopilot import (
     EnumAutopilotCycleStatus,
     EnumAutopilotStepStatus,
 )
+from onex_change_control.models.model_agent_config import (
+    ModelActivationPatterns,
+    ModelAgentConfig,
+    ModelAgentIdentity,
+)
 from onex_change_control.models.model_autopilot_cycle import (
     ModelAutopilotCycleRecord,
     ModelAutopilotStepResult,
@@ -107,6 +112,9 @@ from onex_change_control.models.model_wire_schema_contract import (
 __all__ = [
     "EnumAutopilotCycleStatus",
     "EnumAutopilotStepStatus",
+    "ModelActivationPatterns",
+    "ModelAgentConfig",
+    "ModelAgentIdentity",
     "ModelAutopilotCycleRecord",
     "ModelAutopilotStepResult",
     "ModelComplianceSweepReport",
