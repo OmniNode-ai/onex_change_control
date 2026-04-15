@@ -259,3 +259,47 @@ baz: 123
         result = run_cli(str(test_file))
         assert result.returncode == 1
         assert "Cannot determine schema type" in result.stderr
+
+
+class TestMalformedContractRegression:
+    """Regression tests for OMN-8808: malformed DoD evidence YAML must be blocked.
+
+    Motivated by OMN-8606 where a malformed contract shipped to main undetected.
+    """
+
+    def test_malformed_contract_exits_nonzero(self, tmp_path: Path) -> None:
+        """Synthetic malformed contract must cause validate-yaml to exit non-zero."""
+        contracts_dir = tmp_path / "contracts"
+        contracts_dir.mkdir()
+        bad_contract = contracts_dir / "OMN-9999.yaml"
+        # Missing required fields: summary, is_seam_ticket, interface_change, etc.
+        bad_contract.write_text(
+            """
+ticket_id: OMN-9999
+schema_version: "1.0"
+dod_evidence:
+  - check_type: INVALID_ENUM_VALUE_THAT_DOES_NOT_EXIST
+""",
+        )
+
+        result = run_cli(str(bad_contract))
+        assert result.returncode != 0, (
+            "validate-yaml must exit non-zero for malformed contract (OMN-8808 gate)"
+        )
+
+    def test_malformed_contract_reports_validation_error(self, tmp_path: Path) -> None:
+        """Malformed contract must produce a ValidationError message on stderr."""
+        contracts_dir = tmp_path / "contracts"
+        contracts_dir.mkdir()
+        bad_contract = contracts_dir / "OMN-9998.yaml"
+        bad_contract.write_text(
+            """
+ticket_id: OMN-9998
+schema_version: "1.0"
+required_field_missing: true
+""",
+        )
+
+        result = run_cli(str(bad_contract))
+        assert result.returncode != 0
+        assert result.stderr, "stderr must contain validation error details"
