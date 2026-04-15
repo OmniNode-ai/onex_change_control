@@ -211,6 +211,40 @@ jobs:
           uv run python scripts/validation/check_seam_contract_coverage.py --base "$BASE"
 
 
+  contract-sync-gate:
+    name: Contract Sync Gate (Layer 3)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Compute changed files and diff
+        id: diff
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --no-tags --depth=1
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          git diff --name-only "$BASE"...HEAD > /tmp/changed_files.txt
+          git diff "$BASE"...HEAD > /tmp/pr_diff.txt
+          echo "files_arg=$(cat /tmp/changed_files.txt | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - name: Run contract sync gate
+        run: |
+          FILES="${{ steps.diff.outputs.files_arg }}"
+          if [ -z "$FILES" ]; then
+            echo "[SKIP] No changed files."
+            exit 0
+          fi
+          uv run python -m onex_change_control.scripts.validate_pr_contracts \
+            --diff-files $FILES \
+            --diff-content /tmp/pr_diff.txt
+
   contract-compliance:
     name: Contract Compliance Check
     runs-on: ubuntu-latest
@@ -260,7 +294,7 @@ jobs:
   ci-summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [pre-commit, type-check, schema-purity, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage]
+    needs: [pre-commit, type-check, schema-purity, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate]
     if: always()
     steps:
       - name: Check all jobs passed
