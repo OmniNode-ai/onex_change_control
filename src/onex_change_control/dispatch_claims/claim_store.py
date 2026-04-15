@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
 _CLAIMS_SUBDIR = "dispatch_claims"
 _GITKEEP = ".gitkeep"
+_BLOCKER_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _claims_dir() -> Path:
@@ -38,6 +40,9 @@ def _claims_dir() -> Path:
 
 
 def _claim_path(blocker_hash: str, claims_dir: Path | None = None) -> Path:
+    if not _BLOCKER_HASH_RE.fullmatch(blocker_hash):
+        msg = "blocker_hash must be a 40-character lowercase hex SHA1"
+        raise ValueError(msg)
     d = claims_dir if claims_dir is not None else _claims_dir()
     return d / f"{blocker_hash}.json"
 
@@ -50,7 +55,7 @@ def _is_expired(claim_data: dict[str, object]) -> bool:
             claimed_at = claimed_at.replace(tzinfo=UTC)
         ttl = int(cast("int", claim_data.get("ttl_seconds", 300)))
         elapsed = (datetime.now(tz=UTC) - claimed_at).total_seconds()
-    except (KeyError, ValueError):
+    except (KeyError, ValueError, TypeError):
         return True
     else:
         return elapsed >= ttl
@@ -83,11 +88,16 @@ def is_claimed(blocker_hash: str) -> dict[str, object] | None:
         p = _claim_path(blocker_hash)
         if not p.exists():
             return None
-        data: dict[str, object] = json.loads(p.read_text())
+        try:
+            data: dict[str, object] = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            # Malformed file: delete to unblock future acquires
+            p.unlink(missing_ok=True)
+            return None
         if _is_expired(data):
             p.unlink(missing_ok=True)
             return None
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
     else:
         return data
@@ -148,11 +158,16 @@ def release_claim(blocker_hash: str, claimant: str) -> bool:
         p = _claim_path(blocker_hash)
         if not p.exists():
             return False
-        data: dict[str, object] = json.loads(p.read_text())
+        try:
+            data: dict[str, object] = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            # Malformed file: delete it so future acquires are not permanently blocked
+            p.unlink(missing_ok=True)
+            return False
         if data.get("claimant") != claimant:
             return False
         p.unlink(missing_ok=True)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return False
     else:
         return True
