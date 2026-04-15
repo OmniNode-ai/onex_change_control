@@ -66,7 +66,7 @@ class TestModelAgentConfigValid:
 
     def test_agent_identity_extra_fields_ignored(self) -> None:
         data = _minimal_config()
-        identity = data["agent_identity"]  # type: ignore[index]
+        identity = data["agent_identity"]
         assert isinstance(identity, dict)
         identity["color"] = "green"
         identity["title"] = "Test Agent Title"
@@ -76,7 +76,7 @@ class TestModelAgentConfigValid:
 
     def test_activation_patterns_context_triggers_optional(self) -> None:
         data = _minimal_config()
-        ap = data["activation_patterns"]  # type: ignore[index]
+        ap = data["activation_patterns"]
         assert isinstance(ap, dict)
         ap["context_triggers"] = ["context one"]
         config = ModelAgentConfig.model_validate(data)
