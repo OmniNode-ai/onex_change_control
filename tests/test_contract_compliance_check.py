@@ -279,10 +279,10 @@ def test_check_command_injects_gh_repo_env_when_repo_set(tmp_path: Path) -> None
     Regression for OMN-8830: gh cannot infer branch in detached-HEAD CI
     checkouts; GH_REPO injection provides the repo context it needs.
     """
-    captured_envs: list[dict | None] = []
+    captured_envs: list[dict[str, str] | None] = []
 
     def fake_run(
-        *_args: object, env: dict | None = None, **_kw: object
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
     ) -> tuple[int, str, str]:
         captured_envs.append(env)
         return 0, "", ""
@@ -306,10 +306,10 @@ def test_check_command_injects_gh_repo_env_when_repo_set(tmp_path: Path) -> None
 
 def test_check_command_no_gh_repo_when_no_gh_in_cmd(tmp_path: Path) -> None:
     """GH_REPO must NOT be injected when the command doesn't contain 'gh '."""
-    captured_envs: list[dict | None] = []
+    captured_envs: list[dict[str, str] | None] = []
 
     def fake_run(
-        *_args: object, env: dict | None = None, **_kw: object
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
     ) -> tuple[int, str, str]:
         captured_envs.append(env)
         return 0, "", ""
@@ -331,10 +331,10 @@ def test_check_command_no_gh_repo_when_no_gh_in_cmd(tmp_path: Path) -> None:
 
 def test_check_command_no_gh_repo_when_no_repo_arg(tmp_path: Path) -> None:
     """GH_REPO must NOT be injected when repo arg is empty."""
-    captured_envs: list[dict | None] = []
+    captured_envs: list[dict[str, str] | None] = []
 
     def fake_run(
-        *_args: object, env: dict | None = None, **_kw: object
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
     ) -> tuple[int, str, str]:
         captured_envs.append(env)
         return 0, "", ""
