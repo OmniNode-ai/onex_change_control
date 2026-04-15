@@ -7,8 +7,12 @@ from __future__ import annotations
 import json
 import threading
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from onex_change_control.dispatch_claims.claim_store import (
     acquire_claim,
@@ -39,7 +43,7 @@ def _make_claim_data(
 
 
 @pytest.fixture(autouse=True)
-def isolated_state(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> object:
+def isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("ONEX_STATE_DIR", str(tmp_path))
     # Reload module so _claims_dir() picks up new env
     import importlib
@@ -101,7 +105,7 @@ def test_release_by_non_owner_is_noop() -> None:
 
 @pytest.mark.unit
 def test_reap_expired_claims_removes_stale_files(
-    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ONEX_STATE_DIR", str(tmp_path))
     claims_dir = tmp_path / "dispatch_claims"

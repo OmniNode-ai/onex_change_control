@@ -21,6 +21,7 @@ import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 _CLAIMS_SUBDIR = "dispatch_claims"
 _GITKEEP = ".gitkeep"
@@ -44,10 +45,10 @@ def _claim_path(blocker_hash: str, claims_dir: Path | None = None) -> Path:
 def _is_expired(claim_data: dict[str, object]) -> bool:
     """Return True if the claim's TTL has elapsed."""
     try:
-        claimed_at = datetime.fromisoformat(claim_data["claimed_at"])
+        claimed_at = datetime.fromisoformat(str(claim_data["claimed_at"]))
         if claimed_at.tzinfo is None:
             claimed_at = claimed_at.replace(tzinfo=UTC)
-        ttl = int(claim_data.get("ttl_seconds", 300))
+        ttl = int(cast("int", claim_data.get("ttl_seconds", 300)))
         elapsed = (datetime.now(tz=UTC) - claimed_at).total_seconds()
     except (KeyError, ValueError):
         return True
@@ -64,7 +65,7 @@ def reap_expired_claims() -> list[str]:
         return reaped
     for f in d.glob("*.json"):
         try:
-            data = json.loads(f.read_text())
+            data: dict[str, object] = json.loads(f.read_text())
             if _is_expired(data):
                 f.unlink(missing_ok=True)
                 reaped.append(f.stem)
@@ -82,7 +83,7 @@ def is_claimed(blocker_hash: str) -> dict[str, object] | None:
         p = _claim_path(blocker_hash)
         if not p.exists():
             return None
-        data = json.loads(p.read_text())
+        data: dict[str, object] = json.loads(p.read_text())
         if _is_expired(data):
             p.unlink(missing_ok=True)
             return None
@@ -110,7 +111,7 @@ def acquire_claim(claim_data: dict[str, object]) -> bool:
         RuntimeError: If ONEX_STATE_DIR is unset.
         KeyError: If claim_data is missing required fields.
     """
-    blocker_hash = claim_data["blocker_id"]
+    blocker_hash = str(claim_data["blocker_id"])
     reap_expired_claims()
 
     p = _claim_path(blocker_hash)
@@ -120,7 +121,7 @@ def acquire_claim(claim_data: dict[str, object]) -> bool:
         fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         # Another agent holds the claim — check if it's expired
-        existing = is_claimed(blocker_hash)
+        existing = is_claimed(str(blocker_hash))
         if existing is None:
             # Was expired and reaped by is_claimed — retry once
             try:
@@ -147,7 +148,7 @@ def release_claim(blocker_hash: str, claimant: str) -> bool:
         p = _claim_path(blocker_hash)
         if not p.exists():
             return False
-        data = json.loads(p.read_text())
+        data: dict[str, object] = json.loads(p.read_text())
         if data.get("claimant") != claimant:
             return False
         p.unlink(missing_ok=True)
