@@ -22,18 +22,25 @@ fi
 parse_tiers() {
   local current_tier="" current_desc=""
   local in_repos=false
+  local in_desc=false
   while IFS= read -r line; do
     if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*name:[[:space:]]*(.+) ]]; then
       current_tier="${BASH_REMATCH[1]}"
       in_repos=false
+      in_desc=false
     elif [[ "$line" =~ ^[[:space:]]*description:[[:space:]]*(.+) ]]; then
       current_desc="${BASH_REMATCH[1]}"
+      in_desc=true
+    elif $in_desc && [[ "$line" =~ ^[[:space:]]{6,}(.+) ]]; then
+      current_desc="${current_desc} ${BASH_REMATCH[1]}"
     elif [[ "$line" =~ ^[[:space:]]*repos: ]]; then
       in_repos=true
+      in_desc=false
     elif $in_repos && [[ "$line" =~ ^[[:space:]]*-[[:space:]]*(.+) ]]; then
       echo "${current_tier}|${BASH_REMATCH[1]}|${current_desc}"
     elif [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# && ! "$line" =~ ^[[:space:]]*- && ! "$line" =~ ^version ]]; then
       in_repos=false
+      in_desc=false
     fi
   done < "$TIER_FILE"
 }
