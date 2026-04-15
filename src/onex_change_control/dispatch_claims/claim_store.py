@@ -71,10 +71,19 @@ def reap_expired_claims() -> list[str]:
     for f in d.glob("*.json"):
         try:
             data: dict[str, object] = json.loads(f.read_text())
+        except (OSError, json.JSONDecodeError):
+            # Unparseable file can never represent a live claim; remove it.
+            try:
+                f.unlink(missing_ok=True)
+                reaped.append(f.stem)
+            except OSError:
+                pass
+            continue
+        try:
             if _is_expired(data):
                 f.unlink(missing_ok=True)
                 reaped.append(f.stem)
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             pass
     return reaped
 
@@ -91,8 +100,9 @@ def is_claimed(blocker_hash: str) -> dict[str, object] | None:
         try:
             data: dict[str, object] = json.loads(p.read_text())
         except (OSError, json.JSONDecodeError):
-            # Malformed file: delete to unblock future acquires
-            p.unlink(missing_ok=True)
+            # Cannot determine live/expired status — treat as not claimed.
+            # Do not delete: the file may be an in-progress write; reap_expired_claims
+            # handles corrupt file removal before the next acquire attempt.
             return None
         if _is_expired(data):
             p.unlink(missing_ok=True)
@@ -161,8 +171,6 @@ def release_claim(blocker_hash: str, claimant: str) -> bool:
         try:
             data: dict[str, object] = json.loads(p.read_text())
         except (OSError, json.JSONDecodeError):
-            # Malformed file: delete it so future acquires are not permanently blocked
-            p.unlink(missing_ok=True)
             return False
         if data.get("claimant") != claimant:
             return False
