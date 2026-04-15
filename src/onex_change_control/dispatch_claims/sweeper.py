@@ -22,11 +22,12 @@ def _is_expired(data: dict[str, object]) -> bool:
         claimed_at = datetime.fromisoformat(str(data["claimed_at"]))
         if claimed_at.tzinfo is None:
             claimed_at = claimed_at.replace(tzinfo=UTC)
-        ttl = int(data.get("ttl_seconds", 300))  # type: ignore[arg-type]
+        ttl = int(str(data.get("ttl_seconds", 300)))
         elapsed = (datetime.now(tz=UTC) - claimed_at).total_seconds()
     except (KeyError, ValueError, TypeError):
         return True
-    return elapsed >= ttl
+    else:
+        return elapsed >= ttl
 
 
 def sweep(base_dir: Path) -> int:
