@@ -23,7 +23,7 @@ def _make_claim_data(
     claimant: str = "agent-test",
     ttl_seconds: int = 300,
     claimed_at: str | None = None,
-) -> dict:
+) -> dict[str, object]:
     if claimed_at is None:
         claimed_at = datetime.now(tz=UTC).isoformat()
     return {
@@ -39,7 +39,7 @@ def _make_claim_data(
 
 
 @pytest.fixture(autouse=True)
-def isolated_state(tmp_path, monkeypatch):
+def isolated_state(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> object:
     monkeypatch.setenv("ONEX_STATE_DIR", str(tmp_path))
     # Reload module so _claims_dir() picks up new env
     import importlib
@@ -100,7 +100,9 @@ def test_release_by_non_owner_is_noop() -> None:
 
 
 @pytest.mark.unit
-def test_reap_expired_claims_removes_stale_files(tmp_path, monkeypatch) -> None:
+def test_reap_expired_claims_removes_stale_files(
+    tmp_path: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("ONEX_STATE_DIR", str(tmp_path))
     claims_dir = tmp_path / "dispatch_claims"
     claims_dir.mkdir()
@@ -126,7 +128,7 @@ def test_race_condition_exactly_one_winner() -> None:
     winners: list[bool] = []
     lock = threading.Lock()
 
-    def try_acquire():
+    def try_acquire() -> None:
         data = _make_claim_data(blocker_id="c" * 40)
         result = acquire_claim(data)
         with lock:

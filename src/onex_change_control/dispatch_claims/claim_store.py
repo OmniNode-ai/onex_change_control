@@ -41,7 +41,7 @@ def _claim_path(blocker_hash: str, claims_dir: Path | None = None) -> Path:
     return d / f"{blocker_hash}.json"
 
 
-def _is_expired(claim_data: dict) -> bool:
+def _is_expired(claim_data: dict[str, object]) -> bool:
     """Return True if the claim's TTL has elapsed."""
     try:
         claimed_at = datetime.fromisoformat(claim_data["claimed_at"])
@@ -73,7 +73,7 @@ def reap_expired_claims() -> list[str]:
     return reaped
 
 
-def is_claimed(blocker_hash: str) -> dict | None:
+def is_claimed(blocker_hash: str) -> dict[str, object] | None:
     """Return claim data dict if a live (non-expired) claim exists, else None.
 
     Performs lazy reaping: expired claim files are deleted before returning None.
@@ -92,7 +92,7 @@ def is_claimed(blocker_hash: str) -> dict | None:
         return data
 
 
-def acquire_claim(claim_data: dict) -> bool:
+def acquire_claim(claim_data: dict[str, object]) -> bool:
     """Atomically acquire a claim. Returns True on success, False if already claimed.
 
     Uses os.open(O_CREAT|O_EXCL) for kernel-level mutual exclusion.
