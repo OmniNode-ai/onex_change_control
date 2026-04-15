@@ -11,15 +11,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+import onex_change_control.dispatch_claims.claim_store as cs
+
 if TYPE_CHECKING:
     from pathlib import Path
 
-from onex_change_control.dispatch_claims.claim_store import (
-    acquire_claim,
-    is_claimed,
-    reap_expired_claims,
-    release_claim,
-)
+acquire_claim = cs.acquire_claim
+is_claimed = cs.is_claimed
+reap_expired_claims = cs.reap_expired_claims
+release_claim = cs.release_claim
 
 
 def _make_claim_data(
@@ -44,12 +44,10 @@ def _make_claim_data(
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("ONEX_STATE_DIR", str(tmp_path))
-    # Reload module so _claims_dir() picks up new env
     import importlib
 
-    import onex_change_control.dispatch_claims.claim_store as cs
-
+    monkeypatch.setenv("ONEX_STATE_DIR", str(tmp_path))
+    # Reload module so _claims_dir() picks up new env
     importlib.reload(cs)
     return tmp_path
 
@@ -74,10 +72,9 @@ def test_acquire_succeeds_after_expiry() -> None:
     past = datetime(2020, 1, 1, tzinfo=UTC).isoformat()
     expired_data = _make_claim_data(ttl_seconds=1, claimed_at=past)
     # First write the expired claim manually so acquire can reap it
-    from onex_change_control.dispatch_claims.claim_store import _claim_path, _claims_dir
-
-    claims_dir = _claims_dir()
-    _claim_path("a" * 40, claims_dir).write_text(__import__("json").dumps(expired_data))
+    claims_dir = cs._claims_dir()
+    path = cs._claim_path("a" * 40, claims_dir)
+    path.write_text(json.dumps(expired_data))
     # Now acquire with a live TTL — should succeed because existing claim is expired
     fresh_data = _make_claim_data(ttl_seconds=300)
     assert acquire_claim(fresh_data) is True

@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import cast
 
 _CLAIMS_SUBDIR = "dispatch_claims"
-_GITKEEP = ".gitkeep"
 _BLOCKER_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -77,14 +76,14 @@ def reap_expired_claims() -> list[str]:
                 f.unlink(missing_ok=True)
                 reaped.append(f.stem)
             except OSError:
-                pass
+                pass  # Concurrent deletion is fine; skip this file.
             continue
         try:
             if _is_expired(data):
                 f.unlink(missing_ok=True)
                 reaped.append(f.stem)
         except OSError:
-            pass
+            pass  # Concurrent deletion is fine; skip this file.
     return reaped
 
 
