@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from pydantic import ValidationError
+
+from onex_change_control.canary.schema import ModelCanaryTierAssignments
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TIER_ASSIGNMENTS_PATH = REPO_ROOT / ".canary" / "tier-assignments.yaml"
@@ -31,32 +34,25 @@ EXPECTED_REPOS = {
 
 
 @pytest.fixture
-def tier_data() -> dict:  # type: ignore[type-arg]
+def tier_data() -> dict[str, Any]:
     assert TIER_ASSIGNMENTS_PATH.exists(), f"Missing {TIER_ASSIGNMENTS_PATH}"
-    return yaml.safe_load(TIER_ASSIGNMENTS_PATH.read_text())
-
-
-def _get_model():
-    from onex_change_control.canary.schema import ModelCanaryTierAssignments
-
-    return ModelCanaryTierAssignments
+    raw: dict[str, Any] = yaml.safe_load(TIER_ASSIGNMENTS_PATH.read_text())
+    return raw
 
 
 class TestTierAssignmentsSchema:
     def test_file_exists(self) -> None:
         assert TIER_ASSIGNMENTS_PATH.exists()
 
-    def test_valid_yaml(self, tier_data: dict) -> None:  # type: ignore[type-arg]
+    def test_valid_yaml(self, tier_data: dict[str, Any]) -> None:
         assert isinstance(tier_data, dict)
 
-    def test_pydantic_validates(self, tier_data: dict) -> None:  # type: ignore[type-arg]
-        model = _get_model()
-        obj = model(**tier_data)
+    def test_pydantic_validates(self, tier_data: dict[str, Any]) -> None:
+        obj = ModelCanaryTierAssignments(**tier_data)
         assert obj.version == "1.0"
 
-    def test_all_repos_assigned(self, tier_data: dict) -> None:  # type: ignore[type-arg]
-        model = _get_model()
-        obj = model(**tier_data)
+    def test_all_repos_assigned(self, tier_data: dict[str, Any]) -> None:
+        obj = ModelCanaryTierAssignments(**tier_data)
         assigned = set()
         for tier in obj.tiers:
             assigned.update(tier.repos)
@@ -64,9 +60,8 @@ class TestTierAssignmentsSchema:
             f"Missing: {EXPECTED_REPOS - assigned}, Extra: {assigned - EXPECTED_REPOS}"
         )
 
-    def test_no_duplicate_repos(self, tier_data: dict) -> None:  # type: ignore[type-arg]
-        model = _get_model()
-        obj = model(**tier_data)
+    def test_no_duplicate_repos(self, tier_data: dict[str, Any]) -> None:
+        obj = ModelCanaryTierAssignments(**tier_data)
         all_repos: list[str] = []
         for tier in obj.tiers:
             all_repos.extend(tier.repos)
@@ -74,21 +69,18 @@ class TestTierAssignmentsSchema:
             f"Duplicate repos: {[r for r in all_repos if all_repos.count(r) > 1]}"
         )
 
-    def test_tier_order(self, tier_data: dict) -> None:  # type: ignore[type-arg]
-        model = _get_model()
-        obj = model(**tier_data)
+    def test_tier_order(self, tier_data: dict[str, Any]) -> None:
+        obj = ModelCanaryTierAssignments(**tier_data)
         names = [t.name for t in obj.tiers]
         assert names == ["canary", "early_adopter", "ga"]
 
-    def test_tier1_canary_repos(self, tier_data: dict) -> None:  # type: ignore[type-arg]
-        model = _get_model()
-        obj = model(**tier_data)
+    def test_tier1_canary_repos(self, tier_data: dict[str, Any]) -> None:
+        obj = ModelCanaryTierAssignments(**tier_data)
         canary = next(t for t in obj.tiers if t.name == "canary")
         assert set(canary.repos) == {"omnibase_compat", "omniweb"}
 
-    def test_tier2_early_adopter_repos(self, tier_data: dict) -> None:  # type: ignore[type-arg]
-        model = _get_model()
-        obj = model(**tier_data)
+    def test_tier2_early_adopter_repos(self, tier_data: dict[str, Any]) -> None:
+        obj = ModelCanaryTierAssignments(**tier_data)
         early = next(t for t in obj.tiers if t.name == "early_adopter")
         assert set(early.repos) == {
             "omniclaude",
@@ -97,9 +89,8 @@ class TestTierAssignmentsSchema:
             "omnimarket",
         }
 
-    def test_tier3_ga_repos(self, tier_data: dict) -> None:  # type: ignore[type-arg]
-        model = _get_model()
-        obj = model(**tier_data)
+    def test_tier3_ga_repos(self, tier_data: dict[str, Any]) -> None:
+        obj = ModelCanaryTierAssignments(**tier_data)
         ga = next(t for t in obj.tiers if t.name == "ga")
         assert set(ga.repos) == {
             "omnibase_core",
@@ -112,9 +103,8 @@ class TestTierAssignmentsSchema:
         }
 
     def test_rejects_invalid_tier_name(self) -> None:
-        model = _get_model()
         with pytest.raises(ValidationError):
-            model(
+            ModelCanaryTierAssignments(
                 version="1.0",
                 tiers=[
                     {
@@ -126,9 +116,8 @@ class TestTierAssignmentsSchema:
             )
 
     def test_rejects_empty_repos(self) -> None:
-        model = _get_model()
         with pytest.raises(ValidationError):
-            model(
+            ModelCanaryTierAssignments(
                 version="1.0",
                 tiers=[{"name": "canary", "repos": [], "description": "empty"}],
             )
