@@ -1,0 +1,66 @@
+{
+  "ticket_id": "OMN-8376",
+  "title": "PreToolUse overseer_foreground_block hook",
+  "status": "verified",
+  "timestamp": "2026-04-11T08:10:00Z",
+  "pr": "https://github.com/OmniNode-ai/omniclaude/pull/1210",
+  "merge_commit": "d79a17ad70934352490e284bbd897d3bbb2b0752",
+  "evidence_items": [
+    {
+      "description": "Hook registered in hooks.json as PreToolUse matcher for ^(Edit|Write|MultiEdit|NotebookEdit|Bash)$",
+      "status": "verified",
+      "evidence": "plugins/onex/hooks/hooks.json:73-81 registers pre_tool_use_overseer_foreground_block.sh as the first entry in the PreToolUse chain. jq validation passed."
+    },
+    {
+      "description": "Flag file check: when absent, all tool calls pass through",
+      "status": "verified",
+      "evidence": "Unit test TestFlagAbsent (2 tests) passing in tests/hooks/test_overseer_foreground_block.py. Scratch session scenario 3 confirmed: after `rm overseer-active.flag`, `gh pr merge 123 --auto` passes through with exit 0 and empty JSON response."
+    },
+    {
+      "description": "Flag file present + Bash gh/git mutating commands BLOCKED with exit 2",
+      "status": "verified",
+      "evidence": "test_bash_gh_pr_merge_blocked + test_bash_git_push_blocked passing. Scratch session scenario 1 confirmed: flag present + `gh pr merge 123 --auto` → exit 2, block reason surfaces contract_path (/tmp/scratch.yaml), active_phase (scratch-wave), and `rm <flag>` instructions."
+    },
+    {
+      "description": "Flag file present + Edit targeting $OMNI_HOME BLOCKED",
+      "status": "verified",
+      "evidence": "test_edit_under_omni_home_blocked passing — Edit tool with file_path under $OMNI_HOME returns exit 2 with block decision JSON."
+    },
+    {
+      "description": "Flag file present + Edit targeting paths outside $OMNI_HOME ALLOWED",
+      "status": "verified",
+      "evidence": "test_edit_outside_omni_home_allowed passing — Edit tool targeting /tmp/elsewhere returns exit 0 with empty JSON (pass-through)."
+    },
+    {
+      "description": "Read-only tools (Read, Grep, Glob, TaskList, SendMessage) remain allowed when flag present",
+      "status": "verified",
+      "evidence": "test_read_tool_not_in_block_list passing. BLOCK_TOOLS frozenset in overseer_foreground_block.py excludes Read/Grep/Glob/TaskList/SendMessage so the guard early-returns exit 0 before any path check. Scratch session scenario 2 confirmed: flag present + Read → exit 0."
+    },
+    {
+      "description": "Block reason surfaces contract_path and active_phase from YAML flag",
+      "status": "verified",
+      "evidence": "_parse_flag in overseer_foreground_block.py reads YAML without requiring PyYAML. test_parse_flag_extracts_fields + test_parse_flag_missing_fields_returns_defaults passing. Scratch session block reason observed: 'Overseer contract /tmp/scratch.yaml is active on phase scratch-wave. Foreground tool blocked. Escalate via contract halt condition or kill overseer with: rm .../overseer-active.flag'."
+    },
+    {
+      "description": "All 11 unit tests passing",
+      "status": "verified",
+      "evidence": "uv run pytest tests/hooks/test_overseer_foreground_block.py -v → 11 passed in 0.05s (TestFlagAbsent: 2, TestFlagPresent: 7, TestFlagParsing: 2)."
+    },
+    {
+      "description": "Lint + typecheck clean",
+      "status": "verified",
+      "evidence": "uv run ruff format + ruff check clean. uv run mypy plugins/onex/hooks/lib/overseer_foreground_block.py → Success: no issues found in 1 source file."
+    },
+    {
+      "description": "Pattern mirrors OMN-7018 worktree enforcement",
+      "status": "verified",
+      "evidence": "Script structure (error-guard, CLAUDE_PLUGIN_ROOT resolution, onex-paths sourcing, common.sh PYTHON_CMD, set +e/-e guard around handler, exit 2 on block) follows plugins/onex/hooks/scripts/pre_tool_use_bash_guard.sh verbatim. Python handler mirrors bash_guard.py signature (stdin JSON in, JSON decision out)."
+    },
+    {
+      "description": "PR merged to main",
+      "status": "verified",
+      "evidence": "PR #1210 merged at 2026-04-11T08:08:30Z, merge commit d79a17ad70934352490e284bbd897d3bbb2b0752. 61 CI checks green, 0 failing, mergeStateStatus CLEAN."
+    }
+  ],
+  "summary": "OMN-8376 complete. PreToolUse overseer_foreground_block hook merged via PR #1210. All acceptance criteria verified: flag present blocks Bash/Edit/Write targeting $OMNI_HOME, allows Read/Grep/Glob, surfaces contract_path + active_phase + kill instructions in block reason. 11 unit tests passing. Scratch session smoke test confirmed all 3 acceptance scenarios. Hook activates once the plugin is redeployed."
+}
