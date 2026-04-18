@@ -36,4 +36,5 @@ class ModelEscalationRequest(BaseModel, frozen=True, extra="forbid"):
     error_message: str | None = None
     error_detail: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # string-version-ok: wire type across domain runners and overseer; JSON
     schema_version: str = "1.0"

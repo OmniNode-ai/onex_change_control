@@ -129,7 +129,9 @@ class ModelWireSchemaContract(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     topic: str = Field(..., description="Kafka topic name")
-    schema_version: str = Field(..., description="Schema version (semver)")
+    schema_version: str = Field(
+        ..., description="Schema version (semver)"
+    )  # string-version-ok: wire type serialized to YAML/JSON at contract boundary
     ticket: str = Field(default="", description="Originating ticket")
     description: str = Field(default="", description="Contract description")
 

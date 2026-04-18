@@ -112,6 +112,7 @@ class ModelOvernightContract(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # string-version-ok: wire type serialized to YAML at overnight contract boundary
     schema_version: str = "1.0.0"
     session_id: str  # correlation ID for the overnight session
     created_at: datetime

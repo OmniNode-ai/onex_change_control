@@ -231,6 +231,7 @@ class ModelDogfoodScorecard(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # string-version-ok: wire type serialized to YAML/JSON at scorecard boundary
     schema_version: str = Field(
         default="1.0.0",
         description="Scorecard schema version (SemVer)",
