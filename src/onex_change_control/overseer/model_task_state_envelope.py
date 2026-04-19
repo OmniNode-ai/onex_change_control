@@ -46,4 +46,5 @@ class ModelTaskStateEnvelope(BaseModel, frozen=True, extra="forbid"):
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # string-version-ok: wire type across overseer/runner boundary; JSON
     schema_version: str = "1.0"

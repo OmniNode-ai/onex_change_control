@@ -43,4 +43,5 @@ class ModelTaskShapeFeatures(BaseModel, frozen=True, extra="forbid"):
     requires_tool_use: bool = False
     """Whether the task requires tool/function-call capability."""
 
+    # string-version-ok: wire type for routing policy feature vector, serialized to JSON
     schema_version: str = "1.0"

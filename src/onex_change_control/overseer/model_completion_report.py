@@ -41,4 +41,5 @@ class ModelCompletionReport(BaseModel, frozen=True, extra="forbid"):
     metadata: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None
     completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # string-version-ok: wire type in overseer performance ledger, serialized to JSON
     schema_version: str = "1.0"

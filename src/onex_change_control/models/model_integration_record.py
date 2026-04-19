@@ -112,6 +112,7 @@ class ModelIntegrationRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # string-version-ok: YAML/JSON wire; format checked by field_validator
     schema_version: str = Field(
         ...,
         description="Schema version (SemVer format, e.g., '1.0.0')",

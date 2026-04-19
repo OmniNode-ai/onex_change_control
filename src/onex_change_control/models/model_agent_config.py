@@ -45,7 +45,9 @@ class ModelAgentConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    schema_version: str = Field(..., description="Schema version (semver)")
+    schema_version: str = Field(
+        ..., description="Schema version (semver)"
+    )  # string-version-ok: wire type read from YAML agent config files
     agent_type: str = Field(..., description="Agent type identifier")
     agent_identity: ModelAgentIdentity = Field(..., description="Agent identity block")
     activation_patterns: ModelActivationPatterns = Field(

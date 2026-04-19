@@ -54,7 +54,9 @@ class ModelAutopilotCycleRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    schema_version: str = Field(..., description="Schema version (SemVer)")
+    schema_version: str = Field(
+        ..., description="Schema version (SemVer)"
+    )  # string-version-ok: wire type serialized to YAML at autopilot cycle boundary
     cycle_id: str = Field(..., description="Unique cycle identifier")
     mode: str = Field(..., description="Autopilot mode: close-out or build")
     started_at: str = Field(..., description="ISO datetime when cycle started")

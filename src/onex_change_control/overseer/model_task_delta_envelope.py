@@ -30,6 +30,7 @@ class ModelTaskDeltaEnvelope(BaseModel, frozen=True, extra="forbid"):
     payload: Mapping[str, Any] | None = None
     error: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # string-version-ok: wire type across overseer/runner boundary; JSON
     schema_version: str = "1.0"
 
     @field_validator("payload", mode="before")
