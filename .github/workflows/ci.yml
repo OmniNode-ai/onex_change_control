@@ -258,7 +258,11 @@ jobs:
   contract-compliance:
     name: Contract Compliance Check
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push'
+    # Only run where we can resolve a PR number: pull_request or merge_group.
+    # The `push` event has no associated PR context (main commits have no
+    # PR to validate against), so we exclude it — otherwise every push to
+    # main would fail at the PR-number resolver step.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -290,11 +294,35 @@ jobs:
       - name: Install pyyaml
         if: steps.bootstrap_check.outputs.skip != 'true'
         run: pip install pyyaml
+      - name: Resolve PR number (handle merge_group + pull_request)
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        id: pr_num
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # pull_request event carries github.event.pull_request.number directly.
+          # merge_group event does not — the head ref encodes it as
+          # gh-readonly-queue/<base>/pr-<NUM>-<sha>, so parse NUM from there.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            HEAD_REF="${{ github.event.merge_group.head_ref }}"
+            # e.g. refs/heads/gh-readonly-queue/main/pr-287-<sha>
+            PR_NUM="$(echo "$HEAD_REF" | sed -nE 's@.*pr-([0-9]+)-[0-9a-f]+.*@\1@p')"
+          else
+            PR_NUM=""
+          fi
+          if [[ -z "$PR_NUM" ]]; then
+            echo "::error::Could not resolve PR number for event=${{ github.event_name }}"
+            exit 1
+          fi
+          echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #$PR_NUM"
       - name: Run contract compliance check
         if: steps.bootstrap_check.outputs.skip != 'true'
         run: |
           python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py \
-            --pr ${{ github.event.pull_request.number }} \
+            --pr ${{ steps.pr_num.outputs.pr_num }} \
             --repo ${{ github.repository }} \
             --contracts-dir /tmp/onex_change_control/contracts
         env:
