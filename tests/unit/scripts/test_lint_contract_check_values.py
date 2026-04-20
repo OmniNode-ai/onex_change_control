@@ -136,6 +136,30 @@ def test_silenced_2_dev_null_at_end(tmp_path: Path) -> None:
     assert any("2>/dev/null" in label for _, label, _ in findings)
 
 
+@pytest.mark.unit
+def test_empty_permissive_brace_variable(tmp_path: Path) -> None:
+    """Brace-wrapped vars like ${result} in [ -z ... ] || should also be flagged."""
+    bad = '[ -z "${result}" ] || [ "$result" = "SUCCESS" ]'
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected findings for: {bad}"
+    assert any("empty-permissive" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_2_dev_null_mid_fragment_not_flagged(tmp_path: Path) -> None:
+    """2>/dev/null at a line boundary with a valid exit check should NOT be flagged.
+
+    Uses \\Z (absolute fragment end) instead of MULTILINE $ to avoid false positives.
+    """
+    good = 'cmd 2>/dev/null\n[ "$result" = "SUCCESS" ]'
+    path = write_contract(tmp_path, good)
+    findings = linter.lint_contract(path)
+    assert not findings, (
+        f"Unexpected findings for valid multi-line fragment: {findings}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Clean / fail-closed patterns — should produce zero findings
 # ---------------------------------------------------------------------------

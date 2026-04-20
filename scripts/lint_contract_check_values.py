@@ -30,11 +30,21 @@ import yaml
 # Anti-pattern registry
 # ---------------------------------------------------------------------------
 
-# Each entry: (human_readable_name, compiled_regex)
+# Each entry: (human_readable_name, compiled_regex).
+#
+# The empty-permissive pattern matches both bare `$VAR` and brace-wrapped
+# `${VAR}` forms because shell writers use them interchangeably.
+#
+# The 2>/dev/null pattern uses `\Z` (absolute end of string) rather than
+# `$` with re.MULTILINE. The MULTILINE form produces false positives on
+# multi-line fragments where `2>/dev/null` appears at a line boundary but
+# is followed by a valid exit check on the next line.
 ANTI_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "empty-permissive [ -z ... ] ||",
-        re.compile(r'\[\s*-z\s+"?\$\w+"?\s*\]\s*\|\|'),
+        re.compile(
+            r'\[\s*-z\s+"?\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)"?\s*\]\s*\|\|'
+        ),
     ),
     (
         "trailing || true",
@@ -46,7 +56,7 @@ ANTI_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
     (
         "silenced errors 2>/dev/null at end of fragment",
-        re.compile(r"2>/dev/null[\s;]*$", re.MULTILINE),
+        re.compile(r"2>/dev/null[\s;]*\Z"),
     ),
 ]
 
