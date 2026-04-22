@@ -71,12 +71,9 @@ def reap_expired_claims() -> list[str]:
         try:
             data: dict[str, object] = json.loads(f.read_text())
         except (OSError, json.JSONDecodeError):
-            # Unparseable file can never represent a live claim; remove it.
-            try:
-                f.unlink(missing_ok=True)
-                reaped.append(f.stem)
-            except OSError:
-                pass  # Concurrent deletion is fine; skip this file.
+            # Skip unparseable files — they may be in-progress writes.
+            # Corrupt-but-stable files are cleaned up on the next acquire
+            # attempt via is_claimed, which has a separate no-delete policy.
             continue
         try:
             if _is_expired(data):
