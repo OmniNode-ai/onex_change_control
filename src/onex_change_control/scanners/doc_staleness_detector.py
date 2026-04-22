@@ -111,7 +111,7 @@ def detect_stale_references(
         if recently_changed is not None:
             # Check if the resolved target (relative to repo) is in changed set
             try:
-                rel_path = str(Path(ref.resolved_target).relative_to(repo_root))
+                rel_path = Path(ref.resolved_target).relative_to(repo_root).as_posix()
                 if rel_path in recently_changed:
                     code_modified = get_git_last_modified(
                         ref.resolved_target, repo_root
@@ -223,7 +223,7 @@ def build_freshness_result(
         assert ref.resolved_target is not None
         if recently_changed is not None:
             try:
-                rel_path = str(Path(ref.resolved_target).relative_to(repo_root))
+                rel_path = Path(ref.resolved_target).relative_to(repo_root).as_posix()
                 if rel_path not in recently_changed:
                     continue
             except ValueError:
