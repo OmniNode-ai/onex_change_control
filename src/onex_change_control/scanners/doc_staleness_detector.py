@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,8 +27,12 @@ _STALENESS_THRESHOLD = 0.3
 _STALE_DAYS_THRESHOLD = 30
 
 
+@lru_cache(maxsize=4096)
 def get_git_last_modified(file_path: str, repo_root: str) -> datetime | None:
     """Get the last git commit date for a file.
+
+    Results are cached per (file_path, repo_root) pair to avoid redundant
+    subprocess calls when the same file is referenced by multiple docs.
 
     Args:
         file_path: Path to the file (absolute or relative to repo_root).
@@ -205,13 +210,24 @@ def build_freshness_result(
         resolved_references, doc_last_modified, repo_root, recently_changed
     )
 
-    # Find most recent code change
+    # Find most recent code change.
+    # When recently_changed is available, only query git for refs that appear in
+    # that set — refs absent from it cannot have changed in the lookback window,
+    # so their exact timestamp is irrelevant for staleness scoring. This avoids
+    # O(refs) git subprocess calls per document when scanning large repos.
     checkable = [
         r for r in resolved_references if r.exists is True and r.resolved_target
     ]
     code_dates: list[datetime] = []
     for ref in checkable:
         assert ref.resolved_target is not None
+        if recently_changed is not None:
+            try:
+                rel_path = str(Path(ref.resolved_target).relative_to(repo_root))
+                if rel_path not in recently_changed:
+                    continue
+            except ValueError:
+                continue
         dt = get_git_last_modified(ref.resolved_target, repo_root)
         if dt:
             code_dates.append(dt)

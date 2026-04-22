@@ -33,6 +33,7 @@ from onex_change_control.scanners.doc_reference_extractor import (
 )
 from onex_change_control.scanners.doc_staleness_detector import (
     assign_verdict,
+    build_freshness_result,
     compute_staleness_score,
 )
 
@@ -442,3 +443,101 @@ class TestStalenessScoring:
         # High score but doc is recent -- should be FRESH
         verdict = assign_verdict(0.4, 0, 10, 10.0)
         assert verdict == EnumDocStalenessVerdict.FRESH
+
+
+# ── recently_changed gating tests ───────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestRecentlyChangedGating:
+    """Verify that build_freshness_result skips per-ref git calls when
+    recently_changed is provided and a ref is absent from the set.
+
+    This is the regression test for OMN-9449: without this gating the sweep
+    spawns O(refs * docs) git subprocesses and hangs on large repos.
+    """
+
+    def test_git_not_called_for_ref_absent_from_recently_changed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        doc_path = str(tmp_path / "CLAUDE.md")
+        Path(doc_path).write_text("# test\n", encoding="utf-8")
+
+        target = str(tmp_path / "src" / "foo.py")
+        Path(target).parent.mkdir(parents=True)
+        Path(target).write_text("# code\n", encoding="utf-8")
+
+        call_log: list[str] = []
+
+        def fake_git_last_modified(file_path: str, repo_root: str) -> datetime | None:  # noqa: ARG001
+            call_log.append(file_path)
+            return datetime(2025, 1, 1, tzinfo=UTC)
+
+        # Patch at module level so lru_cache doesn't interfere
+        monkeypatch.setattr(
+            "onex_change_control.scanners.doc_staleness_detector.get_git_last_modified",
+            fake_git_last_modified,
+        )
+
+        ref = ModelDocReference(
+            doc_path=doc_path,
+            line_number=1,
+            reference_type=EnumDocReferenceType.FILE_PATH,
+            raw_text="src/foo.py",
+            resolved_target=target,
+            exists=True,
+        )
+
+        # recently_changed is empty — target is NOT in it, so git must not be
+        # called for it (only for the doc itself to get doc_last_modified).
+        build_freshness_result(
+            doc_path=doc_path,
+            repo="test",
+            repo_root=str(tmp_path),
+            resolved_references=[ref],
+            recently_changed=set(),
+        )
+
+        # Only the doc path itself should have been queried, not the ref target.
+        assert target not in call_log
+
+    def test_git_called_for_ref_present_in_recently_changed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        doc_path = str(tmp_path / "CLAUDE.md")
+        Path(doc_path).write_text("# test\n", encoding="utf-8")
+
+        target = str(tmp_path / "src" / "bar.py")
+        Path(target).parent.mkdir(parents=True)
+        Path(target).write_text("# code\n", encoding="utf-8")
+
+        call_log: list[str] = []
+
+        def fake_git_last_modified(file_path: str, repo_root: str) -> datetime | None:  # noqa: ARG001
+            call_log.append(file_path)
+            return datetime(2025, 6, 1, tzinfo=UTC)
+
+        monkeypatch.setattr(
+            "onex_change_control.scanners.doc_staleness_detector.get_git_last_modified",
+            fake_git_last_modified,
+        )
+
+        ref = ModelDocReference(
+            doc_path=doc_path,
+            line_number=1,
+            reference_type=EnumDocReferenceType.FILE_PATH,
+            raw_text="src/bar.py",
+            resolved_target=target,
+            exists=True,
+        )
+
+        rel_target = str(Path(target).relative_to(tmp_path))
+        build_freshness_result(
+            doc_path=doc_path,
+            repo="test",
+            repo_root=str(tmp_path),
+            resolved_references=[ref],
+            recently_changed={rel_target},
+        )
+
+        assert target in call_log
