@@ -20,7 +20,7 @@ import re
 import pytest
 
 try:
-    from omnibase_core.validation.receipt_gate import (
+    from omnibase_core.validation.receipt_gate import (  # type: ignore[attr-defined, unused-ignore]
         CLOSING_KEYWORD_PATTERN,
         _extract_ticket_ids,
     )
