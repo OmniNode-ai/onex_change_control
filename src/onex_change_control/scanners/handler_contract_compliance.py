@@ -325,7 +325,7 @@ def _build_contract_context(
     }
 
 
-def _audit_handler(  # noqa: PLR0913
+def _audit_handler(  # noqa: PLR0913  Why: audit requires full cross-referencing context
     handler_file: Path,
     node_dir: Path,
     repo: str,

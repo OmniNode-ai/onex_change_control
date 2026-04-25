@@ -13,10 +13,10 @@ from onex_change_control.handlers.handler_dependency_analysis import (
     compute_dependency_graph,
 )
 from onex_change_control.models.model_contract_dependency_input import (
-    ModelContractDependencyInput,  # noqa: TC001
+    ModelContractDependencyInput,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 from onex_change_control.models.model_contract_dependency_output import (
-    ModelContractDependencyOutput,  # noqa: TC001
+    ModelContractDependencyOutput,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 
 if TYPE_CHECKING:

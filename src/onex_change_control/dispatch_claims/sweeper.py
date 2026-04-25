@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -64,8 +65,6 @@ def main() -> None:
         msg = "ONEX_STATE_DIR is not set"
         raise RuntimeError(msg)
     reaped = sweep(Path(raw).expanduser().resolve())
-    import sys  # noqa: PLC0415
-
     sys.stdout.write(f"dispatch-claim-sweeper: reaped {reaped} expired claim(s)\n")
 
 

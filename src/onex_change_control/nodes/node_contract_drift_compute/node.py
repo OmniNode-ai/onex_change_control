@@ -15,10 +15,10 @@ from onex_change_control.handlers.handler_drift_analysis import (
     analyze_drift_with_pinned_contract,
 )
 from onex_change_control.models.model_contract_drift_input import (
-    ModelContractDriftInput,  # noqa: TC001
+    ModelContractDriftInput,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 from onex_change_control.models.model_contract_drift_output import (
-    ModelContractDriftOutput,  # noqa: TC001
+    ModelContractDriftOutput,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 
 if TYPE_CHECKING:

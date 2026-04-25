@@ -155,7 +155,7 @@ def _run_checks(
         violations.extend(github_check(target, spec, fix=fix))
 
     if verbose:
-        print(  # noqa: T201
+        print(  # noqa: T201  Why: CLI progress output to stderr
             f"cosmetic-lint: ran {len(selected)} check(s), "
             f"found {len(violations)} violation(s)",
             file=sys.stderr,
@@ -188,7 +188,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     # Print violations to stderr
     for v in violations:
-        print(v.format(), file=sys.stderr)  # noqa: T201
+        print(v.format(), file=sys.stderr)  # noqa: T201  Why: CLI violation output
 
     remaining = [v for v in violations if not (fix_mode and v.fixable)]
 

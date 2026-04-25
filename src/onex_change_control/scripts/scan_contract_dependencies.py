@@ -23,7 +23,7 @@ def scan_contracts(nodes_dir: Path, repo_name: str) -> list[ModelContractEntry]:
 
     for contract_path in sorted(nodes_dir.rglob("contract.yaml")):
         try:
-            with open(contract_path) as f:  # noqa: PTH123
+            with open(contract_path) as f:  # noqa: PTH123  Why: Path object used directly with open()
                 data = yaml.safe_load(f)
         except (OSError, yaml.YAMLError) as exc:
             logger.warning("Skipping unreadable contract %s: %s", contract_path, exc)

@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
             ModelDayClose.model_validate(data)
             if not args.quiet:
                 print(f"OK: {label}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001  Why: validation harness must catch all errors per-file
             print(f"ERROR: {label}: validation failed: {exc}", file=sys.stderr)
             errors += 1
 

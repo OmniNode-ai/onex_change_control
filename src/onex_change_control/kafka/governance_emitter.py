@@ -65,7 +65,7 @@ def _try_produce(topic: str, payload: dict[str, Any]) -> None:
         producer.send(topic, _build_envelope(topic, payload))
         producer.flush(timeout=3)
         producer.close()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001  Why: best-effort Kafka emission must never fail the CLI
         # Best-effort: never fail the CLI because Kafka is unavailable
         pass
 

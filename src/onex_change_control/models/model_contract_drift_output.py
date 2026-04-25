@@ -8,7 +8,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from onex_change_control.enums.enum_drift_severity import (
-    EnumDriftSeverity,  # noqa: TC001
+    EnumDriftSeverity,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 
 

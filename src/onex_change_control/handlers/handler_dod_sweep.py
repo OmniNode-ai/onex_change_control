@@ -72,7 +72,7 @@ def _linear_request(
 ) -> dict[str, Any]:
     """Execute a Linear GraphQL query using stdlib urllib."""
     payload = json.dumps({"query": query, "variables": variables}).encode()
-    req = urllib.request.Request(  # noqa: S310 -- URL is a constant HTTPS endpoint
+    req = urllib.request.Request(  # noqa: S310  Why: URL is a constant HTTPS endpoint
         LINEAR_API_URL,
         data=payload,
         headers={
@@ -80,7 +80,7 @@ def _linear_request(
             "Authorization": api_key,
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310  Why: URL is a constant HTTPS endpoint
         return json.loads(resp.read().decode())  # type: ignore[no-any-return]
 
 

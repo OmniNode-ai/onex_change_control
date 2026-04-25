@@ -12,7 +12,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from onex_change_control.enums.enum_compliance_violation import (  # noqa: TC001
+from onex_change_control.enums.enum_compliance_violation import (  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
     EnumComplianceViolation,
 )
 from onex_change_control.enums.enum_migration_status import EnumMigrationStatus

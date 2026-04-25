@@ -130,7 +130,7 @@ def check_file_for_topic(
     # Try just the event-name segment (e.g. "agent-actions" from
     # "onex.evt.omniclaude.agent-actions.v1")
     parts = topic_name.split(".")
-    if len(parts) >= 4:  # noqa: PLR2004
+    if len(parts) >= 4:  # noqa: PLR2004  Why: topic format has 4+ dot-separated segments
         event_name = parts[3]
         if event_name in content:
             return True, True

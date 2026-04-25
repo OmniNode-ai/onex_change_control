@@ -14,7 +14,7 @@ class EnumVerifierVerdict(StrEnum):
     - ESCALATE: route to higher-tier agent or human
     """
 
-    PASS = "PASS"  # noqa: S105
+    PASS = "PASS"  # noqa: S105  Why: enum status value, not a password
     """All checks passed — proceed."""
 
     FAIL = "FAIL"

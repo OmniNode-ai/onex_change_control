@@ -23,7 +23,7 @@ from onex_change_control.enums.enum_drift_severity import (
     EnumDriftSeverity,
 )
 from onex_change_control.models.model_contract_drift_input import (
-    ModelContractDriftInput,  # noqa: TC001
+    ModelContractDriftInput,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 from onex_change_control.models.model_contract_drift_output import (
     ModelContractDriftOutput,

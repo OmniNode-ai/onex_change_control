@@ -498,7 +498,7 @@ def _extract_update_targets(raw: str) -> list[str]:
     columns: list[str] = []
     for assignment in raw.split(","):
         parts = assignment.split("=", 1)
-        if len(parts) >= 2:  # noqa: PLR2004
+        if len(parts) >= 2:  # noqa: PLR2004  Why: assignment needs key=value split
             col = parts[0].strip().lower()
             if re.match(r"^[a-z_]\w*$", col):
                 columns.append(col)

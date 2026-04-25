@@ -48,8 +48,8 @@ def _load_password() -> str:
 
     # Source the env file in a subshell and extract the variable
     try:
-        result = subprocess.run(  # noqa: S603
-            [  # noqa: S607
+        result = subprocess.run(  # noqa: S603  Why: subprocess call with controlled args
+            [  # noqa: S607  Why: bash executable path is safe
                 "bash",
                 "-c",
                 f"source {env_file} && echo $POSTGRES_PASSWORD",

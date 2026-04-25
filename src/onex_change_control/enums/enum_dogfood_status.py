@@ -20,7 +20,7 @@ class EnumDogfoodStatus(str, Enum):
     - unknown: Status cannot be determined
     """
 
-    PASS = "pass"  # noqa: S105 - Not a password, it's a status value
+    PASS = "pass"  # noqa: S105  Why: enum status value, not a password
     """Check is healthy."""
 
     WARN = "warn"

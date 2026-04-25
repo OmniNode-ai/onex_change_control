@@ -27,6 +27,6 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001  Why: top-level guard must catch everything
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)

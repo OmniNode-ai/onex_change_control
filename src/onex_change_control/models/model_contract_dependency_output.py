@@ -8,7 +8,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, computed_field
 
-from onex_change_control.models.model_contract_dependency_input import (  # noqa: TC001
+from onex_change_control.models.model_contract_dependency_input import (  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
     ModelContractEntry,
 )
 
@@ -35,7 +35,8 @@ class ModelDependencyEdge(BaseModel):
     shared_protocols: list[str]
     shared_db_tables: list[str] = []
     overlap_type: str  # see docstring for valid values
-    direction: str  # "producer_to_consumer", "co_consumer", "co_producer", "bidirectional"  # noqa: E501
+    # "producer_to_consumer", "co_consumer", "co_producer", "bidirectional"
+    direction: str
 
     @computed_field  # type: ignore[prop-decorator]
     @property

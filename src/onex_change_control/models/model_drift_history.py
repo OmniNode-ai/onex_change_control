@@ -8,7 +8,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from onex_change_control.models.model_contract_drift_output import (
-    ModelContractDriftOutput,  # noqa: TC001
+    ModelContractDriftOutput,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 
 

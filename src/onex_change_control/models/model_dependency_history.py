@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003
+from datetime import (
+    datetime,  # noqa: TC003  Why: Pydantic model uses datetime at runtime
+)
 
 from pydantic import BaseModel, ConfigDict
 
-from onex_change_control.models.model_contract_dependency_output import (  # noqa: TC001
+from onex_change_control.models.model_contract_dependency_output import (  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
     ModelContractDependencyOutput,
     ModelHotspotTopic,
 )

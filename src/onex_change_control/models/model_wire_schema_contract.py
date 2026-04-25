@@ -19,7 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from onex_change_control.enums.enum_wire_field_type import (
-    EnumWireFieldType,  # noqa: TC001 - Pydantic needs runtime access
+    EnumWireFieldType,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
 
 

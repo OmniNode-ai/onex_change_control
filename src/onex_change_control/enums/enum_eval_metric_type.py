@@ -25,7 +25,7 @@ class EnumEvalMetricType(str, Enum):
     LATENCY_MS = "latency_ms"
     """Wall-clock time for task completion in milliseconds."""
 
-    TOKEN_COUNT = "token_count"  # noqa: S105
+    TOKEN_COUNT = "token_count"  # noqa: S105  Why: enum metric name, not a password
     """Total tokens consumed during the run."""
 
     SUCCESS_RATE = "success_rate"

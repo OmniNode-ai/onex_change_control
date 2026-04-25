@@ -296,7 +296,7 @@ class PurityChecker(ast.NodeVisitor):
         return None
 
 
-def _read_file_safely(  # noqa: PLR0911
+def _read_file_safely(  # noqa: PLR0911  Why: many validation exits needed for safe file reading
     file_path: Path,
     *,
     validate_path: bool = True,

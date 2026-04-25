@@ -204,7 +204,7 @@ def _is_cross_service_db_import(
     if node.module is None:
         return False
     parts = node.module.split(".")
-    if len(parts) < 2:  # noqa: PLR2004
+    if len(parts) < 2:  # noqa: PLR2004  Why: module path must have at least pkg.submodule
         return False
     pkg, submodule = parts[0], parts[1]
     return pkg in SERVICE_PACKAGES and pkg != service and submodule in DB_SUBMODULES

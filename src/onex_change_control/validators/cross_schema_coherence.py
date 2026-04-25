@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path  # noqa: TC003
+from pathlib import Path  # noqa: TC003  Why: used at runtime for file reading
 from typing import Any
 
 import yaml
