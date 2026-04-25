@@ -24,7 +24,7 @@ from datetime import (
     datetime,
     timedelta,
 )
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,7 +40,7 @@ from onex_change_control.models.model_dod_sweep import (
 try:
     import yaml
 except ImportError:
-    yaml = None  # type: ignore[assignment]
+    yaml = None  # type: ignore[assignment]  # Why: optional dep; guarded by `if yaml is None` on L136
 
 # ---------------------------------------------------------------------------
 # Linear GraphQL client (stdlib-only, lifted from scripts/check_dod_compliance.py)
@@ -81,7 +81,7 @@ def _linear_request(
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310  Why: URL is a constant HTTPS endpoint
-        return json.loads(resp.read().decode())  # type: ignore[no-any-return]
+        return cast("dict[str, Any]", json.loads(resp.read().decode()))
 
 
 def fetch_completed_tickets(

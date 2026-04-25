@@ -52,7 +52,9 @@ def _build_envelope(topic: str, payload: dict[str, Any]) -> bytes:
 def _try_produce(topic: str, payload: dict[str, Any]) -> None:
     """Attempt to produce a single Kafka message. Silently no-ops on failure."""
     try:
-        from kafka import KafkaProducer  # type: ignore[import-not-found]
+        from kafka import (
+            KafkaProducer,  # type: ignore[import-not-found]  # Why: kafka-python is an optional dep, not installed in all environments
+        )
     except ImportError:
         return
 
