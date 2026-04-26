@@ -10,14 +10,14 @@ You are a foreground tick. Re-probe every dod_evidence item for every headline t
 ## Behavior
 
 1. For each probe, execute the literal command via Bash with a hard timeout (default 300s; override per-probe via `timeout_seconds` in the contract). On timeout, kill the process tree and record `timed_out: true`. Capture literal stdout, stderr, exit_code, timed_out, run_duration_seconds, run_timestamp.
-2. Write a receipt to `onex_change_control/drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml` with fields: ticket_id, evidence_item_id, check_type, check_value, probe_command, probe_stdout, probe_stderr, exit_code, timed_out, run_duration_seconds, status (PASS|FAIL|ADVISORY), runner (current worker if any, else "manual"), verifier (this session's foreground identity), run_timestamp.
+2. Write a receipt to `onex_change_control/drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml` with fields: ticket_id, evidence_item_id, check_type, check_value, probe_command, probe_stdout, probe_stderr, exit_code, timed_out, run_duration_seconds, status (PASS|FAIL|ADVISORY), failure_reason (null on PASS; `timeout` | `nonzero_exit` | `verifier_equals_runner` otherwise), runner (current worker if any, else "manual"), verifier (this session's foreground identity), run_timestamp.
 3. Status mapping: `exit_code == 0 AND NOT timed_out` → PASS; `timed_out` → FAIL with `failure_reason: timeout`; non-zero exit → FAIL with `failure_reason: nonzero_exit`.
-4. If verifier == runner, status downgrades to ADVISORY automatically (regardless of exit_code).
+4. If verifier == runner, status downgrades to ADVISORY automatically (regardless of exit_code) and `failure_reason` is set to `verifier_equals_runner`.
 5. Update the session runbook's tick log with one row.
 
 ## Silence rule
 
-You are silent ONLY if every receipt this tick is PASS AND no new FAIL appeared since last tick. Any FAIL or new ADVISORY → escalate (write a single sentence to chat naming the ticket and the failing item).
+You are silent ONLY if every receipt this tick is PASS AND no new FAIL appeared since last tick. Any FAIL (new or recurring) or any ADVISORY (new or recurring) → escalate (write a single sentence to chat naming the ticket and the failing item).
 
 ## Active-drive lesson (F92)
 
@@ -30,4 +30,4 @@ You are silent ONLY if every receipt this tick is PASS AND no new FAIL appeared 
 
 ## Output
 
-Either: (a) silent ONLY if every receipt this tick is PASS AND no new FAIL appeared since last tick (matching the Silence rule above), or (b) one-sentence escalation per FAIL or new ADVISORY item, AND (c) if the same FAIL persists across 2+ consecutive ticks, additionally dispatch a fixer worker (TeamCreate + named worker) per the session's active dispatch policy.
+Either: (a) silent ONLY if every receipt this tick is PASS AND no new FAIL appeared since last tick (matching the Silence rule above), or (b) one-sentence escalation per non-PASS receipt this tick (FAIL or ADVISORY, new or recurring), AND (c) if the same FAIL persists across 2+ consecutive ticks, additionally dispatch a fixer worker (TeamCreate + named worker) per the session's active dispatch policy.
