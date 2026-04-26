@@ -42,7 +42,7 @@
 Foreground performs in this order:
 
 - [ ] Every headline ticket's dod_evidence has at least one PASS receipt with `verifier ≠ runner`
-- [ ] Receipts written to `onex_change_control/drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml`
+- [ ] Receipts written to `drift/dod_receipts/<TICKET>/<ITEM_ID>/<check_type>.yaml` (e.g. `file_exists.yaml`, `command.yaml`); the aggregated `.evidence/<ticket_id>/dod_report.json` is a separate report and does not replace individual item receipts
 - [ ] Receipts committed to onex_change_control via PR (one PR per session; title `chore(OMN-XXXX): session {{date}} adversarial DoD receipts`)
 - [ ] `manual_count / total_count` recorded in handoff; computed as count of executor-table rows where `current_executor` starts with "manual" divided by total rows in the executor table
 - [ ] broken-skill targets list updated: every row where current_executor != target_executor has a `tracking_ticket` populated; if any row has empty tracking_ticket, create the Linear ticket via `mcp__linear-server__save_issue` and fill in
