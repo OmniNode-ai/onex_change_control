@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-9853
+summary: "Limit .test_durations save/restore to full-suite runs only — restore is unconditional, save
+  is gated on is_full_suite == 'true' AND matrix.split == 1 AND success() so partial-suite shards never
+  overwrite the durations cache"
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: "omnibase_core PR #939 CI checks pass"
+    command: "gh pr checks 939 --repo OmniNode-ai/omnibase_core --watch"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-001
+    description: "ci.yml save step is gated on is_full_suite == 'true' AND matrix.split == 1 AND success();
+      restore step has no such gating"
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run python -c \"import yaml, sys; doc = yaml.safe_load(open('.github/workflows/ci.yml'));
+          steps = [s for j in doc['jobs'].values() if isinstance(j, dict) and 'steps' in j for s in j['steps']];
+          save = [s for s in steps if isinstance(s, dict) and s.get('uses', '').startswith('actions/cache/save')];
+          restore = [s for s in steps if isinstance(s, dict) and s.get('uses', '').startswith('actions/cache/restore')];
+          dur_save = [s for s in save if 'test-durations' in str(s.get('with', {}).get('key', ''))]; dur_restore
+          = [s for s in restore if 'test-durations' in str(s.get('with', {}).get('key', ''))]; assert
+          dur_save, 'no test-durations save step'; assert dur_restore, 'no test-durations restore step';
+          cond = ' '.join(str(s.get('if', '')) for s in dur_save); assert 'is_full_suite' in cond and
+          'matrix.split == 1' in cond and 'success()' in cond, f'save not properly gated: {cond}'; assert
+          all(not s.get('if') for s in dur_restore), 'restore must be unconditional'; print('OK')\""
+  - id: dod-002
+    description: "ci.yml parses as valid YAML (yaml.safe_load smoke check from ticket)"
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run python -c \"import yaml; yaml.safe_load(open('.github/workflows/ci.yml').read())\""
+  - id: dod-003
+    description: "All CI workflow unit tests pass after the change"
+    source: generated
+    checks:
+      - check_type: test_passes
+        check_value: "uv run pytest tests/unit/ci/ -q"
