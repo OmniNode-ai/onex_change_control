@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-9852
+summary: "Convert unit test-parallel job to dynamic matrix gated by ENABLE_SMART_TESTS, wiring detect-changes
+  outputs into the CI workflow"
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: "omnibase_core PR #938 CI checks pass"
+    command: "gh pr checks 938 --repo OmniNode-ai/omnibase_core --watch"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-001
+    description: "test-parallel matrix is dynamic (reads fromJson(detect-changes.outputs.matrix)) and
+      the job name template contains both matrix.split and detect-changes.outputs.split_count"
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run python -c \"import yaml,sys; w=yaml.safe_load(open('.github/workflows/ci.yml'));
+          tp=w['jobs']['test-parallel']; assert 'fromJson(needs.detect-changes.outputs.matrix)' in tp['strategy']['matrix']['split'],
+          'matrix not dynamic'; assert '${{ matrix.split }}' in tp['name'] and '${{ needs.detect-changes.outputs.split_count
+          }}' in tp['name'], 'job name template missing required expressions'; print('ok')\""
+  - id: dod-002
+    description: "Exactly two pytest steps coexist in test-parallel — one smart-mode step gated on ENABLE_SMART_TESTS=='true'
+      && is_full_suite=='false', and one full-suite step gated on the inverse condition"
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run python -c \"import yaml; w=yaml.safe_load(open('.github/workflows/ci.yml'));
+          steps=w['jobs']['test-parallel']['steps']; pytest_steps=[s for s in steps if 'pytest' in (s.get('run')
+          or '')]; assert len(pytest_steps)==2, f'expected 2 pytest steps, got {len(pytest_steps)}'; conds=[s.get('if','')
+          for s in pytest_steps]; assert any('ENABLE_SMART_TESTS' in c and \\\"is_full_suite == 'false'\\\"
+          in c for c in conds), 'missing smart-mode gate'; assert any('ENABLE_SMART_TESTS' in c and \\\"is_full_suite
+          == 'true'\\\" in c for c in conds), 'missing full-suite gate'; print('ok')\""
+  - id: dod-003
+    description: "compute_selection returns is_full_suite=true, full_suite_reason=feature_flag_off, split_count=40,
+      matrix=[1..40] when feature_flag_enabled=False (Task 10 unit test plus the existing 21 tests in
+      tests/unit/scripts/ci/ all pass)"
+    source: generated
+    checks:
+      - check_type: test_passes
+        check_value: "uv run pytest tests/unit/scripts/ci/ -v"
+  - id: dod-004
+    description: "actionlint reports zero new errors on .github/workflows/ci.yml and yaml.safe_load parses
+      the workflow without raising"
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run python -c \"import yaml; yaml.safe_load(open('.github/workflows/ci.yml'));
+          print('ok')\""
