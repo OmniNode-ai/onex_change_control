@@ -23,17 +23,17 @@ REQUIRED_PROBE_COMMANDS = [
 ]
 
 
-def test_recipes_exists():
+def test_recipes_exists() -> None:
     assert RECIPES.is_file()
 
 
-def test_recipes_cover_required_claim_types():
+def test_recipes_cover_required_claim_types() -> None:
     text = RECIPES.read_text()
     for claim in REQUIRED_CLAIMS:
         assert claim in text, f"Missing claim recipe: {claim}"
 
 
-def test_recipes_use_concrete_probes():
+def test_recipes_use_concrete_probes() -> None:
     text = RECIPES.read_text()
     for cmd in REQUIRED_PROBE_COMMANDS:
         assert cmd in text, f"Missing probe command: {cmd}"
