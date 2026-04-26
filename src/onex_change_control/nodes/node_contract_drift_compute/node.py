@@ -40,14 +40,14 @@ class NodeContractDriftCompute:
         self._container = container
         self._computations: dict[
             str,
-            type[object],
+            object,
         ] = {}
         self.register_computation("contract_drift", self._run_hash_only)
         self.register_computation("contract_drift_detailed", self._run_detailed)
 
     def register_computation(self, name: str, fn: object) -> None:
         """Register a named computation function."""
-        self._computations[name] = fn  # type: ignore[assignment]
+        self._computations[name] = fn
 
     def _run_hash_only(self, data: ModelContractDriftInput) -> ModelContractDriftOutput:
         return analyze_drift(data)
