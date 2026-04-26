@@ -22,6 +22,7 @@
 |---|---|---|---|---|
 
 ## Per-step executor table
+
 | step | current_executor | target_executor | tracking_ticket | notes |
 |---|---|---|---|---|
 | bind headline | manual: foreground reads contract YAML | /onex:set_session | OMN-YYYY | |
