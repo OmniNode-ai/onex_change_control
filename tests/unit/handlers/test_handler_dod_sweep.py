@@ -178,6 +178,7 @@ class TestHandlerReceiptReconciliation:
             if c.check == EnumDodSweepCheck.RECEIPT_EXISTS
         )
         assert receipt_check.status == EnumInvariantStatus.FAIL
+        assert receipt_check.detail is not None
         assert "OMN-9791" in receipt_check.detail
 
     def test_run_dod_sweep_legacy_only_pre_cutoff_passes_receipt_with_deprecated(
@@ -215,6 +216,7 @@ class TestHandlerReceiptReconciliation:
             if c.check == EnumDodSweepCheck.RECEIPT_EXISTS
         )
         assert receipt_check.status == EnumInvariantStatus.PASS
+        assert receipt_check.detail is not None
         assert "DEPRECATED" in receipt_check.detail
         deprecation_warnings = [
             w for w in caught if issubclass(w.category, DeprecationWarning)
