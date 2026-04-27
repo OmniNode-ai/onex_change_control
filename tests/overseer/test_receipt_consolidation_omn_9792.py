@@ -68,9 +68,20 @@ class TestVerifierOutputConsolidationOMN9792:
 
         schema = ModelVerifierOutput.model_json_schema()
         checks_prop = schema.get("properties", {}).get("checks", {})
+        assert checks_prop, "checks property must exist in schema"
         # The items should reference ModelDodReceipt, not ModelVerifierCheckResult
-        items = checks_prop.get("items", checks_prop.get("prefixItems", {}))
-        ref = items.get("$ref", "")
+        items = checks_prop.get("items")
+        if items is None:
+            prefix_items = checks_prop.get("prefixItems", [])
+            items = (
+                prefix_items[0]
+                if isinstance(prefix_items, list) and prefix_items
+                else {}
+            )
+        ref = items.get("$ref", "") if isinstance(items, dict) else ""
+        assert ref == "#/$defs/ModelDodReceipt", (
+            "checks items must reference ModelDodReceipt"
+        )
         assert "ModelVerifierCheckResult" not in ref, (
             "checks items must not reference ModelVerifierCheckResult"
         )
