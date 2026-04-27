@@ -34,20 +34,26 @@ class TestVerifierOutputConsolidationOMN9792:
             ModelVerifierOutput,
         )
 
-        receipt = ModelDodReceipt(
-            schema_version="1.0.0",
-            ticket_id="OMN-9792",
-            evidence_item_id="dod-001",
-            check_type="command",
-            check_value="uv run pytest tests/ -v",
-            status=EnumReceiptStatus.PASS,
-            run_timestamp=datetime(2026, 4, 27, 12, 0, 0, tzinfo=UTC),
-            commit_sha="a1b2c3d4e5f6",  # pragma: allowlist secret
-            runner="ci-worker",
-            verifier="foreground-receipt-verifier",
-            probe_command="uv run pytest tests/ -v",
-            probe_stdout="1457 passed, 13 skipped",
-        )
+        receipt_payload: dict[str, object] = {
+            "ticket_id": "OMN-9792",
+            "evidence_item_id": "dod-001",
+            "check_type": "command",
+            "check_value": "uv run pytest tests/ -v",
+            "status": EnumReceiptStatus.PASS,
+            "run_timestamp": datetime(2026, 4, 27, 12, 0, 0, tzinfo=UTC),
+            "commit_sha": "a1b2c3d4e5f6",  # pragma: allowlist secret
+            "runner": "ci-worker",
+        }
+        if "schema_version" in ModelDodReceipt.model_fields:
+            receipt_payload.update(
+                {
+                    "schema_version": "1.0.0",
+                    "verifier": "foreground-receipt-verifier",
+                    "probe_command": "uv run pytest tests/ -v",
+                    "probe_stdout": "1457 passed, 13 skipped",
+                }
+            )
+        receipt = ModelDodReceipt.model_validate(receipt_payload)
         output = ModelVerifierOutput(
             verdict=EnumVerifierVerdict.PASS,
             checks=(receipt,),
