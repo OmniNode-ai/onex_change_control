@@ -112,7 +112,7 @@ def test_omn9762_adversarial_receipt_has_probe_stdout(dod_id: str) -> None:
 @_adversarial_gate
 def test_omn9762_receipt_gate_passes() -> None:
     pr_body = "Closes OMN-9762\n\nPoL verification for OMN-9795."
-    result = validate_pr_receipts(  # type: ignore[name-defined]
+    result = validate_pr_receipts(
         pr_body=pr_body,
         contracts_dir=CONTRACTS_DIR,
         receipts_dir=RECEIPTS_DIR,
