@@ -94,7 +94,7 @@ def test_all_contracts_parse_through_introspection_service() -> None:
     if not omnibase_infra_path.is_dir():
         pytest.skip("omnibase_infra repo not found at expected path")
 
-    from omnibase_infra.services.service_node_introspection import (  # type: ignore[import-not-found]
+    from omnibase_infra.services.service_node_introspection import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
         ServiceNodeIntrospection,
     )
 

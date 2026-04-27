@@ -181,6 +181,70 @@ def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
     assert shell_str == expected, f"Unexpected shell cmd: {shell_str!r}"
 
 
+def test_check_command_shell_style_dollar_substitution(tmp_path: Path) -> None:
+    """``${PR_NUMBER}``/``${REPO}``/``${TICKET_ID}`` must also be pre-substituted.
+
+    Authors that prefer shell-style placeholders (so the value also reads
+    correctly in a single-quoted string, where ``sh -c`` would not expand it)
+    rely on this. Regression for OMN-10086 PR #452, where contracts used bare
+    ``gh pr checks`` and the runner had no shell-style placeholder support.
+    """
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        captured.append(cmd)
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command(
+            "gh pr checks ${PR_NUMBER} --repo ${REPO} && echo ${TICKET_ID}",
+            tmp_path,
+            pr_number=452,
+            repo="OmniNode-ai/onex_change_control",
+            ticket_id="OMN-10086",
+        )
+
+    assert result == _RESULT_PASS
+    shell_str = captured[-1][2]
+    expected = (
+        "gh pr checks 452 --repo OmniNode-ai/onex_change_control && echo OMN-10086"
+    )
+    assert shell_str == expected, f"Unexpected substitution: {shell_str!r}"
+    assert "${PR_NUMBER}" not in shell_str
+    assert "${REPO}" not in shell_str
+    assert "${TICKET_ID}" not in shell_str
+
+
+def test_check_command_exports_pr_number_repo_ticket_env(tmp_path: Path) -> None:
+    """PR_NUMBER, REPO, and TICKET_ID must be exported into the subprocess env
+    so contract authors can also reference them as bare ``$PR_NUMBER`` in
+    double-quoted shell strings (where ``sh -c`` will expand them).
+    """
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command(
+            "echo hi",
+            tmp_path,
+            pr_number=452,
+            repo="OmniNode-ai/onex_change_control",
+            ticket_id="OMN-10086",
+        )
+
+    assert result == _RESULT_PASS
+    env = captured_envs[-1]
+    assert env is not None
+    assert env.get("PR_NUMBER") == "452"
+    assert env.get("REPO") == "OmniNode-ai/onex_change_control"
+    assert env.get("TICKET_ID") == "OMN-10086"
+
+
 def test_check_command_workspace_passed_as_cwd(tmp_path: Path) -> None:
     """_check_command must pass workspace as cwd to subprocess."""
     captured_cwd: list[Path | None] = []
@@ -305,7 +369,12 @@ def test_check_command_injects_gh_repo_env_when_repo_set(tmp_path: Path) -> None
 
 
 def test_check_command_no_gh_repo_when_no_gh_in_cmd(tmp_path: Path) -> None:
-    """GH_REPO must NOT be injected when the command doesn't contain 'gh '."""
+    """GH_REPO must NOT be injected when the command doesn't contain 'gh '.
+
+    Note: as of OMN-10086, PR_NUMBER and REPO ARE always exported (so contract
+    authors can reference them in any command, gh or not), but the gh-specific
+    GH_REPO override is still gated on a gh invocation.
+    """
     captured_envs: list[dict[str, str] | None] = []
 
     def fake_run(
@@ -323,10 +392,16 @@ def test_check_command_no_gh_repo_when_no_gh_in_cmd(tmp_path: Path) -> None:
         )
 
     assert result == _RESULT_PASS
-    env = captured_envs[-1] if captured_envs else None
-    assert env is None, (
-        f"GH_REPO env was injected unnecessarily for non-gh command: {env!r}"
+    env = captured_envs[-1]
+    assert env is not None, (
+        "PR_NUMBER/REPO must always be exported when set (even for non-gh cmds)"
     )
+    assert "GH_REPO" not in env, (
+        f"GH_REPO env was injected unnecessarily for non-gh command: "
+        f"{env.get('GH_REPO')!r}"
+    )
+    assert env.get("PR_NUMBER") == "1"
+    assert env.get("REPO") == "OmniNode-ai/omnimarket"
 
 
 def test_check_command_no_gh_repo_when_no_repo_arg(tmp_path: Path) -> None:

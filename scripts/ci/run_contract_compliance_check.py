@@ -220,16 +220,108 @@ def _check_grep(check_value: Any, workspace: Path) -> tuple[str, str]:
     return _RESULT_BLOCK, f"Pattern '{pattern}' not found under '{search_path}'"
 
 
+def _substitute_tokens(
+    cmd: str,
+    pr_number: int,
+    repo: str,
+    ticket_id: str,
+) -> str:
+    """Substitute templating tokens in a check command.
+
+    Two complementary placeholder forms are supported so contract YAML can
+    pick whichever reads best:
+
+    * ``{pr}``, ``{repo}``, ``{ticket_id}`` — runner-level substitution that
+      happens before ``sh -c`` is invoked (safe in any shell context, including
+      single-quoted strings).
+    * ``${PR_NUMBER}``, ``${REPO}``, ``${TICKET_ID}`` — shell-style placeholders
+      that ALSO get pre-substituted here so they work in single-quoted strings
+      (where ``sh -c`` would not expand them). The same names are exported as
+      env vars by the caller, so unquoted ``${PR_NUMBER}`` references in
+      double-quoted strings keep working too.
+
+    Pre-substitution is preferred over relying solely on env-var expansion
+    because a contract author that writes ``'gh pr checks ${PR_NUMBER}'`` (with
+    single quotes) would otherwise see the literal token reach ``gh``.
+    """
+    return (
+        cmd.replace("{pr}", str(pr_number))
+        .replace("{repo}", repo)
+        .replace("{ticket_id}", ticket_id)
+        .replace("${PR_NUMBER}", str(pr_number))
+        .replace("${REPO}", repo)
+        .replace("${TICKET_ID}", ticket_id)
+    )
+
+
+def _maybe_demote_precommit(cmd_str: str) -> tuple[str, str] | None:
+    """Return a (result, detail) WARN tuple if a pre-commit cmd should be
+    skipped because the binary is genuinely absent. Returns None to indicate
+    "do not demote — proceed with normal execution".
+    """
+    if not cmd_str.lstrip().startswith("pre-commit"):
+        return None
+    rc_which, _, _ = _run(["which", "pre-commit"], timeout=5)
+    if rc_which == 0:
+        return None  # binary present — enforce normally
+    in_ci = os.environ.get("CI", "").lower() in ("true", "1")
+    if in_ci:
+        msg = (
+            "[WARN] pre-commit check skipped (binary absent in CI). "
+            "Install pre-commit on the runner to enforce this check."
+        )
+        print(msg, flush=True)
+        return _RESULT_WARN, "pre-commit check skipped (binary absent in CI)"
+    print(
+        "[WARN] pre-commit check skipped (pre-commit not installed). "
+        "Run pre-commit locally to verify.",
+        flush=True,
+    )
+    return _RESULT_WARN, "pre-commit check skipped (pre-commit not installed)"
+
+
+def _build_command_env(
+    cmd_str: str,
+    pr_number: int,
+    repo: str,
+    ticket_id: str,
+) -> dict[str, str] | None:
+    """Build the env overlay for a contract command.
+
+    PR_NUMBER / REPO / TICKET_ID are always exported when set so contract
+    authors can reference them as ``$VAR`` in double-quoted shell strings.
+    GH_REPO is additionally injected when the command shells out to ``gh``
+    because gh cannot infer the branch in detached-HEAD CI checkouts
+    (regression: OMN-8830).
+    """
+    overlay: dict[str, str] = {}
+    if pr_number:
+        overlay["PR_NUMBER"] = str(pr_number)
+    if repo:
+        overlay["REPO"] = repo
+        if "gh " in cmd_str:
+            overlay["GH_REPO"] = repo
+    if ticket_id:
+        overlay["TICKET_ID"] = ticket_id
+    if not overlay:
+        return None
+    return {**os.environ, **overlay}
+
+
 def _check_command(
     _check_value: Any,
     workspace: Path,
     pr_number: int = 0,
     repo: str = "",
+    ticket_id: str = "",
 ) -> tuple[str, str]:
     """check_type=command: check_value is a shell command; exit 0 = pass.
 
-    Supports {pr} and {repo} placeholders that are substituted at runtime so
-    contract YAML files don't hard-code PR numbers or repository names.
+    Supports both ``{pr}``/``{repo}``/``{ticket_id}`` and
+    ``${PR_NUMBER}``/``${REPO}``/``${TICKET_ID}`` placeholders so contract YAML
+    files don't hard-code PR numbers, repo names, or ticket IDs. Pre-substitutes
+    every token before invoking ``sh -c`` AND exports them as env vars so
+    ``$PR_NUMBER``-style references work in double-quoted shell strings too.
 
     repo is validated against ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ before
     substitution to prevent shell injection via adversarial --repo values.
@@ -244,37 +336,15 @@ def _check_command(
             f"Invalid --repo '{repo}': must match org/repo (alphanumeric, -, _, .)",
         )
 
-    cmd_str = str(_check_value).replace("{pr}", str(pr_number)).replace("{repo}", repo)
+    cmd_str = _substitute_tokens(str(_check_value), pr_number, repo, ticket_id)
 
-    # Demote pre-commit only when the binary is absent AND we are in CI.
-    # CI=true alone is not sufficient — runners with pre-commit installed
-    # must still enforce the check.
-    if cmd_str.lstrip().startswith("pre-commit"):
-        rc_which, _, _ = _run(["which", "pre-commit"], timeout=5)
-        precommit_missing = rc_which != 0
-        in_ci = os.environ.get("CI", "").lower() in ("true", "1")
-        if precommit_missing and in_ci:
-            print(
-                "[WARN] pre-commit check skipped (binary absent in CI). "
-                "Install pre-commit on the runner to enforce this check.",
-                flush=True,
-            )
-            return _RESULT_WARN, "pre-commit check skipped (binary absent in CI)"
-        if precommit_missing:
-            print(
-                "[WARN] pre-commit check skipped (pre-commit not installed). "
-                "Run pre-commit locally to verify.",
-                flush=True,
-            )
-            return _RESULT_WARN, "pre-commit check skipped (pre-commit not installed)"
+    demoted = _maybe_demote_precommit(cmd_str)
+    if demoted is not None:
+        return demoted
 
-    # Inject GH_REPO so `gh pr view` works in CI detached-HEAD checkouts.
-    # gh honours GH_REPO as the default repo context when git can't resolve it.
-    gh_env: dict[str, str] | None = None
-    if repo and "gh " in cmd_str:
-        gh_env = {**os.environ, "GH_REPO": repo}
+    cmd_env = _build_command_env(cmd_str, pr_number, repo, ticket_id)
 
-    rc, out, err = _run(["sh", "-c", cmd_str], timeout=60, cwd=workspace, env=gh_env)
+    rc, out, err = _run(["sh", "-c", cmd_str], timeout=60, cwd=workspace, env=cmd_env)
     if rc == 0:
         return _RESULT_PASS, f"Command succeeded: {cmd_str[:80]}"
     output_snippet = (out + err)[:200]
@@ -345,6 +415,7 @@ def _run_single_check(
     workspace: Path,
     pr_number: int,
     repo: str,
+    ticket_id: str = "",
 ) -> tuple[str, str, str]:
     """Run a single ModelDodCheck and return (check_type, result, detail)."""
     check_type = check.get("check_type", "")
@@ -353,7 +424,9 @@ def _run_single_check(
     runner = _CHECK_RUNNERS.get(check_type)
     if runner is None:
         return check_type, _RESULT_WARN, f"Unknown check_type '{check_type}'"
-    if check_type in ("test_passes", "command"):
+    if check_type == "command":
+        result, detail = runner(check_value, workspace, pr_number, repo, ticket_id)
+    elif check_type == "test_passes":
         result, detail = runner(check_value, workspace, pr_number, repo)
     else:
         result, detail = runner(check_value, workspace)
@@ -365,6 +438,7 @@ def _run_dod_checks(
     workspace: Path,
     pr_number: int,
     repo: str,
+    ticket_id: str = "",
 ) -> list[tuple[str, str, str, str]]:
     """Run all DoD checks and return (dod_id, check_type, result, detail) list."""
     results: list[tuple[str, str, str, str]] = []
@@ -375,7 +449,7 @@ def _run_dod_checks(
         print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
         for check in checks:
             check_type, result, detail = _run_single_check(
-                check, workspace, pr_number, repo
+                check, workspace, pr_number, repo, ticket_id
             )
             results.append((item_id, check_type, result, detail))
             icon = {"PASS": "+", "WARN": "~", "BLOCK": "X"}.get(result, "?")
@@ -423,7 +497,7 @@ def run_compliance_check(
         print("[PASS] No executable DoD checks. Contract acknowledged.", flush=True)
         return 0
 
-    results = _run_dod_checks(dod_evidence, workspace, pr_number, repo)
+    results = _run_dod_checks(dod_evidence, workspace, pr_number, repo, ticket_id)
 
     total = len(results)
     passes = sum(1 for _, _, r, _ in results if r == _RESULT_PASS)
