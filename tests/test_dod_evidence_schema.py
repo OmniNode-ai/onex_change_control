@@ -283,3 +283,99 @@ class TestDodEvidenceOnContract:
         contract = ModelTicketContract.model_validate(data)
         with pytest.raises(ValidationError):
             contract.dod_evidence[0].status = "verified"  # type: ignore[misc]
+
+
+class TestDodCheckCwdField:
+    """OMN-10078: optional cwd field for the dod_verify runner.
+
+    The cwd field replaces the brittle ``cd ${OMNI_HOME}/<repo> && `` shell
+    prefix that PR #448 (OMN-10049) introduced as a temporary fix. The field
+    must:
+
+    - default to None so existing contracts and tests do not regress
+    - accept arbitrary strings (template substitution is a runner concern,
+      not a model concern)
+    - serialize/round-trip cleanly via YAML
+
+    Note: ``ModelDodCheck`` uses ``ConfigDict(frozen=True)`` only, which in
+    Pydantic v2 defaults to ``extra='ignore'`` — unknown fields are silently
+    discarded rather than raising. These tests therefore validate accepted
+    shapes; they do not assert extra-field rejection (which is not the
+    contract-author-facing behavior of this model).
+    """
+
+    def test_cwd_defaults_to_none(self) -> None:
+        check = ModelDodCheck.model_validate(
+            {"check_type": "command", "check_value": "pytest"}
+        )
+        assert check.cwd is None
+
+    def test_cwd_accepts_string_value(self) -> None:
+        check = ModelDodCheck.model_validate(
+            {
+                "check_type": "command",
+                "check_value": "pytest",
+                "cwd": "${OMNI_HOME}/omnibase_core",
+            }
+        )
+        assert check.cwd == "${OMNI_HOME}/omnibase_core"
+
+    def test_cwd_accepts_template_tokens(self) -> None:
+        """Runner expands ${PR_NUMBER}/${REPO}/${TICKET_ID}; model stores raw."""
+        check = ModelDodCheck.model_validate(
+            {
+                "check_type": "command",
+                "check_value": "gh pr checks ${PR_NUMBER}",
+                "cwd": "${OMNI_HOME}/${REPO}",
+            }
+        )
+        assert check.cwd == "${OMNI_HOME}/${REPO}"
+
+    def test_cwd_explicit_none_is_valid(self) -> None:
+        check = ModelDodCheck.model_validate(
+            {"check_type": "command", "check_value": "pytest", "cwd": None}
+        )
+        assert check.cwd is None
+
+    def test_cwd_roundtrips_through_yaml(self) -> None:
+        data = _minimal_contract(
+            dod_evidence=[
+                {
+                    "id": "dod-001",
+                    "description": "cwd field round-trips through YAML",
+                    "checks": [
+                        {
+                            "check_type": "command",
+                            "check_value": "uv run pytest",
+                            "cwd": "${OMNI_HOME}/omnibase_core",
+                        }
+                    ],
+                }
+            ]
+        )
+        contract = ModelTicketContract.model_validate(data)
+        yaml_str = yaml.dump(contract.model_dump(mode="json"), default_flow_style=False)
+        loaded = yaml.safe_load(yaml_str)
+        roundtripped = ModelTicketContract.model_validate(loaded)
+        assert roundtripped.dod_evidence[0].checks[0].cwd == (
+            "${OMNI_HOME}/omnibase_core"
+        )
+
+    def test_cwd_omitted_roundtrips_as_none(self) -> None:
+        """Existing contracts without cwd continue to validate and round-trip."""
+        data = _minimal_contract(
+            dod_evidence=[
+                {
+                    "id": "dod-002",
+                    "description": "Legacy contract has no cwd",
+                    "checks": [
+                        {"check_type": "command", "check_value": "uv run pytest"}
+                    ],
+                }
+            ]
+        )
+        contract = ModelTicketContract.model_validate(data)
+        yaml_str = yaml.dump(contract.model_dump(mode="json"), default_flow_style=False)
+        loaded = yaml.safe_load(yaml_str)
+        roundtripped = ModelTicketContract.model_validate(loaded)
+        assert roundtripped.dod_evidence[0].checks[0].cwd is None
