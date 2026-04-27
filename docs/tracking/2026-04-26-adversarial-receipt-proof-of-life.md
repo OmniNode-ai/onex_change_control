@@ -62,7 +62,7 @@ dod_evidence:
 
 **Stdout (first 50 lines):**
 
-```
+```text
 AI-Slop Pattern Check (strict, PR diff)    pass    8s
 CI Naming Convention                        pass    6s
 CI Summary                                  pass    4s

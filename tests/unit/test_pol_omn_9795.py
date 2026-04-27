@@ -21,13 +21,14 @@ import yaml
 
 try:
     from omnibase_core.validation.receipt_gate import (  # type: ignore[attr-defined, unused-ignore]
-        CLOSING_KEYWORD_PATTERN as _CLOSING_KEYWORD_PATTERN,  # noqa: F401
+        CLOSING_KEYWORD_PATTERN as _CLOSING_KEYWORD_PATTERN,
     )
     from omnibase_core.validation.receipt_gate import (
         validate_pr_receipts,
     )
 
-    _HAS_ADVERSARIAL_GATE = True
+    # Verify the adversarial gate is actually present (not just importable shell)
+    _HAS_ADVERSARIAL_GATE = bool(_CLOSING_KEYWORD_PATTERN)
 except ImportError:
     _HAS_ADVERSARIAL_GATE = False
 
