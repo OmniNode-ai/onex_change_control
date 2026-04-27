@@ -111,6 +111,7 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
         )
 
         receipt = ModelDodReceipt(
+            schema_version="1.0.0",
             ticket_id="OMN-9792",
             evidence_item_id="dod-001",
             check_type="command",
@@ -119,6 +120,9 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
             run_timestamp=datetime(2026, 4, 27, 12, 0, 0, tzinfo=UTC),
             commit_sha="a1b2c3d4e5f6",  # pragma: allowlist secret
             runner="ci-worker",
+            verifier="foreground-receipt-verifier",
+            probe_command="uv run pytest tests/ -v",
+            probe_stdout="1457 passed, 13 skipped",
         )
         output = ModelVerifierOutput(
             verdict=EnumVerifierVerdict.PASS,

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from importlib import import_module
 
 
 class TestVerifierOutputConsolidationOMN9792:
@@ -34,6 +35,7 @@ class TestVerifierOutputConsolidationOMN9792:
         )
 
         receipt = ModelDodReceipt(
+            schema_version="1.0.0",
             ticket_id="OMN-9792",
             evidence_item_id="dod-001",
             check_type="command",
@@ -42,6 +44,9 @@ class TestVerifierOutputConsolidationOMN9792:
             run_timestamp=datetime(2026, 4, 27, 12, 0, 0, tzinfo=UTC),
             commit_sha="a1b2c3d4e5f6",  # pragma: allowlist secret
             runner="ci-worker",
+            verifier="foreground-receipt-verifier",
+            probe_command="uv run pytest tests/ -v",
+            probe_stdout="1457 passed, 13 skipped",
         )
         output = ModelVerifierOutput(
             verdict=EnumVerifierVerdict.PASS,
@@ -65,7 +70,7 @@ class TestVerifierOutputConsolidationOMN9792:
         )
 
     def test_model_verifier_check_result_not_importable_from_module(self) -> None:
-        import onex_change_control.overseer.model_verifier_output as mod
+        mod = import_module("onex_change_control.overseer.model_verifier_output")
 
         assert not hasattr(mod, "ModelVerifierCheckResult"), (
             "ModelVerifierCheckResult must not exist in model_verifier_output module"
