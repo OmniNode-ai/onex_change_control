@@ -73,7 +73,6 @@ from onex_change_control.overseer.model_task_state_envelope import (
     ModelTaskStateEnvelope,
 )
 from onex_change_control.overseer.model_verifier_output import (
-    ModelVerifierCheckResult,
     ModelVerifierOutput,
 )
 from onex_change_control.overseer.model_worker_contract import (
@@ -120,7 +119,6 @@ __all__ = [
     "ModelTaskDeltaEnvelope",
     "ModelTaskShapeFeatures",
     "ModelTaskStateEnvelope",
-    "ModelVerifierCheckResult",
     "ModelVerifierOutput",
     "ModelWorkerContract",
     "load_worker_contract",

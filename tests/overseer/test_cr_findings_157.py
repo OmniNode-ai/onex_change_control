@@ -64,19 +64,13 @@ class TestCRFinding1CriticalTaskDeltaEnvelopePydanticRuntime:
 
 
 class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
-    """CR#2 (Critical): EnumFailureClass in TYPE_CHECKING in model_verifier_output.
+    """CR#2: EnumFailureClass resolves at runtime in ModelVerifierOutput.
 
-    Both ModelVerifierCheckResult.failure_class and ModelVerifierOutput.failure_class
-    use this type. Pydantic cannot resolve it at runtime.
+    ModelVerifierCheckResult was deleted in OMN-9792 (consolidated onto
+    ModelDodReceipt). The surviving regression: ModelVerifierOutput.failure_class
+    (EnumFailureClass) must still resolve at Pydantic runtime, and
+    ModelVerifierOutput.checks must accept ModelDodReceipt items.
     """
-
-    def test_model_verifier_check_result_schema_builds(self) -> None:
-        from onex_change_control.overseer.model_verifier_output import (
-            ModelVerifierCheckResult,
-        )
-
-        schema = ModelVerifierCheckResult.model_json_schema()
-        assert "failure_class" in schema.get("properties", {})
 
     def test_model_verifier_output_schema_builds(self) -> None:
         from onex_change_control.overseer.model_verifier_output import (
@@ -85,19 +79,6 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
 
         schema = ModelVerifierOutput.model_json_schema()
         assert "failure_class" in schema.get("properties", {})
-
-    def test_model_verifier_check_result_instantiate_with_failure_class(self) -> None:
-        from onex_change_control.overseer.enum_failure_class import EnumFailureClass
-        from onex_change_control.overseer.model_verifier_output import (
-            ModelVerifierCheckResult,
-        )
-
-        result = ModelVerifierCheckResult(
-            name="test_check",
-            passed=False,
-            failure_class=EnumFailureClass.PERMANENT,
-        )
-        assert result.failure_class == EnumFailureClass.PERMANENT
 
     def test_model_verifier_output_instantiate_with_failure_class(self) -> None:
         from onex_change_control.overseer.enum_failure_class import EnumFailureClass
@@ -113,6 +94,47 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
             failure_class=EnumFailureClass.PERMANENT,
         )
         assert output.failure_class == EnumFailureClass.PERMANENT
+
+    def test_model_verifier_output_checks_accepts_dod_receipt(self) -> None:
+        from datetime import UTC, datetime
+
+        from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
+        from omnibase_core.models.contracts.ticket.model_dod_receipt import (
+            ModelDodReceipt,
+        )
+
+        from onex_change_control.overseer.enum_verifier_verdict import (
+            EnumVerifierVerdict,
+        )
+        from onex_change_control.overseer.model_verifier_output import (
+            ModelVerifierOutput,
+        )
+
+        receipt_payload: dict[str, object] = {
+            "ticket_id": "OMN-9792",
+            "evidence_item_id": "dod-001",
+            "check_type": "command",
+            "check_value": "uv run pytest tests/ -v",
+            "status": EnumReceiptStatus.PASS,
+            "run_timestamp": datetime(2026, 4, 27, 12, 0, 0, tzinfo=UTC),
+            "commit_sha": "a1b2c3d4e5f6",  # pragma: allowlist secret
+            "runner": "ci-worker",
+        }
+        if "schema_version" in ModelDodReceipt.model_fields:
+            receipt_payload.update(
+                {
+                    "schema_version": "1.0.0",
+                    "verifier": "foreground-receipt-verifier",
+                    "probe_command": "uv run pytest tests/ -v",
+                    "probe_stdout": "1457 passed, 13 skipped",
+                }
+            )
+        receipt = ModelDodReceipt.model_validate(receipt_payload)
+        output = ModelVerifierOutput(
+            verdict=EnumVerifierVerdict.PASS,
+            checks=(receipt,),
+        )
+        assert isinstance(output.checks[0], ModelDodReceipt)
 
 
 class TestCRFinding3MajorOvernightContractCostThreshold:
