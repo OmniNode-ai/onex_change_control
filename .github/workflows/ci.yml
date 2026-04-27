@@ -291,9 +291,17 @@ jobs:
           else
             git clone --depth=1 https://github.com/OmniNode-ai/onex_change_control.git /tmp/onex_change_control
           fi
-      - name: Install pyyaml
+      - name: Set up uv toolchain
+        # The runner shells out to ``uv run`` for several check_value commands
+        # (e.g. ``uv run pytest``, ``uv run python -c "import yaml; ..."``).
+        # Without this step the gate fails with ``sh: 1: uv: not found``.
+        # ``uv sync`` (inside setup-uv) also installs pyyaml as a transitive
+        # dep of the project, so the previous ``pip install pyyaml`` is
+        # redundant.
         if: steps.bootstrap_check.outputs.skip != 'true'
-        run: pip install pyyaml
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
       - name: Resolve PR number (handle merge_group + pull_request)
         if: steps.bootstrap_check.outputs.skip != 'true'
         id: pr_num
@@ -320,8 +328,12 @@ jobs:
           echo "Resolved PR #$PR_NUM"
       - name: Run contract compliance check
         if: steps.bootstrap_check.outputs.skip != 'true'
+        # Use ``uv run python`` so the runner script and any ``uv``-prefixed
+        # commands inside check_values share the same project venv. This is
+        # what lets ``uv run pytest`` / ``uv run python -c …`` succeed inside
+        # the runner — see OMN-10086.
         run: |
-          python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py \
+          uv run python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py \
             --pr ${{ steps.pr_num.outputs.pr_num }} \
             --repo ${{ github.repository }} \
             --contracts-dir /tmp/onex_change_control/contracts
