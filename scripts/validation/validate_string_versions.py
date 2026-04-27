@@ -6,7 +6,8 @@
 
 Checks:
 1. Python __init__.py files must not contain hardcoded __version__ strings.
-2. YAML files must not use string-shaped version fields (e.g. ``schema_version: "1.0.0"``).
+2. YAML files must not use string-shaped version fields
+   (e.g. ``schema_version: "1.0.0"``).
 
 POLICY — Ticket contract exemption (OMN-9593):
     Files matching ``contracts/OMN-*.yaml`` are governance artifacts validated
@@ -27,20 +28,29 @@ import re
 import sys
 from pathlib import Path
 
-_SEMVER_RE = re.compile(r"^\"?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\"?$")
+_SEMVER_RE = re.compile(
+    r"""^(?P<quote>['"]?)(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?P=quote)$"""
+)
 
 # Governance artifacts whose schema_version is intentionally string-shaped
 # and validated by ModelTicketContract.field_validator instead.
-TICKET_CONTRACT_GLOB = re.compile(r"contracts/OMN-\d+\.yaml$")
+TICKET_CONTRACT_GLOB = re.compile(r"^OMN-\d+\.yaml$")
+_MIN_TICKET_CONTRACT_PARTS = 2
 
 
 def _is_ticket_contract(path: Path) -> bool:
-    return bool(TICKET_CONTRACT_GLOB.search(str(path)))
+    parts = path.as_posix().replace("\\", "/").split("/")
+    return (
+        len(parts) >= _MIN_TICKET_CONTRACT_PARTS
+        and parts[-2] == "contracts"
+        and bool(TICKET_CONTRACT_GLOB.fullmatch(parts[-1]))
+    )
 
 
 # ---------------------------------------------------------------------------
 # Python __init__.py checks
 # ---------------------------------------------------------------------------
+
 
 def _is_inside_except_handler(node: ast.AST, tree: ast.Module) -> bool:
     """Return True if *node* is inside an ``except`` handler (fallback pattern)."""
@@ -68,14 +78,18 @@ def _has_hardcoded_version(path: Path) -> list[tuple[int, str]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "__version__":
-                    if isinstance(node.value, (ast.Constant, ast.JoinedStr)):
-                        if _is_inside_except_handler(node, tree):
-                            continue
-                        lineno = node.lineno
-                        lines = source.splitlines()
-                        src_line = lines[lineno - 1] if lineno <= len(lines) else ""
-                        violations.append((lineno, src_line.strip()))
+                if not (
+                    isinstance(target, ast.Name)
+                    and target.id == "__version__"
+                    and isinstance(node.value, (ast.Constant, ast.JoinedStr))
+                ):
+                    continue
+                if _is_inside_except_handler(node, tree):
+                    continue
+                lineno = node.lineno
+                lines = source.splitlines()
+                src_line = lines[lineno - 1] if lineno <= len(lines) else ""
+                violations.append((lineno, src_line.strip()))
     return violations
 
 
@@ -83,7 +97,12 @@ def _has_hardcoded_version(path: Path) -> list[tuple[int, str]]:
 # YAML string-version checks
 # ---------------------------------------------------------------------------
 
-_VERSION_FIELD_NAMES = {"version", "contract_version", "node_version", "protocol_version"}
+_VERSION_FIELD_NAMES = {
+    "version",
+    "contract_version",
+    "node_version",
+    "protocol_version",
+}
 
 
 def _has_string_version_in_yaml(path: Path) -> list[tuple[int, str]]:
@@ -126,6 +145,7 @@ def _has_string_version_in_yaml(path: Path) -> list[tuple[int, str]]:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
     """Check files passed by pre-commit for version anti-patterns."""
     found = 0
@@ -134,7 +154,7 @@ def main() -> int:
 
     # Python __init__.py check
     for path in paths:
-        if path.name != "__init__.py" or not path.suffix == ".py":
+        if path.name != "__init__.py" or path.suffix != ".py":
             continue
         for lineno, src_line in _has_hardcoded_version(path):
             print(

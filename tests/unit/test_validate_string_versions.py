@@ -62,6 +62,12 @@ class TestYamlStringVersion:
         assert len(violations) == 1
         assert "ModelSemVer" in violations[0][1]
 
+    def test_detects_single_quoted_string_version_in_yaml(self, tmp_path: Path) -> None:
+        p = _write(tmp_path, "config.yaml", "version: '1.0.0'\n")
+        violations = _has_string_version_in_yaml(p)
+        assert len(violations) == 1
+        assert "ModelSemVer" in violations[0][1]
+
     def test_detects_schema_version_in_generic_yaml(self, tmp_path: Path) -> None:
         p = _write(tmp_path, "service.yaml", 'schema_version: "2.3.1"\n')
         violations = _has_string_version_in_yaml(p)
@@ -89,6 +95,16 @@ class TestTicketContractExemption:
         assert _is_ticket_contract(p) is False
         violations = _has_string_version_in_yaml(p)
         assert len(violations) == 1
+
+    def test_similarly_named_contracts_dir_not_exempt(self, tmp_path: Path) -> None:
+        p = _write(tmp_path, "mycontracts/OMN-9593.yaml", 'schema_version: "1.0.0"\n')
+        assert _is_ticket_contract(p) is False
+        violations = _has_string_version_in_yaml(p)
+        assert len(violations) == 1
+
+    def test_windows_contract_path_exempt(self) -> None:
+        p = Path(r"C:\repo\contracts\OMN-9593.yaml")
+        assert _is_ticket_contract(p) is True
 
     def test_template_not_exempt(self, tmp_path: Path) -> None:
         p = _write(
