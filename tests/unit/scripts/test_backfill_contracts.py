@@ -68,6 +68,25 @@ def _import_backfill() -> ModuleType:
 # ---------------------------------------------------------------------------
 
 
+def _stub_generate_skeleton_contract(
+    ticket_id: str, summary: str, **_kwargs: Any
+) -> str:
+    """Return a minimal skeleton YAML for testing (avoids OMNI_HOME dependency)."""
+    return (
+        f"schema_version: '1.0.0'\n"
+        f"ticket_id: {ticket_id}\n"
+        f"summary: {summary}\n"
+        f"is_seam_ticket: false\n"
+        f"interface_change: false\n"
+        f"interfaces_touched: []\n"
+        f"evidence_requirements: []\n"
+        f"emergency_bypass:\n"
+        f"  enabled: false\n"
+        f"  justification: ''\n"
+        f"  follow_up_ticket_id: ''\n"
+    )
+
+
 @pytest.mark.unit
 def test_generates_skeleton_yaml_for_missing_ticket(tmp_path: Path) -> None:
     """A missing ticket → script writes a skeleton YAML to contracts/."""
@@ -83,12 +102,18 @@ def test_generates_skeleton_yaml_for_missing_ticket(tmp_path: Path) -> None:
 
     stub_client = _stub_linear_client(_make_linear_ticket(ticket_id))
 
-    backfill.generate_for_ticket(
-        ticket_id=ticket_id,
-        contracts_dir=contracts_dir,
-        linear_client=stub_client,
-        dry_run=False,
-    )
+    # Patch _load_generate_skeleton_contract to avoid OMNI_HOME dependency in CI.
+    with patch.object(
+        backfill,
+        "_load_generate_skeleton_contract",
+        return_value=_stub_generate_skeleton_contract,
+    ):
+        backfill.generate_for_ticket(
+            ticket_id=ticket_id,
+            contracts_dir=contracts_dir,
+            linear_client=stub_client,
+            dry_run=False,
+        )
 
     assert output_path.exists(), f"Expected {output_path} to be created"
     content = output_path.read_text(encoding="utf-8")
@@ -143,12 +168,18 @@ def test_generated_yaml_validates_against_model_ticket_contract(tmp_path: Path) 
 
     stub_client = _stub_linear_client(_make_linear_ticket(ticket_id))
 
-    backfill.generate_for_ticket(
-        ticket_id=ticket_id,
-        contracts_dir=contracts_dir,
-        linear_client=stub_client,
-        dry_run=False,
-    )
+    # Patch _load_generate_skeleton_contract to avoid OMNI_HOME dependency in CI.
+    with patch.object(
+        backfill,
+        "_load_generate_skeleton_contract",
+        return_value=_stub_generate_skeleton_contract,
+    ):
+        backfill.generate_for_ticket(
+            ticket_id=ticket_id,
+            contracts_dir=contracts_dir,
+            linear_client=stub_client,
+            dry_run=False,
+        )
 
     assert output_path.exists()
     raw = yaml.safe_load(output_path.read_text(encoding="utf-8"))
