@@ -204,7 +204,15 @@ class _LinearClient:
         if not nodes:
             return None  # ticket not found
 
-        issue = nodes[0]
+        # issueSearch is a fuzzy text search — verify the returned identifier
+        # is an exact match to prevent OMN-10 matching OMN-100 etc.
+        issue = next(
+            (n for n in nodes if n.get("identifier") == ticket_id),
+            None,
+        )
+        if issue is None:
+            return None  # fuzzy match returned unrelated tickets; treat as not found
+
         return {
             "id": issue.get("identifier", ticket_id),
             "identifier": issue.get("identifier", ticket_id),
