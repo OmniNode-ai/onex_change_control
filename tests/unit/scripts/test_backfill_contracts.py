@@ -1,11 +1,6 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-"""Unit tests for ``scripts/backfill_contracts.py`` (OMN-10075).
-
-These tests are RED by design — the implementation (OMN-10076) does not yet
-exist.  Every test is marked ``xfail`` so that CI passes on this branch while
-the red state is preserved.  OMN-10076 removes the xfail markers once the
-script is implemented.
+"""Unit tests for ``scripts/backfill_contracts.py`` (OMN-10076).
 
 Coverage:
   1. Stubbed Linear client → generates skeleton YAML for a missing ticket.
@@ -74,10 +69,6 @@ def _import_backfill() -> ModuleType:
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(
-    reason="OMN-10076 implements backfill_contracts.py — remove xfail when done",
-    strict=True,
-)
 def test_generates_skeleton_yaml_for_missing_ticket(tmp_path: Path) -> None:
     """A missing ticket → script writes a skeleton YAML to contracts/."""
     backfill = _import_backfill()
@@ -105,10 +96,6 @@ def test_generates_skeleton_yaml_for_missing_ticket(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(
-    reason="OMN-10076 implements backfill_contracts.py — remove xfail when done",
-    strict=True,
-)
 def test_skips_existing_contract(tmp_path: Path) -> None:
     """If ``contracts/OMN-XXXX.yaml`` already exists, script must skip it."""
     backfill = _import_backfill()
@@ -142,10 +129,6 @@ def test_skips_existing_contract(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(
-    reason="OMN-10076 implements backfill_contracts.py — remove xfail when done",
-    strict=True,
-)
 def test_generated_yaml_validates_against_model_ticket_contract(tmp_path: Path) -> None:
     """Generated YAML must round-trip through ModelTicketContract without error."""
     backfill = _import_backfill()
@@ -175,10 +158,6 @@ def test_generated_yaml_validates_against_model_ticket_contract(tmp_path: Path) 
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(
-    reason="OMN-10076 implements backfill_contracts.py — remove xfail when done",
-    strict=True,
-)
 def test_missing_linear_api_key_exits_nonzero(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -221,10 +200,6 @@ def test_missing_linear_api_key_exits_nonzero(
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(
-    reason="OMN-10076 implements backfill_contracts.py — remove xfail when done",
-    strict=True,
-)
 def test_range_argument_limits_sweep(tmp_path: Path) -> None:
     """``--range OMN-123:OMN-200`` must restrict processing to IDs 123-200."""
     backfill = _import_backfill()
