@@ -296,7 +296,12 @@ class TestDodCheckCwdField:
     - accept arbitrary strings (template substitution is a runner concern,
       not a model concern)
     - serialize/round-trip cleanly via YAML
-    - reject extra fields per the existing model_config
+
+    Note: ``ModelDodCheck`` uses ``ConfigDict(frozen=True)`` only, which in
+    Pydantic v2 defaults to ``extra='ignore'`` — unknown fields are silently
+    discarded rather than raising. These tests therefore validate accepted
+    shapes; they do not assert extra-field rejection (which is not the
+    contract-author-facing behavior of this model).
     """
 
     def test_cwd_defaults_to_none(self) -> None:
