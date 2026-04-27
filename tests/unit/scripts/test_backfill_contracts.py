@@ -185,6 +185,7 @@ def test_generated_yaml_validates_against_model_ticket_contract(tmp_path: Path) 
 )
 def test_missing_linear_api_key_exits_nonzero(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Without LINEAR_API_KEY the script must exit nonzero with a clear message."""
@@ -193,13 +194,13 @@ def test_missing_linear_api_key_exits_nonzero(
     contracts_dir = tmp_path / "contracts"
     contracts_dir.mkdir()
 
-    # Strip LINEAR_API_KEY from the environment for this test.
-    env_without_key = {k: v for k, v in os.environ.items() if k != "LINEAR_API_KEY"}
+    # Remove only LINEAR_API_KEY — keep all other env vars intact so that
+    # PATH, HOME, TMPDIR and other system variables remain available.
+    # Using monkeypatch.delenv with raising=False is safe when the key may
+    # not be present in the first place.
+    monkeypatch.delenv("LINEAR_API_KEY", raising=False)
 
-    with (
-        patch.dict(os.environ, env_without_key, clear=True),
-        pytest.raises(SystemExit) as exc_info,
-    ):
+    with pytest.raises(SystemExit) as exc_info:
         backfill.main(
             [
                 "backfill_contracts.py",
@@ -262,13 +263,20 @@ def test_range_argument_limits_sweep(tmp_path: Path) -> None:
     assert processed_ids, "No tickets were processed — range may not be wired"
 
     # All processed IDs must fall within [123, 200].
+    processed_nums = set()
     for tid in processed_ids:
         prefix, num_str = tid.rsplit("-", 1)
         assert prefix == "OMN", f"Unexpected ticket prefix in {tid}"
         num = int(num_str)
         assert 123 <= num <= 200, f"{tid} is outside the declared range OMN-123:OMN-200"
+        processed_nums.add(num)
 
-    # Sanity check: the range covers 78 IDs (123..200 inclusive).
-    assert len(processed_ids) <= 78, (
-        f"Processed {len(processed_ids)} IDs but range OMN-123:OMN-200 has at most 78"
+    # The range covers 78 IDs (123..200 inclusive). Every ID in [123, 200]
+    # must appear — an implementation that skips IDs would fail this check.
+    expected = set(range(123, 201))
+    missing = expected - processed_nums
+    assert not missing, (
+        "Range OMN-123:OMN-200 is incomplete — missing IDs: "
+        + ", ".join(f"OMN-{n}" for n in sorted(missing)[:10])
+        + (" ..." if len(missing) > 10 else "")
     )
