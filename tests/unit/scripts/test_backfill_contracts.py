@@ -20,21 +20,17 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from types import ModuleType
 
 import pytest
 import yaml
 
-# ---------------------------------------------------------------------------
-# Path bootstrap: add scripts dir so we can import the module under test.
-# ---------------------------------------------------------------------------
-_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
-sys.path.insert(0, str(_SCRIPTS_DIR))
+# sys.path is extended by tests/unit/scripts/conftest.py — no local bootstrap needed.
 
 # ---------------------------------------------------------------------------
 # Helpers
