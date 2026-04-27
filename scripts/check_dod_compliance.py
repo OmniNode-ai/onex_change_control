@@ -34,13 +34,30 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime, timedelta
+import warnings
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from onex_change_control.models import ModelTicketContract
+
+_LEGACY_RECEIPT_CUTOFF: date = date(2026, 6, 1)
+"""Two-receipt-location reconciliation hard cutoff (OMN-9791, Wave C / Task 11).
+
+Canonical receipt location going forward:
+``drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml`` (schema:
+``omnibase_core.ModelDodReceipt``).
+
+Legacy receipt location deprecated 2026-04-26 and removed 2026-06-01:
+``.evidence/<TICKET>/dod_report.json``.
+
+Before the cutoff the gate accepts both shapes, normalising legacy presence to
+PASS-with-warning. On or after the cutoff the gate fails closed when only the
+legacy receipt is present. See ``docs/RECEIPT_LOCATIONS.md`` for the migration
+path.
+"""
 
 if TYPE_CHECKING:
     from typing import Any
@@ -248,14 +265,89 @@ def check_contract_exists(ticket_id: str, contracts_dir: Path) -> tuple[str, str
     return "PASS", f"Contract valid: {contract_path}"
 
 
-def check_receipt_exists(ticket_id: str, contracts_dir: Path) -> tuple[str, str]:
-    """Check 2: Evidence receipt exists. Returns (status, detail)."""
-    # Primary location: .evidence/{ticket_id}/dod_report.json relative to repo root
+def check_receipt_exists(
+    ticket_id: str,
+    contracts_dir: Path,
+    *,
+    now: datetime | None = None,
+) -> tuple[str, str]:
+    """Check 2: Evidence receipt exists in canonical or legacy location.
+
+    Reconciles the two known DoD receipt locations (OMN-9791):
+
+    * Canonical: ``drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml``
+      (schema: ``ModelDodReceipt``).
+    * Legacy:    ``.evidence/<TICKET>/dod_report.json``.
+
+    Behaviour:
+
+    * Canonical present -> ``PASS`` with canonical detail (legacy presence
+      is irrelevant once canonical is there).
+    * Legacy-only and ``now < _LEGACY_RECEIPT_CUTOFF`` -> ``PASS`` with a
+      detail string containing ``DEPRECATED``; a ``DeprecationWarning``
+      referencing OMN-9791 is emitted so callers in tooling pipelines can
+      capture the signal.
+    * Legacy-only and ``now >= _LEGACY_RECEIPT_CUTOFF`` -> ``FAIL`` with a
+      detail string referencing OMN-9791 and the cutoff date.
+    * Neither present -> ``FAIL``.
+
+    Args:
+        ticket_id: Linear ticket identifier.
+        contracts_dir: Path to the contracts directory; the repo root is
+            inferred as ``contracts_dir.parent``.
+        now: Injected wall-clock for deterministic tests. ``None`` resolves
+            at call time to ``datetime.now(tz=UTC)``; we never use a
+            ``datetime.now`` *default* (per omnibase_core handshake).
+
+    Returns:
+        ``(status, detail)`` where ``status`` is one of ``"PASS"`` /
+        ``"FAIL"``.
+    """
     repo_root = contracts_dir.parent
-    evidence_path = repo_root / ".evidence" / ticket_id / "dod_report.json"
-    if evidence_path.exists():
-        return "PASS", f"Receipt found: {evidence_path}"
-    return "FAIL", f"No receipt at {evidence_path}"
+    canonical_dir = repo_root / "drift" / "dod_receipts" / ticket_id
+    legacy_path = repo_root / ".evidence" / ticket_id / "dod_report.json"
+
+    canonical_present = canonical_dir.is_dir() and any(canonical_dir.rglob("*.yaml"))
+    legacy_present = legacy_path.is_file()
+
+    if canonical_present:
+        return "PASS", f"canonical receipts found: {canonical_dir}"
+
+    if legacy_present:
+        effective_now = now if now is not None else datetime.now(tz=UTC)
+        cutoff_reached = effective_now.date() >= _LEGACY_RECEIPT_CUTOFF
+        if cutoff_reached:
+            return (
+                "FAIL",
+                (
+                    f"legacy-only receipt at {legacy_path} rejected: "
+                    f"hard cutoff {_LEGACY_RECEIPT_CUTOFF.isoformat()} reached "
+                    f"(OMN-9791); migrate to "
+                    f"drift/dod_receipts/{ticket_id}/<ITEM_ID>/<run_timestamp>.yaml"
+                ),
+            )
+        warnings.warn(
+            (
+                f"DEPRECATED legacy DoD receipt at {legacy_path} for {ticket_id}; "
+                f"migrate to drift/dod_receipts/{ticket_id}/<ITEM_ID>/<ts>.yaml "
+                f"before {_LEGACY_RECEIPT_CUTOFF.isoformat()} (OMN-9791)"
+            ),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return (
+            "PASS",
+            (
+                f"DEPRECATED: only legacy receipt at {legacy_path}; "
+                f"migrate to drift/dod_receipts/{ticket_id}/ before "
+                f"{_LEGACY_RECEIPT_CUTOFF.isoformat()} (OMN-9791)"
+            ),
+        )
+
+    return (
+        "FAIL",
+        f"no receipt at {canonical_dir} or {legacy_path}",
+    )
 
 
 def check_receipt_clean(ticket_id: str, contracts_dir: Path) -> tuple[str, str]:

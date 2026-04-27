@@ -13,12 +13,15 @@ Tests cover:
 7. Partial repo clones -- receipts missing
 8. Empty batch window -- 0 tickets, not error
 9. Receipt exists but has failures -- check 3 fails even though 1-2 pass
+10. Two-receipt-location reconciliation with hard 2026-06-01 cutoff (OMN-9791).
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import warnings
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -209,6 +212,156 @@ class TestArtifactChecks:
         (evidence / "dod_report.json").write_text(json.dumps({"some_other": "data"}))
         status, _ = check_dod_compliance.check_receipt_clean("OMN-2000", tmp_contracts)
         assert status == "UNKNOWN"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Two-receipt-location reconciliation (OMN-9791)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestTwoReceiptLocationReconciliation:
+    """Tests for the canonical-vs-legacy receipt reconciliation.
+
+    Canonical: drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml
+    Legacy:    .evidence/<TICKET>/dod_report.json (deprecated 2026-04-26,
+               removed 2026-06-01).
+    """
+
+    BEFORE_CUTOFF = datetime(2026, 5, 31, 12, 0, tzinfo=UTC)
+    ON_CUTOFF = datetime(2026, 6, 1, 0, 0, tzinfo=UTC)
+    AFTER_CUTOFF = datetime(2026, 6, 2, 12, 0, tzinfo=UTC)
+
+    def test_cutoff_constant_is_2026_06_01(self) -> None:
+        """The hard-cutoff constant is exactly 2026-06-01."""
+        from datetime import date
+
+        assert date(2026, 6, 1) == check_dod_compliance._LEGACY_RECEIPT_CUTOFF
+
+    def test_canonical_only_passes_pre_cutoff(self, tmp_contracts: Path) -> None:
+        """Canonical-only receipt PASSes pre-cutoff with no DEPRECATED marker."""
+        repo_root = tmp_contracts.parent
+        canonical = repo_root / "drift" / "dod_receipts" / "OMN-2000" / "dod-001"
+        canonical.mkdir(parents=True)
+        (canonical / "20260501T120000Z.yaml").write_text("status: PASS\n")
+        status, detail = check_dod_compliance.check_receipt_exists(
+            "OMN-2000", tmp_contracts, now=self.BEFORE_CUTOFF
+        )
+        assert status == "PASS"
+        assert "DEPRECATED" not in detail
+        assert "canonical" in detail.lower()
+
+    def test_canonical_only_passes_post_cutoff(self, tmp_contracts: Path) -> None:
+        """Canonical-only receipt PASSes post-cutoff (canonical is forever)."""
+        repo_root = tmp_contracts.parent
+        canonical = repo_root / "drift" / "dod_receipts" / "OMN-2000" / "dod-001"
+        canonical.mkdir(parents=True)
+        (canonical / "20260601T120000Z.yaml").write_text("status: PASS\n")
+        status, _ = check_dod_compliance.check_receipt_exists(
+            "OMN-2000", tmp_contracts, now=self.AFTER_CUTOFF
+        )
+        assert status == "PASS"
+
+    def test_legacy_only_passes_with_deprecated_warning_pre_cutoff(
+        self, tmp_contracts: Path
+    ) -> None:
+        """Legacy-only receipt PASSes pre-cutoff but emits DeprecationWarning."""
+        repo_root = tmp_contracts.parent
+        evidence = repo_root / ".evidence" / "OMN-2000"
+        evidence.mkdir(parents=True)
+        (evidence / "dod_report.json").write_text('{"result": {"failed": 0}}')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            status, detail = check_dod_compliance.check_receipt_exists(
+                "OMN-2000", tmp_contracts, now=self.BEFORE_CUTOFF
+            )
+        assert status == "PASS"
+        assert "DEPRECATED" in detail
+        assert "2026-06-01" in detail
+        deprecation_warnings = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        assert len(deprecation_warnings) >= 1
+        assert "OMN-9791" in str(deprecation_warnings[0].message)
+
+    def test_legacy_only_fails_on_cutoff(self, tmp_contracts: Path) -> None:
+        """Legacy-only receipt FAILs exactly on 2026-06-01 (inclusive cutoff)."""
+        repo_root = tmp_contracts.parent
+        evidence = repo_root / ".evidence" / "OMN-2000"
+        evidence.mkdir(parents=True)
+        (evidence / "dod_report.json").write_text('{"result": {"failed": 0}}')
+        status, detail = check_dod_compliance.check_receipt_exists(
+            "OMN-2000", tmp_contracts, now=self.ON_CUTOFF
+        )
+        assert status == "FAIL"
+        assert "OMN-9791" in detail
+        assert "2026-06-01" in detail
+
+    def test_legacy_only_fails_post_cutoff(self, tmp_contracts: Path) -> None:
+        """Legacy-only receipt FAILs after 2026-06-01."""
+        repo_root = tmp_contracts.parent
+        evidence = repo_root / ".evidence" / "OMN-2000"
+        evidence.mkdir(parents=True)
+        (evidence / "dod_report.json").write_text('{"result": {"failed": 0}}')
+        status, detail = check_dod_compliance.check_receipt_exists(
+            "OMN-2000", tmp_contracts, now=self.AFTER_CUTOFF
+        )
+        assert status == "FAIL"
+        assert "legacy" in detail.lower()
+
+    def test_both_present_prefers_canonical(self, tmp_contracts: Path) -> None:
+        """When both canonical and legacy exist, canonical wins (no DEPRECATED)."""
+        repo_root = tmp_contracts.parent
+        canonical = repo_root / "drift" / "dod_receipts" / "OMN-2000" / "dod-001"
+        canonical.mkdir(parents=True)
+        (canonical / "20260501T120000Z.yaml").write_text("status: PASS\n")
+        legacy_evidence = repo_root / ".evidence" / "OMN-2000"
+        legacy_evidence.mkdir(parents=True)
+        (legacy_evidence / "dod_report.json").write_text('{"result": {"failed": 0}}')
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            status, detail = check_dod_compliance.check_receipt_exists(
+                "OMN-2000", tmp_contracts, now=self.BEFORE_CUTOFF
+            )
+        assert status == "PASS"
+        assert "DEPRECATED" not in detail
+        assert "canonical" in detail.lower()
+        deprecation_warnings = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        assert deprecation_warnings == []
+
+    def test_neither_present_fails(self, tmp_contracts: Path) -> None:
+        """Missing both canonical and legacy receipts FAILs at any time."""
+        for now in (self.BEFORE_CUTOFF, self.ON_CUTOFF, self.AFTER_CUTOFF):
+            status, detail = check_dod_compliance.check_receipt_exists(
+                "OMN-9999", tmp_contracts, now=now
+            )
+            assert status == "FAIL"
+            assert "no receipt" in detail.lower()
+
+    def test_canonical_dir_present_but_empty_treated_as_absent(
+        self, tmp_contracts: Path
+    ) -> None:
+        """Empty canonical dir without YAML files does not count as present."""
+        repo_root = tmp_contracts.parent
+        canonical_dir = repo_root / "drift" / "dod_receipts" / "OMN-2000"
+        canonical_dir.mkdir(parents=True)
+        # No YAML files inside.
+        status, _ = check_dod_compliance.check_receipt_exists(
+            "OMN-2000", tmp_contracts, now=self.BEFORE_CUTOFF
+        )
+        assert status == "FAIL"
+
+    def test_default_now_uses_real_clock(self, tmp_contracts: Path) -> None:
+        """Calling without now uses the real clock and produces a valid result."""
+        repo_root = tmp_contracts.parent
+        canonical = repo_root / "drift" / "dod_receipts" / "OMN-2000" / "dod-001"
+        canonical.mkdir(parents=True)
+        (canonical / "20260501T120000Z.yaml").write_text("status: PASS\n")
+        status, _ = check_dod_compliance.check_receipt_exists("OMN-2000", tmp_contracts)
+        # Canonical-only is always PASS regardless of clock.
+        assert status == "PASS"
 
 
 # ---------------------------------------------------------------------------
