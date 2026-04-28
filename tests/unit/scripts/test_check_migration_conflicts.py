@@ -51,6 +51,28 @@ class TestCheckMigrationConflicts:
         conflicts = detect_conflicts(FIXTURES_ROOT, ["repo_clean"])
         assert len(conflicts) == 0
 
+    def test_nested_omni_worktrees_are_ignored(self, tmp_path: Path) -> None:
+        """Nested workspace worktrees inside repo clones are ignored."""
+        repo = tmp_path / "repo_with_nested_worktree"
+        migration = repo / "deployment" / "database" / "migrations"
+        nested_migration = (
+            repo
+            / "omni_worktrees"
+            / "OMN-1"
+            / "repo_with_nested_worktree"
+            / "deployment"
+            / "database"
+            / "migrations"
+        )
+        migration.mkdir(parents=True)
+        nested_migration.mkdir(parents=True)
+        sql = "CREATE TABLE orders (id UUID PRIMARY KEY, status TEXT NOT NULL);"
+        (migration / "001_create_orders.sql").write_text(sql)
+        (nested_migration / "001_create_orders.sql").write_text(sql)
+
+        conflicts = detect_conflicts(tmp_path, ["repo_with_nested_worktree"])
+        assert len(conflicts) == 0
+
     def test_multi_table_no_false_positive(self) -> None:
         """Multiple tables in same file should not trigger false positives."""
         clean_sql = (
