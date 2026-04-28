@@ -181,6 +181,12 @@ def find_migration_files(
         if not repo_dir.is_dir():
             continue
         for sql_file in repo_dir.rglob("**/migrations/**/*.sql"):
+            try:
+                relative_parts = sql_file.relative_to(repo_dir).parts
+            except ValueError:
+                relative_parts = sql_file.parts
+            if "omni_worktrees" in relative_parts:
+                continue
             # Skip rollback migrations
             if "rollback" in str(sql_file).lower():
                 continue

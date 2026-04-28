@@ -35,11 +35,6 @@ inputs:
       with boundary seams.
     required: false
     default: "omniclaude,omnidash,omniintelligence,omnibase_infra,omnibase_core,omnimemory"
-  github-token:
-    description: >
-      Optional token used for cloning private OmniNode peer repositories.
-    required: false
-    default: ""
 
 runs:
   using: "composite"
@@ -77,28 +72,19 @@ runs:
     - name: Clone peer repos
       id: clone
       shell: bash
-      env:
-        OMNI_REPO_TOKEN: ${{ inputs.github-token }}
       run: |
         mkdir -p /tmp/omni_repos
         DEGRADED=""
-        git_auth_header() {
-          printf 'AUTHORIZATION: basic %s' "$(printf 'x-access-token:%s' "${OMNI_REPO_TOKEN}" | base64 | tr -d '\n')"
-        }
-        clone_omni_repo() {
-          local repo="$1"
-          local dest="$2"
-          if [[ -n "${OMNI_REPO_TOKEN}" ]]; then
-            git -c "http.https://github.com/.extraheader=$(git_auth_header)" \
-              clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${dest}"
-          else
-            git clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${dest}"
-          fi
-        }
         IFS=',' read -ra REPOS <<< "${{ inputs.repos }}"
         for repo in "${REPOS[@]}"; do
           repo=$(echo "$repo" | xargs)  # trim whitespace
-          if clone_omni_repo "${repo}" "/tmp/omni_repos/${repo}" 2>/dev/null; then
+          if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+            auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 -w0)"
+            clone_args=(-c "http.https://github.com/.extraheader=${auth_header}")
+          else
+            clone_args=()
+          fi
+          if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "/tmp/omni_repos/${repo}" 2>/dev/null; then
             echo "Cloned ${repo}"
           else
             echo "::warning::Boundary verification DEGRADED: could not clone ${repo}. Seam parity NOT confirmed."
