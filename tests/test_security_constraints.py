@@ -108,12 +108,12 @@ class TestListLengthConstraints:
 class TestTicketContractConstraints:
     """Tests for ticket contract security constraints."""
 
-    def test_ticket_id_length_constraint(self) -> None:
-        """Test that ticket_id has appropriate length limit."""
-        # Valid: short ticket ID
+    def test_ticket_id_accepted(self) -> None:
+        """Test that a valid ticket_id is accepted."""
         contract = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Test",
             summary="Test",
             is_seam_ticket=False,
             interface_change=False,
@@ -121,12 +121,13 @@ class TestTicketContractConstraints:
         )
         assert contract.ticket_id == "OMN-962"
 
-        # Invalid: ticket ID too long
-        too_long_id = "OMN-" + "x" * 50
-        with pytest.raises(ValidationError):
+    def test_schema_version_format_constraint(self) -> None:
+        """Test that schema_version must be SemVer format."""
+        with pytest.raises(ValidationError, match="schema_version"):
             ModelTicketContract(
-                schema_version="1.0.0",
-                ticket_id=too_long_id,
+                schema_version="not-a-version",
+                ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,

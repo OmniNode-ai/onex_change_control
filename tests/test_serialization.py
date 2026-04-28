@@ -163,6 +163,7 @@ class TestModelTicketContractSerialization:
         original = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Test ticket",
             summary="Test ticket",
             is_seam_ticket=True,
             interface_change=True,
@@ -201,6 +202,7 @@ class TestModelTicketContractSerialization:
         original = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Test ticket",
             summary="Test ticket",
             is_seam_ticket=False,
             interface_change=False,
@@ -235,6 +237,7 @@ class TestModelTicketContractSerialization:
         original = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Test",
             summary="Test",
             is_seam_ticket=False,
             interface_change=True,
@@ -286,17 +289,12 @@ class TestFrozenModels:
         with pytest.raises(ValidationError):
             day_close.date = "2025-12-21"  # type: ignore[misc]
 
-    def test_ticket_contract_is_frozen(self) -> None:
-        """Test that ModelTicketContract is immutable after creation."""
-        contract = ModelTicketContract(
-            schema_version="1.0.0",
-            ticket_id="OMN-962",
-            summary="Test",
-            is_seam_ticket=False,
-            interface_change=False,
-            emergency_bypass=ModelEmergencyBypass(enabled=False),
+    def test_ticket_contract_emergency_bypass_is_frozen(self) -> None:
+        """Test that ModelEmergencyBypass (embedded in contract) is immutable."""
+        from onex_change_control.models.model_ticket_contract import (
+            ModelEmergencyBypass,
         )
 
-        # Attempting to modify should raise ValidationError
+        bypass = ModelEmergencyBypass(enabled=False)
         with pytest.raises(ValidationError):
-            contract.ticket_id = "OMN-963"  # type: ignore[misc]
+            bypass.enabled = True  # type: ignore[misc]

@@ -23,6 +23,7 @@ def _minimal_contract(**overrides: object) -> dict[str, object]:
     base: dict[str, object] = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-5168",
+        "title": "Test ticket",
         "summary": "Test ticket",
         "is_seam_ticket": False,
         "interface_change": False,
@@ -254,10 +255,7 @@ class TestDodEvidenceOnContract:
                     "checks": [
                         {
                             "check_type": "grep",
-                            "check_value": {
-                                "pattern": "class ModelDodCheck",
-                                "path": "src/",
-                            },
+                            "check_value": "class ModelDodCheck",
                         }
                     ],
                 },
@@ -267,7 +265,7 @@ class TestDodEvidenceOnContract:
         assert len(contract.dod_evidence) == 3
         assert contract.dod_evidence[0].checks[0].check_type == "endpoint"
         assert contract.dod_evidence[1].checks[0].check_type == "command"
-        assert contract.dod_evidence[2].checks[0].check_type == "grep"
+        assert contract.dod_evidence[2].checks[0].check_value == "class ModelDodCheck"
 
     def test_immutability_of_dod_evidence(self) -> None:
         """Frozen model prevents mutation."""
@@ -338,44 +336,35 @@ class TestDodCheckCwdField:
         assert check.cwd is None
 
     def test_cwd_roundtrips_through_yaml(self) -> None:
-        data = _minimal_contract(
-            dod_evidence=[
-                {
-                    "id": "dod-001",
-                    "description": "cwd field round-trips through YAML",
-                    "checks": [
-                        {
-                            "check_type": "command",
-                            "check_value": "uv run pytest",
-                            "cwd": "${OMNI_HOME}/omnibase_core",
-                        }
-                    ],
-                }
-            ]
+        """cwd round-trips via ModelDodEvidenceItem (OCC governance model)."""
+        item = ModelDodEvidenceItem.model_validate(
+            {
+                "id": "dod-001",
+                "description": "cwd field round-trips through YAML",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": "uv run pytest",
+                        "cwd": "${OMNI_HOME}/omnibase_core",
+                    }
+                ],
+            }
         )
-        contract = ModelTicketContract.model_validate(data)
-        yaml_str = yaml.dump(contract.model_dump(mode="json"), default_flow_style=False)
+        yaml_str = yaml.dump(item.model_dump(mode="json"), default_flow_style=False)
         loaded = yaml.safe_load(yaml_str)
-        roundtripped = ModelTicketContract.model_validate(loaded)
-        assert roundtripped.dod_evidence[0].checks[0].cwd == (
-            "${OMNI_HOME}/omnibase_core"
-        )
+        roundtripped = ModelDodEvidenceItem.model_validate(loaded)
+        assert roundtripped.checks[0].cwd == "${OMNI_HOME}/omnibase_core"
 
     def test_cwd_omitted_roundtrips_as_none(self) -> None:
-        """Existing contracts without cwd continue to validate and round-trip."""
-        data = _minimal_contract(
-            dod_evidence=[
-                {
-                    "id": "dod-002",
-                    "description": "Legacy contract has no cwd",
-                    "checks": [
-                        {"check_type": "command", "check_value": "uv run pytest"}
-                    ],
-                }
-            ]
+        """Existing items without cwd continue to validate and round-trip."""
+        item = ModelDodEvidenceItem.model_validate(
+            {
+                "id": "dod-002",
+                "description": "Legacy item has no cwd",
+                "checks": [{"check_type": "command", "check_value": "uv run pytest"}],
+            }
         )
-        contract = ModelTicketContract.model_validate(data)
-        yaml_str = yaml.dump(contract.model_dump(mode="json"), default_flow_style=False)
+        yaml_str = yaml.dump(item.model_dump(mode="json"), default_flow_style=False)
         loaded = yaml.safe_load(yaml_str)
-        roundtripped = ModelTicketContract.model_validate(loaded)
-        assert roundtripped.dod_evidence[0].checks[0].cwd is None
+        roundtripped = ModelDodEvidenceItem.model_validate(loaded)
+        assert roundtripped.checks[0].cwd is None

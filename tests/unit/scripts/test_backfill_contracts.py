@@ -75,6 +75,7 @@ def _stub_generate_skeleton_contract(
     return (
         f"schema_version: '1.0.0'\n"
         f"ticket_id: {ticket_id}\n"
+        f"title: {summary}\n"
         f"summary: {summary}\n"
         f"is_seam_ticket: false\n"
         f"interface_change: false\n"

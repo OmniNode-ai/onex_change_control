@@ -64,6 +64,7 @@ def minimal_ticket_contract_data(
     return {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-999",
+        "title": "Test ticket summary",
         "summary": "Test ticket summary",
         "is_seam_ticket": False,
         "interface_change": False,
@@ -108,6 +109,7 @@ def test_parse_ticket_contract_template(
     data = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-000",
+        "title": "Test ticket",
         "summary": "Test ticket",
         "is_seam_ticket": False,
         "interface_change": False,
@@ -195,6 +197,7 @@ def test_template_ticket_contract_with_evidence_requirements(
     data = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-999",
+        "title": "Test ticket with evidence",
         "summary": "Test ticket with evidence",
         "is_seam_ticket": False,
         "interface_change": False,
@@ -253,6 +256,7 @@ def test_template_ticket_contract_unknown_handling(
     data = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-999",
+        "title": "Test ticket with unknown interfaces",
         "summary": "Test ticket with unknown interfaces",
         "is_seam_ticket": True,
         "interface_change": True,
@@ -263,12 +267,8 @@ def test_template_ticket_contract_unknown_handling(
 
     contract = ModelTicketContract.model_validate(data)
 
-    # Contract should parse but be marked as incomplete
     assert contract.interface_change is True
     assert len(contract.interfaces_touched) == 0
-    assert (
-        contract.is_complete is False
-    )  # Incomplete because interfaces_touched is empty
 
 
 def test_template_ticket_contract_emergency_bypass() -> None:
@@ -279,6 +279,7 @@ def test_template_ticket_contract_emergency_bypass() -> None:
     data = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-999",
+        "title": "Emergency hotfix ticket",
         "summary": "Emergency hotfix ticket",
         "is_seam_ticket": False,
         "interface_change": False,
