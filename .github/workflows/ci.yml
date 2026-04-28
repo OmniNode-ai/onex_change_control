@@ -115,13 +115,19 @@ jobs:
         with:
           python-version: "3.12"
       - name: Clone cross-repo dependencies
+        env:
+          OMNI_REPO_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
         run: |
           mkdir -p /tmp/omni_repos
-          git clone --depth=1 https://github.com/OmniNode-ai/omniintelligence.git /tmp/omni_repos/omniintelligence
-          git clone --depth=1 https://github.com/OmniNode-ai/omnibase_infra.git /tmp/omni_repos/omnibase_infra
-          git clone --depth=1 https://github.com/OmniNode-ai/omnimemory.git /tmp/omni_repos/omnimemory
-          git clone --depth=1 https://github.com/OmniNode-ai/omniclaude.git /tmp/omni_repos/omniclaude
-          git clone --depth=1 https://github.com/OmniNode-ai/omnibase_core.git /tmp/omni_repos/omnibase_core
+          clone_omni_repo() {
+            git -c http.extraheader="AUTHORIZATION: bearer ${OMNI_REPO_TOKEN}" \
+              clone --depth=1 "https://github.com/OmniNode-ai/$1.git" "$2"
+          }
+          clone_omni_repo omniintelligence /tmp/omni_repos/omniintelligence
+          clone_omni_repo omnibase_infra /tmp/omni_repos/omnibase_infra
+          clone_omni_repo omnimemory /tmp/omni_repos/omnimemory
+          clone_omni_repo omniclaude /tmp/omni_repos/omniclaude
+          clone_omni_repo omnibase_core /tmp/omni_repos/omnibase_core
       - name: Copy suppressions file
         run: cp migration_conflict_suppressions.yaml /tmp/omni_repos/
       - name: Check for migration conflicts
@@ -145,12 +151,18 @@ jobs:
         with:
           python-version: "3.12"
       - name: Clone peer repos
+        env:
+          OMNI_REPO_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
         run: |
           mkdir -p /tmp/repos
+          clone_omni_repo() {
+            git -c http.extraheader="AUTHORIZATION: bearer ${OMNI_REPO_TOKEN}" \
+              clone --depth=1 "https://github.com/OmniNode-ai/$1.git" "$2"
+          }
           for repo in omnibase_infra omnidash omniintelligence omnimemory omninode_infra omniclaude omniweb; do
-            git clone --depth=1 https://github.com/OmniNode-ai/$repo.git /tmp/repos/$repo 2>/dev/null || true
+            clone_omni_repo "$repo" "/tmp/repos/$repo" 2>/dev/null || true
           done
-          ln -s $GITHUB_WORKSPACE /tmp/repos/onex_change_control
+          ln -s "$GITHUB_WORKSPACE" /tmp/repos/onex_change_control
       - name: Validate inventory
         # warn-only: Soft-fail until manifest is complete for all repos and
         # clone/input path is reliably observable in CI (all repos clone
@@ -166,14 +178,20 @@ jobs:
         with:
           python-version: "3.12"
       - name: Clone cross-repo dependencies
+        env:
+          OMNI_REPO_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
         run: |
           mkdir -p /tmp/omni_repos
-          git clone --depth=1 https://github.com/OmniNode-ai/omniclaude.git /tmp/omni_repos/omniclaude
-          git clone --depth=1 https://github.com/OmniNode-ai/omnidash.git /tmp/omni_repos/omnidash
-          git clone --depth=1 https://github.com/OmniNode-ai/omniintelligence.git /tmp/omni_repos/omniintelligence
-          git clone --depth=1 https://github.com/OmniNode-ai/omnibase_infra.git /tmp/omni_repos/omnibase_infra
-          git clone --depth=1 https://github.com/OmniNode-ai/omnimemory.git /tmp/omni_repos/omnimemory
-          ln -s $GITHUB_WORKSPACE /tmp/omni_repos/onex_change_control
+          clone_omni_repo() {
+            git -c http.extraheader="AUTHORIZATION: bearer ${OMNI_REPO_TOKEN}" \
+              clone --depth=1 "https://github.com/OmniNode-ai/$1.git" "$2"
+          }
+          clone_omni_repo omniclaude /tmp/omni_repos/omniclaude
+          clone_omni_repo omnidash /tmp/omni_repos/omnidash
+          clone_omni_repo omniintelligence /tmp/omni_repos/omniintelligence
+          clone_omni_repo omnibase_infra /tmp/omni_repos/omnibase_infra
+          clone_omni_repo omnimemory /tmp/omni_repos/omnimemory
+          ln -s "$GITHUB_WORKSPACE" /tmp/omni_repos/onex_change_control
       - name: Check Kafka boundary parity
         run: uv run check-boundary-parity --repos-root /tmp/omni_repos
 
@@ -186,7 +204,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Clone omnidash for cross-repo schema check
-        run: git clone --depth 1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+        env:
+          OMNI_REPO_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+        run: |
+          git -c http.extraheader="AUTHORIZATION: bearer ${OMNI_REPO_TOKEN}" \
+            clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
       - name: Run Python null vs TypeScript optional contract test
         run: uv run pytest tests/integration/cross_repo/test_python_null_vs_ts_optional.py -v
 
@@ -284,12 +306,15 @@ jobs:
       - name: Set up contracts source
         if: steps.bootstrap_check.outputs.skip != 'true'
         id: contracts_setup
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
         run: |
           if [ "${{ github.repository }}" = "OmniNode-ai/onex_change_control" ]; then
             # Running in this repo itself — use checked-out contracts (PR diff version)
             ln -s "$GITHUB_WORKSPACE" /tmp/onex_change_control
           else
-            git clone --depth=1 https://github.com/OmniNode-ai/onex_change_control.git /tmp/onex_change_control
+            git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+              clone --depth=1 https://github.com/OmniNode-ai/onex_change_control.git /tmp/onex_change_control
           fi
       - name: Set up uv toolchain
         # The runner shells out to ``uv run`` for several check_value commands
