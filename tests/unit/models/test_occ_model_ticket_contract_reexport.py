@@ -187,12 +187,16 @@ def test_occ_model_ticket_contract_reexport_passes_schema_purity() -> None:
     )
 
     # Run check-schema-purity subprocess to confirm the tool accepts it
-    result = subprocess.run(
-        [sys.executable, "-m", "onex_change_control.scripts.check_schema_purity"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "onex_change_control.scripts.check_schema_purity"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("check-schema-purity timed out after 30 seconds")
     assert result.returncode == 0, (
         f"check-schema-purity failed on re-export file.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
