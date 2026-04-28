@@ -132,6 +132,7 @@ def test_parse_ticket_contract_template(
     assert contract.is_seam_ticket is False
     assert contract.interface_change is False
     assert len(contract.interfaces_touched) == 0
+    assert contract.emergency_bypass is not None
     assert contract.emergency_bypass.enabled is False
 
 
@@ -183,6 +184,7 @@ def test_template_ticket_contract_minimal_valid(
     assert contract.interface_change is False
     assert len(contract.interfaces_touched) == 0
     assert len(contract.evidence_requirements) == 0
+    assert contract.emergency_bypass is not None
     assert contract.emergency_bypass.enabled is False
 
 
@@ -294,6 +296,7 @@ def test_template_ticket_contract_emergency_bypass() -> None:
 
     contract = ModelTicketContract.model_validate(data)
 
+    assert contract.emergency_bypass is not None
     assert contract.emergency_bypass.enabled is True
     assert (
         contract.emergency_bypass.justification
