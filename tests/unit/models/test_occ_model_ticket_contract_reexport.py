@@ -49,7 +49,10 @@ def test_occ_model_ticket_contract_is_core_class() -> None:
         ModelTicketContract as OccModelTicketContract,
     )
 
-    assert OccModelTicketContract is CoreModelTicketContract, (
+    # NOTE(OMN-10065): mypy reports comparison-overlap because statically the two
+    # classes are distinct types. That is exactly what xfail captures — they ARE
+    # different until OMN-10066 wires the re-export. Suppress for red phase only.
+    assert OccModelTicketContract is CoreModelTicketContract, (  # type: ignore[comparison-overlap]
         "OCC ModelTicketContract must be the same class object as core's "
         f"ModelTicketContract. Got OCC={OccModelTicketContract!r}, "
         f"core={CoreModelTicketContract!r}"
@@ -91,14 +94,20 @@ def test_occ_model_ticket_contract_construction_with_merged_fields() -> None:
     """
     from onex_change_control.models.model_ticket_contract import ModelTicketContract
 
-    # Minimal construction with only required fields + merged defaults
-    contract = ModelTicketContract(
-        ticket_id="OMN-1",
-        title="Test ticket for re-export verification",
-        schema_version="1.0.0",
-        summary="Verify OCC re-export absorbs all merged fields",
-        is_seam_ticket=False,
-        interface_change=False,
+    # NOTE(OMN-10065): mypy reports call-arg errors because the OCC model
+    # (pre-re-export) does not have title/schema_version/summary etc. These
+    # fields will exist after OMN-10066 wires the re-export. Constructing via
+    # model_validate bypasses static type checking while still exercising the
+    # runtime validation path that the xfail gate tests.
+    contract = ModelTicketContract.model_validate(  # type: ignore[attr-defined]
+        {
+            "ticket_id": "OMN-1",
+            "title": "Test ticket for re-export verification",
+            "schema_version": "1.0.0",
+            "summary": "Verify OCC re-export absorbs all merged fields",
+            "is_seam_ticket": False,
+            "interface_change": False,
+        }
     )
 
     # Verify merged fields are present and have correct defaults
