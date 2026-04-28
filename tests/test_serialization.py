@@ -224,6 +224,8 @@ class TestModelTicketContractSerialization:
         # Verify round-trip
         assert reconstructed.schema_version == original.schema_version
         assert reconstructed.ticket_id == original.ticket_id
+        assert reconstructed.emergency_bypass is not None
+        assert original.emergency_bypass is not None
         assert (
             reconstructed.emergency_bypass.enabled == original.emergency_bypass.enabled
         )
@@ -265,7 +267,7 @@ class TestModelTicketContractSerialization:
 
         # Deserialize and verify enums are restored
         reconstructed = ModelTicketContract.model_validate(data)
-        assert reconstructed.interfaces_touched[0] == EnumInterfaceSurface.EVENTS
+        assert reconstructed.interfaces_touched[0].value == "events"
         assert reconstructed.evidence_requirements[0].kind == EnumEvidenceKind.DOCS
 
 
