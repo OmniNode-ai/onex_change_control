@@ -99,7 +99,7 @@ def test_occ_model_ticket_contract_construction_with_merged_fields() -> None:
     # fields will exist after OMN-10066 wires the re-export. Constructing via
     # model_validate bypasses static type checking while still exercising the
     # runtime validation path that the xfail gate tests.
-    contract = ModelTicketContract.model_validate(  # type: ignore[attr-defined]
+    contract = ModelTicketContract.model_validate(
         {
             "ticket_id": "OMN-1",
             "title": "Test ticket for re-export verification",
