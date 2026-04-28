@@ -3,7 +3,7 @@
 Date: 2026-04-28
 Parent: `OMN-10235`
 Primary OCC staging ticket: `OMN-10236`
-Plan source of truth: `/Users/jonah/Code/omni_home/docs/plans/2026-04-28-canonical-skill-path-consolidation.md`
+Plan source of truth: `docs/plans/2026-04-28-canonical-skill-path-consolidation.md`
 
 ## Purpose
 
@@ -52,8 +52,10 @@ concrete contract and receipt path.
 Canonical receipts live under:
 
 ```text
-drift/dod_receipts/<TICKET>/<DOD-ID>/<run_timestamp>.yaml
+drift/dod_receipts/<TICKET>/<DOD-ID>/<check_type>.yaml
 ```
+
+For example: `drift/dod_receipts/OMN-10237/dod-001/command.yaml`.
 
 Do not commit fake or placeholder YAML receipts just to satisfy a path check.
 Receipt directories should only receive machine-generated or probe-generated
