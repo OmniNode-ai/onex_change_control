@@ -57,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _read_ticket_description(args: argparse.Namespace) -> str:
     if args.ticket_description is not None:
-        return args.ticket_description
+        return str(args.ticket_description)
     if args.ticket_description_file is None:
         return ""
     return Path(args.ticket_description_file).read_text(encoding="utf-8")
