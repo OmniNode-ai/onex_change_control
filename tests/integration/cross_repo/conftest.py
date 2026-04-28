@@ -11,6 +11,7 @@ Run: uv run pytest tests/integration/cross_repo/ -v
 """
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -24,13 +25,37 @@ BOUNDARIES_PATH = (
     / "kafka_boundaries.yaml"
 )
 
+PENDING_GRACE_PERIOD_DAYS = 14
+
+
+def _is_pending_within_grace(entry: dict[str, object]) -> bool:
+    """Mirror check_boundary_parity.py grace period logic."""
+    if entry.get("status") != "pending":
+        return False
+    pending_since = entry.get("pending_since", "")
+    if not pending_since:
+        return True
+    try:
+        pending_date = datetime.strptime(str(pending_since), "%Y-%m-%d").replace(
+            tzinfo=UTC
+        )
+    except ValueError:
+        return True
+    elapsed_days = (datetime.now(tz=UTC) - pending_date).days
+    return elapsed_days <= PENDING_GRACE_PERIOD_DAYS
+
 
 @pytest.fixture
-def boundary_manifest() -> list[dict]:  # type: ignore[type-arg]
-    """Load the cross-repo Kafka boundary manifest."""
+def boundary_manifest() -> list[dict[str, object]]:
+    """Load the cross-repo Kafka boundary manifest, excluding pending-grace entries.
+
+    Mirrors the skip logic in check_boundary_parity.py so local tests and CI
+    agree on which entries are enforced.
+    """
     with BOUNDARIES_PATH.open() as f:
         data = yaml.safe_load(f)
-    return data.get("boundaries", [])  # type: ignore[no-any-return]
+    all_entries: list[dict[str, object]] = data.get("boundaries", [])
+    return [e for e in all_entries if not _is_pending_within_grace(e)]
 
 
 @pytest.fixture
