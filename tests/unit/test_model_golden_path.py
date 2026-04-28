@@ -71,6 +71,7 @@ def _make_contract(**kwargs: object) -> ModelTicketContract:
     defaults: dict[str, object] = {
         "schema_version": "1.0.0",
         "ticket_id": "OMN-2980",
+        "title": "Test contract",
         "summary": "Test contract",
         "is_seam_ticket": False,
         "interface_change": False,

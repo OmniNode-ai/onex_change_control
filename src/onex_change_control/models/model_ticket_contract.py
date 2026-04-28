@@ -1,309 +1,35 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""Ticket Contract Model.
+"""Re-export of core ModelTicketContract and OCC supporting types. OMN-10066
 
-Pydantic schema model for ticket contracts.
+ModelTicketContract is re-exported from omnibase_core so all consumers share
+a single class identity. The remaining types (ModelDodCheck, ModelDodEvidenceItem,
+ModelEmergencyBypass, ModelEvidenceRequirement) are OCC-local models kept in
+model_dod_check.py and re-exported here for backwards-compatible import paths.
 """
 
-from typing import Literal
+from omnibase_core.models.ticket.model_ticket_contract import (
+    ModelTicketContract as ModelTicketContract,  # re-export
+)
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from onex_change_control.models.model_dod_check import (
+    ModelDodCheck as ModelDodCheck,  # re-export
+)
+from onex_change_control.models.model_dod_check import (
+    ModelDodEvidenceItem as ModelDodEvidenceItem,  # re-export
+)
+from onex_change_control.models.model_dod_check import (
+    ModelEmergencyBypass as ModelEmergencyBypass,  # re-export
+)
+from onex_change_control.models.model_dod_check import (
+    ModelEvidenceRequirement as ModelEvidenceRequirement,  # re-export
+)
 
-from onex_change_control.enums.enum_evidence_kind import EnumEvidenceKind
-from onex_change_control.enums.enum_interface_surface import EnumInterfaceSurface
-from onex_change_control.models.model_golden_path import ModelGoldenPath
-from onex_change_control.validation.patterns import SEMVER_PATTERN
-
-# Security constraints to prevent DoS attacks
-_MAX_STRING_LENGTH = 10000  # Max length for string fields
-_MAX_LIST_ITEMS = 1000  # Max items in lists
-
-
-class ModelEvidenceRequirement(BaseModel):
-    """Evidence requirement in ticket contract."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: EnumEvidenceKind = Field(..., description="Type of evidence")
-    description: str = Field(
-        ...,
-        description="What evidence must exist",
-        max_length=_MAX_STRING_LENGTH,
-    )
-    command: str | None = Field(
-        default=None,
-        description="How to reproduce, if applicable",
-        max_length=_MAX_STRING_LENGTH,
-    )
-
-
-class ModelEmergencyBypass(BaseModel):
-    """Emergency bypass configuration in ticket contract."""
-
-    model_config = ConfigDict(frozen=True)
-
-    enabled: bool = Field(..., description="Whether bypass is enabled")
-    justification: str = Field(
-        default="",
-        description="Justification for bypass (required if enabled)",
-        max_length=_MAX_STRING_LENGTH,
-    )
-    follow_up_ticket_id: str = Field(
-        default="",
-        description="Follow-up ticket ID (required if enabled)",
-        max_length=50,  # Ticket IDs are typically short (e.g., "OMN-962")
-    )
-
-    @model_validator(mode="after")
-    def validate_bypass_fields(self) -> "ModelEmergencyBypass":
-        """Validate bypass fields are complete if enabled.
-
-        Rejects whitespace-only strings for justification and follow_up_ticket_id
-        when bypass is enabled, as these are not meaningful values.
-        """
-        if self.enabled:
-            if not self.justification.strip():
-                msg = "justification is required when bypass is enabled"
-                raise ValueError(msg)
-            if not self.follow_up_ticket_id.strip():
-                msg = "follow_up_ticket_id is required when bypass is enabled"
-                raise ValueError(msg)
-        return self
-
-
-class ModelDodCheck(BaseModel):
-    """A single executable check for a DoD evidence item.
-
-    Each check has a type that determines how check_value is interpreted:
-    - test_exists: check_value is a glob pattern for test files
-    - test_passes: check_value is a pytest marker or path to run
-    - file_exists: check_value is a glob pattern for expected files
-    - grep: check_value is a dict with 'pattern' and 'path' keys
-    - command: check_value is a shell command (exit 0 = pass)
-    - endpoint: check_value is a URL or path to check
-
-    The optional ``cwd`` field declares the working directory the check should
-    execute under. The runner expands ``${OMNI_HOME}``, ``${PR_NUMBER}``,
-    ``${REPO}``, and ``${TICKET_ID}`` template tokens before invocation, and
-    is responsible for path-traversal containment checks. When ``cwd`` is
-    omitted the runner inherits its caller's working directory (legacy
-    behavior).
-
-    OMN-10078: replaces the brittle ``cd ${OMNI_HOME}/<repo> && `` shell
-    prefix introduced as a temporary fix in OMN-10049 / PR #448.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    check_type: Literal[
-        "test_exists",
-        "test_passes",
-        "file_exists",
-        "grep",
-        "command",
-        "endpoint",
-    ] = Field(..., description="Type of executable check")
-    check_value: str | dict[str, str] = Field(
-        ...,
-        description="Check-type-specific value (glob, command, URL, or pattern dict)",
-    )
-    cwd: str | None = Field(
-        default=None,
-        description=(
-            "Optional working directory for the check command. Supports "
-            "${OMNI_HOME}, ${PR_NUMBER}, ${REPO}, ${TICKET_ID} template "
-            "tokens that the runner substitutes at execution time. When "
-            "omitted the runner inherits its caller's cwd."
-        ),
-        max_length=_MAX_STRING_LENGTH,
-    )
-
-
-class ModelDodEvidenceItem(BaseModel):
-    """A single DoD evidence item mapping a requirement to executable checks.
-
-    Each item represents one Definition of Done bullet point from the ticket,
-    along with one or more executable checks that verify the requirement is met.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    id: str = Field(
-        ...,
-        description="Unique identifier within the contract (e.g., 'dod-001')",
-        max_length=50,
-    )
-    description: str = Field(
-        ...,
-        description="Human-readable description of the DoD requirement",
-        max_length=_MAX_STRING_LENGTH,
-    )
-    source: Literal["linear", "manual", "generated"] = Field(
-        default="generated",
-        description="Where this DoD item originated",
-    )
-    linear_dod_text: str | None = Field(
-        default=None,
-        description="Original DoD text from Linear, if sourced from Linear",
-        max_length=_MAX_STRING_LENGTH,
-    )
-    checks: list[ModelDodCheck] = Field(
-        ...,
-        description="Executable checks that verify this DoD item",
-        max_length=_MAX_LIST_ITEMS,
-    )
-    status: Literal["pending", "verified", "failed", "skipped"] = Field(
-        default="pending",
-        description="Current verification status of this DoD item",
-    )
-    evidence_artifact: str | None = Field(
-        default=None,
-        description="Path to evidence artifact (e.g., test output, screenshot)",
-        max_length=_MAX_STRING_LENGTH,
-    )
-
-
-class ModelTicketContract(BaseModel):
-    """Ticket contract model.
-
-    Represents machine-checkable acceptance criteria and enforcement hooks
-    for a single ticket.
-
-    Schema Version:
-        The schema_version field uses basic SemVer format (major.minor.patch) only.
-        Pre-release versions (e.g., "1.0.0-alpha") and build metadata
-        (e.g., "1.0.0+build") are not supported. Leading zeros are rejected
-        per SemVer specification.
-
-    Immutability:
-        This model is frozen (immutable) after creation to ensure:
-        1. Ticket contracts cannot be modified after creation
-        2. Thread-safe access from multiple readers
-        3. Safe use as dictionary keys or cache entries
-
-    Interface Change Validation:
-        - If interface_change=False, interfaces_touched must be empty
-        - If interface_change=True, interfaces_touched may be empty temporarily
-          (e.g., during initial contract creation before categorization is complete)
-          but should be populated before the ticket is considered complete.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    # string-version-ok: YAML/JSON wire; format checked by field_validator
-    schema_version: str = Field(
-        ...,
-        description="Schema version (SemVer format, e.g., '1.0.0')",
-        max_length=20,
-    )
-    ticket_id: str = Field(
-        ...,
-        description="Ticket identifier (e.g., 'OMN-962')",
-        max_length=50,
-    )
-    summary: str = Field(
-        ...,
-        description="One-line summary",
-        max_length=_MAX_STRING_LENGTH,
-    )
-    is_seam_ticket: bool = Field(
-        ...,
-        description="Whether this ticket touches cross-repo interfaces",
-    )
-    interface_change: bool = Field(
-        ...,
-        description="Whether this ticket changes interface surfaces",
-    )
-    interfaces_touched: list[EnumInterfaceSurface] = Field(
-        default_factory=list,
-        description="Interface surfaces touched by this ticket",
-        max_length=_MAX_LIST_ITEMS,
-    )
-    evidence_requirements: list[ModelEvidenceRequirement] = Field(
-        default_factory=list,
-        description="Evidence requirements",
-        max_length=_MAX_LIST_ITEMS,
-    )
-    emergency_bypass: ModelEmergencyBypass = Field(
-        ...,
-        description="Emergency bypass configuration",
-    )
-    golden_path: ModelGoldenPath | None = Field(
-        default=None,
-        description=(
-            "Optional golden path event chain test declaration. "
-            "When present, declares an input-to-output contract test for the "
-            "node pipeline associated with this ticket."
-        ),
-    )
-    dod_evidence: list[ModelDodEvidenceItem] = Field(
-        default_factory=list,
-        description=(
-            "Definition of Done evidence items. Maps Linear DoD bullets "
-            "to executable checks for automated verification."
-        ),
-        max_length=_MAX_LIST_ITEMS,
-    )
-
-    @field_validator("schema_version")
-    @classmethod
-    def validate_schema_version(cls, v: str) -> str:
-        """Validate schema_version is SemVer format.
-
-        Note: Only basic SemVer (major.minor.patch) is supported.
-        Pre-release versions and build metadata are not supported.
-        Leading zeros are rejected per SemVer specification.
-        """
-        if not SEMVER_PATTERN.match(v):
-            msg = f"Invalid schema_version format: {v}. Expected SemVer (e.g., '1.0.0')"
-            raise ValueError(msg)
-        return v
-
-    @model_validator(mode="after")
-    def validate_interface_constraints(self) -> "ModelTicketContract":
-        """Validate interface change constraints.
-
-        Enforces:
-        - If interface_change is False, interfaces_touched must be empty
-        - If interface_change is True, interfaces_touched may be empty temporarily
-          (e.g., during initial contract creation before categorization is complete)
-          but should be populated before the ticket is considered complete.
-
-        Steady State vs Temporary:
-        - Steady state: interface_change=True should have non-empty interfaces_touched
-        - Temporary: Empty interfaces_touched is allowed during contract creation
-          but should be treated as incomplete until populated
-        """
-        if not self.interface_change and self.interfaces_touched:
-            msg = (
-                "interfaces_touched must be empty when interface_change is false. "
-                "If no interfaces are touched, set interfaces_touched to []"
-            )
-            raise ValueError(msg)
-        # Note: We allow interface_change=True with empty interfaces_touched
-        # to support cases where interfaces are changed but categorization is pending.
-        # This is a temporary state and should be resolved before ticket completion.
-        return self
-
-    @property
-    def is_complete(self) -> bool:
-        """Check if the ticket contract is in a complete state.
-
-        A contract is considered complete when:
-        - If interface_change=True, interfaces_touched must be non-empty
-        - Emergency bypass is either disabled or properly configured (if enabled)
-
-        Returns:
-            True if the contract is in a steady, complete state; False otherwise.
-
-        """
-        # Check interface change completeness
-        # Contract is complete if:
-        # - interface_change is False (no interfaces to categorize), OR
-        # - interface_change is True AND interfaces_touched is non-empty
-        # Emergency bypass completeness is already validated by ModelEmergencyBypass.
-        # If enabled, it must have justification and follow_up_ticket_id (enforced
-        # by validator). So if we get here, bypass is either disabled or properly
-        # configured.
-        return not self.interface_change or bool(self.interfaces_touched)
+__all__ = [
+    "ModelDodCheck",
+    "ModelDodEvidenceItem",
+    "ModelEmergencyBypass",
+    "ModelEvidenceRequirement",
+    "ModelTicketContract",
+]

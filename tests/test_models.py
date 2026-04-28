@@ -201,6 +201,7 @@ class TestModelTicketContract:
         contract = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Implement Pydantic schema models",
             summary="Implement Pydantic schema models",
             is_seam_ticket=False,
             interface_change=False,
@@ -214,10 +215,11 @@ class TestModelTicketContract:
 
     def test_invalid_schema_version(self) -> None:
         """Test invalid schema_version format."""
-        with pytest.raises(ValueError, match="Invalid schema_version format"):
+        with pytest.raises(ValueError, match="schema_version"):
             ModelTicketContract(
                 schema_version="invalid",
                 ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,
@@ -230,6 +232,7 @@ class TestModelTicketContract:
         contract = ModelTicketContract(
             schema_version="0.0.0",
             ticket_id="OMN-962",
+            title="Test",
             summary="Test",
             is_seam_ticket=False,
             interface_change=False,
@@ -241,6 +244,7 @@ class TestModelTicketContract:
         contract = ModelTicketContract(
             schema_version="999.999.999",
             ticket_id="OMN-962",
+            title="Test",
             summary="Test",
             is_seam_ticket=False,
             interface_change=False,
@@ -249,10 +253,11 @@ class TestModelTicketContract:
         assert contract.schema_version == "999.999.999"
 
         # Invalid: leading zeros (rejected per SemVer spec)
-        with pytest.raises(ValueError, match="Invalid schema_version format"):
+        with pytest.raises(ValueError, match="schema_version"):
             ModelTicketContract(
                 schema_version="01.0.0",  # Leading zero - invalid
                 ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,
@@ -260,10 +265,11 @@ class TestModelTicketContract:
             )
 
         # Invalid: leading zeros in minor version
-        with pytest.raises(ValueError, match="Invalid schema_version format"):
+        with pytest.raises(ValueError, match="schema_version"):
             ModelTicketContract(
                 schema_version="1.00.0",  # Leading zero in minor - invalid
                 ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,
@@ -271,10 +277,11 @@ class TestModelTicketContract:
             )
 
         # Invalid: leading zeros in patch version
-        with pytest.raises(ValueError, match="Invalid schema_version format"):
+        with pytest.raises(ValueError, match="schema_version"):
             ModelTicketContract(
                 schema_version="1.0.01",  # Leading zero in patch - invalid
                 ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,
@@ -285,6 +292,7 @@ class TestModelTicketContract:
         contract = ModelTicketContract(
             schema_version="0.0.0",  # Zero is valid (not a leading zero)
             ticket_id="OMN-962",
+            title="Test",
             summary="Test",
             is_seam_ticket=False,
             interface_change=False,
@@ -293,10 +301,11 @@ class TestModelTicketContract:
         assert contract.schema_version == "0.0.0"
 
         # Invalid: missing components
-        with pytest.raises(ValueError, match="Invalid schema_version format"):
+        with pytest.raises(ValueError, match="schema_version"):
             ModelTicketContract(
                 schema_version="1.0",
                 ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,
@@ -304,10 +313,11 @@ class TestModelTicketContract:
             )
 
         # Invalid: pre-release (not supported by basic pattern)
-        with pytest.raises(ValueError, match="Invalid schema_version format"):
+        with pytest.raises(ValueError, match="schema_version"):
             ModelTicketContract(
                 schema_version="1.0.0-alpha",
                 ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,
@@ -323,6 +333,7 @@ class TestModelTicketContract:
             ModelTicketContract(
                 schema_version="1.0.0",
                 ticket_id="OMN-962",
+                title="Test",
                 summary="Test",
                 is_seam_ticket=False,
                 interface_change=False,
@@ -351,6 +362,7 @@ class TestModelTicketContract:
         contract = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Implement Pydantic schema models",
             summary="Implement Pydantic schema models",
             is_seam_ticket=True,
             interface_change=True,
@@ -382,6 +394,7 @@ class TestModelTicketContract:
         contract = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Test ticket",
             summary="Test ticket",
             is_seam_ticket=False,
             interface_change=True,
@@ -390,46 +403,37 @@ class TestModelTicketContract:
         )
         assert contract.interface_change is True
         assert len(contract.interfaces_touched) == 0
-        # Contract with empty interfaces_touched is incomplete
-        assert contract.is_complete is False
 
-    def test_is_complete_property(self) -> None:
-        """Test the is_complete property for ticket contracts."""
-        # Complete: interface_change=True with non-empty interfaces_touched
-        complete_contract = ModelTicketContract(
+    def test_contract_completeness_field(self) -> None:
+        """Test the contract_completeness field defaults to STUB."""
+        from omnibase_core.enums.enum_contract_completeness import (
+            EnumContractCompleteness,
+        )
+
+        contract = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
+            title="Test ticket",
             summary="Test ticket",
             is_seam_ticket=True,
             interface_change=True,
             interfaces_touched=[EnumInterfaceSurface.EVENTS],
             emergency_bypass=ModelEmergencyBypass(enabled=False),
         )
-        assert complete_contract.is_complete is True
+        assert contract.contract_completeness == EnumContractCompleteness.STUB
 
-        # Incomplete: interface_change=True with empty interfaces_touched
-        incomplete_contract = ModelTicketContract(
+        # Explicitly set to FULL
+        full_contract = ModelTicketContract(
             schema_version="1.0.0",
             ticket_id="OMN-962",
-            summary="Test ticket",
-            is_seam_ticket=False,
-            interface_change=True,
-            interfaces_touched=[],  # Empty - incomplete
-            emergency_bypass=ModelEmergencyBypass(enabled=False),
-        )
-        assert incomplete_contract.is_complete is False
-
-        # Complete: interface_change=False (no interfaces to categorize)
-        no_interface_contract = ModelTicketContract(
-            schema_version="1.0.0",
-            ticket_id="OMN-962",
+            title="Test ticket",
             summary="Test ticket",
             is_seam_ticket=False,
             interface_change=False,
-            interfaces_touched=[],
             emergency_bypass=ModelEmergencyBypass(enabled=False),
+            contract_completeness=EnumContractCompleteness.FULL,
         )
-        assert no_interface_contract.is_complete is True
+        assert full_contract.contract_completeness == EnumContractCompleteness.FULL
 
     def test_emergency_bypass_edge_cases(self) -> None:
         """Test edge cases for emergency bypass validation."""
