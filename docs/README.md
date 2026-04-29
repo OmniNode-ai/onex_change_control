@@ -34,7 +34,7 @@ New to this repo? Read in this order:
 | Workflow | Command | Doc |
 |----------|---------|-----|
 | Run general drift check | `uv run check-drift` | [Design](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) |
-| Check DB boundary violations | `uv run check-db-boundary` | [DB Boundary Policy](design/db-boundary-policy.md) |
+| Check DB boundary violations | `uv run check-db-boundary` | [DB Boundary Policy](policy/db-boundary-policy.md) |
 | Check hardcoded Kafka topics | `uv run check-hardcoded-topics` | — |
 | Scan contract dependencies | `uv run scan-contract-dependencies` | — |
 | Check for bare feature flags | `uv run check-bare-feature-flags` | — |
@@ -72,9 +72,9 @@ When automation creates Linear tickets from drift findings:
 |-----|---------|
 | [design/DESIGN_DRIFT_CONTROL_SYSTEM.md](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) | Full enforcement model, invariants, staged rollout phases |
 | [design/DECISION_LOG.md](design/DECISION_LOG.md) | Architectural decisions D-001 through D-008+ |
-| [design/db-boundary-policy.md](design/db-boundary-policy.md) | Database boundary enforcement policy |
-| [design/typed-metadata-policy.md](design/typed-metadata-policy.md) | Typed metadata enforcement policy |
-| [design/2026-04-27-required-gates-rollout.md](design/2026-04-27-required-gates-rollout.md) | Required gates rollout plan (April 2026) |
+| [policy/db-boundary-policy.md](policy/db-boundary-policy.md) | Database boundary enforcement policy |
+| [policy/typed-metadata-policy.md](policy/typed-metadata-policy.md) | Typed metadata enforcement policy |
+| [governance/2026-04-27-required-gates-rollout.md](governance/2026-04-27-required-gates-rollout.md) | Required gates rollout plan (April 2026) |
 
 ---
 
@@ -104,7 +104,7 @@ When automation creates Linear tickets from drift findings:
 
 | Doc | Purpose |
 |-----|---------|
-| [governance/2026-04-26-session.md](governance/2026-04-26-session.md) | April 26 2026 governance session record |
+| [runbooks/2026-04-26-session.md](runbooks/2026-04-26-session.md) | April 26 2026 governance session record |
 
 ---
 
