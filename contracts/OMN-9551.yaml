@@ -34,8 +34,10 @@ dod_evidence:
     checks:
       - check_type: command
         check_value: >-
-          gh pr view ${PR_NUMBER} --repo ${REPO} --json title,body,baseRefName,headRefName --jq 'select(.baseRefName=="main")
-          | (.title + "\n" + .headRefName + "\n" + .body)' | grep -q 'OMN-9551'
+          pr="$(gh pr view ${PR_NUMBER} --repo ${REPO} --json title,body,baseRefName,headRefName --jq
+          'select(.baseRefName=="main") | (.title + "\n" + .headRefName + "\n" + .body)')" && printf '%s'
+          "$pr" | grep -q 'OMN-9551' && printf '%s' "$pr" | grep -q 'Root Cause' && printf '%s' "$pr"
+          | grep -q 'Test Plan'
   - id: dod-002
     description: "PR #1393 diff adds ServiceRuntimeHealthMonitor boot_grace_seconds suppression and TestBootGracePeriod
       coverage."
@@ -53,9 +55,11 @@ dod_evidence:
     checks:
       - check_type: command
         check_value: >-
-          diff="$(gh pr diff ${PR_NUMBER} --repo ${REPO})" && printf '%s' "$diff" | grep -q 'except UnknownTopicOrPartitionError'
-          && printf '%s' "$diff" | grep -q 'ProtocolConfigurationError' && printf '%s' "$diff" | grep
-          -q 'test_unknown_topic_does_not_trip_circuit_breaker'
+          diff="$(gh pr diff ${PR_NUMBER} --repo ${REPO})" && unknown_line="$(printf '%s' "$diff" | awk
+          '/^\+.*except UnknownTopicOrPartitionError/{print NR; exit}')" && kafka_line="$(printf '%s'
+          "$diff" | awk '/^\+.*except KafkaError/{print NR; exit}')" && test -n "$unknown_line" && test
+          -n "$kafka_line" && test "$unknown_line" -lt "$kafka_line" && printf '%s' "$diff" | grep -q
+          'ProtocolConfigurationError' && printf '%s' "$diff" | grep -q 'test_unknown_topic_does_not_trip_circuit_breaker'
   - id: dod-004
     description: "PR #1393 diff wires RUNTIME_HEALTH_BOOT_GRACE_SECONDS through ServiceKernel to ServiceRuntimeHealthMonitor."
     source: manual
