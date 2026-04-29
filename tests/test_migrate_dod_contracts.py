@@ -247,6 +247,23 @@ def test_needs_migration_for_legacy_gh_pr_checks_watch() -> None:
     assert needs_migration(contract) is True
 
 
+def test_needs_migration_when_gh_pr_command_missing_repo_context() -> None:
+    contract = {
+        "dod_evidence": [
+            {
+                "id": "dod-003",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": "gh pr checks ${PR_NUMBER}",
+                    }
+                ],
+            },
+        ],
+    }
+    assert needs_migration(contract) is True
+
+
 def test_does_not_need_migration_when_gh_pr_view_already_templated() -> None:
     contract = {
         "dod_evidence": [
