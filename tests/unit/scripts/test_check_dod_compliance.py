@@ -139,6 +139,7 @@ class TestArtifactChecks:
         (tmp_contracts / "OMN-2000.yaml").write_text(
             "ticket_id: OMN-2000\n"
             'schema_version: "1.0.0"\n'
+            'title: "Test ticket"\n'
             'summary: "Test ticket"\n'
             "is_seam_ticket: false\n"
             "interface_change: false\n"

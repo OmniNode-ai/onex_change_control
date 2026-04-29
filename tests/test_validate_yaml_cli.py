@@ -207,6 +207,7 @@ risks: []
             """
 schema_version: "1.0.0"
 ticket_id: "OMN-123"
+title: "Test ticket"
 summary: "Test ticket"
 is_seam_ticket: false
 interface_change: false
@@ -230,6 +231,7 @@ emergency_bypass:
             """
 schema_version: "1.0.0"
 ticket_id: "OMN-456"
+title: "Content-detected ticket"
 summary: "Content-detected ticket"
 is_seam_ticket: false
 interface_change: false
