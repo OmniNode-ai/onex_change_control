@@ -5,7 +5,7 @@
 
 Exports all enums, models, and type aliases shared between the global
 overseer, domain runners, and routing engine.
-Zero upstream runtime deps.
+Minimal runtime deps; includes upstream core model re-exports where applicable.
 """
 
 from onex_change_control.overseer.enum_artifact_store_action import (
