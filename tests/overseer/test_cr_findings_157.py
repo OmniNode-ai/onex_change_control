@@ -302,12 +302,17 @@ class TestCRFinding7MinorWorkerContractLoadAcceptsMapping:
         assert contract.worker_name == "test-worker"
 
     def test_load_worker_contract_still_rejects_non_mapping(self) -> None:
+        from omnibase_core.models.errors.model_onex_error import ModelOnexError
+
         from onex_change_control.overseer.model_worker_contract import (
             load_worker_contract,
         )
 
-        with pytest.raises(TypeError):
-            load_worker_contract("not-a-mapping")  # type: ignore[arg-type]
+        with pytest.raises(
+            ModelOnexError,
+            match="worker contract data must be a mapping",
+        ):
+            load_worker_contract("not-a-mapping")
 
 
 class TestCRFinding8MajorOvernightHaltConditionConditionalFields:
