@@ -5,7 +5,7 @@
 
 Exports all enums, models, and type aliases shared between the global
 overseer, domain runners, and routing engine.
-Zero upstream runtime deps.
+Minimal runtime deps; includes upstream core model re-exports where applicable.
 """
 
 from onex_change_control.overseer.enum_artifact_store_action import (
@@ -78,6 +78,7 @@ from onex_change_control.overseer.model_verifier_output import (
 from onex_change_control.overseer.model_worker_contract import (
     ModelEvidenceRequirement,
     ModelWorkerContract,
+    ModelWorkerEvidenceRequirement,
     load_worker_contract,
 )
 
@@ -121,5 +122,6 @@ __all__ = [
     "ModelTaskStateEnvelope",
     "ModelVerifierOutput",
     "ModelWorkerContract",
+    "ModelWorkerEvidenceRequirement",
     "load_worker_contract",
 ]
