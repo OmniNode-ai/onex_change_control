@@ -182,9 +182,18 @@ def make_dod_evidence(
 
 
 def needs_migration(contract: dict[str, Any]) -> bool:
-    """A contract needs migration if it has no ``dod_evidence`` block, OR its
-    block contains the legacy ``gh pr checks`` (no PR number) pattern that was
-    stamped before OMN-10086.
+    """A contract needs migration if it has no ``dod_evidence`` block, OR any
+    check uses a legacy ``gh pr ...`` invocation that omits ``${PR_NUMBER}``.
+
+    Legacy forms (all stamped before OMN-10086) fail in detached-HEAD CI runs
+    with "could not determine current branch":
+
+    * ``gh pr checks`` (bare)
+    * ``gh pr checks --watch``
+    * ``gh pr view --json state -q .state``
+    * ``gh pr view --json mergedAt -q .mergedAt``
+
+    Any ``gh pr`` command lacking ``${PR_NUMBER}`` is treated as legacy.
     """
     dod_evidence = contract.get("dod_evidence") or []
     if not dod_evidence:
@@ -192,7 +201,13 @@ def needs_migration(contract: dict[str, Any]) -> bool:
     for item in dod_evidence:
         for check in item.get("checks") or []:
             value = check.get("check_value")
-            if isinstance(value, str) and value.strip() == "gh pr checks":
+            if not isinstance(value, str):
+                continue
+            stripped = value.strip()
+            if (
+                stripped.startswith(("gh pr checks", "gh pr view"))
+                and "${PR_NUMBER}" not in stripped
+            ):
                 return True
     return False
 
