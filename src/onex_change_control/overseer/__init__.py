@@ -78,6 +78,7 @@ from onex_change_control.overseer.model_verifier_output import (
 from onex_change_control.overseer.model_worker_contract import (
     ModelEvidenceRequirement,
     ModelWorkerContract,
+    ModelWorkerEvidenceRequirement,
     load_worker_contract,
 )
 
@@ -121,5 +122,6 @@ __all__ = [
     "ModelTaskStateEnvelope",
     "ModelVerifierOutput",
     "ModelWorkerContract",
+    "ModelWorkerEvidenceRequirement",
     "load_worker_contract",
 ]
