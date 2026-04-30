@@ -392,6 +392,44 @@ class TestDocReferenceExtractor:
         # Clean up
         Path(f.name).unlink()
 
+    def test_extract_all_references_posixpath_returns_nonzero(
+        self, tmp_path: Path
+    ) -> None:
+        """PosixPath input must produce the same non-zero results as str (OMN-8009)."""
+        doc = tmp_path / "README.md"
+        doc.write_text(
+            "# Readme\n"
+            "See `src/foo/bar.py` for details.\n"
+            "Set `KAFKA_BOOTSTRAP_SERVERS` env var.\n",
+            encoding="utf-8",
+        )
+
+        refs_from_str = extract_all_references(str(doc))
+        refs_from_path = extract_all_references(doc)
+
+        assert len(refs_from_path) > 0, (
+            "PosixPath input produced zero results (bug OMN-8009)"
+        )
+        assert len(refs_from_str) == len(refs_from_path)
+
+        str_doc_paths = {r.doc_path for r in refs_from_str}
+        path_doc_paths = {r.doc_path for r in refs_from_path}
+        assert str_doc_paths == path_doc_paths
+
+    def test_extract_all_references_posixpath_doc_path_is_str(
+        self, tmp_path: Path
+    ) -> None:
+        """doc_path field must be str even when PosixPath is passed (OMN-8009)."""
+        doc = tmp_path / "CLAUDE.md"
+        doc.write_text("See `src/nodes/handler.py`.\n", encoding="utf-8")
+
+        refs = extract_all_references(doc)
+        assert refs, "Expected at least one reference"
+        for ref in refs:
+            assert isinstance(ref.doc_path, str), (
+                f"doc_path must be str, got {type(ref.doc_path)}"
+            )
+
 
 # ── Staleness Score Tests ───────────────────────────────────────────────────
 

@@ -236,27 +236,28 @@ def extract_env_vars(doc_path: str, lines: list[str]) -> list[ModelDocReference]
     return results
 
 
-def extract_all_references(doc_path: str) -> list[ModelDocReference]:
+def extract_all_references(doc_path: str | Path) -> list[ModelDocReference]:
     """Extract all references from a documentation file.
 
     Args:
-        doc_path: Path to the .md file to scan.
+        doc_path: Path to the .md file to scan. Accepts str or PosixPath.
 
     Returns:
         List of all extracted references with line numbers.
     """
-    path = Path(doc_path)
+    doc_path_str = str(doc_path)
+    path = Path(doc_path_str)
     if not path.exists():
         return []
 
     lines = path.read_text(encoding="utf-8").splitlines()
 
     references: list[ModelDocReference] = []
-    references.extend(extract_file_paths(doc_path, lines))
-    references.extend(extract_class_names(doc_path, lines))
-    references.extend(extract_function_names(doc_path, lines))
-    references.extend(extract_commands(doc_path, lines))
-    references.extend(extract_urls(doc_path, lines))
-    references.extend(extract_env_vars(doc_path, lines))
+    references.extend(extract_file_paths(doc_path_str, lines))
+    references.extend(extract_class_names(doc_path_str, lines))
+    references.extend(extract_function_names(doc_path_str, lines))
+    references.extend(extract_commands(doc_path_str, lines))
+    references.extend(extract_urls(doc_path_str, lines))
+    references.extend(extract_env_vars(doc_path_str, lines))
 
     return references
