@@ -240,7 +240,7 @@ def extract_all_references(doc_path: str | Path) -> list[ModelDocReference]:
     """Extract all references from a documentation file.
 
     Args:
-        doc_path: Path to the .md file to scan. Accepts str or PosixPath.
+        doc_path: Path to the .md file to scan. Accepts str or Path.
 
     Returns:
         List of all extracted references with line numbers.
