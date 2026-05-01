@@ -185,7 +185,36 @@ class TestGenerateStubs:
         data = yaml.safe_load(content)
         assert data["title"] == "Idempotent test"
 
-        assert len(paths_second) == 0 or all("skip" not in str(p) for p in paths_second)
+        assert paths_second == []
+
+    def test_existing_contract_drives_receipt_generation(self, tmp_path: Path) -> None:
+        contracts_dir = tmp_path / "contracts"
+        contracts_dir.mkdir()
+        drift_dir = tmp_path / "drift" / "dod_receipts"
+        drift_dir.mkdir(parents=True)
+        contract_path = contracts_dir / "OMN-5680.yaml"
+        contract_path.write_text(
+            _build_contract_yaml(
+                ticket_id="OMN-5680",
+                title="Original contract",
+                description="",
+                dod_items=["Original DoD"],
+            ),
+            encoding="utf-8",
+        )
+
+        paths = generate_stubs(
+            ticket_id="OMN-5680",
+            title="New title must not replace existing contract",
+            description="## DoD\n- [ ] New DoD",
+            repo_root=tmp_path,
+        )
+
+        data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+        assert data["title"] == "Original contract"
+        assert data["dod_evidence"][0]["description"] == "Original DoD"
+        assert contract_path not in paths
+        assert (drift_dir / "OMN-5680" / "dod-001" / "command.yaml").exists()
 
     def test_invalid_ticket_id(self, tmp_path: Path) -> None:
         contracts_dir = tmp_path / "contracts"

@@ -17,8 +17,19 @@ import sys
 from pathlib import Path
 
 
-def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)  # noqa: S603
+def _run(
+    cmd: list[str],
+    *,
+    check: bool = True,
+    cwd: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603
+        cmd,
+        capture_output=True,
+        text=True,
+        check=check,
+        cwd=cwd,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -66,7 +77,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.description:
         scaffold_cmd.extend(["--description", args.description])
 
-    result = _run(scaffold_cmd)
+    result = _run(scaffold_cmd, check=False)
     print(result.stdout, end="")
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)

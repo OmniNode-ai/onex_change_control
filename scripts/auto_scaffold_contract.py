@@ -200,18 +200,17 @@ def generate_stubs(
     contract_dir = repo_root / "contracts"
     contract_path = contract_dir / f"{ticket_id}.yaml"
 
+    created_paths: list[Path] = []
     if contract_path.exists():
         print(f"[skip] contract already exists: {contract_path}")
+        contract_yaml = contract_path.read_text(encoding="utf-8")
     else:
         contract_dir.mkdir(parents=True, exist_ok=True)
-        contract_path.write_text(contract_yaml)
+        contract_path.write_text(contract_yaml, encoding="utf-8")
         print(f"[created] {contract_path}")
-
-    receipt_dir = repo_root / "drift" / "dod_receipts" / ticket_id
-    created_paths: list[Path] = []
-    if contract_path.exists() or contract_path.is_file():
         created_paths.append(contract_path)
 
+    receipt_dir = repo_root / "drift" / "dod_receipts" / ticket_id
     contract_data = yaml.safe_load(contract_yaml)
     dod_evidence = contract_data.get("dod_evidence", [])
 
