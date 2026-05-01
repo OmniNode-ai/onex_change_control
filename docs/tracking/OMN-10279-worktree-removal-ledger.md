@@ -3,21 +3,21 @@
 **Legacy root:** `/Users/jonah/Code/omni_worktrees`
 **Scan date:** 2026-05-01
 **Total directories:** 79
-**Total git worktrees:** 92 (91 scanned + 1 at non-standard depth)
+**Total git worktrees listed:** 90
 **Empty directories:** 12
 
 ## Classification Summary
 
 | Classification | Count | Action |
 |---|---:|---|
-| SAFE_REMOVE | 63 | Remove immediately |
+| SAFE_REMOVE | 62 | Removed |
 | NO_UPSTREAM | 13 | Clean, no upstream - safe to remove |
 | CLEAN_DETACHED | 0 | None |
 | DIRTY_UNPUSHED | 14 | Needs human decision |
 | UNPUSHED_ONLY | 1 | Needs push or documented discard |
-| Empty dirs | 12 | Remove, no content |
+| Empty dirs | 12 | Removed, no content |
 
-## SAFE_REMOVE (63 worktrees) - REMOVED
+## SAFE_REMOVE (62 worktrees) - REMOVED
 
 All clean, pushed, upstream exists.
 
@@ -120,7 +120,7 @@ OMN-10290, OMN-10291, OMN-10292, OMN-10293, OMN-10294, OMN-10301, OMN-10302, OMN
 | omn-10316 | omnimemory | 1 | 0 | jonah/omn-10316-wire-docs-gate | 1 dirty file |
 | OMN-10305 | omnidash | 2 | 0 | jonah/omn-10305-proof-of-life | 2 dirty files |
 | OMN-10361 | onex_change_control | 3 | 0 | jonah/omn-10361-receipts | 3 dirty files |
-| OMN-10418 | onex_change_control | 1 | 0 | jonah/omn-10418-add-verify-required-check | Was dirty, cleaned during scan - removed |
+| OMN-10418 | onex_change_control | 1 | 0 | jonah/omn-10418-add-verify-required-check | Dirty during scan; left for human decision |
 | OMN-10419 | omnibase_core | 3 | 0 | jonah/omn-10419-evidence-source-pinning | 3 dirty, no upstream |
 | jon-3 | omnimusic | 1 | 0 | jonah/jon-3-receipt-envelope-and-event-log | 1 dirty, no upstream |
 | omn-8288 | omninode_infra | 1 | 0 | jonah/omn-8288-claude-md-refresh | 1 dirty, no upstream |
@@ -141,9 +141,9 @@ OMN-10290, OMN-10291, OMN-10292, OMN-10293, OMN-10294, OMN-10301, OMN-10302, OMN
 
 | Metric | Count |
 |---|---:|
-| Git worktrees scanned | 95 |
-| Worktrees removed (SAFE_REMOVE + NO_UPSTREAM) | 80 |
-| Empty directories removed | 13 |
+| Git worktrees listed | 90 |
+| Worktrees removed (SAFE_REMOVE + NO_UPSTREAM) | 75 |
+| Empty directories removed | 12 |
 | Parent directories cleaned after subtree removal | ~40 |
 | Remaining worktrees needing human decision | 15 |
 | DIRTY_UNPUSHED | 14 |
@@ -153,7 +153,7 @@ OMN-10290, OMN-10291, OMN-10292, OMN-10293, OMN-10294, OMN-10301, OMN-10302, OMN
 
 See `.onex_state/OMN-10279/removal-log.txt` for full timestamped entries.
 
-80 git worktrees removed via `git worktree remove` or `rm -rf` fallback.
-13 originally empty directories removed via `rmdir`.
+75 git worktrees removed via `git worktree remove` or `rm -rf` fallback.
+12 originally empty directories removed via `rmdir`.
 ~40 parent directories cleaned after subtree removal.
 14 canonical repos pruned via `git worktree prune`.
