@@ -6,9 +6,9 @@
 #   1. required_pull_request_reviews is absent or null (solo dev — reviews block PRs)
 #   2. "CI Summary" is a required status check
 #   3. "verify / verify" Receipt Gate is a required status check
-#   3. enforce_admins is true
-#   4. delete_branch_on_merge is true
-#   5. A "Merge Queue" ruleset exists (public repos only)
+#   4. enforce_admins is true
+#   5. delete_branch_on_merge is true
+#   6. A "Merge Queue" ruleset exists (public repos only)
 #
 # Exit 0 = all repos compliant.  Exit 1 = at least one deviation found.
 
@@ -124,7 +124,12 @@ check_repo() {
   TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
   local ci_summary
   ci_summary=$(echo "$protection" | jq -r '
-    .required_status_checks.contexts // [] | map(select(. == "CI Summary")) | length
+    (
+      (.required_status_checks.contexts // [])
+      + ((.required_status_checks.checks // []) | map(.context))
+    )
+    | map(select(. == "CI Summary"))
+    | length
   ')
   if [[ "$ci_summary" -ge 1 ]]; then
     echo "  PASS: \"CI Summary\" is a required status check"
@@ -141,7 +146,12 @@ check_repo() {
     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
     local receipt_gate
     receipt_gate=$(echo "$protection" | jq -r '
-      .required_status_checks.contexts // [] | map(select(. == "verify / verify")) | length
+      (
+        (.required_status_checks.contexts // [])
+        + ((.required_status_checks.checks // []) | map(.context))
+      )
+      | map(select(. == "verify / verify"))
+      | length
     ')
     if [[ "$receipt_gate" -ge 1 ]]; then
       echo "  PASS: \"verify / verify\" Receipt Gate is a required status check"
