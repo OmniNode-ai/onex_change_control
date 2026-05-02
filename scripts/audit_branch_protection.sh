@@ -32,6 +32,10 @@ REPOS=(
   onex_change_control
 )
 
+if [[ -n "${BRANCH_PROTECTION_AUDIT_REPOS:-}" ]]; then
+  IFS=',' read -r -a REPOS <<< "${BRANCH_PROTECTION_AUDIT_REPOS}"
+fi
+
 # Private repos where Merge Queue rulesets are not expected
 PRIVATE_REPOS=(omninode_infra omnistream omniweb)
 
