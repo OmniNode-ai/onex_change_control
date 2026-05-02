@@ -21,13 +21,11 @@ env:
 jobs:
   type-union-check:
     name: PEP 604 Type Union Check (UP007)
-    # OMNINODE_SELF_HOSTED_RUNS_ON_V1 — do not edit inline; update plan + all occurrences together
     runs-on: >-
       ${{
         (vars.USE_SELF_HOSTED_RUNNERS == 'true' &&
-         (github.event_name == 'push' ||
-          github.event_name == 'workflow_dispatch' ||
-          github.event_name == 'schedule'))
+         (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository))
         && fromJSON('["self-hosted","omnibase-ci"]')
         || fromJSON('["ubuntu-latest"]')
       }}
@@ -53,7 +51,14 @@ jobs:
 
   ci-naming-convention:
     name: CI Naming Convention
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{
+        (vars.USE_SELF_HOSTED_RUNNERS == 'true' &&
+         (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository))
+        && fromJSON('["self-hosted","omnibase-ci"]')
+        || fromJSON('["ubuntu-latest"]')
+      }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -76,3 +81,21 @@ jobs:
             fi
           done
           echo "CI naming convention: PASS"
+
+      - name: Verify self-hosted runner routing standard
+        run: |
+          bare_runs_on="$(grep -RIn '^    runs-on: ubuntu-latest' .github/workflows || true)"
+          if [ -n "$bare_runs_on" ]; then
+            echo "::error::Workflows must use USE_SELF_HOSTED_RUNNERS routing instead of bare ubuntu-latest"
+            echo "$bare_runs_on"
+            exit 1
+          fi
+          if ! grep -R 'vars.USE_SELF_HOSTED_RUNNERS' .github/workflows >/dev/null; then
+            echo "::error::Missing USE_SELF_HOSTED_RUNNERS routing expression in workflows"
+            exit 1
+          fi
+          if ! grep -R 'self-hosted.*omnibase-ci' .github/workflows >/dev/null; then
+            echo "::error::Missing self-hosted omnibase-ci runner labels in workflows"
+            exit 1
+          fi
+          echo "Self-hosted runner routing standard: PASS"
