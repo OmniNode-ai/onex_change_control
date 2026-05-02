@@ -245,6 +245,40 @@ def test_check_command_exports_pr_number_repo_ticket_env(tmp_path: Path) -> None
     assert env.get("TICKET_ID") == "OMN-10086"
 
 
+def test_check_command_exports_contract_paths(tmp_path: Path) -> None:
+    """Commands run in the target repo but can address central OCC evidence."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    contracts_dir = tmp_path / "onex_change_control" / "contracts"
+    contracts_dir.mkdir(parents=True)
+    captured_envs: list[dict[str, str] | None] = []
+    captured_cwds: list[Path | None] = []
+
+    def fake_run(
+        *_args: object,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        **_kw: object,
+    ) -> tuple[int, str, str]:
+        captured_cwds.append(cwd)
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+        result, _ = _check_command(
+            'grep -q PASS "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-1/command.yaml"',
+            workspace,
+            contracts_dir=contracts_dir,
+        )
+
+    assert result == _RESULT_PASS
+    assert captured_cwds[-1] == workspace
+    env = captured_envs[-1]
+    assert env is not None
+    assert env.get("CONTRACTS_DIR") == str(contracts_dir)
+    assert env.get("CONTRACT_REPO_DIR") == str(contracts_dir.parent)
+
+
 def test_check_command_workspace_passed_as_cwd(tmp_path: Path) -> None:
     """_check_command must pass workspace as cwd to subprocess."""
     captured_cwd: list[Path | None] = []

@@ -36,6 +36,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,14 @@ _OMN_TICKET_PATTERN = re.compile(r"\b(OMN-\d+)\b", re.IGNORECASE)
 _RESULT_PASS = "PASS"  # noqa: S105
 _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
+
+
+@dataclass(frozen=True)
+class _CheckContext:
+    pr_number: int
+    repo: str
+    ticket_id: str = ""
+    contracts_dir: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +294,7 @@ def _build_command_env(
     pr_number: int,
     repo: str,
     ticket_id: str,
+    contracts_dir: Path | None = None,
 ) -> dict[str, str] | None:
     """Build the env overlay for a contract command.
 
@@ -303,6 +313,9 @@ def _build_command_env(
             overlay["GH_REPO"] = repo
     if ticket_id:
         overlay["TICKET_ID"] = ticket_id
+    if contracts_dir is not None:
+        overlay["CONTRACTS_DIR"] = str(contracts_dir)
+        overlay["CONTRACT_REPO_DIR"] = str(contracts_dir.parent)
     if not overlay:
         return None
     return {**os.environ, **overlay}
@@ -314,6 +327,7 @@ def _check_command(
     pr_number: int = 0,
     repo: str = "",
     ticket_id: str = "",
+    contracts_dir: Path | None = None,
 ) -> tuple[str, str]:
     """check_type=command: check_value is a shell command; exit 0 = pass.
 
@@ -342,7 +356,7 @@ def _check_command(
     if demoted is not None:
         return demoted
 
-    cmd_env = _build_command_env(cmd_str, pr_number, repo, ticket_id)
+    cmd_env = _build_command_env(cmd_str, pr_number, repo, ticket_id, contracts_dir)
 
     rc, out, err = _run(["sh", "-c", cmd_str], timeout=60, cwd=workspace, env=cmd_env)
     if rc == 0:
@@ -413,9 +427,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def _run_single_check(
     check: dict[str, Any],
     workspace: Path,
-    pr_number: int,
-    repo: str,
-    ticket_id: str = "",
+    context: _CheckContext,
 ) -> tuple[str, str, str]:
     """Run a single ModelDodCheck and return (check_type, result, detail)."""
     check_type = check.get("check_type", "")
@@ -425,9 +437,16 @@ def _run_single_check(
     if runner is None:
         return check_type, _RESULT_WARN, f"Unknown check_type '{check_type}'"
     if check_type == "command":
-        result, detail = runner(check_value, workspace, pr_number, repo, ticket_id)
+        result, detail = runner(
+            check_value,
+            workspace,
+            context.pr_number,
+            context.repo,
+            context.ticket_id,
+            context.contracts_dir,
+        )
     elif check_type == "test_passes":
-        result, detail = runner(check_value, workspace, pr_number, repo)
+        result, detail = runner(check_value, workspace, context.pr_number, context.repo)
     else:
         result, detail = runner(check_value, workspace)
     return check_type, result, detail
@@ -436,9 +455,7 @@ def _run_single_check(
 def _run_dod_checks(
     dod_evidence: list[Any],
     workspace: Path,
-    pr_number: int,
-    repo: str,
-    ticket_id: str = "",
+    context: _CheckContext,
 ) -> list[tuple[str, str, str, str]]:
     """Run all DoD checks and return (dod_id, check_type, result, detail) list."""
     results: list[tuple[str, str, str, str]] = []
@@ -448,9 +465,7 @@ def _run_dod_checks(
         checks = dod_item.get("checks", [])
         print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
         for check in checks:
-            check_type, result, detail = _run_single_check(
-                check, workspace, pr_number, repo, ticket_id
-            )
+            check_type, result, detail = _run_single_check(check, workspace, context)
             results.append((item_id, check_type, result, detail))
             icon = {"PASS": "+", "WARN": "~", "BLOCK": "X"}.get(result, "?")
             print(f"  [{icon}] {check_type}: {detail}", flush=True)
@@ -497,7 +512,11 @@ def run_compliance_check(
         print("[PASS] No executable DoD checks. Contract acknowledged.", flush=True)
         return 0
 
-    results = _run_dod_checks(dod_evidence, workspace, pr_number, repo, ticket_id)
+    results = _run_dod_checks(
+        dod_evidence,
+        workspace,
+        _CheckContext(pr_number, repo, ticket_id, contracts_dir),
+    )
 
     total = len(results)
     passes = sum(1 for _, _, r, _ in results if r == _RESULT_PASS)
