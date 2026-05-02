@@ -49,5 +49,5 @@ def test_receipt_gate_caller_validates_pr_head_occ_evidence() -> None:
     workflow = _load_workflow()
 
     verify_job = workflow["jobs"]["verify"]
-    assert verify_job["with"]["contracts-dir"] == "../contracts"
-    assert verify_job["with"]["receipts-dir"] == "../drift/dod_receipts"
+    assert verify_job["with"]["contracts-dir"] == "contracts"
+    assert verify_job["with"]["receipts-dir"] == "drift/dod_receipts"
