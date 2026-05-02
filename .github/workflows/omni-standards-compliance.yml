@@ -23,11 +23,10 @@ jobs:
     name: PEP 604 Type Union Check (UP007)
     runs-on: >-
       ${{
-        (vars.USE_SELF_HOSTED_RUNNERS == 'true' &&
-         (github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name == github.repository))
-        && fromJSON('["self-hosted","omnibase-ci"]')
-        || fromJSON('["ubuntu-latest"]')
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON)
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON)
       }}
     steps:
       - name: Checkout code
@@ -53,11 +52,10 @@ jobs:
     name: CI Naming Convention
     runs-on: >-
       ${{
-        (vars.USE_SELF_HOSTED_RUNNERS == 'true' &&
-         (github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name == github.repository))
-        && fromJSON('["self-hosted","omnibase-ci"]')
-        || fromJSON('["ubuntu-latest"]')
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON)
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON)
       }}
     steps:
       - name: Checkout code
@@ -83,19 +81,43 @@ jobs:
           echo "CI naming convention: PASS"
 
       - name: Verify self-hosted runner routing standard
+        env:
+          OMNI_PUBLIC_PR_RUNS_ON_JSON: ${{ vars.OMNI_PUBLIC_PR_RUNS_ON_JSON }}
+          OMNI_TRUSTED_CI_RUNS_ON_JSON: ${{ vars.OMNI_TRUSTED_CI_RUNS_ON_JSON }}
         run: |
-          bare_runs_on="$(grep -RIn '^    runs-on: ubuntu-latest' .github/workflows || true)"
-          if [ -n "$bare_runs_on" ]; then
-            echo "::error::Workflows must use USE_SELF_HOSTED_RUNNERS routing instead of bare ubuntu-latest"
-            echo "$bare_runs_on"
+          if [ -z "${OMNI_PUBLIC_PR_RUNS_ON_JSON:-}" ] || [ -z "${OMNI_TRUSTED_CI_RUNS_ON_JSON:-}" ]; then
+            echo "::error::Missing centralized runner selector variables"
             exit 1
           fi
-          if ! grep -R 'vars.USE_SELF_HOSTED_RUNNERS' .github/workflows >/dev/null; then
-            echo "::error::Missing USE_SELF_HOSTED_RUNNERS routing expression in workflows"
+          if grep -RIn '^    runs-on: [^>$]' .github/workflows; then
+            echo "::error::Workflows must use centralized runner selector variables, not bare runs-on labels"
             exit 1
           fi
-          if ! grep -R 'self-hosted.*omnibase-ci' .github/workflows >/dev/null; then
-            echo "::error::Missing self-hosted omnibase-ci runner labels in workflows"
+          if ! grep -R 'vars.OMNI_TRUSTED_CI_RUNS_ON_JSON' .github/workflows >/dev/null; then
+            echo "::error::Missing trusted centralized runner selector in workflows"
             exit 1
           fi
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          labels = set(json.loads(os.environ["OMNI_PUBLIC_PR_RUNS_ON_JSON"]))
+          labels.update(json.loads(os.environ["OMNI_TRUSTED_CI_RUNS_ON_JSON"]))
+          failed = False
+          for label in sorted(labels):
+              result = subprocess.run(
+                  ["grep", "-RIn", label, ".github/workflows"],
+                  check=False,
+                  text=True,
+                  capture_output=True,
+              )
+              if result.stdout:
+                  print(f"::error::Hard-coded runner label found: {label}")
+                  print(result.stdout, end="")
+                  failed = True
+          if failed:
+              sys.exit(1)
+          PY
           echo "Self-hosted runner routing standard: PASS"
