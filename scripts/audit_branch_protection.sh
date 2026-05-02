@@ -5,9 +5,10 @@
 # Checks every OmniNode repo for:
 #   1. required_pull_request_reviews is absent or null (solo dev — reviews block PRs)
 #   2. "CI Summary" is a required status check
-#   3. enforce_admins is true
-#   4. delete_branch_on_merge is true
-#   5. A "Merge Queue" ruleset exists (public repos only)
+#   3. "verify / verify" Receipt Gate is a required status check
+#   4. enforce_admins is true
+#   5. delete_branch_on_merge is true
+#   6. A "Merge Queue" ruleset exists (public repos only)
 #
 # Exit 0 = all repos compliant.  Exit 1 = at least one deviation found.
 
@@ -15,9 +16,10 @@ set -euo pipefail
 
 ORG="OmniNode-ai"
 
-# All 11 repos
 REPOS=(
   omniclaude
+  omnimarket
+  omnibase_compat
   omnibase_core
   omnibase_infra
   omnibase_spi
@@ -30,8 +32,26 @@ REPOS=(
   onex_change_control
 )
 
+if [[ -n "${BRANCH_PROTECTION_AUDIT_REPOS:-}" ]]; then
+  IFS=',' read -r -a REPOS <<< "${BRANCH_PROTECTION_AUDIT_REPOS}"
+fi
+
 # Private repos where Merge Queue rulesets are not expected
 PRIVATE_REPOS=(omninode_infra omnistream omniweb)
+
+# Active repos that accept ticketed PRs must directly require the Receipt Gate.
+# Do not treat CI Summary as an implicit substitute; the branch protection rule
+# must expose the canonical `verify / verify` context so drift is visible.
+RECEIPT_GATE_REQUIRED_REPOS=(
+  omniclaude
+  omnimarket
+  omnibase_compat
+  omnibase_core
+  omnibase_infra
+  omniintelligence
+  omninode_infra
+  onex_change_control
+)
 
 BRANCH="main"
 FAILURES=0
@@ -45,6 +65,33 @@ is_private() {
     fi
   done
   return 1
+}
+
+requires_receipt_gate() {
+  local repo="$1"
+  for p in "${RECEIPT_GATE_REQUIRED_REPOS[@]}"; do
+    if [[ "$p" == "$repo" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+emit_jsonl() {
+  local repo="$1"
+  local check="$2"
+  local status="$3"
+  local detail="$4"
+  if [[ -z "${BRANCH_PROTECTION_AUDIT_JSONL:-}" ]]; then
+    return
+  fi
+  jq -cn \
+    --arg repo "$repo" \
+    --arg check "$check" \
+    --arg status "$status" \
+    --arg detail "$detail" \
+    '{repo:$repo, check:$check, status:$status, detail:$detail}' \
+    >> "$BRANCH_PROTECTION_AUDIT_JSONL"
 }
 
 check_repo() {
@@ -81,14 +128,47 @@ check_repo() {
   TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
   local ci_summary
   ci_summary=$(echo "$protection" | jq -r '
-    .required_status_checks.contexts // [] | map(select(. == "CI Summary")) | length
+    (
+      (.required_status_checks.contexts // [])
+      + ((.required_status_checks.checks // []) | map(.context))
+    )
+    | map(select(. == "CI Summary"))
+    | length
   ')
   if [[ "$ci_summary" -ge 1 ]]; then
     echo "  PASS: \"CI Summary\" is a required status check"
+    emit_jsonl "$repo" "required_check_ci_summary" "PASS" "CI Summary required"
   else
     echo "  FAIL: \"CI Summary\" not found in required status checks"
+    emit_jsonl "$repo" "required_check_ci_summary" "FAIL" "CI Summary missing"
     repo_ok=false
     FAILURES=$((FAILURES + 1))
+  fi
+
+  # 2b. "verify / verify" Receipt Gate in required status checks
+  if requires_receipt_gate "$repo"; then
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    local receipt_gate
+    receipt_gate=$(echo "$protection" | jq -r '
+      (
+        (.required_status_checks.contexts // [])
+        + ((.required_status_checks.checks // []) | map(.context))
+      )
+      | map(select(. == "verify / verify"))
+      | length
+    ')
+    if [[ "$receipt_gate" -ge 1 ]]; then
+      echo "  PASS: \"verify / verify\" Receipt Gate is a required status check"
+      emit_jsonl "$repo" "required_check_receipt_gate" "PASS" "verify / verify required"
+    else
+      echo "  FAIL: \"verify / verify\" Receipt Gate not found in required status checks"
+      emit_jsonl "$repo" "required_check_receipt_gate" "FAIL" "verify / verify missing"
+      repo_ok=false
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    echo "  SKIP: Receipt Gate required-check audit (repo not in active ticketed set)"
+    emit_jsonl "$repo" "required_check_receipt_gate" "SKIP" "repo not in active ticketed set"
   fi
 
   # 3. enforce_admins is true
