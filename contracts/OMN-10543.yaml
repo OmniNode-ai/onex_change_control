@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-10543"
+title: "ticketing_triage orphan enumeration capped at 100 — should emit all"
+summary: "ticketing_triage skill summary asserts the full orphan count (e.g. orphaned: 464 on the 2026-05-05
+  evidence run) but the agent has been emitting only the first 100 records under orphaned_tickets:, with
+  a self-imposed `# top 100 oldest sample` comment. Downstream ticketing_epic_org consumes the truncated
+  list and silently misses the rest. The fix encodes the no-cap invariant in plugins/onex/skills/ticketing_triage/SKILL.md
+  Phase 6 and ships a regression test under tests/skills/test_ticketing_triage_orphan_enumeration.py."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "docs"
+    description: "SKILL.md Phase 6 contains explicit Enumeration-completeness guidance forbidding caps,
+      sampling, or truncation of orphaned_tickets / stale_tickets / actions_applied lists."
+    command: "git diff origin/main -- plugins/onex/skills/ticketing_triage/SKILL.md"
+  - kind: "tests"
+    description: "Regression test guards SKILL.md content and structural completeness of triage reports
+      — capped fixture is rejected, full enumeration is accepted."
+    command: "uv run pytest tests/skills/test_ticketing_triage_orphan_enumeration.py -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "SKILL.md Phase 6 Enumeration-completeness section forbids the truncation phrase `top
+      N oldest sample` and explicitly references OMN-10543."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'Enumeration completeness' plugins/onex/skills/ticketing_triage/SKILL.md
+          && grep -q 'OMN-10543' plugins/onex/skills/ticketing_triage/SKILL.md && grep -q 'MUST enumerate
+          \\*\\*every\\*\\* orphan' plugins/onex/skills/ticketing_triage/SKILL.md"
+  - id: "dod-002"
+    description: "SKILL.md mandates the count-equals-list invariant: orphaned_tickets list length MUST
+      equal summary.orphaned_tickets."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '\\`orphaned_tickets\\` list length MUST equal \\`summary.orphaned_tickets\\`'
+          plugins/onex/skills/ticketing_triage/SKILL.md"
+  - id: "dod-003"
+    description: "Regression test file exists, contains the four expected unit tests, and passes in CI
+      alongside the full unit suite."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f tests/skills/test_ticketing_triage_orphan_enumeration.py && grep -q 'test_skill_md_forbids_orphan_truncation'
+          tests/skills/test_ticketing_triage_orphan_enumeration.py && grep -q 'test_completeness_check_flags_capped_report'
+          tests/skills/test_ticketing_triage_orphan_enumeration.py && grep -q 'test_completeness_check_passes_full_enumeration'
+          tests/skills/test_ticketing_triage_orphan_enumeration.py && grep -q 'test_completeness_check_handles_yaml_round_trip'
+          tests/skills/test_ticketing_triage_orphan_enumeration.py"
+  - id: "dod-occ-pr"
+    description: "OCC PR self-binding receipt exists and proves the OMN-10543 contract + receipts are
+      open on onex_change_control."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10543/dod-occ-pr/command.yaml\"
+          && grep -q '^evidence_item_id: dod-occ-pr$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10543/dod-occ-pr/command.yaml\"
+          && grep -q '^ticket_id: OMN-10543$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10543/dod-occ-pr/command.yaml\""
