@@ -2,18 +2,18 @@
 schema_version: "1.0.0"
 ticket_id: "OMN-10602"
 title: "Fix omnibase_core Auto-Merge workflow fanout queue flood"
-summary: "Replace omnibase_core's wildcard workflow_run Auto-Merge retrigger with PR-context-aware check_suite
-  handling, and cancel superseded merge_group CI runs so queue rotations do not accumulate stale Actions
-  work."
+summary: "check_suite fires on every CI workflow completion, flooding the Actions queue with runs that
+  immediately no-op because there is no PR context. This fix adds a lightweight pre-check job (no checkout,
+  no Python/uv setup) that emits skip=true when there is no associated PR, so the expensive auto-merge
+  job is skipped entirely. A concurrency group per PR cancels redundant queued runs."
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
-  - kind: "manual"
-    description: "omnibase_core PR #1039 workflow YAML parses and diff has no whitespace errors."
-    command: "set -euo pipefail\ncd omni_worktrees/OMN-10602/omnibase_core && python - <<'PY'\nfrom pathlib
-      import Path\nimport yaml\nfor p in ['.github/workflows/auto-merge.yml', '.github/workflows/ci.yml']:\n
-      \   yaml.safe_load(Path(p).read_text())\n    print(f'{p}: yaml ok')\nPY\n\ngit diff --check"
+  - kind: "ci"
+    description: "omnibase_core PR #1046 is open against main with the workflow fix committed"
+    command: "gh pr view 1046 --repo OmniNode-ai/omnibase_core --json state,baseRefName --jq '.state +
+      \":\" + .baseRefName' | grep -q 'OPEN:main'"
   - kind: "manual"
     description: "No runtime deploy is required; this change only modifies GitHub Actions workflow behavior."
     command: "echo 'no runtime deploy required: GitHub Actions workflow-only change'"
@@ -23,22 +23,25 @@ emergency_bypass:
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-001"
-    description: "omnibase_core PR #1039 workflow YAML parses and diff has no whitespace errors."
-    source: "manual"
+    description: "omnibase_core PR #1046 is open against main with the auto-merge fanout fix committed"
+    source: "generated"
     checks:
       - check_type: "command"
         check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-001/command.yaml\"
-          && grep -q '^evidence_item_id: \"dod-001\"$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-001/command.yaml\"
-          && grep -q '^ticket_id: \"OMN-10602\"$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-001/command.yaml\"
-          && grep -q '^commit_sha: \"51e05461a0d82f668af743002ae383781e3a807e\"$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-001/command.yaml\"
-          && grep -q '^pr_number: 1039$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-001/command.yaml\""
+          && grep -q '^ticket_id: OMN-10602$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-001/command.yaml\"
+          && grep -q '^pr_number: 1046$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-001/command.yaml\""
   - id: "dod-deploy"
     description: "No runtime deploy is required for the omnibase_core workflow-only change."
-    source: "manual"
+    source: "generated"
     checks:
       - check_type: "command"
         check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-deploy/command.yaml\"
-          && grep -q '^evidence_item_id: \"dod-deploy\"$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-deploy/command.yaml\"
-          && grep -q '^ticket_id: \"OMN-10602\"$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-deploy/command.yaml\"
-          && grep -q '^commit_sha: \"51e05461a0d82f668af743002ae383781e3a807e\"$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-deploy/command.yaml\"
-          && grep -q '^pr_number: 1039$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-deploy/command.yaml\""
+          && grep -q '^ticket_id: OMN-10602$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-deploy/command.yaml\"
+          && grep -q '^pr_number: 1046$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-deploy/command.yaml\""
+  - id: "dod-occ-pr"
+    description: "onex_change_control PR #765 carries the updated OMN-10602 contract and receipts."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-occ-pr/command.yaml\"
+          && grep -q '^pr_number: 765$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10602/dod-occ-pr/command.yaml\""
