@@ -28,10 +28,10 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Patterns that indicate a REQUIRED env var read
@@ -85,15 +85,20 @@ _EXEMPT_PATH_PATTERNS = (
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class EnvContract:
+class ModelEnvContract(BaseModel):
     """Parsed env var contract."""
 
-    allowed: frozenset[str]
-    blocked: dict[str, str]  # var -> reason
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    allowed: frozenset[str] = Field(default_factory=frozenset)
+    blocked: dict[str, str] = Field(default_factory=dict)
 
 
-def load_contract(contract_path: Path | None = None) -> EnvContract:
+# Keep EnvContract as an alias so existing test fixtures continue to work.
+EnvContract = ModelEnvContract
+
+
+def load_contract(contract_path: Path | None = None) -> ModelEnvContract:
     """Load env_contract.yaml from the repo root or given path."""
     if contract_path is None:
         # Walk up from this file to find env_contract.yaml
@@ -108,7 +113,7 @@ def load_contract(contract_path: Path | None = None) -> EnvContract:
 
     if contract_path is None or not contract_path.exists():
         # No contract found — only enforce the hardcoded blocklist
-        return EnvContract(
+        return ModelEnvContract(
             allowed=frozenset(),
             blocked={
                 "ANTHROPIC_API_KEY": "Claude Code uses OAuth, not API keys (OMN-7467)"
@@ -124,7 +129,7 @@ def load_contract(contract_path: Path | None = None) -> EnvContract:
         for entry in (data.get("blocked") or [])
     }
 
-    return EnvContract(allowed=allowed, blocked=blocked)
+    return ModelEnvContract(allowed=allowed, blocked=blocked)
 
 
 # ---------------------------------------------------------------------------
@@ -132,23 +137,25 @@ def load_contract(contract_path: Path | None = None) -> EnvContract:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class Violation:
+class Violation(BaseModel):
     """A single env var contract violation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     path: str
     lineno: int
     var_name: str
     line_text: str
-    kind: str  # "blocked", "unlisted"
+    kind: str
     reason: str
 
 
-@dataclass
-class ScanResult:
+class ScanResult(BaseModel):
     """Full scan result for a file."""
 
-    violations: list[Violation] = field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    violations: list[Violation] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +209,7 @@ def _extract_required_vars(line: str) -> list[str]:
     return vars_found
 
 
-def scan_file(path: str, contract: EnvContract) -> ScanResult:
+def scan_file(path: str, contract: ModelEnvContract) -> ScanResult:
     """Scan a single file for env var contract violations."""
     result = ScanResult()
 

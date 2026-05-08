@@ -8,9 +8,11 @@ from __future__ import annotations
 import typing
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from onex_change_control.scripts.check_env_var_contract import (
     EnvContract,
+    ModelEnvContract,
     scan_file,
 )
 
@@ -205,3 +207,46 @@ class TestContractLoading:
 
         contract = load_contract(tmp_py.parent / "nonexistent.yaml")
         assert "ANTHROPIC_API_KEY" in contract.blocked
+
+
+# -----------------------------------------------------------------------
+# ModelEnvContract Pydantic model tests (OMN-9739)
+# -----------------------------------------------------------------------
+
+
+class TestModelEnvContractIsBaseModel:
+    """ModelEnvContract must be a Pydantic BaseModel, frozen, extra=forbid."""
+
+    def test_is_pydantic_base_model(self) -> None:
+        assert issubclass(ModelEnvContract, BaseModel)
+
+    def test_model_validate_roundtrip(self) -> None:
+        data = {
+            "allowed": ["POSTGRES_PASSWORD", "GITHUB_TOKEN"],
+            "blocked": {"ANTHROPIC_API_KEY": "OAuth only"},
+        }
+        contract = ModelEnvContract.model_validate(data)
+        assert "POSTGRES_PASSWORD" in contract.allowed
+        assert contract.blocked["ANTHROPIC_API_KEY"] == "OAuth only"
+
+    def test_frozen_rejects_mutation(self) -> None:
+        contract = ModelEnvContract(
+            allowed=frozenset({"POSTGRES_PASSWORD"}),
+            blocked={},
+        )
+        with pytest.raises((TypeError, ValidationError)):
+            contract.allowed = frozenset()  # type: ignore[misc]
+
+    def test_extra_fields_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            ModelEnvContract.model_validate(
+                {"allowed": [], "blocked": {}, "unexpected_key": "boom"}
+            )
+
+    def test_env_contract_alias_is_model_env_contract(self) -> None:
+        assert EnvContract is ModelEnvContract
+
+    def test_default_empty_contract(self) -> None:
+        contract = ModelEnvContract()
+        assert len(contract.allowed) == 0
+        assert len(contract.blocked) == 0
