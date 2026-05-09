@@ -13,7 +13,8 @@ Topics emitted:
   - onex.evt.onex-change-control.cosmetic-compliance-scored.v1
 
 Kafka bootstrap servers are read from the KAFKA_BOOTSTRAP_SERVERS env var.
-If not set, defaults to localhost:19092 (local Docker bus).
+If not set, emission is skipped (no localhost fallback — missing var means
+no bus is configured for this environment).
 """
 
 from __future__ import annotations
@@ -30,11 +31,10 @@ TOPIC_GOVERNANCE_CHECK_COMPLETED: str = GovernanceTopic.GOVERNANCE_CHECK_COMPLET
 TOPIC_DRIFT_DETECTED: str = GovernanceTopic.CONTRACT_DRIFT_DETECTED
 TOPIC_COSMETIC_COMPLIANCE_SCORED: str = GovernanceTopic.COSMETIC_COMPLIANCE_SCORED
 
-_DEFAULT_BOOTSTRAP = "localhost:19092"
 
-
-def _get_bootstrap_servers() -> str:
-    return os.environ.get("KAFKA_BOOTSTRAP_SERVERS", _DEFAULT_BOOTSTRAP)
+def _get_bootstrap_servers() -> str | None:
+    """Return KAFKA_BOOTSTRAP_SERVERS or None if unset."""
+    return os.environ.get("KAFKA_BOOTSTRAP_SERVERS") or None
 
 
 def _build_envelope(topic: str, payload: dict[str, Any]) -> bytes:
@@ -51,6 +51,10 @@ def _build_envelope(topic: str, payload: dict[str, Any]) -> bytes:
 
 def _try_produce(topic: str, payload: dict[str, Any]) -> None:
     """Attempt to produce a single Kafka message. Silently no-ops on failure."""
+    bootstrap = _get_bootstrap_servers()
+    if bootstrap is None:
+        return
+
     try:
         from kafka import (  # type: ignore[import-not-found]  # Why: kafka-python is an optional dep, not installed in all environments
             KafkaProducer,
@@ -60,7 +64,7 @@ def _try_produce(topic: str, payload: dict[str, Any]) -> None:
 
     try:
         producer = KafkaProducer(
-            bootstrap_servers=_get_bootstrap_servers(),
+            bootstrap_servers=bootstrap,
             request_timeout_ms=3000,
             max_block_ms=3000,
         )

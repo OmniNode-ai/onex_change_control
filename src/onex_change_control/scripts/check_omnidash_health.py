@@ -84,10 +84,10 @@ def _fetch_row_counts(password: str) -> dict[str, int]:
         )
         sys.exit(2)
 
-    host = os.environ.get("POSTGRES_HOST", "localhost")
+    host = os.environ["POSTGRES_HOST"]
     port = os.environ.get("POSTGRES_PORT", "5436")
-    dbname = os.environ.get("OMNIDASH_DB_NAME", "omnidash_analytics")
-    user = os.environ.get("POSTGRES_USER", "postgres")
+    dbname = os.environ["OMNIDASH_DB_NAME"]
+    user = os.environ["POSTGRES_USER"]
 
     try:
         conn = psycopg2.connect(
