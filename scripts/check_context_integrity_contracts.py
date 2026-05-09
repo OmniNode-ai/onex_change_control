@@ -123,7 +123,7 @@ def _build_contract_registry(contracts_root: Path) -> dict[str, Path]:
     return registry
 
 
-def _contract_has_context_integrity(contract_path: Path) -> bool:  # noqa: PLR0911
+def _contract_has_context_integrity(contract_path: Path) -> bool:
     """Return True if the contract declares a context_integrity section.
 
     Checks for any of the following YAML patterns:

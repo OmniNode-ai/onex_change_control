@@ -46,6 +46,53 @@ jobs:
       - name: Run mypy
         run: uv run mypy src/ tests/
 
+  smart-test-select:
+    name: Compute Smart Test Selection
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    if: github.event_name == 'pull_request'
+    outputs:
+      selected_paths: ${{ steps.select.outputs.selected_paths }}
+      split_count: ${{ steps.select.outputs.split_count }}
+      matrix: ${{ steps.select.outputs.matrix }}
+      is_full_suite: ${{ steps.select.outputs.is_full_suite }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Compute changed files vs PR base
+        id: changed
+        run: |
+          git fetch origin "${{ github.base_ref }}" --no-tags --depth=1
+          git diff --name-only "origin/${{ github.base_ref }}"...HEAD > /tmp/changed_files.txt
+          echo "Changed files:"
+          cat /tmp/changed_files.txt
+      - name: Run smart test selection
+        id: select
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          ENABLE_SMART_TESTS: ${{ vars.ENABLE_SMART_TESTS }}
+        run: |
+          [ "$ENABLE_SMART_TESTS" = "true" ] && FEATURE_FLAG="on" || FEATURE_FLAG="off"
+          RESULT=$(PYTHONPATH=. uv run python scripts/ci/detect_test_paths.py \
+            --changed-files-from /tmp/changed_files.txt \
+            --ref-name "$HEAD_REF" \
+            --event-name pull_request \
+            --feature-flag "$FEATURE_FLAG")
+          echo "Selection result: $RESULT"
+          echo "selected_paths=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(json.dumps(d["selected_paths"]))')" >> "$GITHUB_OUTPUT"
+          echo "split_count=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["split_count"])')" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(json.dumps(d["matrix"]))')" >> "$GITHUB_OUTPUT"
+          echo "is_full_suite=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(str(d["is_full_suite"]).lower())')" >> "$GITHUB_OUTPUT"
+
   test:
     name: Tests
     runs-on: >-
