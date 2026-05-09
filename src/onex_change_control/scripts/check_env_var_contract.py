@@ -137,7 +137,7 @@ def load_contract(contract_path: Path | None = None) -> ModelEnvContract:
 # ---------------------------------------------------------------------------
 
 
-class Violation(BaseModel):
+class ModelViolation(BaseModel):
     """A single env var contract violation."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -150,12 +150,16 @@ class Violation(BaseModel):
     reason: str
 
 
-class ScanResult(BaseModel):
+class ModelScanResult(BaseModel):
     """Full scan result for a file."""
 
     model_config = ConfigDict(extra="forbid")
 
-    violations: list[Violation] = Field(default_factory=list)
+    violations: list[ModelViolation] = Field(default_factory=list)
+
+
+Violation = ModelViolation
+ScanResult = ModelScanResult
 
 
 # ---------------------------------------------------------------------------
@@ -209,9 +213,9 @@ def _extract_required_vars(line: str) -> list[str]:
     return vars_found
 
 
-def scan_file(path: str, contract: ModelEnvContract) -> ScanResult:
+def scan_file(path: str, contract: ModelEnvContract) -> ModelScanResult:
     """Scan a single file for env var contract violations."""
-    result = ScanResult()
+    result = ModelScanResult()
 
     if _is_exempt_path(path):
         return result
@@ -235,7 +239,7 @@ def scan_file(path: str, contract: ModelEnvContract) -> ScanResult:
         for var in required_vars:
             if var in contract.blocked:
                 result.violations.append(
-                    Violation(
+                    ModelViolation(
                         path=path,
                         lineno=lineno,
                         var_name=var,
@@ -246,7 +250,7 @@ def scan_file(path: str, contract: ModelEnvContract) -> ScanResult:
                 )
             elif var not in contract.allowed:
                 result.violations.append(
-                    Violation(
+                    ModelViolation(
                         path=path,
                         lineno=lineno,
                         var_name=var,
@@ -269,7 +273,7 @@ def scan_file(path: str, contract: ModelEnvContract) -> ScanResult:
 # ---------------------------------------------------------------------------
 
 
-def _format_violation(v: Violation) -> str:
+def _format_violation(v: ModelViolation) -> str:
     if v.kind == "blocked":
         return (
             f"  BLOCKED: {v.path}:{v.lineno}: {v.var_name}\n"
@@ -296,8 +300,8 @@ def main() -> int:
     files = sys.argv[1:]
     contract = load_contract()
 
-    blocked_violations: list[Violation] = []
-    unlisted_violations: list[Violation] = []
+    blocked_violations: list[ModelViolation] = []
+    unlisted_violations: list[ModelViolation] = []
 
     for path in files:
         result = scan_file(path, contract)
