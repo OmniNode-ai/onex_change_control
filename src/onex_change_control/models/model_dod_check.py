@@ -38,6 +38,10 @@ class ModelDodCheck(BaseModel):
     - grep: check_value is a dict with 'pattern' and 'path' keys
     - command: check_value is a shell command (exit 0 = pass)
     - endpoint: check_value is a URL or path to check
+    - semantic_grading: check_value is a receipt path produced by
+      node_pr_semantic_grader_llm_effect; the receipt gate requires a
+      semantic_grading.yaml receipt at the canonical path for this evidence
+      item. Phase 1: ADVISORY status passes; Phase 2 (calibrated): hard fail.
 
     The optional ``cwd`` field declares the working directory the check should
     execute under. The runner expands ``${OMNI_HOME}``, ``${PR_NUMBER}``,
@@ -59,6 +63,7 @@ class ModelDodCheck(BaseModel):
         "grep",
         "command",
         "endpoint",
+        "semantic_grading",
     ] = Field(..., description="Type of executable check")
     check_value: str | dict[str, str] = Field(
         ...,
