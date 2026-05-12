@@ -1,0 +1,41 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-10867"
+title: "Fix build_loop contract schemas — add event_bus block to write_effect, normalize both contracts"
+summary: >
+  node_build_loop_write_effect had no event_bus block, causing wire_from_manifest to silently skip it
+  with "No event_bus.subscribe_topics declared". Fix adds the event_bus.subscribe_topics declaration,
+  migrates handler_routing to flat handler_class/handler_module format, removes stale schema fields (contract_name,
+  node_name, node_version as dict), regenerates enum_omnibase_infra_topic.py with new CMD/EVT topics,
+  and adds integration test coverage.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-contract-schema"
+    description: "Both node contracts updated to current schema format; write_effect wired by wire_from_manifest"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/integration/test_build_loop_contract_schema_omn10867.py -v"
+  - id: "dod-unit-tests"
+    description: "All existing build_loop unit tests pass"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ -k 'build_loop' -v"
+  - id: "dod-deploy"
+    description: >
+      Deploy verification: contract.yaml changes are schema-only — no migration, no topology change, no
+      new runtime service. The write_effect node was previously skipped (not wired); adding event_bus.subscribe_topics
+      causes it to be wired on next runtime restart. The runtime must be restarted on .201 for the wiring
+      change to take effect. No Redpanda topic creation required since the topic is declared in the enum
+      but the runtime creates topics on subscribe.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "deploy: ssh jonah@192.168.86.201 'docker restart omninode-runtime-effects'"
