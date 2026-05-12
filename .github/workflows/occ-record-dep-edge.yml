@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OCC Dependency Edge Recorder (OMN-10487 / OMN-10482 epic)
+#
+# Records a dependency edge when a product PR's Receipt Gate fails with an
+# OCC-related reason (MISSING_RECEIPT or MISSING_CONTRACT) — indicating the
+# downstream PR cannot merge until an OCC PR lands.
+#
+# Triggered via workflow_call from each product repo's receipt-gate caller
+# when the gate result JSON contains one of the OCC dependency failure reasons.
+#
+# Invariants:
+#   D1. Dependency edges use ticket_id as primary identity. PR numbers are
+#       secondary: they scope the rerun target but are not the dedup key.
+#   D2. Edges are upserted (ticket_id + product_repo + product_pr_number).
+#       Duplicate recording is idempotent.
+#   D3. This workflow only WRITES edges; it does NOT rerun downstream gates.
+#       The rerun is handled by occ-rerun-downstream.yml on OCC push to main.
+#   D4. This workflow requires write permission to onex_change_control to
+#       commit the updated edge store. Callers must supply a PAT with that scope
+#       via the `occ-write-token` secret.
+#
+# Required caller inputs:
+#   product-repo:       short repo name (e.g. "omnibase_core")
+#   product-pr-number:  product PR number
+#   ticket-id:          OMN-XXXX ticket that the OCC dependency blocks
+#   failure-reason:     "OCC_DEPENDENCY_OPEN" or "OCC_DEPENDENCY_MISSING"
+
+name: occ-record-dep-edge
+
+on:
+  workflow_call:
+    inputs:
+      product-repo:
+        description: Short repo name of the product PR (e.g. omnibase_core).
+        type: string
+        required: true
+      product-pr-number:
+        description: PR number in the product repo.
+        type: number
+        required: true
+      ticket-id:
+        description: OMN-XXXX ticket that the OCC dependency is blocking.
+        type: string
+        required: true
+      failure-reason:
+        description: "OCC_DEPENDENCY_OPEN or OCC_DEPENDENCY_MISSING"
+        type: string
+        required: true
+    secrets:
+      occ-write-token:
+        description: PAT with write access to OmniNode-ai/onex_change_control.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    name: record
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 5
+    steps:
+      - name: Validate inputs
+        env:
+          TICKET_ID: ${{ inputs.ticket-id }}
+          FAILURE_REASON: ${{ inputs.failure-reason }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TICKET_ID" | grep -qE '^OMN-[0-9]+$'; then
+            echo "::error::ticket-id must match OMN-[0-9]+, got: ${TICKET_ID}"
+            exit 1
+          fi
+          case "$FAILURE_REASON" in
+            OCC_DEPENDENCY_OPEN|OCC_DEPENDENCY_MISSING)
+              ;;
+            *)
+              echo "::error::failure-reason must be OCC_DEPENDENCY_OPEN or OCC_DEPENDENCY_MISSING, got: ${FAILURE_REASON}"
+              exit 1
+              ;;
+          esac
+
+      - name: Check out onex_change_control
+        uses: actions/checkout@v6
+        with:
+          repository: OmniNode-ai/onex_change_control
+          token: ${{ secrets.occ-write-token }}
+          ref: main
+          fetch-depth: 1
+
+      - name: Upsert dependency edge
+        env:
+          PRODUCT_REPO: ${{ inputs.product-repo }}
+          PRODUCT_PR: ${{ inputs.product-pr-number }}
+          TICKET_ID: ${{ inputs.ticket-id }}
+          FAILURE_REASON: ${{ inputs.failure-reason }}
+        run: |
+          set -euo pipefail
+          EDGE_FILE="drift/occ_dependency_edges.yaml"
+          RECORDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Parse existing edges, remove any existing entry for this
+          # (ticket_id, product_repo, product_pr_number) triple, then append.
+          python3 - <<'PYEOF'
+import os, yaml, sys
+
+edge_file = "drift/occ_dependency_edges.yaml"
+ticket_id = os.environ["TICKET_ID"]
+product_repo = os.environ["PRODUCT_REPO"]
+product_pr = int(os.environ["PRODUCT_PR"])
+failure_reason = os.environ["FAILURE_REASON"]
+recorded_at = os.environ["RECORDED_AT"]
+
+with open(edge_file, encoding="utf-8") as fh:
+    store = yaml.safe_load(fh) or {}
+
+edges = store.get("edges", []) or []
+
+# Upsert: remove stale entry for same (ticket_id, repo, pr) if any.
+edges = [
+    e for e in edges
+    if not (
+        e.get("ticket_id") == ticket_id
+        and e.get("product_repo") == product_repo
+        and e.get("product_pr_number") == product_pr
+    )
+]
+
+edges.append({
+    "ticket_id": ticket_id,
+    "product_repo": product_repo,
+    "product_pr_number": product_pr,
+    "failure_reason": failure_reason,
+    "recorded_at": recorded_at,
+})
+
+store["schema_version"] = "1.0.0"
+store["edges"] = sorted(edges, key=lambda e: (e["ticket_id"], e["product_repo"], e["product_pr_number"]))
+
+with open(edge_file, "w", encoding="utf-8") as fh:
+    yaml.dump(store, fh, default_flow_style=False, sort_keys=True, allow_unicode=True)
+print(f"Upserted edge: {ticket_id} → {product_repo}#{product_pr} ({failure_reason})")
+PYEOF
+
+      - name: Commit and push edge store
+        env:
+          PRODUCT_REPO: ${{ inputs.product-repo }}
+          PRODUCT_PR: ${{ inputs.product-pr-number }}
+          TICKET_ID: ${{ inputs.ticket-id }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add drift/occ_dependency_edges.yaml
+          if git diff --cached --quiet; then
+            echo "Edge already recorded (no diff); nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(occ-deps): record dep edge ${TICKET_ID} → ${PRODUCT_REPO}#${PRODUCT_PR} [skip ci]"
+          # Retry once on push conflict (another concurrent recorder).
+          if ! git push origin main 2>&1; then
+            git pull --rebase origin main
+            git push origin main
+          fi

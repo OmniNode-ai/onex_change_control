@@ -1,0 +1,229 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OCC Downstream Gate Rerun (OMN-10487 / OMN-10482 epic)
+#
+# Triggered when a commit lands on onex_change_control main. For each
+# product PR recorded in drift/occ_dependency_edges.yaml whose blocking
+# ticket_id now has a contract + receipts on this new main SHA, reruns the
+# product PR's "Receipt Gate / verify" check.
+#
+# Invariants:
+#   R1. Rerun at most once per OCC merge commit per downstream PR.
+#       Loop prevention: drift/occ_rerun_state.yaml tracks (occ_commit,
+#       product_repo, product_pr_number) triples already processed.
+#   R2. Only reruns when the previous failure reason was OCC_DEPENDENCY_OPEN
+#       or OCC_DEPENDENCY_MISSING. Other gate failures are not eligible.
+#   R3. After rerun, the processed edge is removed from
+#       drift/occ_dependency_edges.yaml and a rerun record is appended to
+#       drift/occ_rerun_state.yaml. Both files are committed atomically.
+#   R4. This workflow requires write access to onex_change_control (to update
+#       state files) and to product repos (to trigger workflow reruns).
+#       Supply a PAT via the `occ-rerun-token` repository secret.
+#   R5. Failures to rerun a single product PR are logged as warnings, not
+#       errors — they do not abort processing of other edges.
+
+name: occ-rerun-downstream
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  rerun:
+    name: rerun
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out onex_change_control at merge commit
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.occ-rerun-token || secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Resolve OCC merge commit SHA
+        id: occ_sha
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "OCC merge commit: ${sha}"
+
+      - name: Process dependency edges
+        env:
+          OCC_COMMIT: ${{ steps.occ_sha.outputs.sha }}
+          GH_TOKEN: ${{ secrets.occ-rerun-token || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          EDGE_FILE="drift/occ_dependency_edges.yaml"
+          STATE_FILE="drift/occ_rerun_state.yaml"
+
+          python3 - <<'PYEOF'
+import os, subprocess, sys, yaml
+from datetime import datetime, timezone
+from pathlib import Path
+
+occ_commit = os.environ["OCC_COMMIT"]
+edge_file = Path("drift/occ_dependency_edges.yaml")
+state_file = Path("drift/occ_rerun_state.yaml")
+contracts_dir = Path("contracts")
+receipts_dir = Path("drift/dod_receipts")
+rerun_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+# Load edge store.
+store = yaml.safe_load(edge_file.read_text(encoding="utf-8")) or {}
+edges = store.get("edges", []) or []
+
+# Load rerun state.
+state_raw = yaml.safe_load(state_file.read_text(encoding="utf-8")) or {}
+reruns = state_raw.get("reruns", []) or []
+
+# Build set of already-processed (commit, repo, pr) triples (R1 loop guard).
+processed = {
+    (r["occ_merge_commit"], r["product_repo"], r["product_pr_number"])
+    for r in reruns
+}
+
+eligible_reasons = {"OCC_DEPENDENCY_OPEN", "OCC_DEPENDENCY_MISSING"}
+remaining_edges = []
+new_reruns = []
+
+for edge in edges:
+    ticket_id = edge["ticket_id"]
+    product_repo = edge["product_repo"]
+    product_pr = edge["product_pr_number"]
+    failure_reason = edge.get("failure_reason", "")
+
+    # R2: only rerun for OCC dependency failure reasons.
+    if failure_reason not in eligible_reasons:
+        remaining_edges.append(edge)
+        continue
+
+    # R1: skip if already processed for this OCC commit.
+    key = (occ_commit, product_repo, product_pr)
+    if key in processed:
+        print(f"SKIP (already rerun): {ticket_id} → {product_repo}#{product_pr} at {occ_commit[:8]}")
+        remaining_edges.append(edge)
+        continue
+
+    # Check whether the blocking ticket now has a contract at this OCC SHA.
+    contract_path = contracts_dir / f"{ticket_id}.yaml"
+    if not contract_path.is_file():
+        print(f"SKIP (contract still missing): {ticket_id} → {product_repo}#{product_pr}")
+        remaining_edges.append(edge)
+        continue
+
+    # Attempt to rerun the downstream Receipt Gate check.
+    print(f"RERUN: {ticket_id} → {product_repo}#{product_pr} ({failure_reason})")
+    rerun_result = subprocess.run(
+        [
+            "gh", "api",
+            f"repos/OmniNode-ai/{product_repo}/statuses",
+            "--method", "GET",
+            "-f", f"pr={product_pr}",
+        ],
+        capture_output=True, text=True,
+    )
+    # Use workflow rerun API: re-trigger the most recent "Receipt Gate / verify"
+    # workflow run for the product PR's head SHA.
+    pr_info = subprocess.run(
+        [
+            "gh", "pr", "view", str(product_pr),
+            "--repo", f"OmniNode-ai/{product_repo}",
+            "--json", "headRefOid,number",
+        ],
+        capture_output=True, text=True,
+    )
+    if pr_info.returncode != 0:
+        print(f"::warning::Could not resolve PR {product_repo}#{product_pr}: {pr_info.stderr.strip()}")
+        remaining_edges.append(edge)
+        continue
+
+    import json
+    pr_data = json.loads(pr_info.stdout)
+    head_sha = pr_data.get("headRefOid", "")
+    if not head_sha:
+        print(f"::warning::Empty head SHA for {product_repo}#{product_pr}; skipping rerun")
+        remaining_edges.append(edge)
+        continue
+
+    # Find the most recent "Receipt Gate" workflow run for this PR head SHA.
+    runs_result = subprocess.run(
+        [
+            "gh", "api",
+            f"repos/OmniNode-ai/{product_repo}/actions/runs",
+            "--jq",
+            f'.workflow_runs | map(select(.head_sha == "{head_sha}" and (.name | test("Receipt Gate"; "i")))) | sort_by(.created_at) | reverse | .[0].id',
+        ],
+        capture_output=True, text=True,
+    )
+    if runs_result.returncode != 0 or not runs_result.stdout.strip():
+        print(f"::warning::No Receipt Gate run found for {product_repo}#{product_pr} at {head_sha[:8]}")
+        remaining_edges.append(edge)
+        continue
+
+    run_id = runs_result.stdout.strip()
+    rerun_result = subprocess.run(
+        [
+            "gh", "api",
+            f"repos/OmniNode-ai/{product_repo}/actions/runs/{run_id}/rerun-failed-jobs",
+            "--method", "POST",
+        ],
+        capture_output=True, text=True,
+    )
+    if rerun_result.returncode != 0:
+        print(f"::warning::Rerun failed for {product_repo}#{product_pr} run {run_id}: {rerun_result.stderr.strip()}")
+        remaining_edges.append(edge)
+        continue
+
+    print(f"OK: rerun triggered for {product_repo}#{product_pr} run {run_id}")
+    # Record the rerun (R3) — edge removed from remaining_edges implicitly.
+    new_reruns.append({
+        "occ_merge_commit": occ_commit,
+        "product_repo": product_repo,
+        "product_pr_number": product_pr,
+        "rerun_at": rerun_at,
+    })
+
+# Write back updated edge store (R3: processed edges removed).
+store["schema_version"] = "1.0.0"
+store["edges"] = sorted(remaining_edges, key=lambda e: (e["ticket_id"], e["product_repo"], e["product_pr_number"]))
+edge_file.write_text(
+    yaml.dump(store, default_flow_style=False, sort_keys=True, allow_unicode=True),
+    encoding="utf-8",
+)
+
+# Append new rerun records.
+if new_reruns:
+    reruns.extend(new_reruns)
+    state_raw["schema_version"] = "1.0.0"
+    state_raw["reruns"] = sorted(
+        reruns,
+        key=lambda r: (r["occ_merge_commit"], r["product_repo"], r["product_pr_number"]),
+    )
+    state_file.write_text(
+        yaml.dump(state_raw, default_flow_style=False, sort_keys=True, allow_unicode=True),
+        encoding="utf-8",
+    )
+    print(f"Recorded {len(new_reruns)} rerun(s) to {state_file}")
+else:
+    print("No new reruns to record.")
+PYEOF
+
+      - name: Commit state updates
+        env:
+          OCC_COMMIT: ${{ steps.occ_sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add drift/occ_dependency_edges.yaml drift/occ_rerun_state.yaml
+          if git diff --cached --quiet; then
+            echo "No state changes; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(occ-deps): update rerun state after merge ${OCC_COMMIT:0:8} [skip ci]"
+          git push origin main
