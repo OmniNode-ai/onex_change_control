@@ -12,10 +12,21 @@ Fail-open patterns cause DoD checks to pass when they should not:
 These patterns mask missing or failing gates and produce false positives.
 The correct fail-closed form is simply `[ "$result" = "SUCCESS" ]`.
 
+Also rejects legacy ``gh pr`` invocations that omit ``${PR_NUMBER}`` or a ``--repo``
+argument.  These fail in detached-HEAD CI runs with "could not determine current
+branch":
+
+  - ``gh pr checks``          (bare — no PR number)
+  - ``gh pr checks --watch``  (bare — no PR number)
+  - ``gh pr checks 1430 ...`` (hardcoded integer PR number)
+  - ``gh pr view {pr} ...``   (wrong-format ``{x}`` placeholder)
+
+Correct form: ``gh pr checks ${PR_NUMBER} --repo ${REPO}``
+
 Usage:
     python3 scripts/lint_contract_check_values.py contracts/OMN-1234.yaml [...]
 
-Exits non-zero if any fail-open pattern is found, with a human-readable report.
+Exits non-zero if any fail-open or legacy-gh-pr pattern is found.
 """
 
 from __future__ import annotations
@@ -59,6 +70,21 @@ ANTI_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"2>/dev/null[\s;]*\Z"),
     ),
 ]
+
+# Legacy ``gh pr`` patterns that must be rejected.
+# These are checked separately from ANTI_PATTERNS because they require
+# inspecting the command prefix before applying the regex — a plain regex
+# over the full value produces too many false positives on non-gh-pr lines.
+#
+# Canonical correct form: ``gh pr checks ${PR_NUMBER} --repo ${REPO}``
+_GH_PR_PREFIX = ("gh pr checks", "gh pr view", "gh pr diff")
+
+# Hardcoded integer PR number: "gh pr checks 1430 --repo ..."
+_HARDCODED_PR_NUMBER_RE = re.compile(r"gh pr (?:checks|view|diff)\s+\d+\s")
+
+# Wrong-format {pr} / {repo} placeholders
+_BRACE_PR_RE = re.compile(r"\{pr\}")
+_BRACE_REPO_RE = re.compile(r"\{repo\}")
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +136,34 @@ def lint_contract(path: Path) -> list[tuple[str, str, str]]:
     return findings
 
 
+def _check_legacy_gh_pr(value: str) -> str | None:
+    """Return a human-readable label if *value* is a legacy ``gh pr`` invocation.
+
+    Returns ``None`` when the command is clean (or not a ``gh pr checks/view/diff``
+    command at all).
+
+    Legacy forms:
+    * Hardcoded integer PR number (e.g. ``gh pr checks 1430 --repo ...``).
+    * Wrong-format ``{pr}`` / ``{repo}`` placeholders.
+    * Missing ``${PR_NUMBER}`` placeholder.
+    * Missing both ``${REPO}`` and a literal ``--repo`` argument.
+    """
+    stripped = value.strip()
+    if not stripped.startswith(_GH_PR_PREFIX):
+        return None
+    if _HARDCODED_PR_NUMBER_RE.search(stripped):
+        return "legacy-gh-pr: hardcoded integer PR number (use ${PR_NUMBER})"
+    if _BRACE_PR_RE.search(stripped):
+        return "legacy-gh-pr: wrong-format {pr} placeholder (use ${PR_NUMBER})"
+    if _BRACE_REPO_RE.search(stripped):
+        return "legacy-gh-pr: wrong-format {repo} placeholder (use ${REPO})"
+    if "${PR_NUMBER}" not in stripped:
+        return "legacy-gh-pr: missing ${PR_NUMBER} placeholder"
+    if "${REPO}" not in stripped and "--repo" not in stripped:
+        return "legacy-gh-pr: missing --repo argument"
+    return None
+
+
 def _scan_value(
     path_str: str,
     dod_id: str,
@@ -125,6 +179,11 @@ def _scan_value(
             end = min(len(value), match.end() + 20)
             fragment = value[start:end].strip()
             findings.append((path_str, f"{dod_id}: {name}", fragment))
+
+    legacy_label = _check_legacy_gh_pr(value)
+    if legacy_label is not None:
+        fragment = value.strip()[:80]
+        findings.append((path_str, f"{dod_id}: {legacy_label}", fragment))
 
 
 # ---------------------------------------------------------------------------
@@ -146,16 +205,23 @@ def main(argv: list[str]) -> int:
 
     if all_findings:
         print(
-            "FAIL: fail-open patterns found in contract check_value fields:",
+            "FAIL: invalid patterns found in contract check_value fields:",
             file=sys.stderr,
         )
         for path_str, pattern_label, fragment in all_findings:
             print(f"  {path_str}: {pattern_label}", file=sys.stderr)
             print(f"    ...{fragment}...", file=sys.stderr)
         print(
-            "\nFix: replace fail-open guards with fail-closed form, e.g.:\n"
+            "\nFix fail-open guards with fail-closed form, e.g.:\n"
             '  BAD:  [ -z "$result" ] || [ "$result" = "SUCCESS" ]\n'
-            '  GOOD: [ "$result" = "SUCCESS" ]',
+            '  GOOD: [ "$result" = "SUCCESS" ]\n'
+            "\nFix legacy gh pr commands with canonical placeholder form, e.g.:\n"
+            "  BAD:  gh pr checks 1430 --repo OmniNode-ai/omnibase_infra\n"
+            "  BAD:  gh pr checks {pr} --repo {repo}\n"
+            "  BAD:  gh pr checks --watch\n"
+            "  GOOD: gh pr checks ${PR_NUMBER} --repo ${REPO}\n"
+            "\nRun: uv run python scripts/migrate_dod_contracts.py"
+            " --apply --tickets <ID>",
             file=sys.stderr,
         )
         return 1

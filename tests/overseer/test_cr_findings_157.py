@@ -308,8 +308,11 @@ class TestCRFinding7MinorWorkerContractLoadAcceptsMapping:
             load_worker_contract,
         )
 
+        # omnibase_core.load_worker_contract raises ValueError locally (annotated
+        # # error-ok) but ModelOnexError on newer CI installs. Accept either until
+        # omnibase_core stabilises on one exception type.
         with pytest.raises(
-            ModelOnexError,
+            (ValueError, ModelOnexError),
             match="worker contract data must be a mapping",
         ):
             load_worker_contract("not-a-mapping")
