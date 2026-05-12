@@ -89,59 +89,57 @@ jobs:
           ref: main
           fetch-depth: 1
 
+      - name: Write upsert script
+        run: |
+          mkdir -p /tmp/occ-scripts
+          cat > /tmp/occ-scripts/upsert_edge.py << 'EOF'
+          import os, sys, yaml
+          edge_file = "drift/occ_dependency_edges.yaml"
+          ticket_id = os.environ["TICKET_ID"]
+          product_repo = os.environ["PRODUCT_REPO"]
+          product_pr = int(os.environ["PRODUCT_PR"])
+          failure_reason = os.environ["FAILURE_REASON"]
+          recorded_at = os.environ["RECORDED_AT"]
+          with open(edge_file, encoding="utf-8") as fh:
+              store = yaml.safe_load(fh) or {}
+          edges = store.get("edges", []) or []
+          edges = [
+              e for e in edges
+              if not (
+                  e.get("ticket_id") == ticket_id
+                  and e.get("product_repo") == product_repo
+                  and e.get("product_pr_number") == product_pr
+              )
+          ]
+          edges.append({
+              "failure_reason": failure_reason,
+              "product_pr_number": product_pr,
+              "product_repo": product_repo,
+              "recorded_at": recorded_at,
+              "ticket_id": ticket_id,
+          })
+          store["schema_version"] = "1.0.0"
+          store["edges"] = sorted(
+              edges,
+              key=lambda e: (e["ticket_id"], e["product_repo"], e["product_pr_number"]),
+          )
+          with open(edge_file, "w", encoding="utf-8") as fh:
+              yaml.dump(store, fh, default_flow_style=False, sort_keys=True, allow_unicode=True)
+          print(f"Upserted: {ticket_id} to {product_repo} PR {product_pr} ({failure_reason})")
+          EOF
+
       - name: Upsert dependency edge
         env:
           PRODUCT_REPO: ${{ inputs.product-repo }}
           PRODUCT_PR: ${{ inputs.product-pr-number }}
           TICKET_ID: ${{ inputs.ticket-id }}
           FAILURE_REASON: ${{ inputs.failure-reason }}
+          RECORDED_AT: ${{ github.event.pull_request.created_at || github.event.head_commit.timestamp }}
         run: |
           set -euo pipefail
-          EDGE_FILE="drift/occ_dependency_edges.yaml"
-          RECORDED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-          # Parse existing edges, remove any existing entry for this
-          # (ticket_id, product_repo, product_pr_number) triple, then append.
-          python3 - <<'PYEOF'
-import os, yaml, sys
-
-edge_file = "drift/occ_dependency_edges.yaml"
-ticket_id = os.environ["TICKET_ID"]
-product_repo = os.environ["PRODUCT_REPO"]
-product_pr = int(os.environ["PRODUCT_PR"])
-failure_reason = os.environ["FAILURE_REASON"]
-recorded_at = os.environ["RECORDED_AT"]
-
-with open(edge_file, encoding="utf-8") as fh:
-    store = yaml.safe_load(fh) or {}
-
-edges = store.get("edges", []) or []
-
-# Upsert: remove stale entry for same (ticket_id, repo, pr) if any.
-edges = [
-    e for e in edges
-    if not (
-        e.get("ticket_id") == ticket_id
-        and e.get("product_repo") == product_repo
-        and e.get("product_pr_number") == product_pr
-    )
-]
-
-edges.append({
-    "ticket_id": ticket_id,
-    "product_repo": product_repo,
-    "product_pr_number": product_pr,
-    "failure_reason": failure_reason,
-    "recorded_at": recorded_at,
-})
-
-store["schema_version"] = "1.0.0"
-store["edges"] = sorted(edges, key=lambda e: (e["ticket_id"], e["product_repo"], e["product_pr_number"]))
-
-with open(edge_file, "w", encoding="utf-8") as fh:
-    yaml.dump(store, fh, default_flow_style=False, sort_keys=True, allow_unicode=True)
-print(f"Upserted edge: {ticket_id} → {product_repo}#{product_pr} ({failure_reason})")
-PYEOF
+          RECORDED_AT="${RECORDED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+          export RECORDED_AT
+          python3 /tmp/occ-scripts/upsert_edge.py
 
       - name: Commit and push edge store
         env:
@@ -157,7 +155,7 @@ PYEOF
             echo "Edge already recorded (no diff); nothing to commit."
             exit 0
           fi
-          git commit -m "chore(occ-deps): record dep edge ${TICKET_ID} → ${PRODUCT_REPO}#${PRODUCT_PR} [skip ci]"
+          git commit -m "chore(occ-deps): record dep edge ${TICKET_ID} to ${PRODUCT_REPO} PR ${PRODUCT_PR} [skip ci]"
           # Retry once on push conflict (another concurrent recorder).
           if ! git push origin main 2>&1; then
             git pull --rebase origin main
