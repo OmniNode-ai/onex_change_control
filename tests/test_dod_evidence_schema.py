@@ -78,11 +78,19 @@ class TestDodEvidenceItemValidation:
 
 
 class TestDodCheckTypes:
-    """Validate all 6 check types."""
+    """Validate all 7 check types."""
 
     @pytest.mark.parametrize(
         "check_type",
-        ["test_exists", "test_passes", "file_exists", "grep", "command", "endpoint"],
+        [
+            "test_exists",
+            "test_passes",
+            "file_exists",
+            "grep",
+            "command",
+            "endpoint",
+            "semantic_grading",
+        ],
     )
     def test_dod_evidence_check_types(self, check_type: str) -> None:
         check = ModelDodCheck.model_validate(
@@ -95,6 +103,42 @@ class TestDodCheckTypes:
             ModelDodCheck.model_validate(
                 {"check_type": "invalid_type", "check_value": "x"}
             )
+
+    def test_semantic_grading_check_type_loads(self) -> None:
+        """OMN-10859: semantic_grading check_type accepted by ModelDodCheck."""
+        receipt_path = "drift/dod_receipts/OMN-10859/dod-001/semantic_grading.yaml"
+        check = ModelDodCheck.model_validate(
+            {
+                "check_type": "semantic_grading",
+                "check_value": receipt_path,
+            }
+        )
+        assert check.check_type == "semantic_grading"
+
+    def test_semantic_grading_roundtrips_via_yaml(self) -> None:
+        """semantic_grading check_type survives YAML round-trip on a full contract."""
+        receipt_path = "drift/dod_receipts/OMN-000/dod-001/semantic_grading.yaml"
+        data = _minimal_contract(
+            dod_evidence=[
+                {
+                    "id": "dod-001",
+                    "description": "Acceptance criteria semantically satisfied",
+                    "source": "generated",
+                    "status": "pending",
+                    "checks": [
+                        {
+                            "check_type": "semantic_grading",
+                            "check_value": receipt_path,
+                        }
+                    ],
+                }
+            ]
+        )
+        contract = ModelTicketContract.model_validate(data)
+        yaml_str = yaml.dump(contract.model_dump(mode="json"), default_flow_style=False)
+        loaded = yaml.safe_load(yaml_str)
+        roundtripped = ModelTicketContract.model_validate(loaded)
+        assert roundtripped.dod_evidence[0].checks[0].check_type == "semantic_grading"
 
     def test_check_value_as_dict(self) -> None:
         check = ModelDodCheck.model_validate(
