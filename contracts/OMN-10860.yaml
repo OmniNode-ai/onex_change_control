@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-10860"
+title: "Add POST /skill HTTP endpoint to runtime ServiceHealth"
+summary: "Adds a POST /skill HTTP endpoint to ServiceHealth (aiohttp) that accepts ModelRuntimeSkillRequest
+  JSON, dispatches through RuntimeHostProcess.dispatch_local_ingress_request (new public wrapper over
+  _dispatch_local_ingress_request), and returns ModelRuntimeSkillResponse. Delegate skills can now POST
+  to http://<runtime-host>:18085/skill with zero Kafka transport code in the skill layer."
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "tests"
+    description: "Unit tests for /skill endpoint pass (8 tests)"
+    command: "uv run pytest tests/unit/runtime/test_service_health_skill_endpoint.py -v"
+  - kind: "tests"
+    description: "Integration tests for /skill endpoint pass (3 tests)"
+    command: "uv run pytest tests/integration/runtime/test_service_health_skill_endpoint_integration.py
+      -v"
+  - kind: "ci"
+    description: "All CI gates green on omnibase_infra PR #1566"
+    command: "gh pr checks 1566 --repo OmniNode-ai/omnibase_infra"
+  - kind: "manual"
+    description: "deploy validation: docker exec omninode-runtime curl -s -X POST http://localhost:8085/skill
+      -H 'Content-Type: application/json' -d '{\"command_name\":\"test\",\"payload\":{}}' | python3 -c
+      \"import sys,json; d=json.load(sys.stdin); assert 'ok' in d\""
+    command: "deploy validation: docker exec omninode-runtime curl -s http://localhost:8085/health | python3
+      -c \"import sys,json; d=json.load(sys.stdin); print(d.get('endpoints', []))\""
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: "8 unit tests for POST /skill pass in omnibase_infra PR #1566"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr diff 1566 -R OmniNode-ai/omnibase_infra | grep -q test_service_health_skill_endpoint"
+  - id: "dod-integration-tests"
+    description: "3 integration tests for POST /skill pass — dispatch, 400 on invalid JSON, correlation
+      ID propagation"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr diff 1566 -R OmniNode-ai/omnibase_infra | grep -q test_service_health_skill_endpoint_integration"
+  - id: "dod-deploy"
+    description: "deploy validation: POST /skill endpoint available on runtime ServiceHealth at :8085/skill
+      after omnibase_infra#1566 merges"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "deploy validation: docker exec omninode-runtime curl -fsS http://localhost:8085/health
+          | python3 -c \"import sys,json; d=json.load(sys.stdin); assert '/skill' in d.get('endpoints',
+          []), f'Missing /skill in {d}'\""
+  - id: "dod-pr-open"
+    description: "omnibase_infra PR #1566 exists and targets main"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1566 -R OmniNode-ai/omnibase_infra --json state -q .state | grep -q OPEN"
