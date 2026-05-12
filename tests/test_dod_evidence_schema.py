@@ -17,6 +17,15 @@ from onex_change_control.models.model_ticket_contract import (
     ModelTicketContract,
 )
 
+try:
+    from omnibase_core.enums.ticket.enum_dod_check_type import (
+        EnumDodCheckType as _EnumDodCheckType,
+    )
+
+    _SEMANTIC_GRADING_IN_CORE = hasattr(_EnumDodCheckType, "SEMANTIC_GRADING")
+except ImportError:
+    _SEMANTIC_GRADING_IN_CORE = False
+
 
 def _minimal_contract(**overrides: object) -> dict[str, object]:
     """Return minimal valid ModelTicketContract data with optional overrides."""
@@ -115,6 +124,10 @@ class TestDodCheckTypes:
         )
         assert check.check_type == "semantic_grading"
 
+    @pytest.mark.skipif(
+        not _SEMANTIC_GRADING_IN_CORE,
+        reason="requires omnibase_core EnumDodCheckType.SEMANTIC_GRADING (PR #1066)",
+    )
     def test_semantic_grading_roundtrips_via_yaml(self) -> None:
         """semantic_grading check_type survives YAML round-trip on a full contract."""
         receipt_path = "drift/dod_receipts/OMN-000/dod-001/semantic_grading.yaml"
