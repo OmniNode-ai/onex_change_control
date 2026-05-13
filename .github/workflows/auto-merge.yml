@@ -9,6 +9,15 @@
 # re-attempts auto-merge after CodeRabbit review finishes and branch
 # protection gates clear. Silent continue-on-error removed; "already
 # enqueued" races are tolerated but real failures surface.
+#
+# OMN-10485: OCC eligibility preflight gate added. Auto-merge CANNOT arm
+# until the PR's ticket has passing OCC receipts. The `occ-check` job
+# queries the latest `occ-preflight / eligibility` status check result for
+# the PR via the GitHub Checks API. If the check is missing or not SUCCESS,
+# auto-merge arming is deferred (exit 0 to avoid noise) and the workflow
+# re-triggers on the next `check_suite` completion event when the preflight
+# check finishes. On merge_group events the gate re-evaluates against the
+# current OCC main SHA (no cached PR-pass accepted).
 name: Auto-Merge
 
 on:
@@ -28,6 +37,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  checks: read
 
 jobs:
   auto-merge:
@@ -82,8 +92,61 @@ jobs:
 
       - uses: actions/checkout@v6
 
+      # OMN-10485: OCC eligibility gate.
+      # Query the `occ-preflight / eligibility` check result for the PR's head SHA.
+      # - SUCCESS → proceed to arm auto-merge.
+      # - PENDING / missing → defer silently; re-triggered when occ-preflight completes.
+      # - FAILURE → hard fail; log reason and exit 1 to surface the block.
+      # merge_group events skip this step; branch protection enforces occ-preflight
+      # as a required status check for the merge group itself.
+      - name: Check OCC eligibility preflight status
+        id: occ_gate
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.actor == 'jonahgabriel' && github.event_name != 'merge_group'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+
+          head_sha="$(gh pr view "$PR" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid')"
+          if [ -z "$head_sha" ]; then
+            echo "::warning::Could not resolve head SHA for PR #${PR}; deferring auto-merge"
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Query the Checks API for the occ-preflight / eligibility check on this SHA.
+          # The check_run name is "eligibility" (job key in occ-preflight.yml) nested
+          # under the "OCC Preflight" workflow. GitHub exposes it as "occ-preflight / eligibility".
+          check_result="$(gh api \
+            "repos/${GH_REPO}/commits/${head_sha}/check-runs" \
+            --jq '[.check_runs[] | select(.name == "eligibility" or .name == "occ-preflight / eligibility")] | sort_by(.started_at) | last | {conclusion: .conclusion, status: .status}' \
+            2>/dev/null || echo '{}')"
+
+          conclusion="$(printf '%s' "$check_result" | jq -r '.conclusion // "missing"')"
+          status="$(printf '%s' "$check_result" | jq -r '.status // "missing"')"
+
+          echo "occ-preflight status=${status} conclusion=${conclusion}"
+
+          if [ "$conclusion" = "success" ]; then
+            echo "OCC eligibility: PASS — proceeding to arm auto-merge"
+            echo "defer=false" >> "$GITHUB_OUTPUT"
+          elif [ "$conclusion" = "failure" ] || [ "$conclusion" = "action_required" ]; then
+            echo "::error::OCC PREFLIGHT FAILED for PR #${PR} (head ${head_sha}). Auto-merge will not arm until OCC eligibility is satisfied."
+            echo "::error::Add a passing receipt to drift/dod_receipts/ in onex_change_control for all dod_evidence items cited in this PR's ticket contract."
+            exit 1
+          else
+            # PENDING or missing: defer. Auto-merge workflow re-fires on check_suite completion.
+            echo "::notice::OCC preflight ${status}/${conclusion} for PR #${PR} — deferring auto-merge arming until eligibility check completes"
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enable auto-merge
-        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.actor == 'jonahgabriel'
+        if: >-
+          steps.resolve.outputs.skip != 'true' &&
+          steps.resolve.outputs.actor == 'jonahgabriel' &&
+          steps.occ_gate.outputs.defer != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
