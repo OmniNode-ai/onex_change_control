@@ -120,6 +120,29 @@ class TestCheckMigrationConflicts:
         ]
         assert detect_conflicts(tmp_path, ["repo_with_test_fixtures"]) == []
 
+    def test_tests_and_fixtures_names_are_not_global_exclusions(
+        self, tmp_path: Path
+    ) -> None:
+        """Non-fixture migration paths may legitimately use tests/fixtures names."""
+        repo = tmp_path / "repo_with_named_paths"
+        tests_named_migration = repo / "deployment" / "tests" / "migrations"
+        fixtures_named_migration = repo / "deployment" / "fixtures" / "migrations"
+        tests_named_migration.mkdir(parents=True)
+        fixtures_named_migration.mkdir(parents=True)
+        tests_sql = "CREATE TABLE test_named_orders (id UUID PRIMARY KEY);"
+        fixtures_sql = "CREATE TABLE fixture_named_orders (id UUID PRIMARY KEY);"
+        (tests_named_migration / "001_create_test_named_orders.sql").write_text(
+            tests_sql
+        )
+        (fixtures_named_migration / "001_create_fixture_named_orders.sql").write_text(
+            fixtures_sql
+        )
+
+        assert find_migration_files(tmp_path, ["repo_with_named_paths"]) == [
+            fixtures_named_migration / "001_create_fixture_named_orders.sql",
+            tests_named_migration / "001_create_test_named_orders.sql",
+        ]
+
     def test_fixture_roots_can_still_be_scanned_directly(self) -> None:
         """Unit fixture repos remain scannable when they are the explicit root."""
         migration_files = find_migration_files(FIXTURES_ROOT, ["repo_a", "repo_b"])

@@ -91,15 +91,14 @@ MIGRATION_SCAN_EXCLUDED_PATH_PARTS = frozenset(
         "__pycache__",
         "build",
         "dist",
-        "fixtures",
         "htmlcov",
         "node_modules",
         "omni_worktrees",
         "site-packages",
-        "tests",
         "venv",
     }
 )
+_MIN_TEST_FIXTURE_PATH_PARTS = 3
 
 
 class TableDefinition(NamedTuple):
@@ -190,7 +189,14 @@ def extract_tables_from_sql(sql_path: Path, repo_name: str) -> list[TableDefinit
 
 
 def _is_excluded_migration_path(relative_parts: tuple[str, ...]) -> bool:
-    return any(part in MIGRATION_SCAN_EXCLUDED_PATH_PARTS for part in relative_parts)
+    parts = tuple(part.lower() for part in relative_parts)
+    if any(part in MIGRATION_SCAN_EXCLUDED_PATH_PARTS for part in parts):
+        return True
+    return (
+        len(parts) >= _MIN_TEST_FIXTURE_PATH_PARTS
+        and parts[0] in {"test", "tests"}
+        and "fixtures" in parts[1:]
+    )
 
 
 def find_migration_files(
