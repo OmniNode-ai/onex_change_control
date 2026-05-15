@@ -77,6 +77,30 @@ CONSTRAINT_KEYWORDS = frozenset(
     }
 )
 
+MIGRATION_SCAN_EXCLUDED_PATH_PARTS = frozenset(
+    {
+        ".cache",
+        ".claude",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".turbo",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "fixtures",
+        "htmlcov",
+        "node_modules",
+        "omni_worktrees",
+        "site-packages",
+        "tests",
+        "venv",
+    }
+)
+
 
 class TableDefinition(NamedTuple):
     """A table definition extracted from a migration file."""
@@ -165,6 +189,10 @@ def extract_tables_from_sql(sql_path: Path, repo_name: str) -> list[TableDefinit
     return tables
 
 
+def _is_excluded_migration_path(relative_parts: tuple[str, ...]) -> bool:
+    return any(part in MIGRATION_SCAN_EXCLUDED_PATH_PARTS for part in relative_parts)
+
+
 def find_migration_files(
     repos_root: Path, repos: list[str] | None = None
 ) -> list[Path]:
@@ -185,7 +213,7 @@ def find_migration_files(
                 relative_parts = sql_file.relative_to(repo_dir).parts
             except ValueError:
                 relative_parts = sql_file.parts
-            if "omni_worktrees" in relative_parts:
+            if _is_excluded_migration_path(relative_parts):
                 continue
             # Skip rollback migrations
             if "rollback" in str(sql_file).lower():

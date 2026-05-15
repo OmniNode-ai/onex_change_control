@@ -12,6 +12,7 @@ from onex_change_control.scripts.check_migration_conflicts import (
     detect_conflicts,
     extract_tables_from_sql,
     filter_suppressed_conflicts,
+    find_migration_files,
     load_suppressions,
 )
 
@@ -72,6 +73,65 @@ class TestCheckMigrationConflicts:
 
         conflicts = detect_conflicts(tmp_path, ["repo_with_nested_worktree"])
         assert len(conflicts) == 0
+
+    def test_generated_dependency_and_agent_trees_are_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        """Generated dependency and agent worktree migration copies are ignored."""
+        repo = tmp_path / "repo_with_generated_trees"
+        migration = repo / "deployment" / "database" / "migrations"
+        migration.mkdir(parents=True)
+        sql = "CREATE TABLE orders (id UUID PRIMARY KEY, status TEXT NOT NULL);"
+        (migration / "001_create_orders.sql").write_text(sql)
+
+        excluded_migration_dirs = [
+            repo / ".venv" / "lib" / "python3.12" / "site-packages" / "pkg",
+            repo / ".claude" / "worktrees" / "OMN-1" / "repo_with_generated_trees",
+            repo / "node_modules" / "pkg",
+            repo / ".pytest_cache" / "pkg",
+            repo / "build" / "pkg",
+            repo / "dist" / "pkg",
+        ]
+        for excluded_dir in excluded_migration_dirs:
+            migrations = excluded_dir / "database" / "migrations"
+            migrations.mkdir(parents=True)
+            (migrations / "001_create_orders.sql").write_text(sql)
+
+        assert find_migration_files(tmp_path, ["repo_with_generated_trees"]) == [
+            migration / "001_create_orders.sql"
+        ]
+        assert detect_conflicts(tmp_path, ["repo_with_generated_trees"]) == []
+
+    def test_repo_local_test_fixture_migrations_are_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        """Repo-local test fixture migrations are ignored during real repo scans."""
+        repo = tmp_path / "repo_with_test_fixtures"
+        migration = repo / "deployment" / "database" / "migrations"
+        fixture_migration = repo / "tests" / "fixtures" / "repo_a" / "migrations"
+        migration.mkdir(parents=True)
+        fixture_migration.mkdir(parents=True)
+        sql = "CREATE TABLE orders (id UUID PRIMARY KEY, status TEXT NOT NULL);"
+        (migration / "001_create_orders.sql").write_text(sql)
+        (fixture_migration / "001_create_orders.sql").write_text(sql)
+
+        assert find_migration_files(tmp_path, ["repo_with_test_fixtures"]) == [
+            migration / "001_create_orders.sql"
+        ]
+        assert detect_conflicts(tmp_path, ["repo_with_test_fixtures"]) == []
+
+    def test_fixture_roots_can_still_be_scanned_directly(self) -> None:
+        """Unit fixture repos remain scannable when they are the explicit root."""
+        migration_files = find_migration_files(FIXTURES_ROOT, ["repo_a", "repo_b"])
+
+        assert {
+            path.relative_to(FIXTURES_ROOT).as_posix() for path in migration_files
+        } == {
+            "repo_a/deployment/database/migrations/001_create_users.sql",
+            "repo_a/deployment/database/migrations/002_create_sessions.sql",
+            "repo_b/deployment/database/migrations/001_create_users.sql",
+            "repo_b/deployment/database/migrations/002_create_sessions.sql",
+        }
 
     def test_multi_table_no_false_positive(self) -> None:
         """Multiple tables in same file should not trigger false positives."""
