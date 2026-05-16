@@ -353,3 +353,36 @@ class TestHandlerInfraConsistency:
             if c.check == EnumDodSweepCheck.INFRA_CONSISTENCY
         )
         assert infra_check.status == EnumInvariantStatus.FAIL
+
+    def test_cron_ticket_is_not_skipped_by_rollout_exemption(
+        self, tmp_path: Path
+    ) -> None:
+        exemptions_file = tmp_path / "exemptions.yaml"
+        exemptions_file.write_text("cutoff_date: '2026-03-23'\nexemptions: []\n")
+        (tmp_path / "OMN-4104.yaml").write_text(
+            "summary: update scripts/cron-closeout.sh\n"
+        )
+        fake_tickets = [
+            {
+                "id": "OMN-4104",
+                "title": "Update cron-closeout.sh",
+                "completedAt": "2026-03-01",
+            }
+        ]
+
+        with patch(
+            "onex_change_control.handlers.handler_dod_sweep.fetch_completed_tickets",
+            return_value=fake_tickets,
+        ):
+            result = run_dod_sweep(
+                contracts_dir=tmp_path,
+                since_days=90,
+                exemptions_path=exemptions_file,
+                api_key="test-key",
+            )
+
+        assert result.tickets[0].exempted is False
+        assert any(
+            c.check == EnumDodSweepCheck.INFRA_CONSISTENCY
+            for c in result.tickets[0].checks
+        )

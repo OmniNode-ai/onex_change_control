@@ -320,15 +320,25 @@ def _canonical_receipt_files(ticket_id: str, contracts_dir: Path) -> list[Path]:
     return sorted(canonical_dir.rglob("*.yaml"))
 
 
-def _ticket_mentions_cron_script(ticket_id: str, contracts_dir: Path) -> bool:
+def _text_mentions_cron_script(text: str) -> bool:
+    """Return whether text references a governed cron script."""
+    lower_text = text.lower()
+    return any(name in lower_text for name in _CRON_SCRIPT_NAMES)
+
+
+def _ticket_mentions_cron_script(
+    ticket_id: str,
+    contracts_dir: Path,
+    *,
+    extra_text: str = "",
+) -> bool:
     """Return whether the central contract or receipts reference a cron script."""
     contract_text = _read_text_if_present(contracts_dir / f"{ticket_id}.yaml")
     receipt_text = "\n".join(
         _read_text_if_present(path)
         for path in _canonical_receipt_files(ticket_id, contracts_dir)
     )
-    combined = f"{contract_text}\n{receipt_text}".lower()
-    return any(name in combined for name in _CRON_SCRIPT_NAMES)
+    return _text_mentions_cron_script(f"{extra_text}\n{contract_text}\n{receipt_text}")
 
 
 def _discover_local_cron_scripts(contracts_dir: Path) -> list[Path]:
@@ -465,9 +475,14 @@ def _audit_ticket_structured(
     """
     ticket_id = ticket["id"]
     completed_at = ticket.get("completedAt", "") or ticket.get("completed_at", "")
+    cron_script_applicable = _ticket_mentions_cron_script(
+        ticket_id,
+        contracts_dir,
+        extra_text=ticket.get("title", ""),
+    )
 
     exemption_reason = is_exempt(ticket_id, completed_at, cutoff_date, exempt_ids)
-    if exemption_reason:
+    if exemption_reason and not cron_script_applicable:
         return ModelDodSweepTicketResult(
             ticket_id=ticket_id,
             title=ticket.get("title", ""),
