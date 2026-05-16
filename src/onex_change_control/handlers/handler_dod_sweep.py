@@ -357,7 +357,11 @@ def _discover_local_cron_scripts(contracts_dir: Path) -> list[Path]:
 
 def scan_cron_script_infra_consistency(script_path: Path) -> tuple[str, str]:
     """Verify one cron script does not mix INFRA_HOST and localhost references."""
-    content = script_path.read_text(encoding="utf-8")
+    try:
+        content = script_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return "FAIL", f"unreadable cron script: {script_path}: {exc}"
+
     infra_lines: list[int] = []
     localhost_lines: list[int] = []
 

@@ -261,6 +261,17 @@ class TestHandlerInfraConsistency:
         assert status == "PASS"
         assert "INFRA_HOST consistently" in detail
 
+    def test_scan_cron_script_unreadable_path_fails_deterministically(
+        self, tmp_path: Path
+    ) -> None:
+        script = tmp_path / "cron-closeout.sh"
+        with patch.object(Path, "read_text", side_effect=OSError("permission denied")):
+            status, detail = scan_cron_script_infra_consistency(script)
+
+        assert status == "FAIL"
+        assert "unreadable cron script" in detail
+        assert "permission denied" in detail
+
     def test_non_cron_ticket_has_no_infra_consistency_check(
         self, tmp_path: Path
     ) -> None:
