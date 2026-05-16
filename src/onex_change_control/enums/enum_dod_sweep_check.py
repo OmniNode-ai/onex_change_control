@@ -1,26 +1,23 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""DoD Sweep Check Types.
-
-The 6 per-ticket checks performed during a DoD compliance sweep,
-organized into two confidence tiers (primary artifact checks and
-supporting operational checks).
-"""
+"""DoD Sweep Check Types."""
 
 from enum import Enum, unique
 
 
 @unique
 class EnumDodSweepCheck(str, Enum):
-    """The 6 hard-fail checks performed per ticket during a DoD sweep.
+    """Hard-fail checks performed per ticket during a DoD sweep.
 
     Checks are organized into two confidence tiers:
     - Primary (artifact checks): CONTRACT_EXISTS, RECEIPT_EXISTS, RECEIPT_CLEAN
       High confidence -- deterministic file existence + content parsing.
-    - Supporting (operational checks): PR_MERGED, CI_GREEN, INTEGRATION_SWEEP_EVIDENCE
-      Medium confidence -- depends on cross-repo search and SHA linkage.
-      Should record UNKNOWN (not FAIL) when linkage cannot be established.
+    - Supporting (operational checks): PR_MERGED, CI_GREEN,
+      INTEGRATION_SWEEP_EVIDENCE, INFRA_CONSISTENCY. Medium confidence --
+      depends on cross-repo search, SHA linkage, or proof receipts.
+      Should record UNKNOWN (not FAIL) when linkage cannot be established,
+      except for ticket-applicable hard evidence requirements.
     """
 
     CONTRACT_EXISTS = "contract_exists"
@@ -40,6 +37,9 @@ class EnumDodSweepCheck(str, Enum):
 
     INTEGRATION_SWEEP_EVIDENCE = "integration_sweep_evidence"
     """Integration sweep evidence linked to the ticket exists."""
+
+    INFRA_CONSISTENCY = "infra_consistency"
+    """Cron script infrastructure references are consistent and receipt-backed."""
 
     def __str__(self) -> str:
         """Return the string value for serialization."""

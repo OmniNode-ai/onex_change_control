@@ -16,6 +16,7 @@ so both the handler and the script can import from it.
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -52,6 +53,18 @@ sites must move together. After this date the legacy
 ``.evidence/<TICKET>/dod_report.json`` shape is rejected outright. See
 ``docs/RECEIPT_LOCATIONS.md`` for the migration path.
 """
+
+_CRON_SCRIPT_NAMES = ("cron-closeout.sh", "cron-buildloop.sh")
+_INFRA_HOST_PATTERN = re.compile(r"\bINFRA_HOST\b", re.IGNORECASE)
+_LOCALHOST_PATTERN = re.compile(r"\b(?:localhost|127\.0\.0\.1)\b", re.IGNORECASE)
+_PASS_STATUS_PATTERN = re.compile(r"(?im)^\s*status:\s*[\"']?PASS[\"']?\s*$")
+_INFRA_RECEIPT_MARKERS = (
+    "infra_consistency",
+    "infra consistency",
+    "INFRA_CONSISTENCY",
+    "check_closeout_phase_compliance",
+    "CLOSEOUT PHASE COMPLIANCE",
+)
 
 # ---------------------------------------------------------------------------
 # Linear GraphQL client (stdlib-only, lifted from scripts/check_dod_compliance.py)
@@ -290,6 +303,133 @@ def check_receipt_clean(ticket_id: str, contracts_dir: Path) -> tuple[str, str]:
         return "FAIL", f"Receipt has {failed} failure(s)"
 
 
+def _read_text_if_present(path: Path) -> str:
+    """Return UTF-8 text for an optional artifact, or an empty string."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _canonical_receipt_files(ticket_id: str, contracts_dir: Path) -> list[Path]:
+    """Return canonical receipt YAML files for a ticket."""
+    repo_root = contracts_dir.parent
+    canonical_dir = repo_root / "drift" / "dod_receipts" / ticket_id
+    if not canonical_dir.is_dir():
+        return []
+    return sorted(canonical_dir.rglob("*.yaml"))
+
+
+def _ticket_mentions_cron_script(ticket_id: str, contracts_dir: Path) -> bool:
+    """Return whether the central contract or receipts reference a cron script."""
+    contract_text = _read_text_if_present(contracts_dir / f"{ticket_id}.yaml")
+    receipt_text = "\n".join(
+        _read_text_if_present(path)
+        for path in _canonical_receipt_files(ticket_id, contracts_dir)
+    )
+    combined = f"{contract_text}\n{receipt_text}".lower()
+    return any(name in combined for name in _CRON_SCRIPT_NAMES)
+
+
+def _discover_local_cron_scripts(contracts_dir: Path) -> list[Path]:
+    """Find cron scripts inside the repo under audit, if present."""
+    repo_root = contracts_dir.parent
+    candidates: list[Path] = []
+    for script_name in _CRON_SCRIPT_NAMES:
+        candidates.extend(
+            [
+                repo_root / "scripts" / script_name,
+                repo_root / script_name,
+            ]
+        )
+    return [path for path in candidates if path.is_file()]
+
+
+def scan_cron_script_infra_consistency(script_path: Path) -> tuple[str, str]:
+    """Verify one cron script does not mix INFRA_HOST and localhost references."""
+    content = script_path.read_text(encoding="utf-8")
+    infra_lines: list[int] = []
+    localhost_lines: list[int] = []
+
+    for line_number, line in enumerate(content.splitlines(), start=1):
+        if _INFRA_HOST_PATTERN.search(line):
+            infra_lines.append(line_number)
+        if _LOCALHOST_PATTERN.search(line):
+            localhost_lines.append(line_number)
+
+    if infra_lines and localhost_lines:
+        return (
+            "FAIL",
+            (
+                f"{script_path} mixes INFRA_HOST lines {infra_lines} with "
+                f"localhost lines {localhost_lines}"
+            ),
+        )
+    if infra_lines:
+        return "PASS", f"{script_path} uses INFRA_HOST consistently"
+    if localhost_lines:
+        return "PASS", f"{script_path} uses localhost consistently"
+    return "FAIL", f"{script_path} has no INFRA_HOST or localhost references"
+
+
+def _has_infra_consistency_receipt(
+    ticket_id: str,
+    contracts_dir: Path,
+) -> tuple[bool, str]:
+    """Check for canonical PASS receipt evidence for cron infra consistency."""
+    receipt_files = _canonical_receipt_files(ticket_id, contracts_dir)
+    for receipt_file in receipt_files:
+        text = _read_text_if_present(receipt_file)
+        if not _PASS_STATUS_PATTERN.search(text):
+            continue
+        if any(marker in text for marker in _INFRA_RECEIPT_MARKERS):
+            return True, f"INFRA_CONSISTENCY PASS receipt found: {receipt_file}"
+    return (
+        False,
+        (
+            "cron script change requires canonical PASS receipt evidence for "
+            "INFRA_CONSISTENCY"
+        ),
+    )
+
+
+def check_infra_consistency(
+    ticket_id: str,
+    contracts_dir: Path,
+    *,
+    cron_script_paths: list[Path] | None = None,
+) -> tuple[str, str] | None:
+    """Check cron-script infrastructure consistency and evidence.
+
+    Returns ``None`` when the ticket is not cron-script applicable, so the
+    sweep can avoid turning unrelated tickets UNKNOWN solely because a
+    cron-only check exists.
+    """
+    explicit_paths = cron_script_paths or []
+    local_paths = explicit_paths or _discover_local_cron_scripts(contracts_dir)
+    applies = bool(local_paths) or _ticket_mentions_cron_script(
+        ticket_id, contracts_dir
+    )
+    if not applies:
+        return None
+
+    for script_path in local_paths:
+        status, detail = scan_cron_script_infra_consistency(script_path)
+        if status == "FAIL":
+            return status, detail
+
+    has_receipt, receipt_detail = _has_infra_consistency_receipt(
+        ticket_id, contracts_dir
+    )
+    if not has_receipt:
+        return "FAIL", receipt_detail
+
+    if local_paths:
+        scanned = ", ".join(str(path) for path in local_paths)
+        return "PASS", f"{receipt_detail}; scanned {scanned}"
+    return "PASS", receipt_detail
+
+
 # ---------------------------------------------------------------------------
 # Status conversion
 # ---------------------------------------------------------------------------
@@ -364,6 +504,19 @@ def _audit_ticket_structured(
             detail=clean_detail,
         )
     )
+    infra_consistency_result = check_infra_consistency(
+        ticket_id,
+        contracts_dir,
+    )
+    if infra_consistency_result is not None:
+        infra_status, infra_detail = infra_consistency_result
+        checks.append(
+            ModelDodSweepCheckResult(
+                check=EnumDodSweepCheck.INFRA_CONSISTENCY,
+                status=_status_from_tuple((infra_status, infra_detail)),
+                detail=infra_detail,
+            )
+        )
 
     return ModelDodSweepTicketResult(
         ticket_id=ticket_id,
@@ -391,7 +544,6 @@ def run_dod_sweep(
         now: Injected wall-clock used both for the look-back-window anchor
             and for the OMN-9791 legacy-receipt cutoff. ``None`` resolves at
             call time to ``datetime.now(tz=UTC)``.
-
     Returns:
         ModelDodSweepResult with per-ticket check results and aggregate status.
     """
@@ -407,7 +559,11 @@ def run_dod_sweep(
 
     ticket_results = [
         _audit_ticket_structured(
-            t, contracts_dir, cutoff_date, exempt_ids, now=effective_now
+            t,
+            contracts_dir,
+            cutoff_date,
+            exempt_ids,
+            now=effective_now,
         )
         for t in tickets
     ]
