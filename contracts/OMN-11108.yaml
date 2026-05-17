@@ -1,0 +1,98 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-11108"
+title: "feat(OMN-11108): Overlay Config Wave 2/3 — overlay config infrastructure"
+summary: >-
+  Implements the full overlay config infrastructure in omnibase_infra (Wave 2/3 of the overlay rollout
+  begun under OMN-11069). Adds OverlayFileLoader (YAML parse + schema + chmod 600 enforcement), OverlayConfigResolver
+  (PURE resolution against contract dependencies[], zero os.environ mutation, fails-closed on bad contracts),
+  boot_overlay (sole env mutation authority with 5-path cold-start branching), OverlayWriter (deterministic
+  atomic write, sorted enum + key iteration), overlay_from_env onboarding helper, and ModelOnboardingOutput
+  extension. Sibling work of OMN-11069 — same module tree (src/omnibase_infra/runtime/overlay/), consistent
+  error taxonomy, same evidence patterns.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: "tests"
+    description: "20 overlay integration tests pass — full pipeline, all cold-start branches, replay determinism,
+      insertion-order independence, onboarding round-trip, resolver purity invariant."
+    command: >-
+      uv run pytest tests/integration/overlay/ -v
+  - kind: "manual"
+    description: "Resolver fails-closed on unreadable/invalid contract.yaml (ContractParseError) rather
+      than silently under-reporting required_keys."
+    command: "See drift/dod_receipts/OMN-11108/dod-resolver-fail-closed/command.yaml"
+  - kind: "manual"
+    description: "OverlayFileLoader rejects directory-shaped paths and sanitizes parser/Pydantic error
+      text (raw exception logged at DEBUG; raised message contains path only)."
+    command: "See drift/dod_receipts/OMN-11108/dod-loader-hardening/command.yaml"
+  - kind: "manual"
+    description: "OverlayWriter no longer emits secret_count log line; CodeQL clear-text-logging-sensitive-data
+      alert 1175 resolved."
+    command: "See drift/dod_receipts/OMN-11108/dod-codeql-alert-1175/command.yaml"
+  - kind: "manual"
+    description: "Overlay modules importable from the runtime image after deploy."
+    command: "See drift/dod_receipts/OMN-11108/dod-overlay-runtime-deploy/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-overlay-runtime-deploy"
+    description: >-
+      Overlay infrastructure modules (OverlayFileLoader, OverlayConfigResolver, boot_overlay, OverlayWriter,
+      overlay_from_env) importable from the omninode-runtime image after deploy of omnibase_infra PR #1623.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          docker exec omninode-runtime python -c "from omnibase_infra.runtime.overlay.boot_overlay import
+          load_overlay_config; from omnibase_infra.runtime.overlay.overlay_config_resolver import OverlayConfigResolver;
+          from omnibase_infra.runtime.overlay.overlay_file_loader import OverlayFileLoader; from omnibase_infra.runtime.overlay.overlay_writer
+          import OverlayWriter; from omnibase_infra.runtime.overlay.overlay_from_env import overlay_from_env_dict;
+          print('overlay deploy ok')"
+  - id: "dod-overlay-integration-tests"
+    description: "20 overlay integration tests pass on PR #1623."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f drift/dod_receipts/OMN-11108/dod-overlay-integration-tests/command.yaml && grep -q '^status:
+          PASS$' drift/dod_receipts/OMN-11108/dod-overlay-integration-tests/command.yaml && grep -q 'pr_number:
+          1623' drift/dod_receipts/OMN-11108/dod-overlay-integration-tests/command.yaml
+  - id: "dod-resolver-fail-closed"
+    description: "OverlayConfigResolver raises ContractParseError on unreadable or malformed contract.yaml
+      rather than silently skipping (PR #1623)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f drift/dod_receipts/OMN-11108/dod-resolver-fail-closed/command.yaml && grep -q '^status:
+          PASS$' drift/dod_receipts/OMN-11108/dod-resolver-fail-closed/command.yaml
+  - id: "dod-loader-hardening"
+    description: "OverlayFileLoader rejects directory-shaped paths and sanitizes parser exception detail
+      (PR #1623)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f drift/dod_receipts/OMN-11108/dod-loader-hardening/command.yaml && grep -q '^status:
+          PASS$' drift/dod_receipts/OMN-11108/dod-loader-hardening/command.yaml
+  - id: "dod-codeql-alert-1175"
+    description: "CodeQL clear-text-logging-sensitive-data alert 1175 in overlay_writer.py resolved by
+      removing the secret_count log line (PR #1623)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f drift/dod_receipts/OMN-11108/dod-codeql-alert-1175/command.yaml && grep -q '^status:
+          PASS$' drift/dod_receipts/OMN-11108/dod-codeql-alert-1175/command.yaml
+  - id: "dod-occ-pr"
+    description: "onex_change_control PR carries the OMN-11108 contract and receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-11108/dod-occ-pr/command.yaml
