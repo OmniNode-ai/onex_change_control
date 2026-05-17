@@ -5,7 +5,7 @@
 
 Pydantic schemas for /dod-sweep compliance results.
 ModelDodSweepCheckResult represents a single check outcome;
-ModelDodSweepTicketResult aggregates all 6 checks for one ticket;
+ModelDodSweepTicketResult aggregates the applicable checks for one ticket;
 ModelDodSweepResult aggregates all ticket results into a sweep report.
 
 Exemption semantics:
@@ -43,7 +43,7 @@ class ModelDodSweepCheckResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     check: EnumDodSweepCheck = Field(
-        ..., description="Which of the 6 DoD checks this result is for"
+        ..., description="Which DoD check this result is for"
     )
     status: EnumInvariantStatus = Field(
         ..., description="Check result: PASS, FAIL, or UNKNOWN"
@@ -92,7 +92,7 @@ class ModelDodSweepTicketResult(BaseModel):
         default=None, description="ISO date when ticket was completed"
     )
     checks: list[ModelDodSweepCheckResult] = Field(
-        ..., description="Results for all 6 DoD checks", max_length=10
+        ..., description="Results for all applicable DoD checks", max_length=10
     )
     overall_status: EnumInvariantStatus = Field(
         default=EnumInvariantStatus.UNKNOWN,

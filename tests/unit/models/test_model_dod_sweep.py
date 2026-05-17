@@ -4,7 +4,7 @@
 """Unit tests for DoD sweep models.
 
 Tests cover:
-1. ModelDodSweepCheckResult -- all 6 check types, all 3 statuses
+1. ModelDodSweepCheckResult -- all check types, all 3 statuses
 2. ModelDodSweepTicketResult -- derived overall_status (all pass, any fail, mixed)
 3. ModelDodSweepResult -- derived aggregates, SemVer validation, date validation
 4. Frozen immutability -- attempting to set attributes raises TypeError
@@ -73,7 +73,7 @@ class TestModelDodSweepCheckResult:
     """Tests for individual check results."""
 
     def test_all_check_types_accepted(self) -> None:
-        """All 6 EnumDodSweepCheck values are accepted."""
+        """All EnumDodSweepCheck values are accepted."""
         for check_type in EnumDodSweepCheck:
             result = _check(check_type, EnumInvariantStatus.PASS)
             assert result.check == check_type
@@ -106,7 +106,7 @@ class TestModelDodSweepTicketResult:
     """Tests for per-ticket result aggregation."""
 
     def test_overall_pass_when_all_pass(self) -> None:
-        """overall_status is PASS when all 6 checks pass."""
+        """overall_status is PASS when all checks pass."""
         t = _ticket("OMN-1001", _all_pass_checks())
         assert t.overall_status == EnumInvariantStatus.PASS
 
