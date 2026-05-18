@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-8768"
+title: "S21: Tier 2 skill thinning — remaining partial-ports (batch by domain)"
+summary: >
+  Thin 14 Tier 2 skill shims to dispatch-only by removing all inline LLM orchestration, gh CLI mutations,
+  database queries, and Linear API calls from hostile_reviewer, pr_review, auto_merge, pr_polish, coderabbit_triage,
+  design_to_plan, plan_to_tickets, create_ticket, linear_housekeeping, dod_verify, database_sweep, coverage_sweep,
+  doc_freshness_sweep, and duplication_sweep. Each shim now routes exclusively to its backing omnimarket
+  node via onex run-node. S18 AST lint gate passes for all 14 shims. Delivery via omniclaude PR #1599.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1599 open on OmniNode-ai/omniclaude"
+    command: "gh pr view 1599 --repo OmniNode-ai/omniclaude --json state --jq '.state'"
+  - kind: "manual"
+    description: "Zero LLM SDK imports in all 14 thinned prompt.md files"
+    command: "grep -rE 'anthropic|openai|google.generativeai' plugins/onex/skills/hostile_reviewer/prompt.md
+      plugins/onex/skills/pr_review/prompt.md plugins/onex/skills/auto_merge/prompt.md plugins/onex/skills/pr_polish/prompt.md
+      plugins/onex/skills/coderabbit_triage/prompt.md plugins/onex/skills/design_to_plan/prompt.md plugins/onex/skills/plan_to_tickets/prompt.md
+      plugins/onex/skills/create_ticket/prompt.md plugins/onex/skills/linear_housekeeping/prompt.md plugins/onex/skills/dod_verify/prompt.md
+      plugins/onex/skills/database_sweep/prompt.md plugins/onex/skills/coverage_sweep/prompt.md plugins/onex/skills/doc_freshness_sweep/prompt.md
+      plugins/onex/skills/duplication_sweep/prompt.md"
+  - kind: "manual"
+    description: "Each shim dispatches via onex run-node to its backing node"
+    command: "grep -l 'onex run-node' plugins/onex/skills/hostile_reviewer/prompt.md plugins/onex/skills/pr_review/prompt.md
+      plugins/onex/skills/auto_merge/prompt.md plugins/onex/skills/pr_polish/prompt.md plugins/onex/skills/coderabbit_triage/prompt.md
+      plugins/onex/skills/design_to_plan/prompt.md plugins/onex/skills/plan_to_tickets/prompt.md plugins/onex/skills/create_ticket/prompt.md
+      plugins/onex/skills/linear_housekeeping/prompt.md plugins/onex/skills/dod_verify/prompt.md plugins/onex/skills/database_sweep/prompt.md
+      plugins/onex/skills/coverage_sweep/prompt.md plugins/onex/skills/doc_freshness_sweep/prompt.md plugins/onex/skills/duplication_sweep/prompt.md
+      | wc -l"
+  - kind: "manual"
+    description: "5026 unit tests passing"
+    command: "uv run pytest tests/unit/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-shims-dispatch-only"
+    description: "All 14 shims are dispatch-only with zero LLM SDK imports"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-8768/dod-shims-dispatch-only/command.yaml\""
+  - id: "dod-onex-run-node-dispatch"
+    description: "All 14 shims dispatch via onex run-node to their backing node"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-8768/dod-onex-run-node-dispatch/command.yaml\""
+  - id: "dod-unit-tests-pass"
+    description: "5026 unit tests passing after S21 thinning"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-8768/dod-unit-tests-pass/command.yaml\""
+  - id: "dod-precommit-clean"
+    description: "Pre-commit hooks pass including S18 AST lint gate"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-8768/dod-precommit-clean/command.yaml\""
+  - id: "dod-occ-pr"
+    description: "Self-binding receipt for this OCC PR."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo OmniNode-ai/onex_change_control --json state -q '.state'
+          | grep -q OPEN"
