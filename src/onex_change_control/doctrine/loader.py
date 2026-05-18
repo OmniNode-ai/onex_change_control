@@ -20,10 +20,6 @@ _DEFAULT_CLAUSES_PATH = (
 
 CoverageStatus = Literal["enforced", "advisory", "uncovered"]
 
-_REQUIRED_FIELDS = frozenset(
-    {"clause_id", "title", "description", "doctrine_section", "check", "coverage"}
-)
-
 
 class DoctrineClause(BaseModel):
     """Machine-readable representation of a single doctrine clause."""
