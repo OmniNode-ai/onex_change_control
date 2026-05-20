@@ -9,6 +9,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Zone filter (OMN-10475): short-circuit heavy jobs on docs-only and
+  # declarative-evidence-only PRs. Most OCC traffic is contract+receipt
+  # YAML in contracts/ and drift/dod_receipts/, both DOCS zone now.
+  zone-filter:
+    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      python-version: "3.12"
+
   pre-commit:
     name: Pre-commit
     runs-on: >-
@@ -31,6 +42,8 @@ jobs:
     # Pre-commit hook runs mypy only on changed files (pre-push stage), while this job
     # checks the entire codebase (src/ and tests/) to catch type errors across all files.
     name: Type Check
+    needs: zone-filter
+    if: needs.zone-filter.outputs.docs_only != 'true'
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -95,6 +108,8 @@ jobs:
 
   test:
     name: Tests
+    needs: zone-filter
+    if: needs.zone-filter.outputs.docs_only != 'true'
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -119,7 +134,12 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [test, contract-compliance]  # Fail fast if tests don't pass
+    needs: [zone-filter, test, contract-compliance]
+    # Run when test was successful or skipped (zone-filter docs-only path).
+    # Skip only when contract-compliance failed/cancelled or test outright failed.
+    if: |
+      always() && needs.contract-compliance.result == 'success'
+        && (needs.test.result == 'success' || needs.test.result == 'skipped')
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-uv
@@ -556,7 +576,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [pre-commit, type-check, schema-purity, no-localhost-fallbacks, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts]
     if: always()
     steps:
       - name: Check all jobs passed
