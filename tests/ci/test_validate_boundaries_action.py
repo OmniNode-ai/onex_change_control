@@ -53,8 +53,11 @@ def test_validate_boundaries_scopes_migration_conflicts_to_migration_diffs() -> 
     assert scope_step["id"] == "scope"
     assert "GITHUB_EVENT_NAME" in scope_step["run"]
     assert "docker/migrations/.+\\.sql" in scope_step["run"]
+    assert "UNKNOWN_CHECK_REQUESTED=false" in scope_step["run"]
+    assert "UNKNOWN_CHECK_REQUESTED=true" in scope_step["run"]
     assert "MIGRATION_CONFLICTS_SHOULD_RUN=false" in scope_step["run"]
     assert "SHOULD_RUN_BOUNDARY_CHECKS=false" in scope_step["run"]
+    assert '"${UNKNOWN_CHECK_REQUESTED}" == "true"' in scope_step["run"]
 
     gated_step_names = {
         "Checkout onex_change_control validators",
