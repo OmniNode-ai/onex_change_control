@@ -193,11 +193,15 @@ FOUND_VIOLATION=0
 # CI runs pre-commit with --all-files, which includes historical contracts that
 # intentionally document removed skip-token forms. Enforce the current PR/staged
 # surface instead of re-litigating legacy evidence that predates this hook.
+base_ref="${GITHUB_BASE_REF:-main}"
+if ! git rev-parse --verify "origin/${base_ref}" >/dev/null 2>&1; then
+    git fetch --no-tags --depth=1 origin "${base_ref}:refs/remotes/origin/${base_ref}" >/dev/null 2>&1 || true
+fi
 changed_files="$(
     {
         git diff --cached --name-only 2>/dev/null || true
-        if git rev-parse --verify origin/main >/dev/null 2>&1; then
-            git diff --name-only origin/main...HEAD 2>/dev/null || true
+        if git rev-parse --verify "origin/${base_ref}" >/dev/null 2>&1; then
+            git diff --name-only "origin/${base_ref}...HEAD" 2>/dev/null || true
         fi
     } | sort -u
 )"
