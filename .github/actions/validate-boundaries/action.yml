@@ -41,8 +41,62 @@ runs:
   steps:
     - name: Checkout calling repository
       uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Detect boundary validation scope
+      id: scope
+      shell: bash
+      run: |
+        BOUNDARY_PARITY_REQUESTED=false
+        MIGRATION_CONFLICTS_REQUESTED=false
+        UNKNOWN_CHECK_REQUESTED=false
+        IFS=',' read -ra CHECKS <<< "${{ inputs.checks }}"
+        for check in "${CHECKS[@]}"; do
+          check=$(echo "$check" | xargs)
+          case "$check" in
+            boundary-parity)
+              BOUNDARY_PARITY_REQUESTED=true
+              ;;
+            migration-conflicts)
+              MIGRATION_CONFLICTS_REQUESTED=true
+              ;;
+            *)
+              if [[ -n "$check" ]]; then
+                UNKNOWN_CHECK_REQUESTED=true
+              fi
+              ;;
+          esac
+        done
+
+        MIGRATION_CONFLICTS_SHOULD_RUN="${MIGRATION_CONFLICTS_REQUESTED}"
+        if [[ "${MIGRATION_CONFLICTS_REQUESTED}" == "true" && "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+          BASE_SHA="$(jq -r '.pull_request.base.sha // empty' "${GITHUB_EVENT_PATH}")"
+          if [[ -z "${BASE_SHA}" ]]; then
+            echo "::warning::Could not resolve pull request base SHA; running migration-conflicts conservatively."
+          elif ! git fetch --no-tags --depth=1 origin "${BASE_SHA}"; then
+            echo "::warning::Could not fetch pull request base SHA; running migration-conflicts conservatively."
+          else
+            git diff --name-only "${BASE_SHA}"...HEAD > changed.txt
+            if grep -Eq '^docker/migrations/.+\.sql$' changed.txt; then
+              echo "SQL migration files changed; migration-conflicts will run."
+            else
+              echo "No SQL migration files changed; migration-conflicts will be skipped."
+              MIGRATION_CONFLICTS_SHOULD_RUN=false
+            fi
+          fi
+        fi
+
+        SHOULD_RUN_BOUNDARY_CHECKS=false
+        if [[ "${BOUNDARY_PARITY_REQUESTED}" == "true" || "${MIGRATION_CONFLICTS_SHOULD_RUN}" == "true" || "${UNKNOWN_CHECK_REQUESTED}" == "true" ]]; then
+          SHOULD_RUN_BOUNDARY_CHECKS=true
+        fi
+
+        echo "migration_conflicts_should_run=${MIGRATION_CONFLICTS_SHOULD_RUN}" >> "$GITHUB_OUTPUT"
+        echo "should_run_boundary_checks=${SHOULD_RUN_BOUNDARY_CHECKS}" >> "$GITHUB_OUTPUT"
 
     - name: Checkout onex_change_control validators
+      if: steps.scope.outputs.should_run_boundary_checks == 'true'
       uses: actions/checkout@v6
       with:
         repository: OmniNode-ai/onex_change_control
@@ -55,22 +109,26 @@ runs:
           uv.lock
 
     - name: Set up Python
+      if: steps.scope.outputs.should_run_boundary_checks == 'true'
       uses: actions/setup-python@v5
       with:
         python-version: "3.12"
 
     - name: Install uv
+      if: steps.scope.outputs.should_run_boundary_checks == 'true'
       uses: astral-sh/setup-uv@v5
       with:
         version: "latest"
 
     - name: Install onex_change_control
+      if: steps.scope.outputs.should_run_boundary_checks == 'true'
       shell: bash
       run: |
         cd .onex_change_control
         uv sync --no-group dev
 
     - name: Clone peer repos
+      if: steps.scope.outputs.should_run_boundary_checks == 'true'
       id: clone
       shell: bash
       run: |
@@ -96,6 +154,7 @@ runs:
         echo "degraded=${DEGRADED}" >> "$GITHUB_OUTPUT"
 
     - name: Symlink calling repo into workspace
+      if: steps.scope.outputs.should_run_boundary_checks == 'true'
       shell: bash
       run: |
         # Extract repo name from GITHUB_REPOSITORY (e.g., OmniNode-ai/omnibase_infra -> omnibase_infra)
@@ -106,6 +165,7 @@ runs:
         echo "Symlinked ${REPO_NAME} -> $GITHUB_WORKSPACE"
 
     - name: Run boundary checks
+      if: steps.scope.outputs.should_run_boundary_checks == 'true'
       shell: bash
       run: |
         FAILURE_COUNT=0
@@ -136,6 +196,10 @@ runs:
               cd ..
               ;;
             migration-conflicts)
+              if [[ "${{ steps.scope.outputs.migration_conflicts_should_run }}" != "true" ]]; then
+                echo "migration-conflicts: SKIPPED — no SQL migration files changed"
+                continue
+              fi
               echo "::group::Running migration-conflicts check"
               cd .onex_change_control
               if uv run check-migration-conflicts --repos-root /tmp/omni_repos --check-columns --warn-only; then

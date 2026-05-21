@@ -40,3 +40,42 @@ def test_validate_boundaries_clone_token_base64_is_portable() -> None:
 
     assert "base64 | tr -d '\\n'" in action_text
     assert "base64 -w0" not in action_text
+
+
+def test_validate_boundaries_scopes_migration_conflicts_to_migration_diffs() -> None:
+    """Non-migration PRs should not fail on existing cross-repo schema drift."""
+    action = _load_action()
+    steps = action["runs"]["steps"]
+
+    scope_step = next(
+        step for step in steps if step.get("name") == "Detect boundary validation scope"
+    )
+    assert scope_step["id"] == "scope"
+    assert "GITHUB_EVENT_NAME" in scope_step["run"]
+    assert "docker/migrations/.+\\.sql" in scope_step["run"]
+    assert "UNKNOWN_CHECK_REQUESTED=false" in scope_step["run"]
+    assert "UNKNOWN_CHECK_REQUESTED=true" in scope_step["run"]
+    assert "MIGRATION_CONFLICTS_SHOULD_RUN=false" in scope_step["run"]
+    assert "SHOULD_RUN_BOUNDARY_CHECKS=false" in scope_step["run"]
+    assert '"${UNKNOWN_CHECK_REQUESTED}" == "true"' in scope_step["run"]
+
+    gated_step_names = {
+        "Checkout onex_change_control validators",
+        "Set up Python",
+        "Install uv",
+        "Install onex_change_control",
+        "Clone peer repos",
+        "Symlink calling repo into workspace",
+        "Run boundary checks",
+    }
+    for step in steps:
+        if step.get("name") in gated_step_names:
+            assert step["if"] == (
+                "steps.scope.outputs.should_run_boundary_checks == 'true'"
+            )
+
+    boundary_step = next(
+        step for step in steps if step.get("name") == "Run boundary checks"
+    )
+    assert "migration-conflicts: SKIPPED" in boundary_step["run"]
+    assert "steps.scope.outputs.migration_conflicts_should_run" in boundary_step["run"]
