@@ -46,10 +46,10 @@ def test_occ_preflight_caller_triggers_on_prs_and_merge_group() -> None:
 
 
 @pytest.mark.unit
-def test_occ_preflight_caller_targets_main_branch() -> None:
+def test_occ_preflight_caller_targets_promotion_branches() -> None:
     workflow = _load_workflow(PREFLIGHT_CALLER)
     triggers = workflow["on"]
-    assert triggers["pull_request"]["branches"] == ["main"]
+    assert triggers["pull_request"]["branches"] == ["main", "dev", "hotfix/**"]
 
 
 @pytest.mark.unit
