@@ -16,6 +16,7 @@ from scripts.validation.validate_string_versions import (
     _has_hardcoded_version,
     _has_string_version_in_yaml,
     _is_ticket_contract,
+    _is_wire_schema_contract,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts" / "validation"
@@ -113,4 +114,24 @@ class TestTicketContractExemption:
             'schema_version: "1.0.0"\n',
         )
         assert _is_ticket_contract(p) is False
+        assert len(_has_string_version_in_yaml(p)) == 1
+
+
+class TestWireSchemaContractExemption:
+    def test_wire_schema_contract_exempt(self, tmp_path: Path) -> None:
+        p = _write(
+            tmp_path,
+            "src/onex_change_control/wire_schemas/event_v1.yaml",
+            'schema_version: "1.0.0"\n',
+        )
+        assert _is_wire_schema_contract(p) is True
+        assert _has_string_version_in_yaml(p) == []
+
+    def test_similarly_named_wire_schema_not_exempt(self, tmp_path: Path) -> None:
+        p = _write(
+            tmp_path,
+            "src/onex_change_control/wire_schema/event_v1.yaml",
+            'schema_version: "1.0.0"\n',
+        )
+        assert _is_wire_schema_contract(p) is False
         assert len(_has_string_version_in_yaml(p)) == 1

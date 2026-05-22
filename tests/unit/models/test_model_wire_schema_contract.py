@@ -159,6 +159,11 @@ class TestModelWireSchemaContractInvalid:
         with pytest.raises(ValidationError):
             load_wire_schema_contract(data)
 
+    def test_invalid_schema_version(self) -> None:
+        data = _minimal_contract(schema_version="v1")
+        with pytest.raises(ValueError, match="schema_version must be SemVer"):
+            load_wire_schema_contract(data)
+
     def test_missing_producer(self) -> None:
         data = _minimal_contract()
         del data["producer"]
