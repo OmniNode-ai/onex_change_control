@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-11673"
+title: "Move runtime activation policy out of Docker Compose into contracts"
+summary: >-
+  Bind OCC evidence for moving dev, stability-test, and prod runtime activation policy into omnibase_infra
+  contracts/services/runtime_policy.contract.yaml with contract-rendered docker/runtime-policy.env consumed
+  by Docker Compose, deploy-runtime, and deploy-agent.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "protocols"
+evidence_requirements:
+  - kind: "tests"
+    description: "Runtime policy contract, runtime env anchor, and deploy-agent compose tests pass."
+    command: >-
+      env -u PYTHONPATH uv run pytest tests/ci/test_runtime_policy_contract.py tests/ci/test_runtime_env_anchor.py
+      -q && env -u PYTHONPATH uv run pytest scripts/deploy-agent/tests/unit/test_executor_compose_gen.py
+      -q
+  - kind: "manual"
+    description: "Runtime policy env is rendered from the contract and compose config resolves for dev,
+      stability-test, and prod."
+    command: >-
+      env -u PYTHONPATH uv run python scripts/render_runtime_policy_env.py --check-env-file docker/runtime-policy.env
+      && docker compose --env-file docker/runtime-policy.env -f docker/docker-compose.infra.yml --profile
+      runtime config --quiet && docker compose --env-file docker/runtime-policy.env -f docker/docker-compose.infra.yml
+      -f docker/docker-compose.stability-test.yml --profile runtime config --quiet && docker compose --env-file
+      docker/runtime-policy.env -f docker/docker-compose.infra.yml -f docker/docker-compose.prod.yml --profile
+      runtime config --quiet
+dod_evidence:
+  - id: "dod-infra-pr-1704"
+    description: "Bind omnibase_infra PR #1704 runtime policy contract cleanup evidence at observed PR
+      head."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11673/dod-infra-pr-1704/command.yaml"
+          && grep -q '^pr_number: 1704$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11673/dod-infra-pr-1704/command.yaml"
+          && grep -q '^commit_sha: "d7e9fa9710bfa8096cf21fb9821738b3dec54c55"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11673/dod-infra-pr-1704/command.yaml"
+          && grep -q 'runtime_policy.contract.yaml' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11673/dod-infra-pr-1704/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-11673 evidence."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11673/dod-occ-pr-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
