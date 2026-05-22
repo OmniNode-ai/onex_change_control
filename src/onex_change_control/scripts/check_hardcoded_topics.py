@@ -54,6 +54,16 @@ def _is_test_file(path: str) -> bool:
     )
 
 
+def _is_wire_schema_contract(path: str) -> bool:
+    """Return True if *path* is an authoritative wire schema YAML contract."""
+    parts = Path(path).as_posix().split("/")
+    return (
+        len(parts) >= 4  # noqa: PLR2004  Why: path must include src/package/dir/file.
+        and parts[-2] == "wire_schemas"
+        and re.fullmatch(r".+_v\d+\.ya?ml", parts[-1]) is not None
+    )
+
+
 def _is_comment_line(line: str) -> bool:
     stripped = line.lstrip()
     return stripped.startswith(_COMMENT_PREFIXES)
@@ -112,7 +122,11 @@ def _update_docstring(stripped: str, *, in_docstring: bool) -> bool:
 def check_file(path: str) -> list[str]:
     """Return violations for a single file."""
     basename = Path(path).name
-    if basename in APPROVED_BASENAMES or _is_test_file(path):
+    if (
+        basename in APPROVED_BASENAMES
+        or _is_test_file(path)
+        or _is_wire_schema_contract(path)
+    ):
         return []
 
     try:

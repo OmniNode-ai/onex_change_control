@@ -14,13 +14,16 @@ Precedent: omnibase_infra routing_decision_v1.yaml (OMN-3425)
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from onex_change_control.enums.enum_wire_field_type import (
     EnumWireFieldType,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
+
+_SEMVER_PATTERN = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
 
 class ModelWireFieldConstraints(BaseModel):
@@ -134,6 +137,14 @@ class ModelWireSchemaContract(BaseModel):
     )  # string-version-ok: wire type serialized to YAML/JSON at contract boundary
     ticket: str = Field(default="", description="Originating ticket")
     description: str = Field(default="", description="Contract description")
+    topic_authority: str = Field(
+        default="",
+        description="Repository that owns the authoritative topic contract.",
+    )
+    freshness_sla: str = Field(
+        default="",
+        description="Maximum age tolerated for evidence carried on this topic.",
+    )
 
     producer: ModelWireProducer = Field(..., description="Producer declaration")
     consumer: ModelWireConsumer = Field(..., description="Consumer declaration")
@@ -176,6 +187,15 @@ class ModelWireSchemaContract(BaseModel):
             raise ValueError(msg)
 
         return self
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_version_is_semver(cls, value: str) -> str:
+        """Require SemVer-shaped wire schema versions."""
+        if not _SEMVER_PATTERN.fullmatch(value):
+            msg = "schema_version must be SemVer formatted as major.minor.patch"
+            raise ValueError(msg)
+        return value
 
     @property
     def all_field_names(self) -> set[str]:
