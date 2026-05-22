@@ -12,12 +12,11 @@ parsing pipeline and asserts description is extractable.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
-
-# omni_home root — parent of onex_change_control
-OMNI_HOME = Path(__file__).resolve().parents[3].parent
 
 # Repos that contain ONEX node contracts
 CONTRACT_REPOS = [
@@ -30,6 +29,33 @@ CONTRACT_REPOS = [
     "omninode_infra",
     "onex_change_control",
 ]
+
+
+def _resolve_omni_home() -> Path:
+    """Resolve omni_home from env first so ticket worktrees remain valid."""
+    env_path = os.environ.get("OMNI_HOME")
+    if env_path:
+        return Path(env_path)
+    for parent in Path(__file__).resolve().parents:
+        if (
+            parent.name == "omni_home"
+            and (parent / "omnibase_infra").is_dir()
+            and (parent / "omnibase_spi").is_dir()
+        ):
+            return parent
+    return Path(__file__).resolve().parents[3].parent
+
+
+def _add_repo_src_paths(omni_home: Path) -> None:
+    """Add sibling repo src directories needed by cross-repo imports."""
+    for repo in CONTRACT_REPOS:
+        src = omni_home / repo / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+
+
+OMNI_HOME = _resolve_omni_home()
+_add_repo_src_paths(OMNI_HOME)
 
 
 def _discover_all_contracts() -> list[tuple[str, Path]]:
@@ -94,9 +120,19 @@ def test_all_contracts_parse_through_introspection_service() -> None:
     if not omnibase_infra_path.is_dir():
         pytest.skip("omnibase_infra repo not found at expected path")
 
-    from omnibase_infra.services.service_node_introspection import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
-        ServiceNodeIntrospection,
-    )
+    try:
+        from omnibase_infra.services.service_node_introspection import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
+            ServiceNodeIntrospection,
+        )
+    except ModuleNotFoundError as exc:
+        missing_name = exc.name or ""
+        if missing_name.startswith("omni"):
+            raise
+        pytest.skip(
+            "omnibase_infra introspection import requires optional runtime "
+            f"dependency {missing_name!r}; install omnibase_infra runtime deps "
+            "to run this integration assertion."
+        )
 
     all_contract_dirs: list[tuple[str, Path]] = []
     for repo in CONTRACT_REPOS:
