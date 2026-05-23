@@ -1,0 +1,60 @@
+name: Imperative Contract Guard
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version for the validator runtime.
+        required: false
+        type: string
+        default: "3.12"
+      target-ref:
+        description: Caller repository ref to check out.
+        required: false
+        type: string
+        default: ""
+      onex-change-control-ref:
+        description: onex_change_control ref containing the validator and allowlists.
+        required: false
+        type: string
+        default: main
+
+jobs:
+  imperative-contract-guard:
+    name: Imperative Contract Guard
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v6
+        with:
+          path: target
+          ref: ${{ inputs['target-ref'] || github.ref }}
+
+      - name: Checkout onex_change_control
+        uses: actions/checkout@v6
+        with:
+          repository: OmniNode-ai/onex_change_control
+          ref: ${{ inputs['onex-change-control-ref'] }}
+          path: onex_change_control
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs['python-version'] }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Run imperative contract guard
+        working-directory: onex_change_control
+        run: |
+          uv sync --locked --all-extras
+          uv run check-imperative-contracts \
+            --repo-root "$GITHUB_WORKSPACE/target" \
+            --allowlists-dir "$GITHUB_WORKSPACE/onex_change_control/allowlists"
