@@ -32,7 +32,7 @@ def test_receipt_gate_caller_triggers_on_prs_and_merge_group() -> None:
     triggers = workflow["on"]
     assert "pull_request" in triggers
     assert "merge_group" in triggers
-    assert triggers["pull_request"]["branches"] == ["main"]
+    assert triggers["pull_request"]["branches"] == ["main", "dev", "hotfix/**"]
 
 
 def test_receipt_gate_caller_uses_core_reusable_gate() -> None:

@@ -18,6 +18,13 @@ POLICY — Ticket contract exemption (OMN-9593):
     The field_validator on ``ModelTicketContract`` provides equivalent SemVer
     enforcement, so the generic string-version ban does not apply.
 
+POLICY — Wire schema contract exemption (OMN-11717):
+    Files matching ``src/onex_change_control/wire_schemas/*_v*.yaml`` are
+    authoritative topic contracts validated by ``ModelWireSchemaContract``.
+    Their ``schema_version`` is intentionally string-shaped to match the
+    published wire schema contract spec, and the model validator enforces
+    SemVer syntax.
+
 Adapted from omnibase_core/scripts/validation/validate-string-versions.py.
 """
 
@@ -35,6 +42,7 @@ _SEMVER_RE = re.compile(
 # Governance artifacts whose schema_version is intentionally string-shaped
 # and validated by ModelTicketContract.field_validator instead.
 TICKET_CONTRACT_GLOB = re.compile(r"^OMN-\d+\.yaml$")
+WIRE_SCHEMA_CONTRACT_GLOB = re.compile(r"^.+_v\d+\.ya?ml$")
 _MIN_TICKET_CONTRACT_PARTS = 2
 
 
@@ -44,6 +52,15 @@ def _is_ticket_contract(path: Path) -> bool:
         len(parts) >= _MIN_TICKET_CONTRACT_PARTS
         and parts[-2] == "contracts"
         and bool(TICKET_CONTRACT_GLOB.fullmatch(parts[-1]))
+    )
+
+
+def _is_wire_schema_contract(path: Path) -> bool:
+    parts = path.as_posix().replace("\\", "/").split("/")
+    return (
+        len(parts) >= 4  # noqa: PLR2004  Why: path must include src/package/dir/file.
+        and parts[-2] == "wire_schemas"
+        and bool(WIRE_SCHEMA_CONTRACT_GLOB.fullmatch(parts[-1]))
     )
 
 
@@ -110,7 +127,7 @@ def _has_string_version_in_yaml(path: Path) -> list[tuple[int, str]]:
 
     Skips files matching the ticket-contract exemption (OMN-9593).
     """
-    if _is_ticket_contract(path):
+    if _is_ticket_contract(path) or _is_wire_schema_contract(path):
         return []
 
     violations: list[tuple[int, str]] = []

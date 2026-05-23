@@ -102,6 +102,16 @@ def test_yaml_topic_in_value_is_violation(tmp_path: Path) -> None:
     assert len(violations) == 1
 
 
+@pytest.mark.unit
+def test_wire_schema_topic_value_no_violation(tmp_path: Path) -> None:
+    schema_dir = tmp_path / "src" / "onex_change_control" / "wire_schemas"
+    schema_dir.mkdir(parents=True)
+    f = schema_dir / "event_v1.yaml"
+    f.write_text('topic: "onex.evt.foo.bar.v1"\n')
+    violations = check_file(str(f))
+    assert violations == []
+
+
 # ---------------------------------------------------------------------------
 # Approved basenames
 # ---------------------------------------------------------------------------

@@ -34,6 +34,9 @@ class GovernanceTopic(str, Enum):
     )
     """Cosmetic compliance score computed for a directory or repo."""
 
+    NIGHTLY_PROMOTION = "onex.evt.occ.nightly-promotion.v1"
+    """Nightly dev-to-main promotion evidence batch emitted by OCC."""
+
     def __str__(self) -> str:
         return self.value
 
