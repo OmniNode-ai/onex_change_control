@@ -57,6 +57,12 @@ from onex_change_control.overseer.model_overnight_contract import (
 from onex_change_control.overseer.model_process_runner_state_transition import (
     ModelProcessRunnerStateTransition,
 )
+from onex_change_control.overseer.model_promotion_bot_policy import (
+    DEFAULT_PROMOTION_BOT_POLICY,
+    OMNINODE_PROMOTION_REPOS,
+    EnumPromotionBotAction,
+    ModelPromotionBotPolicy,
+)
 from onex_change_control.overseer.model_session_contract import (
     ModelSessionContract,
     ModelSessionHaltCondition,
@@ -83,6 +89,8 @@ from onex_change_control.overseer.model_worker_contract import (
 )
 
 __all__ = [
+    "DEFAULT_PROMOTION_BOT_POLICY",
+    "OMNINODE_PROMOTION_REPOS",
     "EnumArtifactStoreAction",
     "EnumCapabilityTier",
     "EnumCodeRepositoryAction",
@@ -93,6 +101,7 @@ __all__ = [
     "EnumLLMProviderAction",
     "EnumNotificationAction",
     "EnumProcessRunnerState",
+    "EnumPromotionBotAction",
     "EnumProvider",
     "EnumRetryType",
     "EnumRiskLevel",
@@ -114,6 +123,7 @@ __all__ = [
     "ModelOvernightHaltCondition",
     "ModelOvernightPhaseSpec",
     "ModelProcessRunnerStateTransition",
+    "ModelPromotionBotPolicy",
     "ModelSessionContract",
     "ModelSessionHaltCondition",
     "ModelSessionPhaseSpec",
