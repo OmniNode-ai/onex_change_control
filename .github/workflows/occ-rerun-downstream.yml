@@ -16,7 +16,8 @@
 #       or OCC_DEPENDENCY_MISSING. Other gate failures are not eligible.
 #   R3. After rerun, the processed edge is removed from
 #       drift/occ_dependency_edges.yaml and a rerun record is appended to
-#       drift/occ_rerun_state.yaml. Both files are committed atomically.
+#       drift/occ_rerun_state.yaml. Both files are committed atomically on a
+#       state-update PR so protected main is never bypassed.
 #   R4. This workflow requires write access to onex_change_control (to update
 #       state files) and to product repos (to trigger workflow reruns).
 #       Supply a PAT via the `occ-rerun-token` repository secret.
@@ -31,6 +32,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   rerun:
@@ -187,9 +189,10 @@ jobs:
           set -euo pipefail
           python3 /tmp/occ-scripts/rerun_downstream.py
 
-      - name: Commit state updates
+      - name: Open state update PR
         env:
           OCC_COMMIT: ${{ steps.occ_sha.outputs.sha }}
+          GH_TOKEN: ${{ secrets.occ-rerun-token || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -199,5 +202,18 @@ jobs:
             echo "No state changes; nothing to commit."
             exit 0
           fi
+          branch="automation/occ-rerun-state-${OCC_COMMIT:0:8}"
+          git checkout -B "$branch"
           git commit -m "chore(occ-deps): update rerun state after merge ${OCC_COMMIT:0:8} [skip ci]"
-          git push origin main
+          git push --force-with-lease origin "$branch"
+
+          if gh pr view "$branch" --repo OmniNode-ai/onex_change_control >/dev/null 2>&1; then
+            echo "State update PR already exists for $branch"
+          else
+            gh pr create \
+              --repo OmniNode-ai/onex_change_control \
+              --base main \
+              --head "$branch" \
+              --title "chore(occ-deps): update rerun state after ${OCC_COMMIT:0:8}" \
+              --body "Automated OCC rerun state update for merge ${OCC_COMMIT}.\n\nThis PR is opened instead of direct-pushing to protected main."
+          fi
