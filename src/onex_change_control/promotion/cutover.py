@@ -122,23 +122,31 @@ class ModelCutoverManifest(BaseModel):
 class GitHubClient(Protocol):
     """GitHub operations required by the cutover orchestrator."""
 
-    def repo_default_branch(self, repo: str) -> str: ...
+    def repo_default_branch(self, repo: str) -> str:
+        raise NotImplementedError
 
-    def branch_sha(self, repo: str, branch: str) -> str | None: ...
+    def branch_sha(self, repo: str, branch: str) -> str | None:
+        raise NotImplementedError
 
-    def create_branch(self, repo: str, branch: str, sha: str) -> None: ...
+    def create_branch(self, repo: str, branch: str, sha: str) -> None:
+        raise NotImplementedError
 
-    def get_branch_protection(self, repo: str, branch: str) -> dict[str, Any]: ...
+    def get_branch_protection(self, repo: str, branch: str) -> dict[str, Any]:
+        raise NotImplementedError
 
     def put_branch_protection(
         self, repo: str, branch: str, payload: dict[str, Any]
-    ) -> None: ...
+    ) -> None:
+        raise NotImplementedError
 
-    def set_default_branch(self, repo: str, branch: str) -> None: ...
+    def set_default_branch(self, repo: str, branch: str) -> None:
+        raise NotImplementedError
 
-    def list_open_prs(self, repo: str, base: str) -> list[dict[str, Any]]: ...
+    def list_open_prs(self, repo: str, base: str) -> list[dict[str, Any]]:
+        raise NotImplementedError
 
-    def retarget_pr(self, repo: str, number: int, base: str) -> None: ...
+    def retarget_pr(self, repo: str, number: int, base: str) -> None:
+        raise NotImplementedError
 
 
 class GhCliClient:
