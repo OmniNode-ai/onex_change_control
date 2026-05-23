@@ -6,6 +6,10 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from onex_change_control.promotion.manifest import (
     ModelPromotionManifest,
@@ -35,7 +39,7 @@ def _manifest(*repos: ModelPromotionManifestRepo) -> ModelPromotionManifest:
     )
 
 
-def test_compat_audit_blocks_production_dependency_ranges(tmp_path) -> None:
+def test_compat_audit_blocks_production_dependency_ranges(tmp_path: Path) -> None:
     manifest = _manifest(
         ModelPromotionManifestRepo(
             repo="omniweb",
@@ -52,7 +56,7 @@ def test_compat_audit_blocks_production_dependency_ranges(tmp_path) -> None:
     assert audit.findings[0].classification == "production_blocker"
 
 
-def test_compat_audit_scans_runtime_surfaces(tmp_path) -> None:
+def test_compat_audit_scans_runtime_surfaces(tmp_path: Path) -> None:
     repo = tmp_path / "omniweb"
     repo.mkdir()
     (repo / "pyproject.toml").write_text(
@@ -107,7 +111,9 @@ def test_promotion_pr_plan_records_dependency_waves() -> None:
     assert plan[0].blocked_by_waves == (1, 2, 3)
 
 
-def test_gate_status_classifies_runtime_and_integration_blockers(tmp_path) -> None:
+def test_gate_status_classifies_runtime_and_integration_blockers(
+    tmp_path: Path,
+) -> None:
     manifest = _manifest(
         ModelPromotionManifestRepo(
             repo="omnibase_core",
@@ -171,7 +177,7 @@ def test_per_repo_results_use_wire_contract_shape() -> None:
     assert results["repos"][0]["url"].endswith("/pull/1")
 
 
-def test_artifact_manifest_hashes_existing_artifacts(tmp_path) -> None:
+def test_artifact_manifest_hashes_existing_artifacts(tmp_path: Path) -> None:
     evidence_dir = tmp_path / "evidence"
     evidence_dir.mkdir()
     (evidence_dir / "promotion_manifest.json").write_text('{"ok": true}\n')
