@@ -1,0 +1,294 @@
+name: Promotion Staleness Monitor
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Comma-separated repo list to scan"
+        required: true
+        default: "omnibase_compat,omnibase_core,omnibase_spi,omnibase_infra,omnimarket,omniclaude,omniintelligence,omnimemory,omnidash,omniweb,onex_change_control,omninode_infra,onex-self-extending-agent"
+        type: string
+      source_branch:
+        description: "Promotion source branch"
+        required: true
+        default: "dev"
+        type: string
+      target_branch:
+        description: "Promotion target branch"
+        required: true
+        default: "main"
+        type: string
+      failure_class:
+        description: "Dominant failure class for alert routing"
+        required: true
+        default: "promotion_failed_integration"
+        type: choice
+        options:
+          - "promotion_failed_code"
+          - "promotion_failed_integration"
+          - "promotion_failed_runtime"
+          - "promotion_failed_flaky_infra"
+          - "promotion_skipped_by_user"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promotion-staleness-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check Dev/Main Staleness
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 30
+    env:
+      REPOS_INPUT: ${{ github.event.inputs.repos || 'omnibase_compat,omnibase_core,omnibase_spi,omnibase_infra,omnimarket,omniclaude,omniintelligence,omnimemory,omnidash,omniweb,onex_change_control,omninode_infra,onex-self-extending-agent' }}
+      SOURCE_BRANCH: ${{ github.event.inputs.source_branch || 'dev' }}
+      TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'main' }}
+      FAILURE_CLASS: ${{ github.event.inputs.failure_class || 'promotion_failed_integration' }}
+      OMNI_REPOS_ROOT: ${{ github.workspace }}/../omni-repos
+      EVIDENCE_DIR: ${{ github.workspace }}/staleness-evidence
+      SOURCE_TICKET: OMN-11738
+
+    steps:
+      - name: Checkout OCC
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+
+      - name: Prepare repo list
+        id: repos
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OMNI_REPOS_ROOT" "$EVIDENCE_DIR"
+          python - <<'PY' > /tmp/repos.txt
+          import os
+
+          repos = [
+              repo.strip()
+              for repo in os.environ["REPOS_INPUT"].split(",")
+              if repo.strip()
+          ]
+          if not repos:
+              raise SystemExit("at least one repo is required")
+          for repo in repos:
+              print(repo)
+          PY
+          {
+            echo "repos<<EOF"
+            cat /tmp/repos.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout scanned repos
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r repo; do
+            [ -n "$repo" ] || continue
+            gh repo clone "OmniNode-ai/${repo}" "${OMNI_REPOS_ROOT}/${repo}" -- --no-tags
+            git -C "${OMNI_REPOS_ROOT}/${repo}" fetch origin "$TARGET_BRANCH" "$SOURCE_BRANCH" --no-tags
+          done <<< "${{ steps.repos.outputs.repos }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Generate staleness report
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r repo; do
+            [ -n "$repo" ] || continue
+            args+=(--repo "$repo")
+          done <<< "${{ steps.repos.outputs.repos }}"
+          uv run promotion-staleness-monitor report \
+            --workspace "$OMNI_REPOS_ROOT" \
+            --source-branch "$SOURCE_BRANCH" \
+            --target-branch "$TARGET_BRANCH" \
+            --failure-class "$FAILURE_CLASS" \
+            --output "$EVIDENCE_DIR/staleness_report.json" \
+            "${args[@]}"
+
+      - name: Publish report outputs
+        id: report
+        shell: bash
+        run: |
+          uv run python - "$EVIDENCE_DIR/staleness_report.json" "$GITHUB_OUTPUT" <<'PY'
+          from pathlib import Path
+          import sys
+
+          from onex_change_control.promotion.staleness import report_outputs
+
+          output = Path(sys.argv[2])
+          with output.open("a", encoding="utf-8") as handle:
+              for key, value in report_outputs(Path(sys.argv[1])).items():
+                  print(f"{key}={value}", file=handle)
+          PY
+
+      - name: Create Linear staleness ticket
+        if: steps.report.outputs.requires_linear_ticket == 'true'
+        shell: bash
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          REPORT_PATH: ${{ env.EVIDENCE_DIR }}/staleness_report.json
+        run: |
+          set -euo pipefail
+          if [ -z "${LINEAR_API_KEY:-}" ]; then
+            echo "::error::LINEAR_API_KEY is required to create the P1 staleness ticket"
+            exit 1
+          fi
+
+          TITLE="$(python - "$REPORT_PATH" <<'PY'
+          import json
+          import sys
+
+          print(json.load(open(sys.argv[1], encoding="utf-8"))["linear_ticket_title"])
+          PY
+          )"
+
+          SEARCH_RESPONSE="$(python - "$TITLE" <<'PY' | curl -sS --max-time 20 -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @-
+          import json
+          import sys
+
+          print(json.dumps({
+              "query": "query($query: String!) { issueSearch(query: $query, first: 5) { nodes { identifier title url description } } }",
+              "variables": {"query": sys.argv[1]},
+          }))
+          PY
+          )"
+
+          EXISTING_URL="$(python - "$SEARCH_RESPONSE" "$TITLE" <<'PY'
+          import json
+          import sys
+
+          data = json.loads(sys.argv[1])
+          nodes = data.get("data", {}).get("issueSearch", {}).get("nodes", [])
+          for node in nodes:
+              if node.get("title") == sys.argv[2]:
+                  print(node.get("url", ""))
+                  raise SystemExit
+          print("")
+          PY
+          )"
+          if [ -n "$EXISTING_URL" ]; then
+            printf '{"status":"existing","url":%s}\n' "$(python -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$EXISTING_URL")" \
+              > "$EVIDENCE_DIR/linear_staleness_ticket.json"
+            echo "Staleness ticket already exists: $EXISTING_URL"
+            exit 0
+          fi
+
+          TEAM_RESPONSE="$(python - "$SOURCE_TICKET" <<'PY' | curl -sS --max-time 20 -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @-
+          import json
+          import sys
+
+          print(json.dumps({
+              "query": "query($id: String!) { issue(id: $id) { team { id } } }",
+              "variables": {"id": sys.argv[1]},
+          }))
+          PY
+          )"
+          TEAM_ID="$(python - "$TEAM_RESPONSE" <<'PY'
+          import json
+          import sys
+
+          data = json.loads(sys.argv[1])
+          print(data.get("data", {}).get("issue", {}).get("team", {}).get("id", ""))
+          PY
+          )"
+          if ! echo "$TEAM_ID" | grep -qE '^[0-9a-f-]+$'; then
+            echo "::error::Could not resolve Linear team ID from $SOURCE_TICKET"
+            exit 1
+          fi
+
+          CREATE_RESPONSE="$(python - "$REPORT_PATH" "$TEAM_ID" <<'PY' | curl -sS --max-time 20 -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @-
+          import json
+          import sys
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(json.dumps({
+              "query": "mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { identifier url } } }",
+              "variables": {
+                  "input": {
+                      "title": report["linear_ticket_title"],
+                      "description": report["linear_ticket_description"],
+                      "teamId": sys.argv[2],
+                      "priority": report["alert_route"]["linear_priority"],
+                  },
+              },
+          }))
+          PY
+          )"
+          python - "$CREATE_RESPONSE" > "$EVIDENCE_DIR/linear_staleness_ticket.json" <<'PY'
+          import json
+          import sys
+
+          response = json.loads(sys.argv[1])
+          issue = response.get("data", {}).get("issueCreate", {}).get("issue")
+          if not issue:
+              raise SystemExit(f"Linear issueCreate failed: {response}")
+          print(json.dumps({"status": "created", **issue}, indent=2, sort_keys=True))
+          PY
+
+      - name: Send Slack staleness alert
+        if: steps.report.outputs.requires_slack_alert == 'true'
+        shell: bash
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          REPORT_PATH: ${{ env.EVIDENCE_DIR }}/staleness_report.json
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::error::SLACK_WEBHOOK_URL is required for >7 day promotion staleness"
+            exit 1
+          fi
+          python - "$REPORT_PATH" > "$EVIDENCE_DIR/slack_payload.json" <<'PY'
+          import json
+          import sys
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(json.dumps({
+              "text": report["slack_message"],
+              "blocks": [
+                  {
+                      "type": "section",
+                      "text": {
+                          "type": "mrkdwn",
+                          "text": report["slack_message"],
+                      },
+                  }
+              ],
+          }))
+          PY
+          curl -fsS --max-time 20 -X POST \
+            -H "Content-Type: application/json" \
+            --data @"$EVIDENCE_DIR/slack_payload.json" \
+            "$SLACK_WEBHOOK_URL"
+
+      - name: Upload staleness evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: promotion-staleness-${{ github.run_id }}
+          path: ${{ env.EVIDENCE_DIR }}
+          retention-days: 365

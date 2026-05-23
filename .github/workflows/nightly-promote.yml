@@ -1,0 +1,303 @@
+name: Nightly Promotion
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Plan only; do not create promotion PRs"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      repos:
+        description: "Comma-separated repo list for this batch"
+        required: true
+        default: "omniweb"
+        type: string
+      runtime_lane:
+        description: "Runtime lane to bind into evidence"
+        required: true
+        default: "stability-test"
+        type: string
+      runtime_profile:
+        description: "Runtime profile to bind into evidence"
+        required: true
+        default: "stability-test"
+        type: string
+      verifier_identity:
+        description: "Verifier identity recorded in promotion evidence"
+        required: true
+        default: "nightly-promotion-bot@occ"
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: nightly-promotion-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  promotion-mvp:
+    name: Promotion MVP
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    env:
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+      REPOS_INPUT: ${{ github.event.inputs.repos || 'omniweb' }}
+      RUNTIME_LANE: ${{ github.event.inputs.runtime_lane || 'stability-test' }}
+      RUNTIME_PROFILE: ${{ github.event.inputs.runtime_profile || 'stability-test' }}
+      VERIFIER_IDENTITY: ${{ github.event.inputs.verifier_identity || 'nightly-promotion-bot@occ' }}
+      OMNI_REPOS_ROOT: ${{ github.workspace }}/../omni-repos
+      EVIDENCE_DIR: ${{ github.workspace }}/promotion-evidence
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout OCC
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+
+      - name: Prepare promotion batch
+        id: batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OMNI_REPOS_ROOT" "$EVIDENCE_DIR"
+          batch_id="promotion-$(date -u +%Y.%m.%d)-batch.${GITHUB_RUN_NUMBER}"
+          printf 'batch_id=%s\n' "$batch_id" >> "$GITHUB_OUTPUT"
+
+          python - <<'PY' > /tmp/repos.txt
+          import os
+
+          repos = [
+              repo.strip()
+              for repo in os.environ["REPOS_INPUT"].split(",")
+              if repo.strip()
+          ]
+          if not repos:
+              raise SystemExit("at least one repo is required")
+          for repo in repos:
+              print(repo)
+          PY
+
+          {
+            echo "repos<<EOF"
+            cat /tmp/repos.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout promoted repos
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r repo; do
+            [ -n "$repo" ] || continue
+            gh repo clone "OmniNode-ai/${repo}" "${OMNI_REPOS_ROOT}/${repo}" -- --no-tags
+            git -C "${OMNI_REPOS_ROOT}/${repo}" fetch origin main dev --no-tags
+          done <<< "${{ steps.batch.outputs.repos }}"
+
+      - name: Generate intended promotion manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t repos <<< "${{ steps.batch.outputs.repos }}"
+          args=()
+          for repo in "${repos[@]}"; do
+            [ -n "$repo" ] || continue
+            args+=(--repo "$repo")
+          done
+          uv run generate-promotion-manifest \
+            --workspace "$OMNI_REPOS_ROOT" \
+            --promotion-batch-id "${{ steps.batch.outputs.batch_id }}" \
+            --runtime-lane "$RUNTIME_LANE" \
+            --runtime-profile "$RUNTIME_PROFILE" \
+            --output "$EVIDENCE_DIR/intended_promotion_manifest.json" \
+            "${args[@]}"
+
+      - name: Verify manifest matches live checkout state
+        shell: bash
+        run: |
+          uv run generate-promotion-manifest \
+            --workspace "$OMNI_REPOS_ROOT" \
+            --promotion-batch-id "${{ steps.batch.outputs.batch_id }}" \
+            --verify-manifest "$EVIDENCE_DIR/intended_promotion_manifest.json"
+
+      - name: Audit compat production dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          audit_status=0
+          uv run promotion-workflow-evidence audit-compat \
+            --manifest "$EVIDENCE_DIR/intended_promotion_manifest.json" \
+            --workspace "$OMNI_REPOS_ROOT" \
+            --output "$EVIDENCE_DIR/compat_dependency_audit.json" || audit_status=$?
+          if [ "$audit_status" -ne 0 ]; then
+            echo "Compat dependency blockers recorded; promotion gate will classify the failure."
+          fi
+
+      - name: Capture runtime topology placeholder
+        shell: bash
+        run: |
+          uv run promotion-workflow-evidence runtime-placeholder \
+            --manifest "$EVIDENCE_DIR/intended_promotion_manifest.json" \
+            --output "$EVIDENCE_DIR/runtime_identity_readonly.json" \
+            --reason "not_collected_by_github_runner; capture .201 read-only topology from operator runtime before execute-mode promotion"
+
+      - name: Capture cross-repo verification placeholder
+        shell: bash
+        run: |
+          uv run promotion-workflow-evidence cross-repo-placeholder \
+            --manifest "$EVIDENCE_DIR/intended_promotion_manifest.json" \
+            --output "$EVIDENCE_DIR/cross_repo_integration_result.json" \
+            --status "not_run_in_mvp" \
+            --reason "MVP workflow records manifest and per-repo state first; full cross-repo suite remains a required gate before cutover"
+
+      - name: Classify promotion gates
+        shell: bash
+        run: |
+          dry_run_flag=()
+          if [ "$DRY_RUN" = "true" ]; then
+            dry_run_flag=(--dry-run)
+          fi
+          uv run promotion-workflow-evidence gate-status \
+            --manifest "$EVIDENCE_DIR/intended_promotion_manifest.json" \
+            --compat-audit "$EVIDENCE_DIR/compat_dependency_audit.json" \
+            --runtime-topology "$EVIDENCE_DIR/runtime_identity_readonly.json" \
+            --cross-repo "$EVIDENCE_DIR/cross_repo_integration_result.json" \
+            --output "$EVIDENCE_DIR/promotion_gate_status.json" \
+            "${dry_run_flag[@]}"
+
+      - name: Plan or create promotion PRs
+        id: promote
+        shell: bash
+        run: |
+          set -euo pipefail
+          created_urls="$EVIDENCE_DIR/created_promotion_pr_urls.json"
+          promotion_batch_id="${{ steps.batch.outputs.batch_id }}"
+          printf '{}\n' > "$created_urls"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run enabled; promotion PRs will be planned only."
+            exit 0
+          fi
+          promotable="$(python - "$EVIDENCE_DIR/promotion_gate_status.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("true" if payload["promotable"] else "false")
+          PY
+          )"
+          if [ "$promotable" != "true" ]; then
+            echo "Promotion gates are blocked; no promotion PRs will be created."
+            exit 0
+          fi
+
+          python - "$EVIDENCE_DIR/intended_promotion_manifest.json" > /tmp/prs.tsv <<'PY'
+          import json
+          import sys
+
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          for repo in manifest["repos"]:
+              print(
+                  "\t".join(
+                      [
+                          repo["repo"],
+                          manifest["target_branch"],
+                          manifest["source_branch"],
+                          repo["dev_head_sha"],
+                          repo["main_base_sha"],
+                      ]
+                  )
+              )
+          PY
+
+          printf '{\n' > "$created_urls"
+          first=true
+          while IFS=$'\t' read -r repo base head dev_sha main_sha; do
+            [ -n "$repo" ] || continue
+            if gh pr list --repo "OmniNode-ai/${repo}" --base "$base" --head "$head" --state open --json url --jq '.[0].url // empty' | grep -q .; then
+              url="$(gh pr list --repo "OmniNode-ai/${repo}" --base "$base" --head "$head" --state open --json url --jq '.[0].url')"
+            else
+              title="promotion($repo): promote dev to main for ${promotion_batch_id}"
+              body="$(mktemp)"
+              {
+                printf 'Promotion batch: %s\n\n' "$promotion_batch_id"
+                printf '%s\n' "Base: \`${base}\`"
+                printf '%s\n' "Head: \`${head}\`"
+                printf '%s\n' "Dev head: \`${dev_sha}\`"
+                printf '%s\n\n' "Main base: \`${main_sha}\`"
+                printf '%s\n' "Evidence artifacts are attached to workflow run \`${GITHUB_RUN_ID}\`."
+                printf '\nEvidence-Ticket: OMN-11732\n'
+              } > "$body"
+              url="$(gh pr create --repo "OmniNode-ai/${repo}" --base "$base" --head "$head" --title "$title" --body-file "$body")"
+            fi
+            if [ "$first" = true ]; then first=false; else printf ',\n' >> "$created_urls"; fi
+            python - "$repo" "$url" >> "$created_urls" <<'PY'
+          import json
+          import sys
+          print(json.dumps(sys.argv[1]) + ": " + json.dumps(sys.argv[2]), end="")
+          PY
+          done < /tmp/prs.tsv
+          printf '\n}\n' >> "$created_urls"
+
+      - name: Write per-repo promotion results
+        shell: bash
+        run: |
+          dry_run_flag=()
+          if [ "$DRY_RUN" = "true" ]; then
+            dry_run_flag=(--dry-run)
+          fi
+          uv run promotion-workflow-evidence per-repo-results \
+            --manifest "$EVIDENCE_DIR/intended_promotion_manifest.json" \
+            --output "$EVIDENCE_DIR/per_repo_results.json" \
+            --created-urls "$EVIDENCE_DIR/created_promotion_pr_urls.json" \
+            "${dry_run_flag[@]}"
+
+      - name: Write verification summary
+        shell: bash
+        run: |
+          dry_run_flag=()
+          if [ "$DRY_RUN" = "true" ]; then
+            dry_run_flag=(--dry-run)
+          fi
+          uv run promotion-workflow-evidence verification \
+            --manifest "$EVIDENCE_DIR/intended_promotion_manifest.json" \
+            --compat-audit "$EVIDENCE_DIR/compat_dependency_audit.json" \
+            --runtime-topology "$EVIDENCE_DIR/runtime_identity_readonly.json" \
+            --cross-repo "$EVIDENCE_DIR/cross_repo_integration_result.json" \
+            --per-repo-results "$EVIDENCE_DIR/per_repo_results.json" \
+            --gate-status "$EVIDENCE_DIR/promotion_gate_status.json" \
+            --output "$EVIDENCE_DIR/promotion_verification.json" \
+            --verifier-identity "$VERIFIER_IDENTITY" \
+            --created-urls "$EVIDENCE_DIR/created_promotion_pr_urls.json" \
+            "${dry_run_flag[@]}"
+
+      - name: Write artifact manifest
+        shell: bash
+        run: |
+          uv run promotion-workflow-evidence artifact-manifest \
+            --evidence-dir "$EVIDENCE_DIR" \
+            --output "$EVIDENCE_DIR/artifact_manifest.json"
+
+      - name: Upload promotion evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: promotion-evidence-${{ steps.batch.outputs.batch_id }}
+          path: ${{ env.EVIDENCE_DIR }}
+          retention-days: 365
