@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-11863"
+title: "[Phase 2.4] OCC receipt binding with independent verifier"
+summary: >
+  Bind the delegation golden chain live proof (correlation_id: 05c6b281-e7f3-490a-b356-4fe242615be4) to
+  an OCC receipt with verifier identity distinct from the runner. Satisfies the adversarial receipts policy
+  requiring verifier != runner for non-advisory status.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "manual"
+    description: >
+      Live golden chain proof executed on stability-test lane: command published to onex.cmd.omnibase-infra.delegation-request.v1,
+      consumed by delegation orchestrator, routed to Corianas/DeepSeek-R1-Distill-Qwen-14B-AWQ, terminal
+      event emitted to onex.evt.omniclaude.task-delegated.v1, projection row written to delegation_events.
+    command: >-
+      source ~/.omnibase/.env && /path/to/omnimarket/.venv/bin/python docs/evidence/runtime-gap-remediation/golden_chain_proof.py
+  - kind: "manual"
+    description: >
+      Independent verifier (occ-verifier-omn-11863) separately queries the stability-test Postgres projection
+      table and the Kafka terminal event topic for the same correlation_id, confirming both links without
+      relying on the runner's output.
+    command: >-
+      psql "postgresql://postgres:...@192.168.86.201:15436/omnidash_analytics" -c "SELECT id FROM delegation_events
+      WHERE correlation_id = '05c6b281-e7f3-490a-b356-4fe242615be4';"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-golden-chain-runner"
+    description: >
+      Runner receipt: live delegation golden chain proof executed end-to-end on stability-test lane. All
+      6 chain links verified (command publish, runtime consume, routing, LLM effect, terminal event, projection
+      write). Source doc at docs/evidence/runtime-gap-remediation/delegation-golden-chain-live-proof.md.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11863/dod-golden-chain-runner/command.yaml"
+          && grep -q 'correlation_id: 05c6b281-e7f3-490a-b356-4fe242615be4' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11863/dod-golden-chain-runner/command.yaml"
+  - id: "dod-golden-chain-verifier"
+    description: >
+      Independent verifier receipt (verifier != runner): occ-verifier-omn-11863 independently probed the
+      stability-test Postgres projection table and the Kafka terminal event topic, confirming the correlation_id
+      exists in both surfaces. This receipt is non-self-signed and satisfies the adversarial receipts
+      policy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11863/dod-golden-chain-verifier/command.yaml"
+          && grep -q 'verifier: occ-verifier-omn-11863' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11863/dod-golden-chain-verifier/command.yaml"
+          && grep -q 'runner: golden-chain-proof-session' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11863/dod-golden-chain-runner/command.yaml"
+  - id: "dod-occ-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-11863 evidence."
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-11863/dod-occ-self/command.yaml"
