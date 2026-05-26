@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12154"
+title: "Fix InMemoryRateLimiter multi-worker correctness bug"
+summary: >
+  Replaces InMemoryRateLimiter in docker/onex-api/auth_rate_limit.py with a
+  Valkey-backed ValkeyRateLimiter that uses an atomic Lua INCR+PEXPIRE script.
+  All uvicorn workers share a single counter per (key, window), eliminating the
+  N×limit effective-rate bug present when WEB_CONCURRENCY>1.
+  omninode_infra PR #472 carries the implementation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-472"
+    description: "omninode_infra PR #472 — ValkeyRateLimiter implementation with unit tests."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12154/dod-infra-pr-472/command.yaml"
+  - id: "dod-unit-tests"
+    description: >
+      11 unit tests (mocked redis client) in test_auth_rate_limit_valkey.py pass.
+      Covers: allow/deny logic, key isolation, TTL-derived reset_after, singleton,
+      decorator routing to ValkeyRateLimiter.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12154/dod-unit-tests/command.yaml"
+  - id: "dod-integration-tests"
+    description: >
+      2 integration tests prove cross-worker counter sharing: test_two_workers_share_counter
+      and test_window_resets_after_expiry. Guarded by Valkey reachability skip.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12154/dod-integration-tests/command.yaml"
+  - id: "dod-no-regressions"
+    description: "171 existing unit tests pass with no regressions after the change."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12154/dod-no-regressions/command.yaml"
