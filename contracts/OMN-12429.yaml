@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-12429
+title: "Runtime kernel crash-loops on current omnimarket dev: HandlerModelRouter deps unsatisfiable in auto-wiring"
+summary: >
+  node_model_router is runtime_dispatch.invocation_mode: in_process with empty
+  subscribe_topics, but wire_from_manifest instantiates every handler at boot.
+  HandlerModelRouter required policy/registry/event_bus; the resolver could only
+  inject event_bus, so it hit the Step-6 hard TypeError and the kernel re-raised
+  it, crash-looping the runtime once OMN-12424 made it install current dev. Fix:
+  make policy/registry/event_bus optional (caller-supplied config), so the
+  resolver constructs the boot instance cleanly; routing on an unconfigured
+  instance fails loudly. Shipped via omnimarket PR #994 with a resolver-level
+  regression test. Verified on the stability-test bus: the runtime now boots
+  clean and node_dod_verify emits its first terminal event.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omnimarket PR #994 carries the HandlerModelRouter DI-wiring fix"
+    command: "gh pr view 994 --repo OmniNode-ai/omnimarket --json state"
+  - kind: "manual"
+    description: "HandlerModelRouter __init__ makes policy/registry/event_bus optional"
+    command: "grep -E 'policy: ModelRoutingPolicy . None = None' handler_model_router.py"
+  - kind: "tests"
+    description: "Resolver-level regression test pins that boot wiring no longer raises"
+    command: "pytest tests/test_node_model_router_auto_wiring.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market-pr-open"
+    description: "omnimarket PR #994 exists with the OMN-12429 HandlerModelRouter fix"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 994 --repo OmniNode-ai/omnimarket --json number --jq .number)\" = 994"
+  - id: "dod-handler-optional-deps"
+    description: "HandlerModelRouter constructor makes policy/registry optional so runtime auto-wiring resolves it (PR head, falls back to dev after merge)"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "for r in jonah/omn-12429-model-router-di-wiring dev; do c=$(gh api \"repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_model_router/handlers/handler_model_router.py?ref=$r\" --jq .content 2>/dev/null | base64 -d 2>/dev/null); if [ -n \"$c\" ]; then printf '%s' \"$c\" | grep -q 'policy: ModelRoutingPolicy | None = None' && printf '%s' \"$c\" | grep -q 'registry: Registry | None = None' && exit 0; fi; done; exit 1"
+  - id: "dod-auto-wiring-test"
+    description: "Resolver-level regression test file exists on the PR head (pins boot wiring success)"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "for r in jonah/omn-12429-model-router-di-wiring dev; do n=$(gh api \"repos/OmniNode-ai/omnimarket/contents/tests/test_node_model_router_auto_wiring.py?ref=$r\" --jq .name 2>/dev/null); if [ \"$n\" = test_node_model_router_auto_wiring.py ]; then exit 0; fi; done; exit 1"
