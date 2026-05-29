@@ -143,9 +143,9 @@ Proposed handling for the Group A candidates: bundle into two tickets, one fixtu
 ## Blockers
 
 1. **omni_home access** — blocks Task 5 (golden-chain classification). Bundle is real and on omni_home main; this account cannot read that repo.
-2. **OCC push access** — blocks delivery of this document and the Day 5 findings. This account has `pull: true, push: false` on onex_change_control. The Day 5 findings are committed locally at `1f300489` but cannot be pushed; today's findings will be in the same state.
+2. **OCC push access — RESOLVED 2026-05-29.** Write access was granted (the account now has `push: true`). The Day 5 and Day 7 findings and manifests have been committed and pushed to branch `clone45/omn-11513-integration-evidence-days-1-7` on origin.
 
-Both are documented for Jonah in `docs/projects/hackathon_prep/discussions/2026-05-29-jonah-blockers-batch2.md`.
+The remaining omni_home blocker is documented for Jonah in `docs/projects/hackathon_prep/discussions/2026-05-29-jonah-blockers-batch2.md`.
 
 ## Severity tally (provisional, through Group B)
 
