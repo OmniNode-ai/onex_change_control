@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-12463
+title: "Producer-side adapter — emit ModelHandlerContract-shaped registration payload for market node
+  hot-load"
+summary: >
+  Third hot-load blocker (follow-up to OMN-12449). Market node contract.yaml files declare handler / handler_routing
+  and nest their I/O models; they lack the top-level handler_id / input_model / output_model / descriptor
+  shape the runtime descriptor parser (omnibase_infra ContractYamlParser.parse) validates against omnibase_core's
+  ModelHandlerContract. node_contract_registry published the raw market contract_yaml verbatim, so every
+  market node failed model_validate before materialization. Approach A (producer-side): add market_contract_adapter.to_handler_contract_payload(),
+  invoked by ContractRegistryHandler before publishing to onex.evt.platform.node-registration.v1, transforming
+  the market contract into a ModelHandlerContract-shaped payload (handler_id, name, contract_version,
+  descriptor, input_model, output_model, handler_class via metadata.handler_class). Fail-fast on undeducible
+  required fields. omnibase_infra is untouched (market knowledge stays out of infra). No market-contract
+  or schema changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Adapter unit tests map compute + orchestrator archetypes to a valid ModelHandlerContract,
+      normalize *_GENERIC node_type, and fail-fast on missing input_model / handler_class / contract_version
+      / unmappable archetype; round-trip through omnibase_infra ContractYamlParser.parse."
+    command: "uv run pytest tests/unit/nodes/test_node_contract_registry/test_market_contract_adapter.py
+      -v"
+  - kind: "tests"
+    description: "Handler tests confirm the published contract_yaml is the adapted ModelHandlerContract
+      payload and unadaptable contracts are rejected with ADAPTER_FAILURE."
+    command: "uv run pytest tests/unit/nodes/test_node_contract_registry/ -v"
+  - kind: "manual"
+    description: "omnimarket PR #997 carries the producer-side adapter and tests, based on dev."
+    command: "gh pr view 997 --repo OmniNode-ai/omnimarket --json number,state,headRefOid,baseRefName"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-997"
+    description: "omnimarket PR #997 is open at the OMN-12463 producer-side adapter head, based on dev."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12463/dod-omnimarket-pr-997/command.yaml\"
+          && grep -q '^pr_number: 997$' \"drift/dod_receipts/OMN-12463/dod-omnimarket-pr-997/command.yaml\""
+  - id: "dod-adapter-unit-tests"
+    description: "Adapter unit tests (8) prove market contracts map to valid ModelHandlerContract, fail-fast
+      cases raise, and the payload round-trips through ContractYamlParser.parse."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12463/dod-adapter-unit-tests/command.yaml\"
+          && grep -q '^pr_number: 997$' \"drift/dod_receipts/OMN-12463/dod-adapter-unit-tests/command.yaml\""
+  - id: "dod-handler-registry-tests"
+    description: "node_contract_registry handler tests (9) confirm the adapted contract_yaml payload and
+      the ADAPTER_FAILURE rejection path."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12463/dod-handler-registry-tests/command.yaml\"
+          && grep -q '^pr_number: 997$' \"drift/dod_receipts/OMN-12463/dod-handler-registry-tests/command.yaml\""
+  - id: "dod-occ-pr-1908"
+    description: "OCC PR #1908 carries the OMN-12463 central contract and receipt evidence."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12463/dod-occ-pr-1908/command.yaml\"
+          && grep -q '^pr_number: 1908$' \"drift/dod_receipts/OMN-12463/dod-occ-pr-1908/command.yaml\""
