@@ -49,11 +49,28 @@ class TestEnumComplianceVerdict:
 
 class TestEnumComplianceViolation:
     def test_all_values(self) -> None:
-        assert len(EnumComplianceViolation) == 10
+        assert {member.value for member in EnumComplianceViolation} == {
+            "hardcoded_topic",
+            "undeclared_transport",
+            "logic_in_node",
+            "missing_handler_routing",
+            "undeclared_publish",
+            "undeclared_subscribe",
+            "direct_db_access",
+            "unregistered_handler",
+            "wire_schema_mismatch",
+            "model_dump_drift",
+            "hardcoded_config",
+            "raw_http_inference",
+            "raw_kafka",
+            "direct_db",
+            "subprocess_network",
+        }
 
     def test_str_serialization(self) -> None:
         assert str(EnumComplianceViolation.HARDCODED_TOPIC) == "hardcoded_topic"
         assert str(EnumComplianceViolation.DIRECT_DB_ACCESS) == "direct_db_access"
+        assert str(EnumComplianceViolation.HARDCODED_CONFIG) == "hardcoded_config"
 
     def test_is_str_enum(self) -> None:
         assert isinstance(EnumComplianceViolation.HARDCODED_TOPIC, str)

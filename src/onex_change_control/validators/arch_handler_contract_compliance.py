@@ -54,6 +54,64 @@ def _find_node_dirs(repo_root: Path) -> list[Path]:
     return node_dirs
 
 
+# Directory names that are never freestanding source (vendored, cached, tests).
+_FREESTANDING_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".repowise",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        "tests",
+        "test",
+    }
+)
+
+
+def _is_node_governed_module(python_file: Path) -> bool:
+    """Return True if the file is already governed by the node-contract scanner.
+
+    That scanner audits handler modules under ``node_*/handlers/`` and the
+    declarative ``node.py`` directly under a ``node_*`` directory. Both are
+    excluded from the freestanding scan to avoid double-counting.
+    """
+    parts = python_file.parts
+    for index, part in enumerate(parts[:-1]):
+        if part == "handlers" and index >= 1 and parts[index - 1].startswith("node_"):
+            return True
+    if python_file.name != "node.py":
+        return False
+    return python_file.parent.name.startswith("node_")
+
+
+def _find_freestanding_modules(repo_root: Path) -> list[Path]:
+    """Enumerate ``src/**/*.py`` modules not governed by the node scanner.
+
+    Excludes node handler modules and declarative ``node.py`` files (governed
+    by the node scanner), test directories, vendored / cache directories, and
+    ``__init__.py`` package markers. The remaining set is the freestanding code
+    the node scanner is structurally blind to.
+    """
+    src_dir = repo_root / "src"
+    if not src_dir.exists():
+        return []
+
+    modules: list[Path] = []
+    for python_file in src_dir.rglob("*.py"):
+        if python_file.name == "__init__.py":
+            continue
+        if any(part in _FREESTANDING_SKIP_DIRS for part in python_file.parts):
+            continue
+        if _is_node_governed_module(python_file):
+            continue
+        modules.append(python_file)
+
+    return sorted(modules)
+
+
 def _load_allowlist(allowlist_path: Path) -> dict[str, list[str]]:
     """Load allowlist YAML, returning handler_path -> list of violation types."""
     if not allowlist_path.exists():
