@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-12444
+title: "Normalize stability session health probe runtime env contract"
+summary: >
+  Stability session_orchestrator dogfood reached the deployed runtime but halted
+  in Phase 1 because the stability runtime did not declare the host probe inputs
+  and tools its health probes require. The fix is carried by omnibase_infra PR
+  #1794: stability runtime services declare ONEX_INFRA_HOST, ONEX_INFRA_USER,
+  OMNI_HOME, and SSH_STRICT_HOST_KEY_CHECKING; mount OMNI_HOME read-only for
+  repo-sync probes; and include git/uv in the final runtime image for session
+  health probes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_infra PR #1794 carries the stability runtime env/tool contract fix"
+    command: "gh pr view 1794 --repo OmniNode-ai/omnibase_infra --json state"
+  - kind: "tests"
+    description: "Focused stability compose/render and runtime tool contract tests pass locally"
+    command: "uv run pytest tests/unit/infra/test_stability_test_runtime_lane.py tests/unit/docker/test_runtime_session_health_tools.py tests/integration/infra/test_stability_test_runtime_compose_render.py -q"
+  - kind: "manual"
+    description: "Stability overlay declares required session health env and OMNI_HOME read-only mount"
+    command: "grep -q ONEX_INFRA_HOST docker/docker-compose.stability-test.yml && grep -q 'OMNI_HOME required for stability session health probes' docker/docker-compose.stability-test.yml"
+  - kind: "manual"
+    description: "Runtime Dockerfile includes git and uv in the final image"
+    command: "grep -q 'git is required by gh and session health repo probes' docker/Dockerfile.runtime && grep -q 'COPY --from=uv-bin /uv /uvx /usr/local/bin/' docker/Dockerfile.runtime"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-1794-open"
+    description: "omnibase_infra PR #1794 exists for the OMN-12444 stability session health fix"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1794 --repo OmniNode-ai/omnibase_infra --json number --jq .number)\" = 1794"
+  - id: "dod-focused-tests"
+    description: "Focused stability compose/render and runtime tool contract tests passed before opening PR #1794"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/infra/test_stability_test_runtime_lane.py tests/unit/docker/test_runtime_session_health_tools.py tests/integration/infra/test_stability_test_runtime_compose_render.py -q"
+  - id: "dod-stability-session-health-env"
+    description: "Stability overlay declares session health env and read-only OMNI_HOME mount"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q ONEX_INFRA_HOST docker/docker-compose.stability-test.yml && grep -q 'OMNI_HOME required for stability session health probes' docker/docker-compose.stability-test.yml"
+  - id: "dod-runtime-image-tools"
+    description: "Runtime image includes git and uv for deployed session health probes"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'git is required by gh and session health repo probes' docker/Dockerfile.runtime && grep -q 'COPY --from=uv-bin /uv /uvx /usr/local/bin/' docker/Dockerfile.runtime"
