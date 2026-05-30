@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-12449
+title: "Hot-load market nodes — shared trusted-namespace constant + resolve handler from handler_routing"
+summary: >
+  Two omnibase_infra runtime defects blocked omnimarket nodes from hot-loading via contract on the bus.
+  Fix 1 (runtime_host_process.py): the live materializer namespace gate hardcoded ("omnibase_infra.",
+  "omnibase_core."), rejecting every omnimarket. handler; replaced with the shared TRUSTED_HANDLER_NAMESPACE_PREFIXES
+  constant (which already includes "omnimarket." and is the policy the caching gate enforces). Fix 2 (kafka_contract_source.py):
+  the descriptor parser only read metadata.handler_class, absent in market node contracts; added a fallback
+  that joins module + class from handler_routing.handlers[].handler (preferred) or the top-level handler
+  block into the fully qualified module.ClassName path the materializer imports. No schema or market-contract
+  changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra PR #1796 carries both fixes (namespace constant + handler_routing fallback)
+      and tests."
+    command: "gh pr view 1796 --repo OmniNode-ai/omnibase_infra --json state,headRefOid,files"
+  - kind: "manual"
+    description: "Descriptor parser resolves handler_class from handler_routing/top-level handler (4 tests)."
+    command: "uv run pytest tests/unit/runtime/test_kafka_contract_source.py -k MarketNodeHandlerResolution
+      -v"
+  - kind: "manual"
+    description: "Live materializer namespace gate accepts the omnimarket. namespace via the shared constant."
+    command: "uv run pytest tests/unit/runtime/test_live_contract_materialization.py::TestMaterializeHandlerLive::test_materialize_accepts_omnimarket_namespace
+      -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-1796"
+    description: "omnibase_infra PR #1796 is open at the current OMN-12449 hot-load fix head."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12449/dod-omnibase-infra-pr-1796/command.yaml\"
+          && grep -q '^pr_number: 1796$' \"drift/dod_receipts/OMN-12449/dod-omnibase-infra-pr-1796/command.yaml\""
+  - id: "dod-descriptor-routing-test"
+    description: "4 descriptor-parser tests confirm handler_class resolves from handler_routing / top-level
+      handler."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12449/dod-descriptor-routing-test/command.yaml\"
+          && grep -q '^pr_number: 1796$' \"drift/dod_receipts/OMN-12449/dod-descriptor-routing-test/command.yaml\""
+  - id: "dod-namespace-gate-test"
+    description: "Materializer namespace-gate test confirms the omnimarket. namespace is accepted via
+      the shared constant."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12449/dod-namespace-gate-test/command.yaml\"
+          && grep -q '^pr_number: 1796$' \"drift/dod_receipts/OMN-12449/dod-namespace-gate-test/command.yaml\""
+  - id: "dod-occ-pr-OCCPRNUM"
+    description: "OCC PR #OCCPRNUM carries the OMN-12449 central contract and receipt evidence."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12449/dod-occ-pr-OCCPRNUM/command.yaml\"
+          && grep -q '^pr_number: OCCPRNUM$' \"drift/dod_receipts/OMN-12449/dod-occ-pr-OCCPRNUM/command.yaml\""
