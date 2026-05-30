@@ -190,6 +190,15 @@ class TestNonHandlerSkips:
         findings = validate_contract_sync(changed_files, diff_content)
         assert len(findings) == 0
 
+    def test_handler_prefixed_library_module_skips(self) -> None:
+        """A library module named handler*.py outside a node_*/ tree is not a
+        node handler and must not be required to co-touch a contract.yaml."""
+        path = "src/onex_change_control/scanners/handler_contract_compliance.py"
+        changed_files = [path]
+        diff_content = _make_diff(path, added_lines=["+def scan(): pass"] * 15)
+        findings = validate_contract_sync(changed_files, diff_content)
+        assert len(findings) == 0
+
 
 # ---------------------------------------------------------------------------
 # Skill file changed + no contract → FAIL

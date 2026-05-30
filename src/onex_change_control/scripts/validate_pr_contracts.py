@@ -24,8 +24,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+# A node handler is either a ``handler*.py`` file living inside a ``node_*``
+# directory tree (the canonical node layout) or any module under a
+# ``handlers/`` directory. The ``node_*`` anchor on the first alternation keeps
+# library modules that merely begin with ``handler`` (e.g. the scanner module
+# ``scanners/handler_contract_compliance.py``) from being misclassified as node
+# handlers that owe a sibling ``contract.yaml``.
 _HANDLER_FILE_PATTERN = re.compile(
-    r"(?:^|/)handler[^/]*\.py$"
+    r"(?:^|/)node_[^/]+/(?:[^/]+/)*handler[^/]*\.py$"
     r"|"
     r"(?:^|/)handlers/[^/]+\.py$",
 )

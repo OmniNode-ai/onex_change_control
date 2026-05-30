@@ -13,19 +13,26 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
-from onex_change_control.scanners.handler_contract_compliance import cross_reference
+from onex_change_control.scanners.handler_contract_compliance import (
+    cross_reference,
+    scan_freestanding_imperative_io,
+)
 from onex_change_control.validators.arch_handler_contract_compliance import (
+    _find_freestanding_modules,
     _find_node_dirs,
     _infer_repo_name,
     _load_allowlist,
 )
 
 if TYPE_CHECKING:
+    from onex_change_control.models.model_freestanding_imperative_result import (
+        ModelFreestandingImperativeResult,
+    )
     from onex_change_control.models.model_handler_compliance_result import (
         ModelHandlerComplianceResult,
     )
@@ -58,6 +65,11 @@ class RepoImperativeSummary:
     allowlisted_count: int
     new_violation_count: int
     results: list[ModelHandlerComplianceResult]
+    freestanding_scanned: bool = False
+    freestanding_module_count: int = 0
+    freestanding_results: list[ModelFreestandingImperativeResult] = field(
+        default_factory=list
+    )
 
     def to_json(self) -> dict[str, Any]:
         """Return JSON-serializable summary data."""
@@ -70,9 +82,16 @@ class RepoImperativeSummary:
             "compliant_count": self.compliant_count,
             "allowlisted_count": self.allowlisted_count,
             "new_violation_count": self.new_violation_count,
+            "freestanding_scanned": self.freestanding_scanned,
+            "freestanding_module_count": self.freestanding_module_count,
             "new_violations": [
                 result.model_dump(mode="json")
                 for result in self.results
+                if result.violations and not result.allowlisted
+            ],
+            "freestanding_violations": [
+                result.model_dump(mode="json")
+                for result in self.freestanding_results
                 if result.violations and not result.allowlisted
             ],
         }
@@ -93,8 +112,14 @@ def scan_repo(
     repo_root: Path,
     *,
     allowlists_dir: Path | None = None,
+    scan_freestanding: bool = False,
 ) -> RepoImperativeSummary:
-    """Scan a repository and return its imperative-contract summary."""
+    """Scan a repository and return its imperative-contract summary.
+
+    When ``scan_freestanding`` is set, every ``src/`` module that is not a node
+    handler is additionally audited for freestanding imperative IO so coverage
+    extends beyond ``node_*/handlers/``.
+    """
     repo_root = repo_root.resolve()
     repo_name = _infer_repo_name(repo_root)
     repo_label = repo_root.name
@@ -121,6 +146,23 @@ def scan_repo(
             )
         )
 
+    freestanding_results: list[ModelFreestandingImperativeResult] = []
+    freestanding_module_count = 0
+    if scan_freestanding:
+        freestanding_module_count, freestanding_results = _scan_freestanding_repo(
+            repo_root=repo_root,
+            repo_name=repo_name,
+            allowlisted_paths=allowlisted_paths,
+        )
+
+    new_violation_count = sum(
+        1 for result in results if result.violations and not result.allowlisted
+    ) + sum(
+        1
+        for result in freestanding_results
+        if result.violations and not result.allowlisted
+    )
+
     return RepoImperativeSummary(
         repo=repo_label,
         repo_root=repo_root,
@@ -133,22 +175,50 @@ def scan_repo(
             if not result.violations
             and result.verdict == EnumComplianceVerdict.COMPLIANT
         ),
-        allowlisted_count=sum(1 for result in results if result.allowlisted),
-        new_violation_count=sum(
-            1 for result in results if result.violations and not result.allowlisted
-        ),
+        allowlisted_count=sum(1 for result in results if result.allowlisted)
+        + sum(1 for result in freestanding_results if result.allowlisted),
+        new_violation_count=new_violation_count,
         results=results,
+        freestanding_scanned=scan_freestanding,
+        freestanding_module_count=freestanding_module_count,
+        freestanding_results=freestanding_results,
     )
+
+
+def _scan_freestanding_repo(
+    *,
+    repo_root: Path,
+    repo_name: str,
+    allowlisted_paths: frozenset[str],
+) -> tuple[int, list[ModelFreestandingImperativeResult]]:
+    """Audit every freestanding module in a repo and return (count, results)."""
+    modules = _find_freestanding_modules(repo_root)
+    src_dir = repo_root / "src"
+    results: list[ModelFreestandingImperativeResult] = []
+    for module in modules:
+        rel_path = str(module.relative_to(src_dir.parent))
+        result = scan_freestanding_imperative_io(
+            module,
+            repo=repo_name,
+            allowlisted=rel_path in allowlisted_paths,
+        )
+        results.append(result.model_copy(update={"module_path": rel_path}))
+    return len(modules), results
 
 
 def scan_repos(
     repo_roots: list[Path],
     *,
     allowlists_dir: Path | None = None,
+    scan_freestanding: bool = False,
 ) -> list[RepoImperativeSummary]:
     """Scan multiple repositories in deterministic order."""
     return [
-        scan_repo(repo_root=repo_root, allowlists_dir=allowlists_dir)
+        scan_repo(
+            repo_root=repo_root,
+            allowlists_dir=allowlists_dir,
+            scan_freestanding=scan_freestanding,
+        )
         for repo_root in sorted(repo_roots, key=lambda path: path.name)
     ]
 
@@ -213,6 +283,19 @@ def render_text_report(summaries: list[RepoImperativeSummary]) -> str:
             lines.append(f"- {result.handler_path}: {result.verdict.value}")
             for detail in result.violation_details:
                 lines.append(f"  - {detail}")
+
+    freestanding = [
+        fs_result
+        for summary in summaries
+        for fs_result in summary.freestanding_results
+        if fs_result.violations and not fs_result.allowlisted
+    ]
+    if freestanding:
+        lines.extend(["", "Unbaselined freestanding imperative violations:"])
+        for fs_result in freestanding:
+            lines.append(f"- {fs_result.module_path}: {fs_result.verdict.value}")
+            for finding in fs_result.active_findings:
+                lines.append(f"  - L{finding.line} {finding.detail}")
     return "\n".join(lines)
 
 
@@ -253,6 +336,24 @@ def render_markdown_report(summaries: list[RepoImperativeSummary]) -> str:
         lines.append(f"- Verdict: `{result.verdict.value}`")
         for detail in result.violation_details:
             lines.append(f"- {detail}")
+
+    freestanding = [
+        fs_result
+        for summary in summaries
+        for fs_result in summary.freestanding_results
+        if fs_result.violations and not fs_result.allowlisted
+    ]
+    if any(summary.freestanding_scanned for summary in summaries):
+        lines.extend(["", "## Unbaselined Freestanding Violations"])
+        if not freestanding:
+            lines.extend(["", "None."])
+        for fs_result in freestanding:
+            lines.append("")
+            lines.append(f"### `{fs_result.module_path}`")
+            lines.append("")
+            lines.append(f"- Verdict: `{fs_result.verdict.value}`")
+            for finding in fs_result.active_findings:
+                lines.append(f"- L{finding.line} {finding.detail}")
     return "\n".join(lines) + "\n"
 
 
@@ -293,6 +394,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Report findings but exit zero.",
     )
+    parser.add_argument(
+        "--scan-freestanding",
+        action="store_true",
+        help=(
+            "Also audit freestanding src/ modules (everything outside "
+            "node_*/handlers/) for imperative IO: raw HTTP/Kafka/DB, hardcoded "
+            "inference params, topics, LAN IPs, and subprocess network ops."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -312,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
     summaries = scan_repos(
         repo_roots=repo_roots,
         allowlists_dir=args.allowlists_dir,
+        scan_freestanding=args.scan_freestanding,
     )
     if args.markdown_report is not None:
         args.markdown_report.parent.mkdir(parents=True, exist_ok=True)
