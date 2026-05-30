@@ -42,6 +42,36 @@ def test_validate_boundaries_clone_token_base64_is_portable() -> None:
     assert "base64 -w0" not in action_text
 
 
+def test_validate_boundaries_validator_install_retries_egress_failures() -> None:
+    """The validator install should tolerate transient GitHub/TLS fetch errors."""
+    action = _load_action()
+    steps = action["runs"]["steps"]
+
+    setup_python_step = next(
+        step for step in steps if step.get("name") == "Set up Python"
+    )
+    setup_uv_step = next(step for step in steps if step.get("name") == "Install uv")
+    install_step = next(
+        step for step in steps if step.get("name") == "Install onex_change_control"
+    )
+
+    assert setup_python_step["uses"] == "actions/setup-python@v6"
+    assert setup_uv_step["uses"] == "astral-sh/setup-uv@v7"
+    assert install_step["env"]["UV_HTTP_TIMEOUT"] == "600"
+    assert install_step["env"]["UV_SYNC_ATTEMPTS"] == "5"
+    assert install_step["env"]["UV_SYNC_RETRY_DELAY_SECONDS"] == "10"
+    assert install_step["env"]["UV_CONCURRENT_DOWNLOADS"] == "2"
+
+    run_script = install_step["run"]
+    assert "git config --global http.version HTTP/1.1" in run_script
+    assert "until uv sync --no-group dev; do" in run_script
+    assert (
+        'echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed'
+        in run_script
+    )
+    assert 'echo "::error::uv sync failed after ${attempt} attempt(s)"' in run_script
+
+
 def test_validate_boundaries_scopes_migration_conflicts_to_migration_diffs() -> None:
     """Non-migration PRs should not fail on existing cross-repo schema drift."""
     action = _load_action()
