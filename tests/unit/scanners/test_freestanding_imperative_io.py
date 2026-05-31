@@ -134,6 +134,105 @@ def test_subprocess_network_flagged(tmp_path: Path) -> None:
     assert EnumComplianceViolation.SUBPROCESS_NETWORK in _violations(result)
 
 
+def test_subprocess_ssh_flagged(tmp_path: Path) -> None:
+    """ssh is a network subprocess op."""
+    module = _write(
+        tmp_path / "remote.py",
+        """
+        import subprocess
+
+
+        def exec_remote(host: str) -> None:
+            subprocess.run(["ssh", host, "uptime"], check=True)
+        """,
+    )
+
+    result = scan_freestanding_imperative_io(module, repo="sea")
+    assert EnumComplianceViolation.SUBPROCESS_NETWORK in _violations(result)
+
+
+def test_subprocess_local_git_rev_parse_not_flagged(tmp_path: Path) -> None:
+    """Local git plumbing (rev-parse) is NOT a network op.
+
+    Pins the OMN-12540 false-positive fix: a git commit-SHA provenance read
+    (``git rev-parse HEAD``) must not be flagged as subprocess_network. Mirror
+    of onex-self-extending-agent/src/__main__.py git provenance.
+    """
+    module = _write(
+        tmp_path / "provenance.py",
+        """
+        import subprocess
+
+
+        def commit_sha() -> str:
+            return subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text=True
+            ).strip()
+        """,
+    )
+
+    result = scan_freestanding_imperative_io(module, repo="sea")
+    assert EnumComplianceViolation.SUBPROCESS_NETWORK not in _violations(result)
+    assert result.verdict == EnumComplianceVerdict.COMPLIANT
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        '["git", "log", "--oneline", "-1"]',
+        '["git", "describe", "--tags"]',
+        '["git", "status", "--porcelain"]',
+        '["git", "branch", "--show-current"]',
+        '["git", "show", "HEAD:file"]',
+        '["git", "diff", "--name-only"]',
+        '["git", "-C", "/repo", "rev-parse", "HEAD"]',
+    ],
+)
+def test_subprocess_local_git_verbs_not_flagged(tmp_path: Path, argv: str) -> None:
+    """Local git porcelain/plumbing verbs perform no network IO."""
+    module = _write(
+        tmp_path / "localgit.py",
+        f"""
+        import subprocess
+
+
+        def run() -> object:
+            return subprocess.run({argv}, check=True)
+        """,
+    )
+
+    result = scan_freestanding_imperative_io(module, repo="sea")
+    assert EnumComplianceViolation.SUBPROCESS_NETWORK not in _violations(result)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        '["git", "fetch", "origin"]',
+        '["git", "clone", "https://example.com/r.git"]',
+        '["git", "push", "origin", "main"]',
+        '["git", "pull", "--ff-only"]',
+        '["git", "ls-remote", "origin"]',
+        '["git", "-C", "/repo", "fetch", "origin"]',
+    ],
+)
+def test_subprocess_network_git_verbs_flagged(tmp_path: Path, argv: str) -> None:
+    """Network git verbs (fetch/clone/push/pull/ls-remote) ARE flagged."""
+    module = _write(
+        tmp_path / "netgit.py",
+        f"""
+        import subprocess
+
+
+        def run() -> object:
+            return subprocess.run({argv}, check=True)
+        """,
+    )
+
+    result = scan_freestanding_imperative_io(module, repo="sea")
+    assert EnumComplianceViolation.SUBPROCESS_NETWORK in _violations(result)
+
+
 def test_hardcoded_lan_ip_flagged(tmp_path: Path) -> None:
     module = _write(
         tmp_path / "config.py",
@@ -157,6 +256,71 @@ def test_hardcoded_topic_flagged(tmp_path: Path) -> None:
 
     result = scan_freestanding_imperative_io(module, repo="sea")
     assert EnumComplianceViolation.HARDCODED_TOPIC in _violations(result)
+
+
+def test_topics_constants_module_is_flagged(tmp_path: Path) -> None:
+    """A topics.py-style constants module IS flagged — no topic-module exemption.
+
+    Per OmniNode architecture, topic strings belong in contract event_bus
+    declarations. Topic literals anywhere outside contracts — including
+    dedicated ``topics.py`` / ``*_topics.py`` constants modules — MUST stay
+    flagged (OMN-12540 keeps topics strict).
+    """
+    module = _write(
+        tmp_path / "topics.py",
+        '''
+        """Centralized topic name constants."""
+
+        DELEGATION_REQUESTED = "onex.evt.delegation.inference-requested.v1"
+        ROUTING_COMPLETED = "agent.routing.completed.v1"
+        ''',
+    )
+
+    result = scan_freestanding_imperative_io(module, repo="sea")
+    assert EnumComplianceViolation.HARDCODED_TOPIC in _violations(result)
+    assert result.verdict != EnumComplianceVerdict.COMPLIANT
+
+
+def test_local_timeout_kwarg_not_flagged(tmp_path: Path) -> None:
+    """A bare local ``timeout=`` is a control-flow bound, not inference config.
+
+    OMN-12540: ``timeout`` was removed from the inference-param set because it
+    over-flagged legitimate local timeouts (subprocess, sockets, asyncio).
+    """
+    module = _write(
+        tmp_path / "runner.py",
+        """
+        import subprocess
+
+
+        def run() -> object:
+            return subprocess.run(["echo", "hi"], timeout=30, check=True)
+        """,
+    )
+
+    result = scan_freestanding_imperative_io(module, repo="sea")
+    assert EnumComplianceViolation.HARDCODED_CONFIG not in _violations(result)
+    assert result.verdict == EnumComplianceVerdict.COMPLIANT
+
+
+def test_inference_params_still_flagged_without_timeout(tmp_path: Path) -> None:
+    """Removing timeout must not weaken genuine inference-param detection."""
+    module = _write(
+        tmp_path / "infer.py",
+        """
+        def gen(client) -> str:
+            return client.complete(
+                prompt="hi",
+                max_tokens=512,
+                top_k=40,
+                presence_penalty=0.5,
+                frequency_penalty=0.5,
+            )
+        """,
+    )
+
+    result = scan_freestanding_imperative_io(module, repo="sea")
+    assert EnumComplianceViolation.HARDCODED_CONFIG in _violations(result)
 
 
 def test_hardcoded_temperature_kwarg_flagged(tmp_path: Path) -> None:
