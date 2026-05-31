@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12533"
+title: "Retry broker metadata startup errors and cap local topic provisioning"
+summary: >-
+  Treat aiokafka BrokerNotAvailableError as a transient consumer-start metadata convergence error, reuse
+  the bounded metadata retry path, and cap local Docker topic provisioning to one partition by default
+  so the stability effects runtime does not amplify Redpanda partition pressure while command topics converge.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused event-bus and service-topic-manager tests prove BrokerNotAvailableError uses the bounded
+      metadata retry path and local topic provisioning honors the single-partition cap.
+    command: >-
+      uv run pytest tests/integration/event_bus/test_kafka_invalid_partitions_retry_integration.py tests/unit/event_bus/test_service_topic_manager.py
+      -q && uv run ruff check src/omnibase_infra/event_bus/event_bus_kafka.py src/omnibase_infra/event_bus/service_topic_manager.py
+      tests/integration/event_bus/test_kafka_invalid_partitions_retry_integration.py tests/unit/event_bus/test_service_topic_manager.py
+      && git diff --check
+  - kind: "manual"
+    description: >-
+      Stability runtime investigation proved runtime-effects was stuck in runtime_pending while startup
+      emitted repeated BrokerNotAvailableError metadata fetches for omnimarket command topics; Redpanda
+      was healthy but saturated near its topic partition cap, so the code fix must be paired with broker
+      capacity cleanup before the live lane can fully recover.
+    command: "runtime-effects .201 diagnostics and rpk topic/partition capacity probes"
+dod_evidence:
+  - id: "dod-infra-pr-1813"
+    description: "Bind omnibase_infra PR #1813 head and runtime event-bus topic retry changes."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-infra-pr-1813/command.yaml"
+          && grep -q '^pr_number: 1813$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-infra-pr-1813/command.yaml"
+          && grep -q '^commit_sha: "03a749289ba8a0b3e8cf5c22a64902709513c770"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-infra-pr-1813/command.yaml"
+  - id: "dod-local-validation"
+    description: "Focused local validation for metadata retry and topic provisioning cap passed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-local-validation/command.yaml"
+          && grep -q 'test_kafka_invalid_partitions_retry_integration.py' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-local-validation/command.yaml"
+          && grep -q 'test_service_topic_manager.py' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-local-validation/command.yaml"
+          && grep -q 'All checks passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-local-validation/command.yaml"
+  - id: "dod-runtime-evidence"
+    description: "Stability runtime diagnostics captured BrokerNotAvailableError and Redpanda partition
+      saturation."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-runtime-evidence/command.yaml"
+          && grep -q 'BrokerNotAvailableError' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-runtime-evidence/command.yaml"
+          && grep -q 'topic_partitions_per_shard=7000' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-runtime-evidence/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-12533 central evidence."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12533/dod-occ-pr-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
