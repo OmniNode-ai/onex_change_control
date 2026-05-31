@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12559"
+title: "auto-discover omnimarket node migrations into the omnibase_infra forward set"
+summary: >
+  omnimarket projection nodes ship SQL under src/omnimarket/nodes/*/migrations/*.sql, but the omnibase_infra
+  forward-migration runner only read docker/migrations/forward/. Landing the OMN-12489 delegation dashboard
+  + savings projection views in infra previously required a manual host-side copy AND a hand-renumber
+  (savings 076 -> 084) to dodge a numeric collision with the existing flat docker/migrations/forward/076_add_savings_estimate_provenance.sql.
+  This change vendors node migrations into a namespaced location (docker/migrations/forward/nodes/<node>/)
+  and extends run-forward-migrations.sh with a discovery pass that applies each under a namespaced migration_id
+  (node:<node>:<file>) in public.schema_migrations — a separate identity space from the flat infra sequence,
+  so a node 076 never collides with infra flat 076 and NO renumber is ever required. scripts/sync-node-migrations.sh
+  (allowlist-scoped) discovers + vendors node migrations from an installed/cloned omnimarket and provides
+  a --check drift guard wired as a pre-commit hook. validate_migration_sequence.py excludes the nodes/
+  subtree. Dockerfile.migrate COPY is recursive so the nodes/ subtree ships in the migrate image. A clean
+  clone reproduces the views with no manual copy.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      omnibase_infra PR carries the discovery runner + vendored node migrations. Unit, integration (real-DB
+      discovery applies the views + namespace no-collision, opt-in) and sequence-validator exclusion tests
+      pass; pre-commit clean.
+    command: "See drift/dod_receipts/OMN-12559/dod-infra-discovery/command.yaml"
+  - kind: "manual"
+    description: "onex_change_control PR carrying this contract binds the central evidence publication."
+    command: "See drift/dod_receipts/OMN-12559/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-discovery"
+    description: >
+      omnibase_infra PR adds run-forward-migrations.sh node discovery and vendors the OMN-12489 delegation
+      + savings view migrations under docker/migrations/forward/nodes/<node>/. A clean run of the runner
+      against an empty DB creates projection_delegation_summary/model_routing/savings via namespaced node:<node>:<file>
+      ids with no manual copy, and a node 076 coexists with the flat infra 076 with no collision. Migration
+      discovery unit + integration + sequence-validator tests pass; full unit suite green (19981 passed);
+      pre-commit clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12559/dod-infra-discovery/command.yaml
+  - id: "dod-occ-pr"
+    description: "onex_change_control publishes the OMN-12559 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12559/dod-occ-pr/command.yaml"
