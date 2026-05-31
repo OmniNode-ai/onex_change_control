@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12532"
+title: "Bug: stability effects runtime lacks ONEX_STATE_DIR for PR lifecycle orchestrator"
+summary: >-
+  Fix the runtime environment contract surfaces so ONEX_STATE_DIR is exported alongside ONEX_STATE_ROOT
+  for local/dev catalog runtime containers, the stability-test runtime lane, and the onex-dev runtime
+  ConfigMap. The PR lifecycle orchestrator uses ONEX_STATE_DIR to write breadcrumbs and worker logs, so
+  the stability runtime effects container must expose the variable before foreground controller dogfood
+  can dispatch PR lifecycle work reliably.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused compose, catalog, and parity tests prove ONEX_STATE_DIR is present on the runtime env surfaces
+      and matches ONEX_STATE_ROOT for container-local state.
+    command: >-
+      uv run pytest tests/unit/infra/test_stability_test_runtime_lane.py tests/integration/infra/test_stability_test_runtime_compose_render.py
+      tests/ci/test_runtime_env_anchor.py tests/unit/infra/test_catalog_generator.py -q && OMNINODE_INFRA_DIR=/Users/jonah/Code/omni_home/omni_worktrees/OMN-12532/omninode_infra
+      uv run pytest tests/ci/test_env_parity.py -q && uv run ruff check tests/ci/test_runtime_env_anchor.py
+      tests/unit/infra/test_catalog_generator.py tests/unit/infra/test_stability_test_runtime_lane.py
+      tests/integration/infra/test_stability_test_runtime_compose_render.py && git diff --check
+  - kind: "manual"
+    description: >-
+      Stability runtime dogfood before the fix proved the direct PR lifecycle command was consumed on
+      the stability bus, then failed in runtime-effects because ONEX_STATE_DIR was not set.
+    command: "direct pr_lifecycle_orchestrator stability bus publish correlation 2a36f868-4153-46b7-992a-5f3e806c7a2a"
+dod_evidence:
+  - id: "dod-infra-pr-1811"
+    description: "Bind omnibase_infra PR #1811 head and runtime env source changes."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-infra-pr-1811/command.yaml"
+          && grep -q '^pr_number: 1811$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-infra-pr-1811/command.yaml"
+          && grep -q '^commit_sha: "ae95965480d8620a2b305913f47e8d73772fa2d9"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-infra-pr-1811/command.yaml"
+  - id: "dod-omninode-infra-pr-480"
+    description: "Bind omninode_infra PR #480 head and onex-dev runtime ConfigMap parity change."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-omninode-infra-pr-480/command.yaml"
+          && grep -q '^pr_number: 480$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-omninode-infra-pr-480/command.yaml"
+          && grep -q '^commit_sha: "f9f8b73' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-omninode-infra-pr-480/command.yaml"
+  - id: "dod-local-validation"
+    description: "Focused local validation for compose, catalog, k8s parity, ruff, and diff checks passed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-local-validation/command.yaml"
+          && grep -q '39 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-local-validation/command.yaml"
+          && grep -q '3 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-local-validation/command.yaml"
+          && grep -q 'All checks passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-local-validation/command.yaml"
+  - id: "dod-stability-dogfood"
+    description: "Stability dogfood captures the pre-fix runtime-effects ONEX_STATE_DIR failure."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-stability-dogfood/command.yaml"
+          && grep -q 'ONEX_STATE_DIR is not set' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-stability-dogfood/command.yaml"
+          && grep -q 'correlation_id: 2a36f868-4153-46b7-992a-5f3e806c7a2a' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-stability-dogfood/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-12532 central evidence."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12532/dod-occ-pr-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
