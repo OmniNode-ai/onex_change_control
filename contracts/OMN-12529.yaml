@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12529"
+title: "Investigate recurring GitHub runner transport failures during integration tidy-up"
+summary: >-
+  Harden omnibase_infra CI and Docker runtime dependency installation against repeated GitHub and PyPI
+  transport failures observed during the 2026-05-31 integration tidy-up. The fix routes standards checks
+  through the existing hardened setup action, increases shared uv sync retry attempts, and preserves Dockerfile
+  plugin pin validation while retry-wrapping Docker build uv installs.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused validation confirms the Dockerfile pin parser accepts retry-wrapped uv installs, the Dockerfile
+      pin gate still validates plugin ranges, touched workflows parse with actionlint, and pre-commit
+      passes over all changed files.
+    command: >-
+      uv run pre-commit run --files .github/actions/setup-python-uv/action.yml .github/workflows/omni-standards-compliance.yml
+      .github/workflows/docker-build.yml docker/Dockerfile.runtime scripts/check_dockerfile_pins.py tests/scripts/test_check_dockerfile_pins.py
+      && uv run pytest tests/scripts/test_check_dockerfile_pins.py -q && uv run python scripts/check_dockerfile_pins.py
+      --dockerfile docker/Dockerfile.runtime --no-pypi && actionlint .github/workflows/omni-standards-compliance.yml
+      && actionlint -ignore 'SC2086|SC2129' .github/workflows/docker-build.yml
+  - kind: "manual"
+    description: >-
+      Docker daemon is unavailable in the local Codex environment, so Docker build execution remains CI-owned.
+      The Dockerfile wrapper shell content was syntax-checked locally and Docker Build CI must provide
+      the image build proof.
+    command: "Docker daemon unavailable locally; CI Docker Build remains required proof."
+dod_evidence:
+  - id: "dod-infra-pr-1809"
+    description: "Bind omnibase_infra PR #1809 head and changed CI/Docker hardening files."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-infra-pr-1809/command.yaml"
+          && grep -q '^pr_number: 1809$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-infra-pr-1809/command.yaml"
+          && grep -q '^commit_sha: "6977caf1945e73b874fb6e1c95fa2eceee376e2e"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-infra-pr-1809/command.yaml"
+  - id: "dod-local-validation"
+    description: "Focused local validation for CI transport hardening passed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-local-validation/command.yaml"
+          && grep -q 'Dockerfile pin check passed (35 entries validated)' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-local-validation/command.yaml"
+          && grep -q '2 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-local-validation/command.yaml"
+  - id: "dod-docker-build-plan"
+    description: "Docker daemon limitation and CI-owned Docker Build proof are explicit."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-docker-build-plan/command.yaml"
+          && grep -q 'Docker daemon was unavailable locally' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-docker-build-plan/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-12529 central evidence."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12529/dod-occ-pr-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
