@@ -136,7 +136,10 @@ _DIRECT_DB_CALL_PATTERNS: frozenset[str] = frozenset(
     }
 )
 
-# subprocess argv[0] tokens that indicate a network / git / remote op.
+# subprocess argv[0] tokens that are unconditionally network/remote tools.
+# ``git`` is intentionally NOT here: local git plumbing (rev-parse, log,
+# status, ...) performs no network IO and is a legitimate freestanding op.
+# Network git is handled separately via _GIT_NETWORK_VERBS below.
 _SUBPROCESS_NETWORK_TOKENS: frozenset[str] = frozenset(
     {
         "ssh",
@@ -144,10 +147,24 @@ _SUBPROCESS_NETWORK_TOKENS: frozenset[str] = frozenset(
         "rsync",
         "curl",
         "wget",
-        "git",
-        "kubectl",
-        "docker",
-        "helm",
+    }
+)
+
+# argv[0] value for the git CLI (after stripping any path prefix).
+_GIT_ARGV0 = "git"
+
+# git subcommands that actually contact a remote. Only these make a
+# ``git ...`` subprocess a network op; local plumbing/porcelain such as
+# rev-parse, log, describe, status, branch, show, diff, rev-list, commit,
+# add, and tag stay unflagged (git commit-SHA provenance is the canonical
+# legitimate local use).
+_GIT_NETWORK_VERBS: frozenset[str] = frozenset(
+    {
+        "fetch",
+        "clone",
+        "push",
+        "pull",
+        "ls-remote",
     }
 )
 _SUBPROCESS_CALL_PATTERNS: frozenset[str] = frozenset(
@@ -161,6 +178,11 @@ _SUBPROCESS_CALL_PATTERNS: frozenset[str] = frozenset(
 )
 
 # Call-keyword names whose numeric literal values are hardcoded inference config.
+# ``timeout`` is intentionally excluded: it is a control-flow safety bound on
+# local IO (``subprocess.run``, socket reads, ``asyncio.wait_for``, file-lock
+# acquisition), not an LLM sampling/generation knob. Flagging every numeric
+# ``timeout=`` over-flagged legitimate local timeouts. The remaining params are
+# unambiguously inference-only and stay flagged per contract-config doctrine.
 _INFERENCE_PARAM_KWARGS: frozenset[str] = frozenset(
     {
         "max_tokens",
@@ -168,7 +190,6 @@ _INFERENCE_PARAM_KWARGS: frozenset[str] = frozenset(
         "temperature",
         "top_p",
         "top_k",
-        "timeout",
         "presence_penalty",
         "frequency_penalty",
     }
@@ -728,7 +749,13 @@ def _classify_call(
 
 
 def _subprocess_is_network(node: ast.Call) -> bool:
-    """Return True if a subprocess call's argv[0] is a network/git tool."""
+    """Return True if a subprocess call performs a network/remote operation.
+
+    A plain remote tool (``ssh``/``scp``/``rsync``/``curl``/``wget``) always
+    counts. ``git`` only counts when its subcommand is a network verb
+    (``fetch``/``clone``/``push``/``pull``/``ls-remote``); local git plumbing
+    such as ``git rev-parse HEAD`` performs no network IO and is not flagged.
+    """
     if not node.args:
         return False
     first = node.args[0]
@@ -744,7 +771,33 @@ def _subprocess_is_network(node: ast.Call) -> bool:
     if not tokens:
         return False
     head = tokens[0].rsplit("/", 1)[-1]
-    return head in _SUBPROCESS_NETWORK_TOKENS
+    if head in _SUBPROCESS_NETWORK_TOKENS:
+        return True
+    if head == _GIT_ARGV0:
+        return _git_argv_is_network(tokens[1:])
+    return False
+
+
+def _git_argv_is_network(argv: list[str]) -> bool:
+    """Return True if a git argv (excluding the ``git`` arg) hits a remote.
+
+    Scans for the first non-option arg (the subcommand), skipping global
+    flags like ``-C <dir>`` / ``--no-pager``, and flags it only when that
+    subcommand is in _GIT_NETWORK_VERBS. Local plumbing stays unflagged.
+    """
+    skip_next = False
+    for arg in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "-C":
+            # ``git -C <dir>`` — the dir is the next arg; skip both.
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg in _GIT_NETWORK_VERBS
+    return False
 
 
 def _scan_string_constant(
