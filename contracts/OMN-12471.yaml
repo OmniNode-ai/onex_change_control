@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12471"
+title: "node_kafka_ingress_effect replaces kafka_runner.py daemon"
+summary: >
+  Phase 2b / PR-5 of the SEA stack-vs-dev reconciliation. Replaces the bespoke src/pipeline/kafka_runner.py
+  daemon (its __main__, SIGINT/SIGTERM handlers, the for-msg KafkaConsumer/KafkaProducer loop, the three
+  inline onex.*.omnimarket.* topic literals, and the direct generate_with_retry call) with a contract-bound
+  EFFECT transport-adapter node. node_kafka_ingress_effect declares the full transport lifecycle as typed,
+  validated config (ModelKafkaIngressContract, extra=forbid): source_topic_ref + dead_letter topic_ref
+  resolved from src/pipeline/topics.py constants (never inline literals), consumer_group, offset_policy,
+  dedupe_key, invalid_message_handling, and first-class typed dead_letter + replay sub-models. The pure
+  map_ingress_envelope maps a validated external command envelope into ModelNodeGenerationRequestedCommand
+  and the handler republishes it onto the in-process bus as DEMO_REQUESTED_TOPIC. The node does NOT call
+  inference — zero httpx.post added; all config from the contract. Manually re-applied onto onex-self-extending-agent
+  origin/dev @ 0984678 (NOT cherry-picked from the abandoned OMN-12468 stack branches).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "onex-self-extending-agent PR #185 carries the ingress node, the kafka_runner.py deletion,
+      and unit + broker-gated integration tests."
+    command: "See drift/dod_receipts/OMN-12471/dod-sea-pr-185/command.yaml"
+  - kind: "manual"
+    description: "onex_change_control PR carrying this contract binds the central evidence publication."
+    command: "See drift/dod_receipts/OMN-12471/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-sea-pr-185"
+    description: >
+      onex-self-extending-agent PR #185 deletes src/pipeline/kafka_runner.py and adds node_kafka_ingress_effect
+      (contract-declared transport lifecycle, pure map_ingress_envelope, fail-closed mapping, no httpx,
+      no off-bus topic literals). Full suite green: uv run pytest tests/ -v (1211 passed, 15 skipped)
+      + mypy --strict + ruff + pre-commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12471/dod-sea-pr-185/command.yaml
+          && grep -q '^pr_number: 185$' drift/dod_receipts/OMN-12471/dod-sea-pr-185/command.yaml"
+  - id: "dod-occ-pr"
+    description: "onex_change_control publishes the OMN-12471 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12471/dod-occ-pr/command.yaml"
