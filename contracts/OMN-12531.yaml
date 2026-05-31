@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12531"
+title: "Bug: Pattern B broker drops or misses terminal emission under stability Kafka load"
+summary: >-
+  Fix the omnibase_infra Pattern B broker direct terminal consumer so it inherits the typed Kafka API
+  version from the event-bus configuration. This keeps the broker terminal wait path aligned with the
+  OMN-12523 EventBusKafka bootstrap hardening and prevents the direct AIOKafkaConsumer from stalling
+  on API-version negotiation before worker command publication under stability runtime load.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused runtime and Kafka configuration tests prove the direct Pattern B terminal consumer receives
+      the typed API-version override and the shared Kafka config still validates fail-closed.
+    command: >-
+      uv run pytest tests/unit/runtime/test_service_pattern_b_broker.py
+      tests/unit/event_bus/test_kafka_config_api_version.py -q && uv run ruff check
+      src/omnibase_infra/runtime/service_pattern_b_broker.py
+      tests/unit/runtime/test_service_pattern_b_broker.py
+      tests/unit/event_bus/test_kafka_config_api_version.py && git diff --check
+  - kind: "manual"
+    description: >-
+      Stability dogfood with the patched OMN-12523 Kafka API-version context reaches Kafka but reproduces
+      group-coordinator heartbeat churn against .201:39092, confirming the remaining runtime instability
+      is in the direct broker/consumer path being fixed and not a local parser-only issue.
+    command: "coderabbit_triage dry-run correlation 25fbac1a-3abe-446f-b4d9-58039e02b3b8"
+dod_evidence:
+  - id: "dod-infra-pr-1810"
+    description: "Bind omnibase_infra PR #1810 head and changed Pattern B broker files."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-infra-pr-1810/command.yaml"
+          && grep -q '^pr_number: 1810$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-infra-pr-1810/command.yaml"
+          && grep -q '^commit_sha: "ae7ad7a6ccd56c8423958edc987b40fbf735a83d"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-infra-pr-1810/command.yaml"
+  - id: "dod-local-validation"
+    description: "Focused local validation for the Pattern B direct terminal consumer fix passed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-local-validation/command.yaml"
+          && grep -q '28 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-local-validation/command.yaml"
+          && grep -q 'All checks passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-local-validation/command.yaml"
+  - id: "dod-stability-dogfood"
+    description: "Stability dogfood captures Kafka group-coordinator churn on the direct Pattern B runtime path."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-stability-dogfood/command.yaml"
+          && grep -q 'GroupCoordinatorNotAvailableError' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-stability-dogfood/command.yaml"
+          && grep -q 'correlation_id: 25fbac1a-3abe-446f-b4d9-58039e02b3b8' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-stability-dogfood/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-12531 central evidence."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12531/dod-occ-pr-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
