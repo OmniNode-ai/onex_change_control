@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12568"
+title: "ci: validate the versioned runner image on a fresh runner + rollout checklist"
+summary: >-
+  Acceptance of the OMN-12567 versioned runner image contract. Adds the landable artifacts that let a
+  freshly recreated runner be proven against the image binding before broad fleet rollout. omnibase_infra
+  PR 1832 adds scripts/ci/validate_runner_image.py, a read-only validator that asserts three things on
+  the runner it runs on: image identity (the baked OMNI_RUNNER_IMAGE_IDENTITY matches the lock identity_digest,
+  recomputing the full OMN-12567 binding when runner_image_identity.py is present, and failing on drift
+  or an unbound image); zero uv sync on the happy path (the prebuilt shared CI env is baked under OMNI_CI_ENV_ROOT
+  with a manifest.json ready marker and UV_NO_SYNC=1 holds); and Receipt-Gate readiness (gh, git, jq,
+  python3, uv are present). scripts/ci/validate_runner_image.sh wraps the validator and resolves the baked
+  identity from the image env or a named container label without entering or recreating the runner. docs/ci/versioned-runner-image-rollout-checklist.md
+  is the per-repo migration checklist with the mutating-job opt-outs carried from OMN-12567 plus explicit
+  repo/job opt-outs (public fork PRs, hosted-runner-only repos, no-Python-CI repos, writable-global-env
+  jobs). tests/ci/test_validate_runner_image.py proves the validator catches identity drift, missing prebuilt
+  env, falsy UV_NO_SYNC, and missing Receipt-Gate tooling. Building, publishing, and rolling the image
+  to the .201 fleet and recreating a runner are gated live runtime steps the user runs; this contract
+  covers only the landable code + checklist.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-1832"
+    description: "omnibase_infra PR 1832 adds the runner validation script (validate_runner_image.py),
+      its runner-side wrapper (validate_runner_image.sh), the per-repo rollout checklist with explicit
+      opt-outs, and the TDD test suite asserting the validator's image-identity, zero-uv-sync, and Receipt-Gate-readiness
+      checks."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12568/dod-infra-pr-1832/command.yaml"
+  - id: "dod-validation-tests"
+    description: "The validation script is regression-locked by tests/ci/test_validate_runner_image.py:
+      18 unit tests prove image-identity drift fails, an unbound image fails, a missing/ not-ready prebuilt
+      env fails the zero-uv-sync check, a falsy UV_NO_SYNC fails, missing Receipt-Gate tooling fails,
+      and a fully-satisfied runner reports GREEN. The drift check was proven to have teeth by a deliberate-break
+      run."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12568/dod-validation-tests/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12568 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12568/dod-occ-pr-self/command.yaml"
