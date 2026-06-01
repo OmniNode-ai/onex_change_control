@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12570"
+title: "Phase-separate branch / merge-group / post-merge checks in the orchestrator state machine"
+summary: >-
+  The pr_lifecycle_orchestrator FSM (omnimarket) now models branch checks, merge-group checks, and
+  post-merge CI tails as DISTINCT phases (EnumPrLifecyclePhase: branch_checks / merge_group /
+  post_merge_tail, plus inventory / triage / terminal). Every PR-ledger source event and materialized
+  entry is attributed to the phase it was produced in (ModelPrLedgerSourceEvent.phase,
+  ModelPrLedgerProvenance.phase, ModelPrLedgerEntry.last_phase), and each phase change is an EXPLICIT
+  recorded state-machine transition (ModelPrLifecyclePhaseTransition) written to the durable ledger at
+  transition time — never inferred later from logs. ModelPrLedgerEntry.failed_in_phase() distinguishes a
+  post-merge-tail failure from a branch-check failure. Implemented in omnimarket PR #1014, stacked on
+  OMN-12569.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-phase-separation-unit"
+    description: >-
+      Ledger entries are attributed to the correct phase; failed_in_phase() separates a POST_MERGE_TAIL
+      failure from a BRANCH_CHECKS failure; provenance retains per-event phase; explicit transitions are
+      recorded at transition time; illegal transitions are rejected; reconstruction preserves phase
+      attribution and the recorded transition log; the durable store round-trips the transition log.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/nodes/node_pr_lifecycle_orchestrator/test_pr_ledger_phase_separation.py
+          -q"
+  - id: "dod-orchestrator-fsm-integration"
+    description: >-
+      A real (mocked) merge sweep records the TRIAGE->MERGE_GROUP->POST_MERGE_TAIL transitions and
+      attributes the MERGED conclusion to POST_MERGE_TAIL; a real (mocked) fix sweep records
+      TRIAGE->BRANCH_CHECKS and attributes the FAILED conclusion to BRANCH_CHECKS — proving phase recording
+      happens in the live FSM, not via log inference.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/nodes/node_pr_lifecycle_orchestrator/test_orchestrator_phase_transitions.py
+          -q"
+  - id: "dod-pr-lifecycle-regression"
+    description: >-
+      Full PR-lifecycle orchestrator, ledger-projection, consumer, contract autowiring, and golden-chain
+      suites pass with phase separation wired in.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/nodes/node_pr_lifecycle_orchestrator/ tests/test_golden_chain_pr_lifecycle_orchestrator.py
+          tests/test_pr_lifecycle_orchestrator_consumer.py tests/test_pr_lifecycle_contract_autowiring.py
+          tests/integration/test_pr_lifecycle_orchestrator_round_trip.py -q -m 'not kafka'"
+  - id: "dod-lint-typecheck"
+    description: >-
+      Touched module and orchestrator code pass ruff and strict mypy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run ruff check src/omnimarket/nodes/pr_ledger_native.py src/omnimarket/nodes/node_pr_lifecycle_orchestrator
+          && uv run mypy src/omnimarket/nodes/pr_ledger_native.py src/omnimarket/nodes/node_pr_lifecycle_orchestrator/handlers/handler_pr_lifecycle_orchestrator.py
+          --strict"
+  - id: "dod-contract-phase-declaration"
+    description: >-
+      The orchestrator contract declares the phase vocabulary (branch_checks, merge_group, post_merge_tail),
+      records transitions to a durable transition table, adds the POST_MERGE_TAIL FSM state, and declares
+      the MERGING -> POST_MERGE_TAIL transition.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'post_merge_tail' src/omnimarket/nodes/node_pr_lifecycle_orchestrator/contract.yaml
+          && grep -q 'transitions_recorded: true' src/omnimarket/nodes/node_pr_lifecycle_orchestrator/contract.yaml
+          && grep -q 'POST_MERGE_TAIL' src/omnimarket/nodes/node_pr_lifecycle_orchestrator/contract.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Runtime-node behavior changed (the orchestrator now records phase transitions and phase-attributed
+      ledger events), but no live deploy or .201 restart was performed in this PR. Wiring the
+      phase-transition table to the production projection database and a deployed runtime smoke remain a
+      post-merge gated step.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -m omnimarket.nodes.node_pr_lifecycle_orchestrator
+          --input '<OMN-12570 inventory_only dry-run envelope>' --output json"
