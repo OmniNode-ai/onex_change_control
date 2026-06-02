@@ -34,6 +34,26 @@ dod_evidence:
           grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12619/dod-occ-pr-2107/command.yaml"
           && grep -q '^ticket_id: "OMN-12619"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12619/dod-occ-pr-2107/command.yaml"
           && grep -q '^pr_number: 2107$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12619/dod-occ-pr-2107/command.yaml"
+  - id: "dod-deploy-runtime-verification"
+    description: "Runtime verification method for the NodeDlqReplayEffect deploy. The dlq-replay-consumer service
+      (ONEX_GROUP_ID=onex-dlq-replay) is built into the runtime-infrastructure bundle and auto-discovered from
+      its contract; the end-to-end live proof (poison -> DLQ -> exactly-once replay -> dlq_replay_history rows ->
+      non-replayable -> quarantine topic) requires a live Redpanda + Postgres lane. Live execution is an
+      operator-gated deploy/runtime-mutation hard gate: it is PENDING an operator-approved .201 run and was NOT
+      executed in this autonomous run. The verification method is authored below; only the static method is claimed."
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PENDING operator-approved .201 run (live deploy/runtime mutation hard gate, NOT executed here).
+          Method: deploy dlq-replay-consumer into the runtime-infrastructure bundle, then
+          rpk topic produce onex.dlq.events.v1 <poison-message> ;
+          assert node_dlq_replay_effect consumes from group onex-dlq-replay and replays eligible messages
+          exactly once to the original topic ; assert a dlq_replay_history row is written with status COMPLETED ;
+          produce a non-replayable message and assert it is published to onex.dlq.quarantine.v1 (QUARANTINED,
+          never dropped) with a dlq_replay_history row status QUARANTINED. Verify on the live lane via
+          docker exec into the runtime container plus rpk topic produce against the lane broker.
 emergency_bypass:
   enabled: false
   justification: ""
