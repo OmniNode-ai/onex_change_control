@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12586"
+title: "SEA delegation bus bootstrap must load from a typed contract overlay"
+summary: >
+  Replace reliance on the SEA_DELEGATION_BUS_BOOTSTRAP env var with a typed CONTRACT OVERLAY as the
+  durable source of truth for how the onex-self-extending-agent (SEA) live generation reaches the shared
+  delegation inference bus. The env var is reduced to a loader pointer / temporary compatibility bridge
+  (a file path to an overlay, or a deprecated pkg.module:factory import spec), never the authority. The
+  overlay (src/contracts/delegation_bootstrap_overlay.{py,yaml}) is a frozen, extra-forbid Pydantic model
+  declaring owner, runtime lane, authorized bootstrap topic/envelope, evidence destination, producer
+  identity, freshness/timeout policy, contractor allowed_command_set, and the authority fields from the
+  OMN-12586 acceptance extension: overlay_id, overlay_version, contract_hash (sha256 bound to the overlay
+  payload, excludes itself, tamper-detected at load), allowed_command_set, a validity window
+  (valid_from/valid_until), and revocation_behavior (fail_closed) on lapse/withdrawal. Validation is
+  fail-fast and fails closed at SEA startup AND at the live command entrypoint (--agent/--demo/--progressive/
+  --live): a missing, malformed, tampered, lapsed, or revoked overlay raises before any live publishing
+  path is constructed. The selected overlay identity + hash + runtime lane + bootstrap topic + producer
+  identity + source commit SHA are emitted into SEA run evidence (isolated subdir, no event-chain glob
+  collision). The repo-default bus factory fails closed with runtime-wiring guidance; the live bus is
+  supplied by the runtime/CI via a lane-specific overlay, never fabricated in-repo, so no new ad-hoc
+  shared-bus publishing path is introduced. Code PR only (onex-self-extending-agent PR #199 against dev);
+  no live runtime mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Typed overlay schema is validated in unit tests, including the required validity-window lapse path
+      (before AND after the window), the revocation/withdrawal path, contract_hash tamper detection,
+      command authorization, fail-fast loading, and run-evidence emission carrying overlay
+      identity/hash/lane/topic/source-SHA. Full suite green with no -k filter.
+    command: >-
+      uv run pytest tests/ -v
+  - kind: "manual"
+    description: >
+      The live command entrypoint validates the overlay fail-fast and emits the [OVERLAY] identity line
+      with overlay_id@overlay_version, runtime lane, bootstrap topic, and contract hash before proceeding,
+      then fail-closes at the runtime bus factory (no fake bus).
+    command: "uv run python -m src --demo"
+dod_evidence:
+  - id: "dod-sea-overlay-pr-199"
+    description: >
+      onex-self-extending-agent PR #199 implements the typed delegation bootstrap contract overlay
+      (model + loader + validation), wires the env var down to a loader pointer/bridge, validates fail-fast
+      at SEA startup and the live command entrypoint, and emits overlay identity/hash/lane/bootstrap-topic/
+      source-SHA into SEA run evidence. Proven green by the overlay/evidence unit tests (validity-window
+      lapse, revocation/withdrawal, tamper detection), mypy --strict, ruff, and pre-commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12586/dod-sea-overlay-pr-199/command.yaml"
+          && grep -q '^pr_number: 199$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12586/dod-sea-overlay-pr-199/command.yaml"
+          && grep -q '^commit_sha: "8fae7c18a78b22c4dc11f288d734f70f0712adc3"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12586/dod-sea-overlay-pr-199/command.yaml"
+  - id: "dod-occ-self-bind"
+    description: >
+      OCC PR #OCC_PR_PLACEHOLDER carries the OMN-12586 central contract + receipts and binds to itself so
+      the OCC-first merge-eligibility gate can verify the evidence is present on the OCC head before merge.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12586/dod-occ-self-bind/command.yaml"
+          && grep -q '^pr_number: OCC_PR_PLACEHOLDER$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12586/dod-occ-self-bind/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
