@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12522"
+title: "Advertise stability Redpanda on the connected network"
+summary: >-
+  Bind central evidence for the stability-test Redpanda advertised-listener fix. The live broker currently
+  accepts TCP on the Tailscale endpoint but advertises the LAN-only broker address in Kafka metadata.
+  The infra PR requires a lane-specific connected-network advertise host so authorized connected operators
+  can complete Kafka metadata bootstrap.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+evidence_requirements:
+  - kind: "tests"
+    description: "Stability runtime lane static and compose render tests pass."
+    command: >-
+      env -u PYTHONPATH uv run pytest tests/unit/infra/test_stability_test_runtime_lane.py tests/integration/infra/test_stability_test_runtime_compose_render.py
+      -q
+  - kind: "manual"
+    description: >-
+      Stability compose render requires and advertises the connected-network broker host.
+    command: >-
+      env STABILITY_TEST_REDPANDA_ADVERTISE_HOST=100.109.203.94 POSTGRES_PASSWORD=test VALKEY_PASSWORD=test
+      LINEAR_API_KEY=test-linear-api-key GITHUB_TOKEN=test-github-token ONEX_REGISTRATION_AUTO_ACK=true
+      ONEX_SERVICE_CLIENT_SECRET=test-service-secret LLM_CODER_URL=http://llm-coder.test:8000 LLM_CODER_FAST_URL=http://llm-coder-fast.test:8001
+      LLM_EMBEDDING_URL=http://llm-embed.test:8100 LLM_DEEPSEEK_R1_URL=http://llm-r1.test:8101 LLM_ENDPOINT_CIDR_ALLOWLIST=192.168.86.0/24
+      LOCAL_LLM_SHARED_SECRET=render-only-local-llm-secret OMNI_HOME=/data/omninode/omni_home ONEX_INFRA_HOST=100.109.203.94
+      ONEX_INFRA_USER=jonah docker compose --env-file docker/runtime-policy.env -f docker/docker-compose.infra.yml
+      -f docker/docker-compose.stability-test.yml --profile runtime config --quiet
+  - kind: "manual"
+    description: >-
+      No live .201 mutation was performed pre-merge; post-merge validation must set STABILITY_TEST_REDPANDA_ADVERTISE_HOST=100.109.203.94,
+      recreate/restart the stability Redpanda lane with approval, and prove Kafka metadata reports broker
+      0 at 100.109.203.94:39092.
+    command: "Post-merge approved stability Redpanda recreate/restart required."
+dod_evidence:
+  - id: "dod-infra-pr-1838"
+    description: "Bind omnibase_infra PR #1838 head and advertised-listener change."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-infra-pr-1838/command.yaml"
+          && grep -q '^pr_number: 1838$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-infra-pr-1838/command.yaml"
+          && grep -q '^commit_sha: "ec98d95f0ed67649f961ef70d69dc2f46c2db789"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-infra-pr-1838/command.yaml"
+          && grep -q 'STABILITY_TEST_REDPANDA_ADVERTISE_HOST' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-infra-pr-1838/command.yaml"
+  - id: "dod-local-validation"
+    description: "Focused local validation for the connected-network advertised-listener fix passed."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-local-validation/command.yaml"
+          && grep -q '25 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-local-validation/command.yaml"
+          && grep -q 'docker compose --env-file docker/runtime-policy.env' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-local-validation/command.yaml"
+  - id: "dod-live-metadata-plan"
+    description: "Pre-merge live stance and post-merge metadata proof are explicit."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-live-metadata-plan/command.yaml"
+          && grep -q 'No live .201 mutation was performed pre-merge' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-live-metadata-plan/command.yaml"
+          && grep -q 'broker 0 at 100.109.203.94:39092' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-live-metadata-plan/command.yaml"
+  - id: "dod-occ-pr-2104"
+    description: "onex_change_control PR #2104 carries the central evidence for OMN-12522."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-occ-pr-2104/command.yaml"
+          && grep -q '^pr_number: 2104$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12522/dod-occ-pr-2104/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
