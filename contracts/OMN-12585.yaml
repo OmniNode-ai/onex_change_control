@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12585"
+title: "fix: runner image RUNNER_VERSION downgrade broke node24 actions + add rollout gate"
+summary: >-
+  The OMN-12567 versioned runner image pinned ARG RUNNER_VERSION=2.323.0 while the live self-hosted
+  fleet ran 2.334.0. Rolling that image to the fleet downgraded the GitHub Actions runner, and 2.323.0
+  cannot execute node24 actions (actions/checkout@v6, used 73x across workflows): jobs fail at "Set up
+  job" with `'using: node24' is not supported`. A post-deploy integration test on .201 caught the failure
+  and the fleet was rolled back to the good 2.334.0 image (healthy at 48/48). node24 execution support
+  landed in actions/runner 2.327.0 (actions/runner#3940). omnibase_infra PR 1836 fixes the defect and
+  closes the gate gap: docker/runners/Dockerfile bumps ARG RUNNER_VERSION 2.323.0 -> 2.334.0 (the latest
+  stable actions/runner release AND >= the live fleet, so non-downgrade) with the matching linux-x64
+  SHA256 (048024cd...3d271) and an updated checksum comment; docker/runners/runner-image.lock.json bumps
+  runner_version to 2.334.0 and the bound identity_digest is regenerated via runner_image_identity.py
+  --mode generate (231ae5fa... -> 3b8b14c83ff79ba55043e4a1b5306f8d, --mode verify passes) because the
+  runner version is a binding component. The rollout gap (this regression had no gate) is closed two ways:
+  tests/ci/test_runner_image_node24_floor.py asserts the baked RUNNER_VERSION is node24-capable (>= 2.327.0)
+  AND not a downgrade (>= 2.334.0) and that the Dockerfile ARG, the SHA256 comment, and the lock runner_version
+  all agree; and .github/workflows/runner-image-build-smoke.yml gains a node24-capability assertion that
+  inspects the built image for an executable externals/node24/bin/node (present only at runner >= 2.327).
+  docs/ci/versioned-runner-image-rollout-checklist.md now requires a deployed-runner actions/checkout@v6
+  (node24) canary green before fleet rollout. The non-destructive candidate rebuild (omninode-runner:next,
+  not :latest) on .201 was proven GREEN: runner.version label 2.334.0, externals/node24/bin/node v24.15.0,
+  identity label matches the lock, and validate_runner_image.py = RESULT: GREEN. Building, retagging :latest,
+  and recreating the live fleet are gated live runtime steps the user runs; this contract covers only the
+  landable code + checklist change and the non-destructive candidate proof. The live 48-runner fleet and
+  omninode-runner:latest were untouched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-1836"
+    description: "omnibase_infra PR 1836 bumps ARG RUNNER_VERSION 2.323.0 -> 2.334.0 with the matching
+      linux-x64 SHA256, regenerates the bound runner-image.lock.json identity_digest, adds the node24-capable
+      + non-downgrade rollout gate (tests/ci/test_runner_image_node24_floor.py), adds a node24-capability
+      assertion to the build-smoke workflow, and updates the OMN-12568 rollout checklist to require a
+      deployed-runner actions/checkout@v6 canary before fleet rollout."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12585/dod-infra-pr-1836/command.yaml"
+  - id: "dod-node24-rebuild-proof"
+    description: "Non-destructive candidate rebuild on .201 (linux/amd64) proves the fix: omninode-runner:next
+      (NOT :latest) built GREEN through the prebuilt-env bake; the baked runner.version label is 2.334.0;
+      externals/node24/bin/node reports v24.15.0 (the capability 2.323.0 lacked); the baked image identity
+      label matches the regenerated lock identity_digest; and validate_runner_image.py reports RESULT:
+      GREEN with image_identity matching the baked image. The candidate image was removed and the live
+      :latest + 48-runner fleet were untouched."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12585/dod-node24-rebuild-proof/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12585 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12585/dod-occ-pr-self/command.yaml"
