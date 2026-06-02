@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12578"
+title: "Wire node_deployment_evidence_reducer projection sink (Phase 3)"
+summary: >-
+  Bind central evidence for omnimarket PR carrying Phase 3 of the node-based runtime deployment design.
+  node_deployment_evidence_reducer declared the deployment_evidence_projection and deployment_readiness_projection
+  surfaces but shipped no migration backing them, which is why the reducer was never wired (no consumer
+  group on any .201 deploy lane). This change adds the projection sink migration, switches the reducer
+  handler to the canonical ProtocolProjectionDatabaseSync (_db) projection path used by node_evidence_dashboard_reducer
+  so the runtime auto-wiring mints the consume group and readiness derives from reducer-owned projection
+  rows, and aligns the contract projection_api with both tables. Per-lane consumer groups for node_occ_pr_writer_effect
+  / node_readiness_gate_orchestrator / node_evidence_pipeline_orchestrator remain absent on dev/prod and
+  Empty on stability-test (blocker B3); that wiring requires a runtime deploy, which is out of scope.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "envelopes"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-reducer-projection-deploy-sink"
+    description: "The reducer ships a projection sink migration backing the deployment-evidence deploy
+      lane topic. The receipt captures a live deploy-lane broker probe (docker exec rpk) confirming the
+      reduced topic exists and the reducer consume group is still absent — the wiring target this work
+      enables on next deploy. The probe targets the .201 deploy lane and cannot re-run on the CI runner,
+      so the check asserts the receipt carries the real captured deploy probe and the migration text."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-reducer-projection-deploy-sink/command.yaml"
+          && grep -q 'docker exec omnibase-infra-redpanda rpk topic list' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-reducer-projection-deploy-sink/command.yaml"
+          && grep -q 'onex.evt.omnimarket.deployment-evidence-reduced.v1' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-reducer-projection-deploy-sink/command.yaml"
+          && grep -q 'CREATE TABLE IF NOT EXISTS deployment_evidence_projection' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-reducer-projection-deploy-sink/command.yaml"
+  - id: "dod-local-tests"
+    description: "The reducer wiring test suite and the evidence-pipeline native/contract suites pass
+      locally on the implementation branch."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-local-tests/command.yaml"
+          && grep -q '16 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-local-tests/command.yaml"
+  - id: "dod-lint-format-mypy"
+    description: "Ruff format/check, mypy --strict, and the node metadata + runtime sweep CI checks pass
+      for the implementation branch."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-lint-format-mypy/command.yaml"
+          && grep -q 'runtime_sweep: 291/291 entry points OK' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-lint-format-mypy/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying OMN-12578 central evidence."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12578/dod-occ-pr-self/command.yaml"
