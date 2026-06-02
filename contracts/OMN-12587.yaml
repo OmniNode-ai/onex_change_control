@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12587"
+title: "SEA stability-test lane delegation overlay returns a real bus (live-pass + 7-task regression unblock)"
+summary: >
+  Implement the stability-test lane delegation overlay whose bus_bootstrap_factory returns a REAL
+  ProtocolInferenceBus connected to the delegation runtime, so SEA --agent on the stability lane wires a
+  real bus instead of fail-closing. Relates to OMN-12586 (the typed delegation bootstrap contract overlay):
+  the repo-default factory is a deliberate fail-closed placeholder and STAYS fail-closed; this ticket adds
+  a LANE-SPECIFIC overlay (src/contracts/delegation_bootstrap_overlay.stability-test.yaml) selecting a new
+  real factory (src/pipeline/delegation_bus_stability.build_stability_delegation_inference_bus). The factory
+  returns a StabilityDelegationBus whose publish_and_wait round-trips one inference request/response over the
+  canonical omnibase_infra Kafka transport: publish the typed inference-request envelope to
+  onex.cmd.omnibase-infra.delegation-inference-request.v1 and block until the correlated
+  onex.evt.omnibase-infra.inference-response.v1 arrives (matched on correlation_id), modeled on omnimarket
+  _CodexDispatchBusAdapter. The sync publish_and_wait (the shape SEA InProcessEventBus already exposes)
+  bridges to the async transport via asyncio. Connection params come from the environment: KAFKA_BOOTSTRAP_SERVERS
+  (fail-fast, no silent localhost fallback) and KAFKA_API_VERSION (default 2.8.0; auto fails the .201 metadata
+  bootstrap and 3.x is rejected by aiokafka; aiokafka 0.14 accepts the api_version kwarg). The transport is
+  injectable so the unit suite exercises the round-trip without a live broker. Selection is via the sanctioned
+  pointer bridge: SEA_DELEGATION_BUS_BOOTSTRAP points at the stability overlay file path. All OMN-12586 authority
+  fields are preserved (overlay_id, overlay_version, contract_hash sha256-bound + tamper-detected, allowed_command_set,
+  validity window valid_from/valid_until, revocation_behavior fail_closed) with the same fail-fast validation,
+  and the selected overlay identity/hash/lane/bootstrap-topic/producer-identity/source-SHA are emitted into SEA
+  run evidence via the existing live-command preflight. No raw httpx LLM path is introduced (Kafka transport),
+  so the OMN-12608 SEA inference-architecture guard stays green. Code PR only (onex-self-extending-agent PR #201
+  against dev); no live runtime mutation in this PR. The live stability run is the next gated step.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      The default overlay still fail-closes with DelegationBusRuntimeNotWiredError; the stability overlay's
+      factory returns a publish_and_wait-capable object wired to the stability connection params with the
+      transport injected/mocked (no live broker); selection via SEA_DELEGATION_BUS_BOOTSTRAP resolves the
+      stability overlay; and the OMN-12586 authority validation (validity window / revocation) still holds.
+      Full suite green with no -k filter.
+    command: >-
+      uv run pytest tests/ -v
+  - kind: "manual"
+    description: >
+      The live stability run (next gated step) wires the real bus: SEA_DELEGATION_BUS_BOOTSTRAP pointed at the
+      stability overlay, KAFKA_BOOTSTRAP_SERVERS=192.168.86.201:39092, KAFKA_API_VERSION=2.8.0, under the brew
+      interpreter (macOS LAN grant, CLAUDE.md Rule 11).
+    command: >-
+      KAFKA_BOOTSTRAP_SERVERS=192.168.86.201:39092 KAFKA_API_VERSION=2.8.0
+      SEA_DELEGATION_BUS_BOOTSTRAP=src/contracts/delegation_bootstrap_overlay.stability-test.yaml
+      /opt/homebrew/bin/python3.13 -m src --agent
+dod_evidence:
+  - id: "dod-sea-stability-overlay-pr-201"
+    description: >
+      onex-self-extending-agent PR #201 adds the stability-test lane delegation bus factory
+      (src/pipeline/delegation_bus_stability.py) returning a real ProtocolInferenceBus wired to the .201
+      stability broker, and the lane-specific overlay (src/contracts/delegation_bootstrap_overlay.stability-test.yaml)
+      that selects it, while the repo-default overlay stays fail-closed. Proven green by the fail-closed-default
+      and real-bus-stability unit tests (transport injected, no live broker), mypy --strict, ruff, and pre-commit
+      (incl. the OMN-12608 inference-architecture guard).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-stability-overlay-pr-201/command.yaml"
+          && grep -q '^pr_number: 201$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-stability-overlay-pr-201/command.yaml"
+          && grep -q '^commit_sha: "4bb686b924c766dcb5ff623a9e783ece3eaa75e7"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-stability-overlay-pr-201/command.yaml"
+  - id: "dod-occ-self-bind"
+    description: >
+      OCC PR carries the OMN-12587 central contract + receipts and binds to itself so the OCC-first
+      merge-eligibility gate can verify the evidence is present on the OCC head before merge.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-self-bind/command.yaml"
+          && grep -q '^pr_number: 2101$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-self-bind/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
