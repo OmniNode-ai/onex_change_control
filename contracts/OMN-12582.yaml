@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12582"
+title: "Reconcile omnibase_infra runner-fleet compose/config to the live 48-runner fleet"
+summary: >
+  Bring the omnibase_infra repo source of truth in line with the proven live .201
+  runner fleet of 48 always-on steady-state runners. The repo dev compose defined
+  only 20 runner services and config/runner_fleet.yaml said expected_count:14 /
+  burst_count:20, while the live fleet runs 48. Running scripts/deploy-runners.sh
+  with the stale repo would orphan-remove live runners 21-48 (48->20 org-CI
+  outage). This ticket reconciles config to 48/48, expands the compose to 48
+  steady services (preserving the OMN-12433 egress healthcheck.sh mount), and
+  fixes deploy-runners.sh to rsync the healthcheck.sh artifact the compose
+  bind-mounts. Repo PR only; no live-fleet mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Regression tests assert config expected_count==48 and the compose contains
+      48 contiguous steady runner services, each mounting the egress
+      healthcheck.sh script, plus a deploy guard asserting deploy-runners.sh ships
+      healthcheck.sh. The assertions fail on the prior 20/14 state (TDD).
+    command: >-
+      uv run pytest tests/unit/observability/runner_health/test_runner_fleet_config.py
+      tests/integration/observability/test_runner_fleet_config_contract.py -q
+  - kind: "manual"
+    description: >
+      deploy-runners.sh --dry-run reports `Runner count: 48` and the reconciled
+      compose service set equals the 48 live running containers (zero
+      orphan-removal). The old 20-service compose would have orphan-removed
+      runners 21-48.
+    command: "bash scripts/deploy-runners.sh --dry-run"
+
+dod_evidence:
+  - id: "dod-runner-fleet-48-reconcile"
+    description: >
+      omnibase_infra PR #1833 reconciles the runner-fleet compose/config to the
+      live 48 fleet, proven green by the regression tests, the --dry-run
+      RUNNER_COUNT=48 line, and the no-orphan service-set proof.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12582/dod-runner-fleet-48-reconcile/command.yaml" &&
+          grep -q '^pr_number: 1833$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12582/dod-runner-fleet-48-reconcile/command.yaml" &&
+          grep -q '^commit_sha: "4f165051ee65012e0a3763b2a2471d7ff365a699"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12582/dod-runner-fleet-48-reconcile/command.yaml" #magic___^_^___line
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
