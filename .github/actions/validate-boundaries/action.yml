@@ -153,18 +153,35 @@ runs:
         rm -rf /tmp/omni_repos
         mkdir -p /tmp/omni_repos
         DEGRADED=""
+        CALLING_REPO="${GITHUB_REPOSITORY##*/}"
         IFS=',' read -ra REPOS <<< "${{ inputs.repos }}"
         for repo in "${REPOS[@]}"; do
           repo=$(echo "$repo" | xargs)  # trim whitespace
+          if [[ "$repo" == "$CALLING_REPO" ]]; then
+            echo "Skipping clone of calling repo ${repo}; checked-out workspace will be symlinked."
+            continue
+          fi
           if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
             auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
             clone_args=(-c "http.https://github.com/.extraheader=${auth_header}")
           else
             clone_args=()
           fi
-          if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "/tmp/omni_repos/${repo}" 2>/dev/null; then
-            echo "Cloned ${repo}"
-          else
+          cloned=false
+          for attempt in 1 2 3; do
+            rm -rf "/tmp/omni_repos/${repo}"
+            if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "/tmp/omni_repos/${repo}" 2>/dev/null; then
+              echo "Cloned ${repo} on attempt ${attempt}"
+              cloned=true
+              break
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              sleep_seconds=$((attempt * 10))
+              echo "::warning::Boundary verification clone attempt ${attempt}/3 failed for ${repo}; retrying in ${sleep_seconds}s"
+              sleep "${sleep_seconds}"
+            fi
+          done
+          if [[ "${cloned}" != "true" ]]; then
             echo "::warning::Boundary verification DEGRADED: could not clone ${repo}. Seam parity NOT confirmed."
             DEGRADED="${DEGRADED}${repo},"
           fi
