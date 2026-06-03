@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12632"
+title: "fix: drain-proof lag observation crashes — aiokafka 0.13.0 admin has no list_offsets"
+summary: >-
+  OMN-12618 follow-up. The merged OMN-12623 drain-proof gate wired ServiceConsumerLagObserver.observe()
+  to call admin.list_offsets(...) (declared on ProtocolKafkaAdminLike), but the pinned aiokafka==0.13.0
+  AIOKafkaAdminClient has NO list_offsets method, so against the real runtime admin the gate raised `AttributeError:
+  'AIOKafkaAdminClient' object has no attribute 'list_offsets'`. The lag/drain-proof gate — the largest
+  net-new piece of OMN-12623 — was therefore non-functional in the deployed runtime. CI missed it because
+  the admin client was MOCKED in the unit tests, with the fake admin stubbing list_offsets into existence;
+  the live .201 stability-test proof of OMN-12623 (2026-06-03) found it and bridged it with a shim to
+  demonstrate the gate's block-at-lag=2 / allow-at-lag=0 logic. omnibase_infra PR <INFRA_PR> fixes the
+  defect with the lower-risk adapter approach (no aiokafka bump): src/omnibase_infra/migration/adapter_kafka_admin_lag.py
+  adds AdapterKafkaAdminLag implementing the full ProtocolKafkaAdminLike surface — committed offsets delegate
+  to the real admin's list_consumer_group_offsets (which 0.13.0 does provide); per-partition log-end offsets
+  (list_offsets) are served via AIOKafkaConsumer.end_offsets() (which 0.13.0 also provides). ServiceConsumerLagObserver
+  is wired to the adapter, never a raw AIOKafkaAdminClient. A new regression test (tests/unit/migration/test_lag_adapter_list_offsets.py)
+  exercises observe() against a fake mirroring the real 0.13.0 surface (admin has list_consumer_group_offsets
+  but NO list_offsets; consumer has end_offsets): test_observer_crashes_on_raw_0_13_0_admin pins the pre-fix
+  AttributeError, and the adapter-wired tests pass. The OMN-12623 migration tests were refactored to drop
+  the list_offsets stub that masked the bug, routing log-end offsets through the consumer instead. A minimal
+  ProtocolKafkaLagConsumer captures only the end_offsets surface (registered in the protocol-ownership
+  allowlist). The live .201 stability-test lag re-proof is operator-gated and was NOT run by this change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-full-suite-green"
+    description: >-
+      omnibase_infra unit suite is green after the fix. `uv run pytest tests/unit/ -n auto -q` reports
+      `20120 passed, 15 skipped` (only pre-existing failure is the ONEX Node Migration Vendor Sync drift
+      against the locally-checked-out omnimarket clone, which the task setup directed must NOT be pulled
+      and which CI vendors from the pinned source; this change touches zero files under docker/migrations/).
+      The targeted migration suite (tests/unit/migration/test_lag_adapter_list_offsets.py + tests/unit/migration/test_consumer_group_lag.py)
+      reports `16 passed`, including test_observer_crashes_on_raw_0_13_0_admin which raises the pre-fix
+      AttributeError without a list_offsets stub. ruff format/check and `mypy src/omnibase_infra/migration/
+      --strict` pass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12632/dod-full-suite-green/command.yaml"
+  - id: "dod-live-lag-reproof-method"
+    description: >-
+      Live .201 stability-test re-proof METHOD for the drain-proof lag gate, marked PENDING operator-approved
+      .201 run (HARD GATE: do not redeploy/restart .201). Method: produce N messages to the old topic
+      and consume fewer with the old group, then evaluate the gate and assert retirement_allowed=False
+      with residual_lag>0; then drain to lag=0 and assert retirement_allowed=True. Concretely on the stability-test
+      lane — `rpk topic produce onex.evt.orders.order-placed.v1 -n 2 --brokers localhost:19092` then `docker
+      exec omnibase-infra-stability-test-omninode-runtime-1 python -c "..."` driving ServiceConsumerLagObserver(AdapterKafkaAdminLag(real_admin,
+      real_consumer)).observe(old_group) and ServiceDrainProofGate.evaluate(contract) — observe() must
+      return real lag with NO AttributeError against the pinned AIOKafkaAdminClient 0.13.0, and the gate
+      must block-then-allow. PENDING operator-approved .201 run.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PENDING$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12632/dod-live-lag-reproof-method/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12632 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12632/dod-occ-pr-self/command.yaml"

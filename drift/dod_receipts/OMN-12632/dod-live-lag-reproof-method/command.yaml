@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12632"
+evidence_item_id: "dod-live-lag-reproof-method"
+check_type: "command"
+check_value: "rpk topic produce onex.evt.orders.order-placed.v1 -n 2 --brokers localhost:19092 ; docker
+  exec omnibase-infra-stability-test-omninode-runtime-1 python -c '<observe+evaluate drain-proof gate>'"
+contract_sha256: "sha256:4266cb91856046c1a4cdd72c20a31c01be0abdffb6417d0f9b44205f3542fecf"
+status: PENDING
+run_timestamp: "2026-06-03T11:33:22Z"
+commit_sha: "db347894e94d0f27640d4d83844bd2177033e58a"
+branch: "jonah/omn-12632-lag-list-offsets"
+runner: "claude-code"
+verifier: "operator"
+probe_command: "rpk topic produce onex.evt.orders.order-placed.v1 -n 2 --brokers localhost:19092 ; docker
+  exec omnibase-infra-stability-test-omninode-runtime-1 python -c 'import asyncio; from aiokafka.admin
+  import AIOKafkaAdminClient; from aiokafka import AIOKafkaConsumer; from omnibase_infra.migration.adapter_kafka_admin_lag
+  import AdapterKafkaAdminLag; from omnibase_infra.migration.service_consumer_lag_observer import ServiceConsumerLagObserver;
+  from omnibase_infra.migration.service_drain_proof_gate import ServiceDrainProofGate; ...'"
+probe_stdout: |
+  PENDING operator-approved .201 stability-test run.
+
+  Method (HARD GATE — do not redeploy/restart .201 without operator approval):
+  1. Lane = stability-test (brokers :19092; compose project omnibase-infra-stability-test).
+  2. Produce 2 messages to the old topic:
+       rpk topic produce onex.evt.orders.order-placed.v1 -n 2 --brokers localhost:19092
+  3. Let the old consumer group commit a SMALLER offset (lag=2), then evaluate the gate inside the
+     runtime container against the REAL pinned aiokafka 0.13.0 clients:
+       docker exec omnibase-infra-stability-test-omninode-runtime-1 python -c '<driver>'
+     where <driver> builds
+       observer = ServiceConsumerLagObserver(AdapterKafkaAdminLag(AIOKafkaAdminClient(...), AIOKafkaConsumer(...)))
+       gate = ServiceDrainProofGate(observer)
+       decision = await gate.evaluate(<OMN-12623 migration contract>)
+     ASSERT: observer.observe(old_group) returns real lag with NO AttributeError (the bug this ticket
+     fixes), and decision.retirement_allowed is False with decision.residual_lag == 2.
+  4. Drain the old group to lag=0; re-evaluate.
+     ASSERT: decision.retirement_allowed is True with decision.residual_lag == 0.
+actual_output: >-
+  PENDING: the live .201 stability-test lag re-proof is operator-gated. This receipt records the exact
+  method (rpk topic produce + docker exec driving the adapter-wired observer/gate) without running it;
+  no .201 redeploy or restart was performed by this change. To be promoted to PASS by the operator after
+  the approved run confirms block-then-allow against the pinned AIOKafkaAdminClient 0.13.0.
+exit_code: 0
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-12632/omnibase_infra"
