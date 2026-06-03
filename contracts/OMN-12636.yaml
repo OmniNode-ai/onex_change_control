@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12636"
+title: "fix: node_dirty_canonical_sweep bases rescue worktree on canonical HEAD, not origin/<base>"
+summary: >-
+  Epic OMN-7466 / skill /onex:ship_dirty_canonical. HandlerDirtyCanonicalSweep._ship_repo (omnimarket/src/omnimarket/nodes/node_dirty_canonical_sweep/handlers/handler_dirty_canonical_sweep.py)
+  created the rescue worktree from origin/<base_branch> (dev) and copied the canonical clone's dirty file
+  CONTENTS onto that base. git status --porcelain reports dirtiness relative to the clone's actual HEAD,
+  not origin/<base>; when the clone is behind dev these reference points diverge and the copy reverts
+  already-merged dev commits, producing a regressive partial PR. Observed 2026-06-03: omnibase_infra canonical
+  clone was 20 commits behind dev -> the node produced PR #1845 with only 11 of 31 dirty files (+50/-329),
+  reverting already-merged dev work; it was closed and re-shipped as #1846. Fix (omnimarket PR #1023):
+  resolve the canonical clone HEAD via `git rev-parse HEAD` (new _canonical_head helper) and branch the
+  rescue worktree from that SHA, so copied dirty contents land on the same tree they were diffed against;
+  the PR base on GitHub remains <base_branch> (dev) via --base. This OCC PR also carries the paired OMN-12635
+  fix (untracked-directory crash) shipped in the same omnimarket PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-tdd-reproduction"
+    description: >-
+      TDD red->green. A failing test reproducing the stale-base bug was added first and confirmed failing
+      against the pre-fix code: test_worktree_based_on_canonical_head_not_origin_base asserts the rescue
+      worktree branches from the canonical HEAD SHA and NOT origin/dev. Pre-fix the worktree used origin/dev
+      (assertion failed); post-fix it uses the canonical HEAD SHA (passes). test_ship_calls_git_in_correct_sequence
+      was updated to assert `git rev-parse` is invoked and the worktree uses the canonical HEAD SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12636/dod-tdd-reproduction/command.yaml"
+  - id: "dod-full-suite-green"
+    description: >-
+      omnimarket full suite green via CI's invocation `uv run pytest tests/ -m "not kafka"`: 6011 passed,
+      10 skipped. The only 4 failures locally are pre-existing test_datasource_postgres.py integration
+      tests that connect to .201:5436; they skip cleanly when OMNIDASH_ANALYTICS_DB_URL is unset (as in
+      CI) and fail locally only on a stale local Postgres password — unrelated to this change. The node
+      unit suite (tests/unit/nodes/node_dirty_canonical_sweep/) is 6 passed. mypy --strict on the node
+      package, ruff format/check, and pre-commit on changed files all clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12636/dod-full-suite-green/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12636 (and paired OMN-12635) central
+      contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12636/dod-occ-pr-self/command.yaml"
