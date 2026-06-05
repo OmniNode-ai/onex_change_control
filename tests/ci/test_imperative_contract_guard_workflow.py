@@ -41,6 +41,7 @@ def test_imperative_contract_guard_pins_uv_and_retries_sync() -> None:
     run_script = guard_step["run"]
     assert "git config --global http.version HTTP/1.1" in run_script
     assert "until uv sync --locked --all-extras; do" in run_script
+    assert "--scan-freestanding" in run_script
     assert (
         'echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed'
         in run_script

@@ -11,13 +11,18 @@ explicit allowlist; any new unallowlisted violation exits non-zero.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
+from onex_change_control.enums.enum_reachability import EnumReachability
 from onex_change_control.scanners.handler_contract_compliance import (
     cross_reference,
     scan_freestanding_imperative_io,
@@ -64,6 +69,7 @@ class RepoImperativeSummary:
     compliant_count: int
     allowlisted_count: int
     new_violation_count: int
+    non_live_violation_count: int
     results: list[ModelHandlerComplianceResult]
     freestanding_scanned: bool = False
     freestanding_module_count: int = 0
@@ -82,17 +88,36 @@ class RepoImperativeSummary:
             "compliant_count": self.compliant_count,
             "allowlisted_count": self.allowlisted_count,
             "new_violation_count": self.new_violation_count,
+            "non_live_violation_count": self.non_live_violation_count,
             "freestanding_scanned": self.freestanding_scanned,
             "freestanding_module_count": self.freestanding_module_count,
             "new_violations": [
                 result.model_dump(mode="json")
                 for result in self.results
-                if result.violations and not result.allowlisted
+                if result.violations
+                and not result.allowlisted
+                and result.reachability == EnumReachability.LIVE
+            ],
+            "non_live_violations": [
+                result.model_dump(mode="json")
+                for result in self.results
+                if result.violations
+                and not result.allowlisted
+                and result.reachability != EnumReachability.LIVE
             ],
             "freestanding_violations": [
                 result.model_dump(mode="json")
                 for result in self.freestanding_results
-                if result.violations and not result.allowlisted
+                if result.violations
+                and not result.allowlisted
+                and result.reachability == EnumReachability.LIVE
+            ],
+            "non_live_freestanding_violations": [
+                result.model_dump(mode="json")
+                for result in self.freestanding_results
+                if result.violations
+                and not result.allowlisted
+                and result.reachability != EnumReachability.LIVE
             ],
         }
 
@@ -156,11 +181,30 @@ def scan_repo(
         )
 
     new_violation_count = sum(
-        1 for result in results if result.violations and not result.allowlisted
+        1
+        for result in results
+        if result.violations
+        and not result.allowlisted
+        and result.reachability == EnumReachability.LIVE
     ) + sum(
         1
         for result in freestanding_results
-        if result.violations and not result.allowlisted
+        if result.violations
+        and not result.allowlisted
+        and result.reachability == EnumReachability.LIVE
+    )
+    non_live_violation_count = sum(
+        1
+        for result in results
+        if result.violations
+        and not result.allowlisted
+        and result.reachability != EnumReachability.LIVE
+    ) + sum(
+        1
+        for result in freestanding_results
+        if result.violations
+        and not result.allowlisted
+        and result.reachability != EnumReachability.LIVE
     )
 
     return RepoImperativeSummary(
@@ -178,6 +222,7 @@ def scan_repo(
         allowlisted_count=sum(1 for result in results if result.allowlisted)
         + sum(1 for result in freestanding_results if result.allowlisted),
         new_violation_count=new_violation_count,
+        non_live_violation_count=non_live_violation_count,
         results=results,
         freestanding_scanned=scan_freestanding,
         freestanding_module_count=freestanding_module_count,
@@ -193,17 +238,264 @@ def _scan_freestanding_repo(
 ) -> tuple[int, list[ModelFreestandingImperativeResult]]:
     """Audit every freestanding module in a repo and return (count, results)."""
     modules = _find_freestanding_modules(repo_root)
+    reachability = _classify_module_reachability(repo_root, modules)
     src_dir = repo_root / "src"
     results: list[ModelFreestandingImperativeResult] = []
     for module in modules:
         rel_path = str(module.relative_to(src_dir.parent))
+        module_reachability = reachability.get(module, EnumReachability.DEAD)
         result = scan_freestanding_imperative_io(
             module,
             repo=repo_name,
             allowlisted=rel_path in allowlisted_paths,
+            reachability=module_reachability,
         )
-        results.append(result.model_copy(update={"module_path": rel_path}))
+        results.append(
+            result.model_copy(
+                update={
+                    "module_path": rel_path,
+                    "reachability": module_reachability,
+                    "findings": [
+                        finding.model_copy(update={"reachability": module_reachability})
+                        for finding in result.findings
+                    ],
+                }
+            )
+        )
     return len(modules), results
+
+
+def _classify_module_reachability(
+    repo_root: Path,
+    modules: list[Path],
+) -> dict[Path, EnumReachability]:
+    """Classify freestanding modules from repo entrypoint import reachability."""
+    freestanding_by_name = {
+        name: module
+        for module in modules
+        if (name := _module_name_for_file(repo_root, module)) is not None
+    }
+    all_modules_by_name = _all_source_modules(repo_root)
+    graph = _build_import_graph(all_modules_by_name)
+    entrypoints = _collect_entrypoint_modules(repo_root)
+    reachable_names = _reachable_modules(entrypoints, graph, all_modules_by_name)
+    return {
+        module: (
+            EnumReachability.TEST_HARNESS
+            if _is_test_harness_path(module)
+            else (
+                EnumReachability.LIVE
+                if module_name in reachable_names
+                else EnumReachability.DEAD
+            )
+        )
+        for module_name, module in freestanding_by_name.items()
+    }
+
+
+def _all_source_modules(repo_root: Path) -> dict[str, Path]:
+    """Return importable module names for all Python source files under src."""
+    src_dir = repo_root / "src"
+    if not src_dir.exists():
+        return {}
+    modules: dict[str, Path] = {}
+    for path in src_dir.rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        name = _module_name_for_file(repo_root, path)
+        if name is not None:
+            modules[name] = path
+    return modules
+
+
+def _module_name_for_file(repo_root: Path, module: Path) -> str | None:
+    """Return the importable module name for a Python file under ``src``."""
+    try:
+        rel = module.relative_to(repo_root / "src")
+    except ValueError:
+        return None
+    parts = list(rel.with_suffix("").parts)
+    if not parts:
+        return None
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts) if parts else None
+
+
+def _is_test_harness_path(path: Path) -> bool:
+    parts = set(path.parts)
+    return "tests" in parts or path.name.startswith("test_")
+
+
+def _build_import_graph(module_by_name: dict[str, Path]) -> dict[str, set[str]]:
+    """Build an intra-repo import graph keyed by importable module name."""
+    graph: dict[str, set[str]] = {name: set() for name in module_by_name}
+    for module_name, module_path in module_by_name.items():
+        try:
+            tree = ast.parse(module_path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        imports = _extract_imports(
+            tree,
+            current_module=module_name,
+            is_package=module_path.name == "__init__.py",
+        )
+        graph[module_name].update(
+            target
+            for imported in imports
+            for target in _resolve_import_target(imported, module_by_name)
+        )
+    return graph
+
+
+def _extract_imports(
+    tree: ast.AST,
+    *,
+    current_module: str,
+    is_package: bool = False,
+) -> set[str]:
+    """Extract absolute import targets from a module AST."""
+    imports: set[str] = set()
+    current_package = (
+        current_module
+        if is_package
+        else current_module.rsplit(".", 1)[0]
+        if "." in current_module
+        else ""
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = _resolve_from_import_base(
+                current_package=current_package,
+                module=node.module,
+                level=node.level,
+            )
+            if not base:
+                continue
+            imports.add(base)
+            imports.update(f"{base}.{alias.name}" for alias in node.names)
+    return imports
+
+
+def _resolve_from_import_base(
+    *,
+    current_package: str,
+    module: str | None,
+    level: int,
+) -> str | None:
+    """Resolve an ``ast.ImportFrom`` base module."""
+    if level == 0:
+        return module
+    package_parts = current_package.split(".") if current_package else []
+    if level > len(package_parts) + 1:
+        return module
+    base_parts = package_parts[: len(package_parts) - level + 1]
+    if module:
+        base_parts.extend(module.split("."))
+    return ".".join(part for part in base_parts if part)
+
+
+def _resolve_import_target(
+    imported: str,
+    module_by_name: dict[str, Path],
+) -> set[str]:
+    """Map an import string onto known repo modules."""
+    if imported in module_by_name:
+        return {imported}
+    parts = imported.split(".")
+    for end in range(len(parts) - 1, 0, -1):
+        candidate = ".".join(parts[:end])
+        if candidate in module_by_name:
+            return {candidate}
+    return set()
+
+
+def _collect_entrypoint_modules(repo_root: Path) -> set[str]:
+    """Collect contract and project-script entrypoints for live reachability."""
+    entrypoints: set[str] = set()
+    for contract_path in (repo_root / "src").rglob("contract.yaml"):
+        entrypoints.update(_contract_entrypoint_modules(contract_path))
+        node_py = contract_path.parent / "node.py"
+        node_module = _module_name_for_file(repo_root, node_py)
+        if node_py.exists() and node_module is not None:
+            entrypoints.add(node_module)
+    entrypoints.update(_pyproject_entrypoint_modules(repo_root / "pyproject.toml"))
+    return entrypoints
+
+
+def _contract_entrypoint_modules(contract_path: Path) -> set[str]:
+    """Extract handler modules declared by a node contract."""
+    try:
+        data = yaml.safe_load(contract_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    modules: set[str] = set()
+    routing = data.get("handler_routing")
+    if isinstance(routing, dict):
+        handlers = routing.get("handlers")
+        if isinstance(handlers, list):
+            for entry in handlers:
+                if not isinstance(entry, dict):
+                    continue
+                handler = entry.get("handler")
+                if isinstance(handler, dict) and isinstance(handler.get("module"), str):
+                    modules.add(handler["module"])
+    return modules
+
+
+def _pyproject_entrypoint_modules(pyproject_path: Path) -> set[str]:
+    """Extract module roots from pyproject scripts and entry-points."""
+    if not pyproject_path.exists():
+        return set()
+    try:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return set()
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return set()
+    modules: set[str] = set()
+    scripts = project.get("scripts")
+    if isinstance(scripts, dict):
+        modules.update(_entrypoint_spec_module(spec) for spec in scripts.values())
+    entry_points = project.get("entry-points")
+    if isinstance(entry_points, dict):
+        for group in entry_points.values():
+            if isinstance(group, dict):
+                modules.update(_entrypoint_spec_module(spec) for spec in group.values())
+    return {module for module in modules if module}
+
+
+def _entrypoint_spec_module(spec: object) -> str:
+    if not isinstance(spec, str):
+        return ""
+    return spec.split(":", 1)[0].strip()
+
+
+def _reachable_modules(
+    entrypoints: set[str],
+    graph: dict[str, set[str]],
+    module_by_name: dict[str, Path],
+) -> set[str]:
+    """Return modules reachable from known entrypoints."""
+    roots = {
+        target
+        for entrypoint in entrypoints
+        for target in _resolve_import_target(entrypoint, module_by_name)
+    }
+    reachable: set[str] = set()
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        stack.extend(sorted(graph.get(current, set()) - reachable))
+    return reachable
 
 
 def scan_repos(
@@ -247,16 +539,18 @@ def _resolve_allowlist_path(
     return repo_local if repo_local.exists() else None
 
 
-def render_text_report(summaries: list[RepoImperativeSummary]) -> str:
+def render_text_report(  # noqa: C901  Why: report has separate live/non-live sections.
+    summaries: list[RepoImperativeSummary],
+) -> str:
     """Render a human-readable table plus unbaselined violation details."""
     lines = [
         "Imperative contract guard",
         "",
         (
             f"{'repo':28} {'nodes':>5} {'handlers':>8} {'clean':>6} "
-            f"{'baseline':>8} {'new':>5} allowlist"
+            f"{'baseline':>8} {'live':>5} {'nonlive':>7} allowlist"
         ),
-        "-" * 92,
+        "-" * 102,
     ]
     for summary in summaries:
         allowlist = (
@@ -268,6 +562,7 @@ def render_text_report(summaries: list[RepoImperativeSummary]) -> str:
             f"{summary.repo:28} {summary.node_count:5} "
             f"{summary.handler_count:8} {summary.compliant_count:6} "
             f"{summary.allowlisted_count:8} {summary.new_violation_count:5} "
+            f"{summary.non_live_violation_count:7} "
             f"{allowlist}"
         )
 
@@ -275,12 +570,17 @@ def render_text_report(summaries: list[RepoImperativeSummary]) -> str:
         result
         for summary in summaries
         for result in summary.results
-        if result.violations and not result.allowlisted
+        if result.violations
+        and not result.allowlisted
+        and result.reachability == EnumReachability.LIVE
     ]
     if new_results:
-        lines.extend(["", "Unbaselined imperative violations:"])
+        lines.extend(["", "Blocking LIVE imperative violations:"])
         for result in new_results:
-            lines.append(f"- {result.handler_path}: {result.verdict.value}")
+            lines.append(
+                f"- {result.handler_path}: {result.verdict.value} "
+                f"({result.reachability.value})"
+            )
             for detail in result.violation_details:
                 lines.append(f"  - {detail}")
 
@@ -288,24 +588,66 @@ def render_text_report(summaries: list[RepoImperativeSummary]) -> str:
         fs_result
         for summary in summaries
         for fs_result in summary.freestanding_results
-        if fs_result.violations and not fs_result.allowlisted
+        if fs_result.violations
+        and not fs_result.allowlisted
+        and fs_result.reachability == EnumReachability.LIVE
     ]
     if freestanding:
-        lines.extend(["", "Unbaselined freestanding imperative violations:"])
+        lines.extend(["", "Blocking LIVE freestanding imperative violations:"])
         for fs_result in freestanding:
-            lines.append(f"- {fs_result.module_path}: {fs_result.verdict.value}")
+            lines.append(
+                f"- {fs_result.module_path}: {fs_result.verdict.value} "
+                f"({fs_result.reachability.value})"
+            )
             for finding in fs_result.active_findings:
-                lines.append(f"  - L{finding.line} {finding.detail}")
+                lines.append(
+                    f"  - L{finding.line} [{finding.reachability.value}] "
+                    f"{finding.detail}"
+                )
+
+    non_live = [
+        result
+        for summary in summaries
+        for result in summary.results
+        if result.violations
+        and not result.allowlisted
+        and result.reachability != EnumReachability.LIVE
+    ]
+    non_live_freestanding = [
+        fs_result
+        for summary in summaries
+        for fs_result in summary.freestanding_results
+        if fs_result.violations
+        and not fs_result.allowlisted
+        and fs_result.reachability != EnumReachability.LIVE
+    ]
+    if non_live or non_live_freestanding:
+        lines.extend(["", "Reported non-live imperative smells:"])
+        for result in non_live:
+            lines.append(
+                f"- {result.handler_path}: {result.verdict.value} "
+                f"({result.reachability.value})"
+            )
+        for fs_result in non_live_freestanding:
+            lines.append(
+                f"- {fs_result.module_path}: {fs_result.verdict.value} "
+                f"({fs_result.reachability.value})"
+            )
     return "\n".join(lines)
 
 
-def render_markdown_report(summaries: list[RepoImperativeSummary]) -> str:
+def render_markdown_report(  # noqa: C901  Why: report has separate live/non-live sections.
+    summaries: list[RepoImperativeSummary],
+) -> str:
     """Render a Markdown report suitable for durable sweep evidence."""
     lines = [
         "# Imperative Contract Guard Sweep",
         "",
-        "| Repo | Nodes | Handlers | Clean | Baselined | New | Allowlist |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        (
+            "| Repo | Nodes | Handlers | Clean | Baselined | Live blockers "
+            "| Non-live reported | Allowlist |"
+        ),
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for summary in summaries:
         allowlist = (
@@ -316,15 +658,18 @@ def render_markdown_report(summaries: list[RepoImperativeSummary]) -> str:
         lines.append(
             f"| `{summary.repo}` | {summary.node_count} | {summary.handler_count} "
             f"| {summary.compliant_count} | {summary.allowlisted_count} "
-            f"| {summary.new_violation_count} | `{allowlist}` |"
+            f"| {summary.new_violation_count} | {summary.non_live_violation_count} "
+            f"| `{allowlist}` |"
         )
 
-    lines.extend(["", "## Unbaselined Violations"])
+    lines.extend(["", "## Blocking LIVE Violations"])
     new_results = [
         result
         for summary in summaries
         for result in summary.results
-        if result.violations and not result.allowlisted
+        if result.violations
+        and not result.allowlisted
+        and result.reachability == EnumReachability.LIVE
     ]
     if not new_results:
         lines.append("")
@@ -334,6 +679,7 @@ def render_markdown_report(summaries: list[RepoImperativeSummary]) -> str:
         lines.append(f"### `{result.handler_path}`")
         lines.append("")
         lines.append(f"- Verdict: `{result.verdict.value}`")
+        lines.append(f"- Reachability: `{result.reachability.value}`")
         for detail in result.violation_details:
             lines.append(f"- {detail}")
 
@@ -341,10 +687,12 @@ def render_markdown_report(summaries: list[RepoImperativeSummary]) -> str:
         fs_result
         for summary in summaries
         for fs_result in summary.freestanding_results
-        if fs_result.violations and not fs_result.allowlisted
+        if fs_result.violations
+        and not fs_result.allowlisted
+        and fs_result.reachability == EnumReachability.LIVE
     ]
     if any(summary.freestanding_scanned for summary in summaries):
-        lines.extend(["", "## Unbaselined Freestanding Violations"])
+        lines.extend(["", "## Blocking LIVE Freestanding Violations"])
         if not freestanding:
             lines.extend(["", "None."])
         for fs_result in freestanding:
@@ -352,8 +700,41 @@ def render_markdown_report(summaries: list[RepoImperativeSummary]) -> str:
             lines.append(f"### `{fs_result.module_path}`")
             lines.append("")
             lines.append(f"- Verdict: `{fs_result.verdict.value}`")
+            lines.append(f"- Reachability: `{fs_result.reachability.value}`")
             for finding in fs_result.active_findings:
-                lines.append(f"- L{finding.line} {finding.detail}")
+                lines.append(
+                    f"- L{finding.line} [{finding.reachability.value}] {finding.detail}"
+                )
+
+    non_live = [
+        result
+        for summary in summaries
+        for result in summary.results
+        if result.violations
+        and not result.allowlisted
+        and result.reachability != EnumReachability.LIVE
+    ]
+    non_live_freestanding = [
+        fs_result
+        for summary in summaries
+        for fs_result in summary.freestanding_results
+        if fs_result.violations
+        and not fs_result.allowlisted
+        and fs_result.reachability != EnumReachability.LIVE
+    ]
+    lines.extend(["", "## Reported Non-live Smells"])
+    if not non_live and not non_live_freestanding:
+        lines.extend(["", "None."])
+    for result in non_live:
+        lines.append("")
+        lines.append(f"### `{result.handler_path}`")
+        lines.append(f"- Verdict: `{result.verdict.value}`")
+        lines.append(f"- Reachability: `{result.reachability.value}`")
+    for fs_result in non_live_freestanding:
+        lines.append("")
+        lines.append(f"### `{fs_result.module_path}`")
+        lines.append(f"- Verdict: `{fs_result.verdict.value}`")
+        lines.append(f"- Reachability: `{fs_result.reachability.value}`")
     return "\n".join(lines) + "\n"
 
 

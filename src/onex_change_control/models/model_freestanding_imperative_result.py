@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
 from onex_change_control.enums.enum_compliance_violation import EnumComplianceViolation
+from onex_change_control.enums.enum_reachability import EnumReachability
 
 
 class ModelFreestandingImperativeFinding(BaseModel):
@@ -43,6 +44,10 @@ class ModelFreestandingImperativeFinding(BaseModel):
             "finding's line suppresses it."
         ),
     )
+    reachability: EnumReachability = Field(
+        default=EnumReachability.LIVE,
+        description="Reachability of the module containing this finding.",
+    )
 
 
 class ModelFreestandingImperativeResult(BaseModel):
@@ -69,6 +74,10 @@ class ModelFreestandingImperativeResult(BaseModel):
     allowlisted: bool = Field(
         default=False,
         description="Whether this module path is baselined in the allowlist.",
+    )
+    reachability: EnumReachability = Field(
+        default=EnumReachability.LIVE,
+        description="Whether this module is reachable from declared live entrypoints.",
     )
 
     @property
