@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import ast
 import re
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import yaml
 
 from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
 from onex_change_control.enums.enum_compliance_violation import EnumComplianceViolation
+from onex_change_control.enums.enum_reachability import EnumReachability
 from onex_change_control.models.model_freestanding_imperative_result import (
     ModelFreestandingImperativeFinding,
     ModelFreestandingImperativeResult,
@@ -27,9 +29,6 @@ from onex_change_control.models.model_freestanding_imperative_result import (
 from onex_change_control.models.model_handler_compliance_result import (
     ModelHandlerComplianceResult,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # --- Topic detection patterns ---
 
@@ -477,6 +476,7 @@ def _audit_handler(  # noqa: PLR0913  Why: audit requires full cross-referencing
             contract_path=None,
             verdict=EnumComplianceVerdict.MISSING_CONTRACT,
             allowlisted=is_allowlisted,
+            reachability=_handler_reachability(rel_path, is_routed=True),
         )
 
     violations, violation_details = _collect_violations(
@@ -510,7 +510,16 @@ def _audit_handler(  # noqa: PLR0913  Why: audit requires full cross-referencing
         handler_in_routing=in_routing,
         verdict=verdict,
         allowlisted=is_allowlisted,
+        reachability=_handler_reachability(rel_path, is_routed=in_routing),
     )
+
+
+def _handler_reachability(rel_path: str, *, is_routed: bool) -> EnumReachability:
+    """Classify handler reachability for static guard blocking."""
+    parts = set(Path(rel_path).parts)
+    if "tests" in parts or Path(rel_path).name.startswith("test_"):
+        return EnumReachability.TEST_HARNESS
+    return EnumReachability.LIVE if is_routed else EnumReachability.DEAD
 
 
 def _collect_violations(
@@ -577,6 +586,7 @@ def scan_freestanding_imperative_io(
     repo: str,
     *,
     allowlisted: bool = False,
+    reachability: EnumReachability = EnumReachability.LIVE,
 ) -> ModelFreestandingImperativeResult:
     """Detect freestanding imperative IO in a non-handler source module.
 
@@ -614,6 +624,7 @@ def scan_freestanding_imperative_io(
             findings=[],
             verdict=EnumComplianceVerdict.COMPLIANT,
             allowlisted=allowlisted,
+            reachability=reachability,
         )
 
     suppressed_lines = _suppressed_lines(source)
@@ -638,6 +649,7 @@ def scan_freestanding_imperative_io(
             line=line,
             detail=detail,
             suppressed=line in suppressed_lines,
+            reachability=reachability,
         )
         for line, violation, detail in sorted(raw_findings, key=lambda item: item[0])
     ]
@@ -650,6 +662,7 @@ def scan_freestanding_imperative_io(
         findings=findings,
         verdict=verdict,
         allowlisted=allowlisted,
+        reachability=reachability,
     )
 
 
