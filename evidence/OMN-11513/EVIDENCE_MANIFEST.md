@@ -18,6 +18,7 @@
 | `2026-05-26-day5-findings.md` | 2026-05-26 | Day-5 follow-on findings (previously merged; manifest row added 2026-06-04). | **Current** |
 | `2026-05-29-bret-day7-findings.md` + `2026-05-29-bret-day7-evidence-manifest.json` | 2026-05-29 | Day-7 findings + typed evidence manifest (previously merged; manifest row added 2026-06-04). | **Current** |
 | `2026-05-30-bret-obj1-token-registry-stability.md` | 2026-05-30 | Objective 1 evidence: SEA token + model-registry stability. SEA dev `13127a7`; registry blob `ca392b6f`; remote-live (Tailscale) + local. Authored 2026-05-30, ported to OCC 2026-06-04. | **Current** |
+| `2026-06-04-judge-dryrun/` | 2026-06-04 | Judge-experience dry run: fresh anonymous clone of the public repo (default branch `dev` @ `106e88c`), no env vars, README four-command judge flow. PASS: clone, `uv sync`, unit suite (1376 passed/1 skipped), keyless `--demo` (replay/fixture), `--replay`. FAIL: keyed `--agent` (`SeaKafkaReadinessError`, ~30s hang, default overlay bootstrap `localhost:19092` unreachable — fail-closed #206 gating the judge path) and native entropy demo (`DelegationBusRuntimeNotWiredError`, 0 tracks). Artifacts: dryrun.log, agent-keyed.log, demo-keyless.log, entropy-native.log, clone-info.txt. | **Current — judge-facing README/architecture divergence evidence** |
 
 ### proof-of-life/
 
