@@ -18,6 +18,9 @@ class EnumDocReferenceType(StrEnum):
     COMMAND       - e.g., uv run pytest tests/unit/
     URL           - e.g., http://localhost:8080
     ENV_VAR       - e.g., KAFKA_BOOTSTRAP_SERVERS
+    PR_NUMBER     - e.g., omnimarket#1034
+    TICKET_STATE  - e.g., OMN-12691 Done
+    LIVE_PATH_AUTHORITY - v2: live-path claim checked against runtime truth
     """
 
     FILE_PATH = "FILE_PATH"
@@ -26,3 +29,6 @@ class EnumDocReferenceType(StrEnum):
     COMMAND = "COMMAND"
     URL = "URL"
     ENV_VAR = "ENV_VAR"
+    PR_NUMBER = "PR_NUMBER"
+    TICKET_STATE = "TICKET_STATE"
+    LIVE_PATH_AUTHORITY = "LIVE_PATH_AUTHORITY"
