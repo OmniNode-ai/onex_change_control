@@ -109,3 +109,26 @@ def test_validate_boundaries_scopes_migration_conflicts_to_migration_diffs() -> 
     )
     assert "migration-conflicts: SKIPPED" in boundary_step["run"]
     assert "steps.scope.outputs.migration_conflicts_should_run" in boundary_step["run"]
+
+
+def test_validate_boundaries_does_not_clone_calling_repo_as_peer() -> None:
+    """Caller checkout is authoritative and should not count as peer clone drift."""
+    action = _load_action()
+    steps = action["runs"]["steps"]
+
+    clone_step = next(step for step in steps if step.get("name") == "Clone peer repos")
+    symlink_step = next(
+        step
+        for step in steps
+        if step.get("name") == "Symlink calling repo into workspace"
+    )
+
+    assert 'CALLING_REPO="${GITHUB_REPOSITORY##*/}"' in clone_step["run"]
+    assert '[[ "$repo" == "$CALLING_REPO" ]]' in clone_step["run"]
+    assert "Skipping clone of calling repo" in clone_step["run"]
+    assert 'DEGRADED="${DEGRADED}${repo},"' in clone_step["run"]
+    assert 'REPO_NAME="${GITHUB_REPOSITORY##*/}"' in symlink_step["run"]
+    assert (
+        'ln -s "$GITHUB_WORKSPACE" "/tmp/omni_repos/${REPO_NAME}"'
+        in symlink_step["run"]
+    )

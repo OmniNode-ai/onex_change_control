@@ -162,11 +162,11 @@ class TestArtifactChecks:
         assert status == "FAIL"
 
     def test_receipt_exists_pass(self, tmp_contracts: Path) -> None:
-        """Check 2 passes when a canonical receipt exists."""
+        """Check 2 passes when receipt exists."""
         repo_root = tmp_contracts.parent
-        evidence = repo_root / "drift" / "dod_receipts" / "OMN-2000" / "dod-001"
-        evidence.mkdir(parents=True)
-        (evidence / "command.yaml").write_text("status: PASS\n")
+        canonical = repo_root / "drift" / "dod_receipts" / "OMN-2000" / "dod-001"
+        canonical.mkdir(parents=True)
+        (canonical / "command.yaml").write_text("status: PASS\n")
         status, _ = check_dod_compliance.check_receipt_exists("OMN-2000", tmp_contracts)
         assert status == "PASS"
 

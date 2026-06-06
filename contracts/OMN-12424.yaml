@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-12424
+title: "Runtime Docker rebuild ships stale code — uv cache mount not busted by --no-cache"
+summary: >
+  Dockerfile.runtime installs onex_change_control@main and omnimarket@dev via uv from moving git refs
+  under a persistent BuildKit uv cache mount. uv keys its git source cache on the resolved commit for
+  the unchanging @branch URL, so docker build --no-cache (which busts layer cache but not the type=cache
+  mount) reinstalls a stale wheel from a prior commit. This masked the OMN-12420 node_dod_verify fix during
+  the stability-test redeploy. Fix: add --refresh-package <name> to each moving-ref git install so a rebuild
+  always fetches current branch HEAD. Shipped via omnibase_infra PR #1788 with a pinned static test; verified
+  by image pre-check (grep -c OMN-12420 on the installed node_dod_verify contract == 1 in the rebuilt
+  stability-test image).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_infra PR #1788 carries the Dockerfile --refresh-package fix"
+    command: "gh pr view 1788 --repo OmniNode-ai/omnibase_infra --json state"
+  - kind: "manual"
+    description: "Dockerfile.runtime passes --refresh-package for both moving-ref git installs"
+    command: "grep -c -- '--refresh-package' docker/Dockerfile.runtime"
+  - kind: "tests"
+    description: "Static test pins the --refresh-package invariant for moving-ref git deps"
+    command: "uv run pytest tests/scripts/test_dockerfile_runtime_git_refresh.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-open"
+    description: "omnibase_infra PR #1788 exists with the OMN-12424 Dockerfile fix"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1788 --repo OmniNode-ai/omnibase_infra --json number --jq .number)\"
+          = 1788"
+  - id: "dod-dockerfile-refresh-package"
+    description: "Dockerfile.runtime passes --refresh-package for both moving-ref git installs (onex_change_control,
+      omnimarket); checks PR head then falls back to main after merge"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "for r in jonah/omn-12424-uv-refresh-package-git-deps main; do c=$(gh api \"repos/OmniNode-ai/omnibase_infra/contents/docker/Dockerfile.runtime?ref=$r\"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); if [ -n \"$c\" ]; then printf '%s' \"$c\"
+          | grep -q -- '--refresh-package omnimarket' && printf '%s' \"$c\" | grep -q -- '--refresh-package
+          onex-change-control' && exit 0; fi; done; exit 1"
+  - id: "dod-static-test"
+    description: "Static invariant test file exists (pins --refresh-package requirement); checks PR head
+      then falls back to main after merge"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "for r in jonah/omn-12424-uv-refresh-package-git-deps main; do n=$(gh api \"repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/test_dockerfile_runtime_git_refresh.py?ref=$r\"
+          --jq .name 2>/dev/null); if [ \"$n\" = test_dockerfile_runtime_git_refresh.py ]; then exit 0;
+          fi; done; exit 1"
+  - id: "dod-occ-pr-1867"
+    description: "OCC PR #1867 carries the OMN-12424 central contract and receipt evidence."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-12424/dod-occ-pr-1867/command.yaml\"
+          && grep -q '^pr_number: 1867$' \"drift/dod_receipts/OMN-12424/dod-occ-pr-1867/command.yaml\""

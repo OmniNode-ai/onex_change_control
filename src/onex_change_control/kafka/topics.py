@@ -37,6 +37,22 @@ class GovernanceTopic(str, Enum):
     NIGHTLY_PROMOTION = "onex.evt.occ.nightly-promotion.v1"
     """Nightly dev-to-main promotion evidence batch emitted by OCC."""
 
+    RUNTIME_DEPLOYMENT_REQUEST = "onex.cmd.omnimarket.redeploy-start.v1"
+    """Runtime deployment request consumed by node_redeploy (OMN-12576).
+
+    OCC owns the deployment wire schema as the source of truth. The request
+    carries the runtime lane, source ref/SHA, and (for prod) the pinned image
+    digest and promotion batch that the deployment orchestrator enforces.
+    """
+
+    RUNTIME_DEPLOYMENT_PROOF = "onex.evt.omnimarket.runtime-deployment-proof.v1"
+    """Runtime deployment proof emitted after per-lane probe (OMN-12576).
+
+    Carries the lane, source SHA, running image digest, health/ready status,
+    and topology/source attestations. The image digest is the prod-gate
+    authority: prod may deploy only the digest proven READY in stability-test.
+    """
+
     def __str__(self) -> str:
         return self.value
 

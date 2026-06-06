@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12515"
+title: "Extend imperative-contract scanner to detect freestanding imperative IO"
+summary: >-
+  Extend the handler-contract-compliance scanner to audit freestanding modules (everything under src/
+  outside node_*/handlers/), closing the detection hole where raw HTTP inference, direct DB connections,
+  raw Kafka clients, hardcoded inference params, topics, LAN IPs, and subprocess network ops went unscanned.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Full pytest suite (no -k filter) passes including new freestanding scanner and CLI tests."
+    command: "uv run pytest tests/ -q"
+  - kind: "ci"
+    description: "mypy --strict, ruff, and pre-commit all pass on the change."
+    command: "uv run mypy src/ --strict && uv run ruff check src/ tests/ && pre-commit run --all-files"
+  - kind: "manual"
+    description: "End-to-end proof: --scan-freestanding flags onex-self-extending-agent src/pipeline/consumer.py
+      (raw httpx.post + max_tokens=2048)."
+    command: "uv run check-imperative-contracts --repo-root \"$OMNI_HOME/onex-self-extending-agent\" --scan-freestanding"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-full-suite"
+    description: "Full pytest suite passes (3340 passed, 17 skipped) including the new freestanding detection
+      tests."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-12515/dod-full-suite/command.yaml" && grep
+          -q '^commit_sha: "81eb576098314e2ce54f3e7ff409bf571de0b83b"$' "drift/dod_receipts/OMN-12515/dod-full-suite/command.yaml"
+  - id: "dod-static-checks"
+    description: "mypy --strict, ruff, and pre-commit pass at the recorded head."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-12515/dod-static-checks/command.yaml" && grep
+          -q '^commit_sha: "81eb576098314e2ce54f3e7ff409bf571de0b83b"$' "drift/dod_receipts/OMN-12515/dod-static-checks/command.yaml"
+  - id: "dod-sea-proof"
+    description: "--scan-freestanding now reports src/pipeline/consumer.py in onex-self-extending-agent
+      (the keystone case that was previously invisible)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-12515/dod-sea-proof/command.yaml" && grep -q
+          'consumer.py' "drift/dod_receipts/OMN-12515/dod-sea-proof/command.yaml" && grep -q '^commit_sha:
+          "81eb576098314e2ce54f3e7ff409bf571de0b83b"$' "drift/dod_receipts/OMN-12515/dod-sea-proof/command.yaml"
