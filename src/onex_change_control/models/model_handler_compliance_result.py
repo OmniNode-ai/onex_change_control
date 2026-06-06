@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
 from onex_change_control.enums.enum_compliance_violation import EnumComplianceViolation
+from onex_change_control.enums.enum_reachability import EnumReachability
 
 
 class ModelHandlerComplianceResult(BaseModel):
@@ -81,4 +82,8 @@ class ModelHandlerComplianceResult(BaseModel):
     allowlisted: bool = Field(
         default=False,
         description="Whether this handler is in the allowlist",
+    )
+    reachability: EnumReachability = Field(
+        default=EnumReachability.LIVE,
+        description="Whether this handler is reachable from contract routing.",
     )

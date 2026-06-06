@@ -1,0 +1,41 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12587"
+evidence_item_id: "dod-sea-finding1-loop-aware-pr-203"
+check_type: "command"
+check_value: "gh pr view 203 --repo OmniNode-ai/onex-self-extending-agent --json number,state,files"
+contract_sha256: "sha256:60bd585d31d477ae8aa558467d553de4888d621a1d09d24239dd7c0ecf345fa7"
+status: PASS
+run_timestamp: "2026-06-02T21:30:00Z"
+commit_sha: "e0350d84f6a35e94ceb9761ff32578c8b0164e4b"
+branch: "jonah/omn-12587-f1-loop-aware-publish"
+pr_number: 203
+runner: "claude-code"
+verifier: "jonah"
+probe_command: "gh pr view 203 --repo OmniNode-ai/onex-self-extending-agent --json number,state,files"
+probe_stdout: |
+  number: 203
+  state: OPEN
+  files:
+    - src/pipeline/delegation_bus_stability.py
+    - tests/unit/test_delegation_bus_stability.py
+actual_output: >-
+  PASS: onex-self-extending-agent PR #203 fixes SEA Finding 1. DEFECT: StabilityDelegationBus.publish_and_wait
+  (src/pipeline/delegation_bus_stability.py) was a sync method that did `return asyncio.run(self._round_trip(...))`.
+  When SEA runs via --agent, the ADK invokes the InferenceClient (and thus publish_and_wait) from inside
+  its ALREADY-running event loop, so asyncio.run() raised "RuntimeError: asyncio.run() cannot be called
+  from a running event loop" BEFORE any Kafka I/O. The shipped tests missed it because they call publish_and_wait
+  from a plain sync context (no running loop). Empirically reproduced on pre-fix HEAD via the injected
+  transport seam inside asyncio.run(_invoke_like_adk_does()): "CONFIRMED-DEFECT RuntimeError: asyncio.run()
+  cannot be called from a running event loop". FIX: publish_and_wait is now loop-aware via _run_round_trip
+  — with no running loop it owns the loop via asyncio.run as before; when a loop is already running it
+  runs _round_trip to completion in a dedicated single-worker ThreadPoolExecutor thread with its own event
+  loop and propagates the result/exception. The synchronous ProtocolInferenceBus surface, the timeout_s,
+  and the close() lifecycle in _round_trip are preserved. RED->GREEN proof: the new regression class TestPublishAndWaitFromRunningLoop
+  fails RED on pre-fix HEAD with the exact RuntimeError (test_publish_and_wait_returns_when_called_inside_running_loop
+  and test_publish_and_wait_propagates_errors_from_running_loop) and passes GREEN after the fix; the no-running-loop
+  guard test also passes. Local proof: uv run pytest tests/ (no -k) = 1340 passed, 15 skipped; mypy --strict
+  = no issues in 199 files; ruff check + format clean; pre-commit hooks pass (incl. OMN-12608 SEA inference-architecture
+  guard).
+exit_code: 0
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-12587-f1/onex-self-extending-agent"

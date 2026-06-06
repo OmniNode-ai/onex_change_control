@@ -36,6 +36,13 @@ def _create_repo_with_imperative_handler(tmp_path: Path, repo_name: str) -> Path
             description: Test node
             input_model: {name: ModelTestInput, module: test}
             output_model: {name: ModelTestOutput, module: test}
+            handler_routing:
+              routing_strategy: operation_match
+              handlers:
+                - operation: run
+                  handler:
+                    name: HandlerExample
+                    module: test_pkg.nodes.node_test.handlers.handler_example
             """
         ),
         encoding="utf-8",
@@ -146,7 +153,7 @@ def test_main_fails_on_new_imperative_violation(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "repo_a" in output
-    assert "Unbaselined imperative violations" in output
+    assert "Blocking LIVE imperative violations" in output
 
 
 def test_main_no_fail_reports_without_blocking(tmp_path: Path) -> None:
