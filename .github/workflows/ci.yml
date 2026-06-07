@@ -35,7 +35,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run pre-commit
-        run: uv run pre-commit run --all-files
+        run: SKIP=check-receipt-honesty uv run pre-commit run --all-files
 
   type-check:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
@@ -585,6 +585,62 @@ jobs:
           EMERGENCY_BYPASS: ${{ secrets.EMERGENCY_BYPASS || '' }}
           GH_TOKEN: ${{ github.token }}
 
+  honesty-gate:
+    permissions:
+      contents: read
+    # Receipt Honesty Gate (OMN-12791): scan drift/dod_receipts/ for gamed probes.
+    # Blocking: no-op echo probes, deferral language in PASS receipts, self-attestation,
+    # fake human verifiers, and deploy-keyword evidence backed by echo-only probe_command.
+    name: Receipt Honesty Gate
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: OmniNode-ai/omnibase_core
+          ref: d4884c59068e1a2989178ab2cc91678ad203f6d3
+          path: omnibase_core_source
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run receipt honesty scan on changed receipts
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          BEFORE_SHA: ${{ github.event.before || '' }}
+          PYTHONPATH: ${{ github.workspace }}/omnibase_core_source/src
+        run: |
+          set -euo pipefail
+          changed_file_list=/tmp/changed_receipts.txt
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            base_ref="${BASE_REF#refs/heads/}"
+            git fetch origin "$base_ref" --no-tags
+            git diff --name-only "origin/${base_ref}"...HEAD -- 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --name-only "$BEFORE_SHA"...HEAD -- 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
+          else
+            git ls-files 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
+          fi
+          if [[ ! -s "$changed_file_list" ]]; then
+            echo "RECEIPT HONESTY GATE PASSED: no changed receipt YAML files"
+            exit 0
+          fi
+          echo "Changed receipt files:"
+          cat "$changed_file_list"
+          mapfile -t changed_receipts < "$changed_file_list"
+          uv run python -m omnibase_core.validation.validator_receipt_honesty \
+            --receipts-dir drift/dod_receipts \
+            "${changed_receipts[@]}"
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -594,7 +650,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate]
     if: always()
     steps:
       - name: Check all jobs passed
