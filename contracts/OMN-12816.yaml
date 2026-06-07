@@ -1,0 +1,84 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-12816
+title: "SEA generation output quality — golden exemplar + robust fenced-block extraction (reasoning-model stabilization)"
+summary: >
+  Stabilizes omnimarket node_generation_consumer output so the local coder model
+  (Qwen3.6-35B-A3B, a reasoning model) yields a schema-valid contract on the first
+  pass. Injects a golden exemplar (valid contract.yaml + handler) into the system
+  prompt; changes fenced-block extraction to return the LAST block (the final
+  answer, not a thinking draft), dedents each block to undo markdown-list nesting,
+  and returns empty (fail-clean) instead of feeding raw prose to the YAML parser.
+  Empirically verified against the live vLLM at the local-coder endpoint: the real
+  thinking-model response now extracts and validates True. Pure node-local change;
+  no shared model/contract touched. Escalation fallback deferred per plan.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+evidence_requirements:
+  - kind: ci
+    description: >
+      6 new OMN-12816 unit tests pass (golden exemplar embedded + self-validates,
+      last-block extraction, dedent, fail-clean no-fence, golden-chain full-handle
+      thinking-model response -> contract_passed=true); full omnimarket suite
+      (6447 tests) green; mypy --strict 0 errors; ruff clean; pre-commit all hooks
+      pass.
+    command: >
+      cd omnimarket && uv run pytest tests/unit/nodes/node_generation_consumer/test_handler_generation_consumer.py
+      -q --tb=short
+  - kind: docs
+    description: OCC contract file OMN-12816.yaml present and schema-valid
+    command: >
+      cd onex_change_control && uv run validate-yaml contracts/OMN-12816.yaml
+dod_evidence:
+  - id: dod-omn12816-tests
+    description: >
+      6 OMN-12816 unit tests pass in test_handler_generation_consumer.py
+      (test_golden_exemplar_is_embedded_in_system_prompt,
+      test_golden_exemplar_itself_passes_validation,
+      test_extract_blocks_returns_empty_when_no_yaml_fence,
+      test_extract_blocks_prefers_last_block_over_thinking_drafts,
+      test_extract_blocks_dedents_markdown_nested_block,
+      test_golden_chain_thinking_model_response_passes_first_attempt).
+      Evidence from local run on worktree jonah/omn-12816-generation-exemplar before push.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run pytest tests/unit/nodes/node_generation_consumer/test_handler_generation_consumer.py
+          -q --tb=short
+  - id: dod-omn12816-no-regression
+    description: >
+      Full omnimarket test suite passes with 6447 tests, 0 failed (m=not kafka and not slow).
+      Verified locally before PR push.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run pytest tests/ --tb=short -m "not kafka and not slow" -q
+  - id: dod-omn12816-mypy
+    description: mypy --strict on the changed handler reports 0 errors.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run mypy src/omnimarket/nodes/node_generation_consumer/handlers/handler_generation_consumer.py --strict
+  - id: dod-omn12816-empirical
+    description: >
+      The PROVEN fix recovers a valid contract from the real reasoning-model output.
+      _extract_blocks (last-block + textwrap.dedent) applied to a captured live
+      Qwen3.6-35B-A3B response yields contract_yaml that _validate_generation
+      returns valid=True for (schema+syntax+security pass). Verified by curl to the
+      live vLLM endpoint + running the handler's extract/validate functions on the
+      output during development (worktree jonah/omn-12816-generation-exemplar).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run pytest tests/unit/nodes/node_generation_consumer/test_handler_generation_consumer.py::test_golden_chain_thinking_model_response_passes_first_attempt
+          tests/unit/nodes/node_generation_consumer/test_handler_generation_consumer.py::test_extract_blocks_dedents_markdown_nested_block
+          -v
