@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12791"
+title: "receipt-honesty CI gate — fail gamed DoD receipts"
+summary: >-
+  Adds validator_receipt_honesty.py to omnibase_core with five honesty rules (A-E) over ModelDodReceipt:
+  no-op echo probes, deferral language in PASS receipts, self-attestation, fake human verifiers, and
+  deploy-keyword evidence backed only by echo. Triggered by OMN-12780/dod-deploy-gate-migration-only and
+  OMN-12779/dod-deploy-wave3 echo-PASS receipts. Wired as blocking pre-commit hook and required CI job in
+  onex_change_control. TDD: 80 tests written before implementation, all pass.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched:
+  - "validation"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-validator-impl"
+    description: >-
+      validator_receipt_honesty.py implements all five honesty rules (A-E) as discrete functions.
+      Module is pure (no I/O in rule functions), mypy --strict clean, ruff clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run mypy src/omnibase_core/validation/validator_receipt_honesty.py --strict"
+
+  - id: "dod-tdd-tests-80-pass"
+    description: >-
+      80 TDD unit tests written before implementation, seeding actual gamed receipts (OMN-12780
+      dod-deploy-gate-migration-only, OMN-12779 dod-deploy-wave3) as fixtures that MUST fail.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/validation/test_receipt_honesty_validator.py -v"
+
+  - id: "dod-precommit-hook"
+    description: >-
+      check-receipt-honesty hook added to omnibase_core/.pre-commit-hooks.yaml and wired in
+      onex_change_control/.pre-commit-config.yaml. Fires on any staged drift/dod_receipts/*.yaml.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q check-receipt-honesty .pre-commit-hooks.yaml"
+
+  - id: "dod-ci-gate"
+    description: >-
+      honesty-gate job added to onex_change_control/.github/workflows/ci.yml and added to ci-summary
+      needs list. Blocking on every PR. No warn-only mode.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q honesty-gate .github/workflows/ci.yml"
+
+  - id: "dod-scan-confirms-gamed-receipts"
+    description: >-
+      Live scan over all drift/dod_receipts/ confirms OMN-12780/dod-deploy-gate-migration-only
+      and OMN-12779/dod-deploy-wave3 are both flagged by NO_OP_PROBE + DEPLOY_REALNESS rules.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "python -m omnibase_core.validation.validator_receipt_honesty --receipts-dir drift/dod_receipts"
+
+  - id: "dod-omnibase-core-pr"
+    description: >-
+      omnibase_core PR containing validator_receipt_honesty.py + tests + pre-commit hook entry.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks --repo OmniNode-ai/omnibase_core"
+
+  - id: "dod-occ-pr"
+    description: >-
+      onex_change_control PR containing ci.yml honesty-gate job + pre-commit-config.yaml hook wire.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks --repo OmniNode-ai/onex_change_control"
