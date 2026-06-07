@@ -1,0 +1,72 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-12800
+title: "Route node-generation-completed.v1 to the handler that writes generation_events"
+summary: >
+  Fixes a runtime-proven defect: the live auto-wiring path dispatches HandlerProjectionDelegation.handle()
+  for every node_projection_delegation subscribe topic, including onex.evt.omnimarket.node-generation-completed.v1.
+  The handler had no generation branch and raised ValidationError on every completed-generation event,
+  leaving generation_events at 0 rows despite migration 0012 landing contract_yaml/handler_source. Adds
+  ModelProjectionGenerationCompletedEvent + project_generation_completed() and routes to it from handle()
+  when _event_type contains node-generation-completed. contract_yaml/handler_source persist in full (no
+  truncation); dedup by correlation_id. Code fix only — no runtime/deploy.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+evidence_requirements:
+  - kind: ci
+    description: >
+      New golden-chain class TestGenerationCompletedProjection (5 tests) passes; full node_projection_delegation
+      projection suite green; full omnimarket suite (6358 tests, not kafka) green; mypy --strict 0 errors;
+      ruff clean; pre-commit all hooks pass.
+    command: >
+      cd omnimarket && uv run pytest tests/test_golden_chain_projection_delegation.py -k TestGenerationCompletedProjection
+      -q --tb=short
+  - kind: docs
+    description: OCC contract file OMN-12800.yaml present and schema-valid
+    command: >
+      cd onex_change_control && uv run validate-yaml contracts/OMN-12800.yaml
+dod_evidence:
+  - id: dod-golden-chain-generation
+    description: >
+      TestGenerationCompletedProjection (5 tests) passes. Each test dispatches via HandlerProjectionDelegation.handle()
+      with _event_type="node-generation-completed" (exactly what the live runtime derives) and asserts
+      a generation_events row with contract_yaml/handler_source populated, no delegation_events pollution,
+      dedup by correlation_id, and empty-output-as-empty-string. These tests were RED (the runtime ValidationError)
+      before the fix.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run pytest tests/test_golden_chain_projection_delegation.py -k TestGenerationCompletedProjection
+          -q --tb=short
+  - id: dod-projection-suite-no-regression
+    description: >
+      Full node_projection_delegation projection test files pass with 63 tests, 0 failed (golden-chain
+      + generation-output-persist + api-contract).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run pytest tests/test_golden_chain_projection_delegation.py tests/test_generation_output_persist_expose.py
+          tests/test_projection_delegation_api_contract.py -q
+  - id: dod-full-suite-no-regression
+    description: >
+      Full omnimarket test suite passes with 6358 tests, 0 failed (m=not kafka). Verified locally on worktree
+      jonah/omn-12800-route-generation-completed before PR push.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run pytest tests/ -m "not kafka" -q
+  - id: dod-mypy-strict
+    description: mypy --strict on the changed node reports 0 errors.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          cd omnimarket && uv run mypy src/omnimarket/nodes/node_projection_delegation/ --strict
