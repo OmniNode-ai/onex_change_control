@@ -1,0 +1,75 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-12816
+title: "SEA generation determinism — enable_thinking:false via additive extra_body + robust block extraction"
+summary: >
+  Determinism layer atop OMN-12813's exemplar (all 12813 green rows were
+  attempt_count=2 — the exemplar alone needs a retry). Two repos: omnibase_infra
+  adds an additive extra_body passthrough on ModelLlmInferenceRequest +
+  HandlerLlmOpenaiCompatible._build_payload; omnimarket declares
+  model_routing.inference_extra_body chat_template_kwargs.enable_thinking=false in
+  the generation contract and hardens _extract_blocks (last fenced block, dedent
+  markdown nesting, fail-clean on no-fence). Suppresses the Qwen3.6-35B-A3B
+  reasoning preamble so the FIRST attempt returns clean fenced blocks
+  (attempt_count=2 -> 1). Additive and contract-native; no env, no literal.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+evidence_requirements:
+  - kind: ci
+    description: >
+      omnibase_infra: 3 new extra_body unit tests + node_llm_inference_effect suite
+      460 pass, mypy strict + ruff clean. omnimarket: 5 new unit tests (last-block,
+      dedent, fail-clean, contract extra_body->request, default empty) + full suite
+      6463 pass, mypy strict + ruff clean. Both verified locally before push.
+    command: >
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-tests/command.yaml
+  - kind: docs
+    description: OCC contract file OMN-12816.yaml present and schema-valid
+    command: >
+      cd onex_change_control && uv run validate-yaml contracts/OMN-12816.yaml
+dod_evidence:
+  - id: dod-omn12816-infra-tests
+    description: >
+      omnibase_infra extra_body passthrough: 3 new unit tests
+      (default adds nothing; extra_body merged; cannot override declared) +
+      node_llm_inference_effect suite 460 pass, mypy strict + ruff clean.
+      omnibase_infra PR #1903 (commit 97a3f092).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-tests/command.yaml"
+  - id: dod-omn12816-market-tests
+    description: >
+      omnimarket determinism: 5 new unit tests (last-block extraction, dedent,
+      fail-clean on no-fence, contract inference_extra_body flows to request,
+      default empty) + full omnimarket suite 6463 pass, mypy strict + ruff +
+      pre-commit clean. omnimarket PR #1107 (commit e284d11f).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-market-tests/command.yaml"
+  - id: dod-omn12816-empirical
+    description: >
+      enable_thinking:false proven against the live Qwen3.6-35B-A3B vLLM: output
+      collapsed from 5989 chars of thinking to 605 (one clean fenced block). The
+      last-block+dedent extraction recovered a valid contract from a real
+      thinking-model response (_validate_generation valid=True). Recorded in the
+      paired receipt.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-empirical/command.yaml"
+  - id: dod-omn12816-additive-safe
+    description: >
+      extra_body is additive (default {}), so existing callers incl. the delegation
+      chain are unaffected; declared payload fields take precedence over identically
+      -named extra_body keys (test_extra_body_cannot_override_declared_fields).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-additive-safe/command.yaml"
