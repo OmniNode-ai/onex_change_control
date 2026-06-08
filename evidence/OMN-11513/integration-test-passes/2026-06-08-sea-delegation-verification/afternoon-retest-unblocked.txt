@@ -1,0 +1,183 @@
+AFTERNOON RETEST — 2026-06-08 (after Jonah's broker fix)
+=========================================================
+
+Context: Jonah recreated the omnibase-infra-stability-test-redpanda broker and
+reported broker 0 now advertised at 100.109.203.94:39092 from his side. He asked
+Bret to rerun the broker check and Phase 2 from the WSL/Tailscale seat.
+
+Pre-retest setup done earlier this afternoon:
+- SEA contractor clone pulled June 5 build (80dc069) -> current dev (27f4f03).
+- uv sync ran clean (Resolved 242 packages). Resolver canary PASS: 24576.
+
+Run context for the retest:
+  branch: dev
+  SHA:    27f4f03  (fix(OMN-12816): raise SEA generation retry budget #218)
+  python: 3.12.13
+
+
+-------------------------------------------------------------------------------
+PHASE 1 — BROKER REACHABILITY  ->  GREEN (advertised host fixed)
+-------------------------------------------------------------------------------
+
+For contrast, this morning (17:14Z, before the fix) the raw-socket metadata parse
+returned:  node=0 ADVERTISED_HOST=192.168.86.201 port=39092  (the LAN redirect).
+
+Retest tooling note: ad-hoc probes via confluent_kafka and a raw-socket parse both
+hung / timed out on the MetadataRequest, but NOT with this morning's _TRANSPORT
+"following the LAN address" signature. librdkafka was now talking to
+thrd:100.109.203.94:39092/0 directly and timing out on the request itself. That is
+the auto-API-version-negotiation quirk the stability-test overlay explicitly warns
+about ("KAFKA_API_VERSION 2.8.0 ... auto fails .201 metadata bootstrap"). The
+sanctioned client path resolves it.
+
+Authoritative check — aiokafka (the real pipeline client):
+  $ KAFKA_BOOTSTRAP_SERVERS=100.109.203.94:39092 KAFKA_API_VERSION=2.8.0 \
+    python -c "<aiokafka AIOKafkaProducer.start(); print cluster.brokers()>"
+  brokers: [(0, '100.109.203.94', 39092)]
+  RESULT: bus reachable, metadata OK
+
+=> Broker 0 now advertises the Tailscale-routable host. Phase 1 GREEN, confirmed
+   from the WSL/Tailscale seat. Jonah's fix holds from our side.
+
+
+-------------------------------------------------------------------------------
+PHASE 3 — DIRECT InferenceClient DELEGATION SMOKE  ->  PASS (proof-quality)
+-------------------------------------------------------------------------------
+
+(This morning this phase failed at aiokafka bus.start() with InfraTimeoutError —
+ the LAN-redirect blocker. It now completes the full round-trip.)
+
+  timestamp: 2026-06-08T17:58:12Z   SHA: 27f4f03
+
+  max_context_tokens 24576
+  overlay sea-delegation-bootstrap-stability-test
+  correlation_id 8c0ddf2a-762b-4365-b714-42ac73a0c3e5
+  model_used Qwen3.6-27B-MTP-IQ4_XS.gguf
+  latency_ms 2824
+  prompt_tokens 33
+  completion_tokens 188
+  error_message            (empty)
+  content healthy=true
+
+  Acceptance check:
+    overlay = stability-test ............ PASS
+    max_context_tokens = 24576 .......... PASS
+    model_used = Qwen3.6-27B-MTP-IQ4_XS .. PASS
+    content indicates healthy=true ...... PASS
+    error_message empty/None ............ PASS
+
+=> Bus round-trip + local delegated inference proven end to end. PASS.
+
+
+-------------------------------------------------------------------------------
+PHASE 2 — SEA --agent (keyless, per plan)  ->  broker CLEARED; stops at ADK finding
+-------------------------------------------------------------------------------
+
+  timestamp: 2026-06-08T18:00:15Z   SHA: 27f4f03
+  command: uv run python -m src --agent \
+           --task "Generate a compute node that returns whether a status string is healthy."
+
+  [MODE:LIVE] [STAGE:AGENT] Self-extending agent loop
+  [OVERLAY] sea-delegation-bootstrap-stability-test@1.0.0 lane=stability-test
+            topic=onex.cmd.omnibase-infra.delegation-inference-request.v1
+  [READINESS] requested=sanctioned_live bootstrap=100.109.203.94:39092
+            probe=ready (38135ms) transport=bus_backed
+  NOTE: Cloud key not set — cloud fallback disabled. Routing local-first.
+  Correlation ID: 1a7f6369-2399-4011-b2c6-d408207e4a89
+  Error: selected ADK backend cloud_gemini requires ONEX_TRACK_A_API_KEY or
+         GOOGLE_API_KEY. Select a local ADK tier in contract.local.yaml or
+         provide the configured credential.
+
+  Reading:
+    - Broker is NO LONGER the blocker: probe ready, transport bus_backed,
+      bootstrap 100.109.203.94, fresh correlation, no direct-mode fallback,
+      routes local-first.
+    - Run stops at the agent-loop ADK backend selection (defaults cloud_gemini,
+      needs a key). This is the SEPARATE finding flagged this morning, now
+      reproduced cleanly on the far side of the broker fix. It is a config
+      choice, not a broker/runtime defect; the error is typed and actionable.
+    - Note: probe readiness was 38135ms (vs ~9s this morning) — freshly recreated
+      broker, slower initial metadata sync; it did become ready.
+
+  Classification: diagnostic (bus-backed, fresh correlation, no fallback, then
+  typed ADK-backend stop). NOT discarded (correct host/overlay, no mutation).
+
+
+-------------------------------------------------------------------------------
+SUMMARY
+-------------------------------------------------------------------------------
+Phase 1 broker ........ GREEN  (advertises 100.109.203.94 from our seat)
+Phase 3 inference ..... PASS   (proof; correlation 8c0ddf2a; content healthy=true)
+Phase 2 --agent ....... broker cleared; stops at out-of-scope ADK backend (cloud_gemini)
+
+Jonah's specific blocker (broker LAN-advertise) is confirmed cleared from the
+WSL/Tailscale seat. A complete --agent generation proof remains gated on the ADK
+reasoning backend: either a local ADK tier (in scope, needs config) or a cloud key
+(out of today's scope per the verification plan).
+
+
+-------------------------------------------------------------------------------
+APPENDIX — CONTRACTOR DIAGNOSTIC EXPERIMENT (off-plan, Bret-approved): can Phase 2
+run FULLY LOCAL with no cloud key?  ->  NO (local server 400s the ADK request)
+-------------------------------------------------------------------------------
+NOT part of Jonah's plan; a self-initiated in-scope experiment. Overlay created and
+deleted; clone left clean.
+
+Setup: created a gitignored contract.local.yaml next to
+src/nodes/node_agent_orchestrator/contract.yaml with
+  config.agent_runtime.adk_model_ref: local_deepseek_reasoning
+(the loader supports this overlay seam; contract.py:103). This repoints the agent's
+ADK reasoning backend from the default cloud_gemini to the local vLLM tier at :8001.
+
+What worked (no cloud key needed):
+  - overlay loaded, deep-merged over the default contract;
+  - ADK selected the local OpenAI-compatible adapter (_OpenAICompatibleLlm,
+    Authorization: Bearer EMPTY);
+  - endpoint rewrite via SEA_LOCAL_INFERENCE_BASE_URL resolved to
+    http://100.109.203.94:8001/v1/chat/completions (the same proven endpoint);
+  - got PAST the cloud_gemini key stop entirely.
+
+What failed:
+  - httpx.HTTPStatusError: 400 Bad Request from the local endpoint, raised inside
+    google/adk/models/apigee_llm.py during the agent loop ->
+    "RuntimeError: ADK runner background thread failed".
+
+Root cause ISOLATED (captured the exact request + 400 body via httpx instrumentation,
+2026-06-08T18:3xZ; full capture in local-adk-400-capture.json):
+
+  400 response body from the local llama.cpp server (:8001):
+    "Unable to generate parser for this template. Automatic parser generation
+     failed: JSON schema conversion failed: Unrecognized schema: {\"type\":\"STRING\"}"
+     (repeated for each tool parameter)
+
+  The request the ADK adapter sent serializes every tool-function parameter with
+  GEMINI-DIALECT JSON Schema types — UPPERCASE — e.g.
+    "parameters":{"properties":{"description":{"type":"STRING"}},"type":"OBJECT"}
+  Gemini's function-calling schema uses STRING/OBJECT/INTEGER. The local
+  OpenAI-compatible server (llama.cpp build b9206) requires standard lowercase
+  JSON Schema ("string"/"object") and rejects the uppercase types when building its
+  tool-calling grammar -> 400.
+
+  Why earlier probe got 200: my direct probe used a hand-written lowercase tool
+  ({"type":"object"/"string"}), which the server accepts. The agent's REAL tools come
+  from ADK FunctionDeclaration objects (Gemini Schema), serialized uppercase. So it
+  is specifically the Gemini->OpenAI tool-schema dialect that is not converted.
+
+  Where: SEA's _OpenAICompatibleLlm adapter / build_http_chat_completions_model in
+  src/nodes/node_agent_orchestrator/adk_backend_adapters.py passes the request
+  through Google ADK's CompletionsHTTPClient (apigee_llm) WITHOUT normalizing the
+  function-declaration schema types to lowercase for the OpenAI-compatible target.
+  The Gemini backend works because Gemini accepts uppercase natively.
+
+  Likely fix: when targeting an OpenAI-compatible endpoint, lowercase the JSON Schema
+  "type" values (and any other Gemini->OpenAI schema normalization) on the tool
+  function parameters before sending. Candidate site: the _OpenAICompatibleLlm
+  adapter path. (Could not isolate without authorization to dig; observation only.)
+
+Conclusion: fully-local SEA --agent generation fails because the local-ADK adapter
+ships Gemini-dialect (uppercase) tool schemas to the OpenAI-compatible local server,
+which rejects them (400). The local INFERENCE path is proven (Phase 3). The local
+ORCHESTRATION path (ADK agent loop on a local model) is blocked on this single schema
+conversion. Cloud Gemini remains the only orchestrator backend that completes today,
+and that is out of today's scope. Not a demo blocker; a gap in the advertised
+local-ADK fallback.
