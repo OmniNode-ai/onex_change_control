@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12820"
+title: "Wire node-deploy executor route for SEA generation close-loop"
+summary: >-
+  Fixes the stability-test close-loop blocker discovered after OMN-12851 landed:
+  the generation consumer successfully emitted the node-deploy command, but
+  runtime dispatcher construction had no explicit command route for
+  omnimarket.node-deploy and sent the command to DLQ. The omnimarket fix adds
+  explicit command routing for both node-generation-requested and node-deploy,
+  wires node-deploy to HandlerGeneratedExecutor, and exposes the executor's
+  runtime handle entrypoint so the command -> dispatcher -> handler -> terminal
+  generated-node-invoked chain can be validated on stability-test after merge.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-runtime-blocker-observed"
+    description: >-
+      Stability-test was rebuilt onto the intended dev baseline and proved the
+      second-hop regression: omnimarket.node-deploy had no dispatcher route and
+      was sent to DLQ.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-runtime-blocker-observed/command.yaml"
+          && grep -q 'omnimarket.node-deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-runtime-blocker-observed/command.yaml"
+  - id: "dod-market-pr-1128"
+    description: >-
+      omnimarket PR #1128 carries the node-deploy route fix and is bound to the
+      downstream PR head SHA for receipt-gate eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1128/command.yaml"
+          && grep -q '^pr_number: 1128$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-market-pr-1128/command.yaml"
+  - id: "dod-focused-tests"
+    description: >-
+      Focused executor tests prove the contract routes node-deploy to
+      HandlerGeneratedExecutor, keeps generation requests on HandlerGenerationConsumer,
+      and exposes handle() as the runtime entrypoint for node-deploy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-focused-tests/command.yaml"
+  - id: "dod-node-generation-suite"
+    description: >-
+      The broader node_generation_consumer unit suite remains green after the
+      route split, covering adjacent generation, deploy, registration, escalation,
+      and executor behavior.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-node-generation-suite/command.yaml"
+  - id: "dod-ci-escape-analysis"
+    description: >-
+      Records why existing CI missed the regression: boot, health, and consumer
+      checks proved the process and subscription existed, while no CI guard
+      asserted every subscribed command topic had a generated dispatcher route
+      and callable handler entrypoint.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-ci-escape-analysis/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deployment is required after omnimarket PR #1128 merges because
+      stability-test must rebuild onto the fixed contract and handler route
+      before SEA L1/L2 generation evidence can be trusted. This receipt records
+      that assessment without claiming a live deploy happened in the OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12820/dod-deploy-assessment/command.yaml"
