@@ -44,7 +44,7 @@ SEA PR #223 is merged into `onex-self-extending-agent` `dev` at
 | `OMN-12860` | Done | none | present | verified | Source merged; runtime identity and post-merge proof remain required before runtime closure claims. |
 | `OMN-12836` | In Progress | none | present | verified | SEA contractor-seat evidence gap remains active until final proof packet. |
 | `OMN-12865` | In Progress | none | present | pending | Stability deploy blocker until compose-gen path is merged and proven. |
-| `OMN-12870` | Todo | Active Sprint | added in this PR | pending in contract; PASS receipt added here | Phase 0 ledger and inventory. |
+| `OMN-12870` | Todo | Active Sprint | added in this PR | verified; PASS receipt added here | Phase 0 ledger and inventory. |
 | `OMN-12871` | Todo | Active Sprint | added in this PR | pending | Contractor clean-dev retest gate. |
 | `OMN-12872` | Todo | Active Sprint | added in this PR | pending | Runtime identity bundle gate. |
 | `OMN-12873` | Todo | Active Sprint | added in this PR | pending | Delegation final closure proof. |
