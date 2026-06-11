@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12959"
+title: "P1.3: FSM terminal-state invariant — stranded-workflow sweep + typed watchdog events"
+summary: >
+  An orchestrator FSM could strand forever in a non-terminal state with zero signal — silent absence in
+  every projection (proven by the OMN-12939 delegation strand, live CID a604cd40-84aa-41fa-97c8-a8d3ec320cd6).
+  This generalizes the OMN-12939 / PR #1158 fix into a platform invariant: every workflow FSM must reach
+  a terminal state or trip a watchdog. New omnimarket.events.watchdog defines the canonical typed-watchdog
+  vocabulary EnumWatchdogEventType (workflow-timeout / workflow-unroutable / workflow-stalled) + ModelWatchdogEvent
+  + watchdog_topic_for topic authority — typed operator-review failure classes, not generic failures,
+  so projections and sweeps distinguish failure modes. NodeRuntimeSweep gains a Phase-4 stranded-workflow
+  check: a workflow started-but-no-terminal-event past its per-archetype SLA is flagged CRITICAL with
+  its classified watchdog type and surfaced through the runtime_sweep auto-ticket path. The enforcement
+  ratchet ships in the same PR: scripts/ci/check_watchdog_topic_authority.py rejects any hardcoded watchdog
+  topic literal outside the canonical registry, wired as both a pre-commit hook and a CI gate. Compute
+  + CI-gate change only; no topic schema, envelope, or contract API change; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD tests assert the typed-watchdog vocabulary, classification precedence (unroutable > stalled
+      > timeout), per-archetype SLA override, terminal-clears-strand, and that the CI guard fires on a
+      hardcoded watchdog topic while allowlisting the registry / skip-token / tests dir.
+    command: "uv run pytest tests/test_stranded_workflow_sweep.py tests/ci/test_check_watchdog_topic_authority.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1170"
+    description: >
+      omnimarket PR #1170 adds src/omnimarket/events/watchdog.py, the NodeRuntimeSweep stranded-workflow
+      check, the watchdog-topic-authority CI guard (pre-commit + CI), and tests. The canonical watchdog
+      topic literals live in omnimarket.events.topics (allowlisted registry); omnimarket.events.watchdog
+      imports them and exposes the typed authority. Evidence anchor: omnimarket head commit b0246319567af0eda86953345502b39ba9b5962e.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12959/dod-omnimarket-pr-1170/command.yaml
+          && grep -q '^pr_number: 1170$' drift/dod_receipts/OMN-12959/dod-omnimarket-pr-1170/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12959/dod-omnimarket-pr-1170/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a compute + CI-gate change in omnimarket with no topic schema, envelope,
+      or contract API change and no live-lane mutation. The stranded-workflow invariant runs inside the
+      runtime_sweep skill/node; the typed-watchdog vocabulary and CI guard are effective on merge. No
+      live deploy is performed by this PR. If the sweep is later wired into the live runtime poller, a
+      standard stability-test image rebuild must verify the sweep emits STRANDED_WORKFLOW findings against
+      the live event stream. The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12959/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1170$' drift/dod_receipts/OMN-12959/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12959/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2494"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: onex_change_control PR #2494
+      carries the OMN-12959 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt with pr_number 2494 binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12959/dod-occ-pr-2494/command.yaml
+          && grep -q '^pr_number: 2494$' drift/dod_receipts/OMN-12959/dod-occ-pr-2494/command.yaml"
+  - id: "dod-occ-pr-2489"
+    description: >
+      Self-binding OCC eligibility receipt: onex_change_control PR #2489 carries the OMN-12959 contract
+      and the dod receipts on this branch, satisfying the receipt-to-PR binding required by validator_occ_merge_eligibility
+      (a PASS receipt with pr_number 2489 binds to this OCC PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12959/dod-occ-pr-2489/command.yaml
+          && grep -q '^pr_number: 2489$' drift/dod_receipts/OMN-12959/dod-occ-pr-2489/command.yaml"
