@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12963"
+title: "Worker-misreport ratchet: verifiable-handle gate before receipt acceptance (omniclaude)"
+summary: >
+  Closes the twice-caught process hole where a worker could assert merged / fixed / deployed in free-form
+  prose with no verifiable handle and slip past the SubagentStop receipt-honesty verifier, propagating
+  a false claim into the receipt BEFORE any re-probe. Hardens plugins/onex/hooks/lib/subagent_claim_verifier.py
+  (OMN-9086, OMN-12825 lineage) and codifies the handle requirement in the dispatch_worker auto-injected
+  Operating Rules. Three rules land as a blocking gate in the registered SubagentStop hook (exit code
+  2), re-probed BEFORE the orchestrator accepts the receipt: R1 — a MERGED PR claim MUST carry pr.merge_sha;
+  the verifier re-probes gh pr view --json mergeCommit and blocks on a missing/mismatched/unverifiable
+  merge SHA (short-SHA prefix match supported). R2 — a kind=deploy claim MUST carry deploy.container_digest
+  (sha256); missing/malformed digest blocks (the live .201 digest re-probe is fail-open since the hook
+  subprocess cannot reach the runtime host, but the handle requirement is unconditional). R3 — prose-claim
+  guard: merged/deployed asserted in prose without the matching structured handle blocks regardless of
+  report kind. omniclaude-only change to one verifier module, its models re-export, the dispatch_worker
+  prompt template, and the verifier test suite.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Unit tests through the real verify_stop / verify_pr_claim / verify_deploy_claim / detect_unbacked_completion_claims
+      surfaces assert R1 (merge_sha missing/mismatch/unverifiable/short-prefix), R2 (deploy digest missing/malformed/present),
+      and R3 (prose merged/deployed claim without handle blocks; honest pending prose does not). Existing
+      pr_ship fixtures updated to carry merge_sha + live mergeCommit.oid.
+    command: "uv run pytest tests/hooks/test_subagent_claim_verifier.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1745"
+    description: >
+      omniclaude PR #1745 (base dev) hardens the SubagentStop receipt-honesty verifier with R1/R2/R3,
+      adds ModelWorkerReportDeploy + EnumWorkerReportKind.DEPLOY, wires the prose-claim guard into verify_stop,
+      and codifies the verifiable-handle requirement in the dispatch_worker auto-injected Operating Rules.
+      Evidence anchor: omniclaude head commit 207738c4276274c8a5382a3afb36169da5d8ceef. The gate is wired
+      (not advisory): subagent_stop_claim_verifier.sh is a registered SubagentStop hook in hooks.json
+      and emits exit code 2 (block) when a completion claim lacks its verifiable handle.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12963/dod-omniclaude-pr-1745/command.yaml
+          && grep -q '^pr_number: 1745$' drift/dod_receipts/OMN-12963/dod-omniclaude-pr-1745/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12963/dod-omniclaude-pr-1745/command.yaml"
+  - id: "dod-occ-pr-2468"
+    description: "onex_change_control PR #2468 (dev) carries the OMN-12963 central contract and receipt
+      evidence; this self-binding receipt makes the OCC PR satisfy its own OCC eligibility check."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12963/dod-occ-pr-2468/command.yaml
+          && grep -q '^pr_number: 2468$' drift/dod_receipts/OMN-12963/dod-occ-pr-2468/command.yaml"
