@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12987"
+title: "fix(OMN-12987): workspace-build sibling lock-pin preflight (vendored stale infra 0.37.0-dev
+  caused the 06-11 stability bootstrap crash)"
+summary: >-
+  Recurrence ratchet for the 2026-06-11 stability bootstrap crash. The 11:20Z --no-cache stability-test
+  rebuild vendored omnibase_infra 0.37.0-dev (~2c1d672f, 2026-05-29, pre-OMN-12501-guard) + omnibase_core
+  0.42.0 even though omnimarket dev's uv.lock pinned infra 0.38.1 @ e2dbdc95 + core 0.44.0 @ c97c2c9a.
+  The build ignored the consuming repo's lock and shipped a 13-day-stale sibling lacking the OMN-12501
+  Protocol-quarantine guard, turning a latent contract defect into a fatal bootstrap crash that
+  crash-looped the main runtime on demo day. Fix adds a host-side fail-fast preflight
+  (scripts/runtime_build/check_sibling_lock_pins.py) that resolves expected sibling versions/SHAs from
+  the consuming repo's (omnimarket) uv.lock and aborts the build if any vendored tree mismatches the pin;
+  stage_workspace.sh emits a .build-sha marker per staged sibling (rsync drops .git); deploy-runtime.sh
+  runs the preflight after staging and aborts on mismatch; compute_workspace_provenance.py +
+  Dockerfile.runtime fold the expected-vs-actual lock_pin_comparison into build-provenance.json so deploy
+  verifiers can detect a stale-sibling build. No live rebuild performed; local/throwaway proof only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: "dod-infra-pr-1944"
+    description: "omnibase_infra PR #1944 adds the build-vendor lock-pin ratchet:
+      scripts/runtime_build/check_sibling_lock_pins.py (host preflight comparing each vendored sibling's
+      version/SHA against the omnimarket uv.lock pin; aborts on mismatch), stage_workspace.sh .build-sha
+      markers, deploy-runtime.sh preflight wiring, and the lock_pin_comparison fold into
+      build-provenance.json. tests/scripts/test_check_sibling_lock_pins.py (11 tests) proves stale infra
+      0.37.0/2c1d672f vs lock-pinned 0.38.1/e2dbdc95 FAILS the preflight and matched pins PASS;
+      tests/scripts/test_deploy_runtime_build_context.py statically asserts the deploy/stage wiring. Live
+      proof: the preflight run against the canonical clones correctly exits 1 flagging infra 0.38.3@b7c93a8e
+      vs lock 0.38.1@e2dbdc95. ruff/pre-commit clean; full uv run pytest tests/ = 23776 passed (the 13
+      live-infra/integration/performance failures are pre-existing on origin/dev and untouched by this
+      change). Evidence anchor: omnibase_infra head commit 51ac72847."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-1944/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-1944/command.yaml"
+          && grep -q '^pr_number: 1944$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-1944/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: "Deploy assessment: this PR changes build/deploy preflight scripts only; it performs no
+      dev/prod/stability mutation and no live deploy. The ratchet reaches live effect on the next batched
+      stability rebuild run by the rebuild agent, where the preflight will abort any build that vendors a
+      sibling mismatching the omnimarket dev lock. The receipt carries the deploy keyword for the
+      deploy-gate."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the OMN-12987 central contract and the dod receipts that omnibase_infra
+      PR #1944 Receipt-Gate resolves via Evidence-Source: <this OCC commit SHA>."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
