@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12962"
+title: "P1.5: Dynamic contract-store durability audit — cold-runtime contract census reconstruction"
+summary: >-
+  Audit proves the contract store is durable: a COLD runtime reconstructs the full registered contract
+  census from the image-bundled filesystem manifest (HYBRID-mode HandlerBootstrapSource + PluginLoaderContractSource
+  in runtime_host_process._resolve_handler_descriptors), independent of Kafka retention. The onex.evt.platform.node-registration.v1
+  topic (cleanup.policy=delete, 7-day retention) feeds ONLY the post-freeze dynamic-contract listener
+  (_on_dynamic_contract_event, OMN-11247), which subscribes via the event-bus default auto_offset_reset=latest
+  and therefore never replays history on a cold start. Read-only .201 stability-test evidence confirms
+  it: the introspection manifest contract_path resolves to a pip-installed filesystem path, and rpk topic
+  describe shows cleanup.policy=delete with LOG-START-OFFSET > 0 on five of six partitions (log head already
+  truncated by retention) while the live registered census remains intact. No store fix (compaction or
+  re-seed-on-boot) is required; adding one would be dead code against the actual cold-start path. The
+  single residual gap — a contract registered ONLY via the dynamic path (not image-bundled), which would
+  vanish on a cold restart unless its registrant re-publishes — is detected by a new NON_DURABLE_CONTRACT
+  census-durability check added to omnimarket node_runtime_sweep (_check_census_durability). Doc-only
+  change in omnibase_infra; additive check + tests in omnimarket; no topic schema, envelope, or contract
+  API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1166"
+    description: >-
+      omnimarket PR #1166 adds NodeRuntimeSweep._check_census_durability and the NON_DURABLE_CONTRACT
+      finding type plus the durable_node_names input. Given the live registered census and the durable
+      cold-start manifest it flags any live-registered contract absent from the durable source as CRITICAL.
+      Three new unit tests in tests/test_golden_chain_runtime_sweep.py cover skip-when-no-manifest, non-durable-flagged-CRITICAL,
+      and full-durable-census-clean. Evidence anchor: omnimarket head commit b8b815199341f0ac822d8512371e795657a96ad0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-omnimarket-pr-1166/command.yaml"
+          && grep -q '^ticket_id: "OMN-12962"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-omnimarket-pr-1166/command.yaml"
+          && grep -q '^pr_number: 1166$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-omnimarket-pr-1166/command.yaml"
+  - id: "dod-infra-pr-1937"
+    description: >-
+      omnibase_infra PR #1937 adds docs/audits/2026-06-11-contract-store-durability-audit.md, the operator-review
+      durability proof. Doc-only; no code, no deploy. Evidence anchor: omnibase_infra head commit 1386e63e39f9e01e26baa78908efb22a566f4e8d.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-infra-pr-1937/command.yaml"
+          && grep -q '^ticket_id: "OMN-12962"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-infra-pr-1937/command.yaml"
+          && grep -q '^pr_number: 1937$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-infra-pr-1937/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-12962 contract and the dod-omnimarket-pr-1166 / dod-infra-pr-1937
+      receipts that the two code PRs' Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12962"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12962/dod-occ-pr/command.yaml"
