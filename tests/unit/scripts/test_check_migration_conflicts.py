@@ -175,6 +175,169 @@ class TestCheckMigrationConflicts:
         conflicts = detect_conflicts(FIXTURES_ROOT, ["repo_clean"])
         assert len(conflicts) == 0
 
+    def test_inventory_boundaries_prevent_cross_database_false_positive(
+        self, tmp_path: Path
+    ) -> None:
+        """Same table names in different logical DBs are not migration conflicts."""
+        infra_migrations = tmp_path / "omnibase_infra" / "docker" / "migrations"
+        intel_migrations = (
+            tmp_path / "omniintelligence" / "deployment" / "database" / "migrations"
+        )
+        infra_migrations.mkdir(parents=True)
+        intel_migrations.mkdir(parents=True)
+        (infra_migrations / "001_session_outcomes.sql").write_text(
+            """
+CREATE TABLE session_outcomes (
+    id UUID PRIMARY KEY,
+    status TEXT
+);
+"""
+        )
+        (intel_migrations / "001_session_outcomes.sql").write_text(
+            """
+CREATE TABLE session_outcomes (
+    id UUID PRIMARY KEY,
+    outcome TEXT
+);
+"""
+        )
+        inventory = tmp_path / "migration_inventory.yaml"
+        inventory.write_text(
+            """
+databases:
+  omnibase_infra:
+    migration_sets:
+      - source_repo: omnibase_infra
+        directory: docker/migrations
+        migrations:
+          - file: "001_session_outcomes.sql"
+            tables: [session_outcomes]
+  omniintelligence:
+    migration_sets:
+      - source_repo: omniintelligence
+        directory: deployment/database/migrations
+        migrations:
+          - file: "001_session_outcomes.sql"
+            tables: [session_outcomes]
+"""
+        )
+
+        assert (
+            detect_conflicts(
+                tmp_path,
+                ["omnibase_infra", "omniintelligence"],
+                migration_inventory_path=inventory,
+            )
+            == []
+        )
+
+    def test_inventory_boundaries_keep_same_database_conflicts(
+        self, tmp_path: Path
+    ) -> None:
+        """Same table names inside one logical DB still fail."""
+        flat_migrations = tmp_path / "omnibase_infra" / "docker" / "migrations"
+        node_migrations = (
+            tmp_path
+            / "omnibase_infra"
+            / "docker"
+            / "migrations"
+            / "nodes"
+            / "node_projection"
+        )
+        flat_migrations.mkdir(parents=True)
+        node_migrations.mkdir(parents=True)
+        (flat_migrations / "001_projection.sql").write_text(
+            """
+CREATE TABLE projection_rows (
+    id UUID PRIMARY KEY,
+    status TEXT
+);
+"""
+        )
+        (node_migrations / "001_projection.sql").write_text(
+            """
+CREATE TABLE projection_rows (
+    id UUID PRIMARY KEY,
+    payload JSONB
+);
+"""
+        )
+        inventory = tmp_path / "migration_inventory.yaml"
+        inventory.write_text(
+            """
+databases:
+  omnibase_infra:
+    migration_sets:
+      - source_repo: omnibase_infra
+        directory: docker/migrations
+        migrations:
+          - file: "001_projection.sql"
+            tables: [projection_rows]
+      - source_repo: omnibase_infra
+        directory: docker/migrations/nodes/node_projection
+        migrations:
+          - file: "001_projection.sql"
+            tables: [projection_rows]
+"""
+        )
+
+        conflicts = detect_conflicts(
+            tmp_path,
+            ["omnibase_infra"],
+            migration_inventory_path=inventory,
+        )
+
+        assert len(conflicts) == 1
+        assert conflicts[0].conflict_type == EnumMigrationConflictType.NAME_CONFLICT
+        assert conflicts[0].table_name == "projection_rows"
+
+    def test_uninventoried_paths_keep_legacy_global_conflict_behavior(
+        self, tmp_path: Path
+    ) -> None:
+        """Missing inventory entries do not hide conflicts."""
+        repo_a = tmp_path / "repo_a" / "deployment" / "database" / "migrations"
+        repo_b = tmp_path / "repo_b" / "deployment" / "database" / "migrations"
+        repo_a.mkdir(parents=True)
+        repo_b.mkdir(parents=True)
+        (repo_a / "001_users.sql").write_text(
+            """
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    email TEXT
+);
+"""
+        )
+        (repo_b / "001_users.sql").write_text(
+            """
+CREATE TABLE users (
+    id UUID PRIMARY KEY,
+    username TEXT
+);
+"""
+        )
+        inventory = tmp_path / "migration_inventory.yaml"
+        inventory.write_text(
+            """
+databases:
+  repo_a_db:
+    migration_sets:
+      - source_repo: repo_a
+        directory: deployment/database/migrations
+        migrations:
+          - file: "001_users.sql"
+            tables: [users]
+"""
+        )
+
+        conflicts = detect_conflicts(
+            tmp_path,
+            ["repo_a", "repo_b"],
+            migration_inventory_path=inventory,
+        )
+
+        assert len(conflicts) == 1
+        assert conflicts[0].conflict_type == EnumMigrationConflictType.NAME_CONFLICT
+
 
 @pytest.mark.unit
 class TestSuppressions:

@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12853"
+title: >-
+  node-deploy executor dispatch — wire HandlerGeneratedExecutor + normalize typed ModelNodeDeploy payload
+  (close generate->deploy->invoke)
+summary: >-
+  Close-loop blocker: node-deploy reached HandlerGeneratedExecutor after #1128 wired the second handler_routing
+  entry, but the executor dispatcher then crashed live with AttributeError: 'ModelNodeDeploy' object has
+  no attribute 'get'. The contract entry declares event_model: ModelNodeDeploy, so the runtime dispatch
+  callback passes a TYPED ModelNodeDeploy instance to handle(); the executor forwarded it straight to
+  on_deploy_event, which reads dict keys via .get(). This receipt set covers the follow-up fix: handle()
+  normalizes the payload (dict/bytes/str pass through; a typed Pydantic model is model_dump(mode=json)'d;
+  unsupported types fail gracefully), completing the node-deploy -> sandbox-invoke leg of the self-extension
+  loop.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      The executor handle() dispatch entrypoint accepts a typed ModelNodeDeploy payload (the runtime event_model),
+      deploys + invokes + emits the terminal event, and fails gracefully on an unsupported payload type.
+    command: "uv run pytest tests/unit/nodes/node_generation_consumer/test_handler_generated_executor.py
+      -q"
+  - kind: "ci"
+    description: "CI pipeline green on omnimarket PR"
+    command: "gh pr checks <PR> --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-handle-typed-payload"
+    description: >-
+      handle() normalizes a typed ModelNodeDeploy payload (proven to FAIL without the fix with the exact
+      runtime AttributeError, PASS with it) and fails gracefully on an unsupported type.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12853/dod-handle-typed-payload/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      OCC PR binds the OMN-12853 follow-up contract and receipt to a mergeable onex_change_control evidence
+      PR paired with the omnimarket handle()-fix PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12853/dod-occ-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      The omnimarket handle()-fix PR touches a runtime path (handler_generated_executor.py); a stability-test
+      rebuild + redeploy + SEA close-loop re-run is required after merge before the generated-node-invoked
+      leg is proven live. Records that assessment without claiming a live deploy happened in the OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12853/dod-deploy-assessment/command.yaml"
