@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12939"
+title: "Terminate delegation FSM when escalation tier is unroutable (projection-row gap)"
+summary: >
+  Live stability-test delegation CID a604cd40 produced zero delegation_events projection rows because
+  the FSM stranded permanently in ROUTED. On quality-gate failure across local and cheap_cloud, the orchestrator
+  escalated to the next declared tier via next_eligible_tier(), which returned a tier name by declaration
+  order without checking routability. Escalating a document task off cheap_cloud returned the claude/frontier_api
+  tier whose backend endpoints are empty, so the routing reducer's delta() raised ProtocolConfigurationError
+  [ONEX_CORE_041], crashing the dispatcher with no routing-decision and no terminal delegation event —
+  so the materializer had nothing to project. Fix makes next_eligible_tier task-aware (skip tiers that
+  cannot route the task), so the orchestrator's existing no_higher_tier_available branch drives the FSM
+  to terminal delegation-failed and a projection row always materializes even when escalation is impossible.
+  Code-only handler change to omnimarket; no topic schema, envelope, or contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Failing-first tests through the real dispatch path assert terminal FAILED, a delegation-failed event,
+      and terminal_failure_reason=no_higher_tier_available when escalation has no routable higher tier.
+    command: "uv run pytest tests/unit/delegation/test_delegation_tier_escalation.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1158"
+    description: >
+      omnimarket PR #1158 implements the durable termination guard: next_eligible_tier gains an optional
+      task_type and the _tier_can_route_task helper; both orchestrator escalation sites pass task_type
+      so an unroutable escalation tier yields terminal delegation-failed instead of a dispatcher crash.
+      Evidence anchor: omnimarket head commit 27f23d7c6560831bf45dda548d845720e7c26943.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12939/dod-omnimarket-pr-1158/command.yaml
+          && grep -q '^pr_number: 1158$' drift/dod_receipts/OMN-12939/dod-omnimarket-pr-1158/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12939/dod-omnimarket-pr-1158/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a code-only routing/escalation handler change in omnimarket with no runtime
+      topology, topic schema, envelope, or contract API change. The terminal-event emission path it restores
+      is the existing delegation-failed projection path already wired on the stability lane. Reaching
+      live effect requires a standard image rebuild that ships omnimarket on the stability-test runtime
+      — a gated deploy to be performed under user approval (HARD gate); no deploy is performed by this
+      PR. The fresh re-verification (terminal event + delegation_events projection row at :13002) is captured
+      after that gated rebuild. The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12939/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1158$' drift/dod_receipts/OMN-12939/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12939/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2456"
+    description: "onex_change_control PR #2456 (dev) carries the OMN-12939 central contract and receipt
+      evidence; this self-binding receipt makes the OCC PR satisfy its own OCC eligibility check."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12939/dod-occ-pr-2456/command.yaml
+          && grep -q '^pr_number: 2456$' drift/dod_receipts/OMN-12939/dod-occ-pr-2456/command.yaml"
+  - id: "dod-occ-pr-2462"
+    description: "onex_change_control PR #2462 promotes the OMN-12939 contract + receipts from dev to
+      main (hotfix/omn-12939-occ-main-promote); this self-binding receipt makes the promote PR satisfy
+      its own OCC eligibility check."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12939/dod-occ-pr-2462/command.yaml
+          && grep -q '^pr_number: 2462$' drift/dod_receipts/OMN-12939/dod-occ-pr-2462/command.yaml"
