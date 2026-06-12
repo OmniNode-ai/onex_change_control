@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13095"
+title: "Phase 3: hook backstop rewrite"
+summary: >-
+  Rewrites the Layer C PostToolUse output suppressor for the skill-output-suppression plan (epic OMN-13089):
+  omniclaude plugins/onex/hooks/lib/skill_output_suppressor.py + scripts/post_tool_use_output_suppressor.sh.
+  The prior suppressor was a functional no-op (plain PostToolUse stdout never reaches the model — OMN-13090
+  probe F1/F2 — 71,000+ fires, zero effect) and matched no onex dispatch form. New behavior: pattern coverage
+  adds onex (run|node|run-node) over the kept legacy tool patterns; capture-before-suppress writes the
+  full output to the content-addressed ArtifactStore (omnibase_core, OMN-13093) and emits artifact.captured
+  + tool.output.captured (OMN-13092) with suppression_decision granularity; replacement uses the probe-winning
+  hookSpecificOutput.updatedToolOutput OBJECT form behind a single build_replacement_output(); ModelSkillResult
+  receipts pass through untouched regardless of size (Layer A idempotence, schema sniff); errors and interrupted
+  runs are never suppressed; every passthrough emits NOTHING (empty stdout, no tool_info echo); artifact
+  write failure passes through unmodified (fail-closed for capture, open for visibility) while emission
+  failure after a successful write still suppresses. The wrapper injects ONEX_ARTIFACT_STORE_ROOT from
+  ONEX_STATE_DIR (probe Probe 4). Until the omniclaude omnibase-core pin (v0.43.0) advances past OMN-13093
+  the store import fails and the backstop passes through — the documented fail-closed default, pinned
+  by tests across both pin generations.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1752"
+    description: >-
+      omniclaude PR #1752 (branch jonah/omn-13095-hook-backstop-rewrite, base=dev, head 33b4a09f273af84652093ed5fe8e1ce8ff5106de)
+      ships the suppressor + wrapper rewrite, recorded probe-shaped hook payload fixtures (tests/fixtures/hooks/post_tool_use/),
+      and the protocol-level test suite replacing the transform-only tests: exact root-level hookSpecificOutput
+      JSON contract for suppress/passthrough/error/receipt cases, subprocess replay of every fixture,
+      fail-closed capture pins (store unavailable, write failure, stripped ONEX_ARTIFACT_STORE_ROOT),
+      emission-failure-still-suppresses, capture-event required-field contract per the OMN-13092 EventRegistration,
+      single-updatedToolOutput-emitter guard (probe ordering: last emitter wins), and an importorskip
+      real-store roundtrip that activates automatically on core pin bump. Targeted suite: 37 passed, 1
+      skipped. Full suite: 11134 passed, 0 failed. mypy strict clean (711 files); ruff clean; pre-commit
+      run --all-files exit 0. Live wrapper smoke: suppress-eligible fixture through the shell hook exits
+      0 with empty stdout and logs the fail-closed capture-unavailable passthrough.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13095/dod-omniclaude-pr-1752/command.yaml"
+          && grep -q '^ticket_id: "OMN-13095"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13095/dod-omniclaude-pr-1752/command.yaml"
+          && grep -q '^pr_number: 1752$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13095/dod-omniclaude-pr-1752/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13095 contract and the dod-omniclaude-pr-1752 receipt that the
+      omniclaude PR #1752 Receipt-Gate resolves via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13095/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13095"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13095/dod-occ-pr/command.yaml"
