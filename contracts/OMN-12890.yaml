@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12890"
+title: "Bifrost Gemini model_name repoint: gemini-2.0-flash → gemini-2.5-flash-lite"
+summary: >
+  The bifrost cloud-gemini-flash backend declared model_name: "gemini-2.0-flash", which is quota-exhausted
+  on the AI Studio free tier (HTTP 429). The key (GEMINI_API_KEY) is valid; the sole failing dimension
+  was external quota. gemini-2.5-flash-lite is quota-available on the same key. This ticket formally documents
+  the repoint of the bifrost contract cloud-gemini-flash model_name (done in OMN-12885 / omnimarket #1140)
+  and adds contract annotations + a regression-guard test to make the escalation path explicitly contract-documented.
+  The cheap_cloud escalation leg for node_generation_consumer (code_generation task class) routes: local-coder
+  → cloud-gemini-flash (gemini-2.5-flash-lite) → cloud-sonnet. VERTEX SUB-LEG: Vertex backend overlay
+  wiring (ADC delivery into effects container) is OUT of scope and stays open on OMN-12890 regardless
+  of this PR outcome.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1190"
+    description: >
+      omnimarket PR #1190 adds OMN-12890 provenance comment on cloud-gemini-flash backend in bifrost_delegation.yaml,
+      documents the cheap_cloud escalation path in node_generation_consumer/contract.yaml, and adds a
+      regression-guard test suite (test_omn12890_gemini_model_repoint.py) that pins the quota-available
+      model name.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12890/dod-omnimarket-pr-1190/command.yaml &&
+          grep -q '^pr_number: 1190$' drift/dod_receipts/OMN-12890/dod-omnimarket-pr-1190/command.yaml
+  - id: "dod-focused-checks"
+    description: >
+      5 unit tests in test_omn12890_gemini_model_repoint.py pass: quota-available model pinned, quota-zero
+      model rejected, vertex backend aligned, contract documentation verified. Full unit+CI suite (tests/unit/
+      tests/ci/) passes with the 2 pre-existing failures on dev origin/dev unchanged.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12890/dod-focused-checks/command.yaml && grep
+          -q '5 passed' drift/dod_receipts/OMN-12890/dod-focused-checks/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >
+      OMN-12890 is a pure contract annotation PR: bifrost_delegation.yaml already carries gemini-2.5-flash-lite
+      (since OMN-12885 / #1140). This PR adds comments and a test. No Kafka topic, Postgres migration,
+      Docker topology, or container restart is introduced by this PR. A main-container restart IS required
+      to flush the lru_cache-pinned bifrost config, but that restart is staged in a declared dev-lane
+      mutation window (see docs/evidence/2026-06-12-weekend-pass/p2-pass/escalation/RESTART_STAGED.md)
+      and is NOT performed by this PR. Standard image rebuild on next scheduled deploy cycle suffices
+      for the contract annotation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12890/dod-deploy-assessment/command.yaml &&
+          grep -q '^pr_number: 1190$' drift/dod_receipts/OMN-12890/dod-deploy-assessment/command.yaml
+          && grep -q 'RESTART_STAGED' drift/dod_receipts/OMN-12890/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-pr"
+    description: >
+      onex_change_control OCC PR #2560 (dev) carries the OMN-12890 central contract and receipt evidence.
+      This self-binding receipt makes the OCC PR satisfy its own OCC eligibility check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12890/dod-occ-pr/command.yaml && grep -q '^pr_number:
+          2560$' drift/dod_receipts/OMN-12890/dod-occ-pr/command.yaml
