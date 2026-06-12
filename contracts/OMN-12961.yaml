@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12961"
+title: "omnibase_core ServiceHandlerResolver rejects typing.Protocol handler targets with an attributable
+  error"
+summary: >
+  ServiceHandlerResolver.resolve Step 5 (service_handler_resolver.py:185) called handler_cls() for any
+  handler whose required-param scan returned empty. A typing.Protocol's synthetic __init__ = _no_init_or_replace_init(*args,
+  **kwargs) exposes only VAR_POSITIONAL/VAR_KEYWORD params, which the POSITIONAL_OR_KEYWORD/KEYWORD_ONLY
+  scan excludes, so a Protocol used as a handler_routing target looked zero-arg and was instantiated,
+  raising the anonymous TypeError("Protocols cannot be instantiated") from typing.py:1774. Uncaught on
+  any call path not behind the infra OMN-12501 quarantine, this took down the ENTIRE runtime bootstrap
+  for one bad contract with no attribution to the offending contract/handler (fault classification (b)
+  of RESOLVER-CRASH-DIAGNOSIS.md; primary contract fix is OMN-12956 in omnimarket). Fix adds Step 1a:
+  fail fast on a _is_protocol handler_cls BEFORE any instantiation path, raising an identifying TypeError
+  that names the handler module.name and the owning contract. The marker is duck-typed (omnibase_core
+  must not import omnibase_spi). This mirrors the infra OMN-12501 guard semantics exactly: the wiring
+  layer's except TypeError still catches it and quarantines as PROTOCOL_HANDLER_DECLARATION; the failure
+  stays a TypeError but becomes attributable rather than anonymous. Placed after Step 1 so a Protocol
+  handler on a node not hosted here still skips cleanly. Code-only change to one resolver source file
+  plus 6 TDD unit tests; no contract API, topic, or envelope change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD-first: 6 unit tests reproduce the Protocol-handler crash and assert an attributable TypeError
+      (names handler module.name + contract, NOT typing's anonymous "Protocols cannot be instantiated")
+      plus precedence ordering (rejected before container/event_bus probing; exempted by ownership skip).
+      Red without the fix (anonymous typing TypeError); green with the Step 1a guard.
+    command: "uv run pytest tests/unit/services/test_service_handler_resolver.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1230"
+    description: >
+      omnibase_core PR #1230 adds Step 1a to src/omnibase_core/services/service_handler_resolver.py rejecting
+      typing.Protocol handler_cls before instantiation, plus 6 TDD tests in tests/unit/services/test_service_handler_resolver.py.
+      Evidence anchor: omnibase_core commit 63bde1de30dbbf69e6bcc438821c1c34e178000e.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12961/dod-omnibase-core-pr-1230/command.yaml
+          && grep -q '^pr_number: 1230$' drift/dod_receipts/OMN-12961/dod-omnibase-core-pr-1230/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12961/dod-omnibase-core-pr-1230/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: code-only hardening in omnibase_core (resolver fail-fast guard + tests). No topic
+      schema, envelope, or contract API change. Reaching live effect requires a standard image rebuild
+      that ships the new omnibase_core into the stability-test runtime — a quiesce-coordinated stability
+      rebuild (no dev/prod mutation); No live deploy is performed by this PR. The receipt check_value
+      carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12961/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1230$' drift/dod_receipts/OMN-12961/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12961/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self-binding"
+    description: >
+      This onex_change_control PR carries the OMN-12961 central contract and receipt evidence; this self-binding
+      receipt makes the OCC PR satisfy its own OCC eligibility check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12961/dod-occ-self-binding/command.yaml"

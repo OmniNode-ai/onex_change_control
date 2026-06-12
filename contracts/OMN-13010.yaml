@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13010"
+title: "node_context_roi_runner: synchronous blocking handle() pins the dispatch loop and starves the
+  co-resident generation consumer — degenerate rows persist after OMN-13005"
+summary: >-
+  THIRD distinct defect on node_context_roi_runner, exposed only after the OMN-13005 consume-leg patch
+  made the injected event_consumer actually block-and-correlate. OMN-13003 fixed the dispatch INPUT (envelope
+  -> typed model); OMN-13005 fixed the consume leg (no-op consumer -> blocking correlate). Both are live
+  and necessary. But probe2 (run_id=20260611T2000Z-probe2, 20:54-20:58Z) STILL produced degenerate rows
+  (failure_stage=generation, attempt_count=0, empty model_id/provider) for a different reason: dispatch-loop
+  starvation. Owning surface: omnimarket runner handler src/omnimarket/nodes/node_context_roi_runner/handlers/handler_context_roi_runner.py.
+  Its handle() is synchronous and serial (publish then block on self._consumer(...) up to generation_timeout_seconds
+  per arm, 240s total). The omnibase_infra runtime auto-wiring dispatch callback (_make_dispatch_callback)
+  invokes a synchronous handle() DIRECTLY on the single effects-container event loop (contrast the projection-runner
+  path which offloads via asyncio.to_thread). The runner's 240s blocking handle() therefore pins the loop,
+  starving every co-resident consumer group's poll/heartbeat -- including node_generation_consumer, the
+  consumer that must produce the terminal the runner awaits. Broker-verified: probe2's two generation
+  command cids (da5985b5-9817-42e7-887b-f19f4eb62319 golden_exemplar; 28e05684-32ae-4d23-8627-ff98d9255340
+  off) produced NON-degenerate node-generation-completed.v1 terminals (provider=local, Qwen3.6-35B-A3B,
+  contract_passed=true) at envelope_timestamp 2026-06-11T20:58:44.730Z and 20:58:45.676Z -- AFTER both
+  runner 120s windows had closed (no terminal event received at 20:56:39 and 20:58:39). Effects-log at
+  20:58:40 shows EVERY consumer group hitting [Error 25] UnknownMemberIdError and rebalancing -- mass
+  session-timeout from the pinned loop. node-generation-failed.v1 HW=0 across all partitions (no failures).
+  This is the feedback_real_dispatch_path_tests blind spot once more: handler-isolation tests inject a
+  returning consumer and never exercise the dispatch-loop pinning. omnimarket PR #1184 adds handle_async
+  (which the dispatch callback prefers, handler_wiring._make_dispatch_callback) that runs the synchronous
+  blocking handle() via asyncio.to_thread, freeing the dispatch loop for the full duration of the runner's
+  blocking waits so generation runs concurrently and its terminal arrives inside the window. No topic,
+  envelope, or contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market-pr"
+    description: >-
+      omnimarket PR #1184 adds handle_async to HandlerContextRoiRunner, offloading the synchronous blocking
+      handle() off the runtime dispatch loop via asyncio.to_thread. Real-dispatch-path regression test
+      tests/nodes/node_context_roi_runner/test_handle_async_non_blocking.py asserts (a) handle_async is
+      a coroutine function so the dispatch callback offloads it, (b) the event loop keeps servicing a
+      co-resident heartbeat task while handle_async is in its blocking consume wait (the anti-starvation
+      invariant; a pinned loop yields ~0 ticks), (c) handle() runs on a worker thread != the loop thread,
+      and (d) handle_async result matches the synchronous handle(). Verified RED before the fix (no handle_async
+      attribute). Local proof: ruff format/check clean; mypy src/omnimarket/nodes/node_context_roi_runner/
+      --strict Success; pre-commit all hooks Passed; pytest tests/nodes/node_context_roi_runner/ tests/nodes/node_context_roi_compute/
+      -> 147 passed. Evidence anchor: omnimarket head commit 5d20de42.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13010/dod-market-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13010"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13010/dod-market-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: PR #1184 is an additive handler change (one new method + one test, +237). No
+      topic, envelope, or contract API change. The fix is runtime-loaded by the effects/runtime image
+      and reaches the stability lane via the normal post-merge batched rebuild. A stability-lane hot-patch
+      of the single handler file (handler_context_roi_runner.py) into omninode-stability-test-runtime-effects
+      is performed under the standing stability hot-patch approval, alongside re-verification that the
+      OMN-13003 (contract.yaml event_model) and OMN-13005 (handler_wiring + service_terminal_event_consumer)
+      patches remain present after restart. deploy_pending = true. Hot-patch surface (exact runtime-loaded
+      file): .venv/.../omnimarket/nodes/node_context_roi_runner/handlers/handler_context_roi_runner.py.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13010/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13010"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13010/dod-deploy-assessment/command.yaml"
+          && grep -q 'additive handler change' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13010/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13010 contract and the dod-market-pr / dod-deploy-assessment
+      receipts that the omnimarket code PR #1184 Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13010/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13010"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13010/dod-occ-pr/command.yaml"
