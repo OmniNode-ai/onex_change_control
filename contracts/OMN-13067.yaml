@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13067"
+title: "gate.activity + gate.metrics projections declared-not-served on dev lane (LT-06)"
+summary: >-
+  Fixes LT-06: node_omnigate_projection/contract.yaml declared projection_api.snapshots (reducer Kafka
+  metadata format: topics the node publishes TO) but lacked the expose: true + exposures fields with table
+  and columns required by the projection API discovery module. No DB tables existed. Fix adds expose:
+  true + exposures entries (gate.activity.v1 -> gate_activity, gate.metrics.v1 -> gate_metrics), db_io
+  section, and migration 0000_create_gate_projection_tables.sql. Regression test added: test_gate_projection_contract_discovery.py.
+  No handler logic changes; tables seed immediately (gate_metrics singleton row in migration INSERT).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR (branch jonah/omn-13067-gate-projection-declare-served, base=dev, head d729ba5d42658f9f48b76fc8c9251a618d8e754c)
+      adds expose:true + exposures + migration for gate.activity and gate.metrics projection topics. Regression
+      tests added: test_gate_activity_topic_is_in_projection_topic_map, test_gate_metrics_topic_is_in_projection_topic_map,
+      test_gate_activity_config_has_required_fields, test_gate_metrics_config_has_required_fields, test_gate_projection_contract_file_exists
+      — all 5 pass. Pre-existing unit test suite: 2230 passed, 1 pre-existing failure in node_generation_consumer
+      (OMN-13068) unrelated to this change. All pre-commit hooks passed. Ruff format/check clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13067/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13067"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13067/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-migrate"
+    description: >-
+      DB migration 0000_create_gate_projection_tables.sql applied to omnidash_analytics on the dev lane.
+      Creates gate_activity and gate_metrics tables; seeds singleton gate_metrics row. Migration runs
+      at W1 redeploy window (announced, user-approved operator gate). After migration: docker exec omnibase-infra-postgres
+      psql -U postgres omnidash_analytics -c '\dt gate_activity gate_metrics' must show both tables, and
+      curl localhost:3002/projection/onex.snapshot.projection.gate.activity.v1 must return HTTP 200.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          docker exec omnibase-infra-postgres psql -U postgres omnidash_analytics -c '\dt gate_activity'
+          | grep -q gate_activity
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13067 contract and the dod-omnimarket-pr receipt that the omnimarket
+      PR Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13067/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13067"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13067/dod-occ-pr/command.yaml"
