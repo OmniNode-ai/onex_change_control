@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13008"
+title: "Automated worktree GC + .201 docker/disk GC + disk watermark alert ratchet"
+summary: >
+  Build the automation requested after the 2026-06-11 incident: /data on .201 hit ~95% (weeks of unpruned
+  docker images + accumulated stale worktrees) and killed all three runtime lanes mid-demo. Conservative,
+  keep-list-driven .201 disk maintenance shipped as systemd USER timer units (NOT lane containers) plus
+  dry-run-tested GC scripts in omnibase_infra. Three surfaces: (1) merge-triggered worktree GC that drives
+  the canonical omniclaude/scripts/prune-worktrees.sh safety logic (remove only if PR MERGED / branch
+  gone AND clean AND fully pushed) on both Mac (merge-sweep tick) and .201 (systemd timer against /data/omninode/omni_worktrees);
+  (2) conservative docker/disk GC (scripts/disk-gc.sh + pure disk_gc_plan.py) honoring a VERSIONED keep-list
+  (deploy/disk-gc/keep-list.yaml): never reaps a kept repo, kept tag, in-use image, or anything younger
+  than min_age_days, keeping the newest N superseded generations as rollback targets; (3) a df watermark
+  ratchet (disk-watermark-check.sh + disk_watermark_event.py): >=85% emits a typed onex.evt.infra.disk-watermark.v1
+  warning event that the sweep auto-ticket path turns into a Linear ticket, >=90% emits critical (the
+  loud event), broker addr fail-fast from KAFKA_BOOTSTRAP_SERVERS (no localhost default). 20 unit tests
+  incl. plan-safety invariants and a dry-run proof that default mode issues no destructive op.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      omnibase_infra: tests/unit/scripts/test_disk_gc_plan.py (10) + test_disk_gc_dry_run.py (6) + test_disk_watermark_event.py
+      (4) = 20 passed. Pure planner never reaps kept repo/tag/in-use/too-young; dry-run mode issues no
+      destructive docker/git/rpk op; typed watermark event with stable dedupe key. mypy --strict clean
+      on both Python modules; ruff + shellcheck + pre-commit clean.
+    command: "uv run pytest tests/unit/scripts/test_disk_gc_plan.py tests/unit/scripts/test_disk_gc_dry_run.py
+      tests/unit/scripts/test_disk_watermark_event.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-gc-plan-safety"
+    description: >
+      Removal-plan resolver (scripts/disk_gc_plan.py) never reaps a keep-list repo, kept tag, in-use image,
+      or anything younger than min_age_days; retains newest N superseded generations. omnibase_infra PR
+      #1952, tests/unit/scripts/test_disk_gc_plan.py = 10 passed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13008/dod-gc-plan-safety/command.yaml
+          && grep -q '^pr_number: 1952$' drift/dod_receipts/OMN-13008/dod-gc-plan-safety/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13008/dod-gc-plan-safety/command.yaml"
+  - id: "dod-gc-dry-run"
+    description: >
+      GC shell scripts in default/dry-run mode issue no destructive docker/git/rpk op (PATH-shim recorder),
+      and the watermark publish path is fail-fast (no broker => no produce). omnibase_infra PR #1952,
+      tests/unit/scripts/test_disk_gc_dry_run.py = 6 passed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13008/dod-gc-dry-run/command.yaml
+          && grep -q '^pr_number: 1952$' drift/dod_receipts/OMN-13008/dod-gc-dry-run/command.yaml && grep
+          -q 'passed' drift/dod_receipts/OMN-13008/dod-gc-dry-run/command.yaml"
+  - id: "dod-occ-pr"
+    description: >
+      This OCC PR carries the central OMN-13008 contract and the dod receipts that omnibase_infra PR #1952
+      resolves via Evidence-Source pointing at this OCC PR's merge SHA.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13008/dod-occ-pr/command.yaml &&
+          grep -q '^ticket_id: \"OMN-13008\"$' drift/dod_receipts/OMN-13008/dod-occ-pr/command.yaml"

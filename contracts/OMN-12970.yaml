@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12970"
+title: "fix(OMN-12970): create projection-DB migrations for ab-compare + cost projection tables + coverage
+  ratchet"
+summary: >-
+  The projection API (omnimarket-*-projection-api, :13002) binds to the dashboard projection DB omnidash_analytics.
+  Three projection contracts declare read models that were only ever created in the omnibase_infra DB
+  by infra forward migrations 031/060, never in omnidash_analytics: node_ab_compare_reducer + node_projection_cost_token_usage
+  -> public.llm_call_metrics, node_projection_cost_summary -> public.llm_cost_aggregates, and node_canary_score_reducer
+  -> public.capability_scores. With those tables absent from omnidash_analytics, the projection API marked
+  the ab-compare, cost.token_usage, cost.summary, and capability-scores topics DEGRADED at startup ("table
+  not found") and the dashboard panels (incl. AbCompareWidget) rendered empty. Fix ships node-owned migrations
+  under each owning node's migrations/ dir (omnimarket PR #1169), vendored into omnibase_infra's forward/nodes
+  tree (infra PR #1938) and applied to NODE_POSTGRES_DB=omnidash_analytics by run-forward-migrations.sh
+  — the same deploy path every other marketplace projection node uses. Schemas mirror the canonical infra
+  migrations verbatim (idempotent IF NOT EXISTS). The omnidash AbCompareWidget panel is already wired;
+  no panel code change. Adds an enforcement ratchet (tests/unit/projection/test_projection_table_migration_coverage.py,
+  runs in the omnimarket CI full-suite gate) asserting every public-schema projection read model is created
+  by a node-owned migration — which is what surfaced the llm_cost_aggregates and capability_scores siblings.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: "dod-omnimarket-pr-1169"
+    description: "omnimarket PR #1169 adds three node-owned projection migrations (node_projection_llm_cost/0001_create_llm_call_metrics.sql,
+      node_projection_cost_summary/0001_create_llm_cost_aggregates.sql, node_canary_score_reducer/0001_create_capability_scores.sql)
+      plus the coverage ratchet test tests/unit/projection/test_projection_table_migration_coverage.py
+      (3 tests, red before the migrations, green after). ruff/mypy --strict/relevant pre-commit clean;
+      106 projection tests pass. Evidence anchor: omnimarket head commit 5b5b636956c6185751aa45e1ba2d354633bef706."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-omnimarket-pr-1169/command.yaml"
+          && grep -q '^ticket_id: "OMN-12970"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-omnimarket-pr-1169/command.yaml"
+          && grep -q '^pr_number: 1169$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-omnimarket-pr-1169/command.yaml"
+  - id: "dod-infra-pr-1938"
+    description: "omnibase_infra PR #1938 vendors the three OMN-12970 node migrations into docker/migrations/forward/nodes/
+      (plus re-syncs three pre-existing drift files) so run-forward-migrations.sh materializes public.llm_call_metrics,
+      public.llm_cost_aggregates, and public.capability_scores in NODE_POSTGRES_DB=omnidash_analytics.
+      sync-node-migrations.sh --check reports 'in sync'. Evidence anchor: omnibase_infra head commit d060f5ef4483f89944389f698661b56c389ddbb2."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-infra-pr-1938/command.yaml"
+          && grep -q '^ticket_id: "OMN-12970"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-infra-pr-1938/command.yaml"
+          && grep -q '^pr_number: 1938$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-infra-pr-1938/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: "Deploy assessment: this is a projection-DB schema migration. It reaches live effect
+      via a batched stability rebuild (run-forward-migrations.sh on warm volumes) run by the orchestrator
+      after in-flight P0.1/P0.1c verifications; no dev/prod mutation and no live deploy is performed by
+      this PR. Pre-fix read-only probes on the stability lane (:13002) confirmed the four DEGRADED topics
+      and the NULL to_regclass for the three tables in omnidash_analytics. The receipt carries the deploy
+      keyword for the deploy-gate."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12970"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the OMN-12970 central contract and the dod receipts that the omnimarket
+      PR #1169 and infra PR #1938 Receipt-Gate resolve via Evidence-Source: <this OCC commit SHA>."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12970"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12970/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

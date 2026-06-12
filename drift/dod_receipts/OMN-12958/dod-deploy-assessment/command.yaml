@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12958"
+evidence_item_id: "dod-deploy-assessment"
+check_type: "command"
+check_value: "grep -q 'No live deploy' drift/dod_receipts/OMN-12958/dod-deploy-assessment/command.yaml"
+status: PASS
+run_timestamp: "2026-06-11T14:24:00Z"
+commit_sha: "e459fbe68329ca2158089a4c2789fb11b3f83b28"
+contract_sha256: "sha256:894e613aa978e39fe6460f2ffdbc843557d15dd455f9a3c1c3a8b2394117567c"
+runner: "worker-omn-12958"
+verifier: "receipt-gate-local"
+probe_command: "n/a — deploy assessment statement"
+probe_stdout: |
+  Deploy assessment for OMN-12958 (volume-config drift gate + re-seed).
+  No live deploy is performed by this PR set.
+
+  The infra change adds runtime config-provenance logging + a sidecar JSON +
+  a health component, and the omnimarket change adds a read-only drift sweep
+  node. Reaching live effect (the provenance sidecar appearing on a lane and
+  the health component reporting) requires a standard image rebuild shipping
+  omnibase_infra + omnimarket on the runtime. The re-seed procedure itself
+  MUTATES a Docker named volume and is therefore an operator deploy step gated
+  behind lane approval — NOT performed here. deploy_pending=true.
+
+  Batch-rebuild verification (run AFTER the orchestrator's batched stability
+  rebuild that ships these two PRs; no dev/prod mutation):
+    1. docker logs <stability-runtime> | grep config_provenance
+       -> expect a "[entrypoint] config_provenance config=bifrost_delegation
+          status=in-sync deployed_path=... deployed_sha256=... source_path=...
+          source_sha256=..." line on boot.
+    2. docker exec <stability-runtime> cat /app/data/delegation/.config_provenance.json
+       -> expect a JSON sidecar with deployed_sha256/source_sha256.
+    3. cd omnimarket && uv run python -m omnimarket.nodes.node_volume_config_drift_sweep \
+         --sidecar <copied-sidecar> --lane stability --dry-run
+       -> expect status "clean" (IN_SYNC) on a freshly-rebuilt lane, or a
+          DRIFTED finding + recommended ticket payload if the pre-existing
+          volume copy diverges (then follow the re-seed runbook).
+    4. Health: GET /health/detailed -> expect a config_provenance component
+       (healthy when deployed_sha256 == source_sha256).
+actual_output: "PASS: No live deploy in this PR set. deploy_pending=true; re-seed mutates a named volume
+  and is an operator/lane-approved step. Batch-rebuild verification steps recorded above."
+exit_code: 0
+pr_number: 1941
+branch: "jonah/omn-12958-volume-config-drift-gate"

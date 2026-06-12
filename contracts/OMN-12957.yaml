@@ -1,0 +1,104 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12957"
+title: "Runtime-profile contract validator — registered-profile + consumer-lane rules (P1.1)"
+summary: >
+  Generalizes OMN-12950. A node contract could declare any runtime_profiles string; a nonexistent profile
+  (e.g. [compute]) silently orphaned the node — the auto-wiring ownership filter (omnibase_infra profile_ownership.filter_manifest_for_runtime_profile)
+  assigned it to no running runtime, so zero consumer groups, zero errors, empty projection tables. This
+  change adds the canonical runtime-profile registry in omnibase_core (constants_runtime_profiles.REGISTERED_RUNTIME_PROFILES
+  = the 9 profile names the runtime can boot; CONSUMER_ATTACHED_RUNTIME_PROFILES = main/effects/workers)
+  and extends ValidatorRuntimeProfiles with two new rules: runtime_profile_unregistered (every declared
+  profile must be in REGISTERED_RUNTIME_PROFILES — catches the OMN-12950 class directly and finds 16 real
+  orphans in omnimarket) and runtime_profile_no_consumer_lane (a subscribing REDUCER/EFFECT must name
+  a consumer-attached profile or its subscriptions are never drained — the second silent-orphan class
+  flagged in operator review: manifest-declares-node != consumer-attached). Core owns the profile NAME
+  set so contract validation enforces membership without a core->infra dependency; infra owns the BEHAVIOUR
+  (_PROFILES) and carries a parity test (test_profiles_match_core_registry). The omnimarket runtime_sweep
+  node gains the operator-review dual check (PROFILE_NO_LIVE_CONSUMER): manifest profile vs live consumer-group
+  census. Consumer repos vendor a frozen baseline allowlist at <repo>/validation/runtime_profiles_allowlist.yaml,
+  discovered deterministically by walking up to the pyproject.toml root (no env var — passes the no-new-os.environ
+  gate). The gate blocks NEW orphans; pre-existing ones (19 in omnibase_infra, 133 in omnimarket) are
+  frozen and drained via OMN-12982.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      tests/unit/validation/test_validator_runtime_profiles.py (omnibase_core): 24 tests pass covering
+      both new rules (unregistered x4, no-consumer-lane x6), deterministic repo-baseline allowlist discovery
+      (x2), registry parity, and the pre-existing OMN-9886 missing-profile suite. tests/test_golden_chain_runtime_sweep.py
+      (omnimarket): 14 pass including the 4 PROFILE_NO_LIVE_CONSUMER dual-check cases. mypy --strict clean
+      on the changed modules.
+    command: "uv run pytest tests/unit/validation/test_validator_runtime_profiles.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1229"
+    description: >
+      omnibase_core PR #1229 adds constants/constants_runtime_profiles.py and the two new ValidatorRuntimeProfiles
+      rules with deterministic repo-root baseline allowlist discovery, 24 passing unit tests, and the
+      validator-runtime-profiles.yml CI self-scan. Evidence anchor: omnibase_core head commit e69b0d500670758b95aae049638c2c5acf491ba7.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12957/dod-omnibase-core-pr-1229/command.yaml
+          && grep -q '^pr_number: 1229$' drift/dod_receipts/OMN-12957/dod-omnibase-core-pr-1229/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12957/dod-omnibase-core-pr-1229/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: omnibase_core PR is a validator + frozen-registry-constant addition (pre-commit/CI
+      gate code). It ships no runtime node, no topic schema, no envelope, and no contract API change —
+      it does not deploy to any .201 lane. The consumer wiring PRs (omnibase_infra, omnimarket) add a
+      pre-commit hook + CI workflow + frozen baseline allowlist and require the core pin to be bumped
+      before their CI can import the new rules. No live-lane rebuild or restart is part of this ticket.
+      No live deploy is performed by this PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12957/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1229$' drift/dod_receipts/OMN-12957/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12957/dod-deploy-assessment/command.yaml"
+  - id: "dod-omnimarket-pr-1175"
+    description: >
+      omnimarket PR #1175 wires the runtime_sweep consumer-census dual check and validator gate into the
+      market repo. Targeted proof: tests/test_golden_chain_runtime_sweep.py passes 14 cases, including
+      PROFILE_NO_LIVE_CONSUMER dual-check coverage.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12957/dod-omnimarket-pr-1175/command.yaml
+          && grep -q '^pr_number: 1175$' drift/dod_receipts/OMN-12957/dod-omnimarket-pr-1175/command.yaml
+          && grep -q '14 passed' drift/dod_receipts/OMN-12957/dod-omnimarket-pr-1175/command.yaml"
+  - id: "dod-omnibase-infra-pr-1945"
+    description: >
+      omnibase_infra PR #1945 wires the runtime-profile validator gate and profile-registry parity guard
+      into infra. Targeted proof: tests/unit/runtime/test_runtime_profile.py passes the core/infra registry
+      parity and consumer-attached profile load checks.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12957/dod-omnibase-infra-pr-1945/command.yaml
+          && grep -q '^pr_number: 1945$' drift/dod_receipts/OMN-12957/dod-omnibase-infra-pr-1945/command.yaml
+          && grep -q '4 passed' drift/dod_receipts/OMN-12957/dod-omnibase-infra-pr-1945/command.yaml"
+  - id: "dod-occ-pr-2485"
+    description: "onex_change_control PR #2485 (dev) carries the OMN-12957 central contract and receipt
+      evidence; this self-binding receipt makes the OCC PR satisfy its own OCC eligibility check."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12957/dod-occ-pr-2485/command.yaml
+          && grep -q '^pr_number: 2485$' drift/dod_receipts/OMN-12957/dod-occ-pr-2485/command.yaml"
+  - id: "dod-occ-pr-2493"
+    description: >
+      onex_change_control PR #2493 carries the downstream OMN-12957 receipts for omnimarket PR #1175 and
+      omnibase_infra PR #1945; this self-binding receipt makes the additive OCC PR satisfy its own OCC
+      eligibility check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12957/dod-occ-pr-2493/command.yaml
+          && grep -q '^pr_number: 2493$' drift/dod_receipts/OMN-12957/dod-occ-pr-2493/command.yaml"
