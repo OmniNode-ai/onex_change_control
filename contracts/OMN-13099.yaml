@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13099"
+title: "fix(omnimarket): context-roi runner _extract_row reads envelope top-level, not payload — probe4
+  degenerate while generation succeeds"
+summary: >-
+  HandlerContextRoiRunner._extract_row() checked "attempt_count" not in event_payload against the outer
+  ModelEventEnvelope dict. EventBusKafka.publish() wraps raw ModelGenerationBenchmark bytes in an envelope
+  so attempt_count lives under event_payload["payload"], not at the top level. The CID match succeeded
+  (envelope copies correlation_id to top level), but the attempt_count check fail-closed every row as
+  failure_stage=GENERATION, attempt_count=0, model_id="" — the probe4 degenerate-row defect (2026-06-12).
+  Fix: detect the "payload" key in event_payload and use event_payload["payload"] as the telemetry dict;
+  fall back to the raw dict when no "payload" key is present (backwards-compatible). Four new real-dispatch-path
+  regression tests: 3 RED on dev tip, 4 GREEN after fix.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR for branch jonah/omn-13099-context-roi-runner-envelope-unwrap (base=dev, head 07f3dac3a732dcd41fca253359eaf1bd1bf60fe6)
+      fixes _extract_row envelope unwrap in handler_context_roi_runner.py. Four new regression tests in
+      test_extract_row_envelope_unwrap.py: 3 RED on dev tip (confirmed via docs/evidence/2026-06-12-weekend-pass/integration-testing/real-dispatch/red-before.log),
+      4 GREEN after fix. 88 node_context_roi_runner tests pass. 3096 unit tests pass (1 pre-existing failure
+      in node_generation_consumer, OMN-13068, unrelated). Ruff format/check clean, mypy strict clean on
+      changed node, key pre-commit hooks pass: ruff, ruff-format, no-hardcoded-topics, check-stub-implementations,
+      leaked-literals-gate, reject-deploy-gate-skip-token.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13099/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13099"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13099/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. Single-repo, consume-side-only change in node_context_roi_runner
+      handler (omnimarket). No emitter, topic, envelope shape, or cross-repo API change. Not hot-patched:
+      change rides the normal post-merge batched stability rebuild. The fix must be live before probe4
+      is re-run on the dev lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13099/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13099"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13099/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13099/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13099 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source: OCC#2570.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13099/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13099"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13099/dod-occ-pr/command.yaml"
