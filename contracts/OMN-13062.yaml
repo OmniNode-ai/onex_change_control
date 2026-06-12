@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13062"
+title: "migration-gate vacuity fix — sentinel discipline, wait-for-postgres, skip-manifest, sync-check
+  nonzero (retro A-10)"
+summary: >-
+  Retro A-10 (recurrences OMN-12885, OMN-12934). Three vacuity bugs in the migration subsystem: (1) run-forward-migrations.sh
+  set migrations_complete=TRUE via SQL migration 037 in mid-sequence, so later migrations (038-084) could
+  fail while the gate read TRUE. Fix: clear the sentinel at startup, set TRUE + runner_completed_at only
+  as the runner's FINAL act after all infra and node migrations succeed; any nonzero exit leaves the gate
+  UNHEALTHY. Committed skip-manifest.yaml is the sole escape for intentionally-skipped migrations. (2)
+  sync-node-migrations.sh --check exited 0 when omnimarket source was unresolvable — a vacuous gate that
+  never detected drift. Fix: exit 2 when source absent in --check mode; single opt-out via SYNC_NODE_MIGRATIONS_SKIP_UNRESOLVABLE=1.
+  (3) No Postgres-ready wait guard — first-boot initdb race could allow the runner to attempt DB operations
+  before Postgres accepted connections. Fix: wait loop with PG_WAIT_RETRIES (default 30 x 2s). Migration
+  085 adds runner_completed_at TIMESTAMPTZ column to db_metadata as the durable stamp of a successful
+  runner completion. 22 regression tests. No live deploy required — migration 085 applies on the next
+  scheduled lane rebuild.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR for OMN-13062: run-forward-migrations.sh sentinel discipline + wait-for-postgres
+      guard + skip-manifest + migration 085 runner_completed_at + sync-node-migrations.sh --check nonzero
+      exit + 22 regression tests. RED-then-GREEN confirmed for all 22 tests. ruff format/check clean;
+      pre-commit on changed files all Passed; pytest tests/ -m unit -n auto 20888 passed (4 pre-existing
+      baseline failures reproduced identically on clean dev tip with the change stashed).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13062/dod-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13062"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13062/dod-infra-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR changes only shell scripts (run-forward-migrations.sh, sync-node-migrations.sh),
+      a new SQL migration (085), a skip-manifest YAML, and test code. No Python runtime source is changed.
+      No live deploy, restart, topic mutation, or .201 mutation is performed. Migration 085 is additive
+      (ALTER TABLE ADD COLUMN IF NOT EXISTS runner_completed_at TIMESTAMPTZ) and applies on the next scheduled
+      lane rebuild. The sentinel-discipline fix takes effect on the next compose up after the image is
+      rebuilt with the updated scripts. deploy_pending = true.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13062/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13062"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13062/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13062/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      onex_change_control PR carries the central OMN-13062 contract and the dod-infra-pr / dod-deploy-assessment
+      receipts that the omnibase_infra code PR Receipt-Gate resolves via Evidence-Source: OCC#<occ-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13062/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13062"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13062/dod-occ-pr/command.yaml"
