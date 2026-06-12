@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12798"
+title: "P2-5b node_context_roi_runner (EFFECT): drive generation over the bus per (task x factor subset)"
+summary: >
+  Lands the context-ROI experiment runner EFFECT (node_context_roi_runner) in omnimarket. The runner drives
+  the generation pipeline over the bus per (task x factor_subset x trial): it assembles a context pack,
+  publishes the generation command on the contract-declared command topic, consumes the terminal generation
+  event correlated by correlation_id, reads back attempt_count / first_pass_success / tokens / model identity
+  from the typed event payload (P2-1 seam, OMN-12794), and emits one ModelAttemptReductionRow per cell.
+  Fails closed when attempt_count is absent. Bus is the transport: no in-process GenerationConsumer import,
+  no kafka_runner, no hardcoded topic literals (all topics read from contract.yaml); model/provider/ endpoint
+  identity is echoed from the terminal event, never hardcoded. This PR is runner-merge-only: it registers
+  the node entry-point, fixes a missing test import, and ships the node's own golden-chain test. Stub
+  content assembly is fixed by a parallel agent on the same dev base. Code-only change with no runtime
+  topology, topic schema, or contract API change beyond the node's own contract; applies on the next normal
+  omnimarket image rebuild.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1154"
+    description: "omnimarket PR #1154 lands node_context_roi_runner (contract + handler + models), registers
+      the onex.nodes entry-point, fixes the missing _assemble_context_text test import, and adds the golden-chain
+      test required by the golden-chain-coverage-gate."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12798/dod-omnimarket-pr-1154/command.yaml
+          && grep -q '^pr_number: 1154$' drift/dod_receipts/OMN-12798/dod-omnimarket-pr-1154/command.yaml"
+  - id: "dod-focused-checks"
+    description: "The node's 56 tests (35 handler unit + 21 golden-chain) pass on the PR head commit;
+      mypy --strict is clean on the node source; the runtime sweep reports 297/297 entry points OK (entry-point
+      registered)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12798/dod-focused-checks/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12798/dod-focused-checks/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      OMN-12798 is a code-only node-addition with no runtime topology change beyond the new node's own
+      contract topics. The runner is an experiment EFFECT not on any live golden chain; it is exercised
+      offline via injected bus stubs. No live .201 deploy, Kafka topic creation, Postgres migration, or
+      container restart is performed by this PR. Standard image rebuild on next scheduled deploy cycle
+      suffices.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo ${REPO} --watch=false --json name,state --jq 'all(.[];
+          .state == \"SUCCESS\" or .state == \"SKIPPED\")'"
+  - id: "dod-occ-pr-2452"
+    description: "onex_change_control PR #2452 (dev) carries the OMN-12798 central contract and receipt
+      evidence; this self-binding receipt makes the OCC PR satisfy its own OCC eligibility check."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12798/dod-occ-pr-2452/command.yaml
+          && grep -q '^pr_number: 2452$' drift/dod_receipts/OMN-12798/dod-occ-pr-2452/command.yaml"
