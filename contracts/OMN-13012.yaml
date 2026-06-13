@@ -100,10 +100,42 @@ dod_evidence:
           grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-deploy-assessment/command.yaml"
           && grep -q '^ticket_id: "OMN-13012"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-deploy-assessment/command.yaml"
           && grep -q 'deploy_pending = true' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-deploy-assessment/command.yaml"
+  - id: "dod-infra-consume-leg-refresh"
+    description: >-
+      RE-SCOPED infra fix (after a two-strike diagnosis relocated the bug). The prior two-phase open-before-publish
+      work (dod-infra-pr / dod-market-pr) was necessary but NOT sufficient: the Exp 1 stability battery
+      (image c0505521f1fa) wedged on the consume leg — only the FAILED terminal topic ever subscribed,
+      the COMPLETED topic never assigned, the correlated completed terminal was never read, and the 8x2x10
+      matrix re-fired cell 1 forever emitting zero non-degenerate rows (EXP1-3_RUNNER_CONSUME_LEG_BLOCKER,
+      HALT_RUNNER_CONSUME_LEG_REGRESSION.md). A faithful real-dispatch-path repro proved the omnimarket
+      handler correct on dev; the defect is in the omnibase_infra runtime consume leg. Root cause: service_pattern_b_broker._assign_direct_terminal_partitions
+      ignored the metadata future returned by AIOKafkaClient.set_topics and re-called set_topics([same_topic])
+      each loop iteration; aiokafka 0.13.0 set_topics only forces a metadata refresh when the topic set
+      DIFFERS from the tracked set, so every iteration after the first took the no-op branch and never
+      re-fetched — an ephemeral group_id=None consumer whose first metadata fetch had not yet surfaced
+      partitions burned the full 30s assign cap and raised a bare TimeoutError (the empty-message 'wait
+      failed' seen live). Fix: register the reply topic once and await that metadata fetch, then on each
+      miss force a fresh fetch via force_metadata_update (always fetches) rather than the no-op set_topics
+      repeat; the assign-cap TimeoutError now carries a diagnostic message. Test: tests/integration/test_terminal_consumer_concurrent_assign_race.py
+      drives the REAL TerminalEventConsumer through the REAL open_direct_terminal_consumer/poll path with
+      AIOKafkaConsumer monkeypatched to a fake that faithfully models aiokafka 0.13.0 set_topics future
+      + metadata-latency semantics — RED before the fix (bare TimeoutError, the live empty-message signature),
+      GREEN after; a K>=2 multi-trial variant asserts no worker-thread leak across trials. Local proof:
+      ruff format/check clean; mypy src/ --strict Success (2435 files); pytest tests/unit/runtime/ ->
+      4880 passed; the new integration test + pattern-b terminal tests green; pre-commit on the 2 changed
+      files Passed. Evidence anchor: omnibase_infra head commit 4feb364fe (branch jonah/omn-13012-infra-consume-leg
+      off dev tip 20273e580).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-infra-consume-leg-refresh/command.yaml"
+          && grep -q '^ticket_id: "OMN-13012"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-infra-consume-leg-refresh/command.yaml"
   - id: "dod-occ-pr"
     description: >-
       This OCC PR carries the central OMN-13012 contract and the dod-infra-pr / dod-market-pr / dod-deploy-assessment
-      receipts that the omnibase_infra code PR #1954 and omnimarket code PR #1185 Receipt-Gates resolve
+      / dod-infra-consume-leg-refresh receipts that the omnibase_infra code PRs Receipt-Gates resolve
       via Evidence-Source: OCC#<this-pr>.
     source: "manual"
     status: "verified"
