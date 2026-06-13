@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13096
+title: "Phase 2b: /onex:delegate single-command rewrite"
+summary: >-
+  Add `onex delegate "<prompt>" [--task-type X] [--max-tokens N]` as a subcommand on the existing onex
+  CLI (omnibase_infra). The command wraps payload construction, task-type classification, node dispatch,
+  and result extraction internally and dispatches through the OMN-13094 receipt-mode path: stdout carries
+  exactly one ModelSkillResult[ModelDelegateSkillResponse] (full LLM response + metrics, never truncated),
+  RuntimeLocal logs go to a capture file + the omnibase_core ArtifactStore, scratch payloads live under
+  <state-root>/tmp/ with run_id suffixes (never /tmp). The omniclaude delegate skill is rewritten to ONE
+  step (prompt.md), marked skill_kind: dispatch, and exempted from the delegation-enforcer subagent mandate
+  so it is handled inline rather than via a ~95k-token subagent spawn. omnimarket untouched — ModelDelegateSkillResponse
+  already carries every receipt field (F8). Carries the first-proof acceptance gate for the skill-output-suppression
+  plan.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on merge PR"
+    command: "gh pr checks"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-delegate-tests"
+    description: >-
+      onex delegate unit tests pass (20 passed): keyword classification (first-match-wins, research fallback,
+      case-insensitive), scratch payload written under <state-root>/tmp/ with a run_id-suffixed name (never
+      /tmp), explicit --task-type overrides classification, exactly one validated ModelSkillResult JSON
+      on stdout, zero RuntimeLocal INFO log leakage.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13096/dod-delegate-tests/command.yaml && grep
+          -q '20 passed' drift/dod_receipts/OMN-13096/dod-delegate-tests/command.yaml
+  - id: "dod-mypy-strict"
+    description: "mypy --strict clean across omnibase_infra src/ (2436 source files)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13096/dod-mypy-strict/command.yaml && grep -q
+          'no issues found' drift/dod_receipts/OMN-13096/dod-mypy-strict/command.yaml
+  - id: "dod-enforcer-exemption"
+    description: >-
+      omniclaude delegation-enforcer + delegate-shim tests pass (21 passed): skill_kind: dispatch bypasses
+      the enforcer, methodology does not, the real delegate skill bypasses; prompt.md is the single `onex
+      delegate` command with no bare `onex node`/workflow_result.json/mktemp and declares skill_kind:
+      dispatch.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13096/dod-enforcer-exemption/command.yaml &&
+          grep -q '21 passed' drift/dod_receipts/OMN-13096/dod-enforcer-exemption/command.yaml
+  - id: "dod-deploy-onex-delegate"
+    description: >-
+      The onex delegate subcommand is wired into the deployed omnibase_infra CLI entrypoints (onex.cli
+      group). Deploy verification: build the package and confirm `onex delegate --help` resolves the registered
+      subcommand so the single-command dispatch surface ships in the runtime CLI.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13096/dod-deploy-onex-delegate/command.yaml
+          && grep -q 'deploy' drift/dod_receipts/OMN-13096/dod-deploy-onex-delegate/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      onex_change_control OCC PR carries the OMN-13096 contract + dod receipts (self-binding OCC eligibility
+      receipt).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13096/dod-occ-pr-self/command.yaml
