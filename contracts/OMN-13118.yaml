@@ -167,3 +167,74 @@ dod_evidence:
         check_value: >-
           grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-runtime-deploy-strike5/command.yaml"
           && grep -q 'rpk topic produce' "drift/dod_receipts/OMN-13118/dod-runtime-deploy-strike5/command.yaml"
+  - id: "dod-tierb-longlived-correlator"
+    description: >-
+      TIER B canonical redesign (omnibase_infra PR for OMN-13118, epic OMN-12525). After strike-5 (#1972
+      independent per-terminal-topic consumers) ALSO FAILED the LIVE K>=10 stability-lane battery with
+      the identical wedge signature, the B0 re-examination (CONSUME_LEG_REDESIGN_DESIGN.md) established
+      that the strike-5 fix was applied to the WRONG path (RuntimePatternBBroker._dispatch_and_wait_with_direct_kafka_consumer,
+      which the context-ROI runner does NOT execute — its live consume leg is TerminalConsumerSession.wait
+      via handler_context_roi_runner._await_first_terminal -> ThreadPoolExecutor), and the runner was
+      ALREADY using independent consumers. The true defect class is the PER-TRIAL EPHEMERAL runtime-resource
+      lifecycle: a brand-new OS thread + asyncio loop + AIOKafkaConsumer + AIOKafkaClient (full bootstrap/metadata/coordination)
+      built and torn down for EVERY (trial x terminal-topic) — up to 80/run, 320+/battery — racing a ~1s
+      generation, so the COMPLETED leg silently never delivers while only the empty-set FAILED leg times
+      out at the 30s assign cap. B1 first ran the §5.1 M1-vs-M2 probe (B1_M1_M2_PROBE_RESULT.md): the
+      mechanism is undistinguished offline, but the failure is in the per-trial lifecycle (live ~30s bound
+      = assign/start cap, not the 120s trial timeout). Fix (service_terminal_event_consumer.py): replace
+      the per-trial TerminalConsumerSession with ONE runtime-lifetime LongLivedTerminalCorrelator — one
+      consumer subscribed once to BOTH terminal topics, a single poll loop, demuxing terminals to waiting
+      trials by correlation_id via a correlation_id->Future registry. A trial registers its cid BEFORE
+      publish (subscribe-before-publish at the consumer level), then awaits its future. No per-trial consumer/assign/pin/thread/loop/client
+      to race — the entire timing-bug class is structurally removed rather than re-tuned (mirrors the
+      working long-lived node_generation_consumer; ARCH-002 runtime owns Kafka plumbing). The open(topic)/register(cid)/wait
+      interface is preserved; session.close() is a no-op (closing would reintroduce the teardown-races-fetch
+      class). NEW honest real-dispatch repro tests/integration/test_terminal_consumer_longlived_correlator.py
+      drives the REAL correlator the way HandlerContextRoiRunner._run_trial does across K=10 x 2 cells
+      x 2 arms and asserts exactly ONE consumer is built for the WHOLE battery, every gap-landed COMPLETED
+      terminal is demuxed, both cells/arms advance with zero degenerate rows. RED genuineness verified
+      by git-stashing ONLY src/omnibase_infra/runtime/service_terminal_event_consumer.py and re-running
+      (the old per-trial substrate has no register()/correlator API). The per-trial-substrate repros (battery_load_wedge,
+      seek_reset_race, concurrent_assign_race, subscription_flip_wedge) and the open-failure leak test
+      were DELETED — they model machinery that no longer exists. NOT THE ACCEPTANCE GATE: per the plan
+      the consume-leg wedge is declared cleared ONLY by the LIVE K>=10 multi-cell context-ROI reprobe
+      on the stability lane (operator-gated rebuild) — a green unit test is necessary, not sufficient.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-tierb-longlived-correlator/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-tierb-longlived-correlator/command.yaml"
+  - id: "dod-tierb-local-verify"
+    description: >-
+      Full local verification on the Tier B changed surfaces. mypy src/omnibase_infra/runtime/service_terminal_event_consumer.py
+      --strict Success (no issues); ruff format + check clean on the new module + new test + rewritten
+      injection test; pre-commit all hooks Passed on changed files (incl. ONEX Union Usage, AI-slop, SPDX).
+      811 passed across the terminal/pattern_b/wiring/delegation/invocation surfaces with no regression.
+      Full unit suite 20474 passed; the only two failures (migration vendored-tree drift; verification
+      CLI registration_only) are PRE-EXISTING on clean origin/dev (proven by git-stash), unrelated to
+      this change. The one change-induced failure (non-optional union count 156>154 from two runtime set
+      | operations the AST union validator counted) was fixed by rewriting as set.union()/[*..] — guard
+      back GREEN at 154.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-tierb-local-verify/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-tierb-local-verify/command.yaml"
+  - id: "dod-tierb-occ-pr-self"
+    description: >-
+      This onex_change_control OCC PR carries the central OMN-13118 contract (updated for the Tier B long-lived-correlator
+      redesign) and the dod-tierb-longlived-correlator / dod-tierb-local-verify receipts that the omnibase_infra
+      code PR Receipt-Gate resolves via Evidence-Source: OCC#<this-pr> / Evidence-Ticket: OMN-13118 (self-binding
+      OCC eligibility receipt). Single-ticket identity binding — bound to OMN-13118 under epic OMN-12525,
+      no duplicate ticket spawned.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-tierb-occ-pr-self/command.yaml" &&
+          grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-tierb-occ-pr-self/command.yaml"
