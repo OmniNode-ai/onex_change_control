@@ -92,29 +92,27 @@ dod_evidence:
           -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-occ-pr-self/command.yaml"
   - id: "dod-seek-race-repro"
     description: >-
-      STRIKE-THREE follow-up (omnibase_infra PR #1971): the consume-leg wedge PERSISTED on REBUILD-4
-      (revision ab9d606d1, which contains PR #1970) because PR #1969 (set_topics no-op) and PR #1970
-      (partition-less assign-cap) each fixed the ASSIGN phase, not the SEEK timing. Refined root cause,
-      confirmed from the live REBUILD-4 runner log (HALT_K10_WEDGE_PERSISTS.md): the COMPLETED terminal
-      IS published every trial (the cid that 'wait failed' in cycle N is the correlation_id published to
-      COMPLETED in cycle N-1), yet the matrix re-fires cell 1 forever. AIOKafkaConsumer.seek_to_end is
-      LAZY — it calls Fetcher.request_offset_reset(partitions, LATEST), which only marks the partition
-      'awaiting reset'; the actual LATEST offset is resolved by a ListOffsets round-trip on the FIRST
-      getone(), AFTER the caller has published. With generation completing in ~1s (dispatch loop freed,
-      OMN-13010), the correlated COMPLETED terminal lands in the open()->poll gap, so the lazily-resolved
-      LATEST position is the high-water-mark AFTER the record and the poll reads PAST it — the trial never
-      correlates. Fix (service_pattern_b_broker.py): replace seek_to_end with a synchronous
-      end_offsets() + seek() pin (_pin_direct_terminal_end_offsets) in BOTH open_direct_terminal_consumer
-      and RuntimePatternBBroker._dispatch_and_wait_with_direct_kafka_consumer, so the read position is
-      fixed at open() time, BEFORE the publish — the real subscribe-before-publish guarantee. An empty
-      assignment (partition-less reply topic, #1970) remains a no-op. NEW repro
-      tests/integration/test_terminal_consumer_seek_reset_race.py drives the REAL
-      TerminalEventConsumer.open()/wait() the way HandlerContextRoiRunner._run_trial does — open BOTH
-      terminal topics per trial, publish the correlated COMPLETED terminal in the open->wait gap, race
-      the wait — across K=10 x 2 cells x 2 arms, with a fake that models seek_to_end FAITHFULLY as a
-      deferred LATEST reset (resolved to the live HWM on first poll). RED with the lazy reset (every cell
-      degenerate, COMPLETED terminal skipped); GREEN once the read offset is pinned synchronously. RED
-      verified by git-stashing ONLY src/omnibase_infra/runtime/service_pattern_b_broker.py and re-running.
+      STRIKE-THREE follow-up (omnibase_infra PR #1971): the consume-leg wedge PERSISTED on REBUILD-4 (revision
+      ab9d606d1, which contains PR #1970) because PR #1969 (set_topics no-op) and PR #1970 (partition-less
+      assign-cap) each fixed the ASSIGN phase, not the SEEK timing. Refined root cause, confirmed from
+      the live REBUILD-4 runner log (HALT_K10_WEDGE_PERSISTS.md): the COMPLETED terminal IS published
+      every trial (the cid that 'wait failed' in cycle N is the correlation_id published to COMPLETED
+      in cycle N-1), yet the matrix re-fires cell 1 forever. AIOKafkaConsumer.seek_to_end is LAZY — it
+      calls Fetcher.request_offset_reset(partitions, LATEST), which only marks the partition 'awaiting
+      reset'; the actual LATEST offset is resolved by a ListOffsets round-trip on the FIRST getone(),
+      AFTER the caller has published. With generation completing in ~1s (dispatch loop freed, OMN-13010),
+      the correlated COMPLETED terminal lands in the open()->poll gap, so the lazily-resolved LATEST position
+      is the high-water-mark AFTER the record and the poll reads PAST it — the trial never correlates.
+      Fix (service_pattern_b_broker.py): replace seek_to_end with a synchronous end_offsets() + seek()
+      pin (_pin_direct_terminal_end_offsets) in BOTH open_direct_terminal_consumer and RuntimePatternBBroker._dispatch_and_wait_with_direct_kafka_consumer,
+      so the read position is fixed at open() time, BEFORE the publish — the real subscribe-before-publish
+      guarantee. An empty assignment (partition-less reply topic, #1970) remains a no-op. NEW repro tests/integration/test_terminal_consumer_seek_reset_race.py
+      drives the REAL TerminalEventConsumer.open()/wait() the way HandlerContextRoiRunner._run_trial does
+      — open BOTH terminal topics per trial, publish the correlated COMPLETED terminal in the open->wait
+      gap, race the wait — across K=10 x 2 cells x 2 arms, with a fake that models seek_to_end FAITHFULLY
+      as a deferred LATEST reset (resolved to the live HWM on first poll). RED with the lazy reset (every
+      cell degenerate, COMPLETED terminal skipped); GREEN once the read offset is pinned synchronously.
+      RED verified by git-stashing ONLY src/omnibase_infra/runtime/service_pattern_b_broker.py and re-running.
       The two prior consume-leg fakes were updated to model end_offsets/seek (they previously masked the
       bug by making seek_to_end a synchronous exact snapshot).
     source: "manual"
@@ -122,5 +120,5 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: >-
-          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml" && grep
-          -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml"
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml" &&
+          grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml"
