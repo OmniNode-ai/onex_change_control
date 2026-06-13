@@ -122,3 +122,48 @@ dod_evidence:
         check_value: >-
           grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml" &&
           grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml"
+  - id: "dod-subscription-flip-repro"
+    description: >-
+      STRIKE-FIVE follow-up (omnibase_infra PR #1972). The consume-leg wedge PERSISTED on REBUILD-5 (revision
+      cdf53d963f7b, which contains PR #1971) because #1969 (set_topics no-op), #1970 (partition-less assign-cap)
+      and #1971 (synchronous end_offsets+seek pin) each fixed the ASSIGN / SEEK phases, NOT the consumer-subscription
+      structure. Converged diagnosis (strikes 3+4, HALT_K10_WEDGE_PERSISTS.md + CONSUME_LEG_DECISION.md):
+      the runtime waited for each trial's terminal across TWO topics (node-generation-completed.v1 + node-generation-failed.v1)
+      using ONE ephemeral group_id=None AIOKafkaConsumer assigned BOTH topics' partitions. A single aiokafka
+      consumer holds ONE manual subscription; the live log captured the alternating 'Updating subscribed
+      topics' flip and a clean 1:1 cid pairing — the COMPLETED delivery window collapsed before surfacing
+      the correlated record. Fix (service_pattern_b_broker.py): RuntimePatternBBroker._dispatch_and_wait_with_direct_kafka_consumer
+      now opens ONE INDEPENDENT consumer per terminal topic via open_direct_terminal_consumer (each assigned
+      + offset-pinned at open() BEFORE publish) and awaits them CONCURRENTLY via asyncio.wait(FIRST_COMPLETED)
+      in a new _race_correlated_terminals helper; first correlated terminal wins, both torn down. No consumer
+      holds two subscriptions. The #1970 partition-less no-op and #1971 offset pin are preserved. NEW
+      repro tests/integration/test_terminal_consumer_subscription_flip_wedge.py drives the REAL RuntimePatternBBroker.dispatch_request
+      across K=10 x 2 cells x 2 arms, with a fake that models the flip HONESTLY (delivery faithful only
+      for a single-topic assignment; a consumer spanning both topics flips and DROPS the COMPLETED record).
+      RED genuineness: revert ONLY the source to the single-consumer-both-topics shape — the test hangs
+      past its @pytest.mark.timeout; GREEN with the independent-consumer fix in ~2.3s. The prior consume-leg
+      fakes masked this by collapsing both waits onto one fake consumer.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-subscription-flip-repro/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-subscription-flip-repro/command.yaml"
+  - id: "dod-runtime-deploy-strike5"
+    description: >-
+      Runtime-path change (src/omnibase_infra/runtime/service_pattern_b_broker.py) for the strike-5 independent-consumer
+      fix (#1972) — pre-deploy gate. Asserts the PRE-DEPLOY proof that authorizes queueing the fix for
+      a runtime rebuild: the subscription-flip repro is RED-then-GREEN and local verify is clean. It does
+      NOT assert the live acceptance: per the weekend standing orders the consume-leg wedge is declared
+      cleared ONLY by the LIVE K>=10 multi-cell context-ROI re-probe on the stability lane (operator-gated
+      REBUILD-6) — the explicit lesson of four prior RED->GREEN unit fixes that each wedged live. That
+      live reprobe is the deferred acceptance gate, operator-gated and tracked separately, NOT claimed
+      here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-runtime-deploy-strike5/command.yaml"
+          && grep -q 'rpk topic produce' "drift/dod_receipts/OMN-13118/dod-runtime-deploy-strike5/command.yaml"
