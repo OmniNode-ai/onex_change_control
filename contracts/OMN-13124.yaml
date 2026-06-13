@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13124"
+title: "Add node_projection_pattern_learning (pattern-stored.v1 -> pattern_learning_artifacts)"
+summary: >-
+  The pattern_learning golden chain had no consume-leg: onex.evt.omniintelligence.pattern-stored.v1 had
+  no projection consumer, so the pattern_learning_artifacts tail table was never written and the golden-chain
+  sweep timed out (0/N). This ticket adds node_projection_pattern_learning, a reducer projection node
+  that subscribes to pattern-stored.v1, UPSERTs into pattern_learning_artifacts keyed on pattern_id (latest-state-wins),
+  preserves richer materialized evidence when a later sparse event arrives (mirrors node_projection_delegation._preserve_existing_evidence),
+  and emits onex.evt.omnimarket.projection-pattern-learning-applied.v1. Ships the node (contract.yaml,
+  metadata.yaml, HandlerProjectionPatternLearning projection handler + PatternLearningProjectionRunner
+  Kafka consume-leg), the migration 0000_create_pattern_learning_artifacts.sql (target DB omnidash_analytics),
+  the pyproject.toml entry-point, and golden-chain tests including an OMN-13121-style row-delta proof
+  (test_row_delta_before_zero_after_one: before=0, project one terminal, after=exactly 1 row). The runtime
+  dogfood inventory count is bumped 300 -> 301 for the new addressable node.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR (branch jonah/omn-13124-pattern-learning-projection, base=dev, head 67d9a540f679ddde0775a8f92742f55e844528e1).
+      Adds node_projection_pattern_learning, the missing consume-leg for the pattern_learning golden chain:
+      pattern-stored.v1 -> pattern_learning_artifacts via UPSERT on pattern_id. Row-delta regression test
+      test_row_delta_before_zero_after_one GREEN (before=0, project one terminal, after=exactly 1 row).
+      Node golden-chain suite 10/10 GREEN; runtime dogfood 4/4 GREEN (entry-point inventory 301, no missing/dangling).
+      ruff clean, mypy --strict clean (5 source files). Any Kafka integration failures are env-only (no
+      broker reachable in worktree), not code regressions.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The node is NOT yet live on the dev lane. No live deploy,
+      restart, topic mutation, or .201 mutation was performed. For the golden-chain pattern_learning chain
+      to flip green, the new pattern_learning_artifacts migration must be applied to omnidash_analytics
+      and the PatternLearningProjectionRunner consumer deployed; this PR ships code + migration + wiring
+      only. The change lands on dev via a coordinated dev redeploy folded with OMN-13121 / OMN-13122,
+      and the pattern_learning row-materialization is only observable after that batched dev lane rebuild.
+      Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13124 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-occ-pr/command.yaml"
