@@ -1,0 +1,92 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13118"
+title: "fix(runtime): terminal-consumer consume-leg wedges under sustained multi-trial battery load (post-OMN-13012)"
+summary: >-
+  SIXTH distinct defect on the context-ROI experiment runtime consume leg, load-dependent and surfacing
+  only AFTER OMN-13012 (omnibase_infra PR #1969) closed the metadata-no-op assign race. OMN-13012 made
+  the narrow K>=2/single-task probe pass, but the full Exp 1 battery (K=10 x 8 tasks = 160 calls) STILL
+  WEDGED on the stability REBUILD-3 image (revision 7aa998bf7dd4): per-trial the COMPLETED-topic terminal
+  consumer never correlated; the runner logged 'wait failed ... topic=node-generation-failed.v1' with
+  an EMPTY exception every ~30s; context-roi-run-completed watermark FROZEN; node-generation-failed HWM
+  0; zero non-degenerate rows. Independently verifier-confirmed HALT_CONFIRMED (HALT_VERIFIER_SIGNOFF.md).
+  Root cause (omnibase_infra runtime, NOT the omnimarket handler — handler confirmed correct by the prior
+  two-strike diagnosis): HandlerContextRoiRunner opens ONE ephemeral group_id=None terminal consumer PER
+  terminal topic BEFORE publishing each generation command (subscribe-before-publish, OMN-13012/13038),
+  serially. The FAILED reply topic (onex.evt.omnimarket.node-generation-failed.v1) is only produced to
+  on contract_passed=False; in a battery where generations pass it has ZERO messages, so Redpanda (auto-create
+  on first produce) never advertises any partition for it. service_pattern_b_broker._assign_direct_terminal_partitions
+  then spins forcing metadata refreshes until the full 30s _DIRECT_TERMINAL_ASSIGN_TIMEOUT_CAP_SECONDS
+  cap and raises a bare TimeoutError (the empty-message 'wait failed'). Because that open is INLINE in
+  the per-trial pre-publish phase, EVERY trial blocks ~30s on the partition-less FAILED open before it
+  can correlate the COMPLETED terminal — a 160-trial battery needs >80 min and never completes in window.
+  Fix: a partition-less reply topic is a VALID steady state, not a 30s error. _assign_direct_terminal_partitions
+  now gives a bounded grace window (_DIRECT_TERMINAL_PARTITIONLESS_GRACE_SECONDS) for a topic that exists
+  but is slow to surface metadata; after it, the broker's answer is taken as authoritative — assign whatever
+  partitions exist (possibly none) and return promptly instead of burning the cap and raising. A consumer
+  with an empty assignment is positioned (seek_to_end is a no-op) and poll_direct_terminal_consumer treats
+  it as 'no terminal will arrive here' (sleeps out its own timeout, returns None) WITHOUT calling getone()
+  on an unassigned consumer (which would raise IllegalStateError). The COMPLETED-topic session, opened
+  separately and assigned its real partition, wins the cross-topic race and correlates fast.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on the omnibase_infra merge PR"
+    command: "gh pr checks"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-full-battery-repro"
+    description: >-
+      A NEW full-battery repro test in omnibase_infra reproduces the wedge RED then proves the fix GREEN.
+      tests/integration/test_terminal_consumer_battery_load_wedge.py drives the REAL TerminalEventConsumer
+      (the object the runtime injects as event_consumer) through the REAL open_direct_terminal_consumer
+      / poll_direct_terminal_consumer code path the way HandlerContextRoiRunner._run_trial does: open
+      BOTH terminal topics per trial, publish, race the COMPLETED wait — across K=10 trials over 2 cells
+      x 2 arms (40 trials). AIOKafkaConsumer is monkeypatched to a fake that faithfully models a never-written
+      FAILED reply topic (broker advertises NO partitions) and a fast generation (correlated COMPLETED
+      terminal published immediately). The assign cap is scaled to 1.5s so the per-trial cap-burn is observable
+      in a fast test. RED (fix reverted): all 40/40 trials each block ~one full assign cap (1.55s scaled
+      == 30s live) on the partition-less FAILED open before the COMPLETED terminal can correlate, proving
+      the >80 min / never-completes battery wedge. GREEN (fix applied): every trial returns the partition-less
+      FAILED open after the bounded grace, correlates its COMPLETED terminal, and the whole 40-trial battery
+      passes in ~9s with zero degenerate rows and both cells/arms advanced. The RED was verified by git-stashing
+      only the source fix and re-running (40/40 slow_trials RED), then restoring (GREEN) — the test is
+      genuinely gated on the source fix, not on test scaling.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-full-battery-repro/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-full-battery-repro/command.yaml"
+  - id: "dod-local-verify"
+    description: >-
+      Full local verification on the changed surfaces. ruff format + ruff check clean on service_pattern_b_broker.py
+      and the new integration test; mypy src/omnibase_infra/runtime/service_pattern_b_broker.py --strict
+      Success (no issues); the new battery repro + the OMN-13012 concurrent-assign-race test + the full
+      tests/unit/runtime/ suite pass (4883 passed, 5 skipped). No existing pattern-b / terminal consumer
+      test regressed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-local-verify/command.yaml" && grep
+          -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-local-verify/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      This onex_change_control OCC PR carries the central OMN-13118 contract and the dod-full-battery-repro
+      / dod-local-verify receipts that the omnibase_infra code PR Receipt-Gate resolves via Evidence-Source:
+      OCC#<this-pr> / Evidence-Ticket: OMN-13118 (self-binding OCC eligibility receipt).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-occ-pr-self/command.yaml" && grep
+          -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-occ-pr-self/command.yaml"
