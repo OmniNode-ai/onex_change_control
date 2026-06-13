@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13094
+title: "Phase 2a: --output receipt mode on onex node/run"
+summary: >-
+  Add --output receipt to onex node/onex run (omnibase_infra). Receipt mode
+  routes ALL RuntimeLocal logging to a run_id-suffixed capture file under the
+  state root (no console handlers — kills the 25-50-line INFO stream at the
+  source), content-addresses the full capture log and full handler result in
+  the omnibase_core ArtifactStore (OMN-13093), emits artifact.captured +
+  tool.output.captured via the emit daemon socket (spool-on-failure), and
+  prints exactly one typed ModelSkillResult JSON carrying the full handler
+  result to stdout. Failure asymmetry: artifact write failure prints the FULL
+  output (no hidden loss); emission failure still prints the receipt and spools
+  the event for replay. Default output mode unchanged (enforcement is Phase 4).
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "onex node --output receipt (CLI flag, omnibase_infra.cli.cli_node)"
+  - "onex run --output receipt (CLI flag, omnibase_infra.cli.cli_node)"
+  - "omnibase_infra.cli.receipt_mode.run_receipt_mode"
+  - "omnibase_infra.runtime.runtime_local.RuntimeLocal.handler_result"
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on merge PR"
+    command: "gh pr checks"
+  - kind: "test"
+    description: >-
+      Receipt-mode acceptance probes pass: stdout parses as exactly one
+      ModelSkillResult; zero runtime INFO lines on stdout/stderr; artifacts
+      retrievable and hash-verified; events spooled when daemon unreachable;
+      failure asymmetry both directions; default mode unchanged.
+    command: "uv run pytest tests/unit/cli/test_cli_node_receipt.py -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "PR opened against dev branch"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --json state -q .state --repo ${REPO}"
+  - id: "dod-002"
+    description: "PR merged"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --json mergedAt -q .mergedAt --repo ${REPO}"
+  - id: "dod-003"
+    description: "Tests pass in CI"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --watch --repo ${REPO}"
+  - id: "dod-004"
+    description: "Receipt-mode unit + acceptance tests pass (20 passed)"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/cli/test_cli_node_receipt.py tests/unit/cli/test_cli_node.py tests/unit/cli/test_onex_run.py -v"
+  - id: "dod-005"
+    description: "mypy --strict clean across src/"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run mypy src/ --strict"
