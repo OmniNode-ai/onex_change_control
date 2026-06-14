@@ -238,3 +238,91 @@ dod_evidence:
         check_value: >-
           grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-tierb-occ-pr-self/command.yaml" &&
           grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-tierb-occ-pr-self/command.yaml"
+  - id: "dod-omnimarket-runner-pr"
+    description: >-
+      omnimarket PR #1212 (branch jonah/omn-13118-runner-register-order, base=dev, head cc1f658dbff07f20172a95ec5004c353866e09f6).
+      Runner half of the consume-leg closing pair: hoists register(correlation_id) to run on both terminal
+      sessions BEFORE the generation command publish, per the two-phase open -> register -> publish ->
+      wait contract. The always-on poll loop in the injected long-lived correlator reads the correlated
+      COMPLETED terminal during the publish -> generation -> wait window; with register() folded into
+      the post-publish wait() the cid was not in the pending registry when getone() read the terminal,
+      so the terminal was UNMATCHED-dropped. Idempotent (wait() re-registering the same cid is a no-op);
+      duck-typed (TerminalConsumerSessionLike does not declare register(); legacy/None sessions skip it).
+      Files: handler_context_roi_runner.py (hoist register before publish) + new test_register_before_publish.py
+      (register-before-publish ordering invariant). ruff clean; mypy --strict Success (no issues in 1
+      source file); the register-before-publish ordering test PASSES. The unit test guards only the ordering
+      invariant the live trace pinned; ACCEPTANCE is the live K>=10 gate (dod-live-gate), not this unit
+      test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-omnimarket-runner-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-omnimarket-runner-pr/command.yaml"
+  - id: "dod-omnibase-infra-correlator-pr"
+    description: >-
+      omnibase_infra PR #1975 (branch jonah/omn-13118-correlator-handoff-fix, base=dev, head fdc5f35b15d907817837898a7d7b7b16465d0393).
+      Correlator half of the consume-leg closing pair: LongLivedTerminalCorrelator._deliver resolves the
+      matched future IN PLACE (self._pending.get(cid) + future.set_result(body) — no pop on match) and
+      _wait OWNS removal (pops the cid in a finally on BOTH success and timeout). This closes the P_RESOLVE_BEFORE_AWAIT
+      race: the always-on poll loop typically matches the correlated terminal BEFORE the runner's wait()
+      attaches (publish -> generation -> wait latency ~28s observed live); with the old pop-on-match _deliver
+      the resolved future was removed the instant it matched, so the late _wait found nothing, created
+      a fresh unresolved future, and timed out. Idempotent under duplicate delivery via the existing future.done()
+      guard. Two-line load-bearing change in service_terminal_event_consumer.py (pop -> get in _deliver;
+      registry removal moved to _wait's finally). NO DIAG13118 instrumentation in this PR — clean fix
+      only. New regression test test_terminal_correlator_resolve_before_await.py pins the ordering (register
+      -> append terminal -> block until future done() -> THEN wait -> assert body), verified RED->GREEN.
+      ruff clean; mypy --strict Success (no issues in 1 source file); correlator + injection + longlived
+      suite 7 passed. ACCEPTANCE is the live K>=10 gate (dod-live-gate), not this unit test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-omnibase-infra-correlator-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-omnibase-infra-correlator-pr/command.yaml"
+  - id: "dod-live-gate"
+    description: >-
+      THE DECISIVE EVIDENCE — the LIVE K>=10 multi-cell context-ROI re-probe on the stability-test lane,
+      the acceptance gate the standing orders require (six+ prior RED->GREEN unit fixes each wedged live;
+      a green unit test is necessary, not sufficient). reprobe-K10-rebuild10 (2026-06-13T23:39Z, omnibase-infra-stability-test
+      :18085/:18086, projection-api :13002) VERDICT PASS: K=10/cell, tasks bool_flag + address_norm, arms
+      off + golden_exemplar = 4 cells = 40 trials. Both fixes live together (omnimarket cc1f658d runner
+      register-before-publish + omnibase_infra correlator resolve-in-place). All 40 trials' primary wait()
+      logged RESOLVED (rebuild-9 had RESOLVED=0 with 3 'no terminal event received' warnings; rebuild-10
+      had 0 warnings). Terminal context-roi-run-completed.v1 HWM advanced 22 -> 24. Projection total_rows
+      448 -> 488 (+40); rows_for_fresh_run_id = 40 via projection API (20 bool_flag + 20 address_norm,
+      40 distinct cids, sample final_success=True first_pass_success=True attempt_count=1). Aggregate
+      trace MATCHED=80, UNMATCHED=0, RESOLVED=40, trial-terminal TIMEOUT=0. (Residual TIMEOUT=39 / NO_PRE_REGISTER=40
+      are the benign second-redundant-waiter from the runner opening two sessions per trial sharing one
+      cid — reported, not suppressed.) Evidence bundle cited: docs/evidence/2026-06-12-weekend-pass/experiments/probe4-stability/reprobe-K10-rebuild10/FINDINGS.md.
+      HONEST PAIRING NOTE: the live-proven deploy commit 0d958ea45 carried DIAG13118 instrumentation alongside
+      the identical logical correlator fix; PR #1975 ships that same load-bearing change WITHOUT instrumentation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-live-gate/command.yaml" && grep -q
+          '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-live-gate/command.yaml" && grep
+          -q 'rows_for_fresh_run_id' "drift/dod_receipts/OMN-13118/dod-live-gate/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment (HONEST). The fix pair is PROVEN on the stability-test lane by the live K>=10
+      rebuild-10 PASS — that is the strongest possible acceptance proof. It is NOT yet deployed to the
+      dev lane: the stability-test lane (:18085/:18086) and the dev lane are distinct runtime lanes, and
+      the canonical-deploy step is a coordinated dev redeploy that lands both PRs (omnimarket #1212 +
+      omnibase_infra #1975) together. This receipt explicitly does NOT claim the fix is dev-deployed and
+      does NOT claim organic context-ROI rows are materializing on the dev lane. It asserts: (1) both
+      impl PRs are correct and green locally; (2) the pair is live-proven on the stability lane; (3) the
+      coordinated dev redeploy remains a separate operator-gated step. No banned bypass tokens.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-deploy-assessment/command.yaml" &&
+          grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-deploy-assessment/command.yaml"
+          && grep -q 'stability-test lane' "drift/dod_receipts/OMN-13118/dod-deploy-assessment/command.yaml"
