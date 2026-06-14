@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13141"
+title: "runtime executor half — _run_event_driven skips event_model import for operation_match entries"
+summary: >-
+  Executor companion to OMN-13137 (#1973, merged on dev), which fixed only the validator half. RuntimeLocal._run_event_driven
+  unconditionally called importlib.import_module(entry.event_model_module) for every resolved routing
+  entry; the except clause caught only (ImportError, AttributeError). operation_match routing entries
+  (e.g. node_integration_sweep_orchestrator) declare no event_model, so _resolve_routing_entries yields
+  event_model_module="", and importlib.import_module("") raised ValueError: Empty module name at runtime_local.py:816
+  — NOT caught by the except clause, swallowed by the outer except Exception in run_async, producing workflow
+  result FAILED. The node never booted end-to-end. The fix gates the import block on a non-empty event_model_module:
+  operation_match forwards the raw decoded payload (LocalRuntimeBusAdapter input_model_cls=None); only
+  payload_type_match resolves a typed event model. _validate_routing (the OMN-13137 half) is left untouched.
+  A CI boot gate (tests/unit/runtime/test_run_event_driven_operation_match.py) runs an operation_match
+  contract through RuntimeLocal.run_async() and asserts no empty-module ValueError, plus a payload_type_match
+  regression guard.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR #1982 (branch jonah/omn-13141-executor-event-model, base=dev, head 6d9402bbe43dc3379f4a2e72de35a60c5f0d7262).
+      Fixes _run_event_driven to skip the event-model import for operation_match entries and forward the
+      raw decoded payload. New boot test test_run_event_driven_operation_match.py FAILS (2/3) on origin/dev
+      — reproducing the ValueError: Empty module name at runtime_local.py:816 — and PASSES (3/3) with
+      the fix. Full tests/unit/runtime/ suite GREEN (4886 passed, 5 pre-existing skips). ruff clean, mypy
+      --strict clean on changed files, pre-commit (incl. union budget gate) passes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13141/dod-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13141"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13141/dod-infra-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Paired OCC receipt PR in onex_change_control (this PR) carries the contract + PASS receipts for
+      OMN-13141 with Evidence-Source 6d9402bbe43dc3379f4a2e72de35a60c5f0d7262.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13141/dod-occ-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = false-by-design. The change is an internal correctness fix to
+      the local-runtime event-driven executor (_run_event_driven) and its bus adapter. No new Kafka topics,
+      no schema changes, no container image changes, no API surface changes, no .201 mutation. A runtime
+      restart picks up the change automatically on the next dev redeploy; no standalone live deploy is
+      required for this PR. Do not claim a live deploy was performed.
+    source: "manual"
