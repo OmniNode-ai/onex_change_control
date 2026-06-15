@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13158"
+title: "next_eligible_tier ignores task-class escalation_policy.tier_order — code_generation never escalates;
+  closed-set semantics"
+summary: >-
+  next_eligible_tier() in handler_delegation_routing.py ignored the task-class escalation_policy.tier_order
+  and always iterated routing_tiers.yaml declaration order regardless of task_type. For code_generation
+  (contract order cheap_cloud -> local -> claude) a cheap_cloud failure could not reach local next, so
+  escalation stalled at the local/Qwen tier and the cloud tier was never reached (live repro CID f97e21c5-b29c-4bbb-9b23-d9098dcc56cb:
+  started at cheap_cloud on glm-4.5, quality gate recommended fallback, terminal no_higher_tier_available,
+  escalation_count=0). The fix also corrected a latent defect in _tier_order_from_contract(), which appended
+  tiers NOT listed in tier_order after the declared order — re-opening the closed set and letting a task
+  escalate past its declared ceiling into an unlisted tier (e.g. test declares [local, cheap_cloud, claude]
+  but escalated into cheap_frontier after claude). escalation_policy.tier_order is now the COMPLETE, CLOSED,
+  ORDERED set of eligible tiers for a task class; next_eligible_tier resolves the task-class entry and
+  uses _tier_order_from_contract when task_type is provided; task_type=None preserves legacy declaration-order
+  behavior (backward-compat). omnimarket PR #1227 (branch jonah/omn-13140-codegen-tier-order, base=dev,
+  head 51149f7af5cb385687d07d7d7df29cb39bc2bc14) carries the fix. Config-docstring + handler-logic + tests
+  only — no DDL, no migration, no live deploy, no .201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused delegation tests prove closed-set tier_order: next_eligible_tier(task_type="code_generation")
+      returns local after a cheap_cloud failure (contract order respected); task-unaware (task_type=None)
+      calls remain forward-only in declaration order; tiers absent from a task class tier_order are never
+      tried for that class.
+    command: >-
+      uv run pytest tests/unit/delegation/test_delegation_tier_escalation.py tests/unit/delegation/test_cloud_escalation_omn13140.py
+      tests/unit/delegation/test_delegation_orchestrator.py -q
+  - kind: "ci"
+    description: >-
+      omnimarket PR #1227 CI green (full suite no -k filter, ruff, ruff format, mypy --strict, pre-commit).
+      This is operator-gated: the PR is a DRAFT and CI verification + merge are pending operator review.
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+# dod_evidence below is SCAFFOLDED with status: "pending". The dod_receipts/ PASS files that each
+# check_value greps for are intentionally NOT authored in this draft pass — PR #1227 is a DRAFT (not
+# merged) and the dev lane is currently DOWN, so a real merged-head receipt and the post-fix Gemini
+# code_generation repro cannot be produced honestly overnight. No PASS receipt is fabricated: the
+# receipt files are absent, so the downstream Receipt-Gate stays RED until the operator completes the
+# steps in each item's TODO. This block exists to satisfy the dod-evidence-required structural gate
+# without claiming verification that has not happened.
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR #1227 (branch jonah/omn-13140-codegen-tier-order, base=dev, head 51149f7af5cb385687d07d7d7df29cb39bc2bc14)
+      makes next_eligible_tier honor the task-class escalation_policy.tier_order as a closed set. Focused
+      delegation suite green in the worktree (76 passed across test_delegation_tier_escalation.py + test_cloud_escalation_omn13140.py
+      + test_delegation_orchestrator.py); mypy --strict clean on the handler; ruff/ruff-format clean.
+      TODO(operator): after the PR is merged, author drift/dod_receipts/OMN-13158/dod-omnimarket-pr/command.yaml
+      with the real merged head SHA + pr_number, status: PASS, verifier != runner, and probe_stdout from
+      the green full-suite CI run.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13158/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13158"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13158/dod-omnimarket-pr/command.yaml"
+          && grep -q '^pr_number: 1227$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13158/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The closed-set tier_order fix is config-docstring + handler-logic
+      + tests only and is NOT yet live on the dev lane. No live deploy, restart, topic mutation, or .201
+      mutation was performed. The live post-fix proof (code_generation escalation advancing cheap_cloud
+      -> local -> claude rather than no_higher_tier_available, with escalation_count incrementing) is
+      observable only after the next dev redeploy AND is additionally blocked because the dev lane is
+      currently DOWN. Do not claim deployed. TODO(operator): after redeploy, author drift/dod_receipts/OMN-13158/dod-deploy-assessment/command.yaml
+      reflecting real deploy state.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13158/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13158"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13158/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13158/dod-deploy-assessment/command.yaml"
