@@ -1,4 +1,15 @@
-# Implementation Readiness Review
+# Implementation Readiness Review [ARCHIVED — pre-v0.5.0]
+
+> **This document is a historical artifact from before v0.5.0 (circa early 2026).
+> All issues identified below as open or HIGH PRIORITY are resolved:**
+>
+> - "No CLI Entrypoint" — resolved: 20+ CLI entry points are registered in `pyproject.toml [project.scripts]`
+> - "Scripts in root scripts/ not src/" — resolved: all scripts live under `src/onex_change_control/scripts/`
+> - "No version mapping policy" — resolved: see `docs/VERSIONING_POLICY.md`
+>
+> Do not act on findings in this document. It is preserved for historical reference only.
+
+---
 
 ## Executive Summary
 
