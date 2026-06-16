@@ -1,7 +1,7 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13158"
-title: "next_eligible_tier honors task-class escalation_policy.tier_order as a closed set"
+title: "code_generation escalation reaches OAuth-backed headless Codex"
 summary: >
   OMN-13158 fixes the delegation escalation bug found by the 2026-06-15 runtime integration sweep: code_generation
   could start at cheap_cloud, fail the quality gate, and terminate with no_higher_tier_available because
@@ -12,10 +12,13 @@ summary: >
   when task_type is provided, and preserves declaration-order behavior when task_type is omitted. It also
   closes the latent leak where tiers absent from a class tier_order were appended and tried after the
   declared ceiling. Follow-up runtime proof after deploy showed the fixed runtime now escalates cheap_cloud
-  -> local, but cannot reach the declared claude tier on installed lanes because runtime_policy.contract.yaml
-  omitted the llm.anthropic.api_key secret resolver mapping. omnibase_infra PR #1996 adds that contract-owned
-  mapping for dev, stability-test, and judge lanes so installed runtimes with ANTHROPIC_API_KEY can resolve
-  the cloud-sonnet backend declared by omnimarket.
+  -> local, and also exposed that the declared final claude tier was the wrong operational model for installed
+  lanes because OmniNode uses local OAuth/subscription CLI sessions rather than an Anthropic API key.
+  The follow-up omnimarket PR #1233 changes code_generation escalation to cheap_cloud -> local -> cli_agents,
+  registers codex-cli/cli-codex as the first cli_agents backend, and treats CLI backends as subprocess
+  transports. The paired omnibase_infra PR #1996 removes the superseded Anthropic secret-map change, registers
+  codex-cli in infra routing config, and lets the generic CLI subprocess handler resolve auto-wired codex-cli/claude-cli/
+  gemini-cli/opencode-cli requests from request.model.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -46,19 +49,27 @@ dod_evidence:
           && grep -q 'live-runtime proof follows merge' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-deploy-assessment/command.yaml\""
   - id: "dod-occ-pr-self"
     description: >-
-      The paired onex_change_control PR carries this central OMN-13158 contract and the dod-omnimarket-1231-head
-      / dod-deploy-assessment receipts that omnimarket PR #1231 resolves via Evidence-Source and Evidence-Ticket.
+      The paired onex_change_control PR carries this central OMN-13158 contract and the receipts used
+      by omnimarket#1233 and omnibase_infra#1996 via Evidence-Source and Evidence-Ticket.
     source: "manual"
     checks:
       - check_type: "command"
         check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-occ-pr-self/command.yaml\""
-  - id: "dod-omnibase-infra-1996-anthropic-secret-map"
+  - id: "dod-omnimarket-1233-headless-codex"
     description: >-
-      omnibase_infra PR #1996 maps the logical llm.anthropic.api_key ref to ANTHROPIC_API_KEY in the contract-owned
-      runtime policy for dev, stability-test, and judge lanes, then regenerates docker/runtime-policy.env.
-      Focused validation passed: runtime-policy render check and 11 targeted policy/compose tests; 3 local
-      Docker/compose checks skipped because Docker/compose is unavailable in the local runner.
+      omnimarket PR #1233 carries the headless Codex routing follow-up at head 966b6d78d4592f9eac401addd6e6e36d858a56c0.
+      It changes code_generation escalation to cheap_cloud -> local -> cli_agents, registers codex-cli/cli-codex
+      as the first CLI agent backend, and keeps CLI backends routable with a subprocess:// transport marker.
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnibase-infra-1996-anthropic-secret-map/command.yaml\""
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnimarket-1233-headless-codex/command.yaml\""
+  - id: "dod-omnibase-infra-1996-headless-codex"
+    description: >-
+      omnibase_infra PR #1996 carries the infra side of the headless Codex fix at head f6fde38ccf91a72b8f10260b1cd20acb765fe0a2.
+      It removes the superseded Anthropic API-key runtime-policy mapping, registers codex-cli in cli_agents,
+      documents the contract behavior change, and resolves auto-wired CLI subprocess requests from request.model.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnibase-infra-1996-headless-codex/command.yaml\""
