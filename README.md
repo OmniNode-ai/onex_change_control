@@ -143,19 +143,32 @@ uv run validate-agent-yaml <path-to-agent.yaml>
 ```text
 onex_change_control/
 ├── src/onex_change_control/
+│   ├── boundaries/       # Kafka boundary rules and DB routing rules (yaml configs)
+│   ├── canary/           # Canary schema definitions
+│   ├── cosmetic/         # Cosmetic lint tooling (spec.yaml, CLI)
+│   ├── dispatch_claims/  # Dispatch claim store and sweeper
+│   ├── doctrine/         # Doctrine loader — authoritative policy configuration
 │   ├── enums/            # Enum* types (EnumDriftCategory, EnumEvidenceKind, ...)
+│   ├── eval/             # A/B evaluation framework (suite manager, comparator)
+│   ├── handlers/         # Handler implementations (dod_sweep, drift_analysis, dependency_analysis)
+│   ├── kafka/            # Governance Kafka topics and event emitter
 │   ├── models/           # Model* Pydantic schemas (ModelDayClose, ModelTicketContract, ...)
 │   ├── nodes/            # ONEX node implementations (drift compute/reducer/effect/orchestrator)
-│   ├── scripts/          # CLI entry points (validate_yaml, check_schema_purity, ...)
-│   ├── eval/             # Evaluation framework (suite manager, comparator)
-│   ├── cosmetic/         # Cosmetic lint tooling
-│   └── validation/       # Shared validation helpers (patterns, SEMVER_PATTERN)
+│   ├── overseer/         # Orchestration models: 14 models + 14 enums for worker/session/dispatch
+│   ├── promotion/        # Promotion tooling: manifest generation, workflow evidence, dev→main cutover
+│   ├── scanners/         # Doc-freshness, handler compliance, wire-schema compliance scanners
+│   ├── scripts/          # CLI entry point implementations (20+ registered scripts)
+│   ├── testing/          # Wire schema test generator
+│   ├── validation/       # Shared validation helpers (patterns, SEMVER_PATTERN)
+│   ├── validators/       # Architectural validators (handler contract compliance, cross-schema coherence)
+│   └── wire_schemas/     # Wire schema YAML definitions (occ_nightly_promotion_v1, etc.)
 ├── schemas/              # Exported JSON schemas (immutable per version)
 ├── templates/            # YAML template files for artifact authoring
 ├── contracts/            # Per-ticket contract YAML files
 ├── drift/                # Day-close reports and DoD receipts
 │   ├── day_close/        # Historical day_close YAML artifacts
 │   └── dod_receipts/     # Per-ticket DoD receipts (canonical receipt location)
+├── allowlists/           # Per-repo compliance allowlist YAML files
 ├── eval_suites/          # Eval suite definitions (standard_v1.yaml)
 ├── docs/                 # Governance design, policy, and reference docs
 └── tests/                # pytest test suite
