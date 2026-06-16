@@ -1,0 +1,61 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13164
+title: "fix(OMN-13164): fail fast with typed error when KAFKA_BOOTSTRAP_SERVERS unset"
+summary: >
+  Foreground merge-sweep dispatch silently fell back to localhost:19092 when KAFKA_BOOTSTRAP_SERVERS was
+  not set, entering a 30-second aiokafka connection-retry loop before raising an opaque InfraTimeoutError.
+  Fix: _check_bus_target_configured() raises ProtocolConfigurationError immediately before EventBusKafka
+  is constructed, naming the missing env var. CLI emits a typed JSON blocker packet (bus_target_not_configured).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: 5 unit tests in TestBusTargetPreflightGuard all pass green
+    command: "uv run pytest tests/test_codex_runtime_client.py::TestBusTargetPreflightGuard -v"
+  - kind: tests
+    description: >
+      _check_bus_target_configured() raises ProtocolConfigurationError before EventBusKafka.default()
+      is called when KAFKA_BOOTSTRAP_SERVERS is absent
+    command: "uv run pytest tests/test_codex_runtime_client.py -v"
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      ProtocolConfigurationError raised immediately when KAFKA_BOOTSTRAP_SERVERS is absent — no 30-second
+      Kafka connection-retry loop
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_codex_runtime_client.py::TestBusTargetPreflightGuard::test_raises_protocol_configuration_error_when_env_var_missing
+          -v"
+  - id: dod-002
+    description: CLI main() emits typed JSON blocker packet with code bus_target_not_configured
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_codex_runtime_client.py::TestBusTargetPreflightGuard::test_cli_main_returns_typed_blocker_packet_when_env_var_missing
+          -v"
+  - id: dod-003
+    description: All 63 tests in test_codex_runtime_client.py pass green
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_codex_runtime_client.py -v"
+  - id: dod-004
+    description: mypy --strict passes with no new errors
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run mypy src/omnimarket/ --strict"
+  - id: dod-005
+    description: PR cites this ticket
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "gh pr view ${PR_NUMBER} --repo OmniNode-ai/omnimarket --json title,body --jq '.title
+          + \" \" + (.body // \"\")' | grep -q 'OMN-13164'"
