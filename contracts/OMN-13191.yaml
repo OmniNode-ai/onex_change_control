@@ -1,0 +1,68 @@
+---
+# OMN-13191 contract file for omnibase_infra deploy-gate.
+# The canonical ticket contract and PASS receipts live in onex_change_control.
+# This file is the per-repo deploy-evidence carrier only.
+schema_version: "1.0.0"
+ticket_id: "OMN-13191"
+title: "feat(OMN-13191): resolve delegation topics via ServiceTopicRegistry in dispatch result applier"
+summary: >-
+  A2 of epic OMN-13188 (Workstream A — all topics from contracts). runtime/service_dispatch_result_applier.py
+  no longer imports TOPIC_* string constants from event_bus/topic_constants.py; it resolves the 4 delegation
+  intent topics (baseline-comparison-request, delegation-inference-request, delegation-quality-gate-request,
+  delegation-routing-request) through ServiceTopicRegistry (the OMN-5839 contract-sourced registry pattern).
+  For registry completeness all 13 TOPIC_DELEGATION_* topics were added as logical keys (topic_keys.py),
+  suffix constants + provisioned ModelTopicSpec entries (platform_topic_suffixes.py), and from_defaults()
+  mappings (service_topic_registry.py), exported via topics/__init__.py. No constant is deleted from topic_constants.py
+  — that is A4. The cross-repo-declared delegation topics are added to the check_contract_topic_parity.py
+  _LEGACY_ALLOWLIST with structured "contract.yaml in omnimarket repo (cross-repo provisioning)" reasons,
+  mirroring the existing omniintelligence cross-repo entries (this parity scanner reads only omnibase_infra/nodes,
+  so omnimarket-owned contracts are invisible to it).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Topic-registry and dispatch-result-applier unit suites pass, including the new no-drift proof TestDelegationTopicRegistryNoDrift.
+      Full unit suite green (24025 passed) with the applier resolving topics via the registry and importing
+      zero TOPIC_* constants; the only failures are pre-existing integration/performance tests that require
+      live PostgreSQL / Kafka / runtime containers / LLM endpoints (environment-dependent, not a regression
+      from this PR).
+    command: "uv run pytest tests/unit/topics/ tests/unit/runtime/test_dispatch_result_applier_topic_routing.py
+      tests/unit/runtime/test_service_dispatch_result_applier.py -q"
+  - kind: ci
+    description: >-
+      Both topic gates green: no-hardcoded-topics pre-commit hook + check_topic_literals.py arch-invariant.
+    command: "uv run python scripts/validation/check_topic_literals.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-applier-no-topic-constant-imports
+    description: >-
+      The applier module imports zero TOPIC_* constants from event_bus/topic_constants.py (grep returns
+      no match).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "! grep -qE 'from omnibase_infra.event_bus.topic_constants import|TOPIC_DELEGATION_'
+          src/omnibase_infra/runtime/service_dispatch_result_applier.py"
+  - id: dod-registry-equals-constant-equals-contract
+    description: >-
+      For all 13 delegation keys the registry-resolved string EQUALS the legacy TOPIC_* constant; for
+      the 4 applier topics the registry-resolved string EQUALS the topic declared in the owning omnimarket
+      node_delegation_orchestrator/contract.yaml. Both legs are asserted by the permanent test TestDelegationTopicRegistryNoDrift.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/unit/runtime/test_dispatch_result_applier_topic_routing.py::TestDelegationTopicRegistryNoDrift
+          -q"
+  - id: dod-topic-gates
+    description: >-
+      Topic literal arch-invariant (check_topic_literals.py) and the no-hardcoded-topics pre-commit hook
+      both pass on the changed files.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "uv run python scripts/validation/check_topic_literals.py"
