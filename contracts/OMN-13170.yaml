@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13170"
+title: "Honor backend timeout_ms in the delegation transport (delete hardcoded 120s cap)"
+summary: >-
+  P0 delegation transport fix. The local delegation dispatch path (node_delegate_skill_orchestrator LocalDelegationDispatchPort
+  -> node_llm_delegation_call_effect HandlerLlmDelegationCall -> transport.post_chat_completion) capped
+  every call at a hardcoded post_chat_completion(timeout_seconds=120.0), ignoring each backend's configured
+  timeout_ms (even 300000). Large generations (raised to 64k tokens per OMN-13161) exceeded 120s and failed
+  with error_message="request timed out", output_tokens=0, while a direct curl to the same endpoint succeeded;
+  raising the overlay timeout_ms had no effect. This threads the contract-resolved per-backend timeout
+  end to end: resolve_delegation_backend reads timeout_ms (fail-closed on missing/non-int/non-positive,
+  mirroring the OMN-13161 max_tokens pattern) and carries it on ModelResolvedDelegationBackend.timeout_ms;
+  the new resolve_timeout_seconds(ms -> s) converts at the orchestrator; ModelLlmDelegationCallRequest
+  carries a required timeout_seconds (gt=0, no silent default); LocalDelegationDispatchPort threads backend.timeout_ms
+  / 1000 into the request; the handler passes request.timeout_seconds to post_chat_completion; and the
+  post_chat_completion timeout_seconds parameter is now required with the hardcoded 120.0 default deleted.
+  The bus orchestrator path (node_delegation_orchestrator -> ModelInferenceIntent -> handler_inference_intent)
+  already threaded routing_decision.timeout_ms / 1000 and is unchanged. No Kafka topic schema change,
+  no DDL/migration, no runtime/deploy/.201 mutation. Code PR: omnimarket #1249 (branch jonahgabriel/omn-13170-delegation-transport-ignores-backend-timeout_ms-hardcoded,
+  base dev).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "pr-omnimarket"
+    description: >-
+      omnimarket fix PR #1249 (branch jonahgabriel/omn-13170-delegation-transport-ignores-backend-timeout_ms-hardcoded,
+      base dev) threads the contract-resolved per-backend timeout_ms through the delegation transport
+      and deletes the hardcoded 120s post_chat_completion default. The paired OCC receipt drift/dod_receipts/OMN-13170/pr-omnimarket/command.yaml
+      binds the code PR head sha (commit_sha) with status PASS and records the root-cause grep proof (zero
+      "timeout_seconds: float = 120.0" in transport.py) plus green gate results: focused delegation/routing
+      suites 109 passed, full `uv run pytest tests/ -m "not kafka"` (no -k) 7509 passed / 64 skipped,
+      ruff format + check clean, mypy --strict on the 5 changed modules Success, pre-commit run --all-files
+      all hooks Passed. The receipt verifier (receipt-gate-local) differs from the runner (omn-13170-impl).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13170/pr-omnimarket/command.yaml && grep -q
+          '^commit_sha: "695e0897cc286537a205212d757ff889365a343e"$' drift/dod_receipts/OMN-13170/pr-omnimarket/command.yaml
