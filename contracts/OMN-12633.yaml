@@ -1,0 +1,40 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-12633
+title: 'Retire ServiceDlqTracking runtime DDL — dlq_replay_history to migration-managed schema'
+summary: >
+  Removes ServiceDlqTracking._ensure_table_exists() and the CREATE TABLE IF NOT EXISTS call from initialize().
+  The dlq_replay_history table is now provisioned by the canonical forward migration runner (086_create_dlq_replay_history.sql),
+  making it visible to public.schema_migrations and owned by node_dlq_replay_effect per CONTRACT/NODE/HANDLER
+  (OMN-12525). Adds src/omnibase_infra/schemas/schema_dlq_replay_history.sql as node-owned schema documentation.
+  Adds a static-analysis ratchet test preventing re-introduction of imperative DDL.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: DLQ unit tests pass including no-runtime-DDL ratchet
+    command: uv run pytest tests/unit/dlq/ -q
+  - kind: ci
+    description: CI pipeline green on omnibase_infra PR  #2012
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-no-imperative-ddl
+    description: ServiceDlqTracking._ensure_table_exists() removed; no CREATE TABLE in method bodies
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'uv run pytest tests/unit/dlq/test_service_dlq_tracking_no_runtime_ddl.py -q'
+  - id: dod-migration-exists
+    description: Forward migration 086_create_dlq_replay_history.sql is present
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'test -f docker/migrations/forward/086_create_dlq_replay_history.sql'
+  - id: dod-infra-pr-2012
+    description: omnibase_infra PR  #2012 open with correct head SHA
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          gh pr view ${PR_NUMBER} --repo ${REPO} --json number,url,headRefOid,headRefName,baseRefName,title,state
