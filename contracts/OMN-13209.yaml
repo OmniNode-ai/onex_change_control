@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13209"
+title: "[A2] Re-home node_redeploy OCC + runtime models; promote compat dups to core"
+summary: >-
+  Phase A2 of the canonical node migration (epic OMN-13205, plan docs/plans/2026-06-17-canonical-node-migration-noncanonical-cleanup.md
+  §3.3 / §4 Phase A2), consuming the A0 ledger (OMN-13206). Closes the A2 exit gate: zero canonical Python
+  import OR contract module declaration of node_redeploy.* (verified by grep over src/**/*.py AND src/**/*.yaml
+  in omnimarket, excluding the node_redeploy/ dir which B3 rebuilds/deletes). Two paired code PRs. (1)
+  omnibase_core #1254 graduates the runtime-deployment lane enum (EnumRuntimeLane) and deployment-proof
+  wire DTO (ModelRuntimeDeploymentProof) from the transient omnibase_compat mirror to their canonical
+  core home, per the compat copy's COMPAT_MIGRATION_TARGET and the >=2-repos graduation condition; promoted
+  from the existing compat copy, not authored fresh. (2) omnimarket #1252 makes omnimarket.events.occ_evidence
+  the OWNER of the OCC evidence draft DTOs (defined there, not re-exported from the node package), re-exports
+  the runtime DTOs from core, repoints node_occ_evidence_draft_orchestrator/contract.yaml (handler.input_model
+  + input_model.module + output_model.module) to the owner module, and collapses the duplicate node copies
+  of EnumRuntimeLane + ModelRuntimeDeploymentProof onto core. The two canonical OCC consumers (node_occ_evidence_draft_orchestrator,
+  node_occ_evidence_validator_compute) import via events.occ_evidence, so they come off the node-backed
+  path automatically. No new Kafka topic schema, no DDL/migration, no external API surface, no .201 runtime
+  mutation in this change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "pr-omnibase_core"
+    description: >-
+      omnibase_core PR #1254 (branch jonahgabriel/omn-13209-a2-core-runtime-deployment, base dev) graduates
+      EnumRuntimeLane + ModelRuntimeDeploymentProof from the compat mirror to core (omnibase_core.enums.enum_runtime_lane
+      + omnibase_core.models.runtime_deployment.wire). The paired receipt binds the code PR head sha and
+      OCC PR number with status PASS and records the green gate results (ruff clean, mypy --strict on
+      the new module + enum clean, 4 unit tests passed, pre-commit exit 0).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13209/pr-omnibase_core/command.yaml"
+  - id: "pr-omnimarket"
+    description: >-
+      omnimarket PR #1252 (branch jonahgabriel/omn-13209-a2-rehome-occ-runtime-models, base dev) re-homes
+      the OCC + runtime models off node_redeploy; omnimarket.events.occ_evidence is the OWNER; contract.yaml
+      module declarations repointed. The paired receipt binds the code PR head sha and OCC PR number with
+      status PASS and records the green gate results (109 focused OCC + redeploy tests passed, mypy src/omnimarket
+      --strict clean on 2351 files, runtime_sweep 302/302, metadata-dependency PASS, pre-commit exit 0)
+      plus the zero-node_redeploy-canonical-import grep.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13209/pr-omnimarket/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Runtime deploy preflight for the omnimarket re-home. The change repoints model imports and a contract.yaml
+      module declaration; it introduces no new service, Kafka topic schema, DDL/migration, or external
+      API surface, and performs no .201 runtime mutation. Runtime wiring is proven green by the omnimarket
+      runtime_sweep (302/302 entry points OK) and the node-metadata dependency check (PASS) — these resolve
+      the repointed contract module paths. No deploy/redeploy dispatch is required to land this models-and-imports
+      re-home; a full runtime deploy is exercised in B3 when node_redeploy is rebuilt and deleted.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13209/dod-deploy/command.yaml"
+  - id: "pr-occ"
+    description: >-
+      onex_change_control PR carries the central OCC evidence for OMN-13209 (this contract + the paired
+      receipts). The paired receipt binds the OCC PR number with status PASS.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13209/pr-occ/command.yaml"
