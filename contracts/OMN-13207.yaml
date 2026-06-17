@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13207"
+title: "C1: delete non-canonical node_projection_query — route any live read shape to GET /projection/{topic}"
+summary: >-
+  Phase C1 of the canonical-node-migration cleanup (epic OMN-13205, plan docs/plans/2026-06-17-canonical-node-migration-noncanonical-cleanup.md
+  §3.5). node_projection_query declared the illegal node_type: query + routing_strategy: operation_match;
+  its handle(self, input_data: dict) -> dict popped a live DatabaseAdapter out of input_data['_db'] —
+  no envelope, no ModelHandlerOutput, not the canonical ProtocolMessageHandler.handle(envelope). It was
+  a synchronous read facade duplicating the canonical projection HTTP edge GET /projection/{topic} (src/omnimarket/projection/api_server.py:609)
+  with zero live consumers: cross-repo grep across omniclaude/omnibase_infra/omnibase_core/omnibase_compat
+  returned zero dependents, and dep_health already flagged onex.evt.omnimarket.projection-query-completed.v1
+  as published-but-unconsumed. Per the plan this node is DELETE-AND-DO-NOT-REBUILD-AS-A-NODE; live read
+  shapes are served by the existing generic GET /projection/{topic} edge — no shape had a live consumer,
+  so the route step is a verified no-op. The omnimarket impl PR (#1244, branch jonahgabriel/omn-13207-c1-delete-node_projection_query,
+  base dev, head 8823acc8c79fec334b8f79e99c5e91227908ae11) deletes src/omnimarket/nodes/node_projection_query/
+  (contract, handler, models, metadata) and tests/test_golden_chain_projection_query.py, removes the pyproject.toml
+  entry point and the validation/runtime_profiles_allowlist.yaml node_id: projection_query allowlist entry,
+  drops the routable assertion and decrements node_dirs/entry_points 302->301 in tests/test_market_node_runtime_dogfood.py,
+  updates docs/reference/node-catalog.md, and re-baselines .onex_state/dep_health_baseline.json (removing
+  the stale UNTESTED_HANDLER finding and the unconsumed-topic MISSING_TOPIC_EDGE finding for this node).
+  No Kafka topic schema addition, no DDL, no .201 / live-lane mutation — the only runtime effect is the
+  removal of a dead, unconsumed command topic. The paired OCC receipt drift/dod_receipts/OMN-13207/pr-omnimarket/command.yaml
+  binds the code PR head sha with status PASS and records the green gate results plus the zero-reference
+  deletion proof.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "pr-omnimarket"
+    description: >-
+      omnimarket implementation PR #1244 (branch jonahgabriel/omn-13207-c1-delete-node_projection_query,
+      base dev, head 8823acc8c79fec334b8f79e99c5e91227908ae11) deletes the non-canonical node_projection_query
+      node + its golden-chain test, removes the entry point + runtime-profile allowlist entry, drops the
+      dogfood routable assertion (302->301 entry points), updates the node catalog, and re-baselines dep_health.
+      The deploy-readiness evidence for a delete-and-do-not-rebuild ticket is the node's *absence* from
+      the runtime surface (no positive deploy): the paired OCC receipt drift/dod_receipts/OMN-13207/pr-omnimarket/command.yaml
+      records the deploy-readiness smoke (runtime_sweep 301/301 entry-point count; check_node_metadata_dependencies
+      PASS; rpk consumer-group / docker exec absence note for the removed onex.evt.omnimarket.projection-query-completed.v1
+      topic; zero-reference grep proof) and binds the code PR head sha (commit_sha) with status PASS.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13207/pr-omnimarket/command.yaml && grep -q
+          'commit_sha: "8823acc8c79fec334b8f79e99c5e91227908ae11"' drift/dod_receipts/OMN-13207/pr-omnimarket/command.yaml
+          && grep -qi 'docker exec' drift/dod_receipts/OMN-13207/pr-omnimarket/command.yaml
