@@ -1,0 +1,57 @@
+---
+# OMN-13193 contract file for omnimarket deploy-gate / receipt-gate.
+# The canonical ticket contract and PASS receipts live in onex_change_control.
+# This file is the per-repo deploy-evidence carrier only.
+schema_version: "1.0.0"
+ticket_id: "OMN-13193"
+title: "feat(OMN-13193): A3 — resolve delegation orchestrator topics from contract.yaml"
+summary: >-
+  A3 of epic OMN-13188 (Workstream A — all topics from contracts). The 4 omnimarket node_delegation_orchestrator
+  production files (contract_topics.py, dispatchers/dispatcher_delegation_workflow.py, dispatchers/dispatcher_routing_decision.py,
+  handlers/handler_delegation_workflow.py) no longer import delegation TOPIC_* string constants from omnibase_infra.event_bus.topic_constants.
+  Every publish/subscribe topic is resolved from this node's own contract.yaml via the adopted contract_publish_topics
+  / contract_subscribe_topics helpers (src/omnimarket/nodes/contract_topics.py), satisfying OMN-12803.
+  The node contract_topics.py module is the single binding layer, resolving all 8 orchestrator topics
+  (2 subscribe, 6 publish) with a fail-fast _single_topic matcher; the dispatchers and handler import
+  the TOPIC_ID_* names from it. Topic strings are unchanged — each resolved string equals both the contract.yaml
+  declaration and the prior topic_constants value (proven in the new migration-lock test tests/unit/delegation/test_contract_topics_orchestrator.py).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Full omnimarket unit suite green (7491 passed, 62 skipped) with the 4 files resolving topics from
+      contract.yaml and importing zero TOPIC_* constants from topic_constants. The new migration-lock
+      test test_contract_topics_orchestrator.py (4 passed) proves each resolved string equals its contract.yaml
+      declaration. The only non-green items are pre-existing @pytest.mark.kafka integration tests requiring
+      a live broker on .201:19092 (environment-dependent, not a regression from this PR; neither references
+      the migrated files or constants).
+    command: "uv run pytest tests/ -v -m 'not kafka'"
+  - kind: ci
+    description: >-
+      omnimarket no-hardcoded-topics annotated gate green; ruff + mypy --strict clean; pre-commit run
+      --all-files all hooks pass.
+    command: "uv run python scripts/ci/check_no_hardcoded_topics.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-omnimarket-pr-1241
+    description: >-
+      omnimarket PR #1241 carries the OMN-13193 A3 migration on a ticketed branch (jonah/omn-13193-omnimarket-contract-topics):
+      the 4 node_delegation_orchestrator production files import zero TOPIC_* constants from topic_constants
+      and resolve every orchestrator topic from contract.yaml via contract_publish_topics / contract_subscribe_topics.
+      The permanent test test_contract_topics_orchestrator.py proves each resolved TOPIC_ID_* string equals
+      the owning contract.yaml declaration for all 8 orchestrator topics (and the equivalence to the prior
+      topic_constants value is recorded in the PR #1241 body); the omnimarket no-hardcoded-topics gate
+      is green; full unit suite 7491 passed (kafka-marked broker tests excluded — env-dependent).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13193/dod-omnimarket-pr-1241/command.yaml"
+          && grep -q '^pr_number: 2682$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13193/dod-omnimarket-pr-1241/command.yaml"
+          && grep -q '^commit_sha: "56d3dac73a4689f38f98925e2b6d2b7d3c444647"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13193/dod-omnimarket-pr-1241/command.yaml"
