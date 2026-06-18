@@ -1,0 +1,114 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13238"
+title: "Contract-declared per-topic config + migrate ALL_PROVISIONED_TOPIC_SPECS"
+summary: >
+  Ticket 2 of 2 of epic OMN-12651 (W3/W4). W3 makes per-topic provisioning config (partitions / replication_factor
+  / kafka_config) contract-declared: the EXISTING ModelContractTopicEntry (omnibase_infra tools/contract_topic_extractor.py)
+  is extended with partitions|replication_factor|kafka_config (PEP 604, frozen, no new parallel model);
+  _extract_raw_topics_from_contract threads the parsed topic_config onto each entry; and service_topic_manager._build_topic_specs
+  maps it onto ModelTopicSpec (which already supports all four fields), falling back to ModelTopicSpec
+  defaults when absent. W4 migrates the 9 config-bearing topics whose owning omnibase_infra contract already
+  declares a published_events entry into those contracts' published_events[].topic_config (5 contracts;
+  config attached to pre-existing entries only so orchestrator/effect event-purity stays green). ALL_PROVISIONED_TOPIC_SPECS
+  is NOT deleted but explicitly annotated TRANSITIONAL (a warm source pending per-repo migration, NOT
+  a standing provisioning authority; the misleading "single source of truth for topic creation" docstring
+  is corrected) because 118 of 141 source entries are owned by other-repo contracts, emitted by the runtime
+  kernel, or are cmd/intent topics. registry_outcome = transitional. #magic___^_^___line
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      W3 unit suite (contract topic_config carried onto ModelContractTopicEntry, mapped onto ModelTopicSpec/NewTopic,
+      defaults when absent, merge keeps declared config) and W4 parity suite (every migrated topic resolves
+      the SAME partitions/replication/kafka_config from its owning contract as the legacy registry; registry
+      marked transitional) pass with NO live broker.
+    command: "uv run pytest tests/unit/tools/test_contract_topic_config.py tests/ci/test_topic_config_contract_parity.py
+      -q"
+  - kind: "ci"
+    description: "No new onex topic literals introduced; topic-literal baseline unchanged."
+    command: "git diff origin/dev -- scripts/validation/topic_literal_baseline.txt"
+
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+
+dod_evidence:
+  - id: "dod-w3-config-carry"
+    description: >
+      AC-2 topic-spec fidelity: a contract declaring topic_config (e.g. partitions=1, retention.ms=604800000)
+      produces a ModelContractTopicEntry and a ModelTopicSpec/NewTopic with those values; a contract with
+      no topic_config falls back to ModelTopicSpec defaults (partitions=6, replication_factor=1, kafka_config=None).
+      Feature PR: omnibase_infra#2032.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13238/dod-w3-config-carry/command.yaml && grep
+          -q '^evidence_item_id: "dod-w3-config-carry"$' drift/dod_receipts/OMN-13238/dod-w3-config-carry/command.yaml
+          && grep -q '6 passed' drift/dod_receipts/OMN-13238/dod-w3-config-carry/command.yaml
+  - id: "dod-w4-parity"
+    description: >
+      Every migrated topic (9 infra-owned, pre-existing published_events entry) resolves the same partitions/replication/kafka_config
+      from its owning contract as the legacy ALL_PROVISIONED_TOPIC_SPECS registry — proving the migration
+      is lossless and drift-free.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13238/dod-w4-parity/command.yaml && grep -q
+          '^evidence_item_id: "dod-w4-parity"$' drift/dod_receipts/OMN-13238/dod-w4-parity/command.yaml
+          && grep -q '3 passed' drift/dod_receipts/OMN-13238/dod-w4-parity/command.yaml
+  - id: "dod-no-shadow-registry"
+    description: >
+      AC-8 no shadow registry: ALL_PROVISIONED_TOPIC_SPECS is explicitly annotated TRANSITIONAL with a
+      deletion ticket (OMN-12651), the misleading "single source of truth for topic creation" docstring
+      is corrected, and no backwards-compat re-export was added.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13238/dod-no-shadow-registry/command.yaml &&
+          grep -q 'TRANSITIONAL' drift/dod_receipts/OMN-13238/dod-no-shadow-registry/command.yaml
+  - id: "dod-mypy-strict"
+    description: >
+      mypy --strict is clean across src/ (2452 files) with the extended ModelContractTopicEntry and the
+      service_topic_manager config mapping.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13238/dod-mypy-strict/command.yaml && grep -q
+          'no issues found' drift/dod_receipts/OMN-13238/dod-mypy-strict/command.yaml
+  - id: "dod-deploy-runtime-readiness"
+    description: >
+      Deploy-readiness attestation (dev lane only). This PR extends the contract topic extractor and service_topic_manager
+      spec mapping and migrates per-topic config into owning contracts. It does NOT itself deploy, rebuild
+      the runtime image, restart runtime, mutate stability-test/prod/judge/.201, or publish live traffic.
+      The change is deploy-safe and lane-scoped: per-topic config carry is proven by the W3/W4 unit/parity
+      suite, and the AC-2 rpk topic describe fidelity proof is exercised on the next dev-lane redeploy
+      run by the deploy agent. This receipt records deploy-safety.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13238/dod-deploy-runtime-readiness/command.yaml
+          && grep -q 'dev lane only' drift/dod_receipts/OMN-13238/dod-deploy-runtime-readiness/command.yaml
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the central OMN-13238 contract and receipts for omnibase_infra PR
+      #2032."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13238/dod-occ-pr/command.yaml && test -f contracts/OMN-13238.yaml
