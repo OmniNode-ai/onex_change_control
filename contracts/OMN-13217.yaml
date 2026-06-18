@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13217"
+title: "SEA semantic verifier false-REJECTs behaviorally-correct handlers (stdlib import + loose-substring
+  fixtures)"
+summary: >-
+  The OMN-13166 semantic validation layer caught false-greens but the 2026-06-18 dev SEA/complexity matrix
+  (dev rev 5abf8c963187) surfaced the inverse failure mode: false-RED. Two distinct sub-defects, both
+  producing semantic_passed=false on handlers that are actually correct. (1) The restricted-builtins semantic
+  sandbox omitted __import__, so any module-level import — even a safe stdlib "import re", used or merely
+  declared — raised ImportError ("__import__ not found") and was recorded as a semantic failure. Evidence:
+  dev cell M1-MEDIUM-CAMEL-EXEMPLAR (correct camelCase handler with an UNUSED "import re") and C1-COMPLEX-JSONNORM-EXEMPLAR
+  (handler that genuinely USES re). (2) derive_semantic_fixtures matched the bare substring "uppercase"
+  inside the structured task "normalizes ticket_id to uppercase OMN-123 form ... returns ticket_id, title,
+  and valid boolean" and derived plain whole-string uppercase fixtures (hello -> HELLO) irrelevant to
+  the ticket's actual transform, judging the handler against the wrong invariant. Fix: (1) add a controlled
+  __import__ to the sandbox builtins that admits a curated, pure, deterministic, I/O-free stdlib allowlist
+  (re, string, math, itertools, functools, collections, json, ...) and raises ImportError for everything
+  else (os, sys, io, socket, subprocess, pathlib), so correct handlers pass while the I/O prohibition
+  that catches malicious/open()/import-os handlers stays intact; (2) decline whole-string casing/reversal
+  fixtures for structured/multi-field tasks (JSON object, multiple named outputs, field-targeted normalization),
+  and require pascal/camel branches to carry BOTH the strong keyword AND snake_case framing. Regression
+  tests assert: correct handler importing re passes (used + unused), the safe stdlib set imports, I/O
+  modules + open() are still blocked, the structured json-normalizer derives no whole-string fixtures,
+  genuine whole-string upper/lower still derive, and the OMN-13166 behaviorally-wrong impostor still fails
+  even with an import present (no OMN-13166 regression).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR for OMN-13217 (branch jonahgabriel/omn-13217-sea-semantic-verifier-false-rejects-behaviorally-correct,
+      base=dev, head 7b65f8efa41bd1692476881ae42f30d469a0510e). Adds a controlled __import__ to the semantic
+      sandbox (_SAFE_BUILTINS) limited to the curated _SAFE_STDLIB_MODULES allowlist, and tightens derive_semantic_fixtures
+      to reject loose-substring matches on structured/multi-field tasks. New regression tests (test_semantic_validation_omn13217.py):
+      correct camelCase handler importing re passes whether re is used or unused; the safe stdlib set
+      imports cleanly; os/sys/io/socket/subprocess/pathlib and open() remain blocked; the C1 json-normalizer
+      task derives NO whole-string uppercase fixtures; genuine whole-string upper/lower tasks still derive;
+      the OMN-13166 whitespace-splitting impostor still fails even with import present. Focused semantic
+      suite 39/39 GREEN, full generation_consumer unit dir 203/203 GREEN, mypy --strict clean on semantic_validation.py,
+      ruff clean, pre-commit on changed files all green.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13217/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13217"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13217/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The fix is NOT yet live on any runtime lane. No live deploy,
+      restart, topic mutation, or .201 mutation was performed by this work. The corrected sandbox + fixture
+      derivation become observable only after a coordinated dev-lane rebuild that ships the updated node_generation_consumer.
+      The acceptance item "re-run the SEA/complexity matrix on dev: medium + complex cells pass" is a
+      user-gated runtime step out of scope for this code-only change. Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13217/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13217"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13217/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13217/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13217 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13217/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13217"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13217/dod-occ-pr/command.yaml"
