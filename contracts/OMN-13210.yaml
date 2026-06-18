@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13210"
+title: "[B1] Rebuild node_hostile_reviewer canonically — orchestrator + COMPUTE/EFFECT split, delete shell"
+summary: >-
+  Phase B1 of the canonical node migration (epic OMN-13205, consuming the A1 re-home OMN-13208). DELETE-AND-REBUILD
+  the non-canonical node_hostile_reviewer 'workflow' shell (node_type: workflow + in-process FSM HandlerWorkflowRunner
+  driving fsm.advance(), shelled gh pr diff, bespoke handle(self, input_data) -> dict signatures) into
+  canonical CONTRACT + NODE + HANDLER primitives across five nodes: node_hostile_reviewer_orchestrator
+  (ORCHESTRATOR) consumes the start command and composes the canonical computes/effects, emitting ModelHostileReviewerCompletedEvent
+  over the bus via ModelHandlerOutput.for_orchestrator(events=...); node_review_prompt_builder_compute
+  (COMPUTE) wraps the A1 build_prompt; node_review_response_parser_compute (COMPUTE) wraps the A1 parse_model_response;
+  node_github_diff_effect (EFFECT) resolves the PR diff via the GitHub REST API (urllib, token from contract
+  api_key_ref) replacing the shelled gh pr diff; node_review_convergence_compute (COMPUTE) retains the
+  eval convergence reducer as a standalone COMPUTE. Each handler implements handle(...) -> ModelHandlerOutput;
+  no FSM advance, no shelled CLI, no asyncio.run inside handle. Shared review node I/O lives in omnimarket.review.node_io
+  so no node reaches into a sibling node's models package (only the pre-existing finding-aggregator input
+  is allowlisted). model_training_data re-homed to omnimarket.models. The command/event topics (onex.cmd.omnimarket.hostile-reviewer-start.v1
+  / onex.evt.omnimarket.hostile-reviewer-completed.v1) and the ModelHostileReviewerCompletedEvent output
+  shape are preserved (byte-stable, replay-verified). Cross-repo repoints: omnibase_infra skill_mapping
+  + omniclaude plugin-compat/SKILL.md; omnimarket ticket_pipeline + pr_review_bot contracts. This OCC
+  PR additionally removes the now-stale node_hostile_reviewer/handlers/* compliance allowlist entries
+  (the node is deleted). A0 ledger hostile_reviewer rows resolved; no node_hostile_reviewer.* import or
+  contract module declaration remains.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR #1260 (branch jonahgabriel/omn-13210-b1-rebuild-node_hostile_reviewer-canonically-orchestrator,
+      base=dev). Rebuilds node_hostile_reviewer into five canonical nodes (orchestrator + 3 COMPUTE +
+      1 EFFECT), deletes the workflow shell, repoints omnimarket ticket_pipeline + pr_review_bot contracts,
+      and migrates the tests. B1 exit gate verified: no omnimarket.nodes.node_hostile_reviewer.* import
+      OR contract module declaration remains (asserted by test_a1_hostile_reviewer_primitive_rehome.py).
+      Full pytest (no -k, not kafka) 7585 passed / 62 skipped / 9 deselected, mypy --strict clean on all
+      new modules, ruff clean, pre-commit all green (golden-chain-coverage, runtime_sweep 305/305, metadata-dependency,
+      no-cross-node-reach-in, no-hardcoded-topics).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13210/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13210"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13210/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. This is a code-only canonical rebuild on omnimarket dev
+      (PR #1260). No live deploy, restart, topic mutation, or .201 mutation was performed. The rebuild
+      preserves the start/completed topics and the completed-event shape; the rebuilt nodes become observable
+      on a runtime lane only after a coordinated dev-lane rebuild — out of scope for this dev-lane-only
+      change. Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13210/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13210"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13210/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13210/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13210 contract, the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source, and removes the now-stale
+      node_hostile_reviewer/handlers/* entries from the omnimarket compliance allowlist (the node is deleted
+      by this rebuild).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13210/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13210"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13210/dod-occ-pr/command.yaml"
