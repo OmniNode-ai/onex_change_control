@@ -1,0 +1,85 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13211"
+title: "[B3] Rebuild node_redeploy canonically — orchestrator + deploy EFFECT + prod-gate COMPUTE + FSM
+  REDUCER, delete shell"
+summary: >-
+  Phase B3 of the canonical node migration (epic OMN-13205, plan docs/plans/2026-06-17-canonical-node-migration-noncanonical-cleanup.md
+  §3.3 / §4 Phase B3), depends on A2 (OMN-13209, merged). Decomposes the bespoke node_redeploy WorkflowPackage
+  (node_type: workflow, routing_strategy: phase_dispatch, in-process HandlerRedeployWorkflowRunner FSM
+  loop, non-protocol handle(dict) shims) into four canonical nodes and deletes the shell: node_redeploy_orchestrator
+  (ORCHESTRATOR — dispatches commands over the bus, emits the prod-gate-evaluate command then the deploy-publish
+  command or redeploy-completed:BLOCKED), node_redeploy_deploy_effect (EFFECT — deploy publish-monitor
+  + rollback, absorbing HandlerRedeployKafka + DeploymentAdapterKafka), node_prod_promotion_gate_compute
+  (COMPUTE — pure prod-promotion gate), and node_redeploy_fsm_reducer (REDUCER — phase transitions + 3-failure
+  circuit breaker). Every handler implements ProtocolMessageHandler.handle(envelope) -> ModelHandlerOutput.
+  Shared deploy domain models are re-homed to omnimarket.events.runtime_deployment (the OWNER) so no node
+  imports another node's package (dependency-elimination invariant); this includes the model_deploy_agent_events
+  wire DTOs that A2 explicitly deferred to B3. The prod same-digest gate + rollback path are preserved;
+  the onex.cmd.omnimarket.redeploy-start.v1 topic and the .201 deploy-agent rebuild-requested/rebuild-completed
+  round-trip are preserved unchanged. Cross-repo repoints (paired PRs): omniclaude redeploy SKILL.md +
+  test_redeploy_shim.py to node_redeploy_orchestrator; omnibase_infra trigger_rebuild_on_merge.py comments
+  (redeploy-start wire preserved). No new external Kafka topic schema beyond the new internal command
+  topics, no DDL/migration, no external API surface, no .201 runtime mutation in this change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "pr-omnimarket"
+    description: >-
+      omnimarket PR (branch jonahgabriel/omn-13211-b3-rebuild-node_redeploy-canonically-orchestrator-deploy,
+      base dev) rebuilds node_redeploy as four canonical nodes (orchestrator + deploy effect + prod-gate
+      compute + FSM reducer), re-homes the shared deploy domain models to omnimarket.events.runtime_deployment,
+      and deletes the bespoke shell. The paired receipt binds the code PR head sha and OCC PR number with
+      status PASS and records the green gate results (full pytest no -k: 7584 passed / 0 failed, mypy
+      --strict clean, runtime_sweep 304/304, metadata-dependency PASS, pre-commit exit 0 incl. the runtime_profiles
+      / golden-chain-coverage / cross-node reach-in gates).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13211/pr-omnimarket/command.yaml"
+  - id: "pr-omniclaude"
+    description: >-
+      omniclaude PR (branch jonahgabriel/omn-13211-b3-redeploy-skill-repoint, base dev) repoints the redeploy
+      SKILL.md dispatch + architecture map and the test_redeploy_shim.py assertion to node_redeploy_orchestrator
+      (the redeploy-start topic is preserved, so the dispatch wire is unchanged). The paired receipt binds
+      the code PR head sha and OCC PR number with status PASS and records the green gate results (13 shim
+      tests passed, pre-commit on the changed files exit 0).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13211/pr-omniclaude/command.yaml"
+  - id: "pr-omnibase-infra"
+    description: >-
+      omnibase_infra PR (branch jonahgabriel/omn-13211-b3-redeploy-trigger-comments, base dev) updates
+      redeploy-trigger comments/docstrings to name node_redeploy_orchestrator while preserving the redeploy-start
+      topic and functional publisher wire. The paired receipt binds the code PR head sha with status PASS
+      and records the scoped pre-commit proof.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13211/pr-omnibase-infra/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Runtime deploy preflight for the canonical redeploy rebuild. The orchestrator/effect/compute/reducer
+      are runtime-registered and wire green (runtime_sweep 304/304 entry points OK; node-metadata dependency
+      PASS), the deleted node_redeploy shell leaves no dangling entry point or contract module declaration,
+      and the deploy-agent wire (rebuild-requested / rebuild-completed) + the redeploy-start CI trigger
+      topic are preserved so the .201 deploy agent round-trips unchanged. No new service, DDL/migration,
+      or external API surface; no .201 runtime mutation is performed to land this change.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13211/dod-deploy/command.yaml"
+  - id: "pr-occ-2733"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to onex_change_control
+      PR #2733 so the OCC receipt-gate eligibility check finds a PR-bound receipt.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13211/pr-occ-2733/command.yaml"
