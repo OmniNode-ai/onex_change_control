@@ -251,8 +251,19 @@ jobs:
               ;;
             update_branch_then_enqueue)
               echo "PR #${PR} is BEHIND on a strict-update repo — updating branch before enqueue (OMN-13214)."
-              if ! gh pr update-branch "$PR" --repo "$GH_REPO" 2>&1; then
-                echo "::warning::update-branch reported no change or a benign error; continuing."
+              # Do NOT treat every non-zero update-branch result as benign: a real
+              # failure here silently leaves a strict-update PR stuck BEHIND with no
+              # enqueue and no failure signal. Tolerate only known no-op/race
+              # messages; surface everything else as a hard failure.
+              if ! ub_out="$(gh pr update-branch "$PR" --repo "$GH_REPO" 2>&1)"; then
+                if echo "$ub_out" | grep -qiE "already up to date|not behind|no update needed|already merged"; then
+                  echo "update-branch no-op: $ub_out"
+                else
+                  echo "::error::update-branch failed for PR #${PR}: $ub_out"
+                  exit 1
+                fi
+              else
+                echo "update-branch succeeded: $ub_out"
               fi
               echo "update-branch issued; the resulting check run re-fires this workflow when CI is green."
               exit 0
