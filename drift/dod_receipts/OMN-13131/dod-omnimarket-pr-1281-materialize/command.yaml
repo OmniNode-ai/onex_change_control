@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13131"
+evidence_item_id: "dod-omnimarket-pr-1281-materialize"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-13131/dod-omnimarket-pr-1281-materialize/command.yaml
+contract_sha256: "sha256:2792c2e2dfceb32365b30a5b063f812f2c76087138f40f8111c8a0a989b608ab"
+status: PASS
+run_timestamp: "2026-06-18T15:30:00Z"
+commit_sha: "fad461179fb76197537b970166e760bdd672d891"
+branch: "jonah/omn-13131-w5-projection-runner-materialize"
+pr_number: 1281
+runner: "omn-13131-gc-author"
+verifier: "receipt-gate-contract-review"
+probe_command: >-
+  env -u GITHUB_TOKEN gh pr view 1281 --repo OmniNode-ai/omnimarket --json number,state,headRefName,headRefOid,baseRefName,title
+probe_stdout: |
+  {"baseRefName":"dev","headRefName":"jonah/omn-13131-w5-projection-runner-materialize","headRefOid":"fad461179fb76197537b970166e760bdd672d891","number":1281,"state":"OPEN","title":"fix(OMN-13131): materialize renderer-capability projection via canonical projection-runner protocol (G-C)"}
+actual_output: >-
+  PASS: omnimarket PR #1281 (head fad461179fb76197537b970166e760bdd672d891, base dev) fixes the live G-C
+  defect — the renderer-capability projection never materialized on the .201 dev lane. node_renderer_capability_projection
+  declares db_io.db_tables + projection_api, so the effects runtime wires it through the canonical projection
+  dispatch path (omnibase_infra.runtime.auto_wiring.handler_wiring._make_projection_dispatch_callback)
+  — the SAME path every materializing projection on the lane uses (HandlerProjectionSavings, HandlerPrMergedProjection).
+  That path delivers a flattened domain-payload dict + an injected DatabaseAdapter under input_data['_db']
+  and input_data['_event_type'], calls handle(input_data), persists via the adapter, and DISCARDS any
+  returned ModelHandlerOutput; it never constructs a ModelEventEnvelope. The W5 handler was written as
+  a reducer (async handle(envelope) -> ModelHandlerOutput.for_reducer), so live it received the dict and
+  crashed on envelope.payload — the AttributeError logged once per omnidash heartbeat in omninode-runtime-effects:
+  "'dict' object has no attribute 'payload'" — and even had it not, its for_reducer projections are dropped
+  by the projection path (no result-applier is built for a db_io contract), so row_count stayed 0. PR
+  #1281 conforms the handler to the proven projection-runner protocol (handle(input_data: dict) -> dict,
+  UPSERT via _db), reusing the pure fold_declaration + state models as the deterministic core; project()
+  reads the prior rows back through the adapter, folds the heartbeat (keyed on renderer_id, TTL freshness
+  re-derived), and UPSERTs every row into renderer_capability_projection. NOT a defensive dict band-aid
+  (no isinstance / getattr-default branching); NOT an infra change (the projection path is correct, proven
+  by 17 sibling projections); NOT a producer change (the omnidash bespoke envelope parses cleanly into
+  ModelEventEnvelope, transport is ignored extra, payload is the declaration). TDD through the REAL dispatch
+  path: tests/test_golden_chain_renderer_capability_materialize.py feeds the EXACT on-wire bytes the omnidash
+  W-cap producer emits (server/renderer-capability-producer.ts) through ModelEventEnvelope.model_validate
+  -> MessageDispatchEngine._materialize_envelope_with_bindings -> the real _make_projection_dispatch_callback
+  -> handle(input_data) and asserts the row materializes (row_count > 0). The prior handler-isolation
+  tests passed yet live failed; this test exercises the live surface. Verified locally: 28 renderer-capability
+  tests pass (unit + golden chains + new live-dispatch materialization); mypy --strict clean (9 source
+  files); ruff format/check clean; runtime sweep 313/313 OK; metadata-deps + no-hardcoded-topics PASS;
+  pre-commit run --files <changed> all green (Node-Purity / Transport-Import gates correctly out of scope
+  — node dir is *_projection, not *_reducer). This receipt binds OMN-13131 to omnimarket PR #1281 (pr_number
+  + commit_sha) so the verify/verify OCC merge-eligibility gate finds a PASS receipt bound to the citing
+  PR. No live prod mutation, deploy, or restart.
+exit_code: 0
