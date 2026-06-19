@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13342"
+title: "fix(omnimarket): thread contract-declared backend max_tokens into SEA/generation inference request"
+summary: >-
+  The SEA/generation inference path in node_generation_consumer built ModelLlmInferenceRequest with no
+  max_tokens kwarg, so the infra inference effect omitted max_tokens on the wire and z.ai glm-4.5 truncated
+  output at its small server-side default (finish_reason=length, quality-gate score 0.0). The bifrost
+  backend cloud-glm declares max_tokens 65536, but resolve_generation_endpoint read the backend through
+  _ResolvedBackend / ModelResolvedEndpoint which had no max_tokens field, so the contract-declared ceiling
+  was read then discarded. This fix adds max_tokens to both models, threads backend.max_tokens through
+  _resolve_bifrost_backend and resolve_generation_endpoint (fail-closed >= 1, no silent default in handler
+  code), and passes max_tokens=resolved.max_tokens into the ModelLlmInferenceRequest construction so the
+  effect posts the contract ceiling on the wire. Regression tests assert the resolved endpoint carries
+  the contract-declared backend ceiling (explicit non-default value and the production cloud-glm 65536)
+  and fails closed on a non-positive ceiling. Child of OMN-12646 (Delegation, SEA & Model-Routing Quality).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1282"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1282 (jonah/omn-13342-thread-backend-max-tokens-generation,
+      base=dev). Threads the contract-declared bifrost backend max_tokens onto _ResolvedBackend, ModelResolvedEndpoint,
+      and the ModelLlmInferenceRequest construction so cloud backends receive their full output ceiling
+      instead of the provider's truncating default. Adds regression tests. Binds OMN-13342 to omnimarket
+      PR #1282 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13342/dod-omnimarket-pr-1282/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13342. The change is a focused handler/model fix in omnimarket
+      (node_generation_consumer). It corrects which value the inference request carries; it does not add
+      a runtime node, change a contract topic, or alter image build inputs. The running stability-test
+      image (v0.4.3) predates the fix, so the corrected behavior reaches the runtime only on the next
+      normal dev->promotion->image rebuild — no separate redeploy is gated by this PR, and no .201 mutation
+      is performed here. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13342/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13342 contract and code-PR
+      binding. Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility check can resolve
+      a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13342/dod-occ-pr-self/command.yaml
