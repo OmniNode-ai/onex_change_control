@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-9536"
+title: "drop legacy routing.feedback bare-topic drain in node_routing_feedback_effect"
+summary: >-
+  node_routing_feedback_effect subscribed to the non-canonical bare topic "routing.feedback" (no onex.
+  prefix), the only omniintelligence subscribe topic that fails even the corrected 5-kind topic-naming
+  regex. PR #607 (2026-04-25) removed it; PR #610 (OMN-8157, 2026-04-27) re-added it as a no-op drain
+  subscription, explicitly gated "Remove after topic is confirmed empty and purged from Redpanda." Both
+  gating conditions are now verified: (1) no producer emits to the bare topic anywhere across all repos
+  — the omniclaude routing.feedback EventRegistration fans out to TopicBase.ROUTING_FEEDBACK = onex.evt.omniclaude.routing-feedback.v1
+  (the canonical topic), not the bare topic; schemas.py event_name="routing.feedback" is a payload field
+  literal, not a Kafka topic; (2) a live Redpanda probe on 192.168.86.201 across all four lanes (dev omnibase-infra-redpanda,
+  stability-test, prod, judge) shows the bare routing.feedback topic ABSENT in every lane while the canonical
+  onex.evt.omniclaude.routing-feedback.v1 is present. This config/code-only change removes the bare topic
+  from subscribe_topics (contract bump 1.2.0 -> 1.2.1), the legacy drain dispatch handler + route, handle_legacy_routing_feedback_drain(),
+  the TOPIC_LEGACY_ROUTING_FEEDBACK_BARE constant, and the drain-only test; it aligns dispatch-engine
+  handler/route count assertions (baseline 30 -> 29 handlers, 37 -> 36 routes) and removes the legacy
+  topic from the contract-topics expected set. No runtime node, no contract topic schema, and no image
+  build input change beyond the dropped legacy subscribe — the running images predate the change and reach
+  the new subscribe surface only on the next normal dev->promotion->image rebuild; this PR gates no separate
+  redeploy and performs no .201 mutation.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "topics"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniintelligence-pr-724"
+    description: >-
+      Per-code-PR binding receipt for omniintelligence PR #724 (jonah/omn-9536-drop-routing-feedback-bare-drain,
+      base=dev). Removes the non-canonical bare topic routing.feedback from node_routing_feedback_effect
+      subscribe_topics (contract 1.2.0 -> 1.2.1), the legacy drain dispatch handler + route, handle_legacy_routing_feedback_drain(),
+      the TOPIC_LEGACY_ROUTING_FEEDBACK_BARE constant, and the drain-only test; aligns dispatch-engine
+      count assertions (30 -> 29 handlers, 37 -> 36 routes) and the contract-topics expected set. Verified
+      green: full unit suite (4837 passed), audit marker (25 passed), mypy + ruff + pre-commit run --all-files
+      (Topic Naming Lint, Node Purity Gate, No hardcoded ONEX topic strings all pass). Binds OMN-9536
+      to omniintelligence PR #724 by pr_number and commit_sha. This is a config/code-only cleanup with
+      no runtime node, no contract topic schema, and no image build input change beyond the dropped legacy
+      subscribe — no separate redeploy is gated and no .201 mutation is performed. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-9536/dod-omniintelligence-pr-724/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-9536 contract and the omniintelligence
+      code-PR binding receipt. Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility
+      check can resolve a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-9536/dod-occ-pr-self/command.yaml
