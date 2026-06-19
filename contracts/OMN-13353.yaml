@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13353"
+title: "fix(omnimarket): make node_gap_compute missing_event_bus probe archetype-aware"
+summary: >-
+  node_gap_compute's missing_event_bus_contract probe (handler_gap_compute.py) flagged every contract
+  lacking a top-level event_bus dict as a CONTRACT_DRIFT WARNING regardless of node archetype, producing
+  ~116 mostly-noise WARNINGs across the cross-repo gap sweep. Pure-compute archetypes (compute/COMPUTE_GENERIC,
+  transformer, aggregator, function, model) are invoked in-process and return a typed result synchronously
+  per the omnibase_core handler-output constraints, so they have no required bus surface; flagging them
+  is a false positive that drowns out the real signal (orchestrator/reducer/effect nodes that genuinely
+  must touch the bus but declared no event_bus). This change resolves each contract's node_type to its
+  canonical EnumNodeKind via a new _resolve_node_kind helper (normalizing the lowercase archetype words
+  and the *_GENERIC / specific EnumNodeType forms, the same mapping omnibase_core uses in MixinNodeTypeValidator
+  / ContractMergeEngine) and maps to EnumNodeKind via EnumNodeType.get_node_kind. When event_bus is missing
+  and the resolved kind is COMPUTE or RUNTIME_HOST, the probe records a ModelSkippedGapProbe instead of
+  a WARNING; EFFECT/REDUCER/ORCHESTRATOR kinds keep the WARNING; unknown or absent node_type resolves
+  to None and keeps the WARNING (fail loud, never silently suppress). Adds three parametrized TDD tests
+  to tests/test_golden_chain_gap_compute.py. Detection-tooling-only change in omnimarket node_gap_compute;
+  no runtime node, no contract topic change, no image build input change, no .201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1290"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1290 (jonah/omn-13353-gap-eventbus-probe-archetype-aware,
+      base=dev). Makes the node_gap_compute missing_event_bus_contract probe archetype-aware: COMPUTE
+      and RUNTIME_HOST kinds missing event_bus are recorded as a SKIP probe instead of a WARNING finding,
+      while EFFECT/REDUCER/ORCHESTRATOR kinds and unknown/absent node_type keep the WARNING. Adds three
+      parametrized TDD tests. 15 gap tests pass and the full omnimarket suite (7535 passed, 62 skipped)
+      is green; mypy --strict clean; ruff + pre-commit over changed files pass. Binds OMN-13353 to omnimarket
+      PR #1290 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13353/dod-omnimarket-pr-1290/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13353. The change is a detection-tooling-only fix to the node_gap_compute
+      missing_event_bus probe plus parametrized regression tests in omnimarket. It adds no runtime node,
+      changes no contract topic, and alters no image build inputs. The running stability-test image predates
+      the change, so the archetype-aware probe reaches any runtime only on the next normal dev -> promotion
+      -> image rebuild — this PR gates no separate redeploy and performs no .201 mutation. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13353/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13353 contract, the omnimarket
+      code-PR binding receipt, and the deploy no-runtime-impact receipt. Binds the OCC PR itself by pr_number
+      so the OCC receipt-gate eligibility check can resolve a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13353/dod-occ-pr-self/command.yaml
