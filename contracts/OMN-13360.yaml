@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13360"
+title: "Projection: gate projected:true terminal on rows_upserted >= 1 (no false-positive terminal)"
+summary: >
+  The omnibase_infra auto-wiring projection callback emitted the projection-delegation-applied.v1 terminal
+  with {"projected": true} gated solely on the projection handler not raising; the handler's rows_upserted
+  result was logged but never inspected, so any no-raise / zero-row / internally-swallowed path emitted
+  a terminal asserting a durable row that never landed (Gate-Zero GZ-1 / defect G-4). Fix gates the terminal
+  on the handler's actual write outcome (rows_upserted >= 1) and logs loudly when a no-raise handler wrote
+  zero rows. Compute/runtime-wiring change only; no topic schema, envelope, or contract API change; no
+  live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Unit test asserts a handler returning rows_upserted=0 emits NO terminal; existing terminal-emission
+      + db-injection + projector-dispatch suites stay green (295 passed in tests/unit/runtime/auto_wiring
+      + projector integration).
+    command: "uv run pytest tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2048"
+    description: >
+      omnibase_infra PR #2048 adds _extract_rows_upserted() and gates projected = rows_upserted >= 1 in
+      src/omnibase_infra/runtime/auto_wiring/handler_wiring.py, plus the zero-row no-terminal unit test.
+      Evidence anchor: omnibase_infra head commit 017a8e50ab1387e66f66a6fcfcc38936ac9e0ed7.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13360/dod-infra-pr-2048/command.yaml
+          && grep -q '^pr_number: 2048$' drift/dod_receipts/OMN-13360/dod-infra-pr-2048/command.yaml &&
+          grep -q 'passed' drift/dod_receipts/OMN-13360/dod-infra-pr-2048/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: runtime-path change (handler_wiring.py) proven on the .201 dev lane (mutable
+      proof lane) by publishing a probe event and observing a real row + correctly-gated terminal. A fresh
+      probe correlation_id was produced to the dev topic via 'rpk topic produce' inside the dev redpanda
+      container and the resulting delegation_events row was read back via 'docker exec ... psql' and the
+      projection API. No prod/judge/stability mutation. The receipt check_value carries the 'rpk topic
+      produce' / 'docker exec' deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13360/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 2048$' drift/dod_receipts/OMN-13360/dod-deploy-assessment/command.yaml
+          && grep -q 'rpk topic produce' drift/dod_receipts/OMN-13360/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      onex_change_control PR #2839 carries the central OMN-13360 contract and receipts that unblock the
+      downstream omnibase_infra deploy/receipt gates and the paired omnimarket Gate-Zero proof PRs.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13360/dod-occ-pr-self/command.yaml
+          && grep -q '^pr_number: 2839$' drift/dod_receipts/OMN-13360/dod-occ-pr-self/command.yaml"
