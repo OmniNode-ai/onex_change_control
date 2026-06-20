@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13375"
+title: "Require a non-reject-only deterministic check before promoting to passed"
+summary: >-
+  Central evidence for omnimarket PR #1305. OMN-13373 (#1302) made no_refusal a reject-only deterministic
+  pre-filter so _has_adequacy_authority excludes it, but a deeper promotion leak survived in handler_quality_gate.py:
+  _is_verifiable_deterministic_acceptance returned True purely on (task_type in _VERIFIABLE_TASK_TYPES)
+  and bool(dod_deterministic), so the deterministic_acceptance_authority branch in delta() promoted a
+  clean output to passed=True ahead of the _has_adequacy_authority guard. A request with acceptance_criteria=["no_refusal"]
+  plus a clean, non-refusing output therefore leaked to passed=True on code_generation / test / validator_generation.
+  The fix requires at least one NON-reject-only deterministic check before that branch may grant adequacy;
+  a reject-only-only band keeps its reject power but loses promotion authority and falls through to the
+  existing guard (OMN-13370 marker-authority retirement and the OMN-13373 reject behavior preserved).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Parametrized regression test over code_generation / test / validator_generation proves a reject-only-only
+      deterministic band (no_refusal) on clean output yields passed=False and fallback_recommended=True,
+      a refusal is still rejected (fail_deterministic + REFUSAL detail), and a control with a real verifiable
+      check (compiles_without_errors) still grants passed=True on clean output. Full suite, mypy --strict,
+      ruff, and pre-commit pass.
+    command: >-
+      uv run pytest tests/unit/delegation/test_quality_gate_promotion_leak_omn13375.py -v
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1305"
+    description: >-
+      omnimarket PR #1305 carries the OMN-13375 fix at commit b200b545831bdd95c1d8b759c15e0ed27de9ee66.
+      It gates _is_verifiable_deterministic_acceptance on a verifiable task type AND at least one NON-reject-only
+      deterministic check, closing the promotion leak while preserving reject behavior. A parametrized
+      regression test exercises all three verifiable task types in both directions plus the control, and
+      the full suite is green.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13375/dod-omnimarket-pr-1305/command.yaml"
+          && grep -q '^pr_number: 1305$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13375/dod-omnimarket-pr-1305/command.yaml"
+          && grep -q '^commit_sha: "b200b545831bdd95c1d8b759c15e0ed27de9ee66"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13375/dod-omnimarket-pr-1305/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13375 contract and receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13375/dod-occ-pr-self/command.yaml"
+          && grep -q '^pr_number: 2841$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13375/dod-occ-pr-self/command.yaml"
+  - id: "dod-local-validation"
+    description: >-
+      PR-local validation evidence reports the full non-kafka pytest suite (7629 passed), ruff format/check,
+      strict mypy (no issues in 2393 files), and pre-commit all passed for the OMN-13375 change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13375/dod-local-validation/command.yaml"
+          && grep -q '7629 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13375/dod-local-validation/command.yaml"
