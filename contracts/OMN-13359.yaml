@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13359"
+title: "Route node generation through the cheapest-first free-local routing ladder"
+summary: >
+  Node generation (node_generation_consumer) previously resolved a single model statically from the contract
+  and called it on EVERY attempt. On contract-validation (quality-gate) failure it emitted a delegation-escalation-triggered
+  proof event but never changed the model for the next attempt — the ladder was advisory, never effective;
+  generation kept hammering the same local model regardless of repeated failures. This change wires generation
+  onto the EXISTING delegation routing path (node_delegation_routing_reducer.delta / next_eligible_tier
+  / tier_for_backend / tier_max_retries) WITHOUT editing routing_tiers.yaml or task_class_contracts.v1.yaml.
+  A new ModelActiveRoute tracks the model/endpoint the run is currently routing to: attempt #1 rides the
+  contract-declared starting tier (first-attempt behavior unchanged), and each quality-gate failure advances
+  the active route to the next tier via the routing authority so the NEXT attempt actually calls the escalated
+  model. A single authority surface (_resolve_escalation_decision) backs both the escalation proof event
+  and the active-route advancement, so the tier/model/endpoint the proof records is exactly the one the
+  next attempt rides — they cannot diverge. Per-attempt benchmark records and the run-level identity reflect
+  the tier that actually produced each artifact (local on a first pass; the escalated tier after a quality-gate
+  failure). A routing-config/resolution failure keeps the current route (resilient, never crashes), preserving
+  parity with the pre-existing escalation behavior. Evidence anchor: omnimarket head commit 16ae7badccb8be318435a80c4884cf56cdeb26fc
+  (PR #1317).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      A new test module proves the behavior end-to-end through the REAL dispatch path (the non-injected
+      _call_llm branch that builds a real ModelLlmInferenceRequest and resolves the endpoint from the
+      routing authority against a hermetic bifrost fixture): local-first (attempt #1 posts the contract
+      local model + endpoint verbatim), escalation on quality-gate fail (attempt #2 posts a DIFFERENT
+      cloud tier's model + endpoint selected by the authority), the quality gate decides acceptance (a
+      contract- valid first pass stops the run), the escalation proof names the same tier the next attempt
+      actually rode, and the benchmark records the escalated tier as the final route. 234 generation-consumer
+      unit tests pass (229 existing + 5 new); 1590 generation/routing/delegation/escalation tests pass
+      across the tree; strict mypy on the changed handler + test is clean; ruff clean; all pre-commit
+      gates pass.
+    command: "uv run pytest tests/unit/nodes/node_generation_consumer/ -m 'not kafka' -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1317"
+    description: >
+      omnimarket PR #1317 wires node_generation_consumer onto the existing delegation routing ladder (ModelActiveRoute
+      + _resolve_escalation_decision; routing_tiers.yaml untouched) and adds test_generation_rides_ladder_omn13359.py
+      (5 tests). 234 generation-consumer unit tests pass; strict mypy clean on the changed handler + test;
+      ruff clean; pre-commit clean. Evidence anchor: omnimarket head commit 16ae7badccb8be318435a80c4884cf56cdeb26fc.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13359/dod-omnimarket-pr-1317/command.yaml
+          && grep -q '^pr_number: 1317$' drift/dod_receipts/OMN-13359/dod-omnimarket-pr-1317/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13359/dod-omnimarket-pr-1317/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: NON-DEPLOYABLE-IN-THIS-PR / no-runtime-mutation. The change modifies the node_generation_consumer
+      handler's model-selection path; it wires no new consumer into a running runtime and mutates no lane.
+      No prod / judge / stability / dev lane was started, restarted, deployed, or otherwise mutated; no
+      docker compose, no rpk produce, no psql write was run for this change. The deploy-equivalent proof
+      for this handler change is the docker-free runtime sweep, which statically verifies every node contract
+      + entry point: it reports 316/316 entry points OK. The behavior is bound by the new real-dispatch-path
+      tests and strict mypy. Live runtime adoption (rebuilding the effects-lane image so the deployed
+      generation consumer rides the ladder) is a separate deploy step, not part of this no-merge PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13359/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1317$' drift/dod_receipts/OMN-13359/dod-deploy-assessment/command.yaml
+          && grep -q 'run_runtime_sweep' drift/dod_receipts/OMN-13359/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13359 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13359/dod-occ-pr-self/command.yaml"
