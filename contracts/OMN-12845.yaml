@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12845"
+title: "M5 — Live closed loop: feed runtime outcomes back onto scored capsule selection"
+summary: >
+  Wire the first live, end-to-end closed loop of the Behavior-Augmented Context plan. Adds node_capsule_effectiveness_feedback_reducer,
+  a consume-side REDUCER/EFFECT that takes a scored runtime ROI row and writes its effectiveness back
+  onto the durable M2 capsule store (node_projection_capsule_store) keyed by the deterministic capsule_hash,
+  so M3 context selection re-ranks on the live-updated score. Attribution honesty is enforced: only a
+  CONTROLLED_INTERVENTION runtime-observed row may carry an effectiveness CLAIM (republished as context-roi-score-completed.v1
+  and folded onto capsule_store via the M2 projection, the sole capsule_store writer); an OBSERVATIONAL
+  row may only generate a HYPOTHESIS (capsule-effectiveness-hypothesis.v1) and is never written as a measured
+  score. The existing node_context_roi_runner EFFECT is extended to carry the full per-row metadata set:
+  routing_source and factor_subset_hash are added so a winning factor is distinguishable from a routing-authority
+  artifact; node_context_roi_compute stays a pure COMPUTE scorer. Adds routing_source to ModelContextRoiRequest's
+  row model (ModelArmRunRow). Topics are contract-declared and referenced via omnimarket.events.topics
+  constants, never hardcoded; endpoints/models are echoed from the routing authority, never env.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - topics
+  - events
+  - public_api
+evidence_requirements:
+  - kind: "tests"
+    description: "Five TDD invariant tests pass (RED-before-implementation, GREEN after)"
+    command: "uv run pytest tests/nodes/node_capsule_effectiveness_feedback_reducer/ tests/nodes/node_context_roi_runner/test_context_roi_runner_emits_runtime_observed_rows.py
+      tests/nodes/node_context_roi_compute/test_roi_request_requires_routing_source.py tests/nodes/node_on_vs_off_experiment_compute/test_no_live_path_today.py
+      -v"
+  - kind: "tests"
+    description: "Full test suite passes with no regressions"
+    command: "uv run pytest tests/ --tb=short -q -m 'not kafka'"
+  - kind: "manual"
+    description: "mypy --strict clean"
+    command: "uv run mypy src/omnimarket/ --strict"
+  - kind: "manual"
+    description: "Runtime sweep: every entry point resolves (the new reducer routable)"
+    command: "uv run python scripts/ci/run_runtime_sweep.py"
+  - kind: "manual"
+    description: "Node metadata dependency scope check passes"
+    command: "uv run python scripts/ci/check_node_metadata_dependencies.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1324"
+    description: >
+      omnimarket PR #1324 proves the M5 live closed loop with the five ticket-mandated TDD tests, golden-chain
+      coverage, full suite, mypy --strict, runtime sweep, and node metadata dependency check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '20 passed' drift/dod_receipts/OMN-12845/dod-omnimarket-pr-1324/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Runtime sweep and deploy assessment prove the new reducer is routable, contract-native, and does
+      not require a production restart in this PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'runtime_sweep: 319/319 entry points OK' drift/dod_receipts/OMN-12845/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "OCC evidence PR #2869 carries the central OMN-12845 contract and receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,url,headRefName,baseRefName,state,title"
