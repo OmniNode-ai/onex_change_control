@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-13437 / OMN-13418 Phase 2a: Dedicated schema-validation workflow for the
+# prod_promotion_grants.yaml trust anchor.
+#
+# This workflow is intentionally standalone — it shares NO file, token, or
+# workflow reference with reject-deploy-gate-skip.yml / skip_token_approvals.yaml.
+# Mixing the skip-token bypass registry with the promotion grant registry would
+# create an audit-trail cross-contamination risk.
+#
+# Required-status-check name: `validate-grants / validate-prod-promotion-grants`
+# Wire via: Settings → Branches → dev → Require status checks → add the name above.
+
+name: Validate Prod Promotion Grants
+
+on:
+  pull_request:
+    paths:
+      - "grants/prod_promotion_grants.yaml"
+    types: [opened, edited, synchronize, reopened]
+  merge_group:
+    paths:
+      - "grants/prod_promotion_grants.yaml"
+  # Also validate on push to dev/main so stale grants are caught at landing.
+  push:
+    branches: [dev, main]
+    paths:
+      - "grants/prod_promotion_grants.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-prod-promotion-grants:
+    name: validate-prod-promotion-grants
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Validate prod_promotion_grants.yaml schema
+        run: |
+          python - <<'PYEOF'
+          import sys
+          import re
+          import yaml
+
+          GRANT_FILE = "grants/prod_promotion_grants.yaml"
+          REQUIRED_FIELDS = {
+              "grant_id",
+              "runtime_lane",
+              "image_digest",
+              "promotion_batch_id",
+              "approved_by",
+              "expires_at",
+              "created_at",
+              "reason",
+          }
+
+          GRANT_ID_RE = re.compile(r"^grant-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+          IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+          # ISO-8601 UTC: 2026-06-21T12:00:00Z or 2026-06-21T12:00:00+00:00
+          ISO8601_RE = re.compile(
+              r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$"
+          )
+
+          errors = []
+
+          try:
+              with open(GRANT_FILE) as f:
+                  data = yaml.safe_load(f)
+          except Exception as exc:
+              print(f"FAIL: Cannot parse {GRANT_FILE}: {exc}")
+              sys.exit(1)
+
+          if not isinstance(data, dict):
+              print(f"FAIL: {GRANT_FILE} must be a YAML mapping at the top level")
+              sys.exit(1)
+
+          if set(data.keys()) != {"entries"}:
+              extra = set(data.keys()) - {"entries"}
+              missing = {"entries"} - set(data.keys())
+              if missing:
+                  print(f"FAIL: {GRANT_FILE} missing top-level key 'entries'")
+              if extra:
+                  print(f"FAIL: {GRANT_FILE} has unexpected top-level keys: {sorted(extra)}")
+              sys.exit(1)
+
+          entries = data["entries"]
+          if not isinstance(entries, list):
+              print(f"FAIL: {GRANT_FILE} 'entries' must be a list")
+              sys.exit(1)
+
+          # entries: [] is valid (at-rest state)
+          if len(entries) == 0:
+              print(f"PASS: {GRANT_FILE} is valid (entries: [] at rest)")
+              sys.exit(0)
+
+          for idx, entry in enumerate(entries):
+              prefix = f"Entry[{idx}]"
+              if not isinstance(entry, dict):
+                  errors.append(f"{prefix}: must be a mapping, got {type(entry).__name__}")
+                  continue
+
+              present = set(entry.keys())
+              missing_fields = REQUIRED_FIELDS - present
+              extra_fields = present - REQUIRED_FIELDS
+              if missing_fields:
+                  errors.append(f"{prefix}: missing required fields: {sorted(missing_fields)}")
+              if extra_fields:
+                  errors.append(f"{prefix}: unexpected fields: {sorted(extra_fields)}")
+              if missing_fields or extra_fields:
+                  continue
+
+              gid = entry["grant_id"]
+              if not isinstance(gid, str) or not GRANT_ID_RE.match(gid):
+                  errors.append(
+                      f"{prefix}: grant_id must match 'grant-<uuid4>', got: {gid!r}"
+                  )
+
+              digest = entry["image_digest"]
+              if not isinstance(digest, str) or not IMAGE_DIGEST_RE.match(digest):
+                  errors.append(
+                      f"{prefix}: image_digest must match 'sha256:<64hex>', got: {digest!r}"
+                  )
+
+              for ts_field in ("expires_at", "created_at"):
+                  ts = entry[ts_field]
+                  if not isinstance(ts, str) or not ISO8601_RE.match(ts):
+                      errors.append(
+                          f"{prefix}: {ts_field} must be ISO-8601 UTC datetime, got: {ts!r}"
+                      )
+
+              for str_field in ("runtime_lane", "promotion_batch_id", "approved_by", "reason"):
+                  val = entry[str_field]
+                  if not isinstance(val, str) or not val.strip():
+                      errors.append(
+                          f"{prefix}: {str_field} must be a non-empty string, got: {val!r}"
+                      )
+
+          if errors:
+              print(f"FAIL: {GRANT_FILE} has {len(errors)} schema violation(s):")
+              for err in errors:
+                  print(f"  - {err}")
+              sys.exit(1)
+
+          print(f"PASS: {GRANT_FILE} — {len(entries)} grant(s) validated successfully")
+          PYEOF
