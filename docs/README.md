@@ -3,6 +3,9 @@
 > **Start here.** This index is the canonical docs map for `onex_change_control`.
 > All other docs in this directory link back here or are reachable from this page.
 
+<!-- Verified against code on 2026-06-21 refresh (OMN-13459): CLI commands match pyproject [project.scripts]; doc-freshness scanners present (scanners/doc_reference_extractor.py, doc_reference_resolver.py, doc_staleness_detector.py) and models present (model_doc_freshness_result.py, model_doc_freshness_sweep_report.py, model_doc_reference.py); the doc-freshness-swept.v1 topic is confirmed NOT yet registered in kafka/topics.py GovernanceTopic. -->
+
+
 ---
 
 ## Start Here

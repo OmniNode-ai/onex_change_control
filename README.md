@@ -10,6 +10,8 @@ Governance, drift detection, and enforcement library for the ONEX (OmniNode eXec
 
 ## What This Repo Is
 
+<!-- Verified against code on 2026-06-21 refresh (OMN-13459): src/ subdir layout, pyproject [project.scripts] (22 CLI entry points) and [project.entry-points."onex.nodes"] (4 drift nodes), templates/, kafka/topics.py, version 0.5.1. -->
+
 `onex_change_control` (package: `onex-change-control`) is the **canonical governance and enforcement hub** for the ONEX platform. It prevents cross-repo drift by:
 
 - Defining versioned Pydantic schemas for governance artifacts (`ModelTicketContract`, `ModelDayClose`).
@@ -35,7 +37,7 @@ Governance, drift detection, and enforcement library for the ONEX (OmniNode eXec
 
 - **Canonical Pydantic schemas**: `ModelTicketContract`, `ModelDayClose`, and all supporting models/enums.
 - **Exported JSON schemas**: `schemas/<version>/` — immutable versioned build artifacts.
-- **YAML templates**: `templates/ticket_contract.template.yaml`, `templates/day_close.template.yaml`.
+- **YAML templates**: `templates/ticket_contract.template.yaml`, `templates/day_close.template.yaml`, `templates/overnight_contract.template.yaml`.
 - **CLI enforcement tooling**: validators, purity checkers, drift checkers, boundary checkers.
 - **Evaluation framework**: eval suite definitions, comparator logic, regression checks.
 - **Governance policy docs**: design, decision log, versioning policy, template guide.
