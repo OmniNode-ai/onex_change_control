@@ -19,6 +19,7 @@ DoD tests:
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,15 @@ def _check_entry_fields(idx: int, entry: dict[str, Any], errors: list[str]) -> b
     return not (missing_fields or extra_fields)
 
 
+def _parse_iso8601(ts: str) -> datetime | None:
+    """Parse ISO-8601 UTC datetime string; return None on failure."""
+    normalized = ts.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
 def _check_entry_formats(idx: int, entry: dict[str, Any], errors: list[str]) -> None:
     """Validate field formats for an entry known to have all required fields."""
     prefix = f"Entry[{idx}]"
@@ -89,10 +99,24 @@ def _check_entry_formats(idx: int, entry: dict[str, Any], errors: list[str]) -> 
     if not isinstance(digest, str) or not _IMAGE_DIGEST_RE.match(digest):
         errors.append(f"{prefix}: image_digest invalid: {digest!r}")
 
+    # Validate timestamp fields and enforce expires_at > created_at
+    ts_parsed: dict[str, datetime | None] = {}
     for ts_field in ("expires_at", "created_at"):
         ts = entry[ts_field]
         if not isinstance(ts, str) or not _ISO8601_RE.match(ts):
             errors.append(f"{prefix}: {ts_field} invalid: {ts!r}")
+            ts_parsed[ts_field] = None
+        else:
+            ts_parsed[ts_field] = _parse_iso8601(ts)
+
+    created = ts_parsed.get("created_at")
+    expires = ts_parsed.get("expires_at")
+    if created is not None and expires is not None and expires <= created:
+        errors.append(
+            f"{prefix}: expires_at must be strictly after created_at "
+            f"(got expires_at={entry['expires_at']!r}, "
+            f"created_at={entry['created_at']!r})"
+        )
 
     for str_field in (
         "runtime_lane",
@@ -279,3 +303,37 @@ class TestGrantSchemaValidation:
         entries_val = data.get("entries")
         # Confirm the isinstance check catches the non-list type
         assert not isinstance(entries_val, list)
+
+    def test_schema_rejects_expires_at_not_after_created_at(self) -> None:
+        """expires_at must be strictly after created_at."""
+        entry = _well_formed_entry()
+        # Set expires_at to same value as created_at (not strictly after)
+        entry["expires_at"] = entry["created_at"]
+        errors = _validate_entries([entry])
+        assert errors, "expires_at == created_at must produce a validation error"
+        assert any("expires_at" in err for err in errors), (
+            f"Expected expires_at ordering error, got: {errors}"
+        )
+
+    def test_schema_rejects_expires_at_before_created_at(self) -> None:
+        """expires_at must not be before created_at."""
+        entry = _well_formed_entry()
+        # Swap: expires before created
+        entry["expires_at"] = "2026-06-01T00:00:00Z"
+        entry["created_at"] = "2026-06-21T12:00:00Z"
+        errors = _validate_entries([entry])
+        assert errors, "expires_at < created_at must produce a validation error"
+        assert any("expires_at" in err for err in errors), (
+            f"Expected expires_at ordering error, got: {errors}"
+        )
+
+    def test_schema_accepts_expires_at_strictly_after_created_at(self) -> None:
+        """A well-formed entry with expires_at after created_at is valid."""
+        entry = _well_formed_entry()
+        # expires_at = 2026-07-01, created_at = 2026-06-21 → valid
+        assert entry["expires_at"] > entry["created_at"]
+        errors = _validate_entries([entry])
+        assert errors == [], (
+            "expires_at strictly after created_at should produce no errors, "
+            f"got: {errors}"
+        )
