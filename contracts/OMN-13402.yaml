@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13402"
+title: "Re-lock omnimarket sibling git pins to merged dev SHAs (workspace build pin-drift)"
+summary: >-
+  omnimarket/pyproject.toml [tool.uv.sources] rev= pins (mirrored in [tool.uv] override-dependencies git
+  URLs and uv.lock) hardcoded stale sibling SHAs that the OMN-12977 workspace-build pin guard (uv.lock
+  is the pin authority, compared to canonical clone HEAD SHAs) aborted on with exit 3, blocking all workspace
+  builds (dev + stability + prod). Re-lock the four stale pins to their LIVE origin/dev tips: omnibase-core
+  25a71031 -> 8a53a063 (dev tip is a strict superset of the un-merged jonah/OMN-13234 branch), omnibase-infra
+  d56384fb -> f2533f5a (carries A2 0018/0019 migration vendoring), omnibase-compat bd7fe461 -> 331a9de4,
+  onex-change-control 33d6747e -> dd2620d1. Versions identical (drift_direction=none) — pure SHA staleness
+  left by the cross-repo pin bot after the 2026-06-20 savings-cluster merges. omnibase-spi stays a version
+  specifier (not git-pinned). omninode-memory intentionally NOT bumped: its dev tip (c3cec15d / v0.16.0)
+  removes the node_persona_lifecycle_orchestrator module omnimarket imports, and the guard does not track
+  it, so bumping it breaks imports for zero guard benefit. Only pyproject.toml pins + uv.lock changed
+  (plus the in-repo contract mirror) — no source. This OCC PR carries the central contract consumed by
+  the omnimarket PR #1326 Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-guard-zero-drift"
+    description: >-
+      The OMN-12977 sibling-pin guard (check_sibling_lock_pins.py) reports 0 drift against the origin/dev-synced
+      canonical clones using the exact --repo args stage_workspace.sh passes (omnibase-infra/core/spi/compat,
+      onex-change-control, omnimarket). Exit 0, drift_count=0, all 6 tracked comparisons matches=true
+      / drift_direction=none. The probe greps the recorded guard receipt and proves the PASS line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13402/dod-guard-zero-drift/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this is a pure dependency-pin re-lock — only omnimarket pyproject.toml [tool.uv.sources]/override-dependencies
+      SHAs and uv.lock change; no source, migration, schema, endpoint, or env-for-model change. After
+      merge, stage_workspace.sh passes the OMN-12977 preflight with NO drift override, unblocking the
+      dev cold bring-up (Ticket B / OMN-13397) and downstream stability/prod workspace builds. The probe
+      greps the deploy receipt and proves the PASS line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13402/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract used by the omnimarket
+      PR #1326 Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13402.yaml
+      is present (carried by this OCC PR).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13402\"$' contracts/OMN-13402.yaml"
