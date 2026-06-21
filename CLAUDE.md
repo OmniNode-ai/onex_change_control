@@ -4,6 +4,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+<!-- Verified against code on 2026-06-21 refresh (OMN-13459): src/onex_change_control/ layout, models/ (30 model_*.py) + enums/ (25 enum_*.py), flat overseer/ (14 model_*.py + 14 enum_*.py, no models/enums subdirs), nodes/ (4 contract-drift archetypes: compute/reducer/orchestrator/effect), handlers/, eval/, doctrine/loader.py, pyproject [project.scripts] (22) + [project.entry-points."onex.nodes"] (4), templates/ (3), version 0.5.1. -->
+
+
 ## Repository Overview
 
 **onex_change_control** is the canonical governance, drift detection, and enforcement hub for the ONEX platform. It owns versioned Pydantic schemas for ticket contracts and day-close reports, CLI validators that downstream repos run in CI to prove contract compliance, ONEX node implementations (compute/reducer/effect/orchestrator for contract drift), an overseer and orchestration model suite, doc-freshness scanners, promotion tooling, and cosmetic lint tooling. Currently at v0.5.1.
@@ -19,7 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Promotion tooling**: manifest generation, workflow evidence, and dev→main cutover automation
 - **Scanners**: doc-freshness detection, handler contract compliance, wire schema compliance, and more
 - **Validation helpers**: regex patterns, YAML validation logic, schema purity checks
-- **Templates**: `templates/ticket_contract.template.yaml`, `templates/day_close.template.yaml`
+- **Templates**: `templates/ticket_contract.template.yaml`, `templates/day_close.template.yaml`, `templates/overnight_contract.template.yaml`
 - **Design docs**: `docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md`, `docs/design/DECISION_LOG.md`
 
 ## Architecture
