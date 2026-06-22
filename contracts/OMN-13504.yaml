@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13504"
+title: "Re-lock omnimarket dev omnibase-core pin from unmerged branch SHA to merged dev SHA (81c865f6)"
+summary: >-
+  omnimarket dev's omnibase-core git pin was hardcoded to 79ec3ad9d801b8da38b4d9099852cc8bfffad00e, a
+  commit that lives only on the un-merged OMN-13408 feature branch and is NOT an ancestor of omnibase_core
+  origin/dev. The squash-merge of that branch (#1300 / OMN-13408) landed on omnibase_core dev as 81c865f69a15781d526125ee13f39834a3ce69fd
+  with byte-identical content (git diff 79ec3ad9..81c865f6 is empty). Because 79ec3ad9 is not an ancestor
+  of core dev, the OMN-12977 sibling-pin guard (check_sibling_lock_pins.py, invoked by stage_workspace.sh)
+  aborted the dev runtime workspace build. This re-locks the pin in omnimarket pyproject.toml [tool.uv.sources]
+  rev= and [tool.uv] override-dependencies git URL (mirrored into uv.lock via uv lock --upgrade-package
+  omnibase-core) to the merged dev SHA 81c865f6, making the pin an ancestor of core dev and unblocking
+  the dev redeploy. Content-safe (merged SHA is byte-identical to the prior unmerged pin), same version
+  0.46.0; no source, version specifier, migration, schema, endpoint, or env change -- only omnimarket
+  pyproject.toml pins + uv.lock (plus this in-repo contract mirror). This OCC PR carries the central contract
+  consumed by the omnimarket PR #1350 Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-ancestry"
+    description: >-
+      The new core pin 81c865f69a15781d526125ee13f39834a3ce69fd is an ancestor of omnibase_core origin/dev
+      (merge-base --is-ancestor exits 0; is_ancestor=true) -- the OMN-12977 guard precondition. The prior
+      pin 79ec3ad9 was NOT an ancestor (lives only on the un-merged OMN-13408 branch); content is identical
+      (git diff 79ec3ad9..81c865f6 empty). The probe greps the recorded receipt and proves the PASS line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13504/dod-ancestry/command.yaml"
+  - id: "dod-guard-ok"
+    description: >-
+      The OMN-12977 sibling-pin guard (check_sibling_lock_pins.py) reports omnibase-core [OK] (lock=0.46.0
+      clone=0.46.0) and exits 0 against the origin/dev-synced canonical clones using the re-locked omnimarket
+      uv.lock. The build that previously aborted on the un-ancestor pin now passes preflight. The probe
+      greps the recorded guard receipt and proves the PASS line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13504/dod-guard-ok/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: pure dependency-pin re-lock -- only omnimarket pyproject.toml [tool.uv.sources]/override-dependencies
+      omnibase-core SHA and uv.lock change; no source, migration, schema, endpoint, or env-for-model change.
+      After merge, stage_workspace.sh passes the OMN-12977 preflight with NO drift override, unblocking
+      the dev runtime redeploy. No live deploy performed by this PR (deploy is a separate gated step).
+      The probe greps the deploy receipt and proves the PASS line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13504/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract used by the omnimarket
+      PR #1350 Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13504.yaml
+      is present (carried by this OCC PR).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13504\"$' contracts/OMN-13504.yaml"
