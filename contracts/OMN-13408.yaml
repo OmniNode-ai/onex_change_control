@@ -1,10 +1,10 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13408"
-title: "fix: accumulate measured cost_usd and carry tokens_input/tokens_output on metered delegation terminal
-  path"
+title: "fix: accumulate measured cost_usd, carry tokens_input/tokens_output, and capture served usage
+  upstream on the metered delegation terminal path"
 summary: >-
-  Two-dimension terminal-event fix for OMN-13408. (1) cost_usd dimension (already landed via omnimarket
+  Three-dimension terminal-event fix for OMN-13408. (1) cost_usd dimension (already landed via omnimarket
   #1332): _escalation_metadata() in HandlerDelegationWorkflow hardcoded cumulative_attempt_cost=0.0, cumulative_input_tokens=0,
   cumulative_output_tokens=0, and final_attempt_cost=0.0 on every terminal ModelDelegationResult regardless
   of actual tokens consumed. For metered tiers (cheap_cloud/GLM at rate_per_1k_usd=0.002), a 769-token
@@ -12,13 +12,27 @@ summary: >-
   and cumulative_attempt_cost from the workflow's resolved token counts through the same _measure_terminal_cost()
   / recompute_actual_cost_and_savings() path OMN-13396 wired for the compat-event builder. Token counts
   are propagated directly from workflow state. free_local tiers still resolve to 0.0 by the cost model
-  (not a hardcoded zero). (2) tokens dimension (this OCC extension; omnibase_core #1300 + omnimarket #1336):
+  (not a hardcoded zero). (2) tokens dimension (OCC extension; omnibase_core #1300 + omnimarket #1336):
   the compat ModelTaskDelegatedEvent did not carry tokens_input/tokens_output, so the projection's token
   columns were clobbered to 0 even when the canonical terminal event held served usage. Fix is ADDITIVE
   on the canonical event-bus model only — two new fields (tokens_input, tokens_output; int, default=0,
   ge=0) on the core wire DTO ModelTaskDelegatedEvent, plus population of those fields from served prompt/completion
   tokens on both the failed-compat path and the _build_compat_event completed path in HandlerDelegationWorkflow.
-  NO new REST route, NO bespoke endpoint, NO direct DB write.
+  (3) upstream-served-usage dimension (this OCC extension; omnimarket served-usage-upstream branch): the
+  carry-fix in (2) read from a ZERO source on the truncated/escalated-failed path, because the cloud inference
+  EFFECT (node_llm_delegation_call_effect/handlers/handler_inference_intent.py) raised on finish_reason==length
+  BEFORE it parsed the provider usage block, so the published ModelInferenceResponseData carried prompt_tokens=0/completion_tokens=0
+  even though the provider returned real usage (live EFFECT proof on .201: HTTP 200, finish_reason=length,
+  usage prompt_tokens=22/completion_tokens=19/total_tokens=529). Fix is ADDITIVE and omnimarket-only (NO
+  core change): a typed InferenceUsageError now carries the parsed served usage out of _call_llm, and
+  the handle() error path threads exc.prompt_tokens/completion_tokens/total_tokens onto the published
+  ModelInferenceResponseData (transport failures with no response still fall back to 0). A secondary latent
+  dispatcher-crash surfaced by the primary fix is also closed: the inference-error terminal-FAILED ModelDelegationResult
+  was built with total_tokens=response.total_tokens, but a reasoning model reports total>prompt+completion
+  (thinking tokens), violating the wire invariant total==prompt+completion and crashing the orchestrator
+  dispatcher with NO terminal emitted once real served tokens flowed — changed to total_tokens=response.prompt_tokens+response.completion_tokens
+  (matches the existing gate-path reconciliation in _record_inference_response). NO new REST route, NO
+  bespoke endpoint, NO direct DB write.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -71,6 +85,34 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -c 'deploy-gate evidence' contracts/OMN-13408.yaml"
+  - id: "dod-upstream-usage"
+    description: >-
+      Upstream-served-usage dimension (omnimarket served-usage-upstream branch). The cloud inference EFFECT
+      (node_llm_delegation_call_effect/handlers/handler_inference_intent.py) now parses the provider usage
+      block BEFORE the finish_reason==length / empty-content / empty-choices raises, raises a typed InferenceUsageError
+      carrying prompt_tokens/completion_tokens/total_tokens, and the handle() error path threads that
+      served usage onto the published ModelInferenceResponseData (transport-failure-before-response still
+      falls back to 0). The orchestrator inference-error terminal-FAILED ModelDelegationResult now sets
+      total_tokens=response.prompt_tokens+response.completion_tokens (reasoning-model total reconciliation)
+      so the canonical wire invariant total==prompt+completion holds and the dispatcher emits a terminal
+      instead of crashing on a thinking-model total. New real-dispatch-path test tests/unit/delegation/test_served_usage_upstream_omn13408.py
+      asserts the EFFECT carries served usage on truncation, the typed exception carries usage, and the
+      CANONICAL delegation-failed.v1 ModelDelegationResult (not just the compat twin) carries non-zero
+      served tokens + priced cost on a metered escalated-failed scenario. PROVEN LIVE on DEV (verifier
+      != runner), read back from the projection (NOT logs), run ON .201 (dev Redpanda advertises external://localhost:19092
+      so a Mac consumer never receives the terminal): fresh metered escalated correlation_id 17c2bed4-7abc-4d47-a21b-690afefd2adc
+      on terminal topic onex.evt.omnibase-infra.delegation-failed.v1, delegated_to=glm-5.2 (metered cheap_cloud,
+      rate 0.002/1k), escalation_count=1, projection row tokens_input=140 / tokens_output=7411 / cost_usd=0.015102
+      (exact: (140+7411)*0.002/1000) — all three > 0 where the prior FAIL (badf851a) read 0/0/0 on the
+      same canonical event. Readback: curl -s "http://192.168.86.201:3002/projection/onex.snapshot.projection.delegation.correlation-trace.v1".
+      Evidence: docs/evidence/2026-06-22-dev-deploy-live-proof/tokens-readback-usage-a1-17c2bed4.md (omni_home).
+      DEV lane only; stability/prod/judge untouched; no prod promotion; no grant edits. Measured DEV proof
+      only — no buyer-facing savings claim (OMN-12296 Integration Lock in force).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'test_served_usage_upstream_omn13408' contracts/OMN-13408.yaml"
   - id: "dod-occ-pr"
     description: >-
       Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
