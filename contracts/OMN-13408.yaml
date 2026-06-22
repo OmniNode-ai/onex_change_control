@@ -1,16 +1,24 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13408"
-title: "fix: accumulate measured cost_usd on metered delegation terminal path"
+title: "fix: accumulate measured cost_usd and carry tokens_input/tokens_output on metered delegation terminal
+  path"
 summary: >-
-  _escalation_metadata() in HandlerDelegationWorkflow hardcoded cumulative_attempt_cost=0.0, cumulative_input_tokens=0,
+  Two-dimension terminal-event fix for OMN-13408. (1) cost_usd dimension (already landed via omnimarket
+  #1332): _escalation_metadata() in HandlerDelegationWorkflow hardcoded cumulative_attempt_cost=0.0, cumulative_input_tokens=0,
   cumulative_output_tokens=0, and final_attempt_cost=0.0 on every terminal ModelDelegationResult regardless
   of actual tokens consumed. For metered tiers (cheap_cloud/GLM at rate_per_1k_usd=0.002), a 769-token
   prompt produced a projection cost_usd of 0.0 — confirmed via dogfood cid 54649717. Fix: compute final_attempt_cost
   and cumulative_attempt_cost from the workflow's resolved token counts through the same _measure_terminal_cost()
   / recompute_actual_cost_and_savings() path OMN-13396 wired for the compat-event builder. Token counts
   are propagated directly from workflow state. free_local tiers still resolve to 0.0 by the cost model
-  (not a hardcoded zero). Purely intra-omnimarket fix — no core wire DTO changes.
+  (not a hardcoded zero). (2) tokens dimension (this OCC extension; omnibase_core #1300 + omnimarket #1336):
+  the compat ModelTaskDelegatedEvent did not carry tokens_input/tokens_output, so the projection's token
+  columns were clobbered to 0 even when the canonical terminal event held served usage. Fix is ADDITIVE
+  on the canonical event-bus model only — two new fields (tokens_input, tokens_output; int, default=0,
+  ge=0) on the core wire DTO ModelTaskDelegatedEvent, plus population of those fields from served prompt/completion
+  tokens on both the failed-compat path and the _build_compat_event completed path in HandlerDelegationWorkflow.
+  NO new REST route, NO bespoke endpoint, NO direct DB write.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -32,6 +40,25 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -c 'test_success_path_cumulative_cost_nonzero_for_metered_tier' contracts/OMN-13408.yaml"
+  - id: "dod-tokens"
+    description: >-
+      Tokens dimension. omnibase_core #1300 adds two additive fields (tokens_input, tokens_output; int,
+      default=0, ge=0) to the canonical wire DTO ModelTaskDelegatedEvent. omnimarket #1336 populates them
+      from served prompt/completion tokens on both terminal compat paths in HandlerDelegationWorkflow,
+      with a real-dispatch-path regression test tests/unit/delegation/test_compat_event_tokens_not_clobbered_omn13408.py
+      (class TestCompatEventTokensNotClobberedOmn13408, 3 tests covering the failed compat path and the
+      _build_compat_event completed path) that FAILS with tokens_input=0/tokens_output=0 when the handler
+      population is stashed out and PASSES (3 passed) with the fix. Independent DEV-lane live projection
+      readback (correlation_id badf851a, terminal topic onex.evt.omnibase-infra.delegation-failed.v1)
+      still reads tokens_input=0/tokens_output=0 because the served Gemini usage is dropped UPSTREAM before
+      response.prompt_tokens / workflow.inference_*_tokens are read on the escalated-failed path; the
+      additive wire+compat carry is in place but the upstream-usage threading is a separate follow-on.
+      No buyer-facing savings claim — measured DEV proof only (OMN-12296 Integration Lock in force).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'tokens_input' contracts/OMN-13408.yaml"
   - id: "dod-occ-pr"
     description: >-
       Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
