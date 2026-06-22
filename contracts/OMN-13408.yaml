@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13408"
+title: "fix: accumulate measured cost_usd on metered delegation terminal path"
+summary: >-
+  _escalation_metadata() in HandlerDelegationWorkflow hardcoded cumulative_attempt_cost=0.0, cumulative_input_tokens=0,
+  cumulative_output_tokens=0, and final_attempt_cost=0.0 on every terminal ModelDelegationResult regardless
+  of actual tokens consumed. For metered tiers (cheap_cloud/GLM at rate_per_1k_usd=0.002), a 769-token
+  prompt produced a projection cost_usd of 0.0 — confirmed via dogfood cid 54649717. Fix: compute final_attempt_cost
+  and cumulative_attempt_cost from the workflow's resolved token counts through the same _measure_terminal_cost()
+  / recompute_actual_cost_and_savings() path OMN-13396 wired for the compat-event builder. Token counts
+  are propagated directly from workflow state. free_local tiers still resolve to 0.0 by the cost model
+  (not a hardcoded zero). Purely intra-omnimarket fix — no core wire DTO changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      4 new real-dispatch-path tests in tests/unit/delegation/test_cumulative_cost_accumulation_omn13408.py
+      confirm the fix: (a) metered cheap_cloud tier with 769+200 tokens yields cumulative_attempt_cost
+      > 0 and cumulative_input_tokens == 769 (was 0.0 / 0); (b) failed path (gate fail, no escalation)
+      still yields non-zero cumulative cost; (c) free_local tier correctly yields 0.0 by cost model; (d)
+      metered and free_local diverge on cumulative cost — FAILED before fix → PASSED after fix. 7827 existing
+      tests green.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'test_success_path_cumulative_cost_nonzero_for_metered_tier' tests/unit/delegation/test_cumulative_cost_accumulation_omn13408.py"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
+      PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13408\"$' contracts/OMN-13408.yaml"
