@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13475"
+title: "fix: collapse delegation terminal+compat construction onto one contract-owned builder (kills OMN-13408
+  class)"
+summary: >-
+  HandlerDelegationWorkflow built the canonical terminal event (delegation-completed.v1 / delegation-failed.v1
+  carrying ModelDelegationResult) AND the backward-compat twin (task-delegated.v1 carrying ModelTaskDelegatedEvent)
+  in five separate ad-hoc terminal sites, each reading token counts and measuring cost independently.
+  The two events co-write the same delegation projection row, so any drift between the independently-read
+  values clobbered the row's tokens/cost to 0 — the OMN-13408 telemetry-zeroing bug class. Patching each
+  site to "also carry the tokens" left the divergence possible at every future edit. Fix: introduce a
+  single contract-owned builder HandlerDelegationWorkflow._emit_terminal fed by one TerminalEmissionInputs
+  value object; it measures cost exactly once (_measure_terminal_cost / recompute_actual_cost_and_savings,
+  the same path OMN-13396 wired) and reads the served tokens once, then derives BOTH events from those
+  identical values. _build_compat_event becomes _gate_terminal_inputs (returns inputs, not an event);
+  the orphaned _escalation_metadata is deleted (folded into the single builder). After the change there
+  is exactly ONE ModelDelegationResult and ONE ModelTaskDelegatedEvent construction site (down from 5
+  + 3). Does not regress the inference EFFECT served-usage fix (OMN-13408, merged). Purely intra-omnimarket
+  fix — no core wire DTO changes. This OCC PR carries the central contract consumed by the omnimarket
+  PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      New structural + parity tests in tests/unit/delegation/test_terminal_builder_single_source_omn13475.py
+      prove the single-source invariant: the handler module now contains exactly ONE ModelDelegationResult
+      and ONE ModelTaskDelegatedEvent construction site (AST count, was 5 + 3 — these structural assertions
+      FAILED before the fix), and across the completed, failed-inference and agent-lifecycle terminal
+      paths the canonical terminal ModelDelegationResult and the compat ModelTaskDelegatedEvent carry
+      the SAME served tokens and the SAME measured cost. The OMN-13408 regression fixtures (test_compat_event_tokens_not_clobbered_omn13408,
+      test_cumulative_cost_accumulation_omn13408, test_terminal_path_cost_usd_omn13396) stay green.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13475/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Full static + suite quality gates green on the omnimarket worktree: uv run ruff check/format src/
+      tests/ clean; uv run mypy src/omnimarket/ --strict succeeds (no issues in 2461 source files); the
+      full pytest suite (uv run pytest tests/ -q, NO -k filter) runs 7969 passed / 68 skipped / 3 failed
+      where the 3 failures are @pytest.mark.kafka live-broker integration tests requiring a Redpanda broker
+      on :19092 (environment-only, not exercised by this change and green in CI against a real broker);
+      pre-commit run --files passed every gate.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13475/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is an intra-omnimarket refactor of the delegation orchestrator
+      handler (collapse five terminal-emission sites onto one builder) plus one new unit test. It contains
+      NO runtime deploy, NO database migration, NO REST surface, NO contract/topic changes, and NO live-lane
+      mutation (dev/stability/prod unchanged). The post-merge live proof is recorded for a verifier to
+      run on the dev lane after the merge workflow lands the PR; nothing in this PR touches a live lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13475/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13475.yaml consumed
+      by the omnimarket PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves the
+      contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13475\"$' contracts/OMN-13475.yaml"
