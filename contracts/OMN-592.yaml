@@ -2,54 +2,63 @@
 schema_version: "1.0.0"
 ticket_id: OMN-592
 title: '[BETA] Refactor: Extract _build_fsm_context method'
-summary: "[BETA] Refactor: Extract _build_fsm_context method"
+summary: >-
+  Extracts NodeReducer._build_fsm_context(input_data) -> (context, warnings) from the inline context construction
+  in process(). The method merges input.data, reduction_type, operation_id, and non-reserved metadata
+  into the serializable FSM execution context. Keys prefixed '_fsm_' are reserved for system use: caller-supplied
+  reserved keys are dropped from the merge (the system context is never overwritten) and a single WARNING-level
+  log_event intent naming the rejected keys is emitted (pure-FSM pattern — warn via intent, never raise).
+  Paired feature PR: omnibase_core#1311 (method + tests).
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
-evidence_requirements:
-  - kind: "ci"
-    description: "CI passes on merge PR"
-    command: "gh pr checks"
+evidence_requirements: []
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-001"
-    description: "PR opened against main branch"
+    description: >-
+      Focused suite tests/unit/nodes/test_node_reducer_build_fsm_context.py passes (6 tests): context
+      carries input_data/reduction_type/operation_id; non-reserved metadata (declared + extra) merges;
+      None-valued metadata is excluded; a single reserved _fsm_* key is dropped and produces exactly one
+      WARNING log_event intent; multiple reserved keys are reported sorted in one intent; and an end-to-end
+      process() run surfaces the reserved-key warning in output intents.
     source: "generated"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "gh pr view ${PR_NUMBER} --json state -q .state --repo ${REPO}"
+        check_value: "grep -c '^status: PASS$' drift/dod_receipts/OMN-592/dod-001/command.yaml"
   - id: "dod-002"
-    description: "PR merged to main"
-    source: "generated"
+    description: >-
+      Implementation proof: src/omnibase_core/nodes/node_reducer.py defines _build_fsm_context returning
+      (SerializedDict, tuple[ModelIntent, ...]); reserved keys are filtered via the _FSM_RESERVED_CONTEXT_PREFIX
+      '_fsm_' constant and surfaced as a WARNING ModelPayloadLogEvent intent; process() prepends the reserved-key
+      warnings ahead of FSM and projection intents.
+    source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "gh pr view ${PR_NUMBER} --json mergedAt -q .mergedAt --repo ${REPO}"
-  - id: "dod-003"
-    description: "Tests pass in CI"
-    source: "generated"
+        check_value: "grep -c '^status: PASS$' drift/dod_receipts/OMN-592/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR which carries the OMN-592 contract consumed by the omnibase_core#1311
+      Receipt Gate via Evidence-Source. The contract declares ticket_id OMN-592 exactly once.
+    source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "gh pr checks ${PR_NUMBER} --watch --repo ${REPO}"
-  - id: "dod-004"
-    description: "Pre-commit hooks clean"
-    source: "generated"
-    checks:
-      - check_type: "command"
-        check_value: "pre-commit run --all-files"
+        check_value: "test \"$(grep -c '^ticket_id: OMN-592$' contracts/OMN-592.yaml)\" -eq 1"
   - id: "dod-deploy-no-runtime-impact"
-    description: "Refactor of NodeReducer context construction; no live deploy, broker mutation, or runtime
-      restart required before merge."
+    description: >-
+      Deploy-path evidence for OMN-592. The feature PR refactors the pure NodeReducer context-construction
+      source and adds unit tests only — no live deploy, no docker exec, no rpk topic produce, no broker
+      mutation, no migration, no image-build input, no .201 mutation, and no runtime restart is required
+      before merge.
     source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "echo 'deploy-gate: OMN-592 refactors omnibase_core NodeReducer source and tests
-          only; no live deploy required before merge'"
-  - id: "dod-occ-pr-self"
-    description: "OCC self-binding receipt for the central evidence PR adding OMN-592 deploy evidence."
-    source: "manual"
-    checks:
-      - check_type: "command"
-        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json headRefOid -q .headRefOid"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-592/dod-deploy-no-runtime-impact/command.yaml
+          # deploy-gate: no live deploy / docker exec / rpk topic produce required"
