@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13517"
+title: "fix(ci): branch-protection-audit Check B false-positives on PR-only required contexts (main-target-guard)"
+summary: >-
+  The scheduled Branch Protection Audit workflow (omnibase_infra/.github/workflows/branch-protection-audit.yml,
+  cron 23 */4 * * *) failed on every run — Check B reported 9 violations, all the same message: context
+  'main-target-guard' not found in last-5-commit check-runs, across the 9 repos that require it. Root
+  cause is a false positive in the auditor, not a branch-protection misconfiguration. Check B (find_orphan_contexts
+  in omnibase_infra/scripts/audit_branch_protection_lib.py) flags any required status-check context whose
+  name is not among the check-run names seen on the last 5 commits of the default branch (main). main-target-guard
+  (.github/workflows/main-target-guard.yml, OMN-12243) triggers ONLY on pull_request events targeting
+  main and binds its check-run to the PR HEAD SHA (a feature-branch tip), so it can never appear on main's
+  commit check-runs and was permanently mis-flagged as an orphan. Fix is auditor-side code only (additive):
+  a PR_ONLY_CONTEXTS = frozenset({'main-target-guard'}) allowlist and a one-line change to find_orphan_contexts
+  to exclude PR-only contexts from orphan detection. No branch-protection settings are mutated; main-target-guard
+  remains intentionally required (OMN-12243 / OMN-12477). Genuinely-stale contexts on a given repo (e.g.
+  omninode_infra's CI Summary / verify / verify / skip-token contexts) are NOT in the allowlist and stay
+  flagged, so real drift is not masked. This OCC PR carries the central contract consumed by the omnibase_infra
+  PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The false positive is fixed at the unit level: scripts/audit_branch_protection_lib.py now defines
+      PR_ONLY_CONTEXTS = frozenset({'main-target-guard'}) and find_orphan_contexts excludes PR-only contexts,
+      so find_orphan_contexts(['main-target-guard'], set()) == [] while a genuinely-stale context find_orphan_contexts(['CI
+      Summary'], set()) == ['CI Summary'] is STILL flagged. The dedicated test file tests/ci/test_branch_protection_audit.py
+      passes 24/24 (6 new TestFindOrphans cases covering the PR-only suppression, real-drift preservation,
+      mixed lists, and the constant).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13517/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      EFFECT proof against the live GitHub API: scripts/audit_branch_protection_lib_cli.py audit --owner
+      OmniNode-ai --repo omnibase_spi now returns status=ok with orphan_contexts=[] while main-target-guard
+      remains in required_contexts (['CI Summary', 'gate / CodeRabbit Thread Check', 'call-reject-skip-token
+      / scan / reject-skip-gate-token', 'main-target-guard']). Pre-fix the same probe returned orphan_contexts=['main-target-guard'].
+      ruff format + ruff check + mypy clean on the changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13517/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      The paired OCC PR carries contracts/OMN-13517.yaml + PASS dod_receipts under drift/dod_receipts/OMN-13517/;
+      the infra PR body Evidence-Source pins the merged OCC commit SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13517\"$' contracts/OMN-13517.yaml"
