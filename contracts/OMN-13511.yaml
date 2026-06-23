@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13511"
+title: "Register node-backed dogfood sweeps in the onex skill CLI dispatch registry (skill_mapping.yaml)"
+summary: >
+  Fixes the registry/field side of the sweep dogfood gap (Rule 5: an enforcement gate that cannot be invoked
+  is worse than no gate). Six dogfood runtime sweeps — runtime_sweep, golden_chain_sweep, integration_sweep,
+  contract_sweep, skill_functional_audit, and dod_sweep — each had a real, implemented backing node in
+  the omnimarket onex.nodes catalog but were absent from the declarative omnibase_infra/src/omnibase_infra/cli/skill_mapping.yaml
+  registry, which carried only the 25 OMN-13097 Phase-4a shims plus gap. So uv run onex skill <name> returned
+  "Unknown skill" and the SKILL.md-prescribed headless dogfood invocation was unrunnable. The fix adds
+  the six skill->node mappings (each node_name is the canonical omnimarket onex.nodes entry point, each
+  result_model is the handler's real return type, each CLI arg maps onto a field the node's extra="forbid"
+  request model accepts) and adds a test_every_node_backed_sweep_skill_is_registered fixture — the inverse
+  of the OMN-13531 mapping->catalog gate — so any future node-backed dogfood sweep that ships without
+  a mapping fails at CI time instead of at dispatch time. record_friction is intentionally NOT added:
+  it is a pure-instruction skill backed by friction_recorder.py with no backing node and no prescribed
+  onex skill record_friction verb. This is the registry/field side, distinct from the node-handler default-scope
+  side (OMN-13538) and the merged compliance_sweep fix (OMN-13514).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Extended _EXPECTED_SKILLS, the node-backed-sweep registry fixture, and the four payload-validation
+      tests pass; full unit suite green."
+    command: "uv run pytest tests/unit/cli/test_cli_skill.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2082"
+    description: "omnibase_infra PR #2082 adds the six skill->node mappings to skill_mapping.yaml (runtime_sweep,
+      golden_chain_sweep, integration_sweep, contract_sweep, skill_functional_audit, dod_sweep), extends
+      _EXPECTED_SKILLS, and adds the test_every_node_backed_sweep_skill_is_registered regression fixture
+      plus the four payload-validation tests."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13511/dod-infra-pr-2082/command.yaml"
+  - id: "dod-deploy-no-runtime-impact"
+    description: "Pure CLI-registry (declarative YAML + tests) change resolved on the in-process onex
+      skill dispatch path; no live deploy, runtime process restart, broker topic mutation, or schema migration
+      required before merge."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13511/dod-deploy-no-runtime-impact/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "OCC self-binding receipt for the central evidence PR carrying the OMN-13511 contract
+      and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13511/dod-occ-pr-self/command.yaml"
