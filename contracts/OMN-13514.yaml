@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13514"
+title: "fix(OMN-13514): compliance_sweep skill false-clean scans zero handlers through RuntimeLocal dispatch"
+summary: >-
+  The onex compliance_sweep skill path could report a false-clean result: RuntimeLocal dispatch with an
+  empty request scanned 0 handlers and returned status=compliant, while the node __main__ path over the
+  canonical repo set scanned real handlers and found violations. Root cause was a contract/model mismatch
+  and duplicated repo-resolution logic: skill_mapping.yaml and the contract send repos, but ComplianceSweepRequest
+  accepted only target_dirs with extra=forbid; the default repo set and repo-name to path resolver lived
+  only in __main__.py, so the dispatch path defaulted to an empty scan. The product PR adds repos to the
+  request model, moves default repo resolution into the shared handler module, makes both RuntimeLocal
+  and __main__ use the same resolver, fails fast when OMNI_HOME is required but unset, excludes nested
+  worktrees/tests/fixtures from scan scope, and ignores LOGIC_IN_NODE matches inside docstring/string-literal
+  examples while preserving real handler detections.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Regression coverage proves RuntimeLocal-shaped empty dispatch no longer scans zero handlers, accepts
+      the contract-declared repos field, shares resolution with __main__, excludes nested worktrees/tests/fixtures,
+      and skips LOGIC_IN_NODE false positives in string-literal/docstring examples. The focused product
+      tests pass 18/18: tests/test_golden_chain_compliance_sweep.py plus tests/test_compliance_sweep_dispatch_resolution.py.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13514/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Quality gates on the changed node are green: mypy --strict succeeds on src/omnimarket/nodes/node_compliance_sweep/,
+      runtime sweep reports 322/322 entry points OK, node metadata dependency checks pass, the contract/metadata/manifest
+      subset passes 1122 tests with 5 skips, and pre-commit passes for the changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13514/dod-002/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      The changed compliance_sweep node is an in-process skill/runtime node. The product PR changes Python
+      request parsing, repo resolution, scope filtering, and AST false-positive handling; it does not
+      add a network listener, persistent service, schema migration, topic, or container image dependency.
+      No live deploy, runtime restart, docker exec, or rpk topic produce is required before merge; deploy
+      readiness is covered by the local Runtime Sweep and focused regression tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13514/dod-deploy-assessment/command.yaml
+          && grep -q 'deploy gate' drift/dod_receipts/OMN-13514/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries contracts/OMN-13514.yaml plus PASS receipts under drift/dod_receipts/OMN-13514/.
+      The paired omnimarket PR cites OMN-13514 via Evidence-Ticket and pins this OCC PR via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13514\"$' contracts/OMN-13514.yaml"
