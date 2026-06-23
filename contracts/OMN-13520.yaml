@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13520"
+title: "Make test_registration_only hermetic — clear OMNIBASE_INFRA_DB_URL so the no-DB precondition holds"
+summary: >-
+  Fixes a non-hermetic unit test in omnibase_infra: tests/unit/verification/test_cli.py::TestCLIMain::test_registration_only.
+  The test's pass/fail flipped on whether the ambient environment variable OMNIBASE_INFRA_DB_URL was set.
+  When set (developer shells and CI runners that export a live Postgres DSN, e.g. the .201 omnibase_infra
+  DB), the verification CLI's _make_runtime_db_query_fn() (src/omnibase_infra/verification/cli.py) builds
+  a real DB query function via ModelPostgresPoolConfig.from_env("OMNIBASE_INFRA_DB_URL") instead of returning
+  None. In _run_registration_only a non-None db_query_fn makes the registration + projection_state checks
+  query the live database, which holds real registration rows, so both checks PASS and main() returns
+  exit code 0 — violating the test assertion `assert exit_code in (1, 2)` with `assert 0 in (1, 2)`. The
+  test docstring already states "No runtime DB is configured in this unit test" but never enforced that
+  precondition. The fix is test-only: add a monkeypatch fixture parameter and monkeypatch.delenv("OMNIBASE_INFRA_DB_URL",
+  raising=False) at the top of the method, before constructing the contracts, so the no-DB precondition
+  holds regardless of the ambient environment. No source change is required — the CLI behaves correctly;
+  the test failed to control its own input. The sibling test test_registration_only_uses_runtime_db_for_projection_state
+  is already hermetic because it monkeypatches _make_runtime_db_query_fn directly. This OCC PR carries
+  the central contract consumed by the omnibase_infra PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The target test is GREEN under the failing condition. With OMNIBASE_INFRA_DB_URL exported in the
+      environment (the condition that previously produced `assert 0 in (1, 2)`), running `uv run pytest
+      tests/unit/verification/test_cli.py::TestCLIMain::test_registration_only` now passes because the
+      test deletes the var via monkeypatch, forcing _make_runtime_db_query_fn() to return None and the
+      DB-backed checks to QUARANTINE (exit 2). Verified on feature commit 4f3e1c2487b8aefa7ba7134daca72d5abb025ce0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13520/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Quality gates green on the omnibase_infra worktree. The full verification unit suite passes (`uv
+      run pytest tests/unit/verification/` — 426 passed); the modified file is clean under `uv run ruff
+      format`, `uv run ruff check`, and `uv run mypy tests/unit/verification/test_cli.py`; and `pre-commit
+      run --files tests/unit/verification/test_cli.py` reports all hooks Passed/Skipped (no failures).
+      Test-only change; no source, no migration, no contract drift.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13520/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is a single test-only edit (add a monkeypatch.delenv to one unit
+      test). It contains NO runtime deploy, NO migration, NO REST surface, NO live-lane mutation, and
+      NO source change. It only makes an existing unit test hermetic so it stops depending on ambient
+      environment. Nothing in this PR touches a live lane (dev / stability / prod / judge).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13520/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13520.yaml consumed
+      by the omnibase_infra PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves
+      the contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13520\"$' contracts/OMN-13520.yaml"
