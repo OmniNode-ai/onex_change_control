@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13083"
+title: "Contract-declared projections for traces (NC-10) and cost.by_repo (NC-04)"
+summary: >-
+  Two dashboard-declared projection topics gained backing contracts in omnimarket following the proven
+  NC-* projection pattern (contract projection_api + handler + typed model + node-owned migration). OMN-13083
+  (NC-10): a new node_projection_traces REDUCER subscribes to onex.evt.platform.log-entry.v1, aggregates
+  entries by correlation_id, and exposes onex.snapshot.projection.traces.v1 over a node-owned traces table
+  carrying the dashboard trace-explorer 9-field row shape (correlation_id, nodes_involved, event_count,
+  first_event_at, last_event_at, duration_ms, has_error, is_running, latest_message), ordered last_event_at
+  DESC. It is the canonical contract-declared replacement for the bespoke :8765 traces server removed
+  in OMN-12822. OMN-13077 (NC-04): the existing node_projection_cost_by_repo gains the missing projection_api
+  block exposing onex.snapshot.projection.cost.by_repo.v1 over a new node-owned cost_by_repo_snapshots
+  table that carries the repo dimension (repo_name, total_cost_usd, window) the shared llm_cost_aggregates
+  lacked, removing the dashboard upstream-blocked state. Both migrations are idempotent CREATE TABLE IF
+  NOT EXISTS, discovered by scripts/run-projection-migrations.py. This OCC contract is the Receipt-Gate
+  Evidence-Source the omnimarket product PR cites. No runtime deploy in this scope.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      traces golden chain (row-delta before=0/after=1, cross-event aggregation, sticky error, terminal
+      clears running, batch); traces contract+projection_api pins; cost.by_repo projection_api+migration
+      pins.
+    command: "uv run pytest tests/test_golden_chain_traces.py tests/test_traces_projection_omn13083.py
+      tests/test_cost_by_repo_projection_api_omn13077.py -q"
+  - kind: "ci"
+    description: >-
+      mypy --strict green on the new traces node; runtime sweep 324/324 entry points OK; pre-commit green
+      (golden-chain-coverage-gate, topic-naming, migration ownership).
+    command: "uv run mypy src/omnimarket/nodes/node_projection_traces/ --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1393"
+    description: >-
+      The omnimarket product PR #1393 carries both projection contracts (node_projection_traces + node_projection_cost_by_repo
+      projection_api block), their typed models, handlers, and node-owned idempotent migrations, plus
+      the golden-chain + contract tests. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json state,headRefOid,baseRefName"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13083 (traces / NC-10) and
+      the absorbed OMN-13077 (cost.by_repo / NC-04). The omnimarket PR cites Evidence-Source: OCC#<this-pr>
+      (post-merge OCC-main SHA) so its verify/verify Receipt Gate resolves against an OCC-main ancestor.
+      Build/PR scope only; no runtime deploy, no env-for-model, no bespoke endpoint.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13083.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR adds contract-declared projection nodes and idempotent node-owned migrations
+      for traces and cost.by_repo. It does not perform a live deploy or runtime restart; live readback
+      is deferred to the normal redeploy step. The deploy-gate evidence is the product PR's focused projection,
+      migration, golden-chain, mypy, runtime-sweep, and pre-commit verification, bound in dod-omnimarket-pr-1393.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13083/dod-deploy-assessment/command.yaml"
