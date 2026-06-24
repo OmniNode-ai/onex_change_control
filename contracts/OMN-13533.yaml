@@ -1,0 +1,79 @@
+---
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+schema_version: '1.0.0'
+ticket_id: OMN-13533
+title: 'Provision validator-catch.v1 + hook-context-injected.v1 via savings-estimation contract'
+summary: >-
+  The savings-estimation runtime consumer subscribes to 6 topics (config.py::_default_consumed_topics)
+  but node_savings_estimation_compute's contract.yaml declared only session-ended.v1 under event_bus.subscribe_topics.
+  The contract-driven topic provisioner (scripts/create_kafka_topics.py) only creates topics it finds
+  in a contract, so validator-catch.v1 and hook-context-injected.v1 were never provisioned on the dev
+  broker. The consumer's subscribe loop then error-stormed "topic not found in cluster" (174 + 220 errors
+  / 15m) on every fresh dev redeploy. Fix: declare all 6 consumed topics in the contract subscribe_topics/topics.consumes
+  so the provisioner creates them, and drop the 5 now-contract-covered parity-gate allowlist entries (the
+  two target topics + the three already-provisioned siblings). Adds a unit gate asserting every runtime-consumed
+  topic is declared in the contract.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Config unit suite proves every ConfigSavingsEstimation.consumed_topics entry is present in node_savings_estimation_compute/contract.yaml
+      subscribe_topics (the provisioner-visible surface), gating the consumer-subscribed-but-unprovisioned
+      regression class.
+    command: >-
+      uv run pytest tests/unit/observability/test_savings_estimation_config.py -q
+  - kind: ci
+    description: CI pipeline green on PR
+    command: gh pr checks <PR> --repo OmniNode-ai/omnibase_infra
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >-
+      The contract-driven topic provisioner now extracts onex.evt.omniclaude.validator-catch.v1 and onex.evt.omniclaude.hook-context-injected.v1
+      from node_savings_estimation_compute/contract.yaml; before this change neither appeared in the provisioner's
+      create plan (dry-run grep returned nothing).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13533/dod-001/command.yaml && grep -q '^ticket_id:
+          OMN-13533$' drift/dod_receipts/OMN-13533/dod-001/command.yaml && grep -q '^pr_number: 2092$'
+          drift/dod_receipts/OMN-13533/dod-001/command.yaml
+  - id: dod-002
+    description: >-
+      test_every_consumed_topic_is_declared_in_contract fails if any runtime-consumed topic is missing
+      from the contract subscribe_topics, gating the OMN-13533 regression so a future consumed-topic addition
+      that skips the contract is caught pre-merge.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13533/dod-002/command.yaml && grep -q '^ticket_id:
+          OMN-13533$' drift/dod_receipts/OMN-13533/dod-002/command.yaml && grep -q '^pr_number: 2092$'
+          drift/dod_receipts/OMN-13533/dod-002/command.yaml
+  - id: dod-003
+    description: >-
+      Parity gate stays green with the two target topics (plus three siblings) moved from allowlist to
+      contract-covered.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13533/dod-003/command.yaml && grep -q '^ticket_id:
+          OMN-13533$' drift/dod_receipts/OMN-13533/dod-003/command.yaml && grep -q '^pr_number: 2092$'
+          drift/dod_receipts/OMN-13533/dod-003/command.yaml
+  - id: dod-occ-pr
+    description: OCC PR carrying this OMN-13533 contract and downstream receipts.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13533/dod-occ-pr/command.yaml && grep -q '^ticket_id:
+          OMN-13533$' drift/dod_receipts/OMN-13533/dod-occ-pr/command.yaml && grep -q '^pr_number: 3021$'
+          drift/dod_receipts/OMN-13533/dod-occ-pr/command.yaml
