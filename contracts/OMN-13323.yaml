@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13323"
+title: "fix(OMN-13323): align dod_evidence_runner writer path with completion guard read path (round-trip
+  gate)"
+summary: >-
+  OCC evidence for the omniclaude fix PR (#1798) that aligns the /dod-verify writer with the DoD completion
+  guard read path (Enforcement Map F7, verified plan UWP-17). The guard (plugins/onex/hooks/scripts/pre_tool_use_dod_completion_guard.sh)
+  reads the receipt at $ONEX_EVIDENCE_ROOT/<ticket>/dod_report.json and fails closed when it is missing.
+  The writer (dod_evidence_runner.write_evidence_receipt) defaulted output_dir to <working_dir>/.evidence/<ticket>,
+  ignoring ONEX_EVIDENCE_ROOT, so a passing /dod-verify landed the receipt where the guard never looked
+  and Done was blocked with "No DoD evidence receipt found". The mismatch was reproduced before the fix.
+  The fix routes the writer default through resolve_evidence_output_dir, mirroring the canonical node_dod_verify
+  precedence (ONEX_EVIDENCE_ROOT first, legacy <working_dir>/.evidence fallback when unset), and adds
+  a round-trip regression gate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-round-trip-path-equal"
+    description: >-
+      The round-trip test asserts the writer's resolved receipt path == the guard's resolved ONEX_EVIDENCE_ROOT
+      path (same absolute path), and that the real writer -> real guard round-trip allows Done. tests/hooks/test_dod_round_trip.py
+      passes (7 tests) at the product commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13323/dod-round-trip-path-equal/command.yaml"
+  - id: "dod-planted-missing-fail-closed"
+    description: >-
+      Planted-missing receipt -> guard fail-closed (exit 2) with the documented missing-receipt reason
+      ("No DoD evidence receipt found"). Proven by tests/hooks/test_dod_round_trip.py::TestRoundTrip::test_planted_missing_receipt_fails_closed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13323/dod-planted-missing-fail-closed/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13323.yaml consumed
+      by the omniclaude fix PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13323\"$' contracts/OMN-13323.yaml"
