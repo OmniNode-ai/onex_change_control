@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13324"
+title: "feat(validation): CI schema gate asserting every dispatched node contract declares handlers[0].operation"
+summary: >
+  The dispatch-envelope unwrap (node_dod_verify test_dispatch_envelope_unwrap) resolves the primary handler's
+  operation from handler_routing.handlers[0].operation regardless of routing_strategy; a dispatched node
+  contract that omits it fails closed with 'handlers[0].operation is missing'. New contract-schema validator
+  omnibase_core.validators.dispatched_contract_operation (validators-standardized home, feedback_validators_standardized)
+  scans every contract.yaml and fails when a dispatched contract (any contract with a non-empty handler_routing.handlers
+  list) omits a non-empty operation on handlers[0]. Distinct from OMN-13530 (operation_match_requires_operation),
+  which EXEMPTS payload_type_match: this gate is strategy-agnostic and covers payload_type_match dispatch
+  targets, because the unwrap reads handlers[0].operation independent of strategy. Wired as pre-commit
+  hook + exportable .pre-commit-hooks.yaml entry + required CI status check, per OMN-9048. Validation/CI-gate
+  change only; no topic schema, envelope, or contract API change; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Unit tests assert the gate flags a missing handlers[0].operation (including payload_type_match,
+      which OMN-13530 exempts), passes a present operation, treats whitespace-only as missing, checks
+      only handlers[0], and treats a contract with no handlers list as out of scope. Planted-violation
+      / revert proof: a payload_type_match contract missing handlers[0].operation exits the gate non-zero
+      naming the contract; revert returns green.
+    command: "cd omnibase_core && uv run pytest tests/unit/validators/test_dispatched_contract_operation.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-pr-1322"
+    description: >
+      omnibase_core PR #1322 adds the dispatched_contract_operation validator + finding model + 11 unit
+      tests, the dispatched-contract-operation pre-commit hook (config + exportable .pre-commit-hooks.yaml),
+      and the validator-dispatched-contract-operation.yml required CI status check. Planted-violation
+      / revert proven (payload_type_match contract; gate exits non-zero naming the contract, revert green).
+      Evidence anchor: omnibase_core head commit 166126d6d101efbc10c7c6bcff30963c00fbeee7.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: \"PASS\"$' drift/dod_receipts/OMN-13324/dod-core-pr-1322/command.yaml
+          && grep -q '^pr_number: 1322$' drift/dod_receipts/OMN-13324/dod-core-pr-1322/command.yaml &&
+          grep -q 'passed' drift/dod_receipts/OMN-13324/dod-core-pr-1322/command.yaml"
+  - id: "dod-occ-pr"
+    description: >
+      onex_change_control PR carries contracts/OMN-13324.yaml and the OMN-13324 dod receipts. Self-binding
+      receipt (pr_number == this OCC PR) satisfies validator_occ_merge_eligibility._receipt_bound_to_pr.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13324/dod-occ-pr/command.yaml"
