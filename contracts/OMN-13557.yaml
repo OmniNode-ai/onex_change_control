@@ -1,0 +1,76 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13557"
+title: "env→contract migration (Wave 1, omnimarket): resolve ARCH_GRAPH_BOLT_URI via overlay seam"
+summary: >-
+  Wave-1 endpoint→overlay migration (epic OMN-13556). The architecture-graph query and populate EFFECT
+  config models (model_architecture_graph_query_config.py / model_architecture_graph_populate_config.py)
+  read os.environ["ARCH_GRAPH_BOLT_URI"] directly inside a Pydantic default_factory — a scattered endpoint
+  read outside the sanctioned overlay boundary. This change routes both reads through expand_contract_env_refs
+  (omnibase_infra.runtime.overlay.contract_env_ref — the ONE sanctioned env-reading surface) against the
+  contract reference ${env.ARCH_GRAPH_BOLT_URI}. The owning contracts now declare bolt_uri default as
+  ${env.ARCH_GRAPH_BOLT_URI} (overlay-resolved, bound per-lane). Resolution is equivalent: same var, same
+  dev/stability/prod value the direct read gave, now via the overlay seam. The resolver fails closed (ValueError)
+  when the overlay does not bind the var, replacing the prior direct-read KeyError and explicitly rejecting
+  a silent localhost fallback. Each node's metadata.yaml declares the new omnibase-infra dependency. This
+  is the template-establishing migration for the omnimarket endpoint→overlay wave; LLM_*_URL family and
+  kernel/overlay machinery are out of scope (Bifrost-owned / sanctioned resolver, respectively). url-authority,
+  delegation-env-read, and no-silent-env-fallbacks gates stay green with ZERO new violations. This OCC
+  PR carries the central contract consumed by the omnimarket PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-overlay-resolution"
+    description: >-
+      Both architecture-graph config models resolve bolt_uri through the sanctioned overlay boundary (expand_contract_env_refs
+      against ${env.ARCH_GRAPH_BOLT_URI}) instead of a direct os.environ read, and the new resolution-equivalence
+      tests prove the overlay resolves the exact dev/stability/prod lane value the prior env read gave
+      AND fails closed (ValueError) when the var is unbound. Verified by running the focused pytest suite
+      for both nodes (36 passed, incl. 8 new overlay tests).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-overlay-resolution/command.yaml"
+  - id: "dod-gates-green"
+    description: >-
+      Static + enforcement gates stay green on the omnimarket worktree with FEWER scattered endpoint reads:
+      uv run mypy --strict clean on both changed config models; ruff check/format clean; the url-authority
+      gate, delegation-env-read gate, and validate-no-env-fallbacks scanner all PASS on the changed files
+      with ZERO new violations introduced (the migrated files now read cleanly through the overlay seam
+      — no os.environ, no *_URL/*_URI const-assignment trigger). node metadata dependency check + runtime
+      sweep (323/323) PASS. Verified via pre-commit run on the changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-gates-green/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is a config-resolution refactor (env-read → overlay seam) + contract
+      config-field default update + new resolution-equivalence tests + a metadata dependency declaration.
+      It contains NO runtime deploy, NO migration, NO REST surface, and NO live-lane mutation. Same endpoint
+      value resolves per-lane as before (the deployment env already injects ARCH_GRAPH_BOLT_URI); the
+      runtime redeploy that re-reads the new resolution path is serialized separately and NOT folded here.
+      It only TIGHTENS the platform (routes a scattered read through the sanctioned boundary, fails closed
+      when unbound). Nothing in this PR touches a live lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13557.yaml consumed
+      by the omnimarket PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves the
+      contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13557\"$' contracts/OMN-13557.yaml"
