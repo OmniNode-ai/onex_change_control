@@ -9,7 +9,13 @@ summary: >
   DLQ topic (event_bus.dlq_topics), carrying the offending envelope + correlation_id + failure reason,
   via a new shared omnimarket.projection.dlq surface that mirrors the canonical node_intent_event_consumer_effect
   DLQ pattern. A CI/pre-commit guard fails any projection handler that catches ValidationError without
-  a DLQ route.
+  a DLQ route. RE-FIX (dod-002): the omnimarket-handler-only fix did not fire on the REAL bus path. The
+  runtime wiring's projection dispatch callback (_make_projection_dispatch_callback) invokes the handler's
+  handle() and catches any raised ValidationError in its generic except arm, then logs + drops — so the
+  handler's internal DLQ branch never ran. The robust fix moves DLQ-on-handler-error into the wiring itself
+  (omnibase_infra handler_wiring.py): the projection dispatch callback now routes the offending raw envelope
+  to the contract-declared event_bus.dlq_topics[0] for ALL projection handlers (general, not delegation-only),
+  carrying correlation_id + failure reason. DLQ target is resolved from the contract YAML, never hardcoded.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -39,6 +45,21 @@ dod_evidence:
         check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13548/dod-001/command.yaml && grep
           -q '^ticket_id: \"OMN-13548\"$' drift/dod_receipts/OMN-13548/dod-001/command.yaml && grep -q
           '^pr_number: 1372$' drift/dod_receipts/OMN-13548/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >
+      omnibase_infra PR routes projection-handler errors to the contract-declared DLQ topic in the runtime
+      wiring (handler_wiring.py _make_projection_dispatch_callback) — the layer that actually fires on
+      the real bus path, where a malformed event's ValidationError escapes handle() and was previously
+      logged + dropped. Local proof: uv run pytest tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py
+      -k "dlq or routes_validation or no_dlq" -q -> 6 passed (a malformed envelope routed THROUGH the
+      wiring dispatch callback publishes exactly one DLQ envelope to the contract topic carrying its correlation_id;
+      a well-formed event publishes none; a no-DLQ-topic contract logs loudly). Ruff + mypy --strict clean
+      on the changed module; all pre-commit hooks pass.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13548/dod-002/command.yaml && grep
+          -q '^ticket_id: \"OMN-13548\"$' drift/dod_receipts/OMN-13548/dod-002/command.yaml"
   - id: "dod-occ-pr-self"
     description: "OCC PR carrying this OMN-13548 contract and downstream receipt."
     source: "manual"
