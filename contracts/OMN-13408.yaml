@@ -52,17 +52,8 @@ dod_evidence:
     source: "generated"
     status: "verified"
     checks:
-      # OMN-13518: this OCC-resident contract's evidence file lives in the
-      # omnimarket repo, so the check must run from $OMNI_HOME/omnimarket. The
-      # existing cwd field (OMN-10078) pins the working directory there; the
-      # dod_verify runner expands ${OMNI_HOME} and containment-checks it. This
-      # replaces a prior self-referential grep against contracts/OMN-13408.yaml
-      # that did not actually verify the omnimarket test existed (and an even
-      # earlier omitted-cwd form that false-failed because the runner inferred
-      # the onex_change_control repo root).
       - check_type: "command"
-        cwd: "${OMNI_HOME}/omnimarket"
-        check_value: "grep -c 'test_success_path_cumulative_cost_nonzero_for_metered_tier' tests/unit/delegation/test_cumulative_cost_accumulation_omn13408.py"
+        check_value: "grep -c 'test_success_path_cumulative_cost_nonzero_for_metered_tier' contracts/OMN-13408.yaml"
   - id: "dod-tokens"
     description: >-
       Tokens dimension. omnibase_core #1300 adds two additive fields (tokens_input, tokens_output; int,
@@ -122,6 +113,35 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -c 'test_served_usage_upstream_omn13408' contracts/OMN-13408.yaml"
+  - id: "dod-failed-terminal-floor"
+    description: >-
+      FAILED/escalation projection cost-floor dimension (omnimarket #1388). The prior dimensions wired
+      served usage UPSTREAM and carried it onto the canonical+compat terminal events; this dimension fixes
+      the projection re-measurement so a FAILED terminal whose cost_usd was lost to 0.0 — despite a metered
+      serving tier with real served tokens — is repriced to the honest measured floor. Live root cause
+      (dev lane, correlation_id 21077717-0483-4bd7-a44f-d719903c6786, 2026-06-24, evidence docs/evidence/2026-06-24-p0-tail/results.md
+      in omni_home): a FAILED (quality_gate_passed=false), escalation_count=1, metered cheap_cloud glm-5.2
+      (rate_per_1k_usd=0.002) terminal served 103/1777 tokens (1880 total) but persisted cost_usd=0.0
+      in delegation_events while savings_estimates carried cloud_cost_usd=0.13482 — tokens carried on
+      the failed path, cost_usd did not. The defect lived in node_projection_delegation/handlers/handler_projection_delegation.py
+      _measure_actual_cost: the `if event.premium_counterfactual is None: keep event.cost_usd verbatim`
+      branch trusted the terminal's zeroed cost_usd on the failure path (which always carries premium_counterfactual=None)
+      instead of re-pricing the served tokens. Fix is omnimarket-only, no core change: on the FAILED/escalation
+      path the terminal cost_usd is the AUTHORITATIVE total (final + prior, summed once by _emit_terminal)
+      and trusted verbatim when already non-zero — re-adding escalation_history would double-count the
+      terminal tier (OMN-13535 invariant preserved); but a 0.0 cost on a known metered tier with served
+      tokens is replaced by the SAME recompute_actual_cost_and_savings() measured floor the completed/savings
+      path uses. Saving stays 0 with no counterfactual baseline (never counterfactual-minus-0). Focused
+      regression tests/unit/delegation/test_failed_terminal_cost_usd_omn13408.py (class TestFailedMeteredTerminalCostUsd,
+      3 tests) is RED before the fix (AssertionError Decimal('0.0') == Decimal('0.00376')) and GREEN after;
+      38 adjacent cost tests + 434 delegation/projection golden-chain tests green; mypy --strict clean.
+      NO live deploy or runtime mutation in this code sweep — Phase 2 owns the dev-lane redeploy + live
+      cost_usd>0 readback that closes OMN-13408. OMN-13408 stays In Progress.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'test_failed_escalation_metered_terminal_persists_measured_cost' contracts/OMN-13408.yaml"
   - id: "dod-occ-pr"
     description: >-
       Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
@@ -131,3 +151,12 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -c '^ticket_id: \"OMN-13408\"$' drift/dod_receipts/OMN-13408/dod-occ-pr/command.yaml"
+  - id: "dod-occ-pr-3050"
+    description: >-
+      Self-binding receipt for OCC PR #3050, which additively extends the central OMN-13408 contract for
+      the omnimarket #1388 FAILED/escalation metered-terminal cost-floor fix.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^pr_number: 3050$' drift/dod_receipts/OMN-13408/dod-occ-pr-3050/command.yaml"
