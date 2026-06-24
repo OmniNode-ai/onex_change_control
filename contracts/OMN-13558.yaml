@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13558"
+title: "env→contract migration (omnibase_infra Wave 1): QDRANT_URL endpoint reads → overlay descriptor
+  seam"
+summary: >-
+  Wave-1 endpoint→overlay migration (epic OMN-13556). Moves the scattered direct os.environ QDRANT_URL
+  reads in omnibase_infra off raw env onto the canonical overlay seam: the node_vector_store_effect contract
+  declares descriptor.qdrant_url = "${env.QDRANT_URL}" (same convention as node_coding_agent_invoke_effect.descriptor.agent_credential_home),
+  and a new contract_descriptor module resolves it through omnibase_infra.runtime.overlay.contract_env_ref.expand_contract_env_refs
+  — the one sanctioned env-reading boundary — fail-closed (unset/blank raises rather than silently defaulting
+  to http://localhost:6333). HandlerVectorUpsert, HandlerVectorSearch, HandlerRegistryApiGetHealth and
+  the ModelQdrantHandlerConfig default_factory now resolve via the descriptor; the localhost fallbacks
+  and the # ONEX_EXCLUDE grandfather suppressions are removed (3 url_authority_baseline entries become
+  removable). A resolution-equivalence test proves the overlay resolves the same dev/stability/prod value
+  the env var gave and fails closed when unset. LLM_EMBEDDING_URL co-located in the same handlers + the
+  similarity adapter is DEFERRED to the Bifrost routing wave (OMN-12803/12815) and left untouched. This
+  OCC PR carries the central contract consumed by the omnibase_infra PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The migrated overlay seam resolves the Qdrant endpoint identically to the pre-migration direct os.environ["QDRANT_URL"]
+      read across dev / stability-test / prod lane values, and fails closed (raises) when QDRANT_URL is
+      unset or blank — no silent http://localhost:6333 fallback. The ModelQdrantHandlerConfig.url default_factory
+      resolves through the same seam. Proven by the focused resolution-equivalence suite tests/unit/nodes/node_vector_store_effect/test_contract_descriptor.py
+      plus the vector-store + registry-api handler suites (151 passed).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13558/dod-001/command.yaml"
+  - id: "dod-gates"
+    description: >-
+      Both REQUIRED ratchet gates stay green with FEWER grandfathered endpoint reads: the URL Authority
+      Gate (check-url-authority) reports 0 new violations and the 3 QDRANT baseline entries are no longer
+      matched; the Canonical Inference Gate (check-canonical-inference) passes; the block-new-os.environ
+      pre-commit gate and the No-localhost/hardcoded-endpoint-fallbacks gate (OMN-10741) both pass; ruff
+      + mypy --strict clean on the changed files. This migration REMOVES env reads, so the diff-based
+      gates cannot regress.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13558/dod-gates/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this PR is a config-resolution refactor — it changes WHERE the QDRANT endpoint
+      is read (overlay descriptor instead of raw env), not the deployed runtime topology, Dockerfile,
+      or any Kafka topic. The resolved value is unchanged (resolution-equivalence proven in dod-001),
+      so no omninode-runtime image rebuild or live .201 deploy is required; runtime redeploy for the env-migration
+      epic is serialized separately. A live prod/stability deploy is explicitly OUT OF SCOPE for this
+      PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'deploy' drift/dod_receipts/OMN-13558/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by the omnibase_infra
+      PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13558.yaml
+      is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13558\"$' contracts/OMN-13558.yaml"
