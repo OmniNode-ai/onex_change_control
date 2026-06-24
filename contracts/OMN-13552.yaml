@@ -1,0 +1,66 @@
+---
+# onex-allow-file OMN-13552 reason="OCC evidence contract documents the .201 lane host + ssh probe command as DoD proof; not shipping source"
+schema_version: "1.0.0"
+ticket_id: "OMN-13552"
+title: "fix(OMN-13552): data_flow_sweep collector probes the targeted lane, not local Docker/psql"
+summary: >-
+  OCC evidence for omnimarket PR #1382. node_data_flow_sweep's collector verified flows by running rpk/psql
+  probes against whatever host the CLI process was on (docker exec omnibase-infra-redpanda / psql -h localhost),
+  not the lane it was nominally verifying. Run from the operator Mac against a HEALTHY .201 dev lane it
+  reported every flow PRODUCER_DOWN ("Topic does not exist") because there was no local container — a
+  false-broken verdict reflecting the probe host, not the target lane. The fix adds a first-class lane/target
+  parameter (lane_target.resolve_lane_target) that maps each lane to its real broker + Postgres container
+  names + runtime host and probes the targeted lane over SSH + docker exec (the transport already proven
+  in node_integration_sweep_orchestrator, OMN-7238). An unreachable or indeterminate target lane fails
+  LOUD (status=error, exit 2), never a false PRODUCER_DOWN or false-clean. Scope: collector.py, lane_target.py
+  (new), __main__.py, contract.yaml. Pure handler unchanged. This contract exists so the omnimarket PR's
+  Receipt Gate can resolve Evidence-Source to a CODEOWNERS-merged OCC contract.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-lane-target-probe"
+    description: >-
+      Collection takes a lane/target and probes that lane's real broker + DB endpoints. Lane resolution
+      maps dev/stability-test/prod/judge to their container names on the runtime host and local to in-stack
+      docker/psql; a remote-lane probe shells out to ssh ... docker exec, never a bare local docker (the
+      OMN-13552 defect class). Verified by the lane-resolution + remote-transport tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13552/dod-lane-target-probe/command.yaml"
+  - id: "dod-live-201-verdict"
+    description: >-
+      LIVE proof against the HEALTHY .201 dev lane: the CLI verdict matches rpk/psql ground truth on .201
+      (cross-checked via ssh jonah@192.168.86.201). node-introspection.v1 => ACTIVE/FLOWING (17 rows,
+      HW=16); pattern-learned.v1 + routing-decision.v1 => EMPTY (topic present, 0 messages, 0 rows). This
+      is no longer the false all-PRODUCER_DOWN verdict the local-probe collector produced.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13552/dod-live-201-verdict/command.yaml"
+  - id: "dod-fail-loud-unreachable"
+    description: >-
+      Unreachable target lane fails LOUD. Pointing the dev lane at an unroutable host (192.0.2.1, TEST-NET-1)
+      yields status=error, broken=0, exit 2 — never a false PRODUCER_DOWN-as-broken or false-clean for
+      a lane that was never actually probed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13552/dod-fail-loud-unreachable/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13552.yaml consumed
+      by the omnimarket PR #1382 Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13552\"$' contracts/OMN-13552.yaml"
