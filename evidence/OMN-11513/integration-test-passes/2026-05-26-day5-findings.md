@@ -94,7 +94,7 @@ Tested via Tailscale at `100.109.203.94:18085`. Probe: `curl -fsS http://100.109
 
 **Status: UNREACHABLE**
 
-`curl -fsS http://192.168.86.200:3003/api/health` timed out after 5 seconds. The Express projection API container is running internally (confirmed in integration plan) but not exposed externally at probe time.
+`curl -fsS http://<onex-host>:3003/api/health` timed out after 5 seconds. The Express projection API container is running internally (confirmed in integration plan) but not exposed externally at probe time.
 
 **Impact:** Cannot test any widget against live projection data. File and sqlite modes only. This is consistent with the Day 4 finding. The projection API being unreachable means the B9 proven delegation chain (`correlation_id: 4c270da6-671c-46cd-9744-d48478220924`) cannot be verified through the dashboard's Correlation Trace widget.
 

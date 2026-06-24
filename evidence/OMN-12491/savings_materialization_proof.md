@@ -60,7 +60,7 @@ silently mis-route future writers, but this had no bearing on demo data.
 
 The live bifrost overlay (`/app/data/delegation/bifrost_delegation.yaml`, env
 `BIFROST_CONTRACT_PATH`) already routes `code_generation` to `local-coder`
-(`http://192.168.86.201:8000`, Qwen3.6-35B-A3B, reachable, verified via `/v1/models`)
+(`http://<onex-host>:8000`, Qwen3.6-35B-A3B, reachable, verified via `/v1/models`)
 with `cloud-sonnet` fallback. The `.200:8101` DeepSeek backend is present as
 `local-heavy-reasoning`. No overlay change was required.
 

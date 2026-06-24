@@ -78,7 +78,7 @@ Command: `uv run pytest tests/unit/services/mcp/ tests/integration/services/mcp/
 132 passed, 25 skipped in 4.60s
 ```
 
-(The 25 skips are Kafka-gated integration tests; `192.168.86.201` Kafka not reachable
+(The 25 skips are Kafka-gated integration tests; runtime-host Kafka not reachable
 from the local CI sandbox — they skip by design, not failure.)
 
 ## Probe — type check + lint

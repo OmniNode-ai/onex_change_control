@@ -1,7 +1,7 @@
 # W1-1B FINAL RUN (ATTEMPT 3): Delegation Golden Chain Proof Summary
 
 **Date:** 2026-05-28
-**Lane:** stability-test (192.168.86.201)
+**Lane:** stability-test (<onex-host>)
 **correlation_id:** `ec7466b9-ec90-405e-b1f9-3bddee05c806`
 **Overall Result:** BLOCKED
 

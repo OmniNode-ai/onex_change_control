@@ -30,7 +30,7 @@ Observed with `git ls-remote ... refs/heads/dev`.
 
 ## Running containers
 
-Observed with read-only `docker inspect` on `jonah@192.168.86.201`.
+Observed with read-only `docker inspect` on `<user>@<onex-host>`.
 
 | Container | Image | Image digest/id | Health | Started | Runtime/source label |
 | --- | --- | --- | --- | --- | --- |
