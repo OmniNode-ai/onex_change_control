@@ -2,7 +2,7 @@
 schema_version: "1.0.0"
 ticket_id: "OMN-13557"
 title: "env→contract migration (omnimarket): Wave-1 ARCH_GRAPH_BOLT_URI endpoint + Wave-2 Codex adapter
-  config via overlay seam"
+  config + Wave-2b consumer-group config via overlay seam"
 summary: >-
   env→contract migration (epic OMN-13556), omnimarket. Two waves of the same ticket route scattered os.environ
   reads through the ONE sanctioned overlay boundary (expand_contract_env_refs in omnibase_infra.runtime.overlay.contract_env_ref)
@@ -18,10 +18,16 @@ summary: >-
   overlay var (empty expansion) falls back to the canonical default constant rather than failing closed
   (vs the default-less endpoint in Wave 1, which fails closed). Resolution is equivalent in both waves:
   same var, same value, now via the seam. Endpoint-classed reads on the Codex file (ONEX_TARGET_RUNTIME_ADDRESS,
-  ONEX_RUNTIME_SELECTION) target the address-registry path (OMN-10345) and are OUT of scope. url-authority,
-  delegation-env-read, and no-silent-env-fallbacks gates stay green with ZERO new violations across both
-  waves. This OCC contract is consumed by the omnimarket PR Receipt Gate via Evidence-Source for both
-  product PRs (#1383 Wave-1, #1391 Wave-2).
+  ONEX_RUNTIME_SELECTION) target the address-registry path (OMN-10345) and are OUT of scope. WAVE 2b (config
+  cluster): the two orchestrator consumer entrypoints (node_autopilot_orchestrator/consumer.py and node_build_loop_orchestrator/consumer.py)
+  read their Kafka consumer-group suffix directly — AUTOPILOT_ORCH_GROUP and BUILD_LOOP_GROUP. Both now
+  resolve via a new _resolve_group_id() that routes a ${env.VAR} contract ref through the overlay seam;
+  because a consumer-group suffix legitimately carries a contract default, an unbound overlay var (empty
+  expansion) falls back to the canonical _DEFAULT_GROUP constant rather than failing closed (config-with-default,
+  like Wave 2, not the fail-closed endpoint of Wave 1). KAFKA_BOOTSTRAP_SERVERS (kernel-sanctioned, x21)
+  stays OUT of scope. url-authority, delegation-env-read, and no-silent-env-fallbacks gates stay green
+  with ZERO new violations across all waves. This OCC contract is consumed by the omnimarket PR Receipt
+  Gate via Evidence-Source for the product PRs (#1383 Wave-1, #1391 Wave-2, #1396 Wave-2b).
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -110,3 +116,35 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-wave2-gates-green/command.yaml"
+  - id: "dod-wave2b-consumer-group-overlay"
+    description: >-
+      Wave-2b config→overlay (omnimarket PR #1396). The two orchestrator consumer entrypoints (node_autopilot_orchestrator/consumer.py
+      and node_build_loop_orchestrator/consumer.py) route their Kafka consumer-group suffix — AUTOPILOT_ORCH_GROUP
+      / BUILD_LOOP_GROUP — through the sanctioned overlay boundary (expand_contract_env_refs against ${env.VAR}
+      contract-ref constants) via a new _resolve_group_id() in each consumer, instead of direct os.environ.get
+      reads. Six new resolution- equivalence tests (3 per node: TestAutopilotGroupOverlayResolution /
+      TestBuildLoopGroupOverlayResolution) prove each resolver routes through the seam (spy on expand_contract_env_refs),
+      returns the exact env-bound value, and falls back to the canonical _DEFAULT_GROUP constant when
+      the overlay is unbound (a consumer-group suffix legitimately carries a default, unlike a fail-closed
+      endpoint). Verifier ran both full consumer test files (25 passed) and a broader subset (667 passed,
+      1 skipped). No direct os.environ read of the migrated group vars remains (grep-verified). Verified
+      by the receipt probe.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-wave2b-consumer-group-overlay/command.yaml"
+  - id: "dod-wave2b-gates-green"
+    description: >-
+      Wave-2b static + enforcement gates stay green on the omnimarket worktree with FEWER scattered config
+      reads: uv run mypy --strict clean on both changed consumers; ruff check/format clean; pre-commit
+      on the changed files PASSES every gate including URL Authority Gate (OMN-12818), Delegation env-read
+      gate (OMN-13295), "Validate no silent env fallbacks", and Leaked literals gate (OMN-10580), with
+      ZERO new violations. The migrated group resolvers now read through the overlay seam — no direct
+      os.environ of the migrated vars. Verified via pre-commit run on the changed files (recorded in the
+      receipt probe).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-wave2b-gates-green/command.yaml"
