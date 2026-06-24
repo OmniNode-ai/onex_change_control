@@ -1,6 +1,6 @@
 # OMN-10279: Legacy Worktree Removal Ledger
 
-**Legacy root:** `/Users/jonah/Code/omni_worktrees`
+**Legacy root:** `$OMNI_HOME/../omni_worktrees`
 **Scan date:** 2026-05-01
 **Total directories:** 79
 **Total git worktrees listed:** 90

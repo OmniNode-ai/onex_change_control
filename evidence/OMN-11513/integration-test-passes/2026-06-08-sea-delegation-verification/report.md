@@ -17,7 +17,7 @@ The broker blocker (OMN-12832) is **cleared and confirmed from the contractor se
 Scope note: the proven generation path uses the supported local-ADK overlay (local reasoning backend); the default cloud-Gemini orchestrator path still requires a key and was not exercised (out of scope today). Prod and cloud/escalation were not verified (out of scope).
 
 **Day timeline:**
-- **AM:** blocked at broker reachability (metadata advertised `192.168.86.201`). Filed OMN-12832.
+- **AM:** blocked at broker reachability (metadata advertised `<onex-host>`). Filed OMN-12832.
 - **Midday:** Jonah recreated the stability broker. Retest from our seat: Phase 1 green, Phase 3 PASS. Phase 2 broker-cleared but stopped at the ADK backend; filed OMN-12834 for the local-ADK schema-dialect defect.
 - **Afternoon:** Jonah merged the OMN-12834 fix (#219, `56d5a45`). Retest: fully-local `--agent` generation completes, PASS.
 
@@ -28,7 +28,7 @@ Scope note: the proven generation path uses the supported local-ADK overlay (loc
 | Phase | Command / Surface | Branch/SHA | Correlation ID | Transport | Model / Endpoint | Result | Classification |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 0 Preflight | `pytest tests/unit -q` | dev/`80dc069` (AM) | n/a | n/a | n/a | 1385 pass / 3 fail / 1 skip | endpoint-resolution defect / env override ignored; not classified as no-regression |
-| 1 Broker | aiokafka metadata (api 2.8.0) | dev/`27f4f03` | n/a | Tailscale | `100.109.203.94:39092` | advertises `100.109.203.94` (AM: `192.168.86.201`) | **PROOF / cleared** |
+| 1 Broker | aiokafka metadata (api 2.8.0) | dev/`27f4f03` | n/a | Tailscale | `100.109.203.94:39092` | advertises `100.109.203.94` (AM: `<onex-host>`) | **PROOF / cleared** |
 | 2 SEA `--agent` (keyless) | `python -m src --agent` | dev/`27f4f03` | `1a7f6369-2399-4011-b2c6-d408207e4a89` | bus_backed | stability-test overlay | bus reached, no direct-mode fallback; typed stop at ADK backend `cloud_gemini` (no key) | **diagnostic** |
 | 2b SEA `--agent` (local-ADK overlay, post OMN-12834 fix) | `python -m src --agent` | dev/`56d5a45` | `0cdc2410-3fa5-4da6-b561-52d4a7075352` | bus_backed | local `:8001`, no cloud ($0.00) | generated `status_health_checker`, registered as MCP tool + invoked → `{"is_healthy": true}`; PASS, attempts 1 | **PROOF (runtime-observed; not projection-backed — see verdict)** |
 | 3 InferenceClient smoke | inline smoke | dev/`27f4f03` | `8c0ddf2a-762b-4365-b714-42ac73a0c3e5` | bus_backed | `Qwen3.6-27B-MTP-IQ4_XS.gguf` / `:8001` | resolver `24576`; `content healthy=true`; latency 2824ms; empty error | **PROOF** |
@@ -41,7 +41,7 @@ Scope note: the proven generation path uses the supported local-ADK overlay (loc
 
 ## Findings
 
-**1. OMN-12832 — broker advertised LAN address (cleared).** AM: broker at `100.109.203.94:39092` accepted TCP over Tailscale but advertised `192.168.86.201` in metadata, unreachable from our seat; every bus round-trip failed after the handshake. PM, after Jonah recreated the broker: the sanctioned aiokafka client (api 2.8.0) reports `brokers: [(0, '100.109.203.94', 39092)]`, and the Phase 3 round-trip — which had failed at `bus.start()` with `InfraTimeoutError` — now completes in 2.8s. Retest confirmation posted to the ticket.
+**1. OMN-12832 — broker advertised LAN address (cleared).** AM: broker at `100.109.203.94:39092` accepted TCP over Tailscale but advertised `<onex-host>` in metadata, unreachable from our seat; every bus round-trip failed after the handshake. PM, after Jonah recreated the broker: the sanctioned aiokafka client (api 2.8.0) reports `brokers: [(0, '100.109.203.94', 39092)]`, and the Phase 3 round-trip — which had failed at `bus.start()` with `InfraTimeoutError` — now completes in 2.8s. Retest confirmation posted to the ticket.
 
 **2. Phase 0 endpoint override defect (observed, not closed here).** The three unit failures are not a `model_registry.local.yaml` false alarm. `phase0-unit-tests.txt` shows endpoint resolution returning `http://100.109.203.94:8000/v1/chat/completions` where tests expected `localhost` or the `LOCAL_INFERENCE_BASE_URL_ENV` override. The failing `test_load_default_registry_honors_env_override` specifically verifies the env override path and shows it being ignored, so this report does not claim "no code regression" for Phase 0.
 

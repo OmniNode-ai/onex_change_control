@@ -71,7 +71,7 @@ All tests run in file mode (`VITE_DATA_SOURCE=file`) on omnidash dev branch (`e7
 
 Two independent systems tested separately.
 
-### Stability-test runtime (.201:18085)
+### Stability-test runtime (<onex-host>:18085)
 
 **Status: HEALTHY**
 
@@ -90,11 +90,11 @@ Two independent systems tested separately.
 
 Tested via Tailscale at `100.109.203.94:18085`. Probe: `curl -fsS http://100.109.203.94:18085/health`.
 
-### Dashboard projection API (.200:3003)
+### Dashboard projection API (<onex-host-gpu>:3003)
 
 **Status: UNREACHABLE**
 
-`curl -fsS http://192.168.86.200:3003/api/health` timed out after 5 seconds. The Express projection API container is running internally (confirmed in integration plan) but not exposed externally at probe time.
+`curl -fsS http://<onex-host-gpu>:3003/api/health` timed out after 5 seconds. The Express projection API container is running internally (confirmed in integration plan) but not exposed externally at probe time.
 
 **Impact:** Cannot test any widget against live projection data. File and sqlite modes only. This is consistent with the Day 4 finding. The projection API being unreachable means the B9 proven delegation chain (`correlation_id: 4c270da6-671c-46cd-9744-d48478220924`) cannot be verified through the dashboard's Correlation Trace widget.
 
@@ -137,7 +137,7 @@ No POST requests were sent to `/api/dispatch`. All verification was through sour
 
 | Widget | file | sqlite | http | Notes |
 |--------|------|--------|------|-------|
-| Correlation Trace (#121) | DEGRADED (JSON parse error) | Not tested (no bridge) | Not tested (.200 unreachable) | Designed for sqlite/http only |
+| Correlation Trace (#121) | DEGRADED (JSON parse error) | Not tested (no bridge) | Not tested (<onex-host-gpu> unreachable) | Designed for sqlite/http only |
 | Savings Proof Pack (#123) | PASS (undisclosed fixture) | Not tested | Not tested | ARCHITECTURAL_RISK in print view |
 | Swarm-runs (#124) | N/A (backend) | N/A | N/A | — |
 | Trace Explorer (#126) | PASS (empty-correct) | Not tested | Not tested | — |
@@ -145,7 +145,7 @@ No POST requests were sent to `/api/dispatch`. All verification was through sour
 | Command Dispatch UI (#129) | PASS (empty-correct) | Not tested | Not tested | — |
 | Dispatch topic fix (#131) | N/A (backend) | N/A | N/A | — |
 
-SQLite and HTTP modes not tested due to: no Express bridge running (sqlite requires it), projection API unreachable (http requires .200:3003).
+SQLite and HTTP modes not tested due to: no Express bridge running (sqlite requires it), projection API unreachable (http requires <onex-host-gpu>:3003).
 
 ---
 

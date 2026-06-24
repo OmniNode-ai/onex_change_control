@@ -26,7 +26,7 @@ This report consolidates substantive material produced across 15+ daily artifact
 
 | Repo | Days touched | Scope of testing |
 |---|---|---|
-| `OmniNode-ai/omnidash` | Days 1–3 | All four data-source modes (file, sqlite, http, postgres) — fully exercised except postgres (no `.201` access). Visual audit of widget palette across modes. Bridge↔widget contract verification. |
+| `OmniNode-ai/omnidash` | Days 1–3 | All four data-source modes (file, sqlite, http, postgres) — fully exercised except postgres (no '`<onex-host>`' access). Visual audit of widget palette across modes. Bridge↔widget contract verification. |
 | `OmniNode-ai/onex-self-extending-agent` (hackathon repo) | Days 1, 3 | Setup, unit tests, progressive demo, trend report, agent demo, judge-readability review of README/DEMO_GUIDE/ARCHITECTURE. |
 | `OmniNode-ai/omnimarket` | Day 2 (contract audit), Day 3 (PR #724 review) | Pricing manifest wiring, delegation orchestrator contract, projection contract. Code-level review, not execution. |
 
@@ -56,7 +56,7 @@ This report consolidates substantive material produced across 15+ daily artifact
 - **state store:** local filesystem under `.onex_state/hackathon/event_chains/`
 - **model endpoint:** Gemini via OpenAI-compatible endpoint, `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`, model `gemini-2.5-flash`
 - **credentials used:** free-tier Gemini API key (Bret-minted 2026-05-21, to be revoked post-run)
-- **live services used:** none — Track B (local GPU model) unavailable, Kafka unavailable, `.201` Postgres unavailable
+- **live services used:** none — Track B (local GPU model) unavailable, Kafka unavailable, '`<onex-host>`' Postgres unavailable
 
 ### Required env vars and current source-of-truth
 
@@ -99,7 +99,7 @@ The integration baseline can be characterized as:
 - **Adequate**: hackathon repo's headline path. The progressive demo runs end-to-end with cloud credentials. 4 of 6 tasks pass first-attempt; 2 fail due to the model returning markdown-fenced YAML that the retry doesn't recover from.
 - **Weak**: hackathon repo's `--agent` invocation path. The full chain (generate → validate → register → invoke) crashes at invoke time with a shape mismatch between the generated handler's expected input and what the registry passes.
 - **Weak**: judge onboarding. The README's reference model isn't usable on a newly minted free-tier key (`gemini-2.0-flash` returns 429 immediately; project quota is `limit: 0`). The README does not document this fallback, does not link to the Gemini API console, and stacks three undefined terms in its opening content sentence.
-- **Unaddressed**: runtime path. `.201` is unreachable from the contractor environment; no Postgres or runtime API testing was possible. The seed delivery substitutes for the SQLite path only.
+- **Unaddressed**: runtime path. '`<onex-host>`' is unreachable from the contractor environment; no Postgres or runtime API testing was possible. The seed delivery substitutes for the SQLite path only.
 
 ---
 
@@ -262,7 +262,7 @@ For the eight existing Linear tickets (OMN-11286 / 11287 / 11288 / 11289 / 11290
 
 1. **Hackathon repo's `--agent` mode crashes at invoke step (D2-3 above).** This is the canonical "full proof chain" command and the one whose output most closely matches the SOW D2 proof chain. With it broken, demo recording of the full chain requires either the `--progressive` mode (which doesn't exercise registration / invocation), the `--failure-showcase` mode (which uses an injected handler so doesn't test the LLM-generated-handler invoke path), or the `--replay` mode (which is golden fixture only, no live LLM call). Each workaround loses something from the demo narrative.
 
-2. **No `.201` access from contractor environment.** This blocks SOW §3.3 D2 step 5 ("Invoke the tool if the runtime path is available"), all Postgres-mode dashboard testing, and any "live MCP registration" evidence. The seed-delivery + sqlite-mode substitution covers the projection-store path but the runtime-projection-API path remains uncovered.
+2. **No '`<onex-host>`' access from contractor environment.** This blocks SOW §3.3 D2 step 5 ("Invoke the tool if the runtime path is available"), all Postgres-mode dashboard testing, and any "live MCP registration" evidence. The seed-delivery + sqlite-mode substitution covers the projection-store path but the runtime-projection-API path remains uncovered.
 
 3. **OCC repo not accessible from contractor environment.** All Day-1/2/3 evidence currently lives in `docs/projects/hackathon_prep/` rather than the canonical `onex_change_control/evidence/OMN-11241/` path. Port-over is mechanical once access is granted but until then the canonical evidence trail is technically not in the canonical place.
 
@@ -280,7 +280,7 @@ For the eight existing Linear tickets (OMN-11286 / 11287 / 11288 / 11289 / 11290
 
 Reasoning:
 
-- **`live` mode is unreachable.** Requires `.201` Postgres + full ONEX runtime + MCP tool sync service. None of that is reachable from the contractor environment, and per ARCHITECTURE §6, the MCP tool sync component is not bundled in the standalone repo at all.
+- **`live` mode is unreachable.** Requires '`<onex-host>`' Postgres + full ONEX runtime + MCP tool sync service. None of that is reachable from the contractor environment, and per ARCHITECTURE §6, the MCP tool sync component is not bundled in the standalone repo at all.
 - **`local` mode works end-to-end for the dashboard.** All four data-source modes function (file / sqlite / http verified). sqlite mode shows real aggregated projection data after PR #101.
 - **`local` mode works for the hackathon repo's progressive demo.** With `gemini-2.5-flash` + the markdown-fence-stripping fix proposed above, this is the strongest available proof chain.
 - **`replay` mode (the hackathon repo's `--replay PATH` flag) is the safe fallback** for demo recording where network or quota issues might disrupt a live run. The committed event chains (12 entries in `.onex_state/hackathon/event_chains/` post-Day-3) provide replay corpus.
