@@ -1,22 +1,27 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13557"
-title: "env→contract migration (Wave 1, omnimarket): resolve ARCH_GRAPH_BOLT_URI via overlay seam"
+title: "env→contract migration (omnimarket): Wave-1 ARCH_GRAPH_BOLT_URI endpoint + Wave-2 Codex adapter
+  config via overlay seam"
 summary: >-
-  Wave-1 endpoint→overlay migration (epic OMN-13556). The architecture-graph query and populate EFFECT
-  config models (model_architecture_graph_query_config.py / model_architecture_graph_populate_config.py)
-  read os.environ["ARCH_GRAPH_BOLT_URI"] directly inside a Pydantic default_factory — a scattered endpoint
-  read outside the sanctioned overlay boundary. This change routes both reads through expand_contract_env_refs
-  (omnibase_infra.runtime.overlay.contract_env_ref — the ONE sanctioned env-reading surface) against the
-  contract reference ${env.ARCH_GRAPH_BOLT_URI}. The owning contracts now declare bolt_uri default as
-  ${env.ARCH_GRAPH_BOLT_URI} (overlay-resolved, bound per-lane). Resolution is equivalent: same var, same
-  dev/stability/prod value the direct read gave, now via the overlay seam. The resolver fails closed (ValueError)
-  when the overlay does not bind the var, replacing the prior direct-read KeyError and explicitly rejecting
-  a silent localhost fallback. Each node's metadata.yaml declares the new omnibase-infra dependency. This
-  is the template-establishing migration for the omnimarket endpoint→overlay wave; LLM_*_URL family and
-  kernel/overlay machinery are out of scope (Bifrost-owned / sanctioned resolver, respectively). url-authority,
-  delegation-env-read, and no-silent-env-fallbacks gates stay green with ZERO new violations. This OCC
-  PR carries the central contract consumed by the omnimarket PR Receipt Gate via Evidence-Source.
+  env→contract migration (epic OMN-13556), omnimarket. Two waves of the same ticket route scattered os.environ
+  reads through the ONE sanctioned overlay boundary (expand_contract_env_refs in omnibase_infra.runtime.overlay.contract_env_ref)
+  against ${env.VAR} contract references. WAVE 1 (endpoint): the architecture-graph query and populate
+  EFFECT config models (model_architecture_graph_query_config.py / model_architecture_graph_populate_config.py)
+  read os.environ["ARCH_GRAPH_BOLT_URI"] in a Pydantic default_factory; both now resolve bolt_uri through
+  the overlay seam against ${env.ARCH_GRAPH_BOLT_URI}, failing closed (ValueError) when unbound (no silent
+  localhost fallback). WAVE 2 (config cluster): the Codex runtime adapter (adapters/codex/runtime_client.py)
+  read four config tunables directly — ONEX_PATTERN_B_COMMAND_TOPIC / ONEX_PATTERN_B_RESPONSE_TOPIC /
+  ONEX_PATTERN_B_REQUESTER (default_command_topic / default_response_topic / default_requester) and KAFKA_API_VERSION
+  (_direct_kafka_client_version_kwargs). All four now resolve through the overlay seam against ${env.VAR}
+  contract-ref constants; because topic/requester config legitimately carries a contract default, an unbound
+  overlay var (empty expansion) falls back to the canonical default constant rather than failing closed
+  (vs the default-less endpoint in Wave 1, which fails closed). Resolution is equivalent in both waves:
+  same var, same value, now via the seam. Endpoint-classed reads on the Codex file (ONEX_TARGET_RUNTIME_ADDRESS,
+  ONEX_RUNTIME_SELECTION) target the address-registry path (OMN-10345) and are OUT of scope. url-authority,
+  delegation-env-read, and no-silent-env-fallbacks gates stay green with ZERO new violations across both
+  waves. This OCC contract is consumed by the omnimarket PR Receipt Gate via Evidence-Source for both
+  product PRs (#1383 Wave-1, #1391 Wave-2).
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -74,3 +79,34 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -c '^ticket_id: \"OMN-13557\"$' contracts/OMN-13557.yaml"
+  - id: "dod-wave2-codex-config-overlay"
+    description: >-
+      Wave-2 config→overlay (omnimarket PR #1391). The Codex runtime adapter (adapters/codex/runtime_client.py)
+      routes its four config tunables — ONEX_PATTERN_B_COMMAND_TOPIC / ONEX_PATTERN_B_RESPONSE_TOPIC /
+      ONEX_PATTERN_B_REQUESTER / KAFKA_API_VERSION — through the sanctioned overlay boundary (expand_contract_env_refs
+      against ${env.VAR} contract-ref constants) instead of direct os.environ reads. Seven new resolution-
+      equivalence tests (TestCodexConfigOverlayResolution) prove each resolver routes through the seam
+      (spy on expand_contract_env_refs), returns the exact env-bound value, falls back to the canonical
+      contract default when the overlay is unbound, and omits the api_version kwarg when neither transport
+      config nor overlay binds it. Verifier ran the focused suite (15 passed incl. 8 pre-existing config
+      tests) and the full codex test file (70 passed). No direct os.environ read of the migrated config
+      vars remains (grep-verified). Verified by the receipt probe.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-wave2-codex-config-overlay/command.yaml"
+  - id: "dod-wave2-gates-green"
+    description: >-
+      Wave-2 static + enforcement gates stay green on the omnimarket worktree with FEWER scattered config
+      reads: uv run mypy --strict clean on the changed adapter; ruff check/format clean; pre-commit on
+      the changed files PASSES every gate including URL Authority Gate (OMN-12818), Delegation env-read
+      gate (OMN-13295), "Validate no silent env fallbacks", and Leaked literals gate (OMN-10580), with
+      ZERO new violations. The migrated config resolvers now read through the overlay seam — no direct
+      os.environ of the migrated vars. Verified via pre-commit run on the changed files (recorded in the
+      receipt probe).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13557/dod-wave2-gates-green/command.yaml"
