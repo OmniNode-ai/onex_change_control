@@ -30,7 +30,7 @@ Observed with `git ls-remote ... refs/heads/dev`.
 
 ## Running containers
 
-Observed with read-only `docker inspect` on `jonah@192.168.86.201`.
+Observed with read-only `docker inspect` on `<user>@<onex-host>`.
 
 | Container | Image | Image digest/id | Health | Started | Runtime/source label |
 | --- | --- | --- | --- | --- | --- |
@@ -41,7 +41,7 @@ Observed with read-only `docker inspect` on `jonah@192.168.86.201`.
 
 ## Runtime health
 
-Observed with `curl -fsS` from `.201` loopback.
+Observed with `curl -fsS` from the runtime host loopback.
 
 - Runtime main `:18085/health`: healthy, version `0.38.3`, `event_bus.environment=stability-test`,
   `bootstrap_servers=redpanda:9092`, `subscriber_count=261`, `topic_count=233`, `consumer_count=261`,

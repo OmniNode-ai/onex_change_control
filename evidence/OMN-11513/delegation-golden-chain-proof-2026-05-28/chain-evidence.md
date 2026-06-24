@@ -2,7 +2,7 @@
 
 **Status:** COMPLETE — quality gate PASSED, delegation-completed.v1 confirmed  
 **Executed:** 2026-05-28T15:10:00Z – 17:04:13Z  
-**Lane:** stability-test (192.168.86.201:18085)  
+**Lane:** stability-test (<onex-host>:18085)  
 **Ticket:** OMN-11850
 
 ---
@@ -20,12 +20,12 @@
 
 ### Routing Decision (Hops 2–3)
 - selected_model: **DeepSeek-V4-Flash-284B**
-- endpoint_url: http://192.168.86.200:8101
+- endpoint_url: http://<onex-host-gpu>:8101
 - cost_tier: local
 
 ### Inference Call (Hops 4–5)
 - model: DeepSeek-V4-Flash-284B
-- endpoint: http://192.168.86.200:8101
+- endpoint: http://<onex-host-gpu>:8101
 - **total_tokens: 900**
 - **latency_ms: 33,772**
 - content_len: 2,016 chars
@@ -60,7 +60,7 @@ Consumer `projection_delegation` Stable LAG=0. Projection DB write not confirmed
 ## Runtime Health
 
 ```
-GET http://192.168.86.201:18085/health
+GET http://<onex-host>:18085/health
 → 200 healthy
   version: 0.37.2
   subscriber_count: 235
@@ -130,7 +130,7 @@ Expected full chain:
 |-----|------|-------|---------|
 | 1 | 15:08:25 | delegation-request consumed | node=runtime_config, topic=onex.cmd.omnibase-infra.delegation-request.v1 |
 | 2 | 15:08:25 | routing-request published | Published to onex.cmd.omnibase-infra.delegation-routing-request.v1 |
-| 3 | 15:08:25 | routing intent resolved | model=glm-z-ai endpoint=https://api.z.ai/v1 (main runtime: also resolved DeepSeek-V4-Flash-284B endpoint=http://192.168.200.200:8101) |
+| 3 | 15:08:25 | routing intent resolved | model=glm-z-ai endpoint=https://api.z.ai/v1 (main runtime: also resolved DeepSeek-V4-Flash-284B endpoint=http://<onex-host-alt>:8101) |
 | 4 | 15:08:25 | routing-decision.v1 published | FSM RECEIVED → ROUTED |
 | 5 | 15:08:25 | inference-request published | Published to onex.cmd.omnibase-infra.delegation-inference-request.v1 |
 | 6 | 15:08:25 | LLM call attempted | LlmCallerDelegation: model=glm-z-ai base_url=https://api.z.ai/v1 |
@@ -162,7 +162,7 @@ No container log entries found for this correlation_id. The orchestrator consume
 | Gap | Description | Impact |
 |-----|-------------|--------|
 | GLM auth | `InfraAuthenticationError` on `https://api.z.ai/v1` | Inference hop fails, chain terminates with delegation-failed |
-| .200:8101 health | `http://192.168.200.200:8101/health → 404 Not Found` (observed in effects logs) | DeepSeek V4 Flash fallback endpoint is unhealthy from container perspective |
+| gpu-host:8101 health | `http://<onex-host-gpu>:8101/health → 404 Not Found` (observed in effects logs) | DeepSeek V4 Flash fallback endpoint is unhealthy from container perspective |
 
 ### Gaps in manifest wiring (from subscriber analysis)
 
@@ -217,8 +217,8 @@ No rows materialized since 2026-05-13. The `task-delegated.v1` event is being pu
 The delegation golden chain is **fully wired** from command intake through routing through inference attempt through terminal event emission and projection topic publication. The chain **terminates in delegation-failed** because:
 
 1. GLM (`api.z.ai`) endpoint returns `InfraAuthenticationError` — API key likely expired or not configured in stability-test lane.
-2. DeepSeek V4 Flash fallback endpoint (`192.168.200.200:8101`) returns 404 from within the Docker network (correct address on the .201 host is `192.168.86.200:8101`, but the container resolves to `192.168.200.200` which is a wrong route).
+2. DeepSeek V4 Flash fallback endpoint (`<onex-host-alt>:8101`) returns 404 from within the Docker network (correct address on the runtime host is `<onex-host-gpu>:8101`, but the container resolves to `<onex-host-alt>` which is a wrong route).
 
 **To get a full successful golden chain**, fix one of:
 - GLM API key in stability-test lane (Infisical → `LLM_GLM_URL` + auth token)
-- Correct the bifrost overlay to use the reachable DS V4 Flash URL (`http://192.168.86.200:8101` vs `http://192.168.200.200:8101`)
+- Correct the bifrost overlay to use the reachable DS V4 Flash URL (`http://<onex-host-gpu>:8101` vs `http://<onex-host-alt>:8101`)

@@ -12,13 +12,13 @@
 - Model registry: `src/contracts/model_registry.yaml` git blob `ca392b6f`, last changed by `13127a7` (PR #166, OMN-12434). The gitignored overlay `model_registry.local.yaml` was active, pointing the local tiers at the reachable Tailscale endpoints.
 - Contract version: delegation runtime profile `schema_version 1.0`; model registry `schema_version 1.0.0`
 - Projection version: not applicable (projection read path unavailable this session; tracked under OMN-12467)
-- Mode: remote-live (Tailscale to the .201 runtime and models) plus local (SEA repo)
+- Mode: remote-live (Tailscale to the <onex-host> runtime and models) plus local (SEA repo)
 
 ## Summary
 
 Observation on `13127a7`: with the Gemini key restored, the delegation escalation ladder is healthy and the OMN-12434 model-ID drift fix holds. The only task that fails is reg-005, which is the known OMN-12438 max_tokens truncation. An earlier run this morning showed 3/7 to 5/7 and looked like a regression. That run was confounded because the cloud fallback tier was unreachable (the Gemini key script had been lost and was later recovered from a git stash). With the key restored, the ladder behaves as designed.
 
-## Served model IDs (live, .201 over Tailscale)
+## Served model IDs (live, <onex-host> over Tailscale)
 
 - Port 8000 (tier 1, `local_qwen_coder`): `Qwen3.6-35B-A3B`
 - Port 8001 (tier 2, `local_deepseek_reasoning`): `Qwen3.6-27B-MTP-IQ4_XS.gguf`

@@ -1,6 +1,6 @@
 # OMN-12491 — savings_estimates materialization proof (stability-test lane)
 
-Lane: stability-test (compose project `omnibase-infra-stability-test`, main `:18085`, effects `:18086`) on `.201`.
+Lane: stability-test (compose project `omnibase-infra-stability-test`, main `:18085`, effects `:18086`) on the runtime host.
 Captured: 2026-05-30. Read-only probes plus one corrective DDL reconciliation and a genuine-event reprocess.
 
 ## Verdict
@@ -60,8 +60,8 @@ silently mis-route future writers, but this had no bearing on demo data.
 
 The live bifrost overlay (`/app/data/delegation/bifrost_delegation.yaml`, env
 `BIFROST_CONTRACT_PATH`) already routes `code_generation` to `local-coder`
-(`http://192.168.86.201:8000`, Qwen3.6-35B-A3B, reachable, verified via `/v1/models`)
-with `cloud-sonnet` fallback. The `.200:8101` DeepSeek backend is present as
+(`http://<onex-host>:8000`, Qwen3.6-35B-A3B, reachable, verified via `/v1/models`)
+with `cloud-sonnet` fallback. The `<onex-host-gpu>:8101` DeepSeek backend is present as
 `local-heavy-reasoning`. No overlay change was required.
 
 ## Separate, out-of-scope issue observed (not OMN-12491)

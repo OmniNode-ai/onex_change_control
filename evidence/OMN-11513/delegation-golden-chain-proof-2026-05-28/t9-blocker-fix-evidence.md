@@ -9,8 +9,8 @@
 ## Fixes Applied
 
 ### Fix 1: Wrong IP for local-heavy-reasoning endpoint
-- **Before:** `http://192.168.200.200:8101` (non-routable from container)
-- **After:** `http://192.168.86.200:8101` (correct, verified reachable)
+- **Before:** `http://<onex-host-alt>:8101` (non-routable from container)
+- **After:** `http://<onex-host-gpu>:8101` (correct, verified reachable)
 - **Applied to:** `/app/data/delegation/bifrost_delegation.yaml` in both `omninode-stability-test-runtime` and `omninode-stability-test-runtime-effects`
 - **Persisted:** renderer skips re-render when endpoints are already populated (`BIFROST_VERIFY_ENDPOINTS=0`)
 
@@ -38,7 +38,7 @@ The installed `omnibase_compat==0.4.0` was missing symbols and model fields requ
 - `model_bifrost_delegation_config.py` — Added field: `ModelDelegationBackendConfig.api_key_env`
 - `model_delegation_request.py` — Updated `task_type` to accept `code_generation` and other task types
 
-**Root fix:** Installed `omnibase_compat-0.4.1.whl` (built from canonical source on .201 via `uv build`) to both containers via directory extraction.
+**Root fix:** Installed `omnibase_compat-0.4.1.whl` (built from canonical source on the runtime host via `uv build`) to both containers via directory extraction.
 
 ---
 
@@ -55,7 +55,7 @@ The installed `omnibase_compat==0.4.0` was missing symbols and model fields requ
 |-----|-----------|-------|---------|
 | 1 | 16:45:10 | delegation-request consumed | DispatcherDelegationRequest processed request |
 | 2 | 16:45:10 | routing-request published | to `onex.cmd.omnibase-infra.delegation-routing-request.v1` |
-| 3 | 16:45:10 | routing resolved | model=DeepSeek-V4-Flash-284B endpoint=http://192.168.86.200:8101 |
+| 3 | 16:45:10 | routing resolved | model=DeepSeek-V4-Flash-284B endpoint=http://<onex-host-gpu>:8101 |
 | 4 | 16:45:10 | inference-request published | to `onex.cmd.omnibase-infra.delegation-inference-request.v1` |
 | 5 | 16:45:10 | LLM call started | LlmCallerDelegation calling model=DeepSeek-V4-Flash-284B |
 | 6 | 16:45:31 | Inference completed | **tokens=580**, latency=21060ms |

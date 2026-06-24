@@ -9,7 +9,7 @@
 
 ## Verdict
 
-**PASS.** A judge can reproduce the SEA Tier 1 no-key path from a fresh clone with standard tooling, no source edits, no overlays, no model key, and no `.201`/broker dependency. Tag-ready at `fc5eed3`.
+**PASS.** A judge can reproduce the SEA Tier 1 no-key path from a fresh clone with standard tooling, no source edits, no overlays, no model key, and no `<onex-host>`/broker dependency. Tag-ready at `fc5eed3`.
 
 ## Acceptance bar (per the 2026-06-11 P4 assignment)
 
@@ -21,7 +21,7 @@
 | `uv sync` completes, no manual repair | PASS (cold run: full resolve + download + build of 240 packages incl. 7 git-source deps; warm run: instant) |
 | Targeted tests pass | PASS — 31 passed (`tests/unit/test_replay.py`, `tests/unit/test_agent_orchestrator.py`) |
 | Golden-fixture replay passes | PASS — validate (schema/syntax/security) → register `node_sentiment_classifier` → invoke → `{'sentiment':'positive','confidence':0.99}`, no LLM calls |
-| No source edits / overlays / keys / `.201` | PASS — confirmed; `ONEX_TRACK_A_API_KEY=(unset)` |
+| No source edits / overlays / keys / `<onex-host>` | PASS — confirmed; `ONEX_TRACK_A_API_KEY=(unset)` |
 
 ## Run identity
 
@@ -43,7 +43,7 @@ Both runs are on the same SHA with identical functional results.
 
 ## Environment statement
 
-No source edits, no local overlays (`contract.local.yaml` / `model_registry.local.yaml` absent), no model key (`ONEX_TRACK_A_API_KEY` unset), no Tailscale / `.201` / broker dependency. This is the portable, key-free Tier 1 path only.
+No source edits, no local overlays (`contract.local.yaml` / `model_registry.local.yaml` absent), no model key (`ONEX_TRACK_A_API_KEY` unset), no Tailscale / `<onex-host>` / broker dependency. This is the portable, key-free Tier 1 path only.
 
 ## Scope / caveats
 
