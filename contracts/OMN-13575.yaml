@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13575"
+title: "Kill soft gates: remove warn-only exit-0 remaps on omniclaude validator jobs"
+summary: >-
+  A validator job that cannot fail the build is advisory, contradicting silent_skip_allowed: false. omniclaude
+  carried two warn-only soft gates in .github/workflows/ci.yml that swallowed real validator failures
+  into exit 0: (1) agent-contract-validation wrapped validate-all-agents.sh in an if/else that emitted
+  "::warning::...warn-only during Wave B rollout" and always exited 0; (2) the compliance job wrapped
+  onex compliance check in an if/else that emitted "::warning::...warn-only for external-service checks"
+  and always exited 0. Both Wave-B and external-service caveats are resolved (Wave B rollout complete,
+  53/53 agents pass), so the remaps could never turn their jobs red. This PR removes both remaps so the
+  jobs hard-fail on a real violation. The command-availability guard in the compliance job is preserved
+  so it still skips cleanly when onex compliance is not yet present. Planted- violation proof: corrupting
+  an agent YAML makes validate-all-agents.sh exit 1 (previously swallowed to exit 0). This OCC contract
+  is the Receipt-Gate Evidence-Source omniclaude PR #1803 cites. No runtime deploy is performed by this
+  PR itself; the change is CI-workflow-only and touches no runtime nodes/handlers/contracts.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      The de-fanged agent-contract-validation step now runs validate-all-agents.sh directly with no exit-0
+      remap. A planted invalid agent YAML makes the validator exit 1; reverting returns exit 0.
+    command: "bash plugins/onex/scripts/validate-all-agents.sh"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-planted-violation-fails"
+    description: >-
+      Planted-violation proof: in the omniclaude worktree, appending malformed YAML to plugins/onex/agents/configs/address-pr-comments.yaml
+      made validate-all-agents.sh exit 1 ("ERROR: 1 agent(s) failed contract validation"); restoring the
+      file returned exit 0 ("All agents passed"). Under the previous warn-only remap that exit 1 was swallowed
+      to exit 0, so the job could never turn red. The de-fanged step now propagates the non-zero exit
+      and fails CI.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13575/dod-planted-violation-fails/command.yaml
+          && grep -q '^pr_number: OCC_PR_PLACEHOLDER$' drift/dod_receipts/OMN-13575/dod-planted-violation-fails/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13575; omniclaude PR #1803
+      cites Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against an OCC-main ancestor.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13575.yaml"
