@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13413"
+title: "node_runtime_closeout_orchestrator + /onex:runtime_closeout skill (one-dispatch closeout)"
+summary: >
+  Turns the overnight hand-run runtime-closeout pipeline into a canonical omnimarket capability (CONTRACT/NODE/HANDLER;
+  thin skill shim) under epic OMN-13410. node_runtime_closeout_orchestrator (ORCHESTRATOR archetype) is
+  a bus-native FSM that owns phase sequencing but dispatches every phase OVER THE BUS — no in-process
+  handler construction, no FSM loop, no I/O. Flow: read-only preflight (identity/broker/projection/migration/rollback;
+  never mutates the lane) -> fresh-deploy fitness gate (OMN-13410 sibling) -> deploy (REUSES node_redeploy_orchestrator
+  via the shared ModelRedeployCommand; prod stays operator-gated by the redeploy orchestrator's own prod-promotion
+  gate, never relaxed here) -> runtime proof matrix (REUSES node_golden_chain_sweep + node_integration_sweep;
+  cells delegation/sea/gate_zero/context/savings/cross_feature classified required|stretch|research, each
+  proven fresh CID -> typed terminal -> projection readback) -> terminal ModelCloseoutReceipt (SHA/image
+  table, migration ledger, per-cell verdicts, rollback plan, residual risk, recommendation customer_beta|internal_integration|hold).
+  A failing preflight or fitness gate completes BLOCKED before any deploy. The /onex:runtime_closeout
+  skill is a thin dispatch shim (no inline logic). The bus-native phase EFFECTS and the live end-to-end
+  closeout proof against a broker-backed lane are owed to the redeploy/runtime workstream; this PR mutates
+  no runtime lane.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Golden-chain suite drives the orchestrator handler over every FSM edge as bus-routing transitions:
+      start->preflight, preflight->fitness (ready) / ->BLOCKED (not ready), fitness->deploy (fit, shared
+      ModelRedeployCommand) / ->BLOCKED (not fit), deploy->proof-matrix (DONE) / ->FAILED / ->BLOCKED,
+      and proof-matrix->COMPLETED receipt, plus ModelCloseoutReceipt recommendation roll-up (required-FAIL->HOLD,
+      full-matrix-PASS->CUSTOMER_BETA). 12 tests, written from the contract first (TDD).
+    command: "uv run pytest tests/test_golden_chain_runtime_closeout_orchestrator.py -q"
+  - kind: "ci"
+    description: >
+      mypy --strict green on the new packages; ruff format + check clean; runtime-sweep --import-check
+      clean (326 entry points); node metadata dependency check PASS; full omnimarket suite green (uv run
+      pytest tests/ -m "not kafka"); pre-commit all node/contract/topic gates green.
+    command: "uv run mypy src/omnimarket/nodes/node_runtime_closeout_orchestrator/ --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1408"
+    description: >
+      Binds omnimarket PR #1408. The new golden-chain suite passes 12/12, the full omnimarket suite is
+      green (8720 passed, 63 skipped; the dogfood node-count assertion is updated 325->326 for the added
+      node), mypy --strict is clean on the new packages, and ruff + import-check + metadata + pre-commit
+      gates are green. The orchestrator dispatches every phase over the bus and reuses node_redeploy_orchestrator
+      (deploy) + node_golden_chain_sweep / node_integration_sweep (proof matrix).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13413/dod-omnimarket-pr-1408/command.yaml
+          && grep -q '^pr_number: 1408$' drift/dod_receipts/OMN-13413/dod-omnimarket-pr-1408/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: omnimarket PR #1408 adds a new ORCHESTRATOR node + its contract + the skill shim.
+      No live runtime deploy or container mutation is performed by this PR. The bus-native phase EFFECTS
+      that run preflight probes / the fitness gate / the live proof-matrix cells against a broker-backed
+      lane and the end-to-end live closeout proof are owed to the redeploy/runtime workstream (it owns
+      the dev lane). No runtime lane is touched here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13413/dod-deploy-assessment/command.yaml
+          && grep -qi 'deploy' drift/dod_receipts/OMN-13413/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev-targeted evidence PR. This onex_change_control
+      PR carries the OMN-13413 contract and receipts onto dev, satisfying the receipt-to-PR binding required
+      by validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13413/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13413/dod-occ-pr-self/command.yaml"
