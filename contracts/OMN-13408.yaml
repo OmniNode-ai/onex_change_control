@@ -203,3 +203,46 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -c '^pr_number: 3095$' drift/dod_receipts/OMN-13408/dod-occ-pr-3095/command.yaml"
+  - id: "dod-projection-canonical-cost"
+    description: >-
+      Projection canonical-event cost-resolution dimension (omnimarket #1405). The emitter half of OMN-13408
+      is now PROVEN correct on the bus (the emitter hoist #1403 emits cost_usd>0 on the compat task-delegated.v1
+      event for a FAILED metered escalation terminal); the residual defect MOVED downstream to the projection
+      write. Live STRIKE THREE root cause (dev lane, clean-room CID 5120dd9c-4205-4407-8342-f859469d3641,
+      2026-06-25, image 21eaff0da067 / v0.38.4, diagnosis docs/evidence/2026-06-24-p0-tail/13408-two-strike-diagnosis.md
+      STRIKE THREE section in omni_home): the compat task-delegated.v1 event carried cost_usd=0.01924
+      (cheap_cloud, metered, 88/9532 tokens, premium_counterfactual=None), but the projected delegation_events
+      row persisted cost_usd=0.0 while copying tier/source/tokens correctly from the SAME event. The projection
+      node node_projection_delegation subscribes to BOTH the compat onex.evt.omniclaude.task-delegated.v1
+      AND the canonical onex.evt.omnibase-infra.delegation-failed.v1 terminal (a ModelDelegationResult)
+      and UPSERTs the same correlation_id row. The canonical ModelDelegationResult carries the real metered
+      spend in cumulative_attempt_cost / final_attempt_cost and in escalation_history[<winning-tier>].cost_usd
+      but has NO top-level cost_usd / cost_tier_name (by design). _canonical_result_to_task_delegated_payload
+      dropped every cost dimension, so the canonical write took the _measure_actual_cost unknown-serving-tier
+      fall-through and persisted cost_usd=0.0 with an empty serving tier — clobbering the compat event's
+      honest cost. Fix is omnimarket-only, no core change and NO canonical event schema change: the converter
+      now carries the canonical cumulative_attempt_cost (fallback final_attempt_cost) as cost_usd, and
+      resolves cost_tier_name from the winning (last positive-cost) metered escalation_history tier via
+      new helper _winning_metered_tier_name. With cost_tier_name set, _measure_actual_cost trusts the
+      metered total (event.cost_usd>0) instead of flooring to 0; free-local-only failed terminals honestly
+      stay 0 (no metered winner). OMN-13535 no-double-count invariant preserved (FAILED path trusts the
+      authoritative total verbatim, never re-adds escalation_history). Focused TDD regression tests/unit/delegation/test_canonical_failed_terminal_cost_projection_omn13408.py
+      (class TestCanonicalFailedTerminalCostProjectionOmn13408, 3 tests) is RED before the fix (AssertionError
+      0.0 == 0.01924, the exact live CID cost) and GREEN after; 8670 tests pass (no -k filter, -m "not
+      kafka"); mypy --strict + ruff + pre-commit clean. NO live deploy or runtime mutation in this code
+      sweep — a SEPARATE serialized clean-room redeploy + live cost_usd>0 readback closes OMN-13408. OMN-13408
+      stays In Progress.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'test_projection_persists_metered_cost_on_canonical_failed_terminal' contracts/OMN-13408.yaml"
+  - id: "dod-occ-pr-3100"
+    description: >-
+      Self-binding receipt for OCC PR #3100, which additively extends the central OMN-13408 contract for
+      the omnimarket #1405 projection canonical-event cost-resolution fix.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^pr_number: 3100$' drift/dod_receipts/OMN-13408/dod-occ-pr-3100/command.yaml"
