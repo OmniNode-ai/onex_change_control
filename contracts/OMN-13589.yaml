@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13589"
+title: "Route runtime_sweep CI gate through canonical node_runtime_sweep; delete freestanding script"
+summary: >-
+  omnimarket CI ran a 184-line freestanding imperative script (scripts/ci/run_runtime_sweep.py --import-check)
+  that self-described as "the entry-point validation subset of runtime_sweep" yet bypassed the canonical
+  COMPUTE node it claimed to be a subset of — architectural drift against the everything-is-nodes / contract-native
+  doctrine. The omnimarket product PR #1397 absorbs the single-repo "do the entry points load?" import
+  probe into the canonical node_runtime_sweep, splitting facts from decisions: the harness (the I/O boundary,
+  __main__.collect_entry_point_probes) walks this repo's pyproject [project.entry-points."onex.nodes"],
+  runs the structural + import checks per node, and emits one typed ModelEntryPointProbe each; the PURE
+  NodeRuntimeSweep handler turns ok=False probes into BROKEN_ENTRY_POINT findings via a new REGISTRATION
+  phase. RuntimeSweepRequest gains entry_point_probes and an enabled_checks selector (None = all phases
+  run exactly as before, so existing cross-repo / skill callers are byte-for-byte unaffected); the single-repo
+  CI request scopes to enabled_checks=[REGISTRATION] so the cross-repo symmetry / durability / stranded-workflow
+  / profile-consumer phases cannot false-positive in a single-repo checkout. ci.yml now invokes 'uv run
+  python -m omnimarket.nodes.node_runtime_sweep --import-check'; the freestanding script is DELETED (no
+  shim, no re-export). Frozen historical DoD/OCC receipts under docs/work-tracking/contracts/ are intentionally
+  left untouched. This OCC contract is the Receipt-Gate Evidence-Source the omnimarket product PR cites.
+  No runtime deploy in this scope.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Migrated CI-helper tests (collect_entry_point_probes structural/import probes + probe->BROKEN_ENTRY_POINT
+      finding) and extended runtime-sweep golden chain (REGISTRATION phase; registration-only scope suppresses
+      symmetry/description; default None runs all phases).
+    command: "uv run pytest tests/ci/test_runtime_sweep_import_check.py tests/test_golden_chain_runtime_sweep.py
+      -q -m 'not kafka'"
+  - kind: "ci"
+    description: >-
+      Full suite green (no -k); mypy --strict clean; ruff clean; pre-commit --all-files clean (incl. Node
+      Purity Gate, OMN-13283); the rewired runtime-sweep gate proves itself in CI; gate proven both ways
+      (clean exit 0 / broken exit 1 with BROKEN_ENTRY_POINT).
+    command: "uv run python -m omnimarket.nodes.node_runtime_sweep --import-check"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1397"
+    description: >-
+      The omnimarket product PR #1397 carries the canonical absorption (BROKEN_ENTRY_POINT + REGISTRATION
+      phase + ModelEntryPointProbe + enabled_checks; collect_entry_point_probes harness; ci.yml rewire;
+      script deletion; live-doc repoint; migrated + extended tests). It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json state,headRefOid,baseRefName"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13589. The omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> (post-merge OCC-main SHA) so its verify/verify Receipt Gate resolves
+      against an OCC-main ancestor. Build/PR scope only; no runtime deploy, no env-for-model, no bespoke
+      endpoint.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13589.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: the omnimarket PR is a CI-gate rewire plus a pure-node phase addition. It ships
+      no runtime contract/topic/migration change and requires no image rebuild; the rewired gate is self-proving
+      (it runs in CI on the PR). No live deploy or runtime restart.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13589/dod-deploy-assessment/command.yaml"
