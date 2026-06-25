@@ -12,19 +12,20 @@ Topics emitted:
   - onex.evt.onex-change-control.contract-drift-detected.v1
   - onex.evt.onex-change-control.cosmetic-compliance-scored.v1
 
-Kafka bootstrap servers are read from the KAFKA_BOOTSTRAP_SERVERS env var.
-If not set, emission is skipped (no localhost fallback — missing var means
-no bus is configured for this environment).
+Kafka bootstrap servers resolve from the integration contract + overlay
+(``descriptor.kafka_bootstrap_servers`` bound to ``${env.KAFKA_BOOTSTRAP_SERVERS}``,
+OMN-13563). If not set, emission is skipped (no localhost fallback — missing
+value means no bus is configured for this environment).
 """
 
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from typing import Any
 
+from onex_change_control.integrations import contract_descriptor
 from onex_change_control.kafka.topics import GovernanceTopic
 
 TOPIC_GOVERNANCE_CHECK_COMPLETED: str = GovernanceTopic.GOVERNANCE_CHECK_COMPLETED
@@ -33,8 +34,13 @@ TOPIC_COSMETIC_COMPLIANCE_SCORED: str = GovernanceTopic.COSMETIC_COMPLIANCE_SCOR
 
 
 def _get_bootstrap_servers() -> str | None:
-    """Return KAFKA_BOOTSTRAP_SERVERS or None if unset."""
-    return os.environ.get("KAFKA_BOOTSTRAP_SERVERS") or None
+    """Return the contract-resolved Kafka bootstrap servers, or None if unset.
+
+    Resolves ``descriptor.kafka_bootstrap_servers`` (bound to
+    ``${env.KAFKA_BOOTSTRAP_SERVERS}``) via the integration contract + overlay
+    (OMN-13563). Optional: ``None`` when unset so emission no-ops (best-effort).
+    """
+    return contract_descriptor.kafka_bootstrap_servers()
 
 
 def _build_envelope(topic: str, payload: dict[str, Any]) -> bytes:
