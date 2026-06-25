@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13597"
+title: "bus-less local CLI delegation path runs the canonical quality gate instead of hardcoding quality_gate_passed=true"
+summary: >-
+  The bus-less / standalone local CLI delegation path (onex delegate, no event bus) in omnimarket LocalDelegationDispatchPort
+  returned hardcoded quality_gate_passed=true / quality_score=1.0 on any transport success. Because result.success
+  is HTTP/transport success (not a quality verdict), any LLM call that returned HTTP 200 — including a
+  model refusal or a confidently-wrong answer — was recorded as a quality-gated PASS, and the delegation_events
+  evidence row was written quality_gate_passed=true unconditionally. No invocation of the canonical quality-gate
+  reducer existed on this path. The fix composes the existing canonical surfaces: after a successful effect
+  call the port resolves the task-class DoD checks (dod_deterministic / dod_heuristic from task_class_contracts.v1.yaml)
+  via a new public routing-authority resolver (resolve_task_class_dod_checks) and runs the SAME canonical
+  quality gate reducer (delta) the bus path runs. The real pass/fail verdict and graded score are written
+  into both the response dict and the projected delegation_events evidence row. A model refusal now yields
+  quality_gate_passed=false with status=failed; a genuine good answer yields true with the reducer's real
+  graded score (never a hardcoded 1.0). No second bespoke gate is added. This PR ships no runtime contract/topic/migration
+  change and performs no live deploy or runtime restart.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Unit tests in tests/unit/nodes/node_delegate_skill_orchestrator/test_local_dispatch_evidence.py
+      prove a refusal payload through LocalDelegationDispatchPort yields quality_gate_passed=false (status
+      failed, evidence row false) and a genuine good answer yields true with the reducer's real graded
+      score (not a hardcoded 1.0).
+    command: "uv run pytest tests/unit/nodes/node_delegate_skill_orchestrator/test_local_dispatch_evidence.py
+      -q"
+  - kind: "ci"
+    description: >-
+      ruff format + ruff check + mypy --strict clean on the changed source files; full pre-commit run
+      on the changed files passes; the full omnimarket pytest suite (not kafka) is green.
+    command: "uv run mypy src/omnimarket/nodes/node_delegate_skill_orchestrator/ports/port_local_delegation_dispatch.py
+      --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      The omnimarket product PR #1420 wires resolve_task_class_dod_checks (new public routing-authority
+      DoD resolver) + the canonical delta quality-gate evaluation into LocalDelegationDispatchPort.dispatch,
+      replacing the hardcoded quality_gate_passed=true/quality_score=1.0. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13597/dod-omnimarket-pr/command.yaml
+          && grep -q '^pr_number: 1420$' drift/dod_receipts/OMN-13597/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13597; the omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against the OCC PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13597.yaml"
+  - id: "dod-quality-gate-tests"
+    description: >-
+      Test proof: a refusal payload through LocalDelegationDispatchPort returns quality_gate_passed=false
+      and projects a failed evidence row; a genuine good answer returns true with the reducer's real graded
+      score. Both new tests plus the existing 8 local-dispatch tests pass (10 passed).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13597/dod-quality-gate-tests/command.yaml
+          && grep -q '7cd37eaf1e0daff634c70b5e9c3a9cc5ce70251a' drift/dod_receipts/OMN-13597/dod-quality-gate-tests/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR edits an in-process node dispatch port and its routing-authority helper
+      plus unit tests. It ships no runtime contract/topic/migration change and requires no image rebuild.
+      No live deploy or runtime restart is performed by merging this PR. The DoD's live readback (a local
+      onex delegate of a refused prompt writing quality_gate_passed=false, verifier != runner) is deferred
+      to the operator-gated dev-lane redeploy/reprove run and is NOT claimed here.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13597.yaml"
