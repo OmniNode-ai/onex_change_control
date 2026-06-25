@@ -10,10 +10,11 @@ ONEX_STATE_DIR side effects.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+
+from onex_change_control.integrations import contract_descriptor
 
 _CLAIMS_SUBDIR = "dispatch_claims"
 
@@ -60,10 +61,14 @@ def sweep(base_dir: Path) -> int:
 
 
 def main() -> None:
-    raw = os.environ.get("ONEX_STATE_DIR", "")
-    if not raw.strip():
+    # State-store root resolves from the integration contract + overlay
+    # (descriptor.onex_state_dir bound to ${env.ONEX_STATE_DIR}, OMN-13563);
+    # fail-closed (raises) when unset.
+    try:
+        raw = contract_descriptor.onex_state_dir()
+    except ValueError as exc:
         msg = "ONEX_STATE_DIR is not set"
-        raise RuntimeError(msg)
+        raise RuntimeError(msg) from exc
     reaped = sweep(Path(raw).expanduser().resolve())
     sys.stdout.write(f"dispatch-claim-sweeper: reaped {reaped} expired claim(s)\n")
 

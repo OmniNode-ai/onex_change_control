@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
+
+from onex_change_control.integrations import contract_descriptor
 
 # ---------------------------------------------------------------------------
 # Database helpers
@@ -33,43 +33,18 @@ from pathlib import Path
 
 
 def _load_password() -> str:
-    """Resolve POSTGRES_PASSWORD from env or by sourcing ~/.omnibase/.env."""
-    pw = os.environ.get("POSTGRES_PASSWORD")
-    if pw:
-        return pw
+    """Resolve the omnidash Postgres password from the contract secret ref.
 
-    env_file = Path.home() / ".omnibase" / ".env"
-    if not env_file.exists():
-        print(
-            f"ERROR: POSTGRES_PASSWORD not set and {env_file} not found",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    # Source the env file in a subshell and extract the variable
+    OMN-13563: the contract declares only the ``*_ref`` name; the literal value
+    is resolved from the operator environment / Infisical store at the effect
+    boundary. The legacy ``~/.omnibase/.env`` ``source`` fallback was removed —
+    it bypassed the secret store and forced a machine-specific path.
+    """
     try:
-        result = subprocess.run(  # noqa: S603  Why: subprocess call with controlled args
-            [  # noqa: S607  Why: bash executable path is safe
-                "bash",
-                "-c",
-                f"source {env_file} && echo $POSTGRES_PASSWORD",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        pw = result.stdout.strip()
-    except subprocess.CalledProcessError:
-        pw = ""
-
-    if not pw:
-        print(
-            f"ERROR: Could not resolve POSTGRES_PASSWORD from env or {env_file}",
-            file=sys.stderr,
-        )
+        return contract_descriptor.omnidash_db_password()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
-
-    return pw
 
 
 def _fetch_row_counts(password: str) -> dict[str, int]:
@@ -84,15 +59,22 @@ def _fetch_row_counts(password: str) -> dict[str, int]:
         )
         sys.exit(2)
 
-    host = os.environ["POSTGRES_HOST"]
-    port = os.environ.get("POSTGRES_PORT", "5436")
-    dbname = os.environ["OMNIDASH_DB_NAME"]
-    user = os.environ["POSTGRES_USER"]
+    # omnidash_analytics endpoint + non-secret credentials resolve from the
+    # integration contract + overlay (OMN-13563) — fail-closed, no hardcoded
+    # host/port/name/user literals.
+    try:
+        host = contract_descriptor.omnidash_db_host()
+        port = contract_descriptor.omnidash_db_port()
+        dbname = contract_descriptor.omnidash_db_name()
+        user = contract_descriptor.omnidash_db_user()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     try:
         conn = psycopg2.connect(
             host=host,
-            port=int(port),
+            port=port,
             dbname=dbname,
             user=user,
             password=password,

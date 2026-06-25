@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -28,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from onex_change_control.enums.enum_doc_reference_type import EnumDocReferenceType
+from onex_change_control.integrations import contract_descriptor
 from onex_change_control.scanners.doc_reference_extractor import extract_all_references
 
 if TYPE_CHECKING:
@@ -48,7 +48,8 @@ _KNOWN_REPOS = {
 }
 
 _PATH_TOKEN_STRIP = "`\"'.,);:]}"  # noqa: S105  Why: punctuation trim set.
-_LINEAR_ENDPOINT = "https://api.linear.app/graphql"
+# Linear GraphQL endpoint resolves from the integration contract + overlay
+# (OMN-13563) — never a hardcoded URL literal.
 
 
 @dataclass(frozen=True)
@@ -234,8 +235,8 @@ def _fetch_linear_state(ticket_id: str, token: str) -> str | None:
         "query": ("query($id:String!){issue(id:$id){state{name}}}"),
         "variables": {"id": ticket_id},
     }
-    request = urllib.request.Request(  # noqa: S310  Why: constant HTTPS endpoint.
-        _LINEAR_ENDPOINT,
+    request = urllib.request.Request(  # noqa: S310  Why: URL resolves from the contract.
+        contract_descriptor.linear_graphql_url(),
         data=json.dumps(query).encode("utf-8"),
         headers={
             "Authorization": token,
@@ -267,8 +268,11 @@ def verify_ticket_state_reference(
     """Verify an explicit ticket-state claim."""
     ticket_id, expected = _parse_ticket_claim(ref.raw_text)
     actual = ticket_states.get(ticket_id)
-    if actual is None and os.environ.get("LINEAR_API_KEY"):
-        actual = _fetch_linear_state(ticket_id, os.environ["LINEAR_API_KEY"])
+    # Linear API key resolves from the contract-declared secret ref (OMN-13563);
+    # optional here (live lookup is best-effort), so required=False.
+    linear_token = contract_descriptor.linear_api_key(required=False)
+    if actual is None and linear_token:
+        actual = _fetch_linear_state(ticket_id, linear_token)
 
     if actual is None:
         return Finding(
