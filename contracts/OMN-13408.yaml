@@ -160,3 +160,46 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -c '^pr_number: 3050$' drift/dod_receipts/OMN-13408/dod-occ-pr-3050/command.yaml"
+  - id: "dod-emitter-hoist"
+    description: >-
+      Emitter-hoist dimension (omnimarket #1403). The prior dimensions wired served usage UPSTREAM, carried
+      it onto the canonical+compat terminal events, and re-priced the projection floor (#1388) — but a
+      residual FAILED/escalation shape persisted cost_usd=0.0 because the metered spend survived ONLY
+      in escalation_history while the TOP-LEVEL cost_usd / cost_tier_name / tokens resolved to null/zero,
+      so the projection short-circuited on the null top-level tier before the floor branch could re-price.
+      Live root cause (dev lane, clean-room CID 1f969398-7373-4614-a169-a3a76d2e4d6a, 2026-06-24, diagnosis
+      docs/evidence/2026-06-24-p0-tail/13408-two-strike-diagnosis.md in omni_home): a FAILED (quality_gate_passed=false),
+      escalation_count=1, metered cheap_cloud glm-5.2 (rate_per_1k_usd=0.002) terminal carried real metered
+      spend cost_usd=0.001098 with 99/450 served tokens in escalation_history[1], but TOP-LEVEL cost_usd=None
+      / cost_tier_name=None / tokens=None, and the projected delegation_events row read cost_usd=0.0.
+      The defect lived in HandlerDelegationWorkflow._emit_terminal (node_delegation_orchestrator): the
+      carry/cumulative fixes populate the top level only when workflow.current_tier_name / inference_*
+      are intact at terminal-build time; on the residual shape they were not. Fix is omnimarket-only,
+      no core change: on a FAILED terminal whose measured top-level cost AND served tokens are null/zero,
+      _emit_terminal hoists the winning (last) metered escalation_history tier's cost_usd + cost_tier_name
+      + cost_tier_type + tokens_input + tokens_output into the top-level terminal fields, re-priced through
+      the SAME recompute_actual_cost_and_savings the completed/projection paths use. The OMN-13535 no-double-count
+      invariant is preserved (the hoist REPLACES the zero once, never re-adds; it is a no-op when the
+      intact path already populated the top level — cost > 0 or tokens > 0). A free_local-only history
+      has no metered winner to hoist, so the terminal honestly stays 0 by the cost model. Saving stays
+      0 on the failure path (never counterfactual-minus-0). total_tokens is reconciled to prompt+completion
+      so the hoisted canonical ModelDelegationResult satisfies the wire invariant total==prompt+completion.
+      Focused TDD regression tests/unit/delegation/test_terminal_cost_hoist_omn13408.py (class TestTerminalCostHoistOmn13408,
+      3 tests) is RED before the fix (AssertionError Decimal('0.0') == Decimal('0.001098'), the exact
+      live CID cost) and GREEN after; 406 delegation/golden-chain tests pass; mypy --strict + ruff clean.
+      NO live deploy or runtime mutation in this code sweep — Phase 2 owns the dev-lane redeploy + live
+      cost_usd>0 readback that closes OMN-13408. OMN-13408 stays In Progress.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'test_failed_metered_terminal_hoists_history_cost_to_top_level' contracts/OMN-13408.yaml"
+  - id: "dod-occ-pr-3095"
+    description: >-
+      Self-binding receipt for OCC PR #3095, which additively extends the central OMN-13408 contract for
+      the omnimarket #1403 emitter-hoist FAILED/escalation null-top-level cost fix.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^pr_number: 3095$' drift/dod_receipts/OMN-13408/dod-occ-pr-3095/command.yaml"
