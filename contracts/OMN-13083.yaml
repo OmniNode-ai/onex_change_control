@@ -33,6 +33,20 @@ evidence_requirements:
       mypy --strict green on the new traces node; runtime sweep 324/324 entry points OK; pre-commit green
       (golden-chain-coverage-gate, topic-naming, migration ownership).
     command: "uv run mypy src/omnimarket/nodes/node_projection_traces/ --strict"
+  - kind: "tests"
+    description: >-
+      MATERIALIZATION FIX (follow-up): the original contract declared only projection_api (read-side)
+      and handle() returned a snapshot dict without touching the DB, so the runtime auto-wiring materialization
+      callback (omnibase_infra.runtime.auto_wiring.handler_wiring._make_projection_dispatch_callback)
+      never fired — it gates on db_io.db_tables via _contract_declares_db_io. On the live dev lane the
+      node_projection_traces consumer was Stable at lag 0 yet traces row_count stayed 0. The fix adds
+      db_io.db_tables for the traces table and rewrites handle() to read the injected ProtocolProjectionDatabaseSync
+      at input_data['_db'], build the typed event, delegate to project() for the aggregating UPSERT, and
+      return rows_upserted (mirrors node_projection_delegation / savings). New RED-before-fix tests pin
+      the db_io declaration, handle()-with-injected-db materialization, fail-loud TypeError on missing
+      _db, and cross-entry aggregation via handle().
+    command: "uv run pytest tests/test_traces_projection_omn13083.py tests/test_golden_chain_traces.py
+      -q"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -67,3 +81,30 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13083/dod-deploy-assessment/command.yaml"
+  - id: "dod-materialization-fix"
+    description: >-
+      The traces projection never materialized from real events because the contract lacked db_io.db_tables
+      (the runtime materialization-callback gate) and handle() never wrote to the DB. The omnimarket fix
+      PR adds db_io.db_tables and rewrites handle() to upsert via the injected adapter and report rows_upserted.
+      Proven by RED-before-fix unit/golden-chain tests (handle()-with-injected-db materializes one row;
+      cross-entry aggregation; fail-loud TypeError without _db) and a live dev-lane root-cause reproduction:
+      a REAL onex.evt.platform.log-entry.v1 event was consumed by the Stable node_projection_traces consumer
+      (current-offset advanced, lag 0) while public.traces stayed at 0 rows on the pre-fix image, and
+      a sibling db_io projection (renderer_capability_projection) materialized a fresh row via the same
+      runtime path — confirming the mechanism works and only the db_io+handle() gap blocked traces. Live
+      readback of the FIXED code is gated on the dev-lane redeploy step (out of this PR's scope).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13083/dod-materialization-fix/command.yaml"
+  - id: "dod-occ-pr-3114"
+    description: >-
+      OCC self-binding evidence: onex_change_control PR #3114 carries this OMN-13083 contract (extended
+      with the materialization-fix evidence) and the paired DoD receipts cited by omnimarket PR #1411.
+      This item binds a PASS receipt to the OCC PR itself so the OCC merge-eligibility validator resolves
+      the ticket against a receipt on this PR's commit set.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13083/dod-occ-pr-3114/command.yaml
+          && grep -q '^pr_number: 3114$' drift/dod_receipts/OMN-13083/dod-occ-pr-3114/command.yaml"
