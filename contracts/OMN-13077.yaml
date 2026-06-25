@@ -1,26 +1,62 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13077"
-title: "Expose cost.by_repo projection API contract"
+title: "cost.by_repo projection WRITER — materialize rows from live delegation-completed"
 summary: >-
-  Companion central evidence for the OMN-13077 NC-04 slice absorbed into omnimarket PR #1393. The existing
-  node_projection_cost_by_repo now exposes the missing projection_api block for the cost_by_repo_snapshots
-  table carrying repo_name, total_cost_usd, and window. The change is additive to the existing event topic
-  and is covered by the same product PR and deploy assessment as OMN-13083.
+  Central Evidence-Source for the OMN-13077 writer cycle. The Wave-5 diagnosis found node_projection_cost_by_repo
+  declared a projection_api over cost_by_repo_snapshots but had NO writer at all — the handler returned
+  a pure dict and nothing persisted, so the table stayed empty (HWM=0 on the dead onex.evt.omniintelligence.llm-call-completed.v1
+  source). This cycle builds the full materialization path: (a) a CostByRepoProjectionRunner(BaseProjectionRunner)
+  + a db_io.db_tables write block, mirroring node_projection_llm_cost's LlmCostProjectionRunner; the handler
+  now persists rows via asyncpg UPSERT into cost_by_repo_snapshots instead of returning a dict; (b) the
+  contract re-subscribes from the dead llm-call-completed.v1 (HWM=0) to the LIVE onex.evt.omnibase-infra.delegation-completed.v1
+  topic that carries real metered cost; (c) a deployed writer service (omnimarket-projection-cost-by-repo)
+  lands in the omnibase_infra docker catalog so the writer actually runs in the lane; (d) repo dimension
+  is read from the delegation terminal payload when present — Wave-5 found the upstream emitter does not
+  populate repo today, so rows currently key on the honest "unknown" sentinel (no fabricated repo). Aggregation
+  is additive within the canonical (repo_name, window, snapshot_timestamp_minute) unique key. No live
+  deploy in this scope; live materialization readback is deferred to the serialized dev redeploy workstream.
 is_seam_ticket: false
 interface_change: true
 interfaces_touched:
   - "events"
+  - "topics"
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Writer TDD: the runner UPSERTs a snapshot row into cost_by_repo_snapshots from a delegation-completed
+      event via self.db.execute; the row builder maps metered cost + tokens and keys on the canonical
+      (repo_name, window, snapshot_timestamp_minute) dimension, honest "unknown" when repo is absent;
+      the contract re-subscribes to the live topic and declares the write model. Plus the projection_api
+      + migration pins.
+    command: "uv run pytest tests/test_cost_by_repo_writer_omn13077.py tests/test_cost_by_repo_projection_api_omn13077.py
+      tests/test_cost_projection_snapshot_contracts.py -q"
+  - kind: "ci"
+    description: >-
+      mypy --strict green on the cost_by_repo node; runtime sweep 326/326 entry points OK; full omnimarket
+      suite green (8775 passed); pre-commit green (topic-naming, golden-chain-coverage, operation_match
+      operation-field, projection-DLQ, writer-migration coupling). The infra catalog service passes ONEX
+      contract validation + writer-migration coupling.
+    command: "uv run mypy src/omnimarket/nodes/node_projection_cost_by_repo/ --strict"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-omnimarket-pr-writer"
+    description: >-
+      The omnimarket product PR carries the CostByRepoProjectionRunner writer, the row_cost_by_repo single-write
+      authority, the db_io write block + live-topic re-subscription in contract.yaml, and the TDD test
+      proving the upsert. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13077.yaml"
   - id: "dod-deploy-assessment"
     description: >-
-      Deploy assessment: OMN-13077 is included in omnimarket PR #1393, which adds the contract-declared
-      cost.by_repo projection API and node-owned idempotent migration. No live deploy or restart is performed
-      in the PR; live readback is deferred to the normal redeploy step.
+      Deploy assessment: this cycle adds the contract-owned writer + deployed catalog service for cost.by_repo.
+      No live deploy or runtime restart is performed in the PRs (build/PR scope); live materialization
+      readback is deferred to the serialized dev redeploy workstream.
     source: "manual"
     checks:
       - check_type: "command"
