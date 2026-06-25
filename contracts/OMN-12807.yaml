@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12807"
+title: "Internal-infra URLs to contract overlay (runtime health lane_policy, OMNIDASH_API_URL, bolt://localhost)"
+summary: >-
+  Removes three groups of hardcoded internal-infra URLs from omnimarket source and replaces them with
+  overlay-resolved contract references that fail closed when the binding is absent. (1) bolt://localhost
+  defaults in handler_architecture_graph_populate.py (two sites) bypassed the ModelArchitectureGraphPopulateConfig
+  default_factory guard; replaced with explicit RuntimeError when self._config is None. (2) _DEFAULT_BASE_URL
+  = "http://localhost:3002" in cli/commands/trace.py removed; _base_url() now raises click.ClickException
+  when OMNIDASH_API_URL is unset. (3) Hardcoded Docker service DNS health URLs in events/runtime_deployment.py
+  (_LANE_TARGETS health_targets tuples) replaced with RUNTIME_{DEV,STABILITY,PROD}_HEALTH_URLS overlay
+  env vars resolved via _resolve_health_targets(). Contract declarations added to node_redeploy_orchestrator
+  and node_redeploy_deploy_effect contracts. All callers fail closed (KeyError / RuntimeError / ClickException)
+  on missing values.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      TDD: new tests assert overlay resolution and fail-closed behavior for all three URL groups. TestLanePolicy
+      updated to use monkeypatch; test_base_url_raises_when_unset replaces test_base_url_defaults_to_localhost.
+    command: "uv run pytest tests/test_redeploy_lane_fsm.py tests/unit/cli/test_trace_commands.py tests/nodes/node_architecture_graph_populate_effect/
+      -q"
+  - kind: "ci"
+    description: >-
+      mypy --strict green (2505 source files); 5785 unit tests pass (0 failures); pre-commit all hooks
+      pass.
+    command: "uv run mypy src/omnimarket/ --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1419"
+    description: >-
+      omnimarket PR #1419 carries all three URL migrations. All pre-commit hooks pass; 5785/5785 unit
+      tests pass; mypy strict clean. Cites this OCC as Evidence-Source.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12807/dod-omnimarket-pr-1419/command.yaml"
+  - id: "dod-deploy-token"
+    description: >-
+      Deploy token evidence: omnimarket PR #1419 changes runtime code and redeploy node contracts. After
+      merge to dev, the affected omnimarket runtime/CLI image must be redeployed on the dev lane so the
+      overlay URL bindings and redeploy health-target contract changes are active. Post-merge validation
+      is a trace CLI smoke check plus redeploy lane-health check using the configured overlay URLs.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12807/dod-deploy-token/command.yaml"
