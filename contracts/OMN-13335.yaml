@@ -1,86 +1,103 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13335"
-title: "code_generation escalation discriminator — contract-passability invariant guard"
+title: "escalation up-tier discriminator — terminal emission must not crash on negative savings"
 summary: >
-  OMN-13335 is the SEA customer-beta discriminator: a fresh code_generation delegation must reach a terminal
-  with escalation_count>=1 AND a non-local CLOUD model_name AND quality_gate_passed=true. Verify-first
-  ground-truthed the DEPLOYED routing config on origin/dev and found the discriminator is ALREADY structurally
-  passable: (1) code_generation escalation_policy.tier_order ends at the cloud ceiling tier `claude`,
-  repointed off the dead Anthropic cloud-sonnet to the resolvable Gemini cloud-gemini-pro / gemini-2.5-flash
-  (OMN-13351); (2) that ceiling backend carries max_tokens=65536 (OMN-13161 — no truncation); (3) the
-  OMN-13470 judge combine lifts a mechanically-incomplete-but-correct cloud answer over required_bar 0.85
-  (deterministic floor 1.0 -> combined = 0.6 + 0.4*judge clears 0.85 for judge >= 0.625). The dev lane
-  already produced the exact discriminator row (cid a66b6c6b: code_generation / escalation_count=2 / gemini-2.5-flash
-  / quality_gate_passed=t). The convergence's prior "0/4 passing" was measured on a STALE image predating
-  the judge combine. No contentious config tune was warranted (no tier reorder — GLM-first is the intentional
-  OMN-13380 cost posture and the ticket states "routing layer is correct"; no required_bar reduction —
-  0.85 is passable via the combine; no max_tokens bump — already 65536). This change adds a STATIC contract-invariant
-  guard (5 unit tests) that pins the three passability properties so a future config edit cannot silently
-  re-break the discriminator. Live stability-lane re-proof of the passing escalation is Phase 2 (separate
-  redeploy), which keeps OMN-13335 In Progress until that row lands.
+  OMN-13335 is the SEA customer-beta discriminator: an escalating delegation must reach a terminal carrying
+  escalation_count>=1 with a cloud model_name and a quality-gate verdict. The prior "routing config is
+  correct" theory (PR #1402 / merged 2026-06-25) was REFUTED by a fresh live run (CID 67d2bfc8): an escalating
+  code_generation delegation walks the ladder, delegation-escalation-triggered.v1 fires, the higher-tier
+  inference RESPONSE arrives — but the escalation silently EXHAUSTS the ladder without ever emitting a
+  terminal. The ticket was reopened. #magic___^_^___line Root cause (environment-independent, proven by
+  a failing-then-green unit test in the orchestrator's single terminal builder _emit_terminal): the builder
+  computes total_savings_usd = cost.cost_savings_usd - prior_attempt_cost_usd. On an escalation that ran
+  a metered prior tier (e.g. cheap_cloud GLM) and then landed on a FAILED / escalation-exhausted terminal
+  whose final tier carries no premium counterfactual (cost.cost_savings_usd == 0.0), this subtraction
+  goes NEGATIVE. The builder then constructs the compat ModelTaskDelegatedEvent with that negative cost_savings_usd,
+  but the core wire DTO pins cost_savings_usd with ge=0.0, so construction raises ValidationError — crashing
+  the dispatcher with NO terminal emitted. That is the silent terminal loss the live run observed: an
+  escalated-to-ceiling delegation can never yield a passing terminal because the terminal is lost to a
+  validation error before it is ever published. #magic___^_^___line Fix (orchestrator emitter layer, root
+  cause — not a core constraint relaxation): clamp total_savings_usd to its honest floor of 0.0 in _emit_terminal.
+  Savings cannot be negative — an escalation that burned metered budget did not "save" negative money;
+  that spend is already captured in cost_usd. With the clamp, a valid terminal is ALWAYS emitted (completed
+  when the gate passes, a clean FAILED terminal otherwise) instead of being silently lost.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "tests"
-    description: "5 contract-invariant unit tests pin: tier_order ceiling is a cloud tier (not local);
-      ceiling resolves to a keyed cloud backend with a provider-correct (Gemini/GLM, never claude/anthropic/gpt)
-      model_name; ceiling max_tokens >= 16384 floor; judge combine clears required_bar 0.85 for an achievable
-      judge score AND a zero-judge clean answer stays sub-bar (judge band load-bearing); code_generation
-      task_model_override resolves to a real tier model."
-    command: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py
-      -q"
+    description: "Failing-then-green unit test drives the orchestrator handler over its per-step entrypoints
+      (routing decision -> inference response -> quality gate result) through a metered-prior-tier escalation
+      that exhausts the ladder. RED: terminal construction raised ValidationError on negative cost_savings_usd
+      (-0.0014 vs ge=0.0). GREEN after the clamp: exactly one terminal compat event is emitted with cost_savings_usd
+      >= 0, positive cost_usd (metered spend surfaced), and escalation_count >= 1."
+    command: "uv run pytest tests/unit/delegation/test_ceiling_quality_gate_wiring_omn13335.py -q"
   - kind: "ci"
-    description: "mypy --strict green on the new test; ruff format + check clean; full unit delegation
-      suite green (387 passed) — no cache interaction."
-    command: "uv run mypy tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py"
+    description: "mypy --strict green on the changed handler; ruff format + check clean; full unit delegation
+      suite green (391 passed, 1 skipped) — savings clamp introduces no regression."
+    command: "uv run mypy src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py
+      --strict"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-001"
-    description: "code_generation escalation ceiling resolves to a CLOUD tier (not 'local'): _tier_order_from_contract([cheap_cloud,
-      local, claude]) ends at 'claude', whose code_generation model (gemini-2.5-flash / backend cloud-gemini-pro)
-      is non-local and key-resolvable. Guards against a ceiling repointed back to a local or dead-cloud
-      backend (the OMN-13351 no_routable_backend failure mode)."
+    description: "An escalation that ran a metered prior tier and then exhausts the ladder emits a valid
+      terminal instead of crashing. The new test reproduces the live silent-terminal-loss (RED: ValidationError
+      on negative cost_savings_usd) and proves the clamp emits exactly one terminal compat event with
+      non-negative savings."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_code_generation_tier_order_ceiling_is_cloud_not_local
-          tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_code_generation_ceiling_resolves_to_keyed_cloud_backend
-          -q"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-001/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-001/command.yaml"
   - id: "dod-002"
-    description: "Ceiling backend output budget is adequate (max_tokens >= 16384 floor; deployed value
-      65536, OMN-13161) so a complete cloud code answer is not truncated below the bar."
+    description: "The metered escalation spend still surfaces as positive terminal cost_usd and the terminal
+      records escalation_count >= 1, so the discriminator row is real (clamp does not zero the cost or
+      hide the escalation)."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_code_generation_ceiling_max_tokens_adequate
-          -q"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-002/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-002/command.yaml"
   - id: "dod-003"
-    description: "OMN-13470 judge combine makes the bar reachable: required_bar=0.85, weights 0.6/0.4,
-      deterministic floor 1.0 -> combined clears 0.85 for a passing judge (breakeven judge 0.625), while
-      a zero-judge clean answer stays below the bar (judge band is not a rubber stamp). Pins the math
-      that converts a correct cloud answer into a quality_gate_passed=true terminal."
+    description: "No regression across the delegation cost/escalation suites (OMN-13396/13408/13470/13475/13535)
+      — the savings clamp only changes the previously-crashing negative path."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_judge_combine_lifts_codegen_answer_over_required_bar
-          -q"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-003/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-003/command.yaml"
   - id: "dod-mypy"
-    description: "mypy --strict green on the new test module."
+    description: "mypy --strict green on the changed orchestrator handler."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "uv run mypy tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py"
-  - id: "dod-occ-pr-3094"
-    description: "The onex_change_control OCC PR #3094 (base dev) carries this OMN-13335 contract plus
-      the four binding receipts (dod-001/dod-002/dod-003/dod-mypy) for omnimarket product PR #1402. Evidence-Source
-      on the product PR resolves to OCC#3094; the receipt bound to PR #3094 satisfies the OCC merge-eligibility
-      pr-binding requirement."
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-mypy/command.yaml && grep
+          -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-mypy/command.yaml"
+  - id: "dod-omnimarket-pr"
+    description: "omnimarket PR #1406 carries the root-cause fix, product-side ticket contract, and focused
+      proof receipts."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "test -f contracts/OMN-13335.yaml && test -d drift/dod_receipts/OMN-13335"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-omnimarket-pr/command.yaml
+          && grep -q '^pr_number: 1406$' drift/dod_receipts/OMN-13335/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: "onex_change_control PR #3101 carries the central contract and receipt evidence cited
+      by omnimarket PR #1406."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-occ-pr/command.yaml &&
+          grep -q '^pr_number: 3101$' drift/dod_receipts/OMN-13335/dod-occ-pr/command.yaml"
+  - id: "dod-deploy"
+    description: "Deploy assessment for the runtime handler change: omnimarket PR #1406 requires the normal
+      post-merge stability-test deployment and a fresh escalation live-close proof."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13335/dod-deploy/command.yaml &&
+          grep -qi 'deploy' drift/dod_receipts/OMN-13335/dod-deploy/command.yaml"
