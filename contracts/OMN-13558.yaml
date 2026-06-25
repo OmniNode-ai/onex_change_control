@@ -95,3 +95,26 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13558/dod-graph/command.yaml"
+  - id: "dod-otel"
+    description: >-
+      Third Wave-1 endpoint cluster of the same ticket (infra PR following the proven QDRANT/GRAPH template):
+      the OTEL_EXPORTER_OTLP_ENDPOINT OTLP tracing endpoint is migrated off the kernel's direct os.environ
+      read onto the canonical overlay seam. runtime/tracing_contract.yaml declares descriptor.otel_exporter_otlp_endpoint
+      = "${env.OTEL_EXPORTER_OTLP_ENDPOINT:}" (empty inline default), and a new runtime/tracing_contract_descriptor
+      module resolves it through omnibase_infra.runtime.overlay.contract_env_ref.expand_contract_env_refs
+      — the one sanctioned env-reading boundary. configure_tracing() now reads the resolved endpoint instead
+      of os.environ. Unlike the fail-closed QDRANT/GRAPH service endpoints, OTEL tracing is opt-in by
+      design (OMN-3811): an unset endpoint resolves to the empty string ("tracing disabled"), so the descriptor
+      returns "" rather than raising; it DOES raise on a structurally malformed contract (missing descriptor
+      / non-string field). OTEL_SERVICE_NAME / OTEL_TRACES_EXPORTER stay direct reads (operator-local
+      span-naming / toggle knobs, not service endpoints — Wave-2 config). Proven by tests/unit/runtime/test_tracing_contract_descriptor.py
+      (9 passed: resolution-equivalence across dev/stability/prod lane values, whitespace-strip parity,
+      empty-when-unset opt-in semantics, malformed-contract raises, end-to-end configure_tracing()==False
+      when unset) plus the existing tests/unit/runtime/test_tracing.py (7 passed). ruff + mypy --strict
+      clean; check-env-reads.sh gate exits 0 (no new os.environ reads added — this migration REMOVES the
+      endpoint env read).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13558/dod-otel/command.yaml"
