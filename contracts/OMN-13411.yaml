@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13411"
+title: "Release-identity gate for omnibase_core — block src/** merged onto a published version without
+  a bump"
+summary: >
+  Port the omnibase_infra release-identity gate (OMN-13412, scripts/check_release_identity.py) to omnibase_core,
+  the literal root-cause repo of OMN-13402 (A3) / OMN-13405 (A6). omnibase_core is a published PyPI package
+  that downstream repos pin and `uv sync` against; its dev HEAD carried unreleased modules (e.g. enum_correction_failure_axis,
+  OMN-13234) while still labelled 0.45.0 — the same version as the published wheel that LACKED them, so
+  a workspace build installed the released enum-LESS wheel and crash-looped on the missing import because
+  the version string could not disambiguate the two code states. scripts/check_release_identity.py fails
+  (exit 1) when packaged src/** changed since the PR base AND project.version is NOT strictly ahead of
+  the latest published v* tag; docs/tests/CI-only diffs are exempt; no-tag repos pass; a missing project.version
+  is a config error (exit 2). Wired as a standalone validator-release-identity.yml CI workflow (runs the
+  unit suite + the gate) matching the 14 existing validator-*.yml workflows, plus a check-release-identity
+  pre-commit hook. Making the workflow a branch-protection-required context is the deferred serial flip
+  (additive, verify-on-merge_group-first), per the no-reflexive-live-mutation rule.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Release-identity gate unit + live-smoke suite: ahead-passes, equals-fails (the OMN-13405 footgun),
+      behind-fails, exempt-diff, no-tag, config-error, src-prefix detection, explicit-changed-file override.
+    command: "uv run pytest tests/scripts/test_check_release_identity.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1334"
+    description: >
+      Binds omnibase_core PR #1334. The release-identity gate passes 9/9 unit + live-smoke tests; ruff
+      and mypy --strict are clean; pre-commit runs all hooks green including the new check-release-identity
+      gate, Verify Model-B rollup coverage (OMN-13574), and Enforce validator-requirements.yaml (OMN-9115).
+      Manual proof: a src/ change at the equal-to-published version exits 1 (the OMN-13405 footgun), and
+      the current 0.46.0 > published 0.45.0 strict run exits 0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13411/dod-omnibase-core-pr-1334/command.yaml
+          && grep -q '^pr_number: 1334$' drift/dod_receipts/OMN-13411/dod-omnibase-core-pr-1334/command.yaml
+          && grep -q '9 passed' drift/dod_receipts/OMN-13411/dod-omnibase-core-pr-1334/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: omnibase_core PR #1334 adds a CLI validator script, its test suite, a standalone
+      validator CI workflow, a pre-commit hook, and a T201 per-file-ignore. No live runtime deploy or
+      container mutation is performed; the change gates merge via CI only. No runtime lane is touched.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13411/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1334$' drift/dod_receipts/OMN-13411/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13411/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev-targeted evidence PR. This onex_change_control
+      PR carries the OMN-13411 contract and receipts onto dev, satisfying the receipt-to-PR binding required
+      by validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13411/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13411/dod-occ-pr-self/command.yaml"
