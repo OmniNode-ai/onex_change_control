@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13335"
+title: "code_generation escalation discriminator — contract-passability invariant guard"
+summary: >
+  OMN-13335 is the SEA customer-beta discriminator: a fresh code_generation delegation must reach a terminal
+  with escalation_count>=1 AND a non-local CLOUD model_name AND quality_gate_passed=true. Verify-first
+  ground-truthed the DEPLOYED routing config on origin/dev and found the discriminator is ALREADY structurally
+  passable: (1) code_generation escalation_policy.tier_order ends at the cloud ceiling tier `claude`,
+  repointed off the dead Anthropic cloud-sonnet to the resolvable Gemini cloud-gemini-pro / gemini-2.5-flash
+  (OMN-13351); (2) that ceiling backend carries max_tokens=65536 (OMN-13161 — no truncation); (3) the
+  OMN-13470 judge combine lifts a mechanically-incomplete-but-correct cloud answer over required_bar 0.85
+  (deterministic floor 1.0 -> combined = 0.6 + 0.4*judge clears 0.85 for judge >= 0.625). The dev lane
+  already produced the exact discriminator row (cid a66b6c6b: code_generation / escalation_count=2 / gemini-2.5-flash
+  / quality_gate_passed=t). The convergence's prior "0/4 passing" was measured on a STALE image predating
+  the judge combine. No contentious config tune was warranted (no tier reorder — GLM-first is the intentional
+  OMN-13380 cost posture and the ticket states "routing layer is correct"; no required_bar reduction —
+  0.85 is passable via the combine; no max_tokens bump — already 65536). This change adds a STATIC contract-invariant
+  guard (5 unit tests) that pins the three passability properties so a future config edit cannot silently
+  re-break the discriminator. Live stability-lane re-proof of the passing escalation is Phase 2 (separate
+  redeploy), which keeps OMN-13335 In Progress until that row lands.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "5 contract-invariant unit tests pin: tier_order ceiling is a cloud tier (not local);
+      ceiling resolves to a keyed cloud backend with a provider-correct (Gemini/GLM, never claude/anthropic/gpt)
+      model_name; ceiling max_tokens >= 16384 floor; judge combine clears required_bar 0.85 for an achievable
+      judge score AND a zero-judge clean answer stays sub-bar (judge band load-bearing); code_generation
+      task_model_override resolves to a real tier model."
+    command: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py
+      -q"
+  - kind: "ci"
+    description: "mypy --strict green on the new test; ruff format + check clean; full unit delegation
+      suite green (387 passed) — no cache interaction."
+    command: "uv run mypy tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "code_generation escalation ceiling resolves to a CLOUD tier (not 'local'): _tier_order_from_contract([cheap_cloud,
+      local, claude]) ends at 'claude', whose code_generation model (gemini-2.5-flash / backend cloud-gemini-pro)
+      is non-local and key-resolvable. Guards against a ceiling repointed back to a local or dead-cloud
+      backend (the OMN-13351 no_routable_backend failure mode)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_code_generation_tier_order_ceiling_is_cloud_not_local
+          tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_code_generation_ceiling_resolves_to_keyed_cloud_backend
+          -q"
+  - id: "dod-002"
+    description: "Ceiling backend output budget is adequate (max_tokens >= 16384 floor; deployed value
+      65536, OMN-13161) so a complete cloud code answer is not truncated below the bar."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_code_generation_ceiling_max_tokens_adequate
+          -q"
+  - id: "dod-003"
+    description: "OMN-13470 judge combine makes the bar reachable: required_bar=0.85, weights 0.6/0.4,
+      deterministic floor 1.0 -> combined clears 0.85 for a passing judge (breakeven judge 0.625), while
+      a zero-judge clean answer stays below the bar (judge band is not a rubber stamp). Pins the math
+      that converts a correct cloud answer into a quality_gate_passed=true terminal."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py::test_judge_combine_lifts_codegen_answer_over_required_bar
+          -q"
+  - id: "dod-mypy"
+    description: "mypy --strict green on the new test module."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run mypy tests/unit/delegation/test_code_generation_escalation_passability_omn13335.py"
+  - id: "dod-occ-pr-3094"
+    description: "The onex_change_control OCC PR #3094 (base dev) carries this OMN-13335 contract plus
+      the four binding receipts (dod-001/dod-002/dod-003/dod-mypy) for omnimarket product PR #1402. Evidence-Source
+      on the product PR resolves to OCC#3094; the receipt bound to PR #3094 satisfies the OCC merge-eligibility
+      pr-binding requirement."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13335.yaml && test -d drift/dod_receipts/OMN-13335"
