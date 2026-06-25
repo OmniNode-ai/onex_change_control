@@ -75,6 +75,17 @@ jobs:
               "created_at",
               "reason",
           }
+          # OMN-13424 single-use lifecycle markers. OPTIONAL (absent == not
+          # consumed); tolerated as extras so a consumed grant can carry its
+          # provenance before the prune job removes it.
+          OPTIONAL_FIELDS = {
+              "consumed",
+              "consumed_at",
+              "consumed_by_correlation_id",
+          }
+          UUID_RE = re.compile(
+              r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          )
 
           GRANT_ID_RE = re.compile(r"^grant-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
           IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -133,13 +144,31 @@ jobs:
 
               present = set(entry.keys())
               missing_fields = REQUIRED_FIELDS - present
-              extra_fields = present - REQUIRED_FIELDS
+              extra_fields = present - REQUIRED_FIELDS - OPTIONAL_FIELDS
               if missing_fields:
                   errors.append(f"{prefix}: missing required fields: {sorted(missing_fields)}")
               if extra_fields:
                   errors.append(f"{prefix}: unexpected fields: {sorted(extra_fields)}")
               if missing_fields or extra_fields:
                   continue
+
+              # OMN-13424 optional lifecycle marker types.
+              if "consumed" in entry and not isinstance(entry["consumed"], bool):
+                  errors.append(
+                      f"{prefix}: consumed must be a bool, got: {entry['consumed']!r}"
+                  )
+              if "consumed_at" in entry:
+                  ca = entry["consumed_at"]
+                  if not isinstance(ca, str) or not ISO8601_RE.match(ca):
+                      errors.append(
+                          f"{prefix}: consumed_at must be ISO-8601 UTC datetime, got: {ca!r}"
+                      )
+              if "consumed_by_correlation_id" in entry:
+                  cc = entry["consumed_by_correlation_id"]
+                  if not isinstance(cc, str) or not UUID_RE.match(cc):
+                      errors.append(
+                          f"{prefix}: consumed_by_correlation_id must be a UUID, got: {cc!r}"
+                      )
 
               gid = entry["grant_id"]
               if not isinstance(gid, str) or not GRANT_ID_RE.match(gid):
@@ -179,6 +208,17 @@ jobs:
                       errors.append(
                           f"{prefix}: {str_field} must be a non-empty string, got: {val!r}"
                       )
+
+              # OMN-13424 lint/prune signal: a grant past its absolute expiry MUST NOT
+              # linger in the trust anchor — a single-use, time-bound grant that has
+              # expired is dead weight that could accumulate or be replay-probed. The
+              # resolver's prune_expired drops it; this CI job FAILs so the prune PR is
+              # required before the anchor can land/stay green.
+              if expires is not None and expires < datetime.now(timezone.utc):
+                  errors.append(
+                      f"{prefix}: grant is EXPIRED (expires_at={entry['expires_at']!r} is in "
+                      f"the past) — prune it from {GRANT_FILE} (OMN-13424: at rest entries: [])"
+                  )
 
           if errors:
               print(f"FAIL: {GRANT_FILE} has {len(errors)} schema violation(s):")

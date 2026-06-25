@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13424"
+title: "feat(OMN-13424): grant lifecycle — single-use consume + expire + prune (resolver + lint/CI)"
+summary: >-
+  Phase 2.3 of the prod-promotion authorization gate (epic OMN-13410, parent OMN-13418), shipped on omnimarket
+  source PR #1422. Makes a prod-promotion grant single-use and time-bound so a stale grant cannot be replayed
+  against a future promotion and grants cannot accumulate. omnimarket: the grant resolver (OMN-13439)
+  gains a pure prune_expired() helper that drops expired (evaluated_at > expires_at) and consumed entries
+  from the grant trust anchor and returns ModelPruneResult with the dropped grant_ids plus a had_expired
+  lint signal (zero I/O); ModelProdPromotionGrant gains optional consumed_at + consumed_by_correlation_id
+  single-use markers carried through by _materialize_grant. A consumed grant already resolves to CONSUMED
+  (grant None — treated as absent, no replay) and an expired grant to EXPIRED (grant None), both fail-closed.
+  onex_change_control (this PR): the dedicated validate-prod-promotion-grants workflow now tolerates the
+  optional consumed* lifecycle markers as extra fields, type-checks them, and FAILs if any EXPIRED entry
+  remains in grants/prod_promotion_grants.yaml (the lint/prune job — at rest the file is entries: []).
+  onex_change_control keeps ZERO Python import on omnimarket — the resolver parses the grant YAML directly.
+  This OCC PR carries the central contract consumed by the omnimarket PR #1422 Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Resolver lifecycle unit tests written and green (new TestGrantSingleUseLifecycle in tests/test_golden_chain_prod_promotion_grant_resolver_effect.py,
+      8 cases). Required cases present and passing: consumed grant -> treated as absent (CONSUMED, grant
+      None, no replay); expired grant -> rejected + pruned (prune_expired drops it, had_expired True,
+      EXPIRED resolution leaves grant None); fresh unconsumed grant -> resolves + is kept by prune; consumed:true
+      precedence over carried provenance; consumed-only prune does not trip the expired lint signal; at-rest
+      empty prune is a no-op; corrupt anchor raises (not silent). consumed_at + consumed_by_correlation_id
+      carry through to the materialized grant DTO. Shipped on omnimarket PR #1422.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13424/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Static quality gates green on the omnimarket worktree: uv run ruff format/check src/ tests/ clean;
+      uv run mypy src/omnimarket/...grant_resolver.py src/omnimarket/events/runtime_deployment.py --strict
+      succeeds; pre-commit run on the changed files passes every ticket hook. The full omnimarket suite
+      ran with no -k filter (uv run pytest tests/ -m "not kafka") and was green: 8859 passed, 63 skipped,
+      0 failed. onex_change_control keeps ZERO Python import (the resolver parses the grant YAML directly).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13424/dod-002/command.yaml"
+  - id: "dod-lint"
+    description: >-
+      The dedicated validate-prod-promotion-grants CI job is the lint/prune gate: it tolerates the optional
+      consumed* lifecycle markers, type-checks consumed (bool) / consumed_at (ISO-8601 UTC) / consumed_by_correlation_id
+      (UUID), and FAILs if any entry's expires_at is in the past — forcing the expired entry to be pruned
+      so at rest the anchor is entries: []. Verified locally against fixtures: empty file PASS; fresh+markers
+      PASS; expired entry FAIL; bad-UUID marker FAIL.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13424/dod-lint/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is pure read-only resolver logic + an optional-field model extension
+      + a CI lint tightening, with NO runtime deploy, NO migration, and NO REST surface. It only TIGHTENS
+      the prod-promotion path (single-use: a consumed/expired grant is pruned and never replayed; the
+      lint job blocks a stale anchor from staying green). It cannot loosen any existing gate. No live
+      lane is mutated by this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13424/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13424.yaml consumed
+      by the omnimarket PR #1422 Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves
+      the contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13424\"$' contracts/OMN-13424.yaml"
