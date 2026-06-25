@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13588"
+title: "RH-6: Integration coverage — prove PR-scoped vs repo-baseline lane split"
+summary: >-
+  Acceptance proof for the merge-sweep repo-health repair lane (epic OMN-13316). Adds three focused integration
+  tests plus one cross-scenario invariant over the real orchestrator -> classify -> repair -> reducer
+  chain in omnimarket. Only the outermost I/O boundaries (event bus and Linear client) are stubbed; every
+  node handler under test (RH-1 classify COMPUTE, RH-2 repair EFFECT, RH-3 reducer folds, RH-4 orchestrator
+  fan-out) runs its real logic. Scenario 1: a PR-introduced failure (a failing path in the PR changed-file
+  set) classifies PR_SCOPED, the orchestrator emits repo-health-classify but NOT repo-health-repair-start,
+  no repair task is emitted, and the reducer terminal state records pr_scoped_count=1 with repair_tasks_emitted=0.
+  Scenario 2: a pre-existing repo-baseline hook failure (a failing path not in the PR set, known-failing
+  on the dev baseline) classifies REPO_BASELINE, the orchestrator emits BOTH classify and repair-start,
+  the repair EFFECT emits exactly one repair task, and the reducer terminal state records repo_baseline_count=1
+  with repair_tasks_emitted=1 and one repair_task_ref. Scenario 3: a clean PR fires neither command and
+  the reducer repo_health sub-record stays all-zero. A fourth invariant test proves the repo_health fold
+  never perturbs the PR-lane FSM fields, so the terminal reducer state records both lanes distinctly.
+  This is a tests-only PR: it ships no runtime contract, topic, or migration change and performs no live
+  deploy or runtime restart.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Three integration tests plus one invariant test in tests/test_repo_health_lane_split_integration.py
+      assert the emitted topics and the terminal reducer state per scenario (PR_SCOPED stays in PR lane;
+      REPO_BASELINE routes to the repair lane and emits one repair task; clean PR fires neither lane).
+    command: "uv run pytest tests/test_repo_health_lane_split_integration.py -q -m 'not kafka'"
+  - kind: "ci"
+    description: >-
+      ruff format + ruff check + mypy --strict clean on the new test file; full pre-commit run on the
+      changed file passes; the full omnimarket pytest suite (not kafka) is green.
+    command: "uv run mypy tests/test_repo_health_lane_split_integration.py --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      The omnimarket product PR #1421 adds tests/test_repo_health_lane_split_integration.py with the RH-6
+      lane-split integration coverage. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13588/dod-omnimarket-pr/command.yaml
+          && grep -q 'e1703a3b0787e391cfce7a39ec3fd94fb6146f39' drift/dod_receipts/OMN-13588/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13588; the omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against the OCC PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13588.yaml"
+  - id: "dod-integration-tests"
+    description: >-
+      Test proof: the three lane-split scenarios plus the lane-distinctness invariant pass (4 passed).
+      The full omnimarket pytest suite (not kafka) is green at 8855 passed, 63 skipped.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13588/dod-integration-tests/command.yaml
+          && grep -q 'e1703a3b0787e391cfce7a39ec3fd94fb6146f39' drift/dod_receipts/OMN-13588/dod-integration-tests/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR adds a single test module under tests/. It ships no runtime contract,
+      topic, or migration change and requires no image rebuild. No live deploy or runtime restart is performed
+      by merging this PR. The DoD's live readback (re-running merge_sweep against a real broken PR on
+      dev) is deferred to the operator-gated dev-lane run and is NOT claimed here.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13588/dod-deploy-assessment/command.yaml
+          && grep -q 'no live deploy' drift/dod_receipts/OMN-13588/dod-deploy-assessment/command.yaml"
