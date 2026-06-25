@@ -1,0 +1,50 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13598"
+title: "fix(delegation): savings projection writes ZERO rows — deployed SavingsProjectionRunner ignores
+  task-delegated.v1, savings_estimates never materializes"
+summary: >-
+  Central evidence for omnimarket PR #1416, which fixes the deployed SavingsProjectionRunner (handler_savings.py)
+  so it materializes savings_estimates rows from the canonical onex.evt.omniclaude.task-delegated.v1 SOURCE
+  stream. Previously task-delegated.v1 events fell through to the savings-estimated path, which requires
+  session_id/model_local/cost fields absent from that payload, causing every event to be DLQ'd as malformed
+  and savings_estimates to write zero rows. The from_task_delegated_event logic (OMN-12494) existed only
+  in the non-deployed handler. Fix: add _project_task_delegated_savings to SavingsProjectionRunner with
+  _topic_delegated wired from the contract subscribe_topics. Six new unit tests prove materialization
+  through the deployed handler (TDD -- written failing first). This contract supplies the Receipt-Gate
+  and deploy-gate evidence cited by the product PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1416"
+    description: >-
+      omnimarket PR #1416 adds _project_task_delegated_savings to SavingsProjectionRunner and six unit
+      tests proving materialization through the deployed catalog handler. Full suite: 8786 passed, 62
+      skipped. ruff + mypy --strict clean.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13598/dod-omnimarket-pr-1416/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Evidence-Source for OMN-13598 and is cited by omnimarket PR #1416.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13598.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: omnimarket PR #1416 fixes a handler-only routing bug in the deployed SavingsProjectionRunner.
+      The fix is purely a code change (no new migration, no topic/contract change). Runtime effect: after
+      redeploy of the omnimarket-projection-savings container, live task-delegated.v1 events with a premium
+      counterfactual will upsert savings_estimates rows instead of being DLQ'd as malformed. Post-merge
+      redeploy of the projection-savings container on the dev lane is the operator verification step.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13598/dod-deploy-assessment/command.yaml"
