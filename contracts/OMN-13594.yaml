@@ -20,7 +20,10 @@ summary: >-
   postgres+valkey up first, forward-migration and intelligence-migration both exited 0, runtime/effects/projection-api
   healthy on the already-built dev images (omninode-runtime 9976997ca80c, runtime-effects e06473a1cdef,
   projection-api df3841def184). This OCC contract is the Receipt-Gate Evidence-Source the omnibase_infra
-  product PR cites. No runtime deploy is performed by this PR itself.
+  product PR cites. The PR was later restamped at head 757300323b9baa93cc3e0731cbcd82fac4aa36c5 after
+  adding a CI-only node-migration-sync workflow hardening: the required gate's infra checkout now uses
+  a shallow fetch because the check only needs the working tree and repeated full-history fetches timed
+  out before the sync script ran. No runtime deploy is performed by this PR itself.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -44,8 +47,9 @@ dod_evidence:
   - id: "dod-infra-pr"
     description: >-
       The omnibase_infra product PR carries ensure_core_infra_ready() + CORE_INFRA_SERVICES + the main()
-      wiring + the 4 new cold-start regression tests. It cites Evidence-Source: OCC#<this-pr> (post-merge
-      OCC-main SHA).
+      wiring + the 4 new cold-start regression tests, plus the CI-only shallow checkout repair for the
+      node-migration-sync required gate. It cites Evidence-Source: OCC#<this-pr> (post-merge OCC-main
+      SHA).
     source: "manual"
     checks:
       - check_type: "command"
@@ -72,10 +76,32 @@ dod_evidence:
         check_value: "test -f contracts/OMN-13594.yaml"
   - id: "dod-deploy-assessment"
     description: >-
-      Deploy assessment: this PR edits an operational deploy script + its static regression tests only.
-      It ships no runtime contract/topic/migration change and requires no image rebuild. No live deploy
-      or runtime restart is performed by merging this PR.
+      Deploy assessment: this PR edits an operational deploy script, its static regression tests, and
+      the CI-only node-migration-sync workflow checkout depth. It ships no runtime contract/topic/migration
+      change and requires no image rebuild. No live deploy or runtime restart is performed by merging
+      this PR.
     source: "manual"
     checks:
       - check_type: "command"
         check_value: "test -f contracts/OMN-13594.yaml"
+  - id: "dod-node-migration-sync-checkout"
+    description: >-
+      The node-migration-sync required gate had repeatedly failed before executing its sync logic because
+      actions/checkout attempted a full-history fetch of omnibase_infra and timed out/canceled on the
+      self-hosted runner. The gate only needs the PR working tree plus a sparse omnimarket sibling checkout,
+      so the infra checkout was narrowed to fetch-depth: 1. Local vendor sync still passes, and the fresh
+      CI node-migration-sync job passed on the restamped product head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13594/dod-node-migration-sync-checkout/command.yaml
+          && grep -q 'fetch-depth: 1' drift/dod_receipts/OMN-13594/dod-node-migration-sync-checkout/command.yaml"
+  - id: "dod-occ-pr-3116"
+    description: >-
+      onex_change_control PR #3116 carries the OMN-13594 restamp evidence cited by omnibase_infra PR #2107
+      after the node-migration-sync checkout repair.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13594/dod-occ-pr-3116/command.yaml
+          && grep -q '^pr_number: 3116$' drift/dod_receipts/OMN-13594/dod-occ-pr-3116/command.yaml"
