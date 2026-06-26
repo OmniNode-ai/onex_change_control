@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13560"
+title: "env→contract migration (omniclaude Wave 1): diagnostics service-endpoint reads → overlay descriptor
+  seam"
+summary: >-
+  Wave-1 endpoint→overlay migration (epic OMN-13556). Moves the three scattered direct os.environ.get(...)
+  service-endpoint reads in omniclaude src/omniclaude/lib/utils/diagnostics.py (INTELLIGENCE_SERVICE_URL,
+  MAIN_SERVER_URL, MCP_SERVER_URL — the MCP read chaining the legacy ONEX_MCP_URL / ARCHON_MCP_URL aliases,
+  5 reads total) off raw env onto the canonical overlay seam: contracts/contract_omniclaude_runtime.yaml
+  declares the endpoints under descriptor.* with the "${env.VAR}" overlay convention, and a new lib/utils/diagnostics_endpoint_descriptor.py
+  resolves each value via the ${env.VAR} overlay expander — the single sanctioned os.environ boundary
+  in the module (AST-guarded by a test) mirroring the canonical omnibase_infra.runtime.overlay.contract_env_ref.expand_contract_env_refs
+  semantics (a local copy is used because the pinned omnibase_infra v0.38.0 does not yet vendor that helper).
+  Two accessors: the strict accessor fails closed (unset/blank raises rather than silently defaulting
+  to localhost — the canonical fail-closed seam); the non-strict accessor is fail-soft (empty when unset)
+  so the fail-soft diagnostics health-check tool never crashes on import. diagnostics.py keeps its module-level
+  constant names (preserving the circular-import regression-test contract) but resolves them through the
+  descriptor; the descriptor is import-safe (no config.settings import) so the original circular import
+  the env reads were written to avoid stays broken. All 5 os.environ endpoint reads are removed, so the
+  URL Authority Gate stays green with FEWER grandfathered reads (the 5 diagnostics.py url_authority_baseline
+  fingerprints are now stale + removable in a core burn-down follow-up; the gate passes regardless because
+  baselines are shrink-only). KAFKA_BOOTSTRAP_SERVERS / DB DSN / QDRANT / MEMGRAPH endpoint clusters,
+  the Bifrost-owned LLM_*_URL family (OMN-12803/12815), and the Wave-2 config + Wave-3 secret reads are
+  DEFERRED to follow-ups. This OCC PR carries the central contract consumed by the omniclaude PR Receipt
+  Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The migrated overlay seam resolves each diagnostics service endpoint identically to the pre-migration
+      direct os.environ.get(...) reads across dev / stability-test / prod lane values, preserves the MCP
+      legacy alias chain (MCP_SERVER_URL -> ONEX_MCP_URL -> ARCHON_MCP_URL), and fails closed (the strict
+      accessor raises) when the endpoint is unset or blank — no silent localhost fallback. The non-strict
+      accessor stays fail-soft (empty when unset) so the diagnostics tool never crashes on import. Proven
+      by the focused resolution-equivalence suite tests/unit/lib/utils/test_diagnostics_endpoint_descriptor.py
+      (22 passed) plus the lib/utils, runtime lifecycle, env-health-check and context-injection consumer
+      suites (109 passed in the scoped run; 10997 passed across the full non-integration suite).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13560/dod-001/command.yaml"
+  - id: "dod-gates"
+    description: >-
+      Both REQUIRED ratchet gates stay green with FEWER grandfathered endpoint reads: the URL Authority
+      Gate (check-url-authority) reports 0 new violations and the 5 diagnostics.py url_authority_baseline
+      entries are no longer matched (the reads were removed); the Canonical Inference Gate (check-canonical-inference)
+      passes; the No localhost/default env fallbacks gate (OMN-10658) passes; the full pre-commit run
+      on the changed files is clean (every hook Passed or Skipped, none Failed); ruff format + ruff check
+      pass; CI mypy is green (the lib/ path is CI-mypy-excluded, the new descriptor module is independently
+      mypy-clean). This migration REMOVES env reads, so the diff-based gates cannot regress.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13560/dod-gates/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this PR is a config-resolution refactor — it changes WHERE the diagnostics
+      service endpoints are read (overlay descriptor instead of raw env), not the deployed runtime topology,
+      Dockerfile, or any Kafka topic. The resolved value is unchanged (resolution-equivalence proven in
+      dod-001), and the affected module is a developer-facing diagnostics/health-check tool, so no omninode-runtime
+      image rebuild or live .201 deploy is required. A live prod/stability deploy is explicitly OUT OF
+      SCOPE for this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'deploy' drift/dod_receipts/OMN-13560/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by the omniclaude
+      PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13560.yaml
+      is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13560\"$' contracts/OMN-13560.yaml"
