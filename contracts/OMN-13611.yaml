@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13611"
+title: "WS-C Phase 2.1: Build omnimarket/adapters/adapter_adk_invoke.py — invocation-only (no provider/model/tier
+  selection)"
+summary: >
+  Wave-1 of the SEA -> canonical migration (epic OMN-13604). New invocation-only ADK adapter in omnimarket
+  (src/omnimarket/adapters/adk/adapter_adk_invoke.py). The adapter owns INVOCATION ONLY: it binds an already-routed
+  ModelInvocationCommand to the canonical remote-agent invoke transport and performs NO provider/model/tier/escalation
+  selection, holds no routing logic, and overrides no delegation decision. Routing authority stays in
+  node_delegation_routing_reducer / node_delegation_orchestrator / model-selection authority. Canonical
+  invoke surface resolved (not assumed): there is NO node_remote_agent_invoke_effect directory in omnimarket;
+  the invoke surface is node_delegation_orchestrator publishing the typed InvocationCommand event to onex.cmd.omnibase-infra.remote-agent-invoke.v1
+  (its contract.yaml published_events + externally_consumed_topics), consumed by node_remote_agent_invoke_effect
+  in omnibase_infra (HandlerA2ATask). The adapter resolves the invoke topic FROM that orchestrator contract
+  (single source of truth, no topic literal recorded in the adapter config). ADK O4 probe (google-adk
+  1.33.0) recorded in the PR body BEFORE implementation: SUPPORTED — Runner accepts constructor credential_service,
+  LlmAgent.model is constructor-injected (str | BaseLlm), Gemini exposes base_url; so credentials are
+  declared by secret_ref resolved at the effect boundary and the adapter reads no GOOGLE_*/ADK_* env.
+  Strongly typed frozen models (UUID, extra=forbid); endpoint from contract+overlay deep-merge, never
+  env. No topic schema, envelope, or contract-API change; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD: failing contract-derived adapter tests written before implementation, then made to pass. The
+      suite proves contract-topic resolution from the delegation orchestrator contract (fail-loud on missing
+      event), contract+overlay deep-merge of the runner binding, dispatch construction copying the routed
+      command verbatim, and the load-bearing authority-boundary checks: no routing/selection import, no
+      selection/scoring callable, MODEL-kind rejected, credential-by-secret_ref, and zero GOOGLE_*/ADK_*
+      env reads (AST-scanned).
+    command: "uv run pytest tests/unit/adapters/adk/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1438"
+    description: >
+      omnimarket PR #1438 adds the canonical invocation-only ADK adapter (src/omnimarket/adapters/adk/adapter_adk_invoke.py
+      + models.py + __init__.py), the contract config src/omnimarket/configs/adk_invoke.yaml (agent_protocol
+      + ADK runner binding; credential by secret_ref; endpoint overlayable), and 10 unit tests. Evidence
+      anchor: omnimarket head commit 02f692caa892d990bd2757b39383e9c273f8cfb6.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13611/dod-omnimarket-pr-1438/command.yaml
+          && grep -q '^pr_number: 1438$' drift/dod_receipts/OMN-13611/dod-omnimarket-pr-1438/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13611/dod-omnimarket-pr-1438/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a new adapter module + typed-model + contract-config addition in omnimarket
+      with no topic schema, envelope, or contract-API change and no live-lane mutation. The adapter builds
+      a typed dispatch envelope from an already-routed command; it performs no network I/O and no runtime-lane
+      mutation. No live deploy is performed by this PR. If the delegation->invoke path is later exercised
+      on a live lane, a standard stability-test image rebuild verifies the adapter against the live event
+      stream. The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13611/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1438$' drift/dod_receipts/OMN-13611/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy is performed' drift/dod_receipts/OMN-13611/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13611 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13611/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13611/dod-occ-pr-self/command.yaml"
