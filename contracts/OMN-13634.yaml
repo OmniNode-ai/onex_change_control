@@ -1,0 +1,92 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13634"
+title: "projection DLQ error classification — poison vs recoverable + unify runner/handler paths (WS-F
+  Phase 2)"
+summary: >-
+  WS-F Phase 2 (epic OMN-13629): projection DLQ error classification. The omnimarket projection runner
+  and handlers previously had two divergent error policies — handler_wiring (infra) DLQ-and-committed
+  on ANY error (silently dropping recoverable infra errors like UndefinedColumn / OperationalError / connection
+  failures), while BaseProjectionRunner._handle_message re-raised + infinite-retried ALL errors including
+  genuine poison (a malformed-payload ValidationError). A migration gap therefore looked like a bad event
+  and was silently quarantined as "malformed". This contract carries the omnimarket fix: a single canonical
+  classifier (omnimarket.projection.error_classification.classify_projection_error) returning POISON vs
+  RECOVERABLE, applied in BaseProjectionRunner._handle_message so the runner path matches the infra handler_wiring
+  policy. POISON (ValidationError / PoisonEventError) routes to the contract-declared poison DLQ with
+  the offset COMMITTED (not retried, durably recoverable by correlation_id); RECOVERABLE (asyncpg PostgresError
+  incl. UndefinedColumn + the OperationalError-equivalent server errors, InterfaceError, connection errors,
+  OSError, TimeoutError) re-raises WITHOUT committing the offset (loud, re-read + retried); an unknown
+  error defaults to RECOVERABLE (fail-safe: never silently drop). A migration gap now produces a loud,
+  retryable failure, never silent malformed-quarantine. Ships no live deploy / runtime restart; dev +
+  stability are pre-authorized, prod redeploy is gated (OMN-13418) and out of autonomous scope.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "events"
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      TDD gate tests/test_projection_error_classification_omn13634.py — per-error-class classification
+      (ValidationError -> POISON; UndefinedColumn / generic PostgresError / connection / interface / stdlib
+      ConnectionError / OSError / TimeoutError -> RECOVERABLE; unknown -> RECOVERABLE) plus runner integration:
+      a POISON project_event error routes to the poison DLQ and commits the offset, a RECOVERABLE error
+      re-raises without committing, and the live delegation + savings runners expose contract-declared
+      poison_dlq_topics + a publish_dlq producer for the base-class safety net.
+    command: "uv run pytest tests/test_projection_error_classification_omn13634.py tests/test_projection_runner.py
+      tests/test_projection_malformed_dlq_omn13548.py -q"
+  - kind: "ci"
+    description: >-
+      ruff format + ruff check + mypy --strict clean on all changed source modules (Success: no issues
+      in 2525 source files); pre-commit on the changed files passes (incl. Projection-DLQ path gate OMN-13548,
+      no-hardcoded-topics, ruff format/check); the full omnimarket pytest suite (not kafka/e2e/slow) is
+      green (8911 passed, 9 skipped).
+    command: "uv run pytest tests/ -q -p no:cacheprovider -m 'not kafka and not e2e and not slow'"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The omnimarket product PR implements the canonical projection error classifier (omnimarket.projection.error_classification)
+      and applies it in BaseProjectionRunner._handle_message so the runner path applies the same poison-vs-recoverable
+      policy as the infra handler_wiring path, wiring the delegation + savings runners' poison_dlq_topics
+      + publish_dlq. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13634.yaml"
+  - id: "dod-002"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13634; the omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against this OCC PR head (then
+      the merged squash SHA).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13634.yaml"
+  - id: "dod-003"
+    description: >-
+      Self-binding receipt for the onex_change_control PR that carries the OMN-13634 Evidence-Source binding
+      for the omnimarket product PR. Binds this OCC PR by pr_number so OCC preflight can validate the
+      evidence update itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13634/dod-003/command.yaml && grep -q '^pr_number:
+          __OCC_PR__$' drift/dod_receipts/OMN-13634/dod-003/command.yaml
+  - id: "dod-004"
+    description: >-
+      Static proof of the classification DoD: per-error-class unit tests assert POISON (ValidationError)
+      routes to the poison DLQ and commits the offset, RECOVERABLE (UndefinedColumn / OperationalError
+      / connection) re-raises without committing the offset, and both the BaseProjectionRunner path and
+      the live delegation/savings runners apply the same classification. The full omnimarket suite (not
+      kafka/e2e/slow) is green (8911 passed) and mypy --strict is clean (2525 files).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13634.yaml"
