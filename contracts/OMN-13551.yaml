@@ -1,0 +1,93 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13551"
+title: "stop ~15 non-delegation handler-prep boot quarantines (helper-misclassification + intelligence
+  wrapper repoint)"
+summary: >-
+  The 2026-06-24 dev-HEAD redeploy booted HEALTHY but logged ~17 non-fatal handler-prep ValidationError
+  / quarantine warnings on non-delegation nodes (node_dispatch_worker, node_environment_health_scanner,
+  node_intelligence_orchestrator, node_platform_readiness, node_process_watchdog, node_routing_policy_engine,
+  node_session_post_mortem, and three more). Root cause: each contract's handler_routing.handlers list
+  declared internal helper functions/classes (per-domain probers, adapter readers, dispatch-record writers,
+  pure routing-policy helper functions, check-target classes) as if they were runtime-dispatched message
+  handlers. The runtime's ServiceHandlerResolver tries to instantiate each declared handler at boot with
+  only the three known-injectable params (event_bus, container, ownership_query); a helper requiring any
+  other default-less param (e.g. socket_path, log_dir, record, ctx, intent) cannot be resolved, so the
+  resolver raises TypeError and the runtime quarantines-and-continues. These helpers are in fact called
+  directly by the node's real KEEP handler, never bus-dispatched. The fix removes the 13 misclassified
+  helper entries (each node retains its real handler) and repoints node_intelligence_orchestrator's two
+  entries from the bare handle_receive_intent(intent) / handle_receive_intents(intents) functions to the
+  already-existing envelope-shaped zero-arg wrapper classes HandlerReceiveIntent / HandlerReceiveIntents.
+  A new contract guard test (tests/test_handler_routing_boot_resolvable.py) asserts every handler_routing
+  entry across all 329 contracts is boot-resolvable, preventing regression. The reproduced live quarantine
+  set dropped from 18 to 3; the 3 remaining are genuinely-shaped handlers needing an unwired protocol-typed
+  external dependency (project tracker / generated-tool registry / task dispatcher) and are carved out
+  to OMN-13603, explicitly enumerated in a documented allowlist guarded by a second test. This PR ships
+  no runtime contract/topic/migration change beyond editing handler_routing lists and performs no live
+  deploy or runtime restart.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      tests/test_handler_routing_boot_resolvable.py asserts every handler_routing target across all contracts
+      is boot-resolvable (zero non-injectable required ctor params), except a documented 3-entry carve-out
+      (OMN-13603). A second test guards the allowlist against staleness. Both pass; the reproduction script
+      confirms the live quarantine set dropped from 18 to 3.
+    command: "uv run pytest tests/test_handler_routing_boot_resolvable.py -q"
+  - kind: "ci"
+    description: >-
+      ruff format + ruff check + mypy --strict clean on the changed test files (no src/ python changed
+      — contracts are YAML); full pre-commit run on the changed files passes (incl. operation_match handler
+      gate + golden-chain coverage gate); the full omnimarket pytest suite (not kafka) is green (8881
+      passed, 46 skipped).
+    command: "uv run pytest tests/ -q -p no:cacheprovider -m 'not kafka'"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      The omnimarket product PR removes the 13 helper-misclassified handler_routing entries across 6 nodes
+      and repoints node_intelligence_orchestrator's 2 entries at the envelope-shaped wrapper classes HandlerReceiveIntent
+      / HandlerReceiveIntents. It cites Evidence-Source: OCC#<this-pr>. Product HEAD SHA 71456f987cf50cc225c7f43b4a84a8871db12aee.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13551.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13551; the omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against the OCC PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13551.yaml"
+  - id: "dod-boot-resolvable-guard"
+    description: >-
+      Static proof of the DoD (0 handler-prep quarantine warnings for the named nodes): the new guard
+      test asserts every handler_routing entry is boot-resolvable. Before the fix it failed on 15 entries;
+      after the fix it passes with only the documented 3-entry OMN-13603 carve-out remaining. The reproduction
+      script (applying the resolver's required-param logic to all 329 contracts) confirms the live quarantine
+      count dropped from 18 to 3.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13551.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR edits only handler_routing.handlers lists in 7 node contract.yaml files
+      — it removes internal-helper entries that were never runtime-dispatched and repoints two entries
+      at already-existing wrapper classes. It adds no new node, topic, migration, input/output model,
+      or published-event surface, so it requires no image rebuild and changes no deployed runtime behavior
+      (the boot quarantine warnings simply stop). No live deploy or runtime restart is performed by merging
+      this PR. The DoD's live readback (a dev-HEAD redeploy boot log showing 0 handler-prep quarantine
+      warnings for the named nodes, verifier != runner) is deferred to the operator-gated dev-lane redeploy/reprove
+      run and is NOT claimed here.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13551/dod-deploy-assessment/command.yaml
+          && grep -q 'no live deploy' drift/dod_receipts/OMN-13551/dod-deploy-assessment/command.yaml"
