@@ -1,0 +1,82 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13621"
+title: "WS-C Phase 5.2: Route usage_normalizer.py + pricing to canonical omnimarket cost surface"
+summary: >
+  Wave-1 of the SEA -> canonical migration (epic OMN-13604). Routes the SEA hackathon repo's token-usage
+  normalization + per-model pricing into a canonical, contract-sourced omnimarket cost surface (omnimarket.cost:
+  usage_normalizer.py, cost_pricing.py + cost_pricing.yaml), and wires generation cost to it. The generation
+  consumer's hardcoded Gemini per-token constants are removed; _calculate_cost now resolves the priced
+  entry for (provider, model_id) from the cost_pricing.yaml contract and prices the measured tokens through
+  it (local/zero-marginal -> 0.0; cloud -> contract rate; unknown -> explicit UNKNOWN -> 0.0, fail-soft).
+  The resulting cost_inference_usd flows via the node-generation-completed.v1 terminal -> node_projection_delegation
+  -> generation_events.cost_inference_usd, queryable at GET /projection/onex.evt.omnimarket.node-generation-completed.v1
+  -- the OMN-13408 delegation-cost projection-write pattern extended to generation cost. SEA src/pipeline/usage_normalizer.py
+  is DELETED after parity (no shim; folded into SEA models.py, which has no omnimarket dependency). Architecture:
+  pricing sourced from the YAML contract, not hardcoded; canonical EnumUsageSource / EnumCostBasis enums
+  reused (not redeclared); strongly typed frozen models. No topic schema, envelope, or contract-API change;
+  no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD: 29 failing tests in tests/unit/cost/ written before the modules existed, then made to pass.
+      Coverage: normalization-mapping parity (openai-compat / gemini-native / char-length estimate / unknown
+      / negative + bool token rejection), contract-sourced pricing (load / validate / lookup / calculate
+      / deterministic hash), and the DoD acceptance proof that a contract-priced generation cost lands
+      in the generation_events projection row (cost_inference_usd > 0, equal to the contract price).
+    command: "uv run pytest tests/unit/cost/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1439"
+    description: >
+      omnimarket PR #1439 adds the canonical omnimarket.cost surface (usage_normalizer.py, cost_pricing.py
+      + cost_pricing.yaml) and wires node_generation_consumer._calculate_cost to source pricing from the
+      contract, removing the hardcoded _GEMINI_* constants. cost_inference_usd lands in the canonical
+      cost projection (generation_events). Evidence anchor: omnimarket head commit 875ef3078bd70c423193c2707392bea7018d1335.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13621/dod-omnimarket-pr-1439/command.yaml
+          && grep -q '^pr_number: 1439$' drift/dod_receipts/OMN-13621/dod-omnimarket-pr-1439/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13621/dod-omnimarket-pr-1439/command.yaml"
+  - id: "dod-sea-pr-238"
+    description: >
+      onex-self-extending-agent PR #238 DELETES src/pipeline/usage_normalizer.py (no shim) after the canonical
+      omnimarket parity is proven, folding ModelUsageResult + normalize_usage into SEA models.py and updating
+      the consumer.py + test importers. mypy --strict + full unit suite green. Evidence anchor: SEA head
+      commit 98ee1f3b87fbc6a39efffb42abf4ff0f2e7a0ff3.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13621/dod-sea-pr-238/command.yaml
+          && grep -q '^pr_number: 238$' drift/dod_receipts/OMN-13621/dod-sea-pr-238/command.yaml && grep
+          -q 'passed' drift/dod_receipts/OMN-13621/dod-sea-pr-238/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: additive cost surface + a pure-compute pricing-resolution change in the omnimarket
+      node_generation_consumer handler, plus a file deletion in the standalone SEA repo. No topic schema,
+      envelope, or contract-API change; no Kafka topic creation; no Postgres migration; no live-lane mutation.
+      No live deploy is performed by these PRs; the change is effective on merge to dev and arrives at
+      runtime via a standard omnimarket image rebuild. The receipt check_value carries the deploy keyword
+      for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13621/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13621/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for this onex_change_control PR: it carries the OMN-13621 contract
+      and dod receipts, satisfying the receipt-to-PR binding required by validator_occ_merge_eligibility
+      (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13621/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13621/dod-occ-pr-self/command.yaml"
