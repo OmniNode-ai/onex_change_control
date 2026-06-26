@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13620"
+title: "feat(OMN-13620): canonical replayable event-chain projection (WS-C Phase 5.1 ROUTE)"
+summary: >
+  WS-C Phase 5.1 ROUTE of the SEA->canonical migration (epic OMN-13604). Routes the SEA bespoke event-chain
+  ledger (src/pipeline/event_chain_capture.py, which wrote .onex_state/hackathon/event_chains/{correlation_id}.json)
+  to a canonical, bus-backed, replayable projection. New canonical REDUCER node node_projection_event_chain
+  in omnimarket subscribes to the canonical platform log-entry topic onex.evt.platform.log-entry.v1 and
+  materializes one durable row per ordered (correlation_id, sequence) event into the event_chain table
+  (omnidash_analytics) via a node-owned migration. The idempotency conflict key (correlation_id, envelope_id)
+  makes the runtime UPSERT replay-safe (a replayed canonical event overwrites its own row and keeps its
+  sequence, no duplicate append). The read-side /projection/{topic} surface onex.snapshot.projection.event_chain.v1
+  declares correlation_id in columns and order_by sequence ASC, so the projection API honours the correlation_id
+  WHERE-filter (api_server.topic_supports_correlation_id_filter) and deterministic ordering. Operator
+  hard-acceptance proven: given a correlation_id, the ordered event chain reconstructs deterministically
+  from canonical projection rows. node_projection_traces only materializes an aggregated one-row-per-correlation
+  summary, which cannot reconstruct the ordered per-event chain, hence a new per-event projection. All
+  archetype constraints met: REDUCER_GENERIC, handler-based, topics contract-sourced, no Plugin* base,
+  no hardcoded paths/IPs, strongly-typed frozen models, fail-fast on missing _db adapter. The SEA event_chain_capture.py
+  deletion ships in the paired SEA PR after parity; envelope.py (build_envelope) is retained as foundational
+  standalone-repo infra imported by 15 non-test src modules with no canonical home under this ticket (same
+  retain-load-bearing posture as OMN-13616). No envelope/contract-API change, no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      A failing-first golden-chain + contract suite proving the chain ModelEventChainProjectionEvent ->
+      HandlerProjectionEventChain.handle -> ordered event_chain rows: one row per (correlation_id, sequence),
+      monotonic sequence assignment, replay idempotency (same envelope_id dedups and keeps sequence),
+      correlation isolation, and the operator hard-acceptance that given a correlation_id the ordered
+      chain reconstructs deterministically. The contract declares db_io write (runtime materialization),
+      projection_api with correlation_id + order_by sequence ASC, and the node is discoverable as an onex.nodes
+      entry-point.
+    command: "uv run pytest tests/test_event_chain_projection_omn13620.py tests/test_golden_chain_event_chain.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >
+      omnimarket product PR adds the node_projection_event_chain REDUCER (contract.yaml + handler + models
+      + node-owned migration + golden-chain test + entry-point), routes the SEA event-chain ledger to
+      a canonical replayable projection, exposes /projection/{topic} with correlation_id filtering + sequence
+      ordering, and proves deterministic correlation_id replay. Full local verify passes (projection/discovery/golden-chain
+      suite green, mypy --strict clean, ruff clean, pre-commit clean on changed files incl. golden-chain-coverage
+      gate PASS, runtime import-check clean, metadata dependency check PASS).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13620/dod-omnimarket-pr/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13620/dod-omnimarket-pr/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13620/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR adds a new REDUCER projection node + its handler/models/migration/tests
+      in omnimarket -- no envelope/contract-API change, no live-lane mutation. The reducer handler performs
+      zero live I/O at construction; the runtime auto-wiring projection callback injects the DB adapter
+      and drives materialization on a live lane. No live deploy is performed by this PR. The new node
+      + its migration are picked up by a standard stability-test image rebuild when exercised on a live
+      lane later. The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13620/dod-deploy-assessment/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13620/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13620/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13620 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13620/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13620/dod-occ-pr-self/command.yaml"
