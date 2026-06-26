@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13616"
+title: "WS-C Phase 3.3: node_regression_test_orchestrator — absorb SEA regression replay with replay mode"
+summary: >
+  Wave-1 of the SEA -> canonical migration (epic OMN-13604). Builds the greenfield ORCHESTRATOR node node_regression_test_orchestrator
+  in omnimarket, absorbing the SEA regression suite (regression/runner.py replay path, regression/tasks.py
+  corpus, regression/results.py per-task result). The node runs in replay mode only: deterministic replay
+  from a recorded event corpus, no live generation, no I/O in the handler. It preserves SEA _run_replay
+  semantics (corpus keyed (task_id, attempt); passed == bool(output); attempt 1 only) and emits the canonical
+  Shared Experiment Result Contract ModelExperimentResult (OMN-13613, core#1346) on the contract-sourced
+  terminal topic onex.evt.omnimarket.regression-suite-completed.v1 -- no node invents its own result schema.
+  All four canonical archetype constraints hold: ORCHESTRATOR (events only, never result), handler-based,
+  no I/O in the handler, topics contract-sourced, no Plugin* base. The omnibase_core pin is bumped to
+  dev HEAD 6e26772ccaf2bf930f8fa8196bdf3e81bc2fbb3b (carries the experiment models). SEA regression/runner.py
+  + its unit/integration tests are DELETED after parity (no shim); tasks.py / results.py are retained
+  as still load-bearing for the SEA fixture/baseline/report subsystem (no canonical home under this ticket).
+  No topic schema, envelope, or contract-API change to existing surfaces; new node adds new topics; no
+  live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      9 handler unit tests + a 5-assertion contract-schema test + a 2-chain golden chain (positive all-pass
+      -> COMPLETED, negative partial -> FAILED) replayed byte-for-byte through the canonical contract-loader-resolved
+      handler with determinism asserted by double-replay. Full omnimarket non-kafka suite 9019 passed
+      / 0 failed; dogfood node count 330 -> 331; mypy --strict clean.
+    command: "uv run pytest tests/unit/nodes/node_regression_test_orchestrator tests/golden_chains/regression_replay
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1446"
+    description: >
+      omnimarket PR #1446 adds the greenfield ORCHESTRATOR node node_regression_test_orchestrator (contract
+      + handler + models + entry-point + golden chain), bumps the omnibase_core pin to the dev HEAD carrying
+      the experiment models, and emits the canonical ModelExperimentResult. Evidence anchor: omnimarket
+      head commit 5cea448d2d4cfc8e2f1c5b7d8baca4826eb35457.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13616/dod-omnimarket-pr-1446/command.yaml
+          && grep -q '^pr_number: 1446$' drift/dod_receipts/OMN-13616/dod-omnimarket-pr-1446/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13616/dod-omnimarket-pr-1446/command.yaml"
+  - id: "dod-sea-pr-239"
+    description: >
+      onex-self-extending-agent PR #239 DELETES src/regression/runner.py + its unit test + the live-runner
+      integration test (no shim) after the canonical omnimarket parity is proven. tasks.py / results.py
+      retained (still load-bearing for the SEA fixture/baseline/report subsystem). mypy --strict + full
+      unit suite green. Evidence anchor: SEA head commit b4e7025808248b32d534cddf3528b6dd3ff4b638.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13616/dod-sea-pr-239/command.yaml
+          && grep -q '^pr_number: 239$' drift/dod_receipts/OMN-13616/dod-sea-pr-239/command.yaml && grep
+          -q 'passed' drift/dod_receipts/OMN-13616/dod-sea-pr-239/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: additive greenfield ORCHESTRATOR node (new topics) + core pin bump + SEA file
+      deletion. No change to existing topic schema / envelope / contract-API; no Postgres migration; no
+      live-lane mutation; no live deploy performed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13616/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      The OCC receipt PR carries this OMN-13616 contract + dod receipts; the self-binding receipt binds
+      to this OCC PR's own number (validator_occ_merge_eligibility).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13616/dod-occ-pr-self/command.yaml"
