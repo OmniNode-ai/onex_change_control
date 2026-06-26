@@ -1,46 +1,80 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13603"
-title: "wire remaining protocol-typed handler dependencies after handler-prep quarantine sweep"
+title: "fix(OMN-13603): wire 3 protocol-dependency handlers into boot container (ticket_query/tool_reuse_matcher/skill_overseer)"
 summary: >-
-  Follow-up ticket for the three remaining handler-prep quarantine entries intentionally carved out of
-  OMN-13551. OMN-13551 removes helper functions/classes that were incorrectly declared as runtime message
-  handlers and leaves only genuinely shaped handlers with unwired protocol-typed external dependencies
-  (project tracker, generated-tool registry, and task dispatcher). This contract exists so PRs that document
-  the OMN-13603 carve-out have central OCC coverage without claiming that OMN-13603 is implemented by
-  the OMN-13551 product PR. The actual adapter wiring and live dev-lane readback remain owned by the OMN-13603
-  implementation work.
+  Carve-out from OMN-13551 (which resolved 15 of 18 handler-prep boot quarantines). The remaining 3 genuinely-shaped
+  handlers required a protocol-typed dependency the boot resolver could not satisfy from the injectable
+  params (event_bus / container / ownership_query), so each quarantined at dev-HEAD boot. All three are
+  now constructed by the resolver from injectable params alone, via the canonical container-driven handler
+  pattern: node_ticket_query/HandlerTicketQuery (EFFECT) and node_tool_reuse_matcher_compute/HandlerToolReuseMatcher
+  (COMPUTE) now take the injectable container and resolve their protocol dependency (ProtocolProjectTracker
+  / ProtocolGeneratedToolRegistry) from the container at the effect/match boundary; the project-tracker
+  adapter owns api_key_ref secret resolution at its own effect boundary, so the handler never touches
+  a literal credential. The function-form handle_skill_requested(request, *, task_dispatcher) on node_skill_overseer_verify_orchestrator
+  was replaced by a class HandlerSkillRequested(container) (mirroring the sibling node_skill_dispatch_engine_orchestrator
+  scaffold); the polymorphic-agent TaskDispatcher is resolved at the dispatch boundary and handle() returns
+  a structured FAILED ModelSkillResult until a real bus-backed dispatcher is registered. _UNWIRED_DEPENDENCY_ALLOWLIST
+  in tests/test_handler_routing_boot_resolvable.py is now empty; the guard fails closed on any new misclassified/unwired
+  entry. No envelope/contract-API change, no live-lane mutation.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      The handler-routing boot-resolvability guard passes with an empty allowlist (every handler_routing
+      target resolvable from injectable params), the converted handlers' golden-chain/unit suites pass
+      via container-driven construction, and the all-node runtime dogfood inventory classifies all three
+      nodes as routable (failed==0).
+    command: "uv run pytest tests/test_handler_routing_boot_resolvable.py tests/test_golden_chain_ticket_query.py
+      tests/test_golden_chain_tool_reuse_matcher.py tests/test_handler_skill_overseer_verify.py tests/test_market_node_runtime_dogfood.py
+      -q"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket product PR #1450 converts HandlerTicketQuery and HandlerToolReuseMatcher to the container-driven
+      pattern, replaces the function-form overseer skill handler with the class HandlerSkillRequested(container),
+      and empties _UNWIRED_DEPENDENCY_ALLOWLIST. Full local verify passes: full non-kafka suite 9102 passed
+      / 45 skipped, mypy src/omnimarket --strict clean (2564 files), ruff clean, pre-commit run on changed
+      files all gates PASS, runtime import-check clean (333 entry points), node metadata dependency check
+      PASS, market_node_runtime_dogfood inventory failed==0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13603/dod-omnimarket-pr/command.yaml && grep
+          -Eq '^pr_number: 1450$' drift/dod_receipts/OMN-13603/dod-omnimarket-pr/command.yaml && grep
+          -q 'passed' drift/dod_receipts/OMN-13603/dod-omnimarket-pr/command.yaml
   - id: "dod-deploy-assessment"
     description: >-
-      Deploy assessment for the OMN-13603 reference in omnimarket PR #1429. That PR does not implement
-      OMN-13603; it only documents the remaining three unwired-dependency handler entries as a guarded
-      carve-out while fixing the helper-misclassification cohort under OMN-13551. No live deploy, runtime
-      restart, topic mutation, or .201 mutation is performed for OMN-13603 by PR #1429.
+      Deploy assessment for omnimarket PR #1450: the change rewires handler construction (constructor
+      signatures + one contract handler_routing repoint) so quarantined handlers resolve at boot. It performs
+      no live deploy, runtime restart, topic mutation, docker exec, rpk produce, or .201 mutation. The
+      converted handlers are picked up by a standard stability-test image rebuild when next exercised
+      on a live lane. The receipt check_value carries the deploy keyword for the deploy-gate.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
           grep -q '^status: PASS$' drift/dod_receipts/OMN-13603/dod-deploy-assessment/command.yaml &&
-          grep -q '^pr_number: 1429$' drift/dod_receipts/OMN-13603/dod-deploy-assessment/command.yaml
+          grep -Eq '^pr_number: 1450$' drift/dod_receipts/OMN-13603/dod-deploy-assessment/command.yaml
           && grep -qi 'no live deploy' drift/dod_receipts/OMN-13603/dod-deploy-assessment/command.yaml
   - id: "dod-occ-pr-self"
     description: >-
-      Self-binding receipt for the onex_change_control PR that introduces central OMN-13603 follow-up
-      coverage for the carve-out referenced by omnimarket PR #1429. This receipt binds the OCC evidence
-      update PR itself by pr_number.
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13603 contract + dod receipts onto main, satisfying the receipt-to-PR binding required
+      by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
-          grep -q '^status: PASS$' drift/dod_receipts/OMN-13603/dod-occ-pr-self/command.yaml && grep -q
-          '^pr_number: 3149$' drift/dod_receipts/OMN-13603/dod-occ-pr-self/command.yaml
+          grep -Eq '^status: "?PASS"?$' drift/dod_receipts/OMN-13603/dod-occ-pr-self/command.yaml && grep
+          -Eq '^pr_number: 3179$' drift/dod_receipts/OMN-13603/dod-occ-pr-self/command.yaml
