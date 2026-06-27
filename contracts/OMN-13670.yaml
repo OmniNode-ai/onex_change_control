@@ -1,0 +1,72 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13670
+title: 'EMERGENCY PROD RECOVERY: surgical main hotfix — re-apply OMN-13654 dep floors + OMN-13666 entrypoint
+  tolerance'
+summary: >-
+  Emergency prod recovery authorized by operator. Two already-reviewed-and-merged dev changes (dev PRs
+  #2115 + #2124) are re-applied surgically to omnibase_infra main so that (a) build-and-push-runtime.yml
+  can complete an ECR push (Trivy gate was blocking on 5 HIGH CVEs since 2026-06-07) and (b) the runtime
+  entrypoint no longer crash-loops on omniintelligence DB permission errors (all 7 prod deployments were
+  at 0/1). OMN-13654 adds pyjwt>=2.13.0, python-multipart>=0.0.30, starlette>=1.3.1 as explicit security-floor
+  constraints and relocks. OMN-13666 makes the secondary DB stamp BEST-EFFORT (warning + continue) while
+  keeping the primary DB stamp REQUIRED (fatal). The prod re-pin (ECR retag + restart) follows separately
+  under OMN-13418 gating. This PR does NOT deploy, restart, or touch any cluster.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      7 behavioral + static tests for entrypoint stamp tolerance pass. Version-compatibility tests pass.
+      5013 unit tests pass in CI-mode (without OMNI_HOME).
+    command: 'uv run pytest tests/unit/docker/test_runtime_entrypoint_stamp_tolerance.py tests/unit/runtime/test_version_compatibility.py
+      -q'
+  - kind: ci
+    description: CI pipeline green on PR
+    command: 'gh pr checks 2127 --repo OmniNode-ai/omnibase_infra'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >-
+      pyproject.toml on main declares explicit security-floor constraints (pyjwt>=2.13.0, python-multipart>=0.0.30,
+      starlette>=1.3.1) and uv.lock resolves all three at or above the CVE-fixed minimums (re-applied
+      from OMN-13654 dev PR #2115).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13670/dod-001/command.yaml"
+  - id: dod-002
+    description: >-
+      Entrypoint marks primary DB (omnibase_infra) stamp REQUIRED and secondary DB (omniintelligence)
+      stamp BEST-EFFORT (re-applied from OMN-13666 dev PR #2124).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13670/dod-002/command.yaml"
+  - id: dod-003
+    description: >-
+      7 behavioral + static tests for the entrypoint stamp tolerance policy pass.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13670/dod-003/command.yaml"
+  - id: dod-deploy-assessment
+    description: >-
+      Static deploy assessment: no live deploy, runtime restart, ECR push, or cluster mutation performed
+      by OMN-13670. Prod re-pin follows separately under OMN-13418 gating.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13670/dod-deploy-assessment/command.yaml"
+  - id: dod-occ-self
+    description: >-
+      Self-binding OCC receipt — this onex_change_control PR carries the OMN-13670 contract + receipts
+      consumed by omnibase_infra #2127 via Evidence-Source.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13670/dod-occ-self/command.yaml"
