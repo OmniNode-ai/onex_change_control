@@ -1,0 +1,71 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13654
+title: 'Fix red build-and-push-runtime.yml — bump Trivy-flagged HIGH-CVE runtime deps'
+summary: >-
+  The runtime ECR build (build-and-push-runtime.yml) has been red since 2026-06-07: the Docker build succeeds
+  but the Trivy gate (CRITICAL,HIGH --ignore-unfixed --exit-code 1) fails on 5 fixable HIGH CVEs in the
+  resolved Python deps (pyjwt 2.12.1 / python-multipart 0.0.27 / starlette 1.0.1), so the ECR push + digest
+  steps are skipped. Fix bumps the three deps to the CVE-fixed minimums via explicit security-floor constraints
+  in pyproject.toml (matching the existing pyjwt CVE-2026-32597 pattern) and re-locks; Trivy never disabled
+  or weakened. Resolved: pyjwt 2.13.0, python-multipart 0.0.31, starlette 1.3.1.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Trivy (same scanner/DB/severity gate as the CI step) reports 0 HIGH/CRITICAL on the re-locked uv.lock;
+      the stale main lock reports the exact 5 CVEs (confirms the scan detects them).
+    command: 'trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 uv.lock'
+  - kind: ci
+    description: CI pipeline green on PR
+    command: 'gh pr checks <PR> --repo OmniNode-ai/omnibase_infra'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >-
+      pyproject.toml declares explicit security-floor constraints (pyjwt>=2.13.0, python-multipart>=0.0.30,
+      starlette>=1.3.1) and uv.lock resolves all three at or above the CVE-fixed minimums. Probe ran in
+      the omnibase_infra worktree (PR #2115); evidence captured in the dod-001 receipt.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13654/dod-001/command.yaml"
+  - id: dod-002
+    description: >-
+      Trivy scan of the re-locked uv.lock returns 0 HIGH/CRITICAL (exit 0) with the identical CI severity
+      gate; the stale main lock returns the exact 5 HIGH CVEs (control). Probe ran in the omnibase_infra
+      worktree; evidence captured in the dod-002 receipt.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13654/dod-002/command.yaml"
+  - id: dod-003
+    description: >-
+      version_compatibility matrix + suite stay green after the dependency bump (pyproject remains the
+      single source of truth). Probe ran in the omnibase_infra worktree; evidence captured in the dod-003
+      receipt.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13654/dod-003/command.yaml"
+  - id: dod-deploy-assessment
+    description: >-
+      Static deploy assessment: no live deploy, runtime restart, ECR push, or .201/AWS mutation is performed
+      by OMN-13654; runtime proof is not claimed.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13654/dod-deploy-assessment/command.yaml"
+  - id: dod-occ-self
+    description: >-
+      Self-binding OCC receipt — this onex_change_control PR carries the OMN-13654 contract + receipts
+      consumed by omnibase_infra #2115 via Evidence-Source.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^pr_number: 3193$' drift/dod_receipts/OMN-13654/dod-occ-self/command.yaml"
