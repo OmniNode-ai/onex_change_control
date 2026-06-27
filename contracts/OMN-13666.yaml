@@ -1,0 +1,67 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13666
+title: 'Runtime entrypoint: secondary-DB schema-fingerprint stamp failure is non-fatal (primary stays
+  fatal)'
+summary: >-
+  The runtime image entrypoint (docker/entrypoint-runtime.sh) stamps schema fingerprints into db_metadata
+  per-DB before starting the kernel. In prod, the runtime DB user lacks write permission on the omniintelligence
+  (secondary, non-owned) database's db_metadata table, so its stamp failed with "permission denied for
+  table db_metadata"; after 5 attempts the entrypoint exited 1 and the container crash-looped, holding
+  all 7 onex-prod runtime deployments at 0/1. The runtime's OWN database (omnibase_infra) stamps fine.
+  This fix introduces a principled required-vs-best-effort stamp policy in the entrypoint: the PRIMARY/owned
+  DB (omnibase_infra) stamp stays REQUIRED — a failure after retries aborts boot loudly (exit 1) so a
+  NULL/stale-fingerprint kernel never starts — while a SECONDARY/non-owned DB (omniintelligence) stamp
+  is BEST-EFFORT — a failure logs a clear WARNING and boot proceeds (exit 0). No DB GRANT is added (operator
+  chose the entrypoint-policy route). No gate is weakened.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Behavioral tests execute the real entrypoint with a stubbed python: a primary-DB stamp failure aborts
+      boot (exit 1), a secondary-DB stamp failure warns and boot proceeds (exit 0); plus static source
+      guards and shellcheck-clean.
+    command: 'uv run pytest tests/unit/docker/test_runtime_entrypoint_stamp_tolerance.py -q'
+  - kind: ci
+    description: CI pipeline green on PR
+    command: 'gh pr checks <PR> --repo OmniNode-ai/omnibase_infra'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >-
+      Entrypoint marks the primary DB (omnibase_infra) stamp REQUIRED and the secondary DB (omniintelligence)
+      stamp BEST-EFFORT.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''stamp_fingerprint "omnibase_infra" "${OMNIBASE_INFRA_DB_URL}" "required"''
+          docker/entrypoint-runtime.sh && grep -q ''stamp_fingerprint "omniintelligence" "${OMNIINTELLIGENCE_DB_URL}"
+          "optional"'' docker/entrypoint-runtime.sh'
+  - id: dod-002
+    description: >-
+      A required-stamp failure exits non-zero (fatal); the optional branch only warns (non-fatal continue).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''if \[ "${REQUIRED}" = "required" \]; then'' docker/entrypoint-runtime.sh
+          && grep -q "aborting boot" docker/entrypoint-runtime.sh && grep -q "continuing best-effort"
+          docker/entrypoint-runtime.sh'
+  - id: dod-003
+    description: >-
+      Behavioral + static tests for the required/optional stamp policy pass.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'uv run pytest tests/unit/docker/test_runtime_entrypoint_stamp_tolerance.py -q'
+  - id: dod-004
+    description: >-
+      Entrypoint script is shellcheck-clean.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'shellcheck docker/entrypoint-runtime.sh'
