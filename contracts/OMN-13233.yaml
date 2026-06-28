@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13233
+title: "feat(delegation): remove ANTHROPIC_API_KEY ceiling default; ceiling resolves per-tenant from config
+  like every tier"
+summary: >
+  Remove the committed api_key_env: ANTHROPIC_API_KEY from cloud-sonnet and cloud-haiku backends in bifrost_delegation.yaml.
+  Both backends already declare secret_ref: llm.anthropic.api_key, which is the per-tenant contract+store
+  resolution path. The api_key_env field is the legacy env-var fallback that special-cased the ceiling
+  tier. After this change, ceiling tier auth resolves through secret_ref (per-tenant store path) identical
+  to cheap_cloud and every other tier. No handler changes required — resolved_secret_ref property already
+  prioritises secret_ref.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >
+      7 new unit tests in tests/unit/delegation/test_ceiling_tier_secret_ref_omn13233.py pass: cloud-sonnet
+      and cloud-haiku have no api_key_env, secret_ref resolves correctly, resolved_secret_ref returns
+      the store path, and git grep confirms zero ANTHROPIC_API_KEY literals in src/.
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13233/dod-ceiling-secret-ref-tests/command.yaml"
+  - kind: ci
+    description: omnimarket PR is bound to the central OCC evidence
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13233/dod-omnimarket-pr/command.yaml"
+dod_evidence:
+  - id: dod-ceiling-secret-ref-tests
+    description: >
+      7 unit tests in tests/unit/delegation/test_ceiling_tier_secret_ref_omn13233.py pass: (1) cloud-sonnet
+      has no api_key_env, (2) cloud-haiku has no api_key_env, (3) cloud-sonnet secret_ref == llm.anthropic.api_key,
+      (4) cloud-haiku secret_ref == same, (5) cloud-sonnet resolved_secret_ref returns secret_ref not
+      env fallback, (6) cloud-haiku same, (7) no ANTHROPIC_API_KEY literal in src/.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13233/dod-ceiling-secret-ref-tests/command.yaml"
+  - id: dod-no-anthropic-key-in-src
+    description: >
+      git grep ANTHROPIC_API_KEY over omnimarket src/ returns zero non-test hits. The literal was in src/omnimarket/configs/bifrost_delegation.yaml
+      (cloud-sonnet + cloud-haiku api_key_env fields). After OMN-13233 both fields are removed; only secret_ref:
+      llm.anthropic.api_key remains.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13233/dod-no-anthropic-key-in-src/command.yaml"
+  - id: dod-mypy-lint
+    description: >
+      uv run mypy src/omnimarket/ --strict passes with no new violations. ruff format+check clean. pre-commit
+      run --all-files passes.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13233/dod-mypy-lint/command.yaml"
+  - id: dod-omnimarket-pr
+    description: omnimarket PR implementing OMN-13233 is open with the expected Evidence-Source OCC SHA
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13233/dod-omnimarket-pr/command.yaml"
+  - id: dod-occ-self
+    description: >
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13233 contract consumed by
+      the omnimarket implementation PR.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13233/dod-occ-self/command.yaml"
