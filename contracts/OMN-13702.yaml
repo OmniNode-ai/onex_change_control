@@ -1,0 +1,93 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13702
+title: 'fix(OMN-13702): node_dod_sweep_orchestrator returns status=failed for all DoD-verified tickets
+  — 2 code bugs + cross-repo PR blind spot + missing OCC contract for OMN-13442'
+summary: >-
+  Fixes three systemic bugs in HandlerDodSweepOrchestrator that caused every ticket to return status=failed
+  regardless of actual DoD state, plus files the missing OCC contract for OMN-13442. #magic___^_^___line
+  Bug 1 (jq null false positive): _gh_find_merged_pr applied jq .[0] to an empty array, producing {"number":"null","repo":""}.
+  The string "null" is truthy, so the function returned a ghost pr_info that propagated a PR number of
+  "null" into _check_ci_green. #magic___^_^___line Bug 2 (invalid conclusion field): _gh_pr_checks_pass
+  requested --json name,state,conclusion. The conclusion field does not exist in gh pr checks --json (exits
+  1 with "Unknown JSON field: conclusion"), so _gh_pr_checks_pass ALWAYS returned False, making ci_green
+  always fail. #magic___^_^___line Bug 3 (cross-repo PR blind spot): _gh_find_merged_pr searched only
+  one repo.  Adds a gh_repos: tuple[str, ...] field to ModelDodSweepOrchestratorRequest so callers can
+  specify multiple repos tried in order. #magic___^_^___line Also files contracts/OMN-13442.yaml which
+  was absent despite the epic's 7 PRs being merged.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      31 golden-chain tests for node_dod_sweep_orchestrator pass, including 7 new regression tests that
+      reproduce all three bugs (RED before fix, GREEN after).
+    command: 'uv run pytest tests/test_golden_chain_dod_sweep_orchestrator.py -q'
+  - kind: manual
+    description: >-
+      mypy --strict clean on all changed files. ruff format + check clean.
+    command: 'uv run mypy src/omnimarket/nodes/node_dod_sweep_orchestrator/ --strict'
+  - kind: ci
+    description: CI pipeline green on omnimarket PR
+    command: 'gh pr checks <PR_NUM> --repo OmniNode-ai/omnimarket'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-bug1-fix
+    description: >-
+      Bug 1 fixed: _gh_find_merged_pr now rejects str(parsed["number"]) == "null" before returning pr_info.
+      Test test_gh_find_merged_pr_empty_list_returns_empty_dict and test_pr_merged_fail_when_jq_returns_null_number
+      both pass (were RED before fix).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_golden_chain_dod_sweep_orchestrator.py -k 'gh_find_merged_pr_empty
+          or pr_merged_fail_when_jq' -q 2>&1 | grep -q '2 passed'"
+  - id: dod-bug2-fix
+    description: >-
+      Bug 2 fixed: _gh_pr_checks_pass uses --json name,state only (conclusion removed). Filter evaluates
+      state field alone. Tests test_gh_pr_checks_pass_does_not_request_conclusion_field, test_ci_green_pass_when_state_only_checks_succeed,
+      and test_ci_green_fail_when_state_failure all pass (two were RED before fix).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_golden_chain_dod_sweep_orchestrator.py -k 'gh_pr_checks_pass_does_not
+          or ci_green_pass_when_state_only or ci_green_fail_when_state_failure' -q 2>&1 | grep -q '3 passed'"
+  - id: dod-bug3-fix
+    description: >-
+      Bug 3 fixed: ModelDodSweepOrchestratorRequest.gh_repos field added. _gh_find_merged_pr accepts repos
+      tuple and tries each in order. Tests test_gh_repos_multi_repo_search_finds_pr_in_second_repo and
+      test_request_model_accepts_gh_repos_field both pass (were RED before fix).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_golden_chain_dod_sweep_orchestrator.py -k 'gh_repos_multi
+          or request_model_accepts_gh_repos' -q 2>&1 | grep -q '2 passed'"
+  - id: dod-full-suite
+    description: >-
+      All 31 golden-chain tests for node_dod_sweep_orchestrator pass after the fix. No pre-existing tests
+      were broken.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_golden_chain_dod_sweep_orchestrator.py -q 2>&1 | grep -q
+          '31 passed'"
+  - id: dod-mypy-clean
+    description: >-
+      mypy --strict reports no issues on all 6 source files in the node_dod_sweep_orchestrator package.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "uv run mypy src/omnimarket/nodes/node_dod_sweep_orchestrator/ --strict 2>&1 | grep
+          -q 'Success: no issues found'"
+  - id: dod-occ-gap-closed
+    description: >-
+      OCC gap closed: contracts/OMN-13442.yaml filed in this PR alongside contracts/OMN-13702.yaml. dod_sweep
+      can now verify OMN-13442 contract_exists and receipt_exists checks.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "test -f contracts/OMN-13442.yaml && grep -q 'dod_evidence' contracts/OMN-13442.yaml"
