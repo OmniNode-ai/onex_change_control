@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12810"
+title: "Projection handlers must not own AIOKafkaProducer — runtime injects the publisher"
+summary: >-
+  Refactors the omnimarket projection handlers so the projection runtime (BaseProjectionRunner) owns the
+  Kafka producer lifecycle instead of each handler constructing its own AIOKafkaProducer. node_projection_delegation
+  and node_projection_savings drop their self._producer field, self._publish_fn re-declaration, and _get_publish_fn()
+  method; every emit / DLQ path delegates to the runtime-owned BaseProjectionRunner.get_publish_fn(),
+  which lazily builds a single producer (or returns an injected publish_fn) and is torn down in shutdown()/run().
+  Product PR: omnimarket #1482.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-aiokafkaproducer-removed"
+    description: >-
+      git grep AIOKafkaProducer over src/omnimarket/nodes/node_projection_delegation/ returns nothing
+      at omnimarket PR #1482 head — the projection node no longer constructs a Kafka producer. The producer
+      lifecycle moved to omnimarket.projection.runner.BaseProjectionRunner (the runtime), which owns a
+      single AIOKafkaProducer built lazily by get_publish_fn() and stopped in _stop_producer()/shutdown().
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12810/dod-aiokafkaproducer-removed/command.yaml
+  - id: "dod-get-publish-fn-deleted"
+    description: >-
+      The handler-owned _get_publish_fn() method is deleted from node_projection_delegation/handlers/handler_delegation.py
+      (and the sibling node_projection_savings/handlers/handler_savings.py). git grep _get_publish_fn
+      over src/omnimarket/nodes/node_projection_delegation/ returns nothing; all emit/DLQ call sites now
+      await the runtime-owned self.get_publish_fn().
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12810/dod-get-publish-fn-deleted/command.yaml
+  - id: "dod-full-suite-green"
+    description: >-
+      The full omnimarket pytest suite (uv run pytest tests/ -m "not kafka and not e2e") passes at PR
+      #1482 head — 10279 passed, 11 skipped, 0 failures — and a new TDD guard test (tests/test_omn12810_projection_publisher_injection.py)
+      locks in the no-owned-producer contract for both projection handlers and the runtime-owned lazy
+      producer build. mypy --strict clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12810/dod-full-suite-green/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control evidence PR. Carries the OMN-12810
+      contract + DoD receipts onto dev and binds the OCC evidence PR with a PASS receipt whose pr_number
+      is this PR's own number, satisfying validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12810/dod-occ-self/command.yaml
