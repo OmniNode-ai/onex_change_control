@@ -1,0 +1,61 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13697
+title: 'fix(omnibase_infra): remove LLM_CODER_FAST_URL env default from ModelAgentLearningExtractionConfig.llm_summary_url'
+summary: >-
+  ModelAgentLearningExtractionConfig.llm_summary_url declared default_factory=lambda: os.environ["LLM_CODER_FAST_URL"],
+  baking a prohibited LLM_* env-var read into a frozen Pydantic field. This violates feedback_no_env_for_model_endpoint_use_routing_authority
+  and feedback_all_urls_from_contracts. Additionally, os.environ[] raises KeyError at model instantiation
+  time when the var is absent — before the use site. Fix: remove default_factory, mark llm_summary_url
+  as a required Field(...), remove unused import os, and add unit tests confirming ValidationError is
+  raised on omission rather than a silent KeyError.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      3 new unit tests in TestModelAgentLearningExtractionConfig confirm (1) ValidationError on missing
+      llm_summary_url, (2) explicit URL accepted, (3) no env-var side effect.
+    command: 'uv run pytest tests/unit/services/test_agent_learning_extraction.py::TestModelAgentLearningExtractionConfig
+      -v'
+  - kind: ci
+    description: CI pipeline green on PR
+    command: 'gh pr checks --repo OmniNode-ai/omnibase_infra'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >-
+      llm_summary_url is a required field (Field(...)) with no default_factory and no os.environ read
+      anywhere in agent_learning_extraction/.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13697/dod-001/command.yaml"
+  - id: dod-002
+    description: >-
+      3 unit tests in TestModelAgentLearningExtractionConfig confirm ValidationError on omission, explicit
+      URL accepted, and no env-var side effect.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13697/dod-002/command.yaml"
+  - id: dod-deploy-assessment
+    description: >-
+      Static deploy assessment: no live deploy, runtime restart, or cluster mutation performed by OMN-13697.
+      Dev-lane code change only.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13697/dod-deploy-assessment/command.yaml"
+  - id: dod-occ-self
+    description: >-
+      Self-binding OCC receipt — this onex_change_control PR carries the OMN-13697 contract consumed by
+      omnibase_infra PR via Evidence-Source.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13697/dod-occ-self/command.yaml"
