@@ -1,30 +1,22 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13563"
-title: "env→contract migration (onex_change_control): 12 non-keep env reads + 4 Linear GraphQL URL literals
-  → contract+overlay seam"
+title: "env→contract migration: onex_change_control Waves 1-3 overlay seam + Wave 4 gate wiring (url-authority
+  + no-new-os-environ)"
 summary: >-
-  Wave-1 env→contract+overlay migration (epic OMN-13556). Moves onex_change_control's 12 non-keep raw
-  os.environ reads and the 4 hardcoded Linear GraphQL URL literals onto the canonical overlay seam: a
-  new integration contract (src/onex_change_control/integrations/contract.yaml) declares every endpoint
-  / config value / secret-ref with the ${env.VAR} / ${env.VAR:default} convention, and a new contract_descriptor
-  module resolves them through onex_change_control.overlays.contract_env_ref.expand_contract_env_refs
-  — the one sanctioned env-reading boundary — fail-closed (unset/blank required value raises rather than
-  silently defaulting to localhost or a hardcoded literal). Because onex_change_control depends only on
-  omnibase_core and the core resolver (omnibase_core.overlays.contract_env_ref) is on core dev but not
-  yet on core main, the canonical ${env.VAR} expansion is vendored locally — exactly as omnibase_core
-  itself vendors its own copy because it cannot import infra (compat → core → spi → infra layering) —
-  rather than pinning an unreleased core commit. Rewired call sites: linear_graphql_url() replaces the
-  4 URL literals (backfill_contracts.py:144, check_dod_compliance.py:75 — was the non-canonical https://linear.app/graphql,
-  corrected to the canonical host, handler_dod_sweep.py:73, check_plan_vs_live.py:51); linear_api_key()
-  replaces the 3 LINEAR_API_KEY reads; the omnidash_db_* resolvers replace POSTGRES_HOST/PORT/OMNIDASH_DB_NAME/POSTGRES_USER
-  and POSTGRES_PASSWORD (with the ~/.omnibase/.env source fallback removed); kafka_bootstrap_servers()
-  replaces KAFKA_BOOTSTRAP_SERVERS; onex_state_dir() replaces ONEX_STATE_DIR (claim_store + sweeper);
-  and emergency_bypass() replaces EMERGENCY_BYPASS. The keep set (OMNI_HOME bootstrap, CI runner-detect,
-  whole-environ subprocess plumbing) is untouched. A resolution-equivalence test proves the overlay resolves
-  the same value the env var / literal gave and fails closed when a required value is unset. Per memory
-  feedback_onex_change_control_keeps_ticket_refs, OMN-XXXX references are NOT sanitized here (record-keeping
-  exemption); only the env/URL migration applies.
+  Waves 1-3 (PR 3115, merged 2026-06-25): env→contract+overlay migration (epic OMN-13556). Moved onex_change_control's
+  12 non-keep raw os.environ reads and the 4 hardcoded Linear GraphQL URL literals onto the canonical
+  overlay seam via src/onex_change_control/integrations/contract.yaml with expand_contract_env_refs —
+  fail-closed. Wave 4 (this PR, OMN-13563): wire the two omnibase_core enforcement gates that close the
+  ratchet for the epic. check-url-authority (fingerprint ratchet, OMN-12818) and no-new-os-environ (AST
+  gate, OMN-13566) are added to .pre-commit-config.yaml under a new OmniNode-ai/omnibase_core remote block
+  at rev 2ec86385174864fd2baee16c1fa9b6b5af04ba85; both hooks also appear as non-blocking CI report jobs
+  (continue-on-error: true) in .github/workflows/ci.yml — the pre-commit hook is the blocking surface.
+  Pre-commit run --all-files (SKIP=check-receipt-honesty) passes clean: check-url-authority reports 0
+  new violations (0 grandfathered), no-new-os-environ reports 0 violations (dynamic-variable reads in
+  overlays/contract_env_ref.py and integrations/contract_descriptor.py are not flagged because the AST
+  visitor requires a string-constant key to trigger). No url-authority-ok suppressions needed. Per memory
+  feedback_onex_change_control_keeps_ticket_refs, OMN-XXXX references are NOT sanitized here.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -74,6 +66,27 @@ dod_evidence:
     description: >-
       Self-binding receipt for this OCC contract, which the feature PR's Receipt Gate consumes via Evidence-Source.
       The probe greps the OCC tree and proves contracts/OMN-13563.yaml is present and ticket-bound.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13563\"$' contracts/OMN-13563.yaml"
+  - id: "dod-w4-precommit"
+    description: >-
+      Wave 4 gate-wiring proof: SKIP=check-receipt-honesty uv run pre-commit run --all-files on a clean
+      working tree with check-url-authority and no-new-os-environ wired in .pre-commit-config.yaml. Both
+      new hooks report Passed. check-url-authority: 0 new violations (0 grandfathered). no-new-os-environ:
+      0 violations (dynamic-key reads in overlays/ and integrations/ not flagged; tests/, scripts/, examples/
+      unconditionally skipped). No # url-authority-ok suppressions needed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13563/dod-w4-precommit/command.yaml"
+  - id: "dod-w4-occ-pr"
+    description: >-
+      Wave 4 self-binding OCC receipt: the updated contracts/OMN-13563.yaml (title + summary updated to
+      cover Wave 4, two new dod_evidence items added) is present and ticket-bound in this PR.
     source: "manual"
     status: "verified"
     checks:
