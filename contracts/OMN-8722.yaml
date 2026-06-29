@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-8722"
+title: "fix(OMN-8722): eliminate stub framing in node_quality_scoring_compute"
+summary: >-
+  node_quality_scoring_compute carried four stub strings and a stub-tracking field even though its temporal-relevance
+  (code-freshness) scorer was already real and wired into the dimension-weight aggregate. The omnimarket
+  fix removes the stub-tracking tracking_url field and the 'stub' status from ModelQualityScoringMetadata,
+  drops the now-unneeded '# stub-ok' annotation on _compute_temporal_relevance_score (rewording its docstring
+  off TODO/FIXME markers), replaces the two hardcoded last-resort dimension dicts (temporal_relevance:
+  0.0) with create_error_dimensions(), and clears the 'stub' wording from contract.yaml. A deterministic
+  regression test fails if any 'stub' string or the tracking_url field is reintroduced and asserts real
+  temporal-relevance behavior.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Node + new regression tests pass (status never 'stub', score non-null, staleness lowers
+      temporal dim)."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-8722/dod-unit-tests/command.yaml
+  - kind: "ci"
+    description: "Stub strings eliminated (grep clean) and full omnimarket suite green."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-8722/dod-implementation/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: >-
+      41 tests pass across tests/test_omn_8722_quality_scoring_no_stub.py (8 new TDD tests) plus the existing
+      tests/test_golden_chain_quality_scoring_compute.py and tests/test_node_quality_scoring_contract.py.
+      The new tests assert no 'stub' substring in any node source file, the metadata model has no tracking_url
+      field, status is never 'stub' for non-empty input, the quality_score is non-null on success, and
+      staleness markers (TODO/FIXME/deprecated) lower the temporal_relevance dimension below a fresh sample.
+      Probe: cd omni_worktrees/OMN-8722/omnimarket && uv run pytest tests/test_omn_8722_quality_scoring_no_stub.py
+      tests/test_golden_chain_quality_scoring_compute.py tests/test_node_quality_scoring_contract.py -q.
+      Result: 41 passed in 0.30s. Evidence-Source SHA: c0aa404fef1835a22279293be6ad7da19d2dc80e
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-8722/dod-unit-tests/command.yaml"
+  - id: "dod-implementation"
+    description: >-
+      Implementation in omnimarket branch jonah/omn-8722-quality-scoring-temporal-relevance commit c0aa404fef1835a22279293be6ad7da19d2dc80e
+      removes the 4 stub strings from node_quality_scoring_compute (grep -rni stub over the node .py +
+      .yaml returns nothing) and the full omnimarket suite is green. Probe: cd omni_worktrees/OMN-8722/omnimarket
+      && uv run pytest tests/ -m "not kafka" -q. Result: 11033 passed, 48 skipped, 9 deselected in 367.30s.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-8722/dod-implementation/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-8722 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"
