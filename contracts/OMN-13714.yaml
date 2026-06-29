@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13714"
+title: "fix(OMN-13714): await handle_onboarding coroutine directly in HandlerOnboarding"
+summary: >
+  OCC receipt for OMN-13714, resolved in omnimarket PR #1511 on branch jonah/omn-13714-bug-node_onboarding-calls-asynciorun-inside-a-running-event.
+  HandlerOnboarding.handle() was synchronous and called asyncio.run(handle_onboarding(input_model)). RuntimeLocal
+  runs the LocalRuntimeBusAdapter inside an async event loop, so asyncio.run() inside it raises RuntimeError.
+  The fix makes handle() async and awaits handle_onboarding(input_model) directly. The runtime adapter
+  already handles awaitable return values via inspect.isawaitable(). The proof is local/in-memory only;
+  no live runtime mutation or .201 action was performed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      PASS receipts bind the omnimarket RuntimeLocal proof and the no-runtime-mutation deploy assessment.
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13714/dod-omnimarket-pr-1511/command.yaml
+      && grep -q '^status: PASS$' drift/dod_receipts/OMN-13714/dod-deploy-assessment/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1511"
+    description: >
+      Binds omnimarket PR #1511. HandlerOnboarding.handle() is made async and awaits handle_onboarding()
+      directly. Five unit tests pass including test_handle_onboarding_awaited_with_model_onboarding_input
+      which confirms the coroutine is awaited. Full unit suite CI on the same head passed with 1247 passed,
+      1 skipped.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13714/dod-omnimarket-pr-1511/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this ticket only edits a handler module (handler_onboarding.py) to make handle()
+      async and replace asyncio.run() with await; the other changed files are tests. No live deploy, container
+      recreate, or runtime-lane mutation is performed. The fix is proven over the in-memory bus (RuntimeLocal).
+      The deploy gate is satisfied by this assessment; no .201 deploy action is needed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13714/dod-deploy-assessment/command.yaml
+          && grep -q 'deploy gate' drift/dod_receipts/OMN-13714/dod-deploy-assessment/command.yaml"
