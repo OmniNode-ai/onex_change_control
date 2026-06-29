@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13750"
+title: "fix(OMN-13750): remove duplicate onex-prod ingresses + add CI dedup gate"
+summary: >
+  Root-cause fix for the 2026-06-29 website 502 outage. Duplicate Ingress resources in onex-prod and onex-dev
+  claimed the same public hostnames (app.omninode.ai, api.omninode.ai, umami.omninode.ai, omniweb.omninode.ai).
+  Traefik picks backends non-deterministically among duplicates; the onex-prod copies had invalid or missing
+  TLS secrets, causing intermittent HTTP 502s despite healthy backends. Live recovery was performed by
+  deleting the onex-prod duplicates. This PR makes that state permanent by deleting the four duplicate
+  ingress.yaml files, updating kustomization.yaml entries with exclusion comments citing CANONICAL_INGRESS.md,
+  adding that doc to record the onex-dev canonical router decision, and wiring a Python-based CI gate
+  in k8s-validate.yml that blocks any future PR that re-introduces duplicate hostnames across Ingress
+  files.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "kustomize build k8s/onex-prod exits 0 producing 0 Ingress objects; kustomize build k8s/onex-dev
+      produces 4 canonical Ingress objects."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13750/dod-ingress-dedup/command.yaml"
+  - kind: "ci"
+    description: "New validate-ingress-host-uniqueness CI gate in k8s-validate.yml exits 0 on the PR branch."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13750/dod-ci-gate/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-ingress-dedup"
+    description: >
+      kustomize build k8s/onex-prod exits 0 and produces 0 Ingress objects (duplicates removed); kustomize
+      build k8s/onex-dev exits 0 and produces 4 Ingress objects (canonical router). duplicate-host check
+      passes: no hostname appears in more than one ingress.yaml across k8s/.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13750/dod-ingress-dedup/command.yaml"
+  - id: "dod-ci-gate"
+    description: >
+      New validate-ingress-host-uniqueness step added to k8s-validate.yml: Python-based scanner walks
+      all ingress.yaml files under k8s/, extracts hostnames via yaml.safe_load_all, and fails if any hostname
+      appears in more than one file. Gate is wired as a CI step on the PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13750/dod-ci-gate/command.yaml"
+  - id: "dod-occ-self"
+    description: >
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13750 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13750/dod-occ-self/command.yaml"
