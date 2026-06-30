@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13082"
+title: "feat(OMN-13082): expose dep_health_findings on projection API"
+summary: >-
+  node_projection_dep_health is a reducer that already writes the dep_health_findings table (OMN-11042,
+  Done), but its contract.yaml had no projection_api stanza, so the snapshot topic onex.snapshot.projection.dep-health.findings.v1
+  was never registered by build_projection_topic_map() and the table was never served on the standard
+  projection API surface. This change adds the projection_api exposure (expose/topic/table + the real
+  finding columns, order_by captured_at, freshness_column captured_at), mirroring node_projection_instruction_eval.
+  No reducer, handler, or migration change — the table and reducer already exist. The static materialization
+  ratchet passes because the contract declares the dep_health_findings write table in db_io.db_tables
+  and ships the node-local migration 001_create_dep_health_findings.sql that creates it (cold DDL proof).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: FULL
+evidence_requirements:
+  - kind: "tests"
+    description: "TDD + projection discovery/ratchet tests pass for the new exposure."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13082/dod-tests/test_passes.yaml
+  - kind: "ci"
+    description: "Implementation landed and full omnimarket suite green; pre-commit clean."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13082/dod-implementation/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-tests"
+    description: >-
+      tests/test_projection_dep_health_api_omn13082.py (5 TDD tests) pins: the contract declares projection_api.expose/topic/table;
+      the topic matches the db_io write table; projection_api.columns expose the real finding columns;
+      live build_projection_topic_map() registers onex.snapshot.projection.dep-health.findings.v1 -> dep_health_findings;
+      and the static materialization ratchet (validate_projection_materialization_contracts scoped to
+      node_projection_dep_health) returns no issues. The scoped ratchet test tests/unit/projection/test_projection_materialization_validation.py
+      also adds node_projection_dep_health to its validated set. Probe: cd omni_worktrees/OMN-13082/omnimarket
+      && uv run pytest tests/test_projection_dep_health_api_omn13082.py tests/unit/projection/test_projection_materialization_validation.py
+      tests/test_golden_chain_projection_dep_health.py -q. Result: 16 passed. Evidence-Source SHA: baa9f1ccc48343adb4237f993a1388d4e8acf20f
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13082/dod-tests/test_passes.yaml"
+  - id: "dod-implementation"
+    description: >-
+      Implementation in omnimarket branch jonah/omn-13082-dep-health-projection-api commit baa9f1ccc48343adb4237f993a1388d4e8acf20f
+      adds the projection_api stanza to src/omnimarket/nodes/node_projection_dep_health/contract.yaml.
+      The full omnimarket suite is green except environment-only @pytest.mark.kafka tests that require
+      a live broker at 192.168.86.201:19092 (unreachable from the local worker; deselected by the repo-standard
+      -m "not kafka" filter and unrelated to this change). pre-commit run over the changed files is clean,
+      including the projection exposure-column drift gate (OMN-13663) and the topic-naming lint (the onex.snapshot.*
+      topic carries the onex-topic-allow annotation). Probe: cd omni_worktrees/OMN-13082/omnimarket &&
+      uv run pytest tests/ -q. Result: 1 failed, 11042 passed, 55 skipped (the single failure + 1 error
+      are the two kafka-broker tests above).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13082/dod-implementation/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-readiness assessment. OMN-13082 is a contract-only additive change: it adds a projection_api
+      exposure stanza to one reducer contract.yaml. No reducer/handler/model/migration change; no Dockerfile,
+      docker-compose, topic-producer, or infra/runtime-kernel change; no prod or stability mutation. The
+      exposed table (dep_health_findings) and its node-local migration already exist (OMN-11042). The
+      new topic becomes readable on the projection API after the standard post-merge node redeploy republishes
+      the node package; no repository-tracked deploy artifact is required.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13082/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13082 contract and its DoD
+      receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13082/dod-occ-self/command.yaml"
