@@ -1,0 +1,40 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-13768
+title: 'fix(OMN): runtime /ready returns 503 ONEX_CORE_041 "RuntimeHostProcess not available" — pods never
+  reach k8s Ready though functionally processing events'
+summary: >-
+  omnibase_infra service_kernel.py created RuntimeHostProcess and called health_server.attach_runtime()
+  AFTER the long-running Kafka subscription bootstrap work (subscribe_wired_contract_topics / plugin consumer
+  start / ContractRegistrationEventRouter wiring), so GET /ready raised ProtocolConfigurationError [ONEX_CORE_041]
+  for the entire subscription window even though the runtime was already processing events via the auto-wired
+  consumers. Fix reorders RuntimeHostProcess creation + container registration + health_server.attach_runtime()
+  to run immediately after health_server.start(), before that subscription work, and adds a graceful runtime_pending
+  503 branch to _handle_readiness mirroring the existing _handle_health pattern (defense in depth for
+  the residual pre-attach window). PR omnibase_infra#2172.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-ready-reorder-and-regression-tests
+    description: >-
+      RuntimeHostProcess create+register+attach reordered before Kafka subscription work in service_kernel.py
+      bootstrap(); graceful runtime_pending 503 branch added to health_checker.py _handle_readiness. 5
+      new unit tests pin the readiness branches (TestServiceHealthReadinessEndpoint); the pre-existing
+      OMN-9741 kernel health-ordering integration test was updated to assert the new create/attach-before-subscribe
+      ordering invariant. Full local suite: 24660 passed / 34 failed / 78 errors, all pre-existing environment-dependent
+      failures (Kafka/Postgres connectivity, perf-timing under concurrent machine load) verified via git-stash
+      re-run against unmodified HEAD — zero failures touch service_kernel.py, health_checker.py, or their
+      test files.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13768/dod-ready-reorder-and-regression-tests/command.yaml"
+          && grep -q '^pr_number: 2172$' "drift/dod_receipts/OMN-13768/dod-ready-reorder-and-regression-tests/command.yaml"
+          && grep -q '^verifier: claude-receipt-review-omn-13768$' "drift/dod_receipts/OMN-13768/dod-ready-reorder-and-regression-tests/command.yaml"
