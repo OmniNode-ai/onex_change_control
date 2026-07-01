@@ -1,0 +1,85 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13774
+title: "fix(OMN-13774): recreate spool dir before every _spool_event write"
+summary: >
+  BoundedEventQueue._ensure_spool_dir() (node_emit_daemon) only ran once at construction time. If the
+  .onex_state/event-spool/ directory was later removed (tmp cleanup, ONEX_STATE_DIR reset between sessions,
+  GC of an idle runtime dir), every subsequent _spool_event write raised FileNotFoundError, silently swallowed
+  as a logged failure — turning a transient Kafka outage into total drain loss ("Drained 0 events from memory
+  to spool"). The fix re-creates the spool dir (mkdir(parents=True, exist_ok=True)) immediately before every
+  write_text() call in _spool_event, not just at __init__. The ticket's original reference path
+  (omniclaude/src/omniclaude/publisher/event_queue.py:155) was removed by OMN-10120 (legacy omniclaude
+  publisher deleted); the live code path is omnimarket/src/omnimarket/nodes/node_emit_daemon/event_queue.py.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: >
+      Regression tests reproduce the reported bug (fail without the fix) and pass with the mkdir fix applied.
+    command: >
+      uv run pytest tests/unit/nodes/node_emit_daemon/test_event_queue_spool_dir.py -v
+  - kind: ci
+    description: >
+      Full omnimarket test suite passes (no -k filter); only pre-existing, unrelated live-Postgres
+      integration failures remain.
+    command: >
+      uv run pytest tests/ -v --tb=short -m "not kafka"
+dod_evidence:
+  - id: dod-001
+    description: >
+      New regression tests (test_spool_event_recreates_missing_spool_dir,
+      test_drain_to_spool_persists_buffer_when_spool_dir_missing) reproduce the FileNotFoundError bug
+      (verified failing via git stash of the fix) and pass with the fix applied.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13774/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      Full omnimarket suite (uv run pytest tests/ -v --tb=short -m "not kafka", no -k filter): 11076
+      passed, 52 skipped, 9 deselected, 4 failed. The 4 failures are pre-existing
+      tests/test_datasource_postgres.py::TestPostgresDataSourceIntegration integration tests requiring a
+      live .201 Postgres connection (localhost:5436 connection refused, no tunnel active this session) —
+      unrelated to this change.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13774/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      mypy --strict on the changed source file is clean, and ruff format / ruff check --fix are clean.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13774/dod-003/command.yaml"
+  - id: dod-004
+    description: >
+      pre-commit run --files <changed files> (with OMNIBASE_INFRA_PATH set for the topic-naming-lint hook)
+      passes every hook, including the Dependency health gate.
+      Feature commit SHA 510c94d2085c24b385ed587a5c3791748dc3d0b0
+      Branch: jonah/omn-13774-spool-mkdir-fix
+      Repo: OmniNode-ai/omnimarket
+      PR: 1544
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13774/dod-004/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13774 contract and PASS receipts required by
+      the downstream omnimarket PR #1544 Receipt Gate.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13774/dod-occ-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
