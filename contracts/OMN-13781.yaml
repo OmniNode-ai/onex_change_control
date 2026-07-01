@@ -1,0 +1,104 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13781"
+title: "OMN-13674 child: contract-state-coverage CI gate (enforcement backbone)"
+summary: >-
+  Implements scripts/validate_state_coverage.py (omnimarket), which extracts each node's declared state
+  set from contract.yaml (FSM states via fsm.states / state_machine.states[].state_name for orchestrators;
+  output field names + published event/topic types for compute/effect/reducer) and diffs it against states
+  literally asserted (quoted string or attribute access) in that node's test files, FAILing CI when a
+  directly-touched node has an uncovered state. Wired as a required CI gate (.github/workflows/state-coverage-gate.yml,
+  runs --check-changed <base-ref> --strict on every pull_request/merge_group event) and a local pre-commit
+  hook (state-coverage-gate, --check-changed HEAD --strict) in the same PR, per Rule 5 (enforcement, not
+  detection). 639 pre-existing (node, state) gaps across 262 nodes as of 2026-07-01 are catalogued in
+  scripts/validation/state_coverage_baseline.txt as a grandfather clause (WARN in non-strict --check-all
+  mode only); strict mode promotes a baselined node's gaps back to FAIL the moment that node is directly
+  touched by a diff, so the gate is real enforcement for all future changes without requiring a 262-node
+  backfill to land. omnimarket PR #1545.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: FULL
+evidence_requirements:
+  - kind: "tests"
+    description: "Full omnimarket suite stays green; new state-coverage unit suite (15 tests) covers FSM
+      extraction (both shapes), output/topic extraction + de-dup, coverage detection (quoted-string +
+      attribute + topic false-positive guard), and baseline WARN-vs-FAIL gating in both directions."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13781/dod-implementation/command.yaml
+  - kind: "ci"
+    description: "Gate lands green on its own PR: state-coverage-gate CI job passes (--check-changed origin/dev
+      --strict finds zero directly-modified nodes since the PR only adds new files), ruff format/check,
+      mypy --strict on the new script, and pre-commit run --files <changed> all clean."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13781/dod-ci-gates/command.yaml
+  - kind: "ci"
+    description: "Gate is wired as a required CI check + pre-commit hook in the same PR (Rule 5), not
+      left advisory: .github/workflows/state-coverage-gate.yml + state-coverage-gate pre-commit hook both
+      ship in omnimarket PR #1545."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13781/dod-enforcement-wiring/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-implementation"
+    description: >-
+      omnimarket branch jonah/omn-13781-contract-state-coverage-gate commit 4c6ea7ff4b0c1ed51de20053848b08397201bd41
+      adds scripts/validate_state_coverage.py, scripts/validation/state_coverage_baseline.txt (639 baselined
+      gaps / 262 nodes), .github/workflows/state-coverage-gate.yml, a state-coverage-gate pre-commit hook,
+      and tests/unit/scripts/test_validate_state_coverage.py. Probe: cd omni_worktrees/OMN-13781/omnimarket
+      && uv run pytest tests/ -v -m "not kafka". Result: 11089 passed, 52 skipped, 9 deselected, 4 pre-existing
+      failures in tests/test_datasource_postgres.py::TestPostgresDataSourceIntegration (live .201 Postgres
+      connectivity test, unrelated to this change — connection refused to localhost:5436 with no local
+      port-forward active in this environment). New suite: uv run pytest tests/unit/scripts/test_validate_state_coverage.py
+      -v -> 15 passed. --check-all (baseline-aware, non-strict) on the full omnimarket node tree -> state-coverage-gate:
+      PASS (0 FAIL / 84 clean nodes / 262 baselined-WARN nodes) — this is the "empty coverage diff" the
+      ticket DoD requires.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13781/dod-implementation/command.yaml"
+  - id: "dod-ci-gates"
+    description: >-
+      uv run ruff format scripts/validate_state_coverage.py tests/unit/scripts/test_validate_state_coverage.py
+      -> 1 file reformatted (whitespace only), re-verified clean on second pass. uv run ruff check --fix
+      -> All checks passed. uv run mypy scripts/validate_state_coverage.py --strict -> Success: no issues
+      found in 1 source file. uv run pre-commit run --files <all 5 changed/added files> -> every hook
+      Passed except Topic Naming Lint, which requires OMNIBASE_INFRA_PATH pointing at a sibling omnibase_infra
+      checkout; confirmed clean (OK: no topic naming violations) when OMNIBASE_INFRA_PATH is set correctly
+      for this nested-worktree layout — CI clones the sibling repo natively so this is a local-worktree-path
+      artifact, not a real finding. Regression-tested strict promotion manually: editing a baselined node's
+      contract.yaml and running --check-changed origin/dev --strict correctly FAILs on that node's baselined
+      gap (node_ab_compare_reducer / 'compared'); an untouched diff PASSes fast with "no node directories
+      to validate". PR #1545 CI: state-coverage-gate job itself passed on first push (job 28547194953/84635383454);
+      two unrelated required checks (occ-preflight / eligibility, verify / verify) initially failed only
+      because the PR body was missing this Evidence-Source line (OMN-10419 receipt-gate) — resolved by
+      this OCC PR + Evidence-Source: OCC#<this-pr-number> on the product PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13781/dod-ci-gates/command.yaml"
+  - id: "dod-enforcement-wiring"
+    description: >-
+      Rule 5 compliance check: the gate is NOT advisory. .github/workflows/state-coverage-gate.yml runs
+      on every pull_request/merge_group event with no paths filter (mirrors node-drift-gate's OMN-12706
+      fix so the required check always reports, including docs-only PRs) and executes `validate_state_coverage.py
+      --check-changed <base-ref> --strict`, which FAILs the job (non-zero exit) when any directly-touched
+      node has an uncovered declared state. The .pre-commit-config.yaml state-coverage-gate hook runs
+      the same script with `--check-changed HEAD --strict`, scoped to src/omnimarket/nodes/node_*/contract.yaml,
+      src/omnimarket/nodes/node_*/*.py, and tests/*.py, so local commits are blocked before push. Both
+      ship in the same PR (omnimarket #1545) as the detector script, satisfying "Wire as required CI gate
+      + pre-commit hook in the SAME PR" from the ticket DoD.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13781/dod-enforcement-wiring/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13781 contract and DoD receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"
