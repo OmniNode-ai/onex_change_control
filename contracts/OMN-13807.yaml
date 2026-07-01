@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13807"
+title: "fix(OMN-13807): reconcile canonical embedding endpoint :8100 -> :8002"
+summary: >-
+  The .201 embedding backend moved from :8100 (dead process, circuit-breaker OPEN) to :8002 (vllm-embeddings,
+  qwen3-embedding-0.6b). OMN-13664 fixed the runtime env surfaces (dev.bifrost.yaml, env-master-template.env,
+  ~/.omnibase/.env) but left the canonical topology contract contracts/llm_endpoints.yaml (slot embeddings-201)
+  still pointing at the dead :8100 — so a redeploy would re-resolve the dead endpoint, and the env-contract
+  guard scripts/check_llm_endpoint_env_contract.py would reject the corrected :8002 env value as a non-running
+  slot. This reconciles the topology contract to :8002, updates the guard test fixture to track the reconciled
+  endpoint, and corrects the LLM_EMBEDDING_URL surfaces in docs/architecture/LLM_INFRASTRUCTURE.md. This
+  is a config + guard + docs change: it touches NO deploy-gate runtime path (no Dockerfile, compose, node
+  contract/handler, or src/omnibase_infra/runtime/**) and performs no prod/judge/stability mutation. The
+  .201 runtime restart to pick up :8002 is a separate operator-gated deploy step, not part of this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "New contract test pins embeddings-201 -> :8002; the env-contract guard test now accepts
+      :8002 and rejects :8100. Targeted contract/script/topology suites pass."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13807/dod-implementation/command.yaml
+  - kind: "ci"
+    description: "The infra PR is not deploy-required (no runtime paths touched); deploy-gate does not
+      fire."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13807/dod-deploy-assessment/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-implementation"
+    description: >-
+      omnibase_infra branch jonah/omn-13807-embedding-endpoint-reconcile commit 5194d0817c09ac9497cde198e0f9994cc5915849
+      reconciles the embedding endpoint. contracts/llm_endpoints.yaml slot embeddings-201 port/endpoint_url
+      move :8100 -> :8002 (canonical topology). A new test tests/unit/contracts/test_llm_endpoints_contract.py::test_embeddings_201_endpoint_reconciled_to_8002
+      pins the slot to :8002. tests/scripts/test_check_llm_endpoint_env_contract.py::test_accepts_running_embedding_endpoint
+      updated so the running-endpoint fixture is :8002, exercising the guard that now accepts :8002 and
+      still rejects the disabled :8100. Probe: cd omni_worktrees/OMN-13807/omnibase_infra && uv run pytest
+      tests/scripts/test_check_llm_endpoint_env_contract.py tests/unit/contracts/ tests/unit/models/contracts/test_model_llm_endpoint_contract.py
+      tests/unit/validators/test_topology_validator.py -q. Result: 120 passed, 1 skipped. Evidence-Source
+      SHA: 5194d0817c09ac9497cde198e0f9994cc5915849
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13807/dod-implementation/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-readiness assessment. The infra PR changes exactly four paths: contracts/llm_endpoints.yaml
+      (topology data contract, not a node contract), docs/architecture/LLM_INFRASTRUCTURE.md, tests/unit/contracts/test_llm_endpoints_contract.py,
+      and tests/scripts/test_check_llm_endpoint_env_contract.py. None match the deploy-gate RUNTIME_PATH_PATTERNS
+      (docker/Dockerfile*, docker/docker-compose*, src/omnibase_infra/runtime/**, node handlers/contracts)
+      — so the PR is NOT deploy-required and deploy-gate does not fire. The residual node/service docstrings
+      that still name :8100 are cosmetic (embedding base_url is always caller-injected; there is no runtime
+      :8100 default) and were deliberately excluded from this non-deploy PR because they touch runtime
+      src paths and correctly require deploy evidence; they are deferred to the operator's deploy PR.
+      No prod/judge/stability mutation is performed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13807/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13807 contract and DoD receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"
