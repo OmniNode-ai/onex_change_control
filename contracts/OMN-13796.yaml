@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13796"
+title: "M2b: Disposition node_release facade — registry honesty + mechanical no-I/O guard"
+summary: >-
+  omnimarket's node_release HandlerRelease is a pure FSM state machine — confirmed zero git/gh/PyPI I/O
+  — but contract.yaml declared node_archetype: compute with purity: impure, a direct contradiction of
+  the canonical rule that COMPUTE nodes are pure/no-I/O (CLAUDE.md rule 7a), and disagreed with metadata.yaml's
+  own node_role: orchestrator. This aligns contract.yaml node_type/descriptor.node_archetype to orchestrator
+  and descriptor.purity to orchestration (matching node_redeploy_orchestrator convention), sets metadata.yaml
+  capabilities.full_runtime: false and side_effect_class: orchestration to honestly reflect that the live-mutating
+  release pipeline (bump/pin/PR/merge/tag/publish) is not runnable through this node today, and adds a
+  mechanical registry-honesty test (tests/unit/nodes/node_release/test_registry_honesty.py) that statically
+  greps handler_release.py's import graph and call sites for forbidden I/O (subprocess/requests/httpx/os.system/shutil/git)
+  so any future PR that silently adds real I/O without updating the registry fails CI. Follow-up OMN-13798
+  tracks the real gated EFFECT implementation for the dev/dry-run release path. No live prod/PyPI effect
+  is exercised in this ticket or its tests; this is a metadata + test-only change with no live deploy.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Focused registry-honesty + golden-chain tests and the full omnimarket suite pass."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13796/dod-implementation/command.yaml
+  - kind: "ci"
+    description: "ruff, pre-commit (Topic Naming Lint, FSM YAML-vs-handler drift, Node Purity Gate), and
+      gh pr checks clean."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13796/dod-implementation/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-implementation"
+    description: >-
+      omnimarket branch jonah/omn-13796-disposition-node-release-facade commit 0f0ad9c75f0a3e23daec124c16234bc1f1ba8749
+      (PR #1543) edits src/omnimarket/nodes/node_release/contract.yaml (node_type/descriptor.node_archetype:
+      compute -> orchestrator, descriptor.purity: impure -> orchestration) and src/omnimarket/nodes/node_release/metadata.yaml
+      (capabilities.full_runtime: true -> false, side_effect_class: external_io -> orchestration), and
+      adds tests/unit/nodes/node_release/test_registry_honesty.py (6 cases) asserting the registry disposition
+      and statically scanning handler_release.py for forbidden I/O imports/calls. Probe: cd omni_worktrees/OMN-13796/omnimarket
+      && uv run pytest tests/unit/nodes/node_release/ tests/test_golden_chain_release.py tests/test_golden_chain_release_node_contract_coverage.py
+      -v. Result: 70 passed. Full suite: uv run pytest tests/ -v -> 11084 passed, 60 skipped, 5 failed
+      + 1 error (all pre-existing @pytest.mark.integration tests requiring live .201 Postgres/Kafka connectivity
+      unreachable from this sandbox — unrelated to node_release, confirmed via diff scope). Evidence-Source
+      SHA: 0f0ad9c75f0a3e23daec124c16234bc1f1ba8749
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13796/dod-implementation/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-readiness assessment. The change edits two YAML fields on one node contract.yaml (node_archetype/purity
+      — a descriptor-only value that neither adds nor removes handler routing, topics, or subscribe/publish
+      wiring), one metadata.yaml capabilities flag, and adds one pure Python test file. It introduces
+      no Dockerfile, docker-compose, runtime-kernel, handler logic, topic, or event-bus wiring change,
+      and performs no prod/judge/stability mutation. HandlerRelease's behavior (the FSM state machine)
+      is byte-for-byte unchanged. Not deploy-required.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13796/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13796 contract and its three
+      DoD receipts (dod-implementation, dod-deploy-assessment, dod-occ-self).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13796/dod-occ-self/command.yaml"
