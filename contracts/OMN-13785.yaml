@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13785"
+title: "OMN-13674 child: Wave 10 delegate state-coverage suite"
+summary: >-
+  omnimarket PR #1550 delivers full declared-state test coverage for the three Wave 10 delegate nodes.
+  node_delegate_skill_orchestrator: no fsm block is declared in this legacy-handler orchestrator contract,
+  so coverage is handler_routing (single route, already covered) plus the handler's terminal-status
+  branches; the "timeout" passthrough (distinct from the unknown-status-coerced-to-failed path) was
+  previously untested and is now covered at both unit and in-memory-bus integration level.
+  node_llm_delegation_routing_compute: closes the two remaining "not found in policy model_profiles"
+  branches (preferred-candidate skip and fallback-not-found raise). ModelDelegationRoutingPolicy's own
+  cross-reference validator makes these unreachable via any public constructor, confirmed empirically
+  (including via model_copy on an already-validated instance, since Pydantic reruns "after" validators on
+  nested-model construction) -- these are genuine defense-in-depth dead code under current validators, so
+  the two new tests exercise the private _select_model function directly against duck-typed stand-ins,
+  documented inline as such, rather than left uncovered or faked via an invalid Pydantic model.
+  node_llm_delegation_call_effect: HandlerLlmDelegationCall.handle(), the actual contract-wired runtime
+  dispatch entrypoint (handler_routing resolves handle, not __call__), had zero test coverage despite
+  __call__ being extensively tested; adds coverage for every outcome handle() documents (endpoint
+  resolution failure, unhealthy endpoint returning the all-tiers-failed event, success returning the
+  call-completed event, timeout/invalid-json returning a plain failure result with no event), plus the
+  generic-exception-to-UNKNOWN failure_class branch and emit_model_degraded. HandlerInferenceIntent (the
+  node's other handler) already had complete boundary-outcome coverage. All tests run over mocked I/O
+  boundaries only (constructor-injected dispatch port / patched transport module); no live LLM call, no
+  live Kafka, no monkeypatched subprocess/asyncpg.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused suite for the three touched nodes passes in-process on EventBusInmemory / constructor-injected
+      mocks with no external services.
+    command: "uv run pytest tests/unit/nodes/node_llm_delegation_routing_compute/ tests/unit/nodes/node_delegate_skill_orchestrator/ tests/unit/nodes/node_llm_delegation_call_effect/ tests/integration/node_delegate_skill_orchestrator/ -v"
+  - kind: "tests"
+    description: >-
+      Full non-Kafka-marked omnimarket suite passed locally before opening PR #1550 (no -k filter).
+    command: "uv run pytest tests/ -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1550"
+    description: >-
+      omnimarket PR #1550 carries the Wave 10 delegate state-coverage suite for OMN-13785 at head commit
+      984bd3feca1c629070bf46a22985de1a14a7a1ca. Focused suite (routing_compute + delegate_skill_orchestrator
+      + llm_delegation_call_effect, unit + integration) = 130 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13785/dod-omnimarket-pr-1550/command.yaml && grep -q '^pr_number: 1550$' drift/dod_receipts/OMN-13785/dod-omnimarket-pr-1550/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: PR #1550 changes tests/ only (4 test files, 3 pre-existing node source dirs) --
+      no handler/runtime behavior change, no topic, schema, migration, or .201/.200 runtime mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13785/dod-deploy-assessment/command.yaml && grep -q 'No live deploy' drift/dod_receipts/OMN-13785/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR, which carries this contract
+      and receipts onto dev so downstream omnimarket PR #1550 can cite Evidence-Source: OCC#<this-pr-number>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13785/dod-occ-self/command.yaml"
