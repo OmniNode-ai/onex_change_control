@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13769"
+title: 'fix(OMN-13769): reconcile onex-dev runtime kustomization to live cluster state'
+summary: >
+  The 2026-07-01 wave-1 recovery re-pinned onex-dev live to digest 00e5a02 and blanked OMNIINTELLIGENCE_DB_URL
+  on the 3 core runtime deployments via SSM, but omninode_infra's k8s/onex-dev/runtime kustomization stayed
+  pinned to the stale 481b774f digest. This ticket reconciles the repo manifests to live so the next deploy-onex-dev
+  reconcile does not revert the recovery, fixes a latent bug (non-optional secretKeyRefs for LLM API keys
+  that do not exist in onex-runtime-credentials, which would crash-loop the deployments), and dispositions
+  onex-prod drift (read-only — no prod mutation).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: FULL
+evidence_requirements:
+  - kind: tests
+    description: "omninode_infra unit suite passes after the manifest reconcile"
+    command: "cd omninode_infra && uv run pytest tests/ -v"
+  - kind: ci
+    description: "pre-commit hooks pass on the changed k8s manifests"
+    command: "cd omninode_infra && pre-commit run --files k8s/onex-dev/runtime/deployment-omninode-runtime-effects.yaml
+      k8s/onex-dev/runtime/deployment-omninode-runtime-worker.yaml k8s/onex-dev/runtime/deployment-omninode-runtime.yaml
+      k8s/onex-dev/runtime/kustomization.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      omninode_infra PR #538 bumps the k8s/onex-dev/runtime image digest override to 13c96028... (tag
+      00e5a02), blanks OMNIINTELLIGENCE_DB_URL on the 3 core runtime deployments, and marks OPEN_ROUTER_API_KEY/LLM_GLM_API_KEY/GEMINI_API_KEY
+      optional. 34 omninode_infra unit tests pass locally (uv run pytest tests/ -v: 34 passed).
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ -v"
+  - id: dod-002
+    description: >
+      pre-commit run clean on all 4 changed manifest files (yamllint, detect-secrets, no-hardcoded-topics,
+      normalization-symmetry, reject-deploy-gate-skip-token, etc.).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "pre-commit run --files k8s/onex-dev/runtime/deployment-omninode-runtime-effects.yaml
+          k8s/onex-dev/runtime/deployment-omninode-runtime-worker.yaml k8s/onex-dev/runtime/deployment-omninode-runtime.yaml
+          k8s/onex-dev/runtime/kustomization.yaml"
+  - id: dod-003
+    description: >
+      Live kubectl diff -k k8s/onex-dev/runtime (SSM on i-0e596e8b557e27785, KUBECONFIG=/etc/rancher/k3s/k3s.yaml)
+      against the onex-dev cluster confirms the image-digest and OMNIINTELLIGENCE_DB_URL drift is resolved
+      post-fix (441-line diff before, image-digest/OMNIINTELLIGENCE_DB_URL hunks gone after). onex-prod
+      disposition: no dev-recovery-driven prod drift (onex-prod was not mutated during wave-1 recovery,
+      per docs/handoffs/2026-07-01-overnight-wave1-result.md); a separate, pre-existing, prod-gated drift
+      (readinessProbe httpGet->tcpSocket, startupProbe added, memory 512Mi->768Mi on all 7 core runtime
+      deployments) was found read-only via kubectl diff and flagged as a sibling follow-up — not applied
+      here.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6'
+          k8s/onex-dev/runtime/kustomization.yaml"
