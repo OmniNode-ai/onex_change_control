@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13761"
+title: "feat(OMN-13761): durable node-level ECR credential refresh (Candidate B) + Candidate A hostNetwork unblock"
+summary: >-
+  Prod/dev ecr-cred pulls silently die every ~12h because the in-pod ecr-secret-refresh CronJob (OMN-13749
+  #527) cannot authenticate on this k3s cluster (IMDS hop-limit=1 drops pod metadata requests, no IRSA
+  fallback). omninode_infra PR #539 provisions the durable node-level systemd timer (ecr-cred-refresh.service/.timer)
+  via terraform user_data on the k3s server node, mirrored across aws/cluster (prod) and aws/cluster-dev
+  (dev) user_data templates, per docs/plans/2026-07-01-omn-13749-ecr-token-refresh-design.md Candidate
+  B. It also fixes the legacy in-pod CronJob into a functional same-day fallback (Candidate A, hostNetwork:
+  true), extends pod-crash-alerts.yaml with the OnexDevPodImagePullBackOff refresh-failure alert (parity
+  with the existing prod alert) and repoints both alerts' diagnostics at the node timer, and adds a permanent
+  regression test (tests/scripts/test_ecr_cred_refresh_timer.py) asserting template parity, refresh cadence,
+  and namespace-list sync. This PR authors the terraform/CI/alerting change only; no terraform apply (dev
+  or prod) was performed — no terraform/tofu binary is available in the authoring environment. Prod apply
+  additionally requires a fresh CODEOWNERS-approved prod-promotion grant per CLAUDE.md §2a/§12 and is
+  explicitly flag-before-fire.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omninode_infra PR #539 root-level pytest suite passes, including the new permanent
+      ECR-refresh-timer regression test."
+    command: "cd omninode_infra && uv run --with pytest pytest tests/ -v"
+  - kind: "manual"
+    description: "No terraform apply or other live AWS/k3s mutation was performed pre-merge; the change
+      is author-only per WS-4a and prod apply remains gated by OMN-13418."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13761/dod-timer-parity/command.yaml && grep -q
+      '^status: PASS$' drift/dod_receipts/OMN-13761/dod-no-live-mutation/command.yaml && grep -q '^status:
+      PASS$' drift/dod_receipts/OMN-13761/dod-occ-self/command.yaml && grep -q '^status: PASS$' drift/dod_receipts/OMN-13761/dod-omninode-infra-pr-539/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-timer-parity"
+    description: >-
+      omninode_infra PR #539 root pytest suite passes (41 passed), including 7/7 in the new
+      tests/scripts/test_ecr_cred_refresh_timer.py asserting both aws/cluster and aws/cluster-dev
+      server.sh.tmpl templates ship the ecr-cred-refresh systemd timer, stay byte-identical, keep the
+      refresh cadence (OnUnitActiveSec=8h, OnBootSec, Persistent=true) inside the 12h ECR token expiry,
+      and keep the managed-namespace list in sync with the legacy CronJob.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13761/dod-timer-parity/command.yaml"
+  - id: "dod-no-live-mutation"
+    description: >-
+      OMN-13761 (this omninode_infra PR) changes terraform user_data templates, a k8s CronJob manifest,
+      a PrometheusRule alert manifest, docs, and a permanent test only. No terraform apply, kubectl apply,
+      SSH+docker mutation, or other live AWS/k3s change was performed pre-merge. Dev-cluster terraform
+      apply for parity and any prod apply are explicitly out of scope for this PR and remain gated (prod
+      apply requires the fresh CODEOWNERS-approved OMN-13418 grant).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13761/dod-no-live-mutation/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13761 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13761/dod-occ-self/command.yaml"
+  - id: "dod-omninode-infra-pr-539"
+    description: >-
+      omninode_infra PR #539 carries the OMN-13761 node-level ECR credential refresh timer, Candidate
+      A hostNetwork fallback fix, alerting extension, permanent regression test, and doc reconciliation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13761/dod-omninode-infra-pr-539/command.yaml
+          && grep -q '^pr_number: 539$' drift/dod_receipts/OMN-13761/dod-omninode-infra-pr-539/command.yaml
+          && grep -q '^commit_sha: \"879e311b1201704f23cd4a37c657fc9977eaeb01\"$' drift/dod_receipts/OMN-13761/dod-omninode-infra-pr-539/command.yaml"
