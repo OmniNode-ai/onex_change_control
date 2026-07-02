@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13852"
+title: "fix(OMN-13852): register routes for six guard-tripped orchestrators + provision NO_DISPATCHER
+  DLQ topics"
+summary: >-
+  omnibase_infra PR #2183 fixes a live-proven routing outage: six multi-handler orchestrators (node_rsd_orchestrator,
+  node_routing_orchestrator, node_merge_sweep_workflow_orchestrator, node_chain_orchestrator, node_registration_orchestrator,
+  node_scope_workflow_orchestrator) declared handler entries with event_model but no event_type, so _topics_for_handler_entry
+  hit the multi-handler ambiguity guard, registered ZERO dispatch routes, and every inbound message fell
+  through to NO_DISPATCHER -- a silent drop (proven end-to-end on node_rsd_orchestrator: ModelRsdScoreResult
+  on onex.evt.rsd.scores-calculated.v1 logged 'No dispatcher found ... routing to DLQ topic onex.dlq.omnibase-infra.rsd.v1',
+  a topic that never existed). The fix is contract disambiguation only -- each handler entry now declares
+  its topic-derived event_type alias plus message_category, so a route registers per handler and the real
+  event_model payload dispatches on its own topic. MessageDispatchEngine is unchanged (OMN-12525 alignment;
+  nothing for the OMN-12549 seam to replicate). DLQ integrity: each contract declares event_bus.dlq_topics
+  matching the engine-derived NO_DISPATCHER target for its domain (OMN-13548 ContractTopicExtractor provisioning
+  path), so the dead-letter escape hatch targets a real topic. The OMN-12548 dispatch parity fixture is
+  regenerated in the same PR and its two P0-1 tripwire tests are repurposed to guard the fix; a focused
+  test proves routes register and the exact live P0-1 scenario now dispatches SUCCESS. This OCC evidence
+  PR records the consuming-PR binding. The change edits runtime contract YAML (additive event_bus.dlq_topics
+  + per-handler event_type/message_category) but is deploy-neutral: deploy-gate passes on PR #2183 and
+  the fix is picked up on the next operator-gated runtime rebuild; no live deploy is performed by this
+  evidence PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2183"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2183 carries the OMN-13852 fix. Each of the six multi-handler
+      orchestrator contracts now declares a per-handler event_type alias (+ message_category) so _topics_for_handler_entry
+      returns the owning subscribe topic and a ModelDispatchRoute registers per handler, and declares
+      event_bus.dlq_topics matching the engine-derived per-domain DLQ topic. The OMN-12548 parity fixture
+      is regenerated in the same PR. All code-correctness CI is green (15/15 Tests splits, CodeQL, dispatch-parity-gate,
+      dispatcher-route-coverage, contract-validation, deploy-gate). Real probe: gh pr view 2183 --repo
+      OmniNode-ai/omnibase_infra --json number,state,headRefOid,headRefName,title,files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13852/dod-infra-pr-2183/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: onex_change_control PR carrying this OMN-13852 contract, consumed by omnibase_infra
+      PR #2183 through Receipt Gate and OCC eligibility. No deploy-gate evidence is required: deploy-gate
+      passes on PR #2183 (deploy-neutral additive contract change) and the fix is picked up on the next
+      operator-gated runtime rebuild.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13852/dod-occ-self/command.yaml"
