@@ -3,15 +3,15 @@ schema_version: "1.0.0"
 ticket_id: OMN-13817
 title: "feat(OMN-13817): fail-closed durable-evidence gate on node_linear_triage close path"
 summary: >-
-  Close-batch wf_1628d9a5 flipped implementation tickets Backlog->Done with no durable evidence
-  (startedAt=null, zero attachments, zero PRs, sub-second bulk close), corrupting the Linear board as a
-  completion signal. omnimarket PR #1554 adds a pure-logic ClosePolicyGate
-  (node_linear_triage/services/close_evidence_gate.py) and routes every save_issue(state="Done") in
-  node_linear_triage through a single _mark_done chokepoint that enforces it: a Done flip is refused unless
-  it carries a recognized durable evidence kind (merged implementing PR, superseding sibling PR,
-  all-children-done roll-up, or a tracked OCC receipt) with a non-empty detail. A no-evidence close — the
-  wf_1628d9a5 signature — raises CloseEvidenceRefusedError before any Linear mutation. Compile-only node
-  logic + tests; no runtime deploy, no .201 mutation, no Linear writes performed by this PR.
+  Close-batch wf_1628d9a5 flipped implementation tickets Backlog->Done with no durable evidence (startedAt=null,
+  zero attachments, zero PRs, sub-second bulk close), corrupting the Linear board as a completion signal.
+  omnimarket PR #1554 adds a pure-logic ClosePolicyGate (node_linear_triage/services/close_evidence_gate.py)
+  and routes every save_issue(state="Done") in node_linear_triage through a single _mark_done chokepoint
+  that enforces it: a Done flip is refused unless it carries a recognized durable evidence kind (merged
+  implementing PR, superseding sibling PR, all-children-done roll-up, or a tracked OCC receipt) with a
+  non-empty detail. A no-evidence close — the wf_1628d9a5 signature — raises CloseEvidenceRefusedError
+  before any Linear mutation. Compile-only node logic + tests; no runtime deploy, no .201 mutation, no
+  Linear writes performed by this PR.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -21,24 +21,27 @@ evidence_requirements:
     command: "gh pr checks 1554 --repo OmniNode-ai/omnimarket --watch"
   - kind: "manual"
     description: "Focused close-evidence-gate tests pass (pure gate + chokepoint + dry-run batch refusal)"
-    command: "env -u PYTHONPATH uv run pytest tests/nodes/node_linear_triage/test_omn_13817_close_evidence_gate.py -v"
+    command: "env -u PYTHONPATH uv run pytest tests/nodes/node_linear_triage/test_omn_13817_close_evidence_gate.py
+      -v"
   - kind: "manual"
-    description: "Post-merge runtime readiness smoke imports the close-evidence-gate path"
-    command: "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c \"from omnimarket.nodes.node_linear_triage.services.close_evidence_gate
-      import enforce_close_evidence, EnumCloseEvidenceKind; print('close-evidence-gate deploy readiness smoke ok')\""
+    description: "Local import readiness smoke imports the close-evidence-gate path (no live deploy)"
+    command: "env -u PYTHONPATH uv run python -c \"from omnimarket.nodes.node_linear_triage.services.close_evidence_gate
+      import enforce_close_evidence, EnumCloseEvidenceKind, evaluate_close_evidence; print('close-evidence-gate
+      deploy readiness smoke ok')\""
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-001"
-    description: "Focused close-evidence-gate tests pass — pure-gate ALLOW per durable kind / REFUSE
-      no-evidence, _mark_done chokepoint never writes Done without evidence, and a dry-run of the
-      wf_1628d9a5 batch refuses every no-evidence close with zero Done writes (13 tests)."
+    description: "Focused close-evidence-gate tests pass — pure-gate ALLOW per durable kind / REFUSE no-evidence,
+      _mark_done chokepoint never writes Done without evidence, and a dry-run of the wf_1628d9a5 batch
+      refuses every no-evidence close with zero Done writes (13 tests)."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "env -u PYTHONPATH uv run pytest tests/nodes/node_linear_triage/test_omn_13817_close_evidence_gate.py -v"
+        check_value: "env -u PYTHONPATH uv run pytest tests/nodes/node_linear_triage/test_omn_13817_close_evidence_gate.py
+          -v"
   - id: "dod-002"
     description: "node_linear_triage lint + strict package typecheck pass locally on the change."
     source: "manual"
@@ -47,10 +50,12 @@ dod_evidence:
         check_value: "env -u PYTHONPATH uv run ruff check src/omnimarket/nodes/node_linear_triage tests/nodes/node_linear_triage
           && env -u PYTHONPATH uv run mypy src/omnimarket/nodes/node_linear_triage --strict"
   - id: "dod-003"
-    description: "Post-merge deploy/readiness smoke plan only; this compile-only PR has not deployed,
-      restarted runtime, mutated .201, or written any Linear ticket state"
+    description: "Local import readiness smoke: the close-evidence-gate module imports cleanly (deploy
+      readiness proxy). This compile-only PR has not performed a live deploy, restarted runtime, mutated
+      .201, or written any Linear ticket state."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c \"from omnimarket.nodes.node_linear_triage.services.close_evidence_gate
-          import enforce_close_evidence, EnumCloseEvidenceKind; print('close-evidence-gate deploy readiness smoke ok')\""
+        check_value: "env -u PYTHONPATH uv run python -c \"from omnimarket.nodes.node_linear_triage.services.close_evidence_gate
+          import enforce_close_evidence, EnumCloseEvidenceKind, evaluate_close_evidence; print('close-evidence-gate
+          deploy readiness smoke ok')\""
