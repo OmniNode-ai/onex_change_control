@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13674"
+evidence_item_id: "dod-omnimarket-pr-1570"
+check_type: "command"
+check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13674/dod-omnimarket-pr-1570/command.yaml && grep -q '^pr_number: 1570$' drift/dod_receipts/OMN-13674/dod-omnimarket-pr-1570/command.yaml"
+status: PASS
+run_timestamp: "2026-07-02T13:35:00Z"
+commit_sha: "b499bcc0c9168f2ed85dff81b68773d388fadb6f"
+branch: "jonah/omn-13674-cov-B-session_phase_fsm"
+pr_number: 1570
+runner: "claude-omn-13674-cov-B"
+verifier: "claude-receipt-review"
+contract_sha256: "sha256:2026cc505414ab773da6414eb2d42b199ee43ececd4427445a5388ab98a52bcc"
+probe_command: "uv run pytest tests/integration/node_session_phase_orchestrator tests/integration/node_session_phase_dispatcher tests/integration/node_session_phase_evaluator tests/integration/node_session_phase_reducer -q"
+probe_stdout: |
+  36 passed
+actual_output: |
+  omnimarket PR #1570 is the OMN-13674 cov-B declared-state coverage PR for the
+  session_phase_fsm cluster. It adds four bus-driven coverage suites over the
+  canonical in-memory bus (EventBusInmemory via integration_event_bus +
+  LocalRuntimeBusAdapter / drive_round_trip), one per node:
+  (1) node_session_phase_orchestrator (ORCHESTRATOR) — every declared action
+  route (transition_required, halt_required, budget_warning, no_action) fires
+  the correct downstream command topic + command_type and lands the correct
+  tick_outcome; tick-completed is always the terminal command; halt out-ranks
+  transition in a batch; empty-evaluations envelope raises -> adapter publishes
+  nothing (negative control).
+  (2) node_session_phase_dispatcher (EFFECT) — every transition publishes a
+  phase-state event (value verbatim); enter+phase_spec dispatches one worker per
+  dispatch_item while exit/skip/fail dispatch zero; budget-gate emits a warning
+  at >=80% and none just below; batch shares one result correlation_id;
+  correlation-mismatch batch raises -> publishes nothing (gate-blocked negative
+  control). This EFFECT node has no injectable external I/O client — the bus
+  publish is its effect boundary, asserted directly (no subprocess/asyncpg
+  monkeypatch).
+  (3) node_session_phase_evaluator (COMPUTE) — every declared verdict class
+  (no_action, budget_warning, transition_required, halt_required) reached across
+  every decision branch + the halt_threshold_pct flag; halt out-ranks satisfied
+  exit conditions; a known-bad 120%-overbudget fixture MUST yield halt_required
+  (negative control; no returned-without-raising assertions).
+  (4) node_session_phase_reducer (REDUCER) — folds every declared FSM event type
+  (idle->active on session.started, active->active on a phase-state fold,
+  active->ended on session.ended); idempotent re-init; out-of-order foreign
+  session_id rejected (state unchanged); idle-reject of a non-start event with
+  no prior state yields the "unknown" sentinel (negative control).
+  All four nodes have a real state space; none is a stub/facade — all are
+  covered. Local proof: the four suites = 36 passed; ruff format/check clean;
+  full suite (uv run pytest tests/ -m "not kafka", no -k) = 11481 passed, 52
+  skipped; the 5 failures are pre-existing infra/env-dependent tests (live
+  Postgres x4, cross-repo event-registry drift for
+  artifact-captured/tool-output-captured), none touching the added files;
+  pre-commit on all files = all hooks Passed (topic-naming-lint +
+  contract-state-coverage green).
+exit_code: 0
+duration_ms: 150
+working_dir: "/Users/jonah/Code/omni_home/.claude/worktrees/wf_9d770adc-6f1-4/omnimarket_wt"
