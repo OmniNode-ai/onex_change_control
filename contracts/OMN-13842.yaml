@@ -1,0 +1,82 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-13842
+title: Fix delegate skill objc fork() SIGABRT on macOS (spawn effect child)
+summary: >-
+  omnimarket PR #1569 changes the bus-less local delegation dispatch port to resolve the multiprocessing
+  start method by platform: spawn on macOS, fork (with a spawn fallback) elsewhere. The delegation effect
+  child was started with fork; on macOS the effect makes a real LLM call that initializes the Objective-C
+  runtime in the parent, so the fork-ed child aborted with SIGABRT (objc "+[NSNumber initialize] may have
+  been in progress ... when fork() was called ... Crashing instead"), exit -6. dispatch() raised
+  "delegation effect process exited without returning a result", so the delegate mapped skill returned no
+  typed delegation payload and was classified broken in the M5 capstone dogfood sweep. spawn starts a clean
+  interpreter with no inherited objc state and is fork-safe.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: ENRICHED
+evidence_requirements:
+  - kind: tests
+    description: Full omnimarket suite passes locally after the fix.
+    command: uv run pytest tests/
+  - kind: manual
+    description: Regression test asserts darwin->spawn / linux->fork start-method selection and a typed receipt through the process boundary.
+    command: uv run pytest tests/unit/nodes/node_delegate_skill_orchestrator/test_local_dispatch_fork_safety_omn13842.py -q
+  - kind: ci
+    description: Local pre-commit + ruff + mypy gates green.
+    command: pre-commit run
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-product-pr-1569
+    description: >-
+      omnimarket PR #1569 resolves the multiprocessing start method by platform (spawn on macOS), ending the
+      objc fork() SIGABRT so onex delegate returns a typed ModelReceiptRuntimeSummary receipt.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13842/dod-product-pr-1569/command.yaml" &&
+          grep -q '^pr_number: 1569$' "drift/dod_receipts/OMN-13842/dod-product-pr-1569/command.yaml"
+  - id: dod-regression-fork-safety
+    description: >-
+      Regression test asserts _resolve_effect_process_context selects spawn on darwin and fork on linux, and
+      that dispatch returns a typed terminal receipt through a real spawned child (no -6 crash).
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13842/dod-regression-fork-safety/command.yaml"
+  - id: dod-local-gates-green
+    description: >-
+      Full local gate green — ruff format/check, mypy on the changed port, full pytest suite, and pre-commit.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13842/dod-local-gates-green/command.yaml"
+  - id: dod-deploy
+    description: >-
+      Deploy DoD: no live prod deploy is required. The fix is a start-method selection in the bus-less local
+      dispatch port exercised in-process by the local onex CLI and CI; no runtime redeploy or prod mutation.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13842/dod-deploy/command.yaml"
+  - id: dod-occ-self
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR, which carries the OMN-13842
+      contract and PASS receipts so downstream omnimarket PR #1569 can cite Evidence-Source: OCC#<this-pr>.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13842/dod-occ-self/command.yaml"
