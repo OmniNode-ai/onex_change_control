@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "check_dep_provenance.py"
 
 
-def _load_module():
+def _load_module() -> Any:
     spec = importlib.util.spec_from_file_location("check_dep_provenance", _SCRIPT)
     assert spec is not None
     assert spec.loader is not None
@@ -30,7 +31,7 @@ def _load_module():
 
 
 @pytest.fixture
-def mod():
+def mod() -> Any:
     return _load_module()
 
 
@@ -62,7 +63,7 @@ def _write_pyproject(tmp_path: Path, sources_block: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_reject_core_spi_git_rev_override(mod, tmp_path: Path) -> None:
+def test_reject_core_spi_git_rev_override(mod: Any, tmp_path: Path) -> None:
     block = (
         "[tool.uv.sources]\n"
         'omnibase-core = { git = "https://github.com/OmniNode-ai/omnibase_core.git", '
@@ -80,7 +81,7 @@ def test_reject_core_spi_git_rev_override(mod, tmp_path: Path) -> None:
     assert mod.main(["--pyproject", str(path)]) == 1
 
 
-def test_reject_underscore_spelling(mod, tmp_path: Path) -> None:
+def test_reject_underscore_spelling(mod: Any, tmp_path: Path) -> None:
     """Underscore spelling (omnibase_core) is caught the same as hyphen."""
     block = (
         "[tool.uv.sources]\n"
@@ -91,7 +92,7 @@ def test_reject_underscore_spelling(mod, tmp_path: Path) -> None:
     assert mod.main(["--pyproject", str(path)]) == 1
 
 
-def test_reject_branch_override(mod, tmp_path: Path) -> None:
+def test_reject_branch_override(mod: Any, tmp_path: Path) -> None:
     block = (
         "[tool.uv.sources]\n"
         "omnibase-compat = { git = "
@@ -102,7 +103,7 @@ def test_reject_branch_override(mod, tmp_path: Path) -> None:
     assert mod.main(["--pyproject", str(path)]) == 1
 
 
-def test_reject_tag_override(mod, tmp_path: Path) -> None:
+def test_reject_tag_override(mod: Any, tmp_path: Path) -> None:
     block = (
         "[tool.uv.sources]\n"
         'omnibase-spi = { git = "https://github.com/OmniNode-ai/omnibase_spi.git", '
@@ -117,7 +118,7 @@ def test_reject_tag_override(mod, tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_allow_occ_only_override(mod, tmp_path: Path) -> None:
+def test_allow_occ_only_override(mod: Any, tmp_path: Path) -> None:
     """onex-change-control git pin is intentional (immutable-main model)."""
     block = (
         "[tool.uv.sources]\n"
@@ -131,7 +132,7 @@ def test_allow_occ_only_override(mod, tmp_path: Path) -> None:
     assert mod.main(["--pyproject", str(path)]) == 0
 
 
-def test_allow_no_uv_sources_block(mod, tmp_path: Path) -> None:
+def test_allow_no_uv_sources_block(mod: Any, tmp_path: Path) -> None:
     """A pyproject with no [tool.uv.sources] block cannot override anything."""
     content = (
         "[project]\n"
@@ -146,7 +147,7 @@ def test_allow_no_uv_sources_block(mod, tmp_path: Path) -> None:
     assert mod.main(["--pyproject", str(path)]) == 0
 
 
-def test_allow_pypi_only(mod, tmp_path: Path) -> None:
+def test_allow_pypi_only(mod: Any, tmp_path: Path) -> None:
     """All first-party deps resolved from PyPI (no uv.sources entries) → clean."""
     block = "[tool.uv.sources]\n"
     path = _write_pyproject(tmp_path, block)
@@ -158,7 +159,7 @@ def test_allow_pypi_only(mod, tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_escape_valid_token(mod, tmp_path: Path) -> None:
+def test_escape_valid_token(mod: Any, tmp_path: Path) -> None:
     block = (
         "[tool.uv.sources]\n"
         'omnibase-core = { git = "https://github.com/OmniNode-ai/omnibase_core.git", '
@@ -170,7 +171,7 @@ def test_escape_valid_token(mod, tmp_path: Path) -> None:
     assert mod.main(["--pyproject", str(path)]) == 0
 
 
-def test_escape_empty_token_still_fails(mod, tmp_path: Path) -> None:
+def test_escape_empty_token_still_fails(mod: Any, tmp_path: Path) -> None:
     """`# raw-override-ok:` with no token does NOT exempt — gate still fails."""
     block = (
         "[tool.uv.sources]\n"
@@ -183,7 +184,7 @@ def test_escape_empty_token_still_fails(mod, tmp_path: Path) -> None:
     assert mod.main(["--pyproject", str(path)]) == 1
 
 
-def test_escape_is_per_line(mod, tmp_path: Path) -> None:
+def test_escape_is_per_line(mod: Any, tmp_path: Path) -> None:
     """An escape on one line does not exempt an un-annotated override on another."""
     block = (
         "[tool.uv.sources]\n"
@@ -205,6 +206,6 @@ def test_escape_is_per_line(mod, tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_missing_pyproject_fails_closed(mod, tmp_path: Path) -> None:
+def test_missing_pyproject_fails_closed(mod: Any, tmp_path: Path) -> None:
     missing = tmp_path / "nope" / "pyproject.toml"
     assert mod.main(["--pyproject", str(missing)]) == 1
