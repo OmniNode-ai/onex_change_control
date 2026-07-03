@@ -212,18 +212,25 @@ def _check_supersession_file(
             f"{receipt_path}: supersession replacement must carry a per-entry "
             "contract_entry_sha256 (OMN-13888 new scheme)"
         ]
-    # Structural hardening of the embedded replacement receipt WITHOUT
-    # ModelDodReceipt.model_validate: the released omnibase_core model forbids
-    # the new contract_entry_sha256 field, so validate the harden-relevant
-    # fields directly (contract_sha256 presence/match + verifier).
-    violations: list[str] = []
+    return _harden_replacement(replacement, receipt_path, contracts_dir)
+
+
+def _harden_replacement(
+    replacement: dict, receipt_path: Path, contracts_dir: Path
+) -> list[str]:
+    """Structurally harden a supersession's embedded replacement receipt.
+
+    Deliberately avoids ``ModelDodReceipt.model_validate`` — the released
+    omnibase_core model forbids the new ``contract_entry_sha256`` field — and
+    checks the harden-relevant fields directly (contract_sha256 match, verifier).
+    """
     ticket_id = replacement.get("ticket_id")
-    contract_sha256 = replacement.get("contract_sha256")
     if not isinstance(ticket_id, str) or not ticket_id:
-        violations.append(
-            f"{receipt_path}: supersession replacement missing 'ticket_id'"
-        )
-    elif isinstance(contract_sha256, str):
+        return [f"{receipt_path}: supersession replacement missing 'ticket_id'"]
+
+    violations: list[str] = []
+    contract_sha256 = replacement.get("contract_sha256")
+    if isinstance(contract_sha256, str):
         contract_path = contracts_dir / f"{ticket_id}.yaml"
         if not contract_path.is_file():
             violations.append(
@@ -237,10 +244,10 @@ def _check_supersession_file(
                     f"{receipt_path}: replacement contract_sha256 mismatch — has "
                     f"{contract_sha256!r} but sha256({contract_path}) is {expected!r}."
                 )
-    status = str(replacement.get("status", "")).upper()
+
     verifier = replacement.get("verifier")
     if (
-        status == "PASS"
+        str(replacement.get("status", "")).upper() == "PASS"
         and isinstance(verifier, str)
         and _is_denylisted_verifier(verifier)
     ):

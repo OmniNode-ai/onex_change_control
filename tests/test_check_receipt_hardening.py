@@ -237,3 +237,84 @@ def test_main_skips_missing_files(tmp_path: Path) -> None:
 
 def test_denylist_is_lowercase_canonical() -> None:
     assert all(v == v.strip().lower() for v in DENYLISTED_VERIFIERS)
+
+
+# OMN-13888: supersession record handling
+def _supersede_path(tmp_path: "Path") -> "Path":
+    d = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "command.supersede.0001.yaml"
+
+
+def test_tombstone_supersession_passes(tmp_path: "Path") -> None:
+    _write_contract(tmp_path)
+    p = _supersede_path(tmp_path)
+    p.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "evidence_item_id": "dod-001",
+                "check_type": "command",
+                "supersedes": "drift/dod_receipts/OMN-13060/dod-001/command.yaml",
+                "reason": "invalidate",
+                "superseder": "closeout",
+                "created_at": POST_CUTOFF_TS,
+                "tombstone": True,
+            }
+        )
+    )
+    assert check_receipt_file(p, tmp_path / "contracts") == []
+
+
+def test_rebind_supersession_hardened(tmp_path: "Path") -> None:
+    contract = _write_contract(tmp_path)
+    replacement = _receipt_data(
+        contract_sha256=_contract_sha(contract),
+        contract_entry_sha256="sha256:" + "a" * 64,
+    )
+    p = _supersede_path(tmp_path)
+    base = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-13060",
+        "evidence_item_id": "dod-001",
+        "check_type": "command",
+        "supersedes": "drift/dod_receipts/OMN-13060/dod-001/command.yaml",
+        "reason": "rebind",
+        "superseder": "closeout",
+        "created_at": POST_CUTOFF_TS,
+        "tombstone": False,
+        "replacement": replacement,
+    }
+    p.write_text(yaml.safe_dump(base))
+    assert check_receipt_file(p, tmp_path / "contracts") == []
+    # missing contract_entry_sha256 on the replacement is a violation
+    base["replacement"] = _receipt_data(contract_sha256=_contract_sha(contract))
+    p.write_text(yaml.safe_dump(base))
+    assert check_receipt_file(p, tmp_path / "contracts")
+
+
+def test_rebind_supersession_contract_hash_mismatch(tmp_path: "Path") -> None:
+    _write_contract(tmp_path)
+    replacement = _receipt_data(
+        contract_sha256="sha256:" + "0" * 64,
+        contract_entry_sha256="sha256:" + "a" * 64,
+    )
+    p = _supersede_path(tmp_path)
+    p.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "evidence_item_id": "dod-001",
+                "check_type": "command",
+                "supersedes": "drift/dod_receipts/OMN-13060/dod-001/command.yaml",
+                "reason": "rebind",
+                "superseder": "closeout",
+                "created_at": POST_CUTOFF_TS,
+                "tombstone": False,
+                "replacement": replacement,
+            }
+        )
+    )
+    assert check_receipt_file(p, tmp_path / "contracts")
