@@ -43,6 +43,10 @@ from pydantic import ValidationError
 # Earlier receipts are legacy migration debt (see module docstring).
 HARDENING_CUTOFF = datetime(2026, 6, 12, 0, 0, 0, tzinfo=UTC)
 
+# OMN-13888: supersession records live alongside base receipts as
+# ``<check>.supersede.<NNNN>.yaml`` and use a distinct schema.
+_SUPERSEDE_RE = re.compile(r"\.supersede\.\d+\.yaml$")
+
 # Session-local / generic verifier aliases that cannot satisfy independent
 # verification for a PASS receipt. Exact match after strip().lower().
 # Seeded from the 2026-06-12 verifier survey on OCC dev (retro A-5(c)).
@@ -130,23 +134,10 @@ def _walk_for_timestamp(node: object) -> datetime | None:
     return None
 
 
-def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
-    """Return violation strings for one receipt file (empty = clean)."""
-    try:
-        raw = yaml.safe_load(receipt_path.read_text())
-    except (OSError, yaml.YAMLError) as exc:
-        return [f"{receipt_path}: unreadable receipt YAML: {exc}"]
-    if not isinstance(raw, dict):
-        return [f"{receipt_path}: receipt YAML is not a mapping"]
-
-    # Legacy exemption decided on the raw timestamp BEFORE model validation,
-    # so pre-cutoff receipts with historical schema quirks never block.
-    # No timestamp at all → exempt: such a file cannot parse as
-    # ModelDodReceipt and the receipt gate already rejects it as NONPASS.
-    run_ts = _extract_receipt_timestamp(raw)
-    if run_ts is None or run_ts < HARDENING_CUTOFF:
-        return []
-
+def _check_receipt_payload(
+    raw: dict, receipt_path: Path, contracts_dir: Path
+) -> list[str]:
+    """Run the three hardening invariants against one ModelDodReceipt payload."""
     try:
         receipt = ModelDodReceipt.model_validate(raw)
     except ValidationError as exc:
@@ -187,6 +178,103 @@ def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
         )
 
     return violations
+
+
+def _check_supersession_file(
+    raw: dict, receipt_path: Path, contracts_dir: Path
+) -> list[str]:
+    """Validate a net-new supersession record (OMN-13888).
+
+    Supersession records (``.supersede.<NNNN>.yaml``) are NOT ModelDodReceipt
+    payloads; they carry ``supersedes`` + ``tombstone`` and, when re-binding, an
+    embedded ``replacement`` receipt. This gate validates the structure and, for
+    a replacement, runs the same hardening invariants on the embedded receipt.
+    Uses only ModelDodReceipt so it works against the released omnibase_core.
+    """
+    if not isinstance(raw.get("supersedes"), str) or not raw["supersedes"].strip():
+        return [f"{receipt_path}: supersession record missing 'supersedes' path"]
+    tombstone = bool(raw.get("tombstone", False))
+    replacement = raw.get("replacement")
+    if tombstone:
+        if replacement is not None:
+            return [
+                f"{receipt_path}: tombstone supersession must not carry a "
+                "'replacement' receipt"
+            ]
+        return []
+    if not isinstance(replacement, dict):
+        return [
+            f"{receipt_path}: non-tombstone supersession must carry a "
+            "'replacement' receipt (or set tombstone: true)"
+        ]
+    if replacement.get("contract_entry_sha256") is None:
+        return [
+            f"{receipt_path}: supersession replacement must carry a per-entry "
+            "contract_entry_sha256 (OMN-13888 new scheme)"
+        ]
+    # Structural hardening of the embedded replacement receipt WITHOUT
+    # ModelDodReceipt.model_validate: the released omnibase_core model forbids
+    # the new contract_entry_sha256 field, so validate the harden-relevant
+    # fields directly (contract_sha256 presence/match + verifier).
+    violations: list[str] = []
+    ticket_id = replacement.get("ticket_id")
+    contract_sha256 = replacement.get("contract_sha256")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        violations.append(
+            f"{receipt_path}: supersession replacement missing 'ticket_id'"
+        )
+    elif isinstance(contract_sha256, str):
+        contract_path = contracts_dir / f"{ticket_id}.yaml"
+        if not contract_path.is_file():
+            violations.append(
+                f"{receipt_path}: contract {contract_path} does not exist for "
+                f"replacement ticket {ticket_id}"
+            )
+        else:
+            expected = f"sha256:{compute_contract_sha256(contract_path)}"
+            if contract_sha256.strip().lower() != expected:
+                violations.append(
+                    f"{receipt_path}: replacement contract_sha256 mismatch — has "
+                    f"{contract_sha256!r} but sha256({contract_path}) is {expected!r}."
+                )
+    status = str(replacement.get("status", "")).upper()
+    verifier = replacement.get("verifier")
+    if (
+        status == "PASS"
+        and isinstance(verifier, str)
+        and _is_denylisted_verifier(verifier)
+    ):
+        violations.append(
+            f"{receipt_path}: replacement PASS receipt uses session-local "
+            f"verifier alias {verifier!r} (OMN-13060/A-5)."
+        )
+    return violations
+
+
+def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
+    """Return violation strings for one receipt file (empty = clean)."""
+    try:
+        raw = yaml.safe_load(receipt_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"{receipt_path}: unreadable receipt YAML: {exc}"]
+    if not isinstance(raw, dict):
+        return [f"{receipt_path}: receipt YAML is not a mapping"]
+
+    # OMN-13888: supersession records are a distinct schema (they carry a
+    # 'supersedes' path + optional embedded 'replacement' receipt), not a
+    # ModelDodReceipt. Validate them structurally + harden the replacement.
+    if _SUPERSEDE_RE.search(receipt_path.name) or "supersedes" in raw:
+        return _check_supersession_file(raw, receipt_path, contracts_dir)
+
+    # Legacy exemption decided on the raw timestamp BEFORE model validation,
+    # so pre-cutoff receipts with historical schema quirks never block.
+    # No timestamp at all → exempt: such a file cannot parse as
+    # ModelDodReceipt and the receipt gate already rejects it as NONPASS.
+    run_ts = _extract_receipt_timestamp(raw)
+    if run_ts is None or run_ts < HARDENING_CUTOFF:
+        return []
+
+    return _check_receipt_payload(raw, receipt_path, contracts_dir)
 
 
 def main(argv: list[str] | None = None) -> int:
