@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13859"
+title: "feat(OMN-13859): event-driven worktree prune-on-PR-close via pr_lifecycle_orchestrator"
+summary: >-
+  Replace the polling worktree GC with an event-driven prune wired behind
+  pr_lifecycle_orchestrator (CONTRACT + NODE + HANDLER, no new daemon). Adds
+  node_pr_lifecycle_worktree_prune_effect (contract + handler + git adapter) and,
+  in the orchestrator POST_MERGE_TAIL phase, fans out one prune command per merged
+  (ticket, repo). The close event is the source of truth, so a deleted post-merge
+  remote branch (missing @{u} upstream) no longer blocks cleanup — the exact
+  false-negative that left 13/20 stale worktrees unremoved in the dogfood run.
+  Safety rails: dirty worktree flagged not removed; canonical clones and any path
+  escaping ONEX_WORKTREES_ROOT refused; worktrees root resolved fail-loud from env,
+  never hardcoded. Shared command/result/enum models promoted to
+  omnimarket.events.worktree_prune (no cross-node reach-in). Delivered on omnimarket
+  PR #1586 (head 8452ff1ff8d4204c7d7ee3e1f8724aba446700df).
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "topics"
+  - "protocols"
+contract_completeness: ENRICHED
+evidence_requirements:
+  - kind: "tests"
+    description: "Focused prune handler + orchestrator wiring tests pass."
+    command: "uv run pytest tests/unit/nodes/node_pr_lifecycle_worktree_prune_effect/ tests/unit/nodes/node_pr_lifecycle_orchestrator/test_omn_13859_prune_wiring.py -q"
+  - kind: "ci"
+    description: "omnimarket PR #1586 non-receipt CI, lint, typecheck, and deploy gates pass."
+    command: "gh pr checks 1586 --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      omnimarket PR #1586 (head 8452ff1ff8d4204c7d7ee3e1f8724aba446700df) carries
+      node_pr_lifecycle_worktree_prune_effect (contract.yaml + handler_worktree_prune
+      + adapter_git_worktree), the omnimarket.events.worktree_prune shared models, the
+      pr_lifecycle_orchestrator POST_MERGE_TAIL prune wiring, and focused + adversarial
+      real-git tests. mypy --strict clean (2672 files); full suite 11849 passed (5
+      pre-existing env failures unrelated to this change).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13859/dod-001/test_passes.yaml
+  - id: "dod-002"
+    description: >-
+      Local pre-commit + lint/format/mypy gates pass clean on the omnimarket branch
+      head. Full-suite pytest run recorded (kafka/e2e/integration excluded per the
+      standard local matrix; CI runs the authoritative full gate).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13859/dod-002/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13859
+      contract plus the dod-001 and dod-002 receipts consumed by the omnimarket PR
+      #1586 Receipt Gate through Evidence-Source.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13859/dod-occ-self/command.yaml
