@@ -240,13 +240,13 @@ def test_denylist_is_lowercase_canonical() -> None:
 
 
 # OMN-13888: supersession record handling
-def _supersede_path(tmp_path: "Path") -> "Path":
+def _supersede_path(tmp_path: Path) -> Path:
     d = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
     d.mkdir(parents=True, exist_ok=True)
     return d / "command.supersede.0001.yaml"
 
 
-def test_tombstone_supersession_passes(tmp_path: "Path") -> None:
+def test_tombstone_supersession_passes(tmp_path: Path) -> None:
     _write_contract(tmp_path)
     p = _supersede_path(tmp_path)
     p.write_text(
@@ -267,7 +267,7 @@ def test_tombstone_supersession_passes(tmp_path: "Path") -> None:
     assert check_receipt_file(p, tmp_path / "contracts") == []
 
 
-def test_rebind_supersession_hardened(tmp_path: "Path") -> None:
+def test_rebind_supersession_hardened(tmp_path: Path) -> None:
     contract = _write_contract(tmp_path)
     replacement = _receipt_data(
         contract_sha256=_contract_sha(contract),
@@ -294,7 +294,7 @@ def test_rebind_supersession_hardened(tmp_path: "Path") -> None:
     assert check_receipt_file(p, tmp_path / "contracts")
 
 
-def test_rebind_supersession_contract_hash_mismatch(tmp_path: "Path") -> None:
+def test_rebind_supersession_contract_hash_mismatch(tmp_path: Path) -> None:
     _write_contract(tmp_path)
     replacement = _receipt_data(
         contract_sha256="sha256:" + "0" * 64,
