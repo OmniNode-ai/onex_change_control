@@ -7,7 +7,7 @@ check_value: "gh pr view 253 --repo OmniNode-ai/omnidash --json number,url,headR
 status: PASS
 run_timestamp: "2026-07-04T03:59:12Z"
 contract_sha256: "sha256:bbc743fe33122e7eb9395297c652780283b30b7525950d9b094bd71f544840ab"
-commit_sha: "ae132e6819258e510644c198f32411e9aba12b15"
+commit_sha: "a5ae18cfcf597f19b1199f4dd24a498574e89770"
 branch: "jonah/omn-10875-onboarding-backend-slice"
 pr_number: 253
 runner: "beta-onboarding-worker-claude"
@@ -22,7 +22,7 @@ probe_stdout: |
   server/onboarding/tenant-provisioning.test.ts 11/11, server/onboarding/keycloak-admin.test.ts 7/7,
   server/onboarding/onboarding-routes.test.ts 11/11
 actual_output: >-
-  PASS: omnidash PR #253 (base dev, head ae132e6819258e510644c198f32411e9aba12b15) lands the self-service
+  PASS: omnidash PR #253 (base dev, head a5ae18cfcf597f19b1199f4dd24a498574e89770) lands the self-service
   onboarding backend slice: idempotent tenant provisioning keyed on the verified OIDC subject (db/migrations/0002_tenant_onboarding.sql),
   a plan/execute Keycloak admin client that never mutates the live realm outside explicit operator opt-in
   (server/onboarding/keycloak-admin.ts), the composition root and Express router (server/onboarding/{bootstrap,onboarding-routes}.ts)
@@ -32,8 +32,13 @@ actual_output: >-
   (EvidencePipelineFlow timeout, DelegationMetrics2D, TraceExplorerWidget) are unrelated to this change
   — none of those files are touched by this PR — and were confirmed to pass in isolation (19/19), consistent
   with parallel-worker resource contention under the full 1570-test suite rather than a functional regression.
-  The tenant-onboarding integration test skips locally (no reachable Postgres, same behavior as the existing
-  tenant-rls integration test) and runs against the postgres:16 CI service via the extended "Tenant RLS
-  Isolation" CI job in .github/workflows/ci.yml.
+  A second, real defect was found and fixed on this head: adding tenant-onboarding.integration.test.ts
+  caused a cluster-wide Postgres catalog race (CREATE ROLE / GRANT membership on the shared omnidash_app
+  role) against the pre-existing tenant-rls.integration.test.ts when both ran as parallel vitest workers
+  in the "Tenant RLS Isolation" CI job — reproduced locally (5/12 parallel runs failed with "duplicate
+  key value violates unique constraint pg_authid_rolname_index" or "tuple concurrently updated"). Fixed
+  with an idempotent exception-handling CREATE ROLE pattern in both 0001_tenant_rls.sql and 0002_tenant_onboarding.sql,
+  plus --no-file-parallelism on the CI job's vitest invocation (confirmed 0/18 failures locally after
+  the fix; CI job "Tenant RLS Isolation" now passes on this head).
 exit_code: 0
 working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-10875/omnidash"
