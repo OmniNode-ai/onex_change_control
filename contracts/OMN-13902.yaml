@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13902"
+title: "Cross-repo sibling version-alignment automation — sibling-lock-refresh workflow (canary + fan-out)"
+summary: >-
+  Closes the recurring stale-sibling-lock drift class. Detection existed (sibling-pin guard OMN-12977,
+  orphan-pin gate OMN-13509) but alignment was manual, so drift recurred and blocked work (OMN-13156,
+  OMN-13402, OMN-13814 were one-off repin tickets; the 2026-07-03 R3 stability refresh was blocked by
+  a stale core pin). The fix is a Dependabot-shaped, per-repo scheduled workflow (.github/workflows/sibling-lock-refresh.yml)
+  that runs `uv lock --upgrade-package` for each omninode sibling on a daily schedule (and workflow_dispatch)
+  and opens a bot PR when uv.lock changes. Git/tag-pinned siblings in [tool.uv.sources] are left untouched
+  — `uv lock --upgrade-package` cannot move an immutable rev/tag — so the Dep-Provenance state is preserved
+  automatically with no per-repo tuning. Landed on the omnimemory canary first (PR #400, all gates green
+  incl. Dep Provenance Gate), then fanned out to the other PyPI-range consumers (omniclaude, omniintelligence,
+  omnibase_infra). This is a docs/CI-only change: each PR adds one workflow YAML file, touches no runtime
+  contract, and performs no deploy, restart, image build/push, or live cluster mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimemory-canary-pr-400"
+    description: >-
+      Canary binding: omnimemory PR #400 added .github/workflows/sibling-lock-refresh.yml and merged with
+      all gates green (incl. Dep Provenance Gate), proving the mechanism. The PR body records a local
+      run that refreshed omnibase-core/spi/compat pins in uv.lock while leaving the git-pinned omnibase-infra
+      entry untouched — exactly the stale-lock drift the ticket cites, auto-resolved.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnimemory-canary-pr-400/command.yaml"
+  - id: "dod-fanout-ci-only"
+    description: >-
+      Deploy-gate evidence: the canary and every fan-out PR add a single .github/workflows CI YAML file
+      only. No runtime contract is touched and no deploy, container restart, docker compose against .201,
+      image build/push, rpk produce, or live cluster/runtime mutation was performed — the workflow itself
+      only opens bot PRs on a schedule, gated by CROSS_REPO_PAT, and merges are human-reviewed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-fanout-ci-only/command.yaml"
