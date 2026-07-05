@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13993
+title: "fix(skill_functional_audit): resolve skill roots via OMNI_HOME so the audit runs from the infra
+  venv"
+summary: >
+  Makes node_skill_functional_audit_compute runnable from the canonical infra venv. HandlerSkillFunctionalAuditCompute._resolve_skill_roots
+  derived the default skill roots from _REPO_ROOT = Path(__file__).resolve().parents[5]. When omnimarket
+  is installed into the infra venv, _REPO_ROOT is the site-packages install dir, so the default pointed
+  at a <venv>/.../plugins/onex/skills path that never exists; the audit discovered zero skills and hard-failed
+  with SkillFunctionalAuditNoSkillsDiscoveredError. The real skills live in the sibling omniclaude clone.
+  The fix mirrors the existing _resolve_nodes_roots walk: resolve the canonical skill libraries via the
+  $OMNI_HOME sibling-repo layout so resolution works even when _REPO_ROOT is a site-packages install dir.
+  Fail-fast (CLAUDE.md rule #8) is preserved: _resolve_omni_home returns $OMNI_HOME when set, else the
+  canonical-clone anchor only when it actually contains a sibling omniclaude clone, else None — never
+  a guessed path; when nothing resolves, _audit_skills still raises the zero-skills hard fail rather than
+  a vacuous pass. The change is one-file surgical (the node handler) plus behavioral tests.
+is_seam_ticket: false
+interface_change: false
+evidence_requirements:
+  - kind: "tests"
+    description: "skill-root resolution via OMNI_HOME + fail-fast tests pass for the audit handler"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-resolve-skill-roots/command.yaml"
+  - kind: "ci"
+    description: "ruff, mypy --strict, and pytest pass on the changed handler and its test"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-lint-typecheck/command.yaml"
+  - kind: "manual"
+    description: "omnimarket PR #1625 carries the OMN-13993 skill-root resolution fix"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-omnimarket-pr-1625/command.yaml"
+  - kind: "manual"
+    description: "onex_change_control PR carries this OMN-13993 contract and receipt set"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-occ-companion/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-resolve-skill-roots"
+    description: "_resolve_skill_roots resolves the canonical skill libraries via $OMNI_HOME from a site-packages
+      _REPO_ROOT, and still fails fast (zero-skills hard fail) when nothing resolves"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-resolve-skill-roots/command.yaml
+          && grep -q '^ticket_id: OMN-13993$' drift/dod_receipts/OMN-13993/dod-resolve-skill-roots/command.yaml"
+  - id: "dod-lint-typecheck"
+    description: "ruff, mypy --strict, and pytest pass on the changed handler and its test"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-lint-typecheck/command.yaml
+          && grep -q '^ticket_id: OMN-13993$' drift/dod_receipts/OMN-13993/dod-lint-typecheck/command.yaml"
+  - id: "dod-omnimarket-pr-1625"
+    description: "omnimarket PR #1625 carries the OMN-13993 skill-root resolution fix"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-omnimarket-pr-1625/command.yaml
+          && grep -q '^pr_number: 1625$' drift/dod_receipts/OMN-13993/dod-omnimarket-pr-1625/command.yaml"
+  - id: "dod-occ-companion"
+    description: "onex_change_control PR carries this OMN-13993 contract and receipt set"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13993/dod-occ-companion/command.yaml
+          && grep -q '^ticket_id: OMN-13993$' drift/dod_receipts/OMN-13993/dod-occ-companion/command.yaml"
