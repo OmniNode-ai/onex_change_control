@@ -446,13 +446,23 @@ jobs:
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
         run: |
-          rm -rf ../omnidash
-          if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
-            auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
-            git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
-          else
-            git clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
-          fi
+          clone_omnidash() {
+            rm -rf ../omnidash
+            if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+              auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+            else
+              git clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+            fi
+          }
+          for attempt in 1 2 3; do
+            if clone_omnidash; then
+              exit 0
+            fi
+            rm -rf ../omnidash
+            sleep $((attempt * 5))
+          done
+          clone_omnidash
       - name: Run Python null vs TypeScript optional contract test
         run: uv run pytest tests/integration/cross_repo/test_python_null_vs_ts_optional.py -v
 
