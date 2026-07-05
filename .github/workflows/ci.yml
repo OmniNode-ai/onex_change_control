@@ -704,6 +704,86 @@ jobs:
             --receipts-dir drift/dod_receipts \
             "${changed_receipts[@]}"
 
+  append-only-gate:
+    permissions:
+      contents: read
+    # OCC Append-Only Gate (OMN-13962): enforce the append-only invariant —
+    # reject any PR that
+    # edits/deletes/renames a merged dod_evidence entry (per-entry hash change)
+    # or a merged receipt file under drift/dod_receipts/<TICKET>/. Existing
+    # entries are immutable; corrections must be net-new add-only supersession
+    # files. Mirrors honesty-gate: omnibase_core is pinned by source ref so the
+    # validator version is controlled by the workflow, not OCC's installed dep
+    # (which is capped <0.46.0 and predates the append_only validator).
+    name: OCC Append-Only Gate
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          # main pin where validator_occ_append_only is present (the honesty-gate
+          # pin predates it). Bump alongside the honesty-gate pin when refreshing.
+          ref: f873d8307d87d41f6581847fe630bfbc139e1bf8
+          path: omnibase_core_source
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run append-only enforcement on changed tickets
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          BEFORE_SHA: ${{ github.event.before || '' }}
+          PYTHONPATH: ${{ github.workspace }}/omnibase_core_source/src
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            git fetch origin "$base_ref" --no-tags
+            # Diff against the merge-base, not origin/<base> directly, so receipts
+            # that only landed on the base after this branch forked are not
+            # mis-flagged as deletions (the validator CLI uses a two-dot diff).
+            base_sha="$(git merge-base "origin/${base_ref}" HEAD)"
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            base_sha="$BEFORE_SHA"
+          else
+            echo "APPEND-ONLY GATE PASSED: non-PR event, nothing to diff"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base_sha"...HEAD -- contracts/ drift/dod_receipts/ || true)"
+          # Distinct ticket ids (OMN-NNNN) touched via a contract or receipt path.
+          tickets="$(printf '%s\n' "$changed" \
+            | sed -nE 's@^(contracts/(OMN-[0-9]+)\.yaml|drift/dod_receipts/(OMN-[0-9]+)/.*)$@\2\3@p' \
+            | sort -u)"
+          if [[ -z "$tickets" ]]; then
+            echo "APPEND-ONLY GATE PASSED: no contract/receipt changes"
+            exit 0
+          fi
+          echo "Tickets touched:"
+          printf '%s\n' "$tickets"
+          rc=0
+          while IFS= read -r tid; do
+            [[ -z "$tid" ]] && continue
+            echo "--- append-only check: ${tid} (base ${base_sha}) ---"
+            if ! uv run python -m omnibase_core.validation.validator_occ_append_only \
+                --repo . --ticket-id "$tid" --base-ref "$base_sha"; then
+              rc=1
+            fi
+          done <<< "$tickets"
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::APPEND-ONLY GATE FAILED: a PR edited/deleted/renamed a merged dod_evidence entry or receipt. Corrections must be net-new add-only supersession files."
+          fi
+          exit "$rc"
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -713,7 +793,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate]
     if: always()
     steps:
       - name: Check all jobs passed
