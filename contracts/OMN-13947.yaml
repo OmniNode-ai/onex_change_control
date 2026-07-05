@@ -1,16 +1,14 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13947"
-title: "Harden runner-monitor auto_bounce against overlap, timeout, and orphaned-created runners"
+title: "Repair runner-monitor missing-container convergence"
 summary: >-
-  Fixes runner-fleet non-convergence in the existing runner-monitor auto_bounce remediation path. The
-  omnibase_infra PR #2208 keeps auto-bounce operator-gated by MONITOR_AUTO_BOUNCE, but makes enabled remediation
-  single-flight, scales the compose timeout by batch size, detects containers left at Docker Status=created
-  after an interrupted recreate, and verifies/retries target startup after compose returns. This prevents
-  overlapping cron cycles from racing the Docker daemon and prevents created-but-never-started runner
-  containers from being orphaned across later monitor cycles. This is pre-deploy code evidence only; no
-  runner restart, docker compose execution against .201, image build/push, or live cluster mutation was
-  performed.
+  Fixes runner-fleet non-convergence in the existing runner-monitor remediation path. The prior omnibase_infra
+  PR #2208 hardened auto_bounce against overlap, timeout, and created-but-not-running stragglers. The
+  follow-up omnibase_infra PR #2213 adds the missing expected runner containers to the monitor's repair
+  target set and makes the receipt-honesty checkout idempotent so the PR gate can clone omnibase_core
+  in a reused workspace. This is pre-deploy code evidence only; no runner restart, docker compose execution
+  against .201, image build/push, or live cluster mutation was performed.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -21,28 +19,43 @@ emergency_bypass:
 dod_evidence:
   - id: "dod-omnibase-infra-pr-2208"
     description: >-
-      Consuming-PR binding: omnibase_infra PR #2208 implements the runner-monitor auto_bounce hardening
-      in docker/runners/runner-monitor.sh and adds end-to-end behavioral tests for stuck-created targeting,
-      compose dispatch, verify/retry startup, and lock contention.
+      Historical consuming-PR binding: omnibase_infra PR #2208 implemented the runner-monitor auto_bounce
+      hardening in docker/runners/runner-monitor.sh and added end-to-end behavioral tests for stuck-created
+      targeting, compose dispatch, verify/retry startup, and lock contention.
     source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13947/dod-omnibase-infra-pr-2208/command.yaml"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13947/dod-omnibase-infra-pr-2208/command.yaml
+          && grep -q '^pr_number: 2208$' drift/dod_receipts/OMN-13947/dod-omnibase-infra-pr-2208/command.yaml"
+  - id: "dod-omnibase-infra-pr-2213"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2213 carries the missing-container runner-monitor repair
+      in docker/runners/runner-monitor.sh and the receipt-honesty checkout idempotency fix.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13947/dod-omnibase-infra-pr-2213/command.yaml
+          && grep -q '^pr_number: 2213$' drift/dod_receipts/OMN-13947/dod-omnibase-infra-pr-2213/command.yaml
+          && grep -q '499cf73ce70a894bc1c23832df4f4a2820d37e88' drift/dod_receipts/OMN-13947/dod-omnibase-infra-pr-2213/command.yaml"
   - id: "dod-no-runtime-deploy"
     description: >-
-      Deploy-gate evidence for this PR: the change modifies runner monitor code and tests only. It did
-      not restart runners, run docker compose against .201, rebuild or push a runner image, or mutate
+      Deploy-gate evidence for this PR: the change modifies runner-monitor and workflow code only. It
+      did not restart runners, run docker compose against .201, rebuild or push a runner image, or mutate
       any live runtime/cluster state.
     source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
         check_value: "grep -q 'No runner restart, docker compose execution against .201, image build/push,
           or live cluster mutation' drift/dod_receipts/OMN-13947/dod-no-runtime-deploy/command.yaml"
   - id: "dod-occ-pr-3610"
     description: >-
-      OCC self-binding: onex_change_control PR #3610 carries the OMN-13947 contract and receipts that
-      omnibase_infra PR #2208 cites via Evidence-Source: OCC#3610.
+      Historical OCC self-binding: merged onex_change_control PR #3610 carries the original OMN-13947
+      contract and receipts that omnibase_infra PR #2208 cited via Evidence-Source: OCC#3610.
     source: "generated"
+    status: "verified"
     checks:
       - check_type: "command"
         check_value: "grep -q '^pr_number: 3610$' drift/dod_receipts/OMN-13947/dod-occ-pr-3610/command.yaml"
