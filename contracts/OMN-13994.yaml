@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13994
+title: "fix(integration_sweep/dod_sweep): registry-aware ONEX_CC_REPO_PATH fallback preserving fail-fast"
+summary: >
+  Makes the integration_sweep and dod_sweep orchestrator skills runnable from the canonical infra venv.
+  Both handlers resolve their contracts/artifact root from ONEX_CC_REPO_PATH via _resolve_root. A stale
+  or container value (the in-container mount /onex_change_control) leaks into local runs where it has
+  no contracts/ dir on the host, so _resolve_root raised RuntimeError and the sweep hard-failed before
+  doing any work. The fix falls back to the canonical registry clone at $OMNI_HOME/onex_change_control
+  when the env path lacks contracts/, before raising. Fail-fast (CLAUDE.md rule #8) is preserved: os.environ["OMNI_HOME"]
+  raises KeyError when unset (never a silent default) and a fallback that itself lacks contracts/ still
+  raises. The change is two-file surgical (both node handlers) plus parametrized tests covering both sweeps.
+is_seam_ticket: false
+interface_change: false
+evidence_requirements:
+  - kind: "tests"
+    description: "resolve_root fallback + fail-fast tests pass for BOTH integration_sweep and dod_sweep"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13994/dod-resolve-root-fallback/command.yaml"
+  - kind: "ci"
+    description: "ruff, mypy --strict, and pytest pass on the changed handlers and their test"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13994/dod-lint-typecheck/command.yaml"
+  - kind: "manual"
+    description: "omnimarket PR #1624 carries the OMN-13994 fallback fix"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13994/dod-omnimarket-pr-1624/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-resolve-root-fallback"
+    description: "resolve_root falls back to $OMNI_HOME/onex_change_control on container-path leak and
+      still fails fast on unset OMNI_HOME, for BOTH sweep handlers"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13994/dod-resolve-root-fallback/command.yaml
+          && grep -q '^ticket_id: OMN-13994$' drift/dod_receipts/OMN-13994/dod-resolve-root-fallback/command.yaml"
+  - id: "dod-lint-typecheck"
+    description: "ruff, mypy --strict, and pytest pass on the changed handlers and their test"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13994/dod-lint-typecheck/command.yaml
+          && grep -q '^ticket_id: OMN-13994$' drift/dod_receipts/OMN-13994/dod-lint-typecheck/command.yaml"
+  - id: "dod-omnimarket-pr-1624"
+    description: "omnimarket PR #1624 carries the OMN-13994 fallback fix"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13994/dod-omnimarket-pr-1624/command.yaml
+          && grep -q '^pr_number: 1624$' drift/dod_receipts/OMN-13994/dod-omnimarket-pr-1624/command.yaml"
