@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-14004
+title: "fix(delegate): code_generation quality gate assumes Python for every ask; persist rejected candidate content"
+summary: >
+  Two coupled defects found by the ratchet-canary (OMN-14000). First, the delegation quality gate's
+  compiles_without_errors deterministic check unconditionally ran ast.parse on the candidate for ANY
+  code_generation ask, regardless of what artifact language was actually requested — a YAML
+  contract-fragment ask was false-rejected with "does not compile as Python: invalid syntax" then
+  escalated through cheap_cloud -> cheap_frontier -> claude for a correct local answer. Second, the
+  LocalDelegationDispatchPort escalation loop logged only the gate's failure reasons on a quality-gate
+  FAIL, never the rejected candidate's own text, so a false-reject like the first defect could not be
+  debugged after the fact. Fix: a fenced code block's own language tag selects the parser for that
+  block (untagged/raw content keeps the original Python-only ast.parse path unchanged), and the
+  rejected candidate's content is now logged at the escalation point, where it is already promoted to
+  a content-addressed artifact by the CLI receipt layer.
+is_seam_ticket: false
+interface_change: false
+evidence_requirements:
+  - kind: "tests"
+    description: "8 new unit tests lock in both fixes plus regression guards for the untouched Python/raw-content paths"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14004/dod-quality-gate-tests/command.yaml"
+  - kind: "ci"
+    description: "ruff, mypy --strict, and full pytest pass with only pre-existing infra-dependent failures"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14004/dod-lint-typecheck-suite/command.yaml"
+  - kind: "manual"
+    description: "omnimarket PR #1630 carries the OMN-14004 fix"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14004/dod-omnimarket-pr-1630/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-quality-gate-tests"
+    description: >-
+      YAML/JSON fenced content now passes compiles_without_errors; malformed YAML/JSON still fails with
+      a language-specific reason; Python-fenced and raw non-fenced content are unaffected; a caplog-based
+      test proves the rejected candidate's content is logged before escalation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14004/dod-quality-gate-tests/command.yaml
+          && grep -q '^ticket_id: OMN-14004$' drift/dod_receipts/OMN-14004/dod-quality-gate-tests/command.yaml"
+  - id: "dod-lint-typecheck-suite"
+    description: "ruff format/check clean, mypy --strict clean (2693 files), full pytest (no -k) with only pre-existing infra-dependent failures"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14004/dod-lint-typecheck-suite/command.yaml
+          && grep -q '^ticket_id: OMN-14004$' drift/dod_receipts/OMN-14004/dod-lint-typecheck-suite/command.yaml"
+  - id: "dod-omnimarket-pr-1630"
+    description: "omnimarket PR #1630 carries the OMN-14004 fix"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14004/dod-omnimarket-pr-1630/command.yaml
+          && grep -q '^pr_number: 1630$' drift/dod_receipts/OMN-14004/dod-omnimarket-pr-1630/command.yaml"
