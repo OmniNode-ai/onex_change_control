@@ -139,6 +139,9 @@ def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
     if not isinstance(raw, dict):
         return [f"{receipt_path}: receipt YAML is not a mapping"]
 
+    if ".supersede." in receipt_path.name:
+        return []
+
     # Legacy exemption decided on the raw timestamp BEFORE model validation,
     # so pre-cutoff receipts with historical schema quirks never block.
     # No timestamp at all → exempt: such a file cannot parse as

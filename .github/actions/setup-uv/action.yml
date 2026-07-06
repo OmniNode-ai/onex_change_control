@@ -21,4 +21,22 @@ runs:
         python-version: ${{ inputs.python-version }}
     - name: Install dependencies
       shell: bash
-      run: uv sync --all-groups
+      env:
+        UV_HTTP_TIMEOUT: "600"
+        UV_SYNC_ATTEMPTS: "5"
+        UV_SYNC_RETRY_DELAY_SECONDS: "10"
+      run: |
+        set -euo pipefail
+        attempt=1
+        until uv sync --all-groups; do
+          status=$?
+          if [ "$attempt" -ge "$UV_SYNC_ATTEMPTS" ]; then
+            echo "::error::uv sync failed after ${attempt} attempt(s)"
+            exit "$status"
+          fi
+
+          sleep_seconds=$((UV_SYNC_RETRY_DELAY_SECONDS * attempt))
+          echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed with exit ${status}; retrying in ${sleep_seconds}s"
+          sleep "$sleep_seconds"
+          attempt=$((attempt + 1))
+        done
