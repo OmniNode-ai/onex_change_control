@@ -1,0 +1,49 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14019"
+title: "fix(OMN-14019): bounded-recency window on ROI overlay aggregation (regression-blindness fix)"
+summary: >-
+  omnimarket PR #1635 fixes the regression-blindness limitation found during OMN-14011 recon: the ROI
+  overlay aggregated the whole context_roi_scores table's lifetime per-tier success rate with no recency
+  scope, so a tier that later regresses could never be suppressed once it accrued enough historical successes.
+  Two env-tunable knobs (DELEGATION_ROI_LOOKBACK_ROWS, DELEGATION_ROI_WINDOW_SECONDS) scope each tier's
+  cohort to its most-recent rows before the rate is computed. Both default unset, in which case the aggregation
+  is byte-identical to the prior whole-table behaviour so every golden-chain replay is untouched; only
+  an opt-in surface enables a window.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused omnimarket coverage proves the default-off path is byte-identical to the whole-table aggregation,
+      a recently-regressed tier is suppressed under a lookback window, the time-window filter drops stale
+      rows, ranking is deterministic, and the knobs resolve from env.
+    command: "uv run pytest tests/unit/delegation/test_roi_overlay_routing_omn14001.py -v"
+  - kind: "docs"
+    description: "Design authority records the recency-window fix and the regression-blindness bug."
+    command: "test -f docs/plans/2026-07-06-OMN-14011-roi-enrichment-design.md"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1635"
+    description: >-
+      Consuming-PR binding: omnimarket PR #1635 carries the bounded-recency window in build_roi_overlay
+      + resolve_roi_overlay, the two env resolvers, and focused tests for OMN-14019 (incl. the byte-identical
+      default-off assertion and the recently-regressed-tier suppression proof).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14019/dod-omnimarket-pr-1635/command.yaml\""
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-14019 central contract and
+      PASS receipts consumed by omnimarket PR #1635 via its Evidence-Source line.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14019/dod-occ-self/command.yaml\""
