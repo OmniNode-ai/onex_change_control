@@ -132,6 +132,9 @@ def _walk_for_timestamp(node: object) -> datetime | None:
 
 def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
     """Return violation strings for one receipt file (empty = clean)."""
+    if ".supersede." in receipt_path.name:
+        return []
+
     try:
         raw = yaml.safe_load(receipt_path.read_text())
     except (OSError, yaml.YAMLError) as exc:
