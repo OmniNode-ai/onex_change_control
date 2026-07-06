@@ -242,9 +242,7 @@ def test_supersession_record_is_not_plain_receipt_hardened(tmp_path: Path) -> No
             {
                 "schema_version": "1.0.0",
                 "ticket_id": "OMN-13060",
-                "supersedes": (
-                    "drift/dod_receipts/OMN-13060/dod-001/command.yaml"
-                ),
+                "supersedes": ("drift/dod_receipts/OMN-13060/dod-001/command.yaml"),
                 "reason": "test supersession",
                 "superseder": "codex-gpt-5",
                 "created_at": POST_CUTOFF_TS,
