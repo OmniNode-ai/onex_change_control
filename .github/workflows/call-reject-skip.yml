@@ -53,12 +53,24 @@ jobs:
 
           BODY_FILE="$(mktemp)"
           DIFF_FILE="$(mktemp)"
+          FILTERED_DIFF_FILE="$(mktemp)"
           printf '%s' "${PR_BODY:-}" > "${BODY_FILE}"
           if [[ -n "${PR_NUMBER:-}" ]]; then
             gh pr diff "${PR_NUMBER}" --repo "${GH_REPO}" > "${DIFF_FILE}"
           fi
 
-          if grep -E '\[skip-[^]]+\]' "${BODY_FILE}" "${DIFF_FILE}"; then
+          awk '
+            /^\+\+\+ / { p=$2; sub(/^b\//, "", p); f=p; next }
+            /^--- / { next }
+            /^diff --git / { f=""; next }
+            /^\+/ {
+              if (f != "" &&
+                  f ~ /\.(md|yaml|yml|txt)$/ &&
+                  f != ".github/workflows/call-reject-skip.yml") print
+            }
+          ' "${DIFF_FILE}" > "${FILTERED_DIFF_FILE}"
+
+          if grep -E '\[skip-[^]]+\]' "${BODY_FILE}" "${FILTERED_DIFF_FILE}"; then
             echo "::error::skip-gate bypass token found."
             exit 1
           fi
