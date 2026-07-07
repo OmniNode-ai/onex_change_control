@@ -18,8 +18,30 @@ on:
     - cron: "0 6 * * 1"
 
 jobs:
+  # OMN-14098 OCC evidence-only fast-lane. Classify the PR diff via the shared
+  # omnibase_core zone-filter. On pure evidence PRs (docs_only=true — every
+  # changed path in contracts/ ∪ drift/dod_receipts/ ∪ other DOCS prefixes) the
+  # CodeQL analysis steps below are gated OFF, but the job still runs and exits 0
+  # so the REQUIRED `CodeQL / CodeQL Analysis (python)` context reports SUCCESS
+  # (skip-with-success). NEVER remove/rename this job or use paths-ignore — a
+  # required context that does not report wedges branch protection permanently.
+  # On merge_group/push/schedule the zone-filter forces docs_only=false, so the
+  # full CodeQL scan still runs at the merge boundary and on the weekly cron.
+  zone-filter:
+    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      python-version: "3.12"
+
   codeql:
     name: CodeQL / CodeQL Analysis (python)
+    needs: [zone-filter]
+    # Wedge-safety: run even if zone-filter fails/skips so this REQUIRED context
+    # always reports. When zone-filter is unavailable, docs_only is '' so the
+    # analysis steps below run (fail-safe = full CodeQL scan), never a silent skip.
+    if: ${{ !cancelled() }}
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -37,15 +59,24 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Initialize CodeQL
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: github/codeql-action/init@v4
         with:
           languages: python
           queries: security-and-quality
 
       - name: Autobuild
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: github/codeql-action/autobuild@v4
 
       - name: Perform CodeQL Analysis
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: github/codeql-action/analyze@v4
         with:
           category: /language:python
+
+      - name: Evidence-only short-circuit (report success)
+        if: needs.zone-filter.outputs.docs_only == 'true'
+        run: |
+          echo "Evidence-only PR (docs_only=true) — CodeQL analysis skipped;"
+          echo "required context reports success via skip-with-success. OMN-14098."
