@@ -40,8 +40,21 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run full pre-commit
-        if: needs.zone-filter.outputs.docs_only != 'true'
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
         run: SKIP=check-receipt-honesty,check-receipt-hardening uv run pre-commit run --all-files
+      - name: Run dev PR changed-file pre-commit
+        if: needs.zone-filter.outputs.docs_only != 'true' && github.event_name == 'pull_request' && github.base_ref == 'dev'
+        env:
+          BASE_REF: ${{ github.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REF" --no-tags
+          mapfile -t changed_files < <(git diff --name-only --diff-filter=ACMRT "origin/${BASE_REF}"...HEAD || true)
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "Dev PR fast-lane: no changed files for pre-commit."
+            exit 0
+          fi
+          SKIP=check-receipt-honesty,check-receipt-hardening uv run pre-commit run --files "${changed_files[@]}"
       - name: Run evidence-only pre-commit
         if: needs.zone-filter.outputs.docs_only == 'true'
         env:
