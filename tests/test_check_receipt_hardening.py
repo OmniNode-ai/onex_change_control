@@ -169,7 +169,9 @@ def test_invalid_receipt_fails_model_validation(tmp_path: Path) -> None:
     assert "ModelDodReceipt validation" in violations[0]
 
 
-def test_supersession_record_is_not_plain_receipt_hardened(tmp_path: Path) -> None:
+def test_minimal_supersession_record_is_not_plain_receipt_hardened(
+    tmp_path: Path,
+) -> None:
     """Supersession wrappers are validated by receipt-gate chain resolution."""
     _write_contract(tmp_path)
     receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
