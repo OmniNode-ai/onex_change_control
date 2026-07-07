@@ -44,17 +44,25 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
+        env:
+          UV_HTTP_TIMEOUT: "600"
+          UV_SYNC_ATTEMPTS: "3"
+          UV_SYNC_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
-          for attempt in 1 2 3; do
-            if uv sync --all-extras; then
-              exit 0
-            fi
+          git config --global http.version HTTP/1.1
+          attempt=1
+          until uv sync --all-extras; do
             status=$?
-            if [ "$attempt" -eq 3 ]; then
+            if [ "$attempt" -ge "$UV_SYNC_ATTEMPTS" ]; then
+              echo "::error::uv sync failed after ${attempt} attempt(s)"
               exit "$status"
             fi
-            sleep $((attempt * 10))
+
+            sleep_seconds=$((UV_SYNC_RETRY_DELAY_SECONDS * attempt))
+            echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed with exit ${status}; retrying in ${sleep_seconds}s"
+            sleep "$sleep_seconds"
+            attempt=$((attempt + 1))
           done
 
       - name: Check for Optional/Union usage (PEP 604)
