@@ -262,5 +262,25 @@ def test_main_skips_missing_files(tmp_path: Path) -> None:
     )
 
 
+def test_supersession_record_is_not_plain_receipt_hardened(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "command.supersede.0001.yaml"
+    receipt_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "supersedes": ("drift/dod_receipts/OMN-13060/dod-001/command.yaml"),
+                "reason": "test supersession",
+                "superseder": "codex-gpt-5",
+                "created_at": POST_CUTOFF_TS,
+                "tombstone": False,
+                "replacement": _receipt_data(run_timestamp=POST_CUTOFF_TS),
+            }
+        )
+    )
+
+    assert check_receipt_file(receipt_path, tmp_path / "contracts") == []
+
+
 def test_denylist_is_lowercase_canonical() -> None:
     assert all(v == v.strip().lower() for v in DENYLISTED_VERIFIERS)
