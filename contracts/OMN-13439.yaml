@@ -1,0 +1,82 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13439"
+title: "feat(OMN-13439): prod-promotion grant resolver EFFECT — fetch-from-main, provenance, lifecycle"
+summary: >-
+  Phase 2b of the prod-promotion authorization gate (epic OMN-13410, parent OMN-13418), shipped on omnimarket
+  source PR #1329. Adds a canonical EFFECT node node_prod_promotion_grant_resolver_effect that resolves
+  the prod promotion grant from the durable governance anchor BEFORE the prod gate evaluates. The resolver
+  reads grants/prod_promotion_grants.yaml from onex_change_control@main (fetch-from-main anti-self-approval,
+  OMN-10971 — mirrors reject-deploy-gate-skip.yml's contents/<path>?ref=main fetch, so a redeploy request
+  cannot author the authorization that approves it), keyed by (promotion_batch_id, image_digest, lane=prod),
+  and materializes ModelProdPromotionGrant. onex_change_control keeps ZERO Python import on omnimarket
+  — the resolver parses the YAML directly. Lifecycle: a consumed grant (consumed:true/removed) resolves
+  to ABSENT (no replay); an expired grant (evaluated_at > expires_at) to EXPIRED; a self-grant (approved_by
+  == requester) to SELF_GRANTED; a mismatch to ABSENT. Every non-RESOLVED outcome leaves grant None so
+  the prod gate fails CLOSED. Provenance is emitted on the resolver EFFECT's AUDIT EVIDENCE event (ModelProdPromotionGrantResolvedEvent.provenance),
+  NOT on the pure ModelProdPromotionGrant DTO: source commit SHA + grant file path + grant_id + file sha256
+  + CODEOWNERS-match. The redeploy orchestrator routes a prod redeploy-start to the grant-RESOLVE command
+  first; on prod-promotion-grant-resolved it threads the RESOLVED grant + deterministic evaluated_at into
+  the gate command — NEVER from start.promotion_grant. Non-prod lanes go straight to the gate (dev/stability
+  dispatch unchanged). This OCC PR carries the central contract consumed by the omnimarket PR #1329 Receipt
+  Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Resolver unit + golden-chain tests written and green through the REAL dispatch path (orchestrator
+      _on_start -> grant-RESOLVE command -> resolver EFFECT.handle -> orchestrator _on_grant_resolved
+      -> gate COMPUTE handler), NOT handler-isolation. All required cases present and passing: present+future-expiry+matching
+      -> RESOLVED fact; absent/expired/digest-mismatch/batch-mismatch/ lane-mismatch -> None; approved_by==requester
+      -> SELF_GRANTED (None); consumed -> ABSENT (None); provenance fields populated on the emitted audit
+      evidence; test_resolver_fetches_from_main_not_branch asserts the ref=main fetch; test_orchestrator_resolves_grant_before_gate_command
+      golden-chains through real dispatch and proves the gate ALLOWS with the resolved grant. Shipped
+      on omnimarket PR #1329.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13439/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Static quality gates green on the omnimarket worktree: uv run ruff format/check src/ tests/ clean;
+      uv run mypy src/omnimarket/ --strict succeeds; pre-commit run on the changed files passes every
+      ticket hook (including Node Purity Gate, Transport Mock Lint, GitHub-token env-read gate, URL Authority
+      Gate, golden-chain-coverage-gate, and the Plugin*-daemon block). Runtime sweep 321/321 entry points
+      OK and the node-metadata dependency-scope check passes. onex_change_control keeps ZERO Python import
+      (the resolver parses the grant YAML directly).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13439/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is a new pure read-only EFFECT node + cross-node models + orchestrator
+      wiring in omnimarket with NO runtime deploy, NO migration, and NO REST surface. It only TIGHTENS
+      the prod-promotion path (fail-closed: the grant is now resolved out-of-band from onex_change_control@main
+      before the prod gate, and every non-RESOLVED outcome leaves the gate's grant None). It cannot loosen
+      any existing gate; dev/stability dispatch is proven unchanged by test_non_prod_start_skips_resolver.
+      No live lane is mutated by this PR; the deploy-effect prod-refusal (Phase-3) is the separate downstream
+      ticket OMN-13440.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13439/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13439.yaml consumed
+      by the omnimarket PR #1329 Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves
+      the contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13439\"$' contracts/OMN-13439.yaml"

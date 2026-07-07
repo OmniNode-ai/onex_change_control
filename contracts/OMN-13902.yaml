@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13902"
+title: "Cross-repo sibling version-alignment automation — sibling-lock-refresh workflow (canary + fan-out)"
+summary: >-
+  Closes the recurring stale-sibling-lock drift class. Detection existed (sibling-pin guard OMN-12977,
+  orphan-pin gate OMN-13509) but alignment was manual, so drift recurred and blocked work (OMN-13156,
+  OMN-13402, OMN-13814 were one-off repin tickets; the 2026-07-03 R3 stability refresh was blocked by
+  a stale core pin). The fix is a Dependabot-shaped, per-repo scheduled workflow (.github/workflows/sibling-lock-refresh.yml)
+  that runs `uv lock --upgrade-package` for each omninode sibling on a daily schedule (and workflow_dispatch)
+  and opens a bot PR when uv.lock changes. Git/tag-pinned siblings in [tool.uv.sources] are left untouched
+  — `uv lock --upgrade-package` cannot move an immutable rev/tag — so the Dep-Provenance state is preserved
+  automatically with no per-repo tuning. Landed on the omnimemory canary first (PR #400, all gates green
+  incl. Dep Provenance Gate), then fanned out to the other PyPI-range consumers (omniclaude, omniintelligence,
+  omnibase_infra). This is a docs/CI-only change: each PR adds one workflow YAML file, touches no runtime
+  contract, and performs no deploy, restart, image build/push, or live cluster mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimemory-canary-pr-400"
+    description: >-
+      Canary binding: omnimemory PR #400 added .github/workflows/sibling-lock-refresh.yml and merged with
+      all gates green (incl. Dep Provenance Gate), proving the mechanism. The PR body records a local
+      run that refreshed omnibase-core/spi/compat pins in uv.lock while leaving the git-pinned omnibase-infra
+      entry untouched — exactly the stale-lock drift the ticket cites, auto-resolved.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnimemory-canary-pr-400/command.yaml"
+  - id: "dod-fanout-ci-only"
+    description: >-
+      Deploy-gate evidence: the canary and every fan-out PR add a single .github/workflows CI YAML file
+      only. No runtime contract is touched and no deploy, container restart, docker compose against .201,
+      image build/push, rpk produce, or live cluster/runtime mutation was performed — the workflow itself
+      only opens bot PRs on a schedule, gated by CROSS_REPO_PAT, and merges are human-reviewed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-fanout-ci-only/command.yaml"
+  - id: "dod-omniintelligence-pr-755"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #755 adds .github/workflows/sibling-lock-refresh.yml (the
+      fan-out of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-755/command.yaml"
+  - id: "dod-omnibase-infra-pr-2202"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2202 adds .github/workflows/sibling-lock-refresh.yml (the
+      fan-out of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnibase-infra-pr-2202/command.yaml"
+  - id: "dod-omniclaude-pr-1857"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1857 adds .github/workflows/sibling-lock-refresh.yml (the fan-out
+      of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniclaude-pr-1857/command.yaml"
+  - id: "dod-occ-pr-3617"
+    description: >-
+      OCC self-binding: onex_change_control PR #3617 carries the OMN-13902 contract and receipts that
+      the canary omnimemory PR #400 and the fan-out PRs (omniintelligence #755, omnibase_infra #2202,
+      omniclaude #1857) cite via Evidence-Source: OCC#3617. Satisfies this PR's own occ-preflight/receipt-gate
+      binding.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3617/command.yaml"

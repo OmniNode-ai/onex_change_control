@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13165"
+title: "Projection API: delegation summary topic rejects correlation_id filter with missing column"
+summary: >-
+  The generic /projection/{topic} endpoint unconditionally applied WHERE correlation_id = $1 regardless
+  of whether the topic's declared column list included that column. Aggregate/summary topics (e.g. delegation.summary.v1)
+  back views with no per-row correlation_id column; the filter caused Postgres to raise column "correlation_id"
+  does not exist, which surfaced to callers as a 503 degraded response. Callers were being misled into
+  treating a summary projection error as proof of delegation failure, when the delegation.correlation-trace.v1
+  topic was returning fresh rows for the same correlation_id. #magic___^_^___line Fix: topic_supports_correlation_id_filter()
+  checks the contract-declared column list before issuing SQL. When correlation_id is absent from the
+  explicit column list and SELECT * is not used, the endpoint returns a typed 422 unsupported_filter response
+  that names the authoritative per-correlation surface (delegation.correlation-trace.v1) so callers are
+  not misled. Regression coverage added: 3 new HTTP integration tests and 4 pure-unit tests for the helper
+  function. #magic___^_^___line Evidence from the 2026-06-15 night gate-zero run confirms the defect (before)
+  and the fix (after) are distinct code paths: correlation-trace returned row_count=1 / data_freshness=fresh
+  while summary returned 503 degraded for the same correlation_id.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR on branch jonah/omn-13165-projection-correlation-id (base=dev, HEAD 612253140814ee6c3511b98023be140a2f74aafc).
+      Adds topic_supports_correlation_id_filter() helper and the typed 422 guard in projection_query().
+      Regression tests: 16 total in test_projection_api_dynamic.py (all PASS). Full unit suite 2245 passed,
+      1 skipped. ruff format + ruff check: clean. mypy --strict src/omnimarket/: Success (2351 files).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13165/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13165"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13165/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Paired OCC receipt PR in onex_change_control (this PR) carries the contract + PASS receipts for
+      OMN-13165 with Evidence-Source 612253140814ee6c3511b98023be140a2f74aafc.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13165/dod-occ-pr/command.yaml"
+  - id: "dod-runtime-identity"
+    description: >-
+      Runtime identity evidence from the 2026-06-15 night gate-zero run: - Defect confirmed: GET /projection/onex.snapshot.projection.delegation.summary.v1?correlation_id=1b90ea27-1f06-42ae-b668-ecdf9450f7ca
+        returned {"status":"degraded","error":"upstream_unavailable","reason":"column \"correlation_id\"
+      does not exist","data_freshness":"degraded"}
+        on both dev and stability-test lanes.
+      - Authoritative surface working: GET /projection/onex.snapshot.projection.delegation.correlation-trace.v1?correlation_id=1b90ea27-1f06-42ae-b668-ecdf9450f7ca
+        returned row_count=1, data_freshness=fresh on dev (correlation_id=1b90ea27-1f06-42ae-b668-ecdf9450f7ca)
+        and on stability-test (correlation_id=ec8ce95a-f7af-4dd4-a08b-7cd927111416).
+      - Evidence files: docs/evidence/2026-06-15-night-autonomous-runtime-tests/01-gate-zero/GZ-DEV-DEL/rerun-valid-input/projection-summary.json
+        and projection-correlation-trace.json.
+      - Contract hash (node_projection_delegation/contract.yaml): sha256:ed31522614d3edd303d026ed0bdf529bfe131c109ddfb6dc8d098b8d7b6eb5be
+      - api_server.py hash after fix: sha256:29cc78d4231978741a64ca1da663203835bcf0c7ccb917da61aa504f84010b52
+      - The fix is a code-only change to the projection API server. No Kafka schema, DB
+        migration, or container image change is required; the fix takes effect on the next
+        container restart (image rebuild + deploy cycle).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13165/dod-runtime-identity/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true for full runtime effect. The fix lives in omnimarket/src/omnimarket/projection/api_server.py
+      which is packaged into the projection-api container image. The typed 422 response (replacing the
+      503 degraded from Postgres) becomes live only after the container image is rebuilt and deployed
+      to dev/stability-test. No Kafka topic changes, no DB migrations, no schema changes, no new env vars.
+      The PR can merge now; image rebuild is tracked separately under the standard dev-redeploy procedure.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13165/dod-deploy-assessment/command.yaml"

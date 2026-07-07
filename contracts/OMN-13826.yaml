@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13826"
+title: "fix(OMN-13826): lane-aware container resolution in deploy-runtime verify_deployment"
+summary: >-
+  omnibase_infra PR #2180 makes deploy-runtime.sh verify_deployment() lane-aware. It previously resolved
+  the runtime container by the hardcoded dev name omninode-runtime (an anchored docker ps name filter
+  plus a docker logs line), so on a non-dev lane -- where the dev container commonly runs alongside the
+  lane -- it resolved the wrong (dev) container and emitted a false "Image label mismatch" warning. The
+  PR adds resolve_lane_runtime_container_name() (mirroring resolve_lane_overlay_filename's lane derivation
+  and fail-closed whitelist), mapping the compose project to the lane-scoped container_name (dev->omninode-runtime,
+  stability-test->omninode-stability-test-runtime, prod->omninode-prod-runtime, judge->omninode-judge-runtime),
+  and routes verify_deployment's name probe and docker-logs line through it. The change is scripts-only
+  with no runtime contract change; it adds per-lane derivation regression tests and records local shellcheck,
+  ruff, focused pytest, and pre-commit evidence. Runtime rebuild/deploy is explicitly outside this OCC
+  evidence PR and remains operator-gated.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2180"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2180 carries the OMN-13826 lane-aware verify_deployment
+      fix. verify_deployment() now derives the lane-scoped runtime container name via resolve_lane_runtime_container_name()
+      and uses it in the docker ps name filter and the docker logs health-fail line, instead of the hardcoded
+      dev name omninode-runtime. The com.docker.compose.service label fallback is intentionally left unchanged
+      (the compose service key is lane-invariant across all overlays; only container_name is lane-prefixed,
+      and the adjacent com.docker.compose.project filter disambiguates the lane). The PR adds per-lane
+      derivation regression tests and leaves runtime contracts untouched. Real probe: gh pr view 2180
+      --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid,headRefName,title,files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13826/dod-infra-pr-2180/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: onex_change_control PR carrying this OMN-13826 contract, consumed by omnibase_infra
+      PR #2180 through Receipt Gate and OCC eligibility. No deploy-gate evidence is required: the consuming
+      PR is a scripts-only change with no runtime contract, so deploy-gate passes deploy-neutral.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13826/dod-occ-self/command.yaml"

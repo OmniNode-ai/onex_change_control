@@ -1,3 +1,32 @@
+## v0.5.1
+
+### Added
+- feat(promotion): `staleness.py` helper for promotion staleness detection
+- feat(testing): wire schema test generator (`wire_schema_test_generator.py`)
+- feat(validators): `cross_schema_coherence.py` validator for cross-schema integrity checks
+
+### Changed
+- chore: version bump to 0.5.1
+
+## v0.5.0
+
+### Added
+- feat(overseer): orchestration model suite — 14 models (`ModelWorkerContract`, `ModelSessionContract`, `ModelOvernightContract`, `ModelDispatchItem`, `ModelEscalationRequest`, `ModelContextBundle`, `ModelCompletionReport`, `ModelVerifierOutput`, `ModelPromotionBotPolicy`, `ModelTaskStateEnvelope`, `ModelTaskDeltaEnvelope`, `ModelTaskShapeFeatures`, `ModelProcessRunnerStateTransition`, `ModelContractAllowedActions`) and 14 enums (`EnumArtifactStoreAction`, `EnumCapabilityTier`, `EnumCodeRepositoryAction`, `EnumContextBundleLevel`, `EnumEventBusAction`, `EnumFailureClass`, `EnumLlmProviderAction`, `EnumNotificationAction`, `EnumProcessRunnerState`, `EnumProvider`, `EnumRetryType`, `EnumRiskLevel`, `EnumTicketServiceAction`, `EnumVerifierVerdict`) for worker/session/dispatch orchestration
+- feat(promotion): promotion tooling module — `manifest.py` (`generate-promotion-manifest` CLI), `workflow.py` (`promotion-workflow-evidence` CLI), `cutover.py` (`dev-main-cutover` CLI) for automated dev→main promotion workflows
+- feat(scanners): additional scanner implementations — `claude_md_cross_ref.py`, `claude_md_update_suggester.py`, `historical_docs_validator.py`, `model_dump_drift.py`; complementing the v0.3.0 doc-freshness and handler-compliance scanners
+- feat(handlers): `handler_dependency_analysis.py` and `handler_drift_analysis.py` alongside the existing `handler_dod_sweep.py`
+- feat(kafka): `governance_emitter.py` and `topics.py` for governance event emission
+- feat(boundaries): Kafka boundary and DB routing rule YAML configs; `migration_inventory.yaml` added
+- feat(canary): canary schema module (`schema.py`)
+- feat(dispatch_claims): dispatch claim store (`claim_store.py`) and sweeper (`sweeper.py`)
+- feat(doctrine): doctrine loader (`loader.py`) as the authoritative policy configuration surface
+- feat(validators): `arch_handler_contract_compliance.py` validator
+- feat(wire_schemas): `runtime_deployment_proof_v1.yaml` and `runtime_deployment_request_v1.yaml` wire schema definitions
+- feat(scripts): additional CLI scripts — `check_db_routing`, `check_diagnosis_doc_freshness`, `check_integration_map_freshness`, `check_plan_vs_live`, `check_pr_touches_ticket_files`, `validate_pr_contracts` (registered as internal helpers, not all exposed as entry points)
+
+### Changed
+- chore: version bump to 0.5.0
+
 ## v0.4.0 (2026-03-31)
 
 ### Added

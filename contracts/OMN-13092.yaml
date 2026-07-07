@@ -1,0 +1,91 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13092"
+title: "Phase 0c: capture topics + event types registration + consistency test"
+summary: >-
+  Registers the durable-capture event types for the skill-output-suppression slice (epic OMN-13089). omnimarket:
+  artifact.captured -> onex.evt.omnimarket.artifact-captured.v1 and tool.output.captured -> onex.evt.omnimarket.tool-output-captured.v1,
+  both duty_critical, in node_emit_daemon/registries/topics.yaml, mirrored in the emit daemon contract
+  publish_topics; also fixes pre-existing hook-side registry drift (delegate.task, agent.action, llm.cost.completed
+  were registered in omniclaude but missing from the daemon YAML, previously masked by source_only baseline
+  entries). omniclaude: adds both event types to emit_client_wrapper SUPPORTED_EVENT_TYPES, registers
+  TopicBase + EVENT_REGISTRY entries, and adds the blocking cross-registry consistency test (hook frozenset
+  subset-of daemon registry topics) plus a CI job that checks out omnimarket@dev so the gate blocks in
+  omniclaude CI.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "events"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1201"
+    description: >-
+      omnimarket PR #1201 (branch jonah/omn-13092-capture-topics, base=dev, head 4bf2a3a448b871e2761a7dbc343963ec96b09847)
+      registers artifact.captured and tool.output.captured as duty_critical fan-out rules, fixes the delegate.task/agent.action/llm.cost.completed
+      drift, mirrors all five topics in contract.yaml publish_topics, and updates the drift baseline.
+      New tests: TestCaptureTopicRegistrations (4 tests) in tests/test_golden_chain_emit_daemon.py — file
+      total 60 passed. event_registry_drift validator passes against omniclaude@dev. Ruff/mypy --strict
+      clean; pre-commit run --all-files exit 0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-omnimarket-pr-1201/command.yaml"
+          && grep -q '^ticket_id: "OMN-13092"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-omnimarket-pr-1201/command.yaml"
+          && grep -q '^pr_number: 1201$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-omnimarket-pr-1201/command.yaml"
+  - id: "dod-emit-daemon-standalone-deploy"
+    description: >-
+      Deploy verification for the registry change: the emit daemon (the deployable runtime unit for topics.yaml)
+      was started standalone (no-kafka) from the omnimarket PR #1201 head via `python -m omnimarket.nodes.node_emit_daemon
+      start`, and both new event types were round-tripped through the real Unix socket with the EmitClient.
+      artifact.captured and tool.output.captured were accepted and queued; an under-specified artifact.captured
+      payload was rejected with the exact missing required fields — proving the daemon loads and enforces
+      the new registry entries at runtime. Full package-level runtime adoption (omnimarket release + plugin
+      venv update) is parent-epic Phase 2a/3 scope, not this ticket.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-emit-daemon-standalone-deploy/command.yaml"
+          && grep -q '^ticket_id: "OMN-13092"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-emit-daemon-standalone-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13092 contract and the dod receipts that the omnimarket and
+      omniclaude implementation PRs' Receipt-Gates resolve via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13092"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-occ-pr/command.yaml"
+  - id: "dod-omniclaude-pr-1751"
+    description: >-
+      omniclaude PR #1751 (branch jonah/omn-13092-capture-event-types, base=dev, head f95ba7c9b451d8892cc4599ca71ecff43a5e001b)
+      registers the durable-capture event types on the hook side, adds cross-registry consistency coverage,
+      and refreshes the topic naming validator producer allowlist for the existing omnimarket-owned capture
+      topics.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-omniclaude-pr-1751/command.yaml"
+          && grep -q '^pr_number: 1751$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-omniclaude-pr-1751/command.yaml"
+  - id: "dod-occ-pr-2588"
+    description: >-
+      This OCC PR carries the central OMN-13092 receipt binding that lets omniclaude PR #1751 satisfy
+      OCC merge eligibility while preserving the existing omnimarket PR #1201 and OCC PR #2581 receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-occ-pr-2588/command.yaml"
+          && grep -q '^pr_number: 2588$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13092/dod-occ-pr-2588/command.yaml"

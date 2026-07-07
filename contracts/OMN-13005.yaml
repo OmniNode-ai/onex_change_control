@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13005"
+title: "node_context_roi_runner consume-leg: runtime injects no blocking event_consumer — degenerate rows
+  halt Exp 1-3"
+summary: >-
+  SECOND distinct defect on node_context_roi_runner (the dispatch INPUT crash was OMN-13003 / omnimarket#1180,
+  hot-patched live). After that patch the runner consumed, drove, and emitted its terminal without crashing,
+  but every battery row was degenerate (failure_stage=generation, attempt_count=0, zero tokens, empty
+  model_id/provider) while the underlying generations SUCCEEDED ~1-2s later (provider=local, Qwen3.6-35B-A3B,
+  contract_passed=True). Root cause (owning surface: omnibase_infra runtime auto-wiring, src/omnibase_infra/runtime/auto_wiring/handler_wiring.py):
+  HandlerContextRoiRunner declares an injectable blocking event_consumer and, in _run_trial, calls self._consumer(gen_terminal_topic,
+  correlation_id, generation_timeout_seconds) expecting a blocking, correlation-id-filtered consumer of
+  onex.evt.omnimarket.node-generation-completed.v1. The runtime auto-wiring materialized event_publisher
+  for handlers that declare it (_materialize_known_handler_dependencies -> _make_sync_event_publisher)
+  but had NO equivalent for event_consumer, so the runner constructed with the no-op _noop_consumer default
+  that returns None synchronously -> _run_trial recorded failure_stage=generation BEFORE the generation
+  pipeline produced its result. The 120s timeout was never honored because the no-op never blocked. This
+  is the feedback_real_dispatch_path_tests blind spot: handler-isolation tests inject a returning consumer
+  stub and pass; the live runtime injected nothing. omnibase_infra PR #1951 adds _make_sync_event_consumer
+  (mirror of _make_sync_event_publisher) backed by service_terminal_event_consumer.make_terminal_event_consumer,
+  a sync (topic, correlation_id, timeout) -> dict | None adapter running the proven direct-Kafka correlate-and-wait
+  loop (from RuntimePatternBBroker) on an isolated event loop in a worker thread so blocking does not
+  deadlock the runtime dispatch loop that delivers the awaited terminal. No topic, envelope, or contract
+  API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR #1951 adds event_consumer materialization to runtime auto-wiring, fixing the runner
+      consume-leg degenerate-row defect at the runtime DI layer. Real-dispatch-path regression test tests/unit/runtime/auto_wiring/test_event_consumer_injection.py
+      drives a trial through _prepare_handler_wiring with a terminal generation event arriving after a
+      delay and asserts a non-degenerate row (attempt_count>=1, populated model_id, no failure_stage=generation);
+      verified RED with the injection disabled (handler fell back to the no-op). Local proof: ruff format/check
+      clean; mypy src/omnibase_infra/runtime/service_terminal_event_consumer.py src/omnibase_infra/runtime/auto_wiring/handler_wiring.py
+      --strict Success; pre-commit all hooks Passed (incl. ONEX Any Type gate); pytest tests/unit/runtime/
+      tests/integration/runtime/ -n auto -> 5197 passed, 1 pre-existing parallelism flake (test_secondary_index_speedup,
+      passes in isolation, unrelated). Evidence anchor: omnibase_infra head commit 4e469591ef3b3e381de7485e44e268d129f8aaf2.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13005/dod-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13005"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13005/dod-infra-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: PR #1951 is an additive runtime-wiring fix (one new service module + one auto-wiring
+      injection helper + one test). No live deploy, restart, topic mutation, or .201 mutation is performed
+      in this work. The fix is runtime-loaded by the effects/runtime image and reaches the stability lane
+      only through the normal post-merge batched rebuild. deploy_pending = true. Hot-patch surface (exact
+      runtime-loaded files) recorded in the ticket and PR body: src/omnibase_infra/runtime/service_terminal_event_consumer.py
+      and src/omnibase_infra/runtime/auto_wiring/handler_wiring.py.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13005/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13005"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13005/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13005/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13005 contract and the dod-infra-pr / dod-deploy-assessment
+      receipts that the omnibase_infra code PR #1951 Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13005/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13005"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13005/dod-occ-pr/command.yaml"

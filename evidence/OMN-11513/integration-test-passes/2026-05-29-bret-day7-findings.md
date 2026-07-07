@@ -9,7 +9,7 @@
 **Branches / SHAs tested:**
 - omnidash `dev` at `e10c825`
 - onex-self-extending-agent `main` at `c04a4d8`, `dev` at `48aeed9`
-**Data source mode:** `VITE_DATA_SOURCE=file` only. Both projection paths (`.200:3003` and `localhost:3003`) are down today, so projection mode could not be exercised.
+**Data source mode:** `VITE_DATA_SOURCE=file` only. Both projection paths (`<onex-host-gpu>:3003` and `localhost:3003`) are down today, so projection mode could not be exercised.
 
 ---
 
@@ -74,13 +74,13 @@ Projection-mode testing of any surface remains impossible today (no projection b
 
 | Endpoint | Expected interpretation | Result |
 |---|---|---|
-| `.201:18085/v1/introspection/manifest` (via Tailscale `100.109.203.94`) | Runtime manifest | Alive. 245 contracts registered, 0 errors. omnimarket 0.4.2. 8 delegation-related nodes present (delegate-skill orchestrator, delegation orchestrator, quality-gate reducer, routing-feedback reducer, routing reducer, llm-delegation projection, llm-delegation routing compute, projection_delegation). |
+| `<onex-host>:18085/v1/introspection/manifest` (via Tailscale `100.109.203.94`) | Runtime manifest | Alive. 245 contracts registered, 0 errors. omnimarket 0.4.2. 8 delegation-related nodes present (delegate-skill orchestrator, delegation orchestrator, quality-gate reducer, routing-feedback reducer, routing reducer, llm-delegation projection, llm-delegation routing compute, projection_delegation). |
 | `localhost:3003/projection/delegation` | Local omnidash bridge | Connection refused. Bridge not running. |
-| `.200:3003/projection/delegation` | Per today's plan, not the authoritative bridge | Connection timed out. Unreachable from WSL, as expected. |
+| `<onex-host-gpu>:3003/projection/delegation` | Per today's plan, not the authoritative bridge | Connection timed out. Unreachable from WSL, as expected. |
 
 Net: file mode is the only available data path today. The runtime itself is healthy and richly populated.
 
-Side observation: `.201` /health reports version 0.37.0 today versus 0.37.2 yesterday. Logged as observed runtime identity drift per Jonah's guidance, not as an intentional rollback.
+Side observation: '`<onex-host>`' /health reports version 0.37.0 today versus 0.37.2 yesterday. Logged as observed runtime identity drift per Jonah's guidance, not as an intentional rollback.
 
 ## Task 5 — Golden-chain evidence classification
 

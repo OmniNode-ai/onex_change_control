@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12996"
+title: "fix(OMN-12996): capture honest LLM usage provenance on exp0/generation-consumer path"
+summary: >-
+  The experiment-runner / exp0 path (node-generation-requested.v1 -> node_generation_consumer -> LLM inference
+  effect) emitted projection rows with prompt_tokens=0 / usage_source=MISSING (observed in the 2026-06-11
+  ab-compare.v1 + llm_call_metrics rows), hollowing experiment COST data — cost columns and ROI math read
+  as zero/missing on the /experiments demo surface. Root cause: in HandlerGenerationConsumer, _call_llm
+  read response.usage.tokens_input/tokens_output but DISCARDED response.usage.usage_source (the provenance
+  the infra inference effect already computes — API when the provider returns a usage block, MISSING when
+  absent), and handle() HARDCODED usage_source=EnumUsageSource.ESTIMATED on the emitted ModelGenerationBenchmark
+  regardless of whether the provider actually reported usage. Fix: _call_llm now propagates the provider-reported
+  provenance via _map_response_usage_source (api -> MEASURED, estimated -> ESTIMATED, absent/None -> UNKNOWN,
+  never fabricating MEASURED); ModelGenerationAttempt gains a per-attempt usage_source field; handle()
+  aggregates per-attempt provenance into an honest benchmark usage_source via _aggregate_usage_source
+  (MEASURED if any attempt measured, ESTIMATED if any estimated, else UNKNOWN); and the benchmark default
+  is now UNKNOWN (honest absent-state). Real prompt/completion token capture is preserved. Real-dispatch-path
+  tests drive HandlerGenerationConsumer.handle and assert MEASURED+nonzero tokens for a usage-reporting
+  provider and UNKNOWN (never fabricated MEASURED, never fake-zeros-as-measured) when usage is absent.
+  Sibling of OMN-12970 (ab-compare table/migration). deploy_pending: live effect requires the next batched
+  stability rebuild; acceptance probe = a fresh exp run row showing usage_source=MEASURED + nonzero tokens
+  on ab-compare.v1 / llm_call_metrics.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: "dod-omnimarket-pr-1182"
+    description: "omnimarket PR #1182 fixes HandlerGenerationConsumer to propagate provider usage provenance
+      (_map_response_usage_source) and aggregate it honestly onto the benchmark (_aggregate_usage_source)
+      instead of the hardcoded ESTIMATED; adds ModelGenerationAttempt.usage_source; adds real-dispatch-path
+      tests (tests/unit/nodes/node_generation_consumer/test_usage_source_capture_omn12996.py, 5 tests:
+      MEASURED+nonzero, UNKNOWN-when-absent, ESTIMATED-propagates, mixed-attempt + all-absent aggregation).
+      ruff/mypy --strict/pre-commit clean; generation-consumer + downstream projection_llm_cost golden-chain
+      tests pass; net new test failures 0 (verified by full-suite diff vs dev HEAD). Evidence anchor:
+      omnimarket head commit cc465f3b75f5bfddbf9d035d94acef126db507aa."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12996/dod-omnimarket-pr-1182/command.yaml"
+          && grep -q '^ticket_id: "OMN-12996"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12996/dod-omnimarket-pr-1182/command.yaml"
+          && grep -q '^pr_number: 1182$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12996/dod-omnimarket-pr-1182/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: "Deploy assessment: this is an emitter-side provenance fix in node_generation_consumer.
+      It reaches live effect via a batched stability rebuild (image rebuild of the omnimarket runtime
+      consuming node-generation-requested.v1) run by the orchestrator after in-flight verifications; no
+      dev/prod mutation and no live deploy is performed by this PR. Pre-fix read-only observation: exp0
+      ab-compare.v1 / llm_call_metrics rows carried prompt_tokens=0 and usage_source=MISSING. Post-deploy
+      acceptance probe: a fresh exp run row (provider that reports usage) shows usage_source=MEASURED
+      + nonzero prompt_tokens/completion_tokens. The receipt carries the deploy keyword for the deploy-gate."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12996/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12996"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12996/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the OMN-12996 central contract and the dod receipts that the omnimarket
+      PR #1182 Receipt-Gate resolves via Evidence-Source: <this OCC PR>."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12996/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12996"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12996/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

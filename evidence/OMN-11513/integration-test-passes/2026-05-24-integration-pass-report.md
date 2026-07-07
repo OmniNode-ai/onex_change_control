@@ -5,7 +5,7 @@
 Fresh integration pass per Jonah's "Bret Integration Prompt Plan — May 24." Covers:
 
 - **Workstream A:** SEA current-main rebaseline (A0), agent path proof (A1), demo/replay/report/entropy (A2), swarm/fan-out structural verification (A3)
-- **Workstream B:** Tailscale connectivity to `.201` runtime + model endpoints
+- **Workstream B:** Tailscale connectivity to '`<onex-host>`' runtime + model endpoints
 - **Workstream C:** Dashboard honesty re-check (PR #118 landed, fixes verified)
 - **Workstream D:** Remote read-only delegation orientation
 
@@ -68,7 +68,7 @@ curl -fsS http://100.109.203.94:18085/v1/introspection/manifest
 | A0 — Baseline | **PASS** | 1146 passed / 16 skipped / 0 failed; mypy --strict 0 errors in 156 files |
 | A1 — Agent path | **DEGRADED** | Full 5/5 chain achieved on attempt 3 (no patches). Attempts 1, 2, 4 hit ~30% sandbox-rejection rate (OMN-11828). Run Summary cosmetic bug shows "FAIL" even on success (OMN-11972). |
 | A2 — Demo/Replay/Report/Entropy | **PASS** | All 4 modes pass. Honesty checks all clean. One carry-forward: `--report` metrics lack provenance labels (OMN-11696). |
-| A3 — Swarm/Fan-Out | **PASS** (structural) / **BLOCKED** (live) | 67 unit tests pass. All endpoints on `.201`/`.200` — live execution requires Tailscale routing to model ports (confirmed reachable in Workstream B but not tested for swarm dispatch). |
+| A3 — Swarm/Fan-Out | **PASS** (structural) / **BLOCKED** (live) | 67 unit tests pass. All endpoints on '`<onex-host>`'/'`<onex-host-gpu>`' — live execution requires Tailscale routing to model ports (confirmed reachable in Workstream B but not tested for swarm dispatch). |
 | B — Tailscale | **PASS** | All 4 endpoints reachable: runtime 18085 ✓, effects 18086 ✓, Qwen 8000 ✓, DeepSeek 8001 ✓ |
 | C — Dashboard honesty | **PASS** | PR #118 fixes verified: error boundary catches crashes ✓, "Fixture Mode" banner visible ✓, LIVE badges gated on real data source ✓ |
 | D — Remote orientation | **PASS** | 216 contracts loaded, 9 delegation topics with active partitions, runtime healthy v0.36.1 |

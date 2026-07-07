@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13440"
+title: "feat(OMN-13440): deploy-effect prod-refusal + grant target binding"
+summary: >-
+  Phase 3 (epic OMN-13410, parent OMN-13418) defense-in-depth: close the deploy-agent off-gate path, shipped
+  on omnimarket source PR #1330. The deploy publish-monitor EFFECT (node_redeploy_deploy_effect / handler_deploy_publish_monitor)
+  now independently refuses a prod ModelDeployPublishCommand unless it carries a verified promotion_grant
+  whose (approved_lane == PROD, approved_image_digest, approved_promotion_batch_id) MATCH the command's
+  (runtime_lane, image_digest, promotion_batch_id) — target binding, NOT mere grant_id presence: a grant
+  for batch/digest A never authorizes a deploy of batch/digest B. On a refusal the deploy EFFECT publishes
+  NOTHING to the deploy agent — the rebuild-requested command is never emitted — and instead emits a typed
+  ModelDeployRefusedEvent (EnumProdGrantReason: missing_promotion_grant | grant_lane_mismatch | grant_digest_mismatch
+  | grant_batch_mismatch | expired_promotion_grant) on the contract-declared onex.evt.omnimarket.redeploy-deploy-refused.v1
+  topic. The pure verify_prod_deploy_grant_binding helper mirrors the prod-gate COMPUTE so the deploy-agent
+  path is closed even if the upstream gate were bypassed. The redeploy ORCHESTRATOR threads the out-of-band-resolved
+  grant + batch + evaluated_at from the gate command into the deploy-publish command (the grant is taken
+  ONLY from the gate command, NEVER from the start request; absent grant -> deploy fails closed). Scoped
+  to the deploy-agent path only — raw ssh+docker is Phase 4 doctrine + script-locking (OMN-13413), tracked
+  not closed; 3.2 closeout-orchestrator routing stays in OMN-13413. Canonical EFFECT, NO REST. dev/stability
+  deploys are byte-for-byte unchanged (the non-prod binding check is a no-op). Depends on the grant model
+  (OMN-13436) + resolver (OMN-13439), both merged on dev. This OCC PR carries the central contract consumed
+  by the omnimarket PR #1330 Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Real-dispatch (golden-chain) prod-refusal + target-binding tests, NOT handler-isolation: test_deploy_effect_rejects_prod_without_verified_grant
+      (missing grant), digest-mismatch, batch-mismatch, lane-mismatch, expired-grant, and no-evaluated_at
+      refusals each assert the deploy-agent rebuild command was NEVER published; test_deploy_effect_proceeds_with_matching_grant
+      proves a target-bound grant lets the deploy reach the agent; an orchestrator->deploy golden chain
+      proves the verified grant threads through and that an absent grant fails closed at the deploy EFFECT.
+      Driven through the EFFECT handle() over a real EventBusInmemory. Full suite: 7883 passed, 65 skipped,
+      0 failed (uv run pytest tests/ -m "not kafka"). Shipped on omnimarket PR #1330.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13440/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Static assertion that no prod path through orchestrator -> gate -> deploy-effect emits ModelDeployRebuildCommand
+      without a verified grant_id: test_publish_and_monitor_is_guarded_by_grant_binding AST-proves handle()
+      calls verify_prod_deploy_grant_binding and never publishes TOPIC_REBUILD_REQUESTED directly (the
+      single deploy-agent publish lives behind the guard in publish_and_monitor); test_refuse_never_publishes_rebuild_command
+      AST-proves the refusal path publishes the refused topic and never the rebuild topic. Plus static
+      quality gates green on the omnimarket worktree: ruff format/check clean; uv run mypy src/omnimarket/
+      --strict succeeds over 2459 source files; runtime sweep 321/321; node-metadata dependency scope
+      PASS; pre-commit passes on every changed file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13440/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change only TIGHTENS the prod deploy path (fail-closed: a prod deploy
+      now additionally requires a target-bound approver grant at the EFFECT boundary) — it cannot loosen
+      any existing gate. It is a contract-topic ADDITION (the new redeploy-deploy-refused.v1 publish topic)
+      plus pure model/handler code in omnimarket; NO runtime deploy, NO migration, NO REST surface, and
+      it does not close the raw ssh+docker residual (Phase 4 / OMN-13413, tracked not closed). dev/stability
+      dispatch is proven byte-for-byte unchanged by test_non_prod_deploy_unaffected_by_grant_binding (non-prod
+      binding check is a no-op). No live lane is mutated by this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13440/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13440.yaml consumed
+      by the omnimarket PR #1330 Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves
+      the contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13440\"$' contracts/OMN-13440.yaml"

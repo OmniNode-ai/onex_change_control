@@ -1,0 +1,107 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13140"
+title: "Delegation cloud-escalation ladder never fires (escalation topic HWM=0) — open the three escalation
+  gates so local->cloud reaches Gemini"
+summary: >-
+  The delegation cloud-escalation ladder never fired (escalation topic HWM=0, every terminal escalation_count=0):
+  work was served local-only / Qwen and the cloud tier (gemini-2.5-flash-lite) was never reached. Root
+  cause (code-confirmed): escalation failed CLOSED at three predicate gates before it could route to cloud.
+  omnimarket PR #1215 (branch jonah/omn-13140-cloud-escalation, base=dev, head 3d507076965b94c185846a0c2e19cec9f5c200fb)
+  opens all three. GATE 2 (handler_quality_gate.py): fallback_recommended was True only on a deterministic
+  fail or a REFUSAL verdict; the common WEAK_OUTPUT / TASK_MISMATCH verdicts returned False, so the orchestrator
+  terminated instead of escalating — now _recommends_fallback() escalates REFUSAL / WEAK_OUTPUT / TASK_MISMATCH
+  on both the contract-DoD and legacy paths. GATE 3 (routing_tiers.yaml + bifrost_delegation.yaml): the
+  canonical cloud target AI Studio cloud-gemini-flash (gemini-2.5-flash-lite, generativelanguage.googleapis.com,
+  secret_ref llm.gemini.api_key) lacked the code_generation capability, so next_eligible_tier(code_generation)
+  could not reach it — added code_generation to gemini-flash use_for + cloud-gemini-flash capabilities;
+  cloud-vertex-gemini stays defined but intentionally NOT in the code_generation path (one canonical Gemini
+  target for the proof). GATE 1 (handler_delegation_workflow.py): finish_reason=length was classed non-retryable,
+  so a truncated local response terminated instead of escalating — reclassified as retryable (truncation,
+  not refusal; a longer-context cloud successor can complete it), original+escalated models recorded in
+  escalation_history; empty body / empty choices stay non-retryable (minimal-safe). Secret-ref discipline
+  preserved (decisions on REFS only). Real-dispatch tests drive routing reducer -> inference effect ->
+  quality gate reducer -> orchestrator and prove a WEAK_OUTPUT code_generation result on local escalates
+  to cheap_cloud and the routing reducer resolves the canonical Gemini cloud endpoint. Config + handler-classification
+  change only — no DDL, no migration, no live deploy, no .201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR #1215 (branch jonah/omn-13140-cloud-escalation, base=dev, head 3d507076965b94c185846a0c2e19cec9f5c200fb)
+      opens the three escalation gates so local->cloud delegation escalation fires and reaches AI Studio
+      Gemini. GATE 2: WEAK_OUTPUT / TASK_MISMATCH verdicts now set fallback_recommended=True (contract
+      + legacy paths). GATE 3: cloud-gemini-flash carries code_generation in both routing use_for and
+      bifrost capabilities; next_eligible_tier(code_generation)=cheap_cloud. GATE 1: finish_reason=length
+      reclassified retryable -> escalates to a longer-context successor. Real-dispatch test (test_cloud_escalation_omn13140.py)
+      proves a weak local code_generation output escalates to cheap_cloud and the routing reducer resolves
+      the canonical Gemini cloud endpoint over the real handler chain. ruff + ruff format clean; mypy
+      src/omnimarket --strict clean (2347 files); full suite 7372 passed / 69 skipped (no -k filter);
+      pre-commit all hooks pass on changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13140"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-omnimarket-pr/command.yaml"
+          && grep -q '^pr_number: 1215$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The escalation-firing fix is config + handler-classification
+      only and is NOT yet live on the dev lane. No live deploy, restart, topic mutation, or .201 mutation
+      was performed by this PR. escalation_count incrementing and the Gemini cloud endpoint being resolved
+      are proven over the real handler chain in unit/integration tests; the live stability-lane escalation
+      topic HWM>0 / terminal escalation_count>=1 are observable only after the next dev redeploy (folded
+      into the OMN-13119 dev redeploy). Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13140"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13140 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR #1215 Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13140"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-occ-pr/command.yaml"
+  - id: "dod-emit-wired-pr1221"
+    description: >-
+      omnimarket PR #1221 (branch jonah/omn-13140-wire-delegation-escalation-emit, base=dev, head f1808ef0527356aea672fcef852dc3f56827a59c)
+      wires the TERMINAL escalation emit that PR #1215 left missing. PR #1215 only opened the three routing
+      GATES; the orchestrator still emitted ONLY a ModelRoutingIntent on escalation, never the typed ModelLlmDelegationEscalationTriggeredEvent,
+      so the escalation topic HWM stayed at 0 and node_delegation_routing_feedback_reducer saw zero signal.
+      #1221 builds the typed event in _build_escalation_event (handler_delegation_workflow.py:972) and
+      emits it from both escalation branches — handle_inference_response (line 647) and handle_gate_result
+      (line 903) — returning ModelLlmDelegationEscalationTriggeredEvent (line 1003). The topic onex.evt.omnimarket.delegation-escalation-triggered.v1
+      is contract-declared on the orchestrator (contract.yaml publish_topics line 75 + published_events
+      line 103), so the runtime DispatchResultApplier routes the typed event; the consumer node_delegation_routing_feedback_reducer
+      already subscribes (its contract.yaml line 48), closing the producer/consumer pairing. INDEPENDENT
+      VERIFICATION by a verifier distinct from the code author: TDD red->green reproduced against origin/dev
+      — 3 failed (positive emit/route cases) + 3 passed (negative no-emit cases) with the fix reverted
+      but the test present, then 6 passed with the fix; mypy --strict clean on the changed handler; gh
+      pr checks #1221 shows every code-quality gate GREEN with ONLY verify/verify (this Receipt-Gate)
+      failing on the placeholder Evidence-Source. HWM>0 on the deployed lane is a separate runtime proof
+      (deploy_pending), not claimed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-emit-wired-pr1221/command.yaml"
+          && grep -q '^ticket_id: "OMN-13140"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-emit-wired-pr1221/command.yaml"
+          && grep -q '^pr_number: 1221$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13140/dod-emit-wired-pr1221/command.yaml"

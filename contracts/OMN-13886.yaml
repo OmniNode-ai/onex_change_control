@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13886"
+title: "local Mac dev-lane omninode-runtime crash-loop: arch-aware coding-agent CLI install"
+summary: >-
+  The local Apple Silicon dev-lane omninode-runtime crash-looped on ONEX_CORE_041 (local_ingress.enabled_profiles
+  / pattern_b_broker.enabled_profiles extra_forbidden), killing the canonical bus-based dod_verify dispatch
+  path. Root cause: the OMN-13248 coding-agent CLI block in docker/Dockerfile.runtime hard-pins the x64-only
+  npm platform packages (@openai/codex-linux-x64, @anthropic-ai/claude-code-linux-x64), so every linux/arm64
+  image build fails ("notsup Actual cpu: arm64") and the local image was frozen at 2026-05-03 - predating
+  the enabled_profiles schema fields added 2026-05-08 (OMN-10207, af2124bd). omnibase_infra PR #2195 selects
+  the platform npm package via BuildKit TARGETARCH (amd64 -> -linux-x64, arm64 -> -linux-arm64) with exact
+  version pins preserved. Verified on the local lane: arm64 build succeeds, omninode-runtime healthy with
+  RestartCount=0, dod-verify-start consumer group Stable, and a live bus-based dod_verify round-trip completed
+  (correlation caff11e2-763b-4a45-ac7e-6c61ab88c1e6).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_infra-pr-2195"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2195 makes the Dockerfile.runtime coding-agent CLI install
+      TARGETARCH-aware (exact pins preserved for both arches) at head e4d5c8a67a9bd8fe9c3ad9206495ad3bd73d9e1e,
+      unblocking linux/arm64 runtime image rebuilds and the local dev-lane bus-based dod_verify path.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13886/dod-omnibase_infra-pr-2195/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: onex_change_control PR carrying the OMN-13886 contract and receipt consumed
+      by omnibase_infra PR #2195.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13886/dod-occ-self/command.yaml"
+  - id: "dod-deploy-local-lane"
+    description: >-
+      Deploy evidence: the TARGETARCH-aware Dockerfile.runtime was rebuilt for linux/arm64 and redeployed
+      on the local Apple Silicon dev lane. omninode-runtime came up healthy with RestartCount=0 (previously
+      the ONEX_CORE_041 crash loop), the dod-verify-start consumer group reached Stable, and a live bus-based
+      dod_verify round-trip completed (correlation caff11e2-763b-4a45-ac7e-6c61ab88c1e6). Satisfies the
+      OMN-8912 deploy gate for the runtime-path (docker/Dockerfile.runtime) change in omnibase_infra PR
+      #2195.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13886/dod-deploy-local-lane/command.yaml"
+  - id: "dod-omnibase_infra-pr-2211"
+    description: >-
+      Consuming-PR binding (OMN-13886 residual, WS-2): omnibase_infra PR #2211 adds the profile-aware
+      runtime-lane teardown guard — a bare `docker compose ... down` against a runtime lane (no --profile
+      runtime/full and no --remove-orphans) orphans the profile-gated runtime containers while yanking
+      their core deps (the "2 hits in 24h" teardown defect). CI gate .github/workflows/no-bare-compose-teardown.yml
+      + pre-commit hook + self-contained scanner tests/test_compose_profile_teardown_policy.py (4 passed;
+      fires exit=1 on an injected bare down, exit=0 after revert). CI-configuration + docs + test evidence
+      only; no runtime deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13886/dod-omnibase_infra-pr-2211/command.yaml"
+  - id: "dod-no-runtime-deploy"
+    description: >-
+      Deploy-gate evidence: PR #2211 is a CI gate + pre-commit hook + test + docs change (no runtime contract,
+      no scripts). No live deploy, restart, docker exec, rpk topic produce, AWS mutation, or .201/cluster
+      mutation performed. deploy-gate reports deploy-neutral on the code PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'No runtime deploy, restart, docker exec, rpk topic produce, AWS mutation'
+          drift/dod_receipts/OMN-13886/dod-no-runtime-deploy/command.yaml"

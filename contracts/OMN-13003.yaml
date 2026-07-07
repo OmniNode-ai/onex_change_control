@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13003"
+title: "node_context_roi_runner contract omits event_model — live dispatcher crash halts Exp 1-3"
+summary: >-
+  The first-ever run-request on onex.cmd.omnimarket.context-roi-run-requested.v1 crashed the stability-test
+  dispatcher with "AttributeError: 'dict' object has no attribute 'tasks'", halting experiment batteries
+  Exp 1-3 (920 runs). Root cause (CONTRACT defect, same class as OMN-12420 node_dod_verify): the node_context_roi_runner
+  handler_routing.handlers[0] entry omitted the event_model block, so the runtime auto-wiring dispatcher
+  (_make_dispatch_callback in omnibase_infra runtime/auto_wiring/handler_wiring.py) took the event_model-is-None
+  branch and handed HandlerContextRoiRunner.handle the raw materialized dispatch envelope (a dict) instead
+  of a validated ModelContextRoiRunRequest; "for task in request.tasks" then raised AttributeError. The
+  node's golden-chain/unit tests construct ModelContextRoiRunRequest(...) directly and call handle(),
+  never exercising the auto-wiring deserialize step, so the defect shipped green. omnimarket PR #1180
+  adds the event_model (+ event_type + message_category: command) mapping to the handler entry and a real-dispatch-path
+  regression test that replays the exact crashing envelope through _make_dispatch_callback (fails before
+  fix with KeyError: 'event_model', passes after). No topic, envelope, or contract API change beyond the
+  handler event_model declaration.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR #1180 declares the ModelContextRoiRunRequest event_model on the node_context_roi_runner
+      handler_routing entry, fixing the live dispatcher crash at the contract layer. Real-dispatch-path
+      regression test tests/nodes/node_context_roi_runner/test_dispatch_envelope_unwrap.py replays the
+      exact wrapped envelope through _make_dispatch_callback built from the contract event_model and asserts
+      no AttributeError + typed ModelDispatchResult (fails before fix with KeyError: 'event_model'). Local
+      proof: tests/nodes/node_context_roi_runner/ -> 65 passed; mypy src/omnimarket/ --strict Success
+      (2325 files); ruff format/check clean; runtime sweep 298/298 OK. Pre-existing unrelated node_generation_consumer
+      effect-wiring + projection-handler failures verified identical on clean origin/dev 7bfefec1. Evidence
+      anchor: omnimarket head commit 445fe4aaa63b339ce33424c883d75f93047c92cc.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13003/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13003"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13003/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: PR #1180 is an additive contract-layer fix (one handler event_model declaration
+      + one test). No live deploy, restart, topic mutation, or .201 mutation is performed in this work
+      — the green stability demo lane was held READ-ONLY (logs, rpk probes, throwaway containers only)
+      per the operating constraint. The fix reaches the stability lane only through the normal post-merge
+      batched rebuild (effects image rebuilt from the new omnimarket head). deploy_pending = true. Exact
+      re-fire + Exp 1-3 rerun steps recorded in the ticket and PR body.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13003/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13003"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13003/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13003/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13003 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket code PR #1180 Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13003/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13003"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13003/dod-occ-pr/command.yaml"

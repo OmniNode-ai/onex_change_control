@@ -1,0 +1,103 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13766
+title: "fix(OMN-13766): resolve omniweb build ownership — build against omniweb's own Dockerfile"
+summary: >
+  omninode_infra/.github/workflows/build-and-push-omniweb.yml has never succeeded: its "Copy Dockerfile
+  to omniweb context" step runs `cp omninode_infra/docker/omniweb/Dockerfile omniweb/`, but docker/omniweb/
+  has never existed in omninode_infra on any branch. Decision: build ownership belongs to omniweb, not
+  omninode_infra — omniweb has shipped its own multi-stage Dockerfile at its repo root since PR #6 (the
+  pnpm-monorepo/Next.js 15 migration), unlike omnidash/onex-api where omninode_infra genuinely owns the
+  docker/<service>/ build context. Fix deletes the broken copy step, points the build at omniweb's own
+  Dockerfile (the build step already targeted omniweb/Dockerfile), fixes the dead docker/omniweb/** trigger
+  path, and adds a repository_dispatch(omniweb-push) receiver so the workflow has a real firing trigger
+  once the sender is wired on the omniweb side (fast-follow OMN-13804).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: >
+      docker/omniweb/ has never existed in omninode_infra — the broken copy step referenced a path with
+      zero commit history.
+    command: >
+      git log --all --oneline -- docker/omniweb/ | wc -l
+  - kind: ci
+    description: >
+      omniweb owns its own root Dockerfile with dedicated commit history going back to the original PHP
+      containerization commit, later rewritten for the pnpm-monorepo/Next.js 15 migration (PR #6) — confirming
+      build ownership belongs there, not in omninode_infra.
+    command: >
+      git -C omniweb log --oneline -- Dockerfile | tail -1
+  - kind: ci
+    description: >
+      Fixed workflow YAML is valid and passes all pre-commit hooks (yamllint, normalization-symmetry,
+      skip-gate-bypass, secret scan).
+    command: >
+      pre-commit run --files .github/workflows/build-and-push-omniweb.yml
+  - kind: ci
+    description: >
+      Full omninode_infra test suite (no -k filter) passes after the change.
+    command: >
+      uv run --with pytest pytest tests/ -v
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      git log --all --oneline -- docker/omniweb/ in omninode_infra returns zero commits — the Dockerfile
+      the broken "Copy Dockerfile to omniweb context" step referenced was never committed, confirming
+      the workflow was born broken rather than regressed.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      omniweb's own repo history shows Dockerfile added at the repo root in PR #6 (pnpm-monorepo/Next.js
+      15 migration), confirming omniweb — not omninode_infra — owns the build context. The fix reuses
+      that Dockerfile directly instead of fabricating a duplicate copy in omninode_infra.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      build-and-push-omniweb.yml passes all pre-commit hooks (yamllint, normalization-symmetry, skip-gate
+      bypass rejection, secret scan) after removing the broken copy step and fixing the trigger path.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-003/command.yaml"
+  - id: dod-004
+    description: >
+      Full omninode_infra test suite (34 tests, no -k filter) passes after the workflow fix — no regression
+      introduced by the change.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-004/command.yaml"
+  - id: dod-005
+    description: >
+      Feature commit SHA: e1d24c980e967ef30434d55fad5833f619e22cc1 Branch: jonah/omn-13766-omniweb-build-ownership
+      Repo: OmniNode-ai/omninode_infra PR: 536
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-005/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13766 contract and PASS receipts required by
+      the downstream omninode_infra PR #536 Receipt Gate.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13766/dod-occ-self/command.yaml"

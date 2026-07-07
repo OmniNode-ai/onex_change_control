@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+# OMN-13299: Enforce validator-requirements.yaml fleet gate for onex_change_control.
+# Reports ALL missing gates in a single pass (never fail-on-first).
+name: Validate Validator Requirements
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  merge_group:
+  workflow_dispatch:
+
+jobs:
+  validate-validator-requirements:
+    name: Enforce validator-requirements.yaml (OMN-13299)
+    # OMNI_RUNNER_SELECTOR_V1 — runners are resolved from centralized selector variables.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      - name: Checkout omnibase_core
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          # Pinned to the commit that exports validate-validator-requirements hook (OMN-13299).
+          # Update by running: gh api repos/OmniNode-ai/omnibase_core/commits/dev --jq '.sha'
+          ref: f826fb0a0d7891c9ca1bb5c60781edca52052499
+          path: omnibase_core
+          token: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Enforce validator-requirements.yaml
+        run: |
+          cd omnibase_core
+          uv sync --all-extras
+          uv run python -m omnibase_core.validation.validator_requirements_consumer \
+            --repo onex_change_control \
+            --repo-root .. \
+            --spec architecture-handshakes/validator-requirements.yaml \
+            --baseline ../architecture-handshakes/validator-requirements-baseline.yaml

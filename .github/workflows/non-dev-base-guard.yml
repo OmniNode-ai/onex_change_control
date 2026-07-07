@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-13021 (retro A-6): Fail PRs whose base is neither dev nor main unless
+# the body declares an intentional stack via `Stacked-Parent: #<pr-number>`.
+#
+# Failure class: feedback_stacked_prs_orphan_from_dev — PRs #1185/#1954 were
+# auto-merged INTO parent feature branches, producing misleading MERGED states
+# and stranding the work off dev (recurrence of the June 5 incident, 3 tickets
+# stranded). Base=main is governed by main-target-guard (OMN-12243/OMN-12477).
+
+name: Non-dev base guard
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  non-dev-base-guard:
+    name: non-dev-base-guard
+    runs-on: >-
+      ${{
+        (github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Check PR base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${BASE_REF}" == "dev" ]]; then
+            echo "::notice::PR targets dev; guard does not apply."
+            exit 0
+          fi
+
+          if [[ "${BASE_REF}" == "main" ]]; then
+            echo "::notice::PR targets main; main-target-guard governs that path."
+            exit 0
+          fi
+
+          echo "PR targets feature base '${BASE_REF}' from head '${HEAD_REF}'."
+
+          if echo "${PR_BODY}" | grep -qE 'Stacked-Parent:[[:space:]]*#[0-9]+'; then
+            echo "::notice::Declared stacked PR (Stacked-Parent found). Allowed."
+            echo "::warning::Stacked PRs merge INTO their parent branch, not dev."
+            echo "::warning::Do NOT arm auto-merge on this PR; land the parent into dev first."
+            exit 0
+          fi
+
+          echo "::error::PR base '${BASE_REF}' is not the integration branch (dev)."
+          echo "::error::Auto-merge on this PR would fold it INTO '${BASE_REF}' and strand it off dev"
+          echo "::error::(feedback_stacked_prs_orphan_from_dev — the #1185/#1954 incident class)."
+          echo "::error::Either retarget to dev, or declare an intentional stack by adding a body line:"
+          echo "::error::  Stacked-Parent: #<parent-pr-number>"
+          exit 1

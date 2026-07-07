@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13141"
+evidence_item_id: "dod-infra-pr"
+check_type: "command"
+check_value: "uv run pytest tests/unit/runtime/test_run_event_driven_operation_match.py -q"
+contract_sha256: "sha256:34d70cdec400eb3b6f72d72416db151277bcd27249a101a84b05dfa4b2dfbddc"
+status: PASS
+run_timestamp: "2026-06-14T06:45:00Z"
+commit_sha: "6d9402bbe43dc3379f4a2e72de35a60c5f0d7262"
+runner: "worktree-agent-omn-13141-executor"
+verifier: "receipt-gate-local"
+probe_command: >-
+  (1) On origin/dev (BEFORE the fix): uv run pytest tests/unit/runtime/test_run_event_driven_operation_match.py
+  -> reproduces ValueError: Empty module name at runtime_local.py:816 (2/3 FAIL). (2) With the fix on
+  HEAD 6d9402bbe: same command -> 3/3 PASS. (3) Regression: uv run pytest tests/unit/runtime/ -q -> 4886
+  passed, 5 skipped. (4) uv run mypy src/omnibase_infra/runtime/runtime_local.py src/omnibase_infra/runtime/runtime_local_adapter.py
+  --strict -> Success.
+probe_stdout: |
+  # (1) BEFORE the fix — on origin/dev, the executor crashes on operation_match wiring:
+  $ uv run pytest tests/unit/runtime/test_run_event_driven_operation_match.py -v
+  tests/.../test_operation_match_contract_boots_via_run_async FAILED
+  tests/.../test_operation_match_wiring_does_not_import_empty_module FAILED
+  tests/.../test_payload_type_match_still_imports_event_model PASSED
+    File ".../src/omnibase_infra/runtime/runtime_local.py", line 816, in _run_event_driven
+      em_mod = importlib.import_module(entry.event_model_module)
+    ValueError: Empty module name
+  E   AssertionError: importlib.import_module('') was called during operation_match wiring
+  2 failed, 1 passed
+
+  # (2) WITH the fix — HEAD 6d9402bbe (verifier rerun, fresh):
+  $ uv run pytest tests/unit/runtime/test_run_event_driven_operation_match.py -v
+  tests/.../test_operation_match_contract_boots_via_run_async PASSED  [ 33%]
+  tests/.../test_operation_match_wiring_does_not_import_empty_module PASSED  [ 66%]
+  tests/.../test_payload_type_match_still_imports_event_model PASSED  [100%]
+  3 passed, 1 warning in 14.16s
+
+  # (3) Full runtime unit suite — no regression:
+  $ uv run pytest tests/unit/runtime/ -q
+  4886 passed, 5 skipped, 8595 warnings in 101.52s
+
+  # (4) mypy --strict on the two changed source files:
+  $ uv run mypy src/omnibase_infra/runtime/runtime_local.py src/omnibase_infra/runtime/runtime_local_adapter.py --strict
+  Success: no issues found in 2 source files
+
+  # pre-commit union budget gate (the only hook that initially fired; resolved by typing the
+  # adapter payload params as `object` rather than new BaseModel|dict unions):
+  $ uv run pre-commit run onex-validate-unions --files src/.../runtime_local.py src/.../runtime_local_adapter.py tests/.../test_run_event_driven_operation_match.py
+  ONEX Union Usage Validation..............................................Passed
+actual_output: >-
+  PASS: omnibase_infra PR #1982 (branch jonah/omn-13141-executor-event-model, base=dev, head 6d9402bbe43dc3379f4a2e72de35a60c5f0d7262)
+  fixes the executor half of OMN-13137. The new boot test test_run_event_driven_operation_match.py reproduces
+  the ValueError: Empty module name at runtime_local.py:816 on origin/dev (2/3 FAIL) and passes 3/3 with
+  the fix. The fix gates the importlib.import_module/getattr block on a non-empty event_model_module so
+  operation_match entries (no event_model) forward the raw decoded payload instead of importing module
+  "". _validate_routing (the OMN-13137 validator half, #1973) is untouched. Full tests/unit/runtime/ suite
+  GREEN (4886 pass, 5 pre-existing skips); mypy --strict clean on the two changed source files; pre-commit
+  (including the union budget gate) passes. Verifier (receipt-gate-local) is distinct from the runner
+  (worktree-agent-omn-13141-executor).

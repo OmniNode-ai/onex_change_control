@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13247"
+evidence_item_id: "dod-infra-pr-2043"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-13247/dod-infra-pr-2043/command.yaml
+contract_sha256: "sha256:4d95614860970481cde91da275ef5aa047fc09f2a94166b0cca391f86d635f04"
+status: PASS
+run_timestamp: "2026-06-19T11:07:38Z"
+commit_sha: "040eb2351a7e1d9f3c3015f611ef12fcf20f9143"
+branch: "jonahgabriel/omn-13247-orchestrator-multitopic-route"
+pr_number: 2043
+runner: "claude-subagent-omn-13247-routefix"
+verifier: "receipt-gate-local"
+probe_command: >-
+  gh pr view 2043 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid,baseRefName,title
+probe_stdout: |
+  {"baseRefName":"dev","headRefName":"jonahgabriel/omn-13247-orchestrator-multitopic-route","headRefOid":"040eb2351a7e1d9f3c3015f611ef12fcf20f9143","number":2043,"state":"OPEN","title":"fix(OMN-13247): route each coding-agent orchestrator emit to its own topic (multi-output dispatch-applier fix)"}
+actual_output: >-
+  PASS: omnibase_infra PR #2043 at commit 040eb2351a7e1d9f3c3015f611ef12fcf20f9143 fixes the e2e-discovered
+  coding-agent MULTI-OUTPUT topic-routing bug. The runtime published EVERY command the orchestrator emitted
+  to the single terminal_event topic (onex.evt.omnibase-infra.coding-agent-completed.v1) instead of each
+  emit's intended topic: DispatchResultApplier.apply() Phase-2 publish loop resolved the publish topic
+  from event.topic (absent on a ModelEventEnvelope), then the class-name topic_router/output_topic_map
+  (no match — an orchestrator-emitted output_event is always a ModelEventEnvelope), then the single output_topic
+  fallback (the terminal_event), so the first emit (workspace-validate command, event_type correctly set
+  to the validate topic) was misrouted to the terminal topic and the validate->invoke->capture chain never
+  ran. Canonical basis: node_redeploy_orchestrator (OMN-13211) sequences a workflow by emitting one ModelEventEnvelope
+  per next-command whose event_type IS the destination topic; it shares the identical latent bug, so the
+  fix lands in the applier (benefiting every orchestrator), not a per-node shim. The fix (1) makes _resolve_embedded_output_topic
+  recognize a ModelEventEnvelope output event whose event_type is a contract-declared (allowed) publish
+  topic and route to it (method count unchanged, ONEX Pattern Validation green); (2) unwraps a ModelEventEnvelope
+  output event to its inner payload (no double-nesting); and (3) re-hydrates an envelope-accepting orchestrator's
+  heterogeneous follow-up events (validated/completed/ failed) with the raw domain payload via _materialize_raw_event_envelope
+  when they fail entrypoint-model validation — the second layer the #2042 entrypoint rename left. A new
+  real-dispatch hop suite drives a published ModelCodingAgentInvokeCommand through the real MessageDispatchEngine
+  + the real DispatchResultApplier (only the CLI subprocess mocked) and asserts the bus-received topic
+  per hop (validate -> validate topic, validated -> workspace-validated, invoke -> effect-invoke, effect
+  reached, terminal carries ModelCodingAgentResult); it is verified to FAIL pre-fix (first emit -> terminal)
+  and PASS post-fix. mypy --strict clean on both changed modules; ruff + ONEX Pattern Validation green;
+  the existing applier topic-routing + applier suites + the full coding-agent suite + the unit runtime
+  suite remain green. No real claude/codex subprocess is executed in tests.
+exit_code: 0

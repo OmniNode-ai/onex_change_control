@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13405"
+title: "Workspace build vendors omnibase_core from the dev-HEAD clone"
+summary: >-
+  Make the workspace-mode runtime image (omnibase_infra docker/Dockerfile.runtime, staged by scripts/runtime_build/stage_workspace.sh)
+  install omnibase_core from the staged dev-HEAD clone instead of the lock-pinned released wheel. The
+  image previously installed omnibase_core only from omnibase_infra/uv.lock + pyproject [tool.uv.sources]
+  (a released 0.45.0 git rev predating dev enum modules); omnimarket dev imports omnibase_core.enums.enum_correction_failure_axis
+  at module import, so the enum-less wheel crash-looped omnimarket-projection-api and the runtime kernel.
+  The fix stages omnibase_core, then reinstalls it from the staged tree defeating [tool.uv.sources] (install
+  run from / with --no-sources + explicit file:// direct reference + --no-cache + --reinstall-package),
+  and adds omnibase_core to the build-provenance WORKSPACE_PACKAGES so a future regression fails the build.
+  release mode is unchanged (core from the lock). Proven by a cold dev-lane bring-up coming up HEALTHY:
+  runtime + effects + projection-api running/healthy restarts=0, projection-api no longer crash-loops,
+  broker EventBusKafka, migration ledger 0017/0018/0019 applied. Shipped on omnibase_infra PR #2058.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Workspace build installs omnibase_core from the staged dev-HEAD tree (file:// direct_url), defeating
+      omnibase_infra pyproject [tool.uv.sources] git pin; build-provenance reports all workspace provenance
+      proofs passed with omnibase_core install=file://. Proven on omnibase_infra PR #2058.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13405/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      The new runtime image imports omnibase_core.enums.enum_correction_failure_axis (the exact v4 ModuleNotFoundError)
+      and omnimarket.intelligence.events (the v4 crash site); cold dev bring-up came up HEALTHY with omnimarket-projection-api
+      restarts=0 and /health 200. Proven on omnibase_infra PR #2058.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13405/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by the omnibase_infra
+      PR #2058 Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13405.yaml
+      is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13405\"$' contracts/OMN-13405.yaml"

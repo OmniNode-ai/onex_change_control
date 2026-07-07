@@ -82,6 +82,13 @@ repos:
         types_or: [python, markdown]
         pass_filenames: true
         stages: [pre-commit]
+      - id: check-dep-provenance
+        name: Forbid first-party git-source overrides (OMN-13873)
+        entry: uv run --frozen python scripts/check_dep_provenance.py
+        language: system
+        files: ^pyproject\.toml$
+        pass_filenames: false
+        stages: [pre-commit]
       - id: no-env-file
         name: Reject committed .env files (except .env.example)
         entry: bash -c 'if git diff --cached --name-only | grep -E "(^|/)\\.env([._-].+)?$" | grep -vE
@@ -195,7 +202,19 @@ repos:
           Scan drift/dod_receipts/ for gamed probes: no-op echo PASS receipts, deferral language in PASS
           output, self-attestation, fake human verifiers, and deploy-keyword evidence backed only by echo.
           Exit 1 on any violation.
-        entry: uv run python -m omnibase_core.validation.validator_receipt_honesty --receipts-dir drift/dod_receipts
+        entry: uv run python -m omnibase_core.validation.validator_receipt_honesty
+        language: system
+        files: ^drift/dod_receipts/.*\.yaml$
+        pass_filenames: true
+        stages: [pre-commit]
+
+      - id: check-receipt-hardening
+        name: Receipt Hardening Gate (OMN-13060 / retro A-5)
+        description: >
+          Receipts produced on/after 2026-06-12 must carry contract_sha256 matching sha256(contracts/<ticket>.yaml),
+          and PASS receipts may not use session-local verifier aliases. Legacy receipts (run_timestamp
+          before cutoff) are exempt. Exit 1 on any violation.
+        entry: uv run python scripts/validation/check_receipt_hardening.py
         language: system
         files: ^drift/dod_receipts/.*\.yaml$
         pass_filenames: true
@@ -225,7 +244,32 @@ repos:
         language: script
         pass_filenames: true
         stages: [commit-msg]
-
+  # OMN-13299: Validator-requirements fleet gate
+  - repo: https://github.com/OmniNode-ai/omnibase_core
+    rev: f826fb0a0d7891c9ca1bb5c60781edca52052499  # pragma: allowlist secret
+    hooks:
+      - id: validate-validator-requirements
+        args:
+          - --repo
+          - onex_change_control
+          - --spec
+          - architecture-handshakes/validator-requirements.yaml
+          - --baseline
+          - architecture-handshakes/validator-requirements-baseline.yaml
+  # OMN-13563 Wave 4: URL authority + os.environ read gates from omnibase_core.
+  # check-url-authority: ratchet — any NEW URL literal outside a contract fails.
+  #   Suppress with: # url-authority-ok: <reason>
+  # no-new-os-environ: AST gate — block ALL os.environ/os.getenv reads outside KEEP_ALLOWLIST.
+  #   Suppress with: # env-read-ok: <reason> (structural bootstrap seams only)
+  #   Exempts tests/, scripts/, examples/ unconditionally (via internal skip logic).
+  - repo: https://github.com/OmniNode-ai/omnibase_core
+    rev: 2ec86385174864fd2baee16c1fa9b6b5af04ba85  # pragma: allowlist secret
+    hooks:
+      - id: check-url-authority
+        args: [--repo, onex_change_control, --repo-root, .]
+        exclude: ^(tests/|scripts/|examples/|drift/|evidence/).*\.py$
+      - id: no-new-os-environ
+        exclude: ^(tests/|scripts/|examples/)
 # Configuration
 default_install_hook_types: [pre-commit, pre-push]
 default_stages: [pre-commit]

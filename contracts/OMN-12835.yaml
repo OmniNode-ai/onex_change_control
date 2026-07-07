@@ -1,74 +1,78 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-12835"
-title: "Restore delegation runtime discovery with declared compatibility publish topics"
+title: "Wire typed contract-side execution-graph DAG into orchestrator contracts (stop silently dropping
+  declared DAGs)"
 summary: >-
-  The stability runtime skipped node_delegation_orchestrator because active package filtering treated
-  its legacy Omniclaude compatibility publish topic as an inactive runtime package domain. The command
-  consumer still subscribed, so delegate-skill commands reached the bus but failed with no dispatcher
-  registered for omnibase-infra.delegation-request. This change makes compatibility publish topics an
-  explicit typed contract field, keeps ordinary active-package filtering strict, and declares the legacy
-  task-delegated event on the delegation orchestrator contract.
-is_seam_ticket: true
+  Wave B of the imperative-orchestrator decomposition (epic OMN-12525 / OMN-13471). Adds typed contract-side
+  DAG models to omnibase_core so an orchestrator contract's declared workflow_coordination.workflow_definition.execution_graph
+  is no longer silently dropped at the type boundary (ModelWorkflowConfig previously had no workflow_definition
+  field and extra="ignore"). New additive models mirror the live YAML and the ModelFSMSubcontract validator
+  pattern: ModelContractWorkflowNode (node_id: str, node_type: str, depends_on: list[str] = []; frozen),
+  ModelContractExecutionGraph (no-duplicate-id + no-dangling-edge + acyclicity validators), ModelContractWorkflowMetadata,
+  and ModelContractWorkflowDefinition (workflow_metadata, execution_graph, optional coordination_rules).
+  ModelWorkflowConfig gains workflow_definition: ModelContractWorkflowDefinition | None = None, and ModelContractOrchestrator.INTERFACE_VERSION
+  is bumped 1.0.0 -> 1.1.0. The contract-side string-keyed DAG is kept separate from the runtime UUID
+  model (ModelWorkflowNode) per the OMN-7591/7782 namespacing caution; full unification is the gated OMN-12525
+  Phase 2 / OMN-656 follow-up. 0 blast radius on the ~52 non-declaring contracts (workflow_definition
+  is optional). This OCC PR carries the central contract consumed by the omnibase_core product PR Receipt
+  Gate via Evidence-Source.
+is_seam_ticket: false
 interface_change: true
 interfaces_touched:
-  - "topics"
   - "public_api"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
-  - id: "dod-omnibase-infra-pr-1915"
+  - id: "dod-001"
     description: >-
-      omnibase_infra PR #1915 adds typed compatibility_publish_topics discovery support, preserves strict
-      active runtime package filtering for ordinary publish topics, and verifies the discovery regression
-      locally.
+      The declared execution_graph is typed-bound and traversable (no silent drop). A TDD test (tests/unit/models/contracts/test_model_contract_execution_graph.py)
+      loads the canonical node_intelligence_orchestrator workflow_coordination block and asserts execution_graph.nodes
+      is populated with 5 nodes (receive_request, route_operation, execute_compute, execute_effects, publish_outcome)
+      and 4 dependency edges, with each depends_on edge correctly wired and node_ids as the declared strings.
+      The live node_intelligence_orchestrator/contract.yaml validates through ModelWorkflowConfig producing
+      5 nodes / 4 edges. 7/7 focused tests pass.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12835/dod-omnibase-infra-pr-1915/command.yaml"
-  - id: "dod-omnimarket-pr-1122"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12835/dod-001/command.yaml"
+  - id: "dod-002"
     description: >-
-      omnimarket PR #1122 declares onex.evt.omniclaude.task-delegated.v1 as the delegation orchestrator's
-      compatibility publish topic and verifies the runtime profile contract.
+      Structural integrity validators enforced at parse time: duplicate node_id, dangling depends_on edge,
+      and cyclic graphs each raise ValidationError (negative tests included). Non-declaring workflow configs
+      are unaffected (workflow_definition defaults to None). Quality gates green on the worktree: uv run
+      mypy --strict on the 5 changed/new contract source files succeeds (no issues); uv run ruff check/format
+      clean; the full tests/unit/models/contracts suite passes (3114 passed, 1 skipped); env -u GITHUB_TOKEN
+      pre-commit run --files <changed> exits 0 (incl onex-single-class-per-file: each new model lives
+      in its own file).
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12835/dod-omnimarket-pr-1122/command.yaml"
-  - id: "dod-cross-worktree-discovery-proof"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12835/dod-002/command.yaml"
+  - id: "dod-deploy"
     description: >-
-      The updated omnibase_infra discovery code successfully discovers the updated omnimarket delegation
-      orchestrator contract with ONEX_ACTIVE_RUNTIME_PACKAGES=omnibase_infra,omnimarket and preserves
-      the legacy Omniclaude topic only as a declared compatibility publish topic.
+      Deploy-gate evidence: this change is additive typed-model work in omnibase_core only. It adds an
+      optional model field plus four new Pydantic models and bumps a ClassVar INTERFACE_VERSION. It contains
+      NO runtime deploy, NO migration, NO REST surface, NO Kafka topic change, and NO live-lane mutation.
+      The ~10 contracts already declaring execution_graph now validate with typed binding; the ~52 non-declaring
+      contracts are unaffected because workflow_definition is optional (defaults to None). Nothing in
+      this PR touches a live lane.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12835/dod-cross-worktree-discovery-proof/command.yaml"
-  - id: "dod-occ-pr-self"
+        check_value: "grep -q 'workflow_definition' contracts/OMN-12835.yaml"
+  - id: "dod-occ-pr"
     description: >-
-      onex_change_control PR #2354 carries the central OMN-12835 contract and receipts required by the
-      downstream omnibase_infra and omnimarket Receipt Gate checks.
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-12835.yaml consumed
+      by the omnibase_core product PR Receipt Gate via Evidence-Source. The probe proves the contract
+      is present with the correct ticket_id.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12835/dod-occ-pr-self/command.yaml"
-  - id: "dod-deploy-assessment"
-    description: >-
-      Deployment is required after merging omnibase_infra PR #1915 and omnimarket PR #1122; this receipt
-      records the explicit deploy assessment and post-deploy L3 delegation retest requirement without
-      performing an unauthorized runtime restart.
-    source: "manual"
-    status: "verified"
-    checks:
-      - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12835/dod-deploy-assessment/command.yaml"
+        check_value: "grep -c '^ticket_id: \"OMN-12835\"$' contracts/OMN-12835.yaml"

@@ -1,0 +1,146 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13012"
+title: "node_context_roi_runner: subscribe-after-publish race — single-call event_consumer seeks-to-end
+  AFTER the command publish, skipping the already-emitted terminal — degenerate rows persist after OMN-13010"
+summary: >-
+  FOURTH distinct defect on node_context_roi_runner, exposed only after OMN-13010 freed the dispatch loop.
+  The ladder: OMN-13003 fixed the dispatch INPUT (envelope -> typed model); OMN-13005 fixed the consume
+  leg (no-op consumer -> blocking correlate); OMN-13010 offloaded the blocking handle() off the dispatch
+  loop (handle_async) so generation runs concurrently. All three are live and necessary. With starvation
+  gone, generation completes in ~1s, and that speed exposes the residual subscribe-after-publish race.
+  The OMN-13005 injected event_consumer is a single callable self._consumer(topic, cid, timeout) that
+  owns assign -> seek_to_end -> poll internally, all executed AFTER _run_trial has already published the
+  generation command. The terminal lands ~1s after publish, BEFORE the consumer's post-publish seek_to_end
+  positions, so seek_to_end skips PAST the already-emitted terminal; the runner polls an offset beyond
+  it, waits the full timeout, and times out. Broker-verified (probe3, run_id=20260611T2140Z-probe3, 21:41-21:46Z):
+  golden_exemplar terminal 837a83d0 at 21:41:10.183Z but runner "no terminal event" at 21:43:38 (seek
+  positioned ~21:41:38, after publish); off-arm terminal 43115f95 at 21:43:39.008Z, runner gave up 21:46:08.
+  Both rows degenerate (failure_stage=generation, attempt_count=0); ZERO UnknownMemberIdError rebalances
+  all window (starvation IS fixed by OMN-13010); generation ran concurrently. NOT starvation, NOT transient.
+  Owning surfaces (two repos, one defect): omnibase_infra src/omnibase_infra/runtime/service_terminal_event_consumer.py
+  + auto_wiring/handler_wiring.py (PR #1954) splits positioning from waiting — make_terminal_event_consumer
+  returns TerminalEventConsumer, still directly callable with the legacy (topic, cid, timeout) -> dict
+  | None single-call shape AND exposing .open(topic) -> TerminalConsumerSession (assign + seek_to_end
+  NOW, before publish); session.wait(cid, timeout) blocks from the captured position (after publish).
+  TerminalConsumerSession owns a dedicated event loop on a daemon worker thread for the open->wait->close
+  lifecycle, preserving the OMN-13005 loop-isolation discipline. omnimarket handler src/omnimarket/nodes/node_context_roi_runner/handlers/handler_context_roi_runner.py
+  (PR #1185) makes _run_trial open the session BEFORE publishing each generation command and wait AFTER,
+  with a single-call fallback when the injected consumer does not expose open(). No topic, envelope, or
+  contract API change. The race is proven RED-then-GREEN through the real dispatch path (_prepare_handler_wiring)
+  in omnibase_infra tests/unit/runtime/auto_wiring/test_event_consumer_injection.py.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR #1954 evolves the OMN-13005 injected event_consumer into the two-phase (seek-now
+      / wait-later) form. make_terminal_event_consumer returns TerminalEventConsumer; .open(topic) assigns
+      + seeks-to-end NOW (before publish) and returns a TerminalConsumerSession; session.wait(cid, timeout)
+      blocks from the captured position (after publish). The legacy single-call shape is preserved for
+      backward compatibility. TDD through the REAL dispatch path (_prepare_handler_wiring): the existing
+      OMN-13005 injection test is extended with a terminal emitted IMMEDIATELY after publish — test_single_call_consumer_loses_fast_terminal_race
+      asserts the seek-after-publish consumer MISSES it (RED, failure_stage=generation, the exact probe3
+      failure), test_two_phase_consumer_catches_fast_terminal_race asserts open-before-publish CATCHES
+      it (GREEN, non-degenerate), and the OMN-13005 blocking-correlate behavior stays green. Local proof:
+      ruff format/check clean; mypy --strict Success on service_terminal_event_consumer.py + handler_wiring.py;
+      pre-commit on the 3 changed files Passed (naming gate enforced the public TerminalEventConsumer
+      name); pytest tests/unit/runtime/auto_wiring/ -> 269 passed. Evidence anchor: omnibase_infra head
+      commit 44296696d, stacked on PR #1951.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13012"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-infra-pr/command.yaml"
+  - id: "dod-market-pr"
+    description: >-
+      omnimarket PR #1185 makes HandlerContextRoiRunner._run_trial subscribe-before-publish: it opens
+      the positioned terminal session (assign + seek_to_end NOW) via the injected two-phase consumer's
+      open(topic) BEFORE publishing the generation command, then blocks on session.wait(correlation_id,
+      timeout) AFTER publish, resuming from the pre-publish position so a fast terminal is seen. Falls
+      back to the legacy single-call consume when the injected consumer does not expose open() (the no-op
+      default or a non-two-phase consumer), so standalone/test paths and the OMN-13010 handle_async offload
+      are unaffected; the publish-failure path closes the opened session. Adds TerminalConsumerSessionLike
+      / TwoPhaseEventConsumer Protocols describing the runtime injection surface. Local proof: ruff format/check
+      clean; mypy src/omnimarket/nodes/node_context_roi_runner/ --strict Success; pre-commit on the changed
+      file Passed; pytest tests/nodes/node_context_roi_runner/ -m "not kafka" -> 67 passed (incl. the
+      OMN-13010 anti-starvation handle_async invariants). Evidence anchor: omnimarket head commit 2f829b92,
+      stacked on PR #1184.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-market-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13012"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-market-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: the fix spans two repos — additive infra package change (service_terminal_event_consumer.py
+      + handler_wiring.py, PR #1954) and an additive handler change (handler_context_roi_runner.py, PR
+      #1185). No topic, envelope, or contract API change. deploy_pending = true: the change crosses the
+      infra package boundary plus the handler, and the operator is recording against the stability lane,
+      so it is NOT hot-patched tonight (contrast OMN-13005/OMN-13010, which were single-surface hot-patches).
+      It reaches the stability lane via the next batched workspace rebuild, which must include PRs #1180
+      / #1184 / #1951 / #1954 / #1185 (verify each merged first), followed by probe4 expecting NON-degenerate
+      rows, then Exp 1-3. Hot-patch surfaces (exact runtime-loaded files, for the rebuild): omnibase_infra
+      workspace src tree /app/src/omnibase_infra/runtime/service_terminal_event_consumer.py + auto_wiring/handler_wiring.py;
+      omnimarket .venv site-packages .venv/.../omnimarket/nodes/node_context_roi_runner/handlers/handler_context_roi_runner.py.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13012"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-deploy-assessment/command.yaml"
+          && grep -q 'deploy_pending = true' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-deploy-assessment/command.yaml"
+  - id: "dod-infra-consume-leg-refresh"
+    description: >-
+      RE-SCOPED infra fix (after a two-strike diagnosis relocated the bug). The prior two-phase open-before-publish
+      work (dod-infra-pr / dod-market-pr) was necessary but NOT sufficient: the Exp 1 stability battery
+      (image c0505521f1fa) wedged on the consume leg — only the FAILED terminal topic ever subscribed,
+      the COMPLETED topic never assigned, the correlated completed terminal was never read, and the 8x2x10
+      matrix re-fired cell 1 forever emitting zero non-degenerate rows (EXP1-3_RUNNER_CONSUME_LEG_BLOCKER,
+      HALT_RUNNER_CONSUME_LEG_REGRESSION.md). A faithful real-dispatch-path repro proved the omnimarket
+      handler correct on dev; the defect is in the omnibase_infra runtime consume leg. Root cause: service_pattern_b_broker._assign_direct_terminal_partitions
+      ignored the metadata future returned by AIOKafkaClient.set_topics and re-called set_topics([same_topic])
+      each loop iteration; aiokafka 0.13.0 set_topics only forces a metadata refresh when the topic set
+      DIFFERS from the tracked set, so every iteration after the first took the no-op branch and never
+      re-fetched — an ephemeral group_id=None consumer whose first metadata fetch had not yet surfaced
+      partitions burned the full 30s assign cap and raised a bare TimeoutError (the empty-message 'wait
+      failed' seen live). Fix: register the reply topic once and await that metadata fetch, then on each
+      miss force a fresh fetch via force_metadata_update (always fetches) rather than the no-op set_topics
+      repeat; the assign-cap TimeoutError now carries a diagnostic message. Test: tests/integration/test_terminal_consumer_concurrent_assign_race.py
+      drives the REAL TerminalEventConsumer through the REAL open_direct_terminal_consumer/poll path with
+      AIOKafkaConsumer monkeypatched to a fake that faithfully models aiokafka 0.13.0 set_topics future
+      + metadata-latency semantics — RED before the fix (bare TimeoutError, the live empty-message signature),
+      GREEN after; a K>=2 multi-trial variant asserts no worker-thread leak across trials. Local proof:
+      ruff format/check clean; mypy src/ --strict Success (2435 files); pytest tests/unit/runtime/ ->
+      4880 passed; the new integration test + pattern-b terminal tests green; pre-commit on the 2 changed
+      files Passed. Evidence anchor: omnibase_infra head commit 4feb364fe (branch jonah/omn-13012-infra-consume-leg
+      off dev tip 20273e580).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-infra-consume-leg-refresh/command.yaml"
+          && grep -q '^ticket_id: "OMN-13012"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-infra-consume-leg-refresh/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13012 contract and the dod-infra-pr / dod-market-pr / dod-deploy-assessment
+      / dod-infra-consume-leg-refresh receipts that the omnibase_infra code PRs Receipt-Gates resolve
+      via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13012"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13012/dod-occ-pr/command.yaml"

@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13124"
+evidence_item_id: "dod-routing-decision-db-repoint"
+check_type: "command"
+check_value: "grep -q 'database: omnibase_infra' src/omnimarket/nodes/node_projection_routing_decision/contract.yaml"
+status: PASS
+run_timestamp: "2026-06-13T00:00:00Z"
+commit_sha: "a75947ad2519c0ce384dc6677f0749d5e0abce41"
+runner: "worktree-agent-omn-13124-durable"
+verifier: "receipt-gate-local"
+probe_command: "uv run ruff check <node> && uv run mypy <node> --strict && uv run pytest <routing node
+  tests> && uv run pytest tests/test_market_node_runtime_dogfood.py tests/unit/projection/test_projection_materialization_validation.py
+  && psql (throwaway pg14) apply 021 to omnibase_infra; compare handler INSERT columns to 021 schema"
+probe_stdout: |
+  $ uv run ruff check src/omnimarket/nodes/node_projection_routing_decision/
+  All checks passed!
+
+  $ uv run mypy src/omnimarket/nodes/node_projection_routing_decision --strict
+  Success: no issues found in 6 source files
+
+  $ uv run pytest src/omnimarket/nodes/node_projection_routing_decision/tests/ tests/test_golden_chain_projection_routing_decision.py -q
+  16 passed in 0.22s
+
+  $ uv run pytest tests/test_market_node_runtime_dogfood.py tests/unit/projection/test_projection_materialization_validation.py -q
+  9 passed in 7.44s
+
+  # repoint target verified against a throwaway postgres 14:
+  $ psql -d omnibase_infra -f docker/migrations/forward/021_create_agent_routing_decisions_table.sql -> 021 APPLIED
+  $ \dt agent_routing_decisions  ->  public | agent_routing_decisions | table | postgres
+  # handler INSERT columns == migration 021 schema (id, correlation_id, selected_agent, confidence_score,
+  #   created_at, request_type, alternatives, routing_reason, domain, metadata, project_path, project_name,
+  #   claude_session_id)  -> exact match
+actual_output: >-
+  PASS: omnimarket PR (branch jonah/omn-13122-routing-decision-db-repoint, base=dev, head a75947ad2519c0ce384dc6677f0749d5e0abce41)
+  repoints node_projection_routing_decision db_io.db_tables[].database from omnidash_analytics to omnibase_infra.
+  The omnibase_infra runtime auto-wiring (handler_wiring._DB_URL_ENV_MAP) resolves the contract database
+  field to the DSN env var (omnibase_infra -> OMNIBASE_INFRA_DB_URL); the prior omnidash_analytics value
+  pointed the HandlerProjectionRoutingDecision write at a DB where agent_routing_decisions does not exist,
+  producing the UndefinedTable logged in golden-chain run12. agent_routing_decisions DDL is owned by omnibase_infra
+  migration 021 and the node is a NON-OWNER WRITER (forbid_cross_repo_create_table), so omnibase_infra
+  is the only canonical home; the registration golden chain already reads the row from there and passes.
+  PROVES: writer DSN == reader DSN, single canonical home, no divergent duplicate table (OMN-13127 invariant);
+  handler INSERT column set matches the migration 021 schema exactly (verified on postgres 14); follows
+  the existing node_projection_overnight precedent (also database: omnibase_infra). ruff clean, mypy --strict
+  clean (6 files), routing node tests 16/16, dogfood + projection materialization validation 9/9. SCOPE:
+  contract DB target only — no DDL, no new migration, no live deploy, no .201 mutation. Any Kafka-marked
+  integration failures are env-only (no broker in worktree), not code regressions.
+exit_code: 0
+contract_sha256: "sha256:1aec4a90e6e1eeec39d3dce3d258954583a2da0c7ae0a245d99c68d11607fb9f"
+pr_number: 1214
+branch: "jonah/omn-13124-routing-decision-db-repoint"

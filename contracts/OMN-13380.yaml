@@ -1,0 +1,82 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13380"
+title: "Route cheap_cloud GLM direct to z.ai (glm-5.2); remove OpenRouter markup"
+summary: >-
+  Config-only model-routing change (OMN-13215 discipline — swappable via contract/overlay, no code change,
+  no env var, no CLI shell-out). The cheap_cloud routing tier routed GLM code-generation through the OpenRouter
+  aggregator (openrouter-glm-flash -> thudm/glm-4-9b-chat:free) as PRIMARY, with the direct z.ai backend
+  (cloud-glm, model glm-5.2, secret_ref llm.glm.api_key) only as fallback. We hold a resolvable DIRECT
+  GLM key for z.ai, so paying an aggregator markup for a model we can hit directly is a routing-cost bug.
+  This change removes openrouter-glm-flash from the cheap_cloud tier and promotes the direct cloud-glm
+  route to PRIMARY (id glm-5.2), and repoints the code_generation/test/refactor task_model_overrides from
+  openrouter-glm-flash to glm-5.2. The cloud-glm backend in bifrost_delegation.yaml was already correct
+  (verbatim z.ai endpoint, model glm-5.2, secret_ref llm.glm.api_key — OMN-13343) and is unchanged; the
+  openrouter-glm-flash backend definition is retained (still a valid backend, just no longer routed in
+  cheap_cloud). Direct Gemini cheap_cloud entries and the FREE cheap_frontier Qwen3-Coder-480B entry are
+  untouched. No topic schema, envelope, protocol, public API, or contract-interface change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1308"
+    description: >-
+      omnimarket PR #1308 removes openrouter-glm-flash from the cheap_cloud routing tier and promotes
+      the direct z.ai cloud-glm route to PRIMARY (id glm-5.2), and repoints the code_generation/test/refactor
+      task_model_overrides to glm-5.2. Against the committed config, the real delta() routing decision
+      for a code_generation request resolves selected_model=glm-5.2, tier=cheap_cloud, endpoint https://api.z.ai/api/coding/paas/v4/chat/completions,
+      api_key_ref=llm.glm.api_key, is_openrouter=false. Full suite green: pytest (not kafka) 7629 passed;
+      mypy --strict Success; ruff + pre-commit clean. Evidence anchor: omnimarket head commit 91d40bf2.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-omnimarket-pr-1308/command.yaml"
+          && grep -q '^ticket_id: "OMN-13380"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-omnimarket-pr-1308/command.yaml"
+          && grep -q '^pr_number: 1308$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-omnimarket-pr-1308/command.yaml"
+  - id: "dod-dev-http-proof"
+    description: >-
+      Live proof on dev: the resolved cheap_cloud route for a code_generation-shaped request hits the
+      direct z.ai endpoint (https://api.z.ai/api/coding/paas/v4/chat/completions) with the live llm.glm.api_key
+      (LLM_GLM_API_KEY) and returns HTTP 200, echoing model=glm-5.2, NOT OpenRouter. Real correlation
+      id 6a04b278-37da-4fc5-93fd-53efc303ed30.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-dev-http-proof/command.yaml"
+          && grep -q '^ticket_id: "OMN-13380"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-dev-http-proof/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: config-only model-routing change in omnimarket configs (routing_tiers.yaml, task_class_contracts.v1.yaml)
+      plus a registry-doc note and a test update. No code/handler change, no Kafka topic creation, no
+      Postgres migration, no contract API change. Routing is resolved in the omnimarket package by the
+      routing reducer; the change rides a standard omnimarket image rebuild. No live runtime deploy is
+      performed by this PR; dev/stability/prod lanes are untouched.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13380"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR (#2844), which carries the OMN-13380 contract and the dod-omnimarket-pr-1308
+      / dod-dev-http-proof / dod-deploy-assessment receipts that omnimarket PR #1308's Receipt-Gate resolves
+      via Evidence-Source: OCC#2844. Binds by pr_number so the OCC eligibility validator finds a PASS
+      receipt for OMN-13380 on this OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13380"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-occ-pr/command.yaml"
+          && grep -q '^pr_number: 2844$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13380/dod-occ-pr/command.yaml"

@@ -3,6 +3,9 @@
 > **Start here.** This index is the canonical docs map for `onex_change_control`.
 > All other docs in this directory link back here or are reachable from this page.
 
+<!-- Verified against code on 2026-06-21 refresh (OMN-13459): CLI commands match pyproject [project.scripts]; doc-freshness scanners present (scanners/doc_reference_extractor.py, doc_reference_resolver.py, doc_staleness_detector.py) and models present (model_doc_freshness_result.py, model_doc_freshness_sweep_report.py, model_doc_reference.py); the doc-freshness-swept.v1 topic is confirmed NOT yet registered in kafka/topics.py GovernanceTopic. -->
+
+
 ---
 
 ## Start Here
@@ -146,25 +149,33 @@ CI enforces all of the above on every PR. See `.github/workflows/ci.yml` for the
 
 ---
 
-## Doc Freshness Sweep (Planned)
+## Doc Freshness Sweep
 
-> **Status**: Planned, not yet implemented in this repo.
+> **Status**: Models and scanners are implemented. Kafka topic registration and omnidash dashboard card are not yet built.
 
-The `doc_freshness_sweep` is a planned governance capability that will:
+The `doc_freshness_sweep` governance capability:
 
-- Scan all `.md` files across ONEX repos and extract code references (file paths, class names, commands, env vars, URLs).
-- Detect stale references (code changed after the doc was last updated).
-- Detect broken references (referenced file or function no longer exists).
-- Emit `onex.evt.onex-change-control.doc-freshness-swept.v1` Kafka events for dashboard consumption.
-- Auto-create Linear tickets for broken or stale docs.
+- Scans `.md` files across ONEX repos and extracts code references (file paths, class names, commands, env vars, URLs).
+- Detects stale references (code changed after the doc was last updated).
+- Detects broken references (referenced file or function no longer exists).
+- Will emit `onex.evt.onex-change-control.doc-freshness-swept.v1` Kafka events once the topic is registered in `GovernanceTopic`.
+- Auto-creates Linear tickets for broken or stale docs.
 
-**Ownership**: `onex_change_control` owns the models (`ModelDocFreshnessResult`, `ModelDocFreshnessSweepReport`, `ModelDocReference`) and the scanner/resolver library. `omniclaude` owns the `doc_freshness_sweep` skill definition. `omnidash` owns the dashboard card.
+**What is implemented** (in `src/onex_change_control/scanners/`):
+- `doc_reference_extractor.py` — extracts code references from markdown files
+- `doc_reference_resolver.py` — resolves extracted references against the live codebase
+- `doc_staleness_detector.py` — detects stale or broken references
+
+**What is implemented** (in `src/onex_change_control/models/`):
+- `ModelDocFreshnessResult`, `ModelDocFreshnessSweepReport`, `ModelDocReference`
+
+**What remains**:
+- `GovernanceTopic` enum entry for `onex.evt.onex-change-control.doc-freshness-swept.v1` is not yet registered
+- omnidash dashboard card is not yet built
+
+**Ownership**: `onex_change_control` owns the models and the scanner/resolver library. `omniclaude` owns the `doc_freshness_sweep` skill definition. `omnidash` owns the dashboard card.
 
 **Design reference**: See `omni_home/docs/plans/archive/2026-Q1/2026-03-27-doc-freshness-sweep.md` — 15-task plan covering scanner, cross-reference checker, staleness detection, skill definition, and Kafka integration.
-
-**Integration with OmniClaude**: The skill calls into `onex_change_control` scanners, then emits results through the ONEX event bus.
-
-**Integration with OmniDash**: The `/status` page will display a "Doc Freshness" card consuming the `onex.evt.onex-change-control.doc-freshness-swept.v1` event.
 
 ---
 

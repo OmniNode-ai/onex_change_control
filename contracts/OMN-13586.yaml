@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13586"
+title: "RH-4: pr_lifecycle orchestrator fan-out to repo-health classify/repair"
+summary: >-
+  Part of the merge-sweep repo-health repair lane (OMN-13316 epic). Adds validation_failure_origin: EnumFailureOrigin
+  | None to TriageRecord in protocol_sub_handlers.py so the triage handler can signal the failure-origin
+  bucket. Adds _publish_repo_health_fanout to HandlerPrLifecycleOrchestrator: in the FIXING phase, publishes
+  onex.cmd.omnimarket.repo-health-classify.v1 for all fix_prs with a non-None origin, and additionally
+  publishes onex.cmd.omnimarket.repo-health-repair-start.v1 only for REPO_BASELINE origins. contract.yaml
+  publish_topics updated with the two new cmd topics. Guardrail enforced: repo_baseline debt does not
+  hard-block auto-merge arming — sweep completes normally. Four TDD transition tests prove the four routing
+  branches. No runtime deploy; this is a pure handler + protocol extension.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      4 transition tests in tests/unit/nodes/node_pr_lifecycle_orchestrator/test_repo_health_fanout.py:
+      (1) repo_baseline → classify + repair-start, (2) pr_scoped → classify only, (3) unknown → classify
+      only, (4) clean → no classify. Full unit suite green (2656 passed, 2 skipped). mypy --strict clean.
+      ruff clean.
+    command: "uv run pytest tests/unit/nodes/node_pr_lifecycle_orchestrator/test_repo_health_fanout.py
+      -q"
+  - kind: "ci"
+    description: >-
+      No hardcoded topic strings in handlers (check_no_hardcoded_topics.py passes). contract.yaml publish_topics
+      includes the two new cmd topics. Pre-commit hooks (no-hardcoded-topics, topic-naming-lint, ruff,
+      etc.) all pass.
+    command: "uv run python scripts/ci/check_no_hardcoded_topics.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1417"
+    description: >-
+      omnimarket product PR #1417 carries the four changed files (handler_pr_lifecycle_orchestrator.py,
+      protocol_sub_handlers.py, contract.yaml, metadata.yaml) and the new test file. It cites Evidence-Source:
+      OCC#<this-pr> so its verify/verify Receipt Gate resolves against the OCC contract.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13586/dod-omnimarket-pr-1417/command.yaml"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13586. The omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify/verify Receipt Gate resolves against an OCC-main ancestor.
+      Build/PR scope only; no runtime deploy, no env-for-model, no bespoke endpoint.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13586.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this omnimarket PR is a pure handler + protocol extension. It ships no runtime
+      contract/topic/migration change and requires no image rebuild. No live deploy or runtime restart
+      is performed by merging this PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13586/dod-deploy-assessment/command.yaml"

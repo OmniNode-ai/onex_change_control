@@ -1,0 +1,83 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-13841
+title: Fix ONEX_CORE_095 tuple-return in build_loop/design_to_plan handlers
+summary: >-
+  omnimarket PR #1568 makes HandlerBuildLoop.handle() and HandlerDesignToPlan.handle() return typed frozen
+  result envelopes (ModelBuildLoopResult / ModelDesignToPlanResult) instead of a raw 3-tuple. The LocalRuntimeBusAdapter
+  publish path only accepts BaseModel/dict/None; the tuple raised ONEX_CORE_095_HANDLER_EXECUTION_ERROR,
+  so the build_loop and design_to_plan mapped skills failed exit 1 in the M5 capstone dogfood sweep. One
+  fix class unblocks both skills.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: ENRICHED
+evidence_requirements:
+  - kind: tests
+    description: Full omnimarket suite passes locally after the fix.
+    command: uv run pytest tests/ -m "not kafka"
+  - kind: manual
+    description: Regression test drives the real core adapter and asserts no ONEX_CORE_095.
+    command: uv run pytest tests/test_onex_core_095_tuple_return_regression.py -q
+  - kind: ci
+    description: Local pre-commit + ruff + mypy gates green.
+    command: pre-commit run
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-product-pr-1568
+    description: >-
+      omnimarket PR #1568 returns typed BaseModel results from both handlers (not a tuple), resolving
+      ONEX_CORE_095 for build_loop and design_to_plan.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13841/dod-product-pr-1568/command.yaml" &&
+          grep -q '^pr_number: 1568$' "drift/dod_receipts/OMN-13841/dod-product-pr-1568/command.yaml"
+  - id: dod-regression-no-095
+    description: >-
+      Regression test drives the real omnibase_core LocalRuntimeBusAdapter on_message for both handlers
+      and asserts on_error never fires (no ONEX_CORE_095) and a typed payload is published.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13841/dod-regression-no-095/command.yaml"
+  - id: dod-local-gates-green
+    description: >-
+      Full local gate green — ruff format/check, mypy --strict, full pytest suite, and pre-commit.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13841/dod-local-gates-green/command.yaml"
+  - id: dod-deploy
+    description: >-
+      Deploy DoD: no live prod deploy is required for this change. The fix is a pure FSM handler return-type
+      correction (COMPUTE/ORCHESTRATOR logic, no I/O surface); the build_loop and design_to_plan skills
+      are invoked via the editable-venv onex CLI (entry-point node discovery), so the corrected code is
+      exercised in-process by CI and the regression test — not through a runtime redeploy. A future runtime
+      refresh picks up the new code with no additional deploy action for this ticket.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13841/dod-deploy/command.yaml"
+  - id: dod-occ-self
+    description: >-
+      Self-binding OCC eligibility receipt for onex_change_control PR #3470, which carries this OMN-13841
+      contract and PASS receipts so downstream omnimarket PR #1568 can cite Evidence-Source: OCC#3470.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13841/dod-occ-self/command.yaml" && grep -q
+          '^pr_number: 3470$' "drift/dod_receipts/OMN-13841/dod-occ-self/command.yaml"

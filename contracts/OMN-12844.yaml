@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12844"
+title: "M4 — Exploration policy: contract-config bandit + effectiveness decay"
+summary: >
+  omnimarket PR #1315 adds node_context_exploration_policy_compute, a pure COMPUTE node that replaces
+  the greedy argmax in node_context_roi_compute (_select_preferred_arm) with a probabilistic explore/exploit
+  bandit over scored, decay-adjusted capsule candidates. Prevents cold-start starvation and winner lock-in.
+  Every bandit parameter is resolved from the contract config block into a frozen ModelExplorationPolicyConfig
+  — never module-level constants or env. Consumes M2's (OMN-12842) already-decayed confidence; never recomputes
+  decay. Deterministic given a typed seed; no I/O, no bus, no inference, no datetime.now(), no ambient
+  random(). Six TDD invariant tests RED-before-implementation then GREEN; full suite 7696 passed / 0 failed;
+  mypy --strict clean; runtime sweep 316/316 routable.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - topics
+  - events
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Six TDD invariant tests pass: cold-start no-starvation, decay re-entry, contract-config governs
+      distribution (no module-level epsilon), negative control never exploit winner, deterministic-given-seed
+      (REPLAY_PROVEN), distribution normalizes to 1.0.
+    command: "uv run pytest tests/nodes/node_context_exploration_policy_compute/ -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1315"
+    description: >
+      omnimarket PR #1315 adds node_context_exploration_policy_compute with the bandit policy and the
+      six green TDD invariant tests, plus the handler export wiring required by the unimported-handler
+      gate. Evidence anchor: omnimarket head commit 6eb093ba2dae70468ebd61e3ce27084e9cdf1197.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12844/dod-omnimarket-pr-1315/command.yaml
+          && grep -q '^pr_number: 1315$' drift/dod_receipts/OMN-12844/dod-omnimarket-pr-1315/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12844/dod-omnimarket-pr-1315/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      This onex_change_control PR carries the OMN-12844 ticket contract and the DoD receipts required
+      by the downstream Receipt Gate for omnimarket PR #1315.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12844/dod-occ-pr-self/command.yaml
+          && grep -q '^ticket_id: \"OMN-12844\"$' drift/dod_receipts/OMN-12844/dod-occ-pr-self/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Pure COMPUTE scorer: no I/O, no bus, no inference, no runtime-profile registration that boots a
+      deployable surface in this PR. No live deploy or runtime restart required or performed. Production
+      wiring / closed loop is owned by M3 (OMN-12843) and M5 (OMN-12845).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12844/dod-deploy-assessment/command.yaml
+          && grep -q '^ticket_id: OMN-12844$' drift/dod_receipts/OMN-12844/dod-deploy-assessment/command.yaml"

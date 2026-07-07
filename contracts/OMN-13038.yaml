@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13038"
+title: "node_context_roi_runner FIFTH defect: failed-terminal routing — generation consumer emits contract_passed=False
+  terminals to node-generation-failed.v1, runner only subscribes node-generation-completed.v1"
+summary: >-
+  FIFTH distinct defect on node_context_roi_runner, sibling to the OMN-13003 -> OMN-13005 -> OMN-13010
+  -> OMN-13012 ladder. With the two-phase subscribe-before-publish session (OMN-13012: omnimarket #1185,
+  omnibase_infra #1951/#1954) on dev, the runner reliably catches COMPLETED terminals — but generation
+  FAILURES never reach it. node_generation_consumer._emit_benchmark routes contract_passed=False benchmarks
+  to onex.evt.omnimarket.node-generation-failed.v1 (handler_generation_consumer.py lines 947-948 on dev
+  tip dcd3ead5), while the runner contract declared only generation_pipeline.terminal_event_topic (completed)
+  and _run_trial opened exactly one terminal session on it. A failed terminal — emitted with full telemetry
+  (attempt_count, tokens, model/provider, contract_passed=False) — was never delivered: the runner blocked
+  the full per-arm timeout (120s) and recorded failure_stage=GENERATION / attempt_count=0, indistinguishable
+  from generation never running. OFF-arm failures are the context-ROI experiment's signal, so every such
+  row was corrupted (P5 pre-battery blocker, 2026-06-11 night plan). Fix (consume-side only; emitter and
+  its contract untouched because failed.v1 has zero other subscribers and probe4 abort diagnostics rely
+  on its high-watermark): omnimarket PR #1187 declares generation_pipeline.terminal_failed_event_topic
+  on the runner contract, opens one two-phase session per terminal topic BEFORE publishing, and races
+  the correlated waits across both topics within the single per-arm timeout; first correlated terminal
+  wins; all sessions closed on the way out; legacy single-call consumers raced per-topic the same way.
+  _extract_row already maps contract_passed=False to failure_stage=VALIDATION with the real attempt_count.
+  Proven RED-then-GREEN via tests/nodes/node_context_roi_runner/test_failed_terminal_routing.py (10 RED
+  on dev tip, GREEN after; drives handle/handle_async, the entry points the runtime uses).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "tests"
+    description: "Runner node suite + new failed-terminal-routing tests pass"
+    command: "uv run pytest tests/nodes/node_context_roi_runner/ -v"
+  - kind: "ci"
+    description: "CI passes"
+    command: "pre-commit run --all-files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      omnimarket PR #1187 (base dev): runner contract declares generation_pipeline.terminal_failed_event_topic
+      (already on the emitter's publish side; no topic literals in code; handler fails fast at construction
+      when missing); HandlerContextRoiRunner opens a two-phase session per terminal topic BEFORE publishing
+      (subscribe-before-publish discipline from OMN-13012 preserved on BOTH topics) and races the correlated
+      waits across both topics within the single per-arm timeout via _await_first_terminal; first correlated
+      terminal wins; winner and loser sessions both closed (publish-failure path included); legacy single-call
+      consumers raced per-topic the same way. TDD RED-first: test_failed_terminal_routing.py (10 RED on
+      dev tip dcd3ead5 — core: failed terminal must yield failure_stage=VALIDATION with real attempt_count,
+      not GENERATION/0), GREEN after. Local proof: ruff format/check clean; mypy src/omnimarket/ --strict
+      Success (2331 files); pytest tests/nodes/node_context_roi_runner/ -> 84 passed; full-suite failure
+      set diffed byte-identical against a clean dev-tip stash run (33 pre-existing env-dependent failures
+      reaching live Kafka; +14 passing from this branch, 0 new failures); pre-commit run --all-files all
+      hooks pass. Evidence anchor: omnimarket head commit 64022bd3 on jonah/omn-13038-failed-terminal-routing.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13038/dod-001/command.yaml"
+          && grep -q '^ticket_id: "OMN-13038"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13038/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Deploy assessment: deploy_pending = true. Single-repo, consume-side-only change (runner contract
+      + handler in omnimarket); no emitter, topic, envelope, or cross-repo API change. NOT hot-patched:
+      per the 2026-06-11 night plan P5 it rides the dev rehearsal -> batched stability rebuild, after
+      which probe4 must be non-degenerate on BOTH arms before any experiment battery runs. The failed.v1
+      topic's high-watermark remains the probe4 abort diagnostic, which is why the emitter keeps publishing
+      failures to a distinct topic.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13038/dod-002/command.yaml"
+          && grep -q '^ticket_id: "OMN-13038"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13038/dod-002/command.yaml"
+          && grep -q 'deploy_pending = true' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13038/dod-002/command.yaml"
+  - id: "dod-003"
+    description: >-
+      This OCC PR carries the central OMN-13038 contract and the dod-001 / dod-002 / dod-003 receipts
+      that the omnimarket code PR #1187 Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13038/dod-003/command.yaml"
+          && grep -q '^ticket_id: "OMN-13038"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13038/dod-003/command.yaml"

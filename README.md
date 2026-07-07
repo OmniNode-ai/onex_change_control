@@ -10,6 +10,8 @@ Governance, drift detection, and enforcement library for the ONEX (OmniNode eXec
 
 ## What This Repo Is
 
+<!-- Verified against code on 2026-06-21 refresh (OMN-13459): src/ subdir layout, pyproject [project.scripts] (22 CLI entry points) and [project.entry-points."onex.nodes"] (4 drift nodes), templates/, kafka/topics.py, version 0.5.1. -->
+
 `onex_change_control` (package: `onex-change-control`) is the **canonical governance and enforcement hub** for the ONEX platform. It prevents cross-repo drift by:
 
 - Defining versioned Pydantic schemas for governance artifacts (`ModelTicketContract`, `ModelDayClose`).
@@ -35,7 +37,7 @@ Governance, drift detection, and enforcement library for the ONEX (OmniNode eXec
 
 - **Canonical Pydantic schemas**: `ModelTicketContract`, `ModelDayClose`, and all supporting models/enums.
 - **Exported JSON schemas**: `schemas/<version>/` — immutable versioned build artifacts.
-- **YAML templates**: `templates/ticket_contract.template.yaml`, `templates/day_close.template.yaml`.
+- **YAML templates**: `templates/ticket_contract.template.yaml`, `templates/day_close.template.yaml`, `templates/overnight_contract.template.yaml`.
 - **CLI enforcement tooling**: validators, purity checkers, drift checkers, boundary checkers.
 - **Evaluation framework**: eval suite definitions, comparator logic, regression checks.
 - **Governance policy docs**: design, decision log, versioning policy, template guide.
@@ -143,19 +145,32 @@ uv run validate-agent-yaml <path-to-agent.yaml>
 ```text
 onex_change_control/
 ├── src/onex_change_control/
+│   ├── boundaries/       # Kafka boundary rules and DB routing rules (yaml configs)
+│   ├── canary/           # Canary schema definitions
+│   ├── cosmetic/         # Cosmetic lint tooling (spec.yaml, CLI)
+│   ├── dispatch_claims/  # Dispatch claim store and sweeper
+│   ├── doctrine/         # Doctrine loader — authoritative policy configuration
 │   ├── enums/            # Enum* types (EnumDriftCategory, EnumEvidenceKind, ...)
+│   ├── eval/             # A/B evaluation framework (suite manager, comparator)
+│   ├── handlers/         # Handler implementations (dod_sweep, drift_analysis, dependency_analysis)
+│   ├── kafka/            # Governance Kafka topics and event emitter
 │   ├── models/           # Model* Pydantic schemas (ModelDayClose, ModelTicketContract, ...)
 │   ├── nodes/            # ONEX node implementations (drift compute/reducer/effect/orchestrator)
-│   ├── scripts/          # CLI entry points (validate_yaml, check_schema_purity, ...)
-│   ├── eval/             # Evaluation framework (suite manager, comparator)
-│   ├── cosmetic/         # Cosmetic lint tooling
-│   └── validation/       # Shared validation helpers (patterns, SEMVER_PATTERN)
+│   ├── overseer/         # Orchestration models: 14 models + 14 enums for worker/session/dispatch
+│   ├── promotion/        # Promotion tooling: manifest generation, workflow evidence, dev→main cutover
+│   ├── scanners/         # Doc-freshness, handler compliance, wire-schema compliance scanners
+│   ├── scripts/          # CLI entry point implementations (20+ registered scripts)
+│   ├── testing/          # Wire schema test generator
+│   ├── validation/       # Shared validation helpers (patterns, SEMVER_PATTERN)
+│   ├── validators/       # Architectural validators (handler contract compliance, cross-schema coherence)
+│   └── wire_schemas/     # Wire schema YAML definitions (occ_nightly_promotion_v1, etc.)
 ├── schemas/              # Exported JSON schemas (immutable per version)
 ├── templates/            # YAML template files for artifact authoring
 ├── contracts/            # Per-ticket contract YAML files
 ├── drift/                # Day-close reports and DoD receipts
 │   ├── day_close/        # Historical day_close YAML artifacts
 │   └── dod_receipts/     # Per-ticket DoD receipts (canonical receipt location)
+├── allowlists/           # Per-repo compliance allowlist YAML files
 ├── eval_suites/          # Eval suite definitions (standard_v1.yaml)
 ├── docs/                 # Governance design, policy, and reference docs
 └── tests/                # pytest test suite

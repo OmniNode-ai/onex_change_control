@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12955"
+evidence_item_id: "dod-deploy-assessment"
+check_type: "command"
+check_value: "ssh jonah@192.168.86.201 'docker ps --filter name=stability-test --format {{.Names}}' &&
+  curl -s http://localhost:13002/projection/onex.snapshot.projection.context.experiment-scores.v1"
+status: PASS
+run_timestamp: "2026-06-11T17:10:00Z"
+commit_sha: "8dbd829ab677a14ed961d82c12b8aa04c83492bc"
+branch: "jonah/omn-12955-context-roi-projection"
+runner: "claude-code"
+verifier: "claude-code-review"
+contract_sha256: "sha256:1297a4e57ec1dbe5510319d2d7c05ebf091d1cec82ec9a7733b897d8db9c2a30"
+probe_command: "ssh jonah@192.168.86.201 'docker ps --filter name=stability-test --format {{.Names}} &&
+  curl -s http://localhost:13002/projection/onex.snapshot.projection.context.experiment-scores.v1'"
+probe_stdout: |
+  omninode-stability-test-runtime-worker
+  omninode-stability-test-runtime-effects
+  omninode-stability-test-runtime
+  omnimarket-stability-test-projection-api
+  omnibase-infra-stability-test-postgres
+  omnibase-infra-stability-test-redpanda
+  {"error":"unknown_topic","available_topics":["onex.snapshot.projection.ab-compare.v1","onex.snapshot.projection.capability-scores.v1","onex.snapshot.projection.deployment-evidence.v1","onex.snapshot.projection.evidence_pipeline.stages.v1"]}
+actual_output: >-
+  PASS (read-only assessment, no mutation): The executed read-only .201 probe confirms the stability-test
+  lane is running and that the projection API currently returns unknown_topic for onex.snapshot.projection.context.experiment-scores.v1
+  (the topic is absent from the served available_topics list at probe time) — exactly the gap this ticket
+  closes. No live deploy, restart, topic mutation, or .201 mutation is performed by omnimarket PR #1178
+  or omnidash PR #206; both are additive read-path wiring (a new projection reducer node_projection_context_roi
+  plus dashboard panels reading its exposed topic). Acceptance — Experiment-0/1 output rendering in ContextExperimentHero
+  + ContextHeatmap on :3001/experiments with FRESH experiment output — is reached through the normal post-merge
+  batched stability rebuild owned by the rebuild agent, which (1) applies migration 001_create_context_roi_scores.sql
+  into omnidash_analytics and (2) runs the node_projection_context_roi reducer. Post-rebuild verification
+  steps for that agent — (a) projection API: curl -s "http://192.168.86.201:13002/projection/onex.snapshot.projection.context.experiment-scores.v1"
+  | jq '.row_count, .data_freshness' must return a served envelope (topic present, no unknown_topic error);
+  (b) emit FRESH output by running a context-ROI run (node_context_roi_runner) on the stability lane and
+  confirm new context_roi_scores rows (row_count rises, latest_event_at advances); (c) dashboard route:
+  load http://192.168.86.201:3001/experiments and confirm ContextExperimentHero shows per-arm first-pass
+  rates and ContextHeatmap shows a segment x model matrix, replacing the honest empty state. No deploy-gate
+  exception or skip token used.
+exit_code: 0
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-12955/omnimarket"

@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13507"
+title: "Re-lock omnibase_infra dev omnibase-core pin to dev HEAD carrying ModelTaskDelegatedEvent token
+  fields"
+summary: >-
+  The dev omninode-runtime image (built in RELEASE mode) bundled omnibase-core pinned to db7f341353e598df84629b1c32514c78d554ef57
+  (OMN-13444, #1296), which PREDATES the ModelTaskDelegatedEvent token-field additions. The running container's
+  frozen+extra=forbid wire event lacked tokens_input, tokens_output (#1300 / 81c865f6 / OMN-13408) and
+  context_pack_hash (#1299 / 1c412207b / OMN-13407), so terminal-emit raised a pydantic ValidationError
+  and delegation terminal rows never persisted (blocking the OMN-13408 / P0-3 live proof). This change
+  repoints the omnibase-core git pin in omnibase_infra pyproject.toml [tool.uv.sources] rev= and [tool.uv]
+  override-dependencies, mirrored into uv.lock via uv lock --upgrade-package omnibase-core, from db7f341353e598df84629b1c32514c78d554ef57
+  to omnibase_core dev HEAD 8ecb7efc17721dda2ce468b2e5051816ff8e89bc (a strict descendant of the old pin
+  that carries all three fields). Version stays 0.46.0; the override bound >=0.44.0,<0.47.0 is unchanged.
+  Pure dependency-pin re-lock; no source, version specifier, migration, schema, endpoint, or env change.
+  Mirrors the OMN-13504 omnimarket relock. The downstream PR also carries the minimal CI compatibility
+  fix surfaced by the relock: stage_workspace.sh now has a non-rsync copy fallback for runners without
+  rsync, and the CLI receipt test now reads typed artifact metadata via attributes. This OCC PR carries
+  the central contract consumed by the omnibase_infra PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The new core pin 8ecb7efc17721dda2ce468b2e5051816ff8e89bc is an ancestor of omnibase_core origin/dev
+      AND a strict descendant of the prior pin db7f341353e598df84629b1c32514c78d554ef57. The pinned core
+      source carries all three ModelTaskDelegatedEvent token fields (tokens_input, tokens_output, context_pack_hash);
+      after uv sync, M.model_fields is a superset of the three, so terminal-emit no longer raises ValidationError
+      under frozen+extra=forbid.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13507/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      The re-locked infra env resolves and imports: uv lock --upgrade-package omnibase-core advances the
+      pin (db7f3413 -> 8ecb7efc) with version unchanged at 0.46.0; uv sync resolves; import omnibase_core
+      loads v0.46.0; ruff clean on changed files; no old SHA db7f341353 remains in pyproject.toml or uv.lock
+      and the new SHA is present in both (pyproject x1, uv.lock x3).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13507/dod-002/command.yaml"
+  - id: "dod-003"
+    description: >-
+      The downstream omnibase_infra PR head e74caaf6662d5cafd203c1bf5c5cc7147c04a4fe clears the two CI
+      split failures surfaced by the core relock: stage_workspace.sh no longer requires rsync on the runner,
+      and the CLI receipt test asserts typed artifact metadata via source_system. The exact failing tests
+      pass locally, the shell script parses with bash -n, and ruff passes on the touched Python test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13507/dod-003/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      The paired OCC PR carries contracts/OMN-13507.yaml + PASS dod_receipts under drift/dod_receipts/OMN-13507/;
+      the omnibase_infra PR (#2071) body Evidence-Source pins this OCC PR head (then the merged OCC squash
+      commit SHA). Dev-lane only; no prod/stability/judge mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13507/dod-occ-pr/command.yaml"

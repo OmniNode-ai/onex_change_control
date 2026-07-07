@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13514"
+title: "fix: compliance_sweep skill (onex skill path) was false-clean — share repo resolution into handler"
+summary: >-
+  The operator-invoked `onex skill compliance_sweep` (RuntimeLocal dispatch) path returned a trust-defeating
+  false-clean verdict: handlers_scanned=0, status=compliant, while the node's own `__main__` CLI over
+  the same default repo set scanned 2190 handlers / 741 raw findings. Root cause was three coupled defects
+  in omnimarket node_compliance_sweep: (1) the handler request model ComplianceSweepRequest exposed only
+  `target_dirs` while the skill mapping + contract supply `repos` — with extra="forbid" a `repos` payload
+  was rejected and a no-arg payload defaulted target_dirs to [] -> 0 handlers; (2) the _DEFAULT_REPOS
+  list lived only in __main__.py, which the dispatch path never executes; (3) the repo-name -> absolute-path
+  resolver also lived only in __main__.py. Fix: add `repos: list[str]` to the request model (reconciling
+  contract / skill_mapping / model), move _DEFAULT_REPOS + a shared resolve_target_dirs() into the handler
+  module used by BOTH paths (fail-fast on unset $OMNI_HOME when repo names must be resolved), exclude
+  omni_worktrees / tests / fixtures from the scan, and make LOGIC_IN_NODE skip string-literal/docstring
+  AST lines. After the fix both paths scan identically (806 handlers / 95 violations over the canonical
+  repo set, scoped). Purely intra-omnimarket change; no core wire DTO changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      tests/test_compliance_sweep_dispatch_resolution.py is the OMN-13514 regression suite: it dispatches
+      node_compliance_sweep with an empty (no-arg) request against a synthetic $OMNI_HOME populated with
+      the default repo dirs and asserts handlers_scanned == len(_DEFAULT_REPOS) (was 0); asserts the model
+      now accepts `repos`; asserts fail-fast (ValueError) when $OMNI_HOME is unset rather than silently
+      scanning zero; asserts omni_worktrees/tests/fixtures are excluded from the scan; and asserts LOGIC_IN_NODE
+      skips docstring code examples while still flagging real class/def-execute logic. The pre-existing
+      golden-chain suite (explicit target_dirs) passes unchanged. Hermetic — no dependency on the live
+      multi-repo workspace.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13514/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Live end-to-end proof that the real operator-invoked skill is no longer false-clean: `onex skill
+      compliance_sweep --dry-run` (RuntimeLocal dispatch, worktree venv resolving the fixed node + contract)
+      returns handlers_scanned=806, status=violations_found (95 violations), identical to the `__main__`
+      CLI path — was handlers_scanned=0, status=compliant. Quality gates green on the changed surface:
+      mypy --strict clean on node_compliance_sweep; runtime sweep 322/322 entry points OK; node-metadata
+      dependency check PASS; ruff format + check clean; pre-commit fleet green on all changed files (27
+      Passed incl. "Validate no silent env fallbacks", node-orphan-graph, no-hardcoded-topics). Code-gen
+      was dogfooded via `onex skill delegate` (Qwen3.6-35B-A3B on .201, quality gate passed) as the resolver
+      seed, then hand-hardened against the real symbols (the model hallucinated repo names + ConfigDict
+      shape).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13514/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
+      PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13514\"$' contracts/OMN-13514.yaml"

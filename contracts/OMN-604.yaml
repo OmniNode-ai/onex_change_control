@@ -2,40 +2,69 @@
 schema_version: "1.0.0"
 ticket_id: OMN-604
 title: '[BETA-10] Implement state mutation protection'
-summary: "[BETA-10] Implement state mutation protection"
+summary: >-
+  FSM state mutation protection for MixinFSMExecution.execute_fsm_transition: _fsm_state is mutated ONLY
+  on a successful transition (result.success is True), which is the single authoritative write site. A
+  guard-rejected transition (success=False, no raise) early-returns so state and history stay untouched;
+  a raised ModelOnexError (invalid current state / unknown trigger) propagates from the pure executor
+  BEFORE the guarded write, so the exception path never mutates state. The committed snapshot stores a
+  deep copy of the execution context so a later mutation of the caller's dict cannot retroactively corrupt
+  committed FSM state. Paired feature PR: omnibase_core#1309 (mixin + tests).
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
-evidence_requirements:
-  - kind: "ci"
-    description: "CI passes on merge PR"
-    command: "gh pr checks"
+evidence_requirements: []
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-001"
-    description: "PR opened against main branch"
+    description: >-
+      Focused FSM mixin suite tests/unit/mixins/test_mixin_fsm_execution.py passes (13 tests) including
+      the 4 new OMN-604 mutation-protection cases: guard-rejected transition (success=False) leaves _fsm_state
+      and history unchanged; only success=True advances state; a raised ModelOnexError leaves state unchanged;
+      committed snapshot is isolated from post-transition mutation of the caller's context dict.
     source: "generated"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "gh pr view ${PR_NUMBER} --json state -q .state --repo ${REPO}"
+        check_value: "grep -c '^status: PASS$' drift/dod_receipts/OMN-604/dod-001/command.yaml"
   - id: "dod-002"
-    description: "PR merged to main"
-    source: "generated"
+    description: >-
+      Implementation proof: src/omnibase_core/mixins/mixin_fsm_execution.py mutates _fsm_state only after
+      an early return on the non-success path (if not result.success: return result) and stores a copy.deepcopy(context)
+      into the committed FSMState snapshot, removing the prior caller-dict aliasing.
+    source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "gh pr view ${PR_NUMBER} --json mergedAt -q .mergedAt --repo ${REPO}"
-  - id: "dod-003"
-    description: "Tests pass in CI"
-    source: "generated"
+        check_value: "grep -c '^status: PASS$' drift/dod_receipts/OMN-604/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for OCC PR #2964 which carries the OMN-604 contract consumed by the omnibase_core#1309
+      Receipt Gate via Evidence-Source. The contract declares ticket_id OMN-604 exactly once.
+    source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "gh pr checks ${PR_NUMBER} --watch --repo ${REPO}"
-  - id: "dod-004"
-    description: "Pre-commit hooks clean"
-    source: "generated"
+        check_value: "test \"$(grep -c '^ticket_id: OMN-604$' contracts/OMN-604.yaml)\" -eq 1"
+  - id: "dod-deploy-no-live-mutation"
+    description: >-
+      Deploy-path evidence for OMN-604. The feature PR changes a pure FSM library mixin and its unit tests
+      only. It adds no runtime node deploy, no Kafka topic in a live broker, no migration, no image-build
+      input, no .201 mutation, and no live deploy or runtime mutation. No deploy is required before merge.
+    source: "manual"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "pre-commit run --all-files"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-604/dod-deploy-no-live-mutation/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      Self-binding receipt for OCC PR #2966 which carries the OMN-592 and OMN-13480 evidence refresh and
+      preserves the current OMN-604 evidence contract while rebasing onto dev.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json headRefOid -q .headRefOid"

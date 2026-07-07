@@ -3,7 +3,7 @@
 Date: 2026-04-27
 Parent: `OMN-10079`
 Primary OCC staging ticket: `OMN-10080`
-Plan source of truth: `/Users/jonah/Code/omni_home/docs/plans/2026-04-27-emit-daemon-omnimarket-cutover-and-runtime-standardization.md`
+Plan source of truth: `$OMNI_HOME/docs/plans/2026-04-27-emit-daemon-omnimarket-cutover-and-runtime-standardization.md`
 
 ## Purpose
 

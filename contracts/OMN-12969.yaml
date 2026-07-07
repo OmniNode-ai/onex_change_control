@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12969"
+title: "Dashboard ws invalidation 403 (:13002/ws) — remove the dead ws path + reintroduction ratchet"
+summary: >
+  The omnidash dashboard opened a `/ws` invalidation/live-tail WebSocket whose URL was derived from the
+  projection backend (VITE_PROJECTION_API_URL = FastAPI projection-api on :13002). That backend (omnimarket/src/omnimarket/projection/api_server.py)
+  is a FastAPI app exposing HTTP GET routes plus a single advisory SSE endpoint (/v1/evidence-pipeline/events/stream);
+  it never registered a `/ws` websocket route, so every browser upgrade against :13002/ws was rejected
+  (403) — the source of the pre-existing console errors. The omnidash Express server (server/index.ts)
+  did expose a `/ws` WebSocketServer, but broadcast() had zero callers and no Kafka consumer fed it, so
+  it could never deliver an INVALIDATE frame. The path was dead on both ends; dashboard panels were already
+  poll-only via useProjectionQuery. Remediation removes the dead path with no half-dead code: client-side
+  useWebSocketInvalidation hook + Providers mount, EventStream.useEventWebSocket (component stays poll-driven),
+  getWebSocketUrl(), DATA_SOURCE_DEFAULT_WS_URL, contract.yaml data_source.ws_url, VITE_WS_URL and the
+  test WebSocket mocks; server-side the /ws WebSocketServer, broadcast(), clients map, upgrade handler,
+  ws import and broadcast.test.ts. The Express HTTP projection routes and the Kafka dispatch producer
+  are untouched. Enforcement ratchet (same PR set): new local/no-projection-websocket ESLint rule (error)
+  bans raw browser `new WebSocket(...)` in client source, wired into eslint.config.js with unit tests,
+  so an unwired socket cannot be reintroduced.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      ESLint rule unit tests assert the new local/no-projection-websocket rule fires on new WebSocket
+      / new window.WebSocket / new globalThis.WebSocket in client source and stays silent in test files
+      and for non-WebSocket constructors. EventStream tests assert poll-only rendering with no WebSocket
+      mock. Build (tsc + vite build) and full lint/typecheck are green after the removal.
+    command: "npx vitest run src/no-projection-websocket.test.ts src/components/dashboard/events/EventStream.test.tsx
+      && npm run lint && npx tsc --noEmit && npm run build"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnidash-pr-204"
+    description: >
+      omnidash PR #204 (base dev) removes the dead /ws path client- and server-side and adds the local/no-projection-websocket
+      ESLint rule + tests. Evidence anchor: omnidash head commit b9976fbf070d77760fb0cc6b5d648807df1fc35b.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12969/dod-omnidash-pr-204/command.yaml
+          && grep -q '^pr_number: 204$' drift/dod_receipts/OMN-12969/dod-omnidash-pr-204/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a frontend + Express-serving code change in omnidash. It deletes a dead
+      browser WebSocket client and the never-broadcasting Express /ws bridge; no topic, contract, schema,
+      or runtime-node change. Correctness does not require a deploy — the 403 console errors disappear
+      once this build ships in the next batched dashboard rebuild. No live lane (dev/stability/prod) was
+      rebuilt, restarted, or mutated by this PR. The receipt carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12969/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12969/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >
+      This onex_change_control PR carries the OMN-12969 central contract and dod receipts; this self-binding
+      receipt makes the OCC PR satisfy its own OCC eligibility check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12969/dod-occ-self/command.yaml"

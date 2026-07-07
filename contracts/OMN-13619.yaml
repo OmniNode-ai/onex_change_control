@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13619"
+title: "WS-C Phase 4.3: Route SEA delegation/* to omnimarket node_delegation_routing_reducer + orchestrator;
+  tier config to contract"
+summary: >
+  Wave-1 ROUTE item of the SEA -> canonical migration (epic OMN-13604). Routes the SEA bespoke delegation
+  escalation ladder (src/delegation/{executor,config,events,validation}.py) to its permanent canonical
+  home in omnimarket and proves parity. The canonical delegation surface already reproduces the SEA ladder:
+  tier config lives in the contract overlay configs/routing_tiers.yaml (plus the task-class overlay configs/task_class_contracts.v1.yaml
+  and the bifrost endpoint overlay) rather than a bespoke Python config module; the escalate-or-terminate
+  verdict is the pure NodeCompute node_delegation_escalation_decision_compute (HandlerEscalationDecision);
+  next-eligible tier and per-tier retry budgets are resolved by node_delegation_routing_reducer (next_eligible_tier
+  / tier_max_retries / describe_no_higher_tier_available) from the contract+overlay; tier execution runs
+  through the canonical HTTP inference effect node_llm_delegation_call_effect, with NO shelled CLI (OMN-13215
+  removed the codex-cli / cli_agents tiers). Every tier — including the ceiling — resolves provider+endpoint+model+api_key_ref
+  from the routing contract deep-merged with the user overlay, swappable by overlay, never from environment
+  variables. This PR adds (a) the focused integration parity proof tests/integration/golden_chain/test_sea_delegation_ladder_parity_omn13619.py
+  reproducing each of the seven SEA DelegationExecutor behaviors through the canonical nodes, and (b)
+  the routing-provenance boundary doc docs/migrations/sea-delegation-routing.md recording the SEA-source
+  -> canonical-surface mapping plus the deletion boundary. The bespoke SEA delegation modules are NOT
+  deleted in this PR: their remaining in-repo consumers (the experiment harness and the regression runner)
+  migrate to canonical nodes in Phase 3 (OMN-13614/13615/13616), and the explicit DELETE step is Phase
+  8.1 (OMN-13626) which runs after every consumer is ported and parity is proven. No new node, no topic
+  schema / envelope / contract-API change, no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Focused integration / golden-chain proof of the tier ladder. The parity test asserts each SEA DelegationExecutor
+      behavior (first-tier success, escalate-on-escalatable, no-escalate-on-non- escalatable, terminate-on-replay-violation,
+      budget guard, disabled/excluded-tier skip, correlation-id propagation) reproduces through node_delegation_escalation_decision_compute
+      + node_delegation_routing_reducer + HandlerRoutingIntent, with tier config resolved from the contract
+      overlay and endpoints from the bifrost overlay (not env), and an AST guard proving the routing path
+      contains no subprocess / shelled CLI.
+    command: "uv run pytest tests/integration/golden_chain/test_sea_delegation_ladder_parity_omn13619.py
+      src/omnimarket/nodes/node_delegation_escalation_decision_compute/tests/test_handler_escalation_decision.py
+      tests/test_routing_tiers_contract.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >
+      omnimarket product PR adds the SEA delegation escalation-ladder parity proof (tests/integration/golden_chain/test_sea_delegation_ladder_parity_omn13619.py)
+      and the routing- provenance migration boundary doc (docs/migrations/sea-delegation-routing.md).
+      The parity proof passes (12 parity tests) and reproduces the seven SEA DelegationExecutor behaviors
+      through the canonical delegation nodes; tier config resolved from the contract overlay; no shelled
+      CLI.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13619/dod-omnimarket-pr/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13619/dod-omnimarket-pr/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13619/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a test + documentation addition in omnimarket with no new node, no topic
+      schema, envelope, or contract-API change and no live-lane mutation. The parity proof exercises pure
+      in-process handlers against an in-memory/contract-overlay configuration; it does not mutate any
+      runtime lane. No live deploy is performed by this PR. The receipt check_value carries the deploy
+      keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13619/dod-deploy-assessment/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13619/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13619/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13619 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13619/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13619/dod-occ-pr-self/command.yaml"

@@ -555,7 +555,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    bypass_env = os.environ.get("EMERGENCY_BYPASS", "").strip()
+    # Emergency-bypass toggle resolves from the integration contract + overlay
+    # (descriptor.emergency_bypass bound to ${env.EMERGENCY_BYPASS}, OMN-13563);
+    # empty string == disabled. Lazy import keeps this standalone CI script's
+    # module load free of the package import.
+    from onex_change_control.integrations import contract_descriptor
+
+    bypass_env = contract_descriptor.emergency_bypass()
     if bypass_env:
         print(
             f"[EMERGENCY_BYPASS] Bypass activated by: {bypass_env}. "

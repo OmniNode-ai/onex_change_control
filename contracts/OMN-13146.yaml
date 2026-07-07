@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13146"
+title: "Unify the two event registries into one canonical source + structural drift gate"
+summary: >-
+  There were two parallel event registries describing the same hook -> Kafka fan-out routing: the hook-side
+  omniclaude EVENT_REGISTRY (Python, hooks/event_registry.py + the TopicBase enum) and the emit-daemon-side
+  omnimarket topics.yaml (YAML, loaded by node_emit_daemon at runtime). The prior drift validator (OMN-10127)
+  compared topic SETS only, so the two could silently diverge on every other field -- and they had: task.delegated.required_fields
+  was missing delegated_to on the YAML side (delegated_to is required by the omniclaude hook registry,
+  the delegation golden chain, and the SQLite projection). This promotes topics.yaml to the single canonical
+  registry, fixes the delegated_to drift, and turns the OMN-10127 validator into a full STRUCTURAL comparison
+  (event-type membership + per-event fan-out topic set, partition_key_field, and required_fields). The
+  validator is wired as both a pre-commit hook and the required "Event Registry Drift" CI gate. omnimarket
+  PR #1220.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-13146-structural-gate"
+    description: >-
+      The strengthened event_registry_drift validator catches required_fields / partition_key_field /
+      per-event topic drift (not just topic-set drift). 14 unit tests pass, including the exact task.delegated
+      required_fields regression, order-insensitivity, baseline suppression at both the topic and event-type
+      level, and a live-registry regression lock. Negative proof confirms the gate reports has_drift=True
+      with the task.delegated required_fields diff when delegated_to is absent.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13146/dod-omn-13146-structural-gate/command.yaml"
+  - id: "dod-omn-13146-local-verify"
+    description: >-
+      Full local verification of the changed files: ruff format + ruff check clean, mypy --strict clean,
+      and pre-commit run (incl. the event-registry-drift hook) all green on the four changed files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13146/dod-omn-13146-local-verify/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      This OCC PR carries the OMN-13146 contract + PASS receipts that the Receipt-Gate on omnimarket PR
+      #1220 resolves against.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13146/dod-occ-pr-self/command.yaml
+          && grep -q '^ticket_id: \"OMN-13146\"$' drift/dod_receipts/OMN-13146/dod-occ-pr-self/command.yaml"

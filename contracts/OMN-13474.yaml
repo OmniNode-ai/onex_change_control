@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13474"
+title: "refactor: bind delegation FSM guard to a contract-derived typed ModelFSMSubcontract"
+summary: >-
+  Track A W2 of the delegation-orchestrator decomposition (epic OMN-13471), depends on OMN-12835 (typed
+  contract-side workflow surface, now on dev). HandlerDelegationWorkflow drove its FSM transition guard
+  from a hardcoded _VALID_TRANSITIONS Python dict that paralleled the contract.yaml fsm.transitions block
+  (reconciled to be the single source of truth in W1/OMN-13473). This wave removes that parallel imperative
+  FSM table: the guard table is now a projection of a typed, executor-bound ModelFSMSubcontract built
+  once at import from the contract fsm block via _load_fsm_subcontract() + _build_valid_transitions().
+  The declared contract table is therefore the runtime execution authority; the imperative _transition
+  guard validates against it. The typed FSM is structurally validated at import by the core model's own
+  validators (initial/terminal membership, transition-state membership, structural uniqueness, no-outgoing-from-terminal)
+  and fails fast on any state with no EnumDelegationState member (no silent fallback). Behavior preserved:
+  the contract-derived table is byte-identical to the prior hardcoded table. The per-call-site _transition(...)
+  invocations are unchanged — reducing them to zero is the explicit scope of W5 (OMN-13477), which this
+  ticket blocks. Purely intra-omnimarket change; no core wire DTO changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      tests/unit/delegation/test_delegation_fsm_contract_bound_omn13474.py proves the typed, executor-bound
+      binding: the module-level ModelFSMSubcontract matches the contract verbatim (states/initial/terminal/
+      transition count); the guard table equals the declared contract edges and is a re-loadable projection
+      (not a parallel literal); EVERY declared edge is drivable by the canonical core FSM executor (omnibase_core.utils.util_fsm_executor.execute_transition)
+      to the same target state the imperative guard reaches — proving the typed field is genuinely executor-bound,
+      not a dead schema field; plus the unknown-state fail-fast guard. The full delegation unit suite
+      + no-cross-node-reach-in pass unchanged (363 passed, 1 skipped), and the contract-derived _VALID_TRANSITIONS
+      is asserted byte-identical to the prior hardcoded table.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13474/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Quality gates green on the changed surface: mypy --strict clean on handler_delegation_workflow.py;
+      runtime sweep classifies 322/322 entry points OK; metadata dependency scope PASS; ruff format +
+      check clean; full pre-commit fleet green on both changed files (stub detector, canonical inference
+      gate, URL authority, plugin-daemon gate, topic-literal, env-read, golden-chain coverage, no-skip-token
+      — all Passed). Code-gen was dogfooded via onex skill delegate (Qwen3.6-35B-A3B on .201, quality
+      gate passed) then hand-hardened for fail-fast + typed-FSM binding.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13474/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
+      PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13474\"$' contracts/OMN-13474.yaml"

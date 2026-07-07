@@ -24,15 +24,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from onex_change_control.integrations import contract_descriptor
+
 _CLAIMS_SUBDIR = "dispatch_claims"
 _BLOCKER_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _claims_dir() -> Path:
-    raw = os.environ.get("ONEX_STATE_DIR", "")
-    if not raw.strip():
+    # State-store root resolves from the integration contract + overlay
+    # (descriptor.onex_state_dir bound to ${env.ONEX_STATE_DIR}, OMN-13563);
+    # fail-closed (raises) when unset — the dispatch claim store requires it.
+    try:
+        raw = contract_descriptor.onex_state_dir()
+    except ValueError as exc:
         msg = "ONEX_STATE_DIR is not set — dispatch claim store requires it"
-        raise RuntimeError(msg)
+        raise RuntimeError(msg) from exc
     p = Path(raw).expanduser().resolve() / _CLAIMS_SUBDIR
     p.mkdir(parents=True, exist_ok=True)
     return p

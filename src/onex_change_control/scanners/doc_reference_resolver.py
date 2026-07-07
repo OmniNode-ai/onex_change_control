@@ -9,11 +9,124 @@ in the filesystem, codebase, or environment configuration.
 
 from __future__ import annotations
 
-import subprocess
+import os
+import re
+import time
 from pathlib import Path
 
 from onex_change_control.enums.enum_doc_reference_type import EnumDocReferenceType
 from onex_change_control.models.model_doc_reference import ModelDocReference
+
+# Default wall-clock budget for a full resolve_references pass. Once exceeded the
+# resolver stops doing work and returns the remaining references marked
+# exists=None (fail-loud, bounded). The old per-ref ``grep -r`` resolver had no
+# budget and could run for tens of minutes (OMN-13521).
+_DEFAULT_TIME_BUDGET_SECONDS = 120.0
+
+# Directories never worth walking when building the per-repo symbol index.
+# Nested worktrees (.claude/worktrees, omni_worktrees) are duplicate copies of
+# the canonical tree; walking them re-scans the same source many times over and
+# was a major contributor to the non-terminating sweep (OMN-13521).
+_INDEX_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".claude",
+        "worktrees",
+        "omni_worktrees",
+    }
+)
+
+# Match a top-level (or indented) ``class Name`` / ``def name`` definition. The
+# mandatory whitespace after the keyword keeps us from matching ``classify``
+# when looking for ``class``; the captured group is the symbol name.
+_CLASS_RE = re.compile(r"^[ \t]*class[ \t]+([A-Za-z_][A-Za-z0-9_]*)")
+_DEF_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _build_symbol_index(root: str) -> dict[str, str]:
+    """Scan ``<root>/src`` once and index symbol name -> first defining file.
+
+    Builds an in-memory map of every ``class Name`` and ``def name`` definition
+    under the repo's ``src/`` tree. This replaces the per-reference ``grep -r``
+    subprocess: the tree is walked exactly once per repo-root, then every
+    reference is resolved in pure Python against the map.
+
+    The first file in which a symbol appears wins (matching the prior
+    ``grep -r -l | head -1`` semantics).
+    """
+    index: dict[str, str] = {}
+    src_dir = Path(root) / "src"
+    if not src_dir.is_dir():
+        return index
+
+    for dirpath, dirnames, filenames in os.walk(src_dir):
+        # Prune skip dirs in place so os.walk does not descend into them. This
+        # is the load-bearing optimisation: nested worktrees / .venv are never
+        # entered, so the canonical tree is scanned exactly once.
+        dirnames[:] = [d for d in dirnames if d not in _INDEX_SKIP_DIRS]
+        dir_path = Path(dirpath)
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            file_path = dir_path / filename
+            try:
+                with file_path.open(encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        m = _CLASS_RE.match(line)
+                        if m is None:
+                            m = _DEF_RE.match(line)
+                        if m is None:
+                            continue
+                        name = m.group(1)
+                        # First definition wins.
+                        index.setdefault(name, str(file_path))
+            except OSError:
+                continue
+    return index
+
+
+def _unverified(ref: ModelDocReference) -> ModelDocReference:
+    """Return a copy of ``ref`` marked as unverified (budget exhausted)."""
+    return ModelDocReference(
+        doc_path=ref.doc_path,
+        line_number=ref.line_number,
+        reference_type=ref.reference_type,
+        raw_text=ref.raw_text,
+        resolved_target=None,
+        exists=None,
+    )
+
+
+def _resolve_class_or_function_indexed(
+    ref: ModelDocReference, symbol_indices: list[dict[str, str]]
+) -> ModelDocReference:
+    """Resolve a class/function reference against prebuilt per-root indices."""
+    name = ref.raw_text
+    for index in symbol_indices:
+        target = index.get(name)
+        if target is not None:
+            return ModelDocReference(
+                doc_path=ref.doc_path,
+                line_number=ref.line_number,
+                reference_type=ref.reference_type,
+                raw_text=ref.raw_text,
+                resolved_target=target,
+                exists=True,
+            )
+    return ModelDocReference(
+        doc_path=ref.doc_path,
+        line_number=ref.line_number,
+        reference_type=ref.reference_type,
+        raw_text=ref.raw_text,
+        resolved_target=None,
+        exists=False,
+    )
 
 
 def _resolve_file_path(
@@ -45,52 +158,6 @@ def _resolve_file_path(
                 resolved_target=str(candidate),
                 exists=True,
             )
-
-    return ModelDocReference(
-        doc_path=ref.doc_path,
-        line_number=ref.line_number,
-        reference_type=ref.reference_type,
-        raw_text=ref.raw_text,
-        resolved_target=None,
-        exists=False,
-    )
-
-
-def _resolve_class_or_function(
-    ref: ModelDocReference, repo_roots: list[str]
-) -> ModelDocReference:
-    """Resolve a class or function name by grepping the codebase."""
-    name = ref.raw_text
-    pattern = (
-        f"class {name}"
-        if ref.reference_type == EnumDocReferenceType.CLASS_NAME
-        else f"def {name}"
-    )
-
-    for root in repo_roots:
-        src_dir = Path(root) / "src"
-        if not src_dir.exists():
-            continue
-        try:
-            result = subprocess.run(
-                ["grep", "-r", "-l", pattern, str(src_dir)],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                first_file = result.stdout.strip().splitlines()[0]
-                return ModelDocReference(
-                    doc_path=ref.doc_path,
-                    line_number=ref.line_number,
-                    reference_type=ref.reference_type,
-                    raw_text=ref.raw_text,
-                    resolved_target=first_file,
-                    exists=True,
-                )
-        except (subprocess.TimeoutExpired, OSError):
-            continue
 
     return ModelDocReference(
         doc_path=ref.doc_path,
@@ -188,38 +255,90 @@ def _resolve_command(
     )
 
 
+def _resolve_single(
+    ref: ModelDocReference,
+    repo_roots: list[str],
+    symbol_indices: list[dict[str, str]],
+    env_file: str | None,
+) -> ModelDocReference:
+    """Dispatch a single reference to its type-specific resolver."""
+    if ref.reference_type == EnumDocReferenceType.FILE_PATH:
+        return _resolve_file_path(ref, repo_roots)
+    if ref.reference_type in (
+        EnumDocReferenceType.CLASS_NAME,
+        EnumDocReferenceType.FUNCTION_NAME,
+    ):
+        return _resolve_class_or_function_indexed(ref, symbol_indices)
+    if ref.reference_type == EnumDocReferenceType.ENV_VAR:
+        return _resolve_env_var(ref, env_file)
+    if ref.reference_type == EnumDocReferenceType.URL:
+        return _resolve_url(ref)
+    if ref.reference_type == EnumDocReferenceType.COMMAND:
+        return _resolve_command(ref, repo_roots)
+    return ref
+
+
+def _build_symbol_indices(
+    references: list[ModelDocReference],
+    repo_roots: list[str],
+    deadline: float,
+) -> list[dict[str, str]]:
+    """Build the per-root symbol index, once, if any class/func refs exist."""
+    needs_symbol_index = any(
+        ref.reference_type
+        in (EnumDocReferenceType.CLASS_NAME, EnumDocReferenceType.FUNCTION_NAME)
+        for ref in references
+    )
+    if not needs_symbol_index:
+        return []
+
+    symbol_indices: list[dict[str, str]] = []
+    for root in repo_roots:
+        if time.monotonic() >= deadline:
+            break
+        symbol_indices.append(_build_symbol_index(root))
+    return symbol_indices
+
+
 def resolve_references(
     references: list[ModelDocReference],
     repo_roots: list[str],
     env_file: str | None = None,
+    time_budget_seconds: float = _DEFAULT_TIME_BUDGET_SECONDS,
 ) -> list[ModelDocReference]:
     """Resolve all references, populating exists and resolved_target fields.
+
+    Class/function references resolve against an in-memory symbol index built
+    **once per repo-root** (one ``os.walk`` over each ``src/`` tree) instead of
+    the previous one-``grep -r``-subprocess-per-reference-per-root pass. That
+    turns the cost from O(refs x roots) subprocess spawns into O(roots) tree
+    walks plus O(refs) dict lookups (OMN-13521).
+
+    A wall-clock ``time_budget_seconds`` bounds the whole pass: once the budget
+    is exhausted, any not-yet-resolved reference is returned with
+    ``exists=None`` (fail-loud, bounded) rather than letting the resolver run
+    for an unbounded number of minutes.
 
     Args:
         references: List of extracted references to resolve.
         repo_roots: List of repository root directories to search.
         env_file: Optional path to env file (defaults to ~/.omnibase/.env).
+        time_budget_seconds: Wall-clock budget for the whole pass. References
+            still unresolved when the budget is hit come back ``exists=None``.
 
     Returns:
-        List of resolved references with exists field populated.
+        List of resolved references with exists field populated. Always the
+        same length and order as ``references``.
     """
-    resolved: list[ModelDocReference] = []
+    deadline = time.monotonic() + max(time_budget_seconds, 0.0)
+    symbol_indices = _build_symbol_indices(references, repo_roots, deadline)
 
+    resolved: list[ModelDocReference] = []
     for ref in references:
-        if ref.reference_type == EnumDocReferenceType.FILE_PATH:
-            resolved.append(_resolve_file_path(ref, repo_roots))
-        elif ref.reference_type in (
-            EnumDocReferenceType.CLASS_NAME,
-            EnumDocReferenceType.FUNCTION_NAME,
-        ):
-            resolved.append(_resolve_class_or_function(ref, repo_roots))
-        elif ref.reference_type == EnumDocReferenceType.ENV_VAR:
-            resolved.append(_resolve_env_var(ref, env_file))
-        elif ref.reference_type == EnumDocReferenceType.URL:
-            resolved.append(_resolve_url(ref))
-        elif ref.reference_type == EnumDocReferenceType.COMMAND:
-            resolved.append(_resolve_command(ref, repo_roots))
-        else:
-            resolved.append(ref)
+        # Budget guard: once exhausted, return remaining refs as unverified.
+        if time.monotonic() >= deadline:
+            resolved.append(_unverified(ref))
+            continue
+        resolved.append(_resolve_single(ref, repo_roots, symbol_indices, env_file))
 
     return resolved

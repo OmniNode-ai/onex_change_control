@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13020"
+title: "Vendor missing node migrations — llm_routing 0000 + context_roi 001 (prod forward-migration exit
+  3)"
+summary: >
+  Prod forward-migration (omnibase-infra-prod-forward-migration) exited 3 at 2026-06-11T09:35:52Z on node_projection_llm_routing/0001_create_routing_dashboard_projection_view.sql:135
+  — relation "llm_routing_decisions" does not exist. The 0001 VIEW applies against NODE_POSTGRES_DB=omnidash_analytics,
+  where the base table (created by flat infra 065 only in the omnibase_infra DB) never existed. The self-contained
+  base-table migration node_projection_llm_routing/0000_create_llm_routing_decisions.sql existed in omnimarket
+  dev source (omnimarket #1168 / OMN-12942, merge ed6734f8) and as untracked hot-patch residue on the
+  .201 stability clone, but in NO omnibase_infra ref — every clean build reproduced the prod failure by
+  construction. Same class: node_projection_context_roi/001 (omnimarket #1178 / OMN-12955, merge 5010b1f4)
+  was never vendored either. omnibase_infra PR #1956 vendors both files via the canonical mechanism (scripts/sync-node-migrations.sh,
+  OMN-12559), byte-identical to the omnimarket dev blobs (sha256 f8a8b339... / c4126e65...). SQL-only
+  additive change; all statements IF NOT EXISTS; 0000 sorts lexically before 0001 inside the namespaced
+  node:<node>:<file> identity space — no flat-sequence renumber. Root-cause gate gap (sync --check skips
+  when omnimarket source is unresolvable on the runner) is recorded on the ticket; migration-gate sentinel
+  vacuity is OMN-13062.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-1956"
+    description: >
+      omnibase_infra PR #1956 (base=dev) adds both vendored migration files, produced by scripts/sync-node-migrations.sh
+      against omnimarket@dev (dcd3ead5) and byte-identical to the omnimarket dev blobs and the .201 stability-clone
+      hot-patch copies (sha256 f8a8b339953a15f9b8d7e1fdc980b01a352835b466e14941c416649892f577db and c4126e65c943cdd774513c3241070cd3ccdd567699512f562c12a77bd6c05f52).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13020/dod-infra-pr-1956/command.yaml
+          && grep -q '^pr_number: 1956$' drift/dod_receipts/OMN-13020/dod-infra-pr-1956/command.yaml"
+  - id: "dod-focused-checks"
+    description: >
+      Migration-sequence validator exits 0 and sync-node-migrations.sh --check reports in-sync after vendoring;
+      ruff format/check clean; mypy src/ --strict Success (2418 files); full pytest suite (no -k filter,
+      -n 8) 23846 passed / 381 skipped with remaining F/E confined to live-infra-dependent integration/performance
+      surfaces and xdist logging-capture flakes on a 2-SQL-file diff (test_util_db_transaction passes
+      serially; test_receipt_gate_install_guard reproduces on byte-identical dev-tip content).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13020/dod-focused-checks/command.yaml"
+  - id: "dod-occ-pr-2541"
+    description: "onex_change_control PR #2541 carries the OMN-13020 central contract and receipt evidence."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13020/dod-occ-pr-2541/command.yaml
+          && grep -q '^pr_number: 2541$' drift/dod_receipts/OMN-13020/dod-occ-pr-2541/command.yaml"

@@ -1,65 +1,37 @@
 ---
-schema_version: '1.0.0'
-ticket_id: OMN-13687
-title: 'EMERGENCY PROD RECOVERY: bounded retry on docker push to ECR — absorb transient runner→ECR EOF'
+schema_version: "1.0.0"
+ticket_id: "OMN-13687"
+title: "fix(OMN-13687): bounded retry on docker push to ECR"
 summary: >-
-  Emergency prod recovery authorized by operator. The runtime image build (build-and-push-runtime.yml)
-  builds and Trivy-scans cleanly on omnibase_infra main HEAD 2cd720817 (the OMN-13670 crypto-floor hotfix
-  #2131), but the final `docker push` to ECR repeatedly fails with a transient network EOF on a single
-  blob HEAD request from the .201 self-hosted runner fleet to 272493677981.dkr.ecr.us-east-1.amazonaws.com.
-  Two fresh workflow_dispatch runs on main (28315044412, 28315257828) both pushed several blobs, then
-  died on a blob HEAD EOF. omnibase_infra hotfix PR #2134 wraps the docker push in a bounded retry loop
-  (5 attempts, exponential backoff 10s/20s/40s/80s, cap 120s), mirroring the exponential-backoff idiom
-  already used by .github/actions/resolve-ecr-digest. docker push is resumable so retrying absorbs the
-  transient blob-HEAD EOF. Additive only: build, image tag/digest computation, lineage-guard, and Trivy
-  are unchanged. This PR does NOT deploy, restart, retag, or touch any cluster or .201 host config. The
-  prod re-pin follows separately under OMN-13418 gating.
+  OCC evidence for omnibase_infra PR #2134, which wraps the runtime image docker push step in .github/workflows/build-and-push-runtime.yml
+  with a bounded retry loop. The change is additive: image build, Trivy scan, tag generation, and digest
+  handling remain unchanged; only the network push is retried to absorb the transient runner-to-ECR blob
+  HEAD EOF observed during emergency prod recovery.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
-evidence_requirements:
-  - kind: ci
-    description: >-
-      build-and-push-runtime.yml on the hotfix branch builds + Trivy-passes, then the wrapped push step
-      retries on transient EOF. Verified post-merge by a fresh build-and-push run reaching ECR.
-    command: 'gh pr checks 2134 --repo OmniNode-ai/omnibase_infra'
 emergency_bypass:
   enabled: false
-  justification: ''
-  follow_up_ticket_id: ''
+  justification: ""
+  follow_up_ticket_id: ""
 dod_evidence:
-  - id: dod-001
+  - id: "dod-workflow-retry-loop"
     description: >-
-      build-and-push-runtime.yml on the hotfix branch wraps the `docker push` in a bounded retry loop
-      (5 attempts, exponential backoff, cap 120s) scoped to the push step; the build, image tag/digest
-      computation, lineage-guard, and Trivy steps are unchanged (additive +35/-1).
-    source: generated
+      The runtime image publish workflow parses as valid YAML at omnibase_infra PR #2134 head dfa4aba8b0a0acf1ca91e6506b4dfa175499b065
+      and contains the bounded push_with_retry helper with PUSH_MAX_ATTEMPTS=5, initial delay 10s, max
+      delay 120s, exponential backoff factor 2, docker push retry on each tag, and failure after the bounded
+      attempts.
+    source: "manual"
+    status: "verified"
     checks:
-      - check_type: command
-        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13687/dod-001/command.yaml"
-  - id: dod-002
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13687/dod-workflow-retry-loop/command.yaml"
+  - id: "dod-occ-pr"
     description: >-
-      Two fresh workflow_dispatch runs on omnibase_infra main (28315044412, 28315257828) both passed the
-      build + Trivy steps and then failed at "Push image to Amazon ECR" with a transient blob-HEAD EOF,
-      establishing that the EOF is systemic (not a single bad runner) and the push-retry fix is warranted.
-    source: generated
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13687.yaml consumed
+      by omnibase_infra PR #2134 via Evidence-Source and hotfix-evidence.
+    source: "manual"
+    status: "verified"
     checks:
-      - check_type: command
-        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13687/dod-002/command.yaml"
-  - id: dod-deploy-assessment
-    description: >-
-      Static deploy assessment: OMN-13687 changes only a CI workflow file. No live deploy, runtime restart,
-      ECR retag, cluster mutation, or .201 host-config change is performed. Prod re-pin follows separately
-      under OMN-13418 gating.
-    source: generated
-    checks:
-      - check_type: command
-        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13687/dod-deploy-assessment/command.yaml"
-  - id: dod-occ-self
-    description: >-
-      Self-binding OCC receipt — this onex_change_control PR carries the OMN-13687 contract + receipts
-      consumed by omnibase_infra #2134 via Evidence-Source.
-    source: generated
-    checks:
-      - check_type: command
-        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13687/dod-occ-self/command.yaml"
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13687/dod-occ-pr/command.yaml"

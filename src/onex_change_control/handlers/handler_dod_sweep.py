@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 from onex_change_control.enums.enum_dod_sweep_check import EnumDodSweepCheck
 from onex_change_control.enums.enum_invariant_status import EnumInvariantStatus
+from onex_change_control.integrations import contract_descriptor
 from onex_change_control.models.model_dod_sweep import (
     ModelDodSweepCheckResult,
     ModelDodSweepResult,
@@ -69,8 +70,8 @@ _INFRA_RECEIPT_MARKERS = (
 # ---------------------------------------------------------------------------
 # Linear GraphQL client (stdlib-only, lifted from scripts/check_dod_compliance.py)
 # ---------------------------------------------------------------------------
-
-LINEAR_API_URL = "https://api.linear.app/graphql"
+# Endpoint resolves from the integration contract + overlay (OMN-13563) — never a
+# hardcoded URL literal.
 
 _TICKETS_QUERY = """
 query CompletedTickets($after: String, $filter: IssueFilter!) {
@@ -96,8 +97,8 @@ def _linear_request(
 ) -> dict[str, Any]:
     """Execute a Linear GraphQL query using stdlib urllib."""
     payload = json.dumps({"query": query, "variables": variables}).encode()
-    req = urllib.request.Request(  # noqa: S310  Why: URL is a constant HTTPS endpoint
-        LINEAR_API_URL,
+    req = urllib.request.Request(  # noqa: S310  Why: URL resolves from the contract
+        contract_descriptor.linear_graphql_url(),
         data=payload,
         headers={
             "Content-Type": "application/json",

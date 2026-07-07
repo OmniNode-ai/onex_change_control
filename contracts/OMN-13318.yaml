@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13318"
+title: "org-wide open-PR census as mandatory sweep-done gate"
+summary: >
+  The overnight merge sweep could briefly look complete after two PRs merged while omnibase_infra#2043
+  was still open — the repo-by-repo inventory missed it because there was no org-wide precondition on
+  the done-report. This adds an org-wide open-PR census to node_pr_lifecycle_inventory_compute (collect_org_wide_open_prs,
+  the GitHub-search equivalent of 'gh api /search/issues?q=org:OmniNode-ai is:pr is:open') returning ModelOrgWideOpenPrInventory(open_count,
+  remainders, query_failed), attached to ModelPrInventoryOutput.org_wide_open. The node_pr_lifecycle_orchestrator
+  captures the census during INVENTORYING and gates its reported final_state: COMPLETE is downgraded to
+  NOT_DONE while open_count > 0 (or the census failed), surfacing the exact blocking remainders; result.json
+  reports status=not_done with the remainder list. Fail-closed: a failed or invalid census query is never
+  reported as done. Compute + report-gating change only; no topic schema, envelope, or contract API change;
+  no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      DoD tests assert the org-wide census (seed one open PR -> NOT_DONE listing the remainder; close
+      it -> done), fail-closed behavior on query failure / invalid JSON, ModelPrInventoryOutput.org_wide_open
+      population, and the orchestrator sweep-done gate downgrading COMPLETE to NOT_DONE while open PRs
+      remain (with remainders surfaced).
+    command: "uv run pytest tests/test_golden_chain_pr_lifecycle_inventory_compute.py tests/test_golden_chain_pr_lifecycle_orchestrator.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1377"
+    description: >
+      omnimarket PR #1377 adds collect_org_wide_open_prs + ModelOrgWideOpenPrInventory to node_pr_lifecycle_inventory_compute,
+      the sweep-done gate (_apply_org_wide_done_gate) to node_pr_lifecycle_orchestrator, and the DoD tests.
+      Contract + metadata bumped to 1.1.0. Evidence anchor: omnimarket head commit 9c7a45386b6b2cbc3a83a201e47d01db5c2a1ee6.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13318/dod-omnimarket-pr-1377/command.yaml
+          && grep -q '^pr_number: 1377$' drift/dod_receipts/OMN-13318/dod-omnimarket-pr-1377/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13318/dod-omnimarket-pr-1377/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a compute + report-gating change in omnimarket with no topic schema,
+      envelope, or contract API change and no live-lane mutation. The sweep-done gate runs inside the
+      merge_sweep node/skill path (node_pr_lifecycle_orchestrator). No live deploy is performed by this
+      PR. The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13318/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1377$' drift/dod_receipts/OMN-13318/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13318/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-3012"
+    description: >
+      Self-binding OCC eligibility receipt: onex_change_control PR #3012 carries the OMN-13318 contract
+      and dod receipts onto dev/main, satisfying the receipt-to-PR binding required by validator_occ_merge_eligibility
+      (a PASS receipt with pr_number 3012 binds to this OCC PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13318/dod-occ-pr-3012/command.yaml
+          && grep -q '^pr_number: 3012$' drift/dod_receipts/OMN-13318/dod-occ-pr-3012/command.yaml"

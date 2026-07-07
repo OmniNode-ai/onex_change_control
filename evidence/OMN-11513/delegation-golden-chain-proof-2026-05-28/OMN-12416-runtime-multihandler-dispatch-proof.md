@@ -1,7 +1,7 @@
 # OMN-12416 — Runtime multi-handler dispatch fix: live golden-chain proof
 
 Date: 2026-05-29
-Lane: stability-test (compose project `omnibase-infra-stability-test`, .201)
+Lane: stability-test (compose project `omnibase-infra-stability-test`, the runtime host)
 Branch: `jonah/omn-12416-runtime-multihandler-dispatch` (omnibase_infra, off `origin/dev`)
 Image: built from branch src + omnimarket@dev + omnibase_compat@4d887307 (main), tag `omn-12416-v2`, deployed as `:latest` to ONLY `omninode-stability-test-runtime` + `runtime-effects`.
 
@@ -40,7 +40,7 @@ newline).
 | 1 | onex.cmd.omnibase-infra.delegation-request.v1 | `cmd_delegation-request.txt` | 2:86 |
 | 2 | onex.cmd.omnibase-infra.delegation-routing-request.v1 | `cmd_delegation-routing-request.txt` | 2:161 |
 | 3 | onex.evt.omnibase-infra.routing-decision.v1 | `hop_routing-decision.txt` (selected_model=DeepSeek-V4-Flash-284B) | 1:323 |
-| 4 | onex.cmd.omnibase-infra.delegation-inference-request.v1 | `cmd_delegation-inference-request.txt` (base_url=http://192.168.86.200:8101) | 1:151 |
+| 4 | onex.cmd.omnibase-infra.delegation-inference-request.v1 | `cmd_delegation-inference-request.txt` (base_url=http://<onex-host>:8101) | 1:151 |
 | 5 | onex.evt.omnibase-infra.inference-response.v1 | `hop_inference-response.txt` (real 284B LLM output, 195 tokens) | 1:107 |
 | 6 | onex.cmd.omnibase-infra.delegation-quality-gate-request.v1 → onex.evt.omnibase-infra.quality-gate-result.v1 | `cmd_delegation-quality-gate-request.txt`, `hop_quality-gate-result.txt` | 4:74 → 1:135 |
 | terminal | onex.evt.omnibase-infra.delegation-failed.v1 | `terminal_delegation-failed.txt` | 2:59 |

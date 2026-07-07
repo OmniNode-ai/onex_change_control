@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13122"
+title: "Add node_projection_routing_decision (routing-decision.v1 -> agent_routing_decisions)"
+summary: >-
+  Adds the canonical omnimarket projection node node_projection_routing_decision that closes the golden
+  "registration" chain: it consumes onex.evt.omniclaude.routing-decision.v1 (emitted by the omniclaude
+  polymorphic router) and projects each routing decision into the agent_routing_decisions table via INSERT
+  ... ON CONFLICT (id) DO NOTHING (append-only; the router mints the UUID idempotency key). Ships a reducer
+  contract.yaml + metadata.yaml, HandlerProjectionRoutingDecision (DatabaseAdapter projection) and RoutingDecisionProjectionRunner
+  (Kafka consumer runtime), a single pyproject.toml entry-point line, a docker-compose.projection.yml
+  consumer service, and golden-chain tests including the row-delta proof (before=0, publish routing-decision,
+  after=1). agent_routing_decisions DDL is owned by omnibase_infra migration 021 (021_create_agent_routing_decisions_table.sql);
+  this node is a NON-OWNER WRITER and ships no CREATE TABLE migration (metadata declares duplicate_migration_policy:
+  forbid_cross_repo_create_table). This PR ships code + wiring only. The RoutingDecisionProjectionRunner
+  consumer is not live on the dev lane in this PR; the registration golden chain becomes owned by a canonical
+  node at runtime via a coordinated dev redeploy folded with OMN-13121 / OMN-13124.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR (branch jonah/omn-13122-registration-projection-node, base=dev, head bf27c95d9596c9b31e66f9491699a1d5ac4b0ab8).
+      Adds node_projection_routing_decision projecting onex.evt.omniclaude.routing-decision.v1 into agent_routing_decisions
+      append-only (ON CONFLICT (id) DO NOTHING). Row-delta regression test test_row_delta_before_zero_after_one
+      GREEN (before=0, after=1). Golden-chain suite 13/13 GREEN; runtime dogfood inventory 4/4 GREEN (entry-points
+      now 301). ruff clean, ruff format clean, mypy --strict clean. Any Kafka integration failures are
+      env-only (no broker reachable in worktree), not code regressions.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13122/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13122"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13122/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The RoutingDecisionProjectionRunner consumer must be deployed
+      for the registration golden chain to be owned by a canonical node at runtime; it is not live on
+      the dev lane in this PR. agent_routing_decisions DDL is owned by omnibase_infra migration 021 (non-owner
+      writer — no migration shipped in omnimarket). No live deploy, restart, topic mutation, or .201 mutation
+      was performed; the runner lands via a coordinated dev redeploy folded with OMN-13121 / OMN-13124.
+      Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13122/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13122"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13122/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13122/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13122 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13122/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13122"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13122/dod-occ-pr/command.yaml"

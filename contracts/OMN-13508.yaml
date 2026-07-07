@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13508"
+title: "Dev runtime: 9 non-strict auto-wiring failures at startup — regression coverage (enforcement)"
+summary: >
+  The 9 dev-runtime auto-wiring failures reported in OMN-13508 against dev 0.38.4 / c0845264 (wired=186
+  skipped=67 failed=10 quarantined=1) were already fixed on dev before this ticket was worked: the 8 symbol-drift
+  AttributeErrors (baseline_capture, data_verification, node_dispatch_worker, environment_health_scanner,
+  platform_readiness, process_watchdog, node_routing_policy_engine, session_post_mortem) by OMN-13550
+  (#1374) and OMN-13551 (#1429) — which removed misclassified internal-helper entries from handler_routing
+  — and the 1 ModelHandlerResolverContext "Input should be a type" ValidationError (node_intelligence_orchestrator)
+  by OMN-13551 (#1429), which repointed handler_routing from the bare handle_receive_intent(intent) function
+  to the envelope-shaped wrapper classes. The reported baseline c0845264 predates both fixes. A live wiring
+  probe (import the symbol + build ModelHandlerResolverContext) across all 9 nodes (top-level handler
+  + every handler_routing entry) reports zero failures today; node_runtime_sweep --import-check reports
+  status=clean over 333 entry points. No contract change is required (failed-count already 0). This ticket
+  adds the missing pre-merge enforcement (Operating Rule 5) so the defect class cannot recur: a regression
+  guard that replicates the runtime auto-wiring boot path for the top-level handler block AND every handler_routing
+  entry, catching both symbol drift and the non-type handler_cls class. No topic schema, envelope, contract-API,
+  or migration change; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      New guard tests/test_handler_resolver_context_buildable_omn13508.py replicates handler_wiring._prepare_handler_wiring
+      (import symbol + ModelHandlerResolverContext) for the top-level handler block and every handler_routing
+      entry across all omnimarket nodes. TDD red proof: reintroducing the #9 drift (handler_routing ->
+      bare function) yields HANDLER_CLS_NOT_A_TYPE; reintroducing symbol drift yields CLASS_NOT_FOUND.
+      Green on real (fixed) contracts: 662 passed / 1 skipped (documented function-form carve-out); full
+      guard family 1039 passed / 1 skipped. node_runtime_sweep --import-check status=clean, 333 entry
+      points. mypy clean; pre-commit all hooks Passed.
+    command: "uv run pytest tests/test_handler_resolver_context_buildable_omn13508.py tests/test_handler_class_existence_omn13550.py
+      tests/test_handler_routing_boot_resolvable.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1448"
+    description: >
+      omnimarket PR #1448 adds tests/test_handler_resolver_context_buildable_omn13508.py — the pre-merge
+      regression guard for the OMN-13508 defect classes (symbol drift + non-type handler_cls). No contract
+      change (all 9 nodes already wire cleanly on dev). Evidence anchor: omnimarket head commit 9580475715ab34ad380717926e280b0640d1072c.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13508/dod-omnimarket-pr-1448/command.yaml
+          && grep -q '^pr_number: 1448$' drift/dod_receipts/OMN-13508/dod-omnimarket-pr-1448/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13508/dod-omnimarket-pr-1448/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: test-only addition (one new pytest guard). No source/contract change, no new
+      topics, no Postgres migration, no change to existing topic schema / envelope / contract-API; no
+      live-lane mutation; no live deploy performed. The 9 reported failures are already resolved on dev.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13508/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      The OCC receipt PR carries this OMN-13508 contract + dod receipts; the self-binding receipt binds
+      to this OCC PR's own number (validator_occ_merge_eligibility).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13508/dod-occ-pr-self/command.yaml"

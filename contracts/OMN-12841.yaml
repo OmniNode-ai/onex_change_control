@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12841"
+title: "Surface generated COMPUTE nodes as MCP tools via an orchestrator wrapper surface"
+summary: >
+  Contract-native Option B for exposing a generated COMPUTE node as an MCP tool. A generated COMPUTE node
+  never surfaces as an MCP tool because MCP exposure is orchestrator-only in two source-verified places:
+  services/mcp/service_mcp_tool_discovery.py:197-212 (projection->tool converter rejects node_type not
+  starting with 'orchestrator') and services/mcp/service_mcp_tool_sync.py (exposure rule). Option A (relaxing
+  the gate for node-type:compute) was REJECTED by the ticket as a "flip the literal" smell that forks
+  the MCP gate logic permanently. Option B (selected) keeps the gate orchestrator-only and emits, ALONGSIDE
+  the generated COMPUTE node, a thin declarative ORCHESTRATOR wrapper (CONTRACT + handler_routing only,
+  no custom node logic) whose contract declares mcp.expose=true + a tool_name and routes the inbound MCP
+  invocation to the generated COMPUTE handler. The wrapper is an ORCHESTRATOR, so it satisfies the existing
+  gate WITHOUT modifying it. New ServiceMCPWrapperContractEmitter (pure, deterministic, no I/O) takes
+  a ModelGeneratedComputeNodeSpec and returns a ModelMCPWrapperEmission carrying BOTH the generated COMPUTE
+  contract (verbatim) AND the ORCHESTRATOR wrapper contract YAML. Per-tool invoke/result topic suffixes
+  are composed + validated by the canonical topics module (build_generated_tool_invoke_suffix / build_generated_tool_result_suffix),
+  so no hardcoded topic literals live in the emitter (no-hardcoded-topics gate preserved; no allowlist).
+  The two orchestrator-only gates are NOT modified. No topic schema, event envelope, contract-API, or
+  live-lane mutation -- a library service + typed-model addition under services/mcp + models/mcp, plus
+  canonical topic-suffix builders, plus a vendored omnimarket node migration required to keep the node-migration-sync
+  CI gate green (OMN-13620 merged to omnimarket dev after the last infra PR).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD: generation-layer test (test_service_mcp_wrapper_contract_emitter.py) written failing first
+      (ModuleNotFoundError), driving the emitter; asserts the pipeline emits BOTH a *_compute contract
+      AND a *_orchestrator wrapper contract (mcp.expose=true + tool_name, payload_type_match route to
+      the COMPUTE handler). Discovery-layer test (TestMCPWrapperOrchestratorSatisfiesGate) proves a wrapper-shaped
+      orchestrator projection converts to a non-None ModelMCPToolDefinition while a bare compute projection
+      returns None (gate preserved, NOT relaxed).
+    command: "uv run pytest tests/unit/services/mcp/test_service_mcp_wrapper_contract_emitter.py tests/integration/services/mcp/test_service_mcp_tool_discovery.py
+      tests/unit/topics/test_platform_topic_suffixes.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2113"
+    description: >
+      omnibase_infra PR #2113 adds ServiceMCPWrapperContractEmitter + ModelGeneratedComputeNodeSpec +
+      ModelMCPWrapperEmission + canonical generated-tool topic-suffix builders, emitting a declarative
+      ORCHESTRATOR wrapper alongside a generated COMPUTE node that satisfies the unchanged orchestrator-only
+      MCP gate. The two gates (service_mcp_tool_sync.py / service_mcp_tool_discovery.py:197-212) are NOT
+      modified. Evidence anchor: omnibase_infra head commit 1e77d4bfb55a00907ac6b88a48471e7f2fd7caa3.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12841/dod-omnibase-infra-pr-2113/command.yaml
+          && grep -q '^pr_number: 2113$' drift/dod_receipts/OMN-12841/dod-omnibase-infra-pr-2113/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12841/dod-omnibase-infra-pr-2113/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR adds a pure library service (ServiceMCPWrapperContractEmitter) + two
+      typed frozen models under services/mcp + models/mcp, plus canonical topic-suffix builders, plus
+      a vendored omnimarket node migration (node_projection_event_chain/0001_create_event_chain.sql) required
+      to keep the node-migration-sync CI gate green. No node contract.yaml behavior change, topic schema,
+      event envelope, contract-API, or runtime lane mutation; no live deploy is performed by this PR.
+      The emitter is a pure deterministic function with no external I/O. The receipt check_value carries
+      the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12841/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 2113$' drift/dod_receipts/OMN-12841/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12841/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-12841 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12841/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-12841/dod-occ-pr-self/command.yaml"

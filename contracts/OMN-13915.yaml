@@ -1,16 +1,18 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-13915"
-title: "fix(runners): listener liveness - heartbeat healthcheck, entrypoint watchdog, fleet-status canary"
+title: "fix(runners): listener liveness — heartbeat healthcheck, entrypoint watchdog, fleet-status canary"
 summary: >-
   Root-cause fix for the 2026-07-03 zombie fleet: 37/48 self-hosted runner listeners were dead-in-container
   since ~2026-06-29 while every Docker healthcheck stayed green, because the healthcheck asserted container
   liveness rather than listener liveness. omnibase_infra PR #2194 delivers three enforced layers: (1)
-  healthcheck.sh asserts the RUNNER_HOME-anchored Runner.Listener process is alive and its _diag heartbeat
-  is fresh and github.com egress works; (2) an entrypoint watchdog recycles the runner when the listener
-  dies under a still-alive wrapper tree; (3) a scheduled GitHub-hosted canary compares the org runner
-  registry against config/runner_fleet.yaml. Code plus PR evidence only; live fleet deploy remains a separate
-  operator action.
+  healthcheck.sh asserts the RUNNER_HOME-anchored Runner.Listener process is alive AND its _diag heartbeat
+  is fresh (default 900s) AND github.com egress; (2) an entrypoint watchdog recycles the runner when the
+  listener dies under a still-alive wrapper tree (bounded restarts); (3) a NEW scheduled GitHub-hosted
+  canary workflow (runner-fleet-canary.yml, every 15 min on ubuntu-latest) compares the org runner registry
+  against config/runner_fleet.yaml expected_count and fails loudly when offline+missing runners exceed
+  the threshold. Code + PR only — NO live-fleet mutation; rollout is a separate step documented in the
+  runbook and the ticket rollout-plan comment.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -21,29 +23,20 @@ emergency_bypass:
 dod_evidence:
   - id: "dod-omnibase_infra-pr-2194"
     description: >-
-      Consuming-PR binding: omnibase_infra PR #2194 at head 600d4288fc556d8c625d11adc8cd04a761708e6a carries
-      the listener-aware healthcheck, entrypoint listener watchdog, scheduled runner-fleet canary, runbook,
-      focused CI tests, and integration coverage for the Docker Compose container-creation warning.
+      Consuming-PR binding: omnibase_infra PR #2194 at head 91a367a42f09779c1669e0893c97bccb98eae1e8 carries
+      the listener-aware healthcheck (_diag heartbeat freshness + anchored pgrep), the entrypoint listener
+      watchdog, the runner-fleet-canary scheduled workflow + script, the runbook, and the synthetic-kill
+      test proof (tests/ci/test_runner_listener_liveness.py, 20/20 pass; the canary is proven against
+      the exact 11-online/37-offline incident shape via a stubbed org API).
     source: "manual"
     checks:
       - check_type: "command"
         check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13915/dod-omnibase_infra-pr-2194/command.yaml"
-  - id: "dod-deploy-plan"
+  - id: "dod-occ-self"
     description: >-
-      Runtime deploy-gate binding: PR #2194 touches docker/docker-compose.runners.yml only to add the
-      required container-creation warning. No live-fleet deploy, restart, or .201 mutation was performed;
-      the deployment action is gated to an explicit operator rollout after merge.
-    source: "manual"
-    checks:
-      - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' drift/dod_receipts/OMN-13915/dod-deploy-plan/command.yaml && grep -qi
-          'deploy' drift/dod_receipts/OMN-13915/dod-deploy-plan/command.yaml
-  - id: "dod-occ-main-promote"
-    description: >-
-      Self-binding OCC main-promotion receipt for the OMN-13915 central contract and deploy-gate-compatible
-      evidence.
+      Self-binding OCC receipt: onex_change_control PR carrying the OMN-13915 contract and the consuming-PR
+      receipt above.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13915/dod-occ-main-promote/command.yaml"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13915/dod-occ-self/command.yaml"

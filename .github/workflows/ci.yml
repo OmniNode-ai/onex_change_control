@@ -30,12 +30,30 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
       - name: Run pre-commit
-        run: SKIP=check-receipt-honesty uv run pre-commit run --all-files
+        run: SKIP=check-receipt-honesty,check-receipt-hardening uv run pre-commit run --all-files
+      - name: Run receipt hardening on changed receipts
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          mapfile -t receipt_files < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- drift/dod_receipts/ \
+              | grep -E '^drift/dod_receipts/.*\.ya?ml$' || true
+          )
+          if [ "${#receipt_files[@]}" -eq 0 ]; then
+            echo "No changed receipt files for receipt hardening."
+            exit 0
+          fi
+          uv run python scripts/validation/check_receipt_hardening.py "${receipt_files[@]}"
 
   type-check:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
@@ -52,7 +70,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -75,7 +93,7 @@ jobs:
       matrix: ${{ steps.select.outputs.matrix }}
       is_full_suite: ${{ steps.select.outputs.is_full_suite }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-uv
@@ -118,7 +136,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -141,7 +159,7 @@ jobs:
       always() && needs.contract-compliance.result == 'success'
         && (needs.test.result == 'success' || needs.test.result == 'skipped')
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -159,12 +177,64 @@ jobs:
       }}
     needs: [test]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
       - name: Validate no localhost fallbacks
         run: uv run python scripts/validation/validate_no_env_fallbacks.py
+
+  url-authority-gate:
+    # OMN-13563 Wave 4: URL authority ratchet (non-blocking report; pre-commit hook is the
+    # blocking surface). Fails only on NEW URL literals outside contracts — baseline is
+    # burn-down only. Suppress with: # url-authority-ok: <reason>
+    name: URL Authority Gate (OMN-13563)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run URL authority ratchet
+        continue-on-error: true
+        run: >
+          uv run python -m omnibase_core.validation.validator_url_authority
+          --repo onex_change_control --repo-root . --all src/
+
+  no-new-os-environ:
+    # OMN-13563 Wave 4: AST os.environ read gate (non-blocking report; pre-commit hook is
+    # the blocking surface). Exempts tests/, scripts/, examples/. Suppress with:
+    # # env-read-ok: <reason>
+    name: No New os.environ Reads (OMN-13563)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run no-new-os-environ validator
+        continue-on-error: true
+        run: uv run pre-commit run no-new-os-environ --all-files
 
   imperative-contract-guard:
     name: Imperative Contract Guard
@@ -176,7 +246,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -197,7 +267,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Set up Python
@@ -230,7 +300,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -258,7 +328,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -269,13 +339,27 @@ jobs:
           clone_omni_repo() {
             local repo="$1"
             local target="$2"
+            local clone_args=()
             if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
               local auth_header
               auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
-              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"
-            else
-              git clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"
+              clone_args=(-c "http.https://github.com/.extraheader=${auth_header}")
             fi
+
+            for attempt in 1 2 3; do
+              rm -rf "${target}"
+              if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"; then
+                return 0
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep_seconds=$((attempt * 10))
+                echo "::warning::Cross-repo clone attempt ${attempt}/3 failed for ${repo}; retrying in ${sleep_seconds}s"
+                sleep "${sleep_seconds}"
+              fi
+            done
+
+            echo "::error::Failed to clone ${repo} after 3 attempts"
+            return 1
           }
           rm -rf /tmp/omni_repos
           mkdir -p /tmp/omni_repos
@@ -308,7 +392,7 @@ jobs:
       }}
     needs: [pre-commit]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -345,7 +429,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -356,13 +440,27 @@ jobs:
           clone_omni_repo() {
             local repo="$1"
             local target="$2"
+            local clone_args=()
             if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
               local auth_header
               auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
-              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"
-            else
-              git clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"
+              clone_args=(-c "http.https://github.com/.extraheader=${auth_header}")
             fi
+
+            for attempt in 1 2 3; do
+              rm -rf "${target}"
+              if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"; then
+                return 0
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep_seconds=$((attempt * 10))
+                echo "::warning::Cross-repo clone attempt ${attempt}/3 failed for ${repo}; retrying in ${sleep_seconds}s"
+                sleep "${sleep_seconds}"
+              fi
+            done
+
+            echo "::error::Failed to clone ${repo} after 3 attempts"
+            return 1
           }
           rm -rf /tmp/omni_repos
           mkdir -p /tmp/omni_repos
@@ -386,21 +484,40 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup-uv
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install test dependencies
+        run: uv sync --frozen --group dev
       - name: Clone omnidash for cross-repo schema check
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
         run: |
-          rm -rf ../omnidash
-          if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
-            auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
-            git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
-          else
-            git clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
-          fi
+          clone_omnidash() {
+            rm -rf ../omnidash
+            if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+              auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+            else
+              git clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+            fi
+          }
+          for attempt in 1 2 3; do
+            if clone_omnidash; then
+              exit 0
+            fi
+            rm -rf ../omnidash
+            sleep $((attempt * 5))
+          done
+          clone_omnidash
       - name: Run Python null vs TypeScript optional contract test
         run: uv run pytest tests/integration/cross_repo/test_python_null_vs_ts_optional.py -v
 
@@ -414,7 +531,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-uv
@@ -440,7 +557,7 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
@@ -458,7 +575,7 @@ jobs:
       }}
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-uv
@@ -502,7 +619,7 @@ jobs:
     # main would fail at the PR-number resolver step.
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Bootstrap exemption check
@@ -601,11 +718,11 @@ jobs:
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: OmniNode-ai/omnibase_core
           ref: d4884c59068e1a2989178ab2cc91678ad203f6d3
@@ -642,6 +759,86 @@ jobs:
             --receipts-dir drift/dod_receipts \
             "${changed_receipts[@]}"
 
+  append-only-gate:
+    permissions:
+      contents: read
+    # OCC Append-Only Gate (OMN-13962): enforce the append-only invariant —
+    # reject any PR that
+    # edits/deletes/renames a merged dod_evidence entry (per-entry hash change)
+    # or a merged receipt file under drift/dod_receipts/<TICKET>/. Existing
+    # entries are immutable; corrections must be net-new add-only supersession
+    # files. Mirrors honesty-gate: omnibase_core is pinned by source ref so the
+    # validator version is controlled by the workflow, not OCC's installed dep
+    # (which is capped <0.46.0 and predates the append_only validator).
+    name: OCC Append-Only Gate
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          # main pin where validator_occ_append_only is present (the honesty-gate
+          # pin predates it). Bump alongside the honesty-gate pin when refreshing.
+          ref: f873d8307d87d41f6581847fe630bfbc139e1bf8
+          path: omnibase_core_source
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run append-only enforcement on changed tickets
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          BEFORE_SHA: ${{ github.event.before || '' }}
+          PYTHONPATH: ${{ github.workspace }}/omnibase_core_source/src
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            git fetch origin "$base_ref" --no-tags
+            # Diff against the merge-base, not origin/<base> directly, so receipts
+            # that only landed on the base after this branch forked are not
+            # mis-flagged as deletions (the validator CLI uses a two-dot diff).
+            base_sha="$(git merge-base "origin/${base_ref}" HEAD)"
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            base_sha="$BEFORE_SHA"
+          else
+            echo "APPEND-ONLY GATE PASSED: non-PR event, nothing to diff"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base_sha"...HEAD -- contracts/ drift/dod_receipts/ || true)"
+          # Distinct ticket ids (OMN-NNNN) touched via a contract or receipt path.
+          tickets="$(printf '%s\n' "$changed" \
+            | sed -nE 's@^(contracts/(OMN-[0-9]+)\.yaml|drift/dod_receipts/(OMN-[0-9]+)/.*)$@\2\3@p' \
+            | sort -u)"
+          if [[ -z "$tickets" ]]; then
+            echo "APPEND-ONLY GATE PASSED: no contract/receipt changes"
+            exit 0
+          fi
+          echo "Tickets touched:"
+          printf '%s\n' "$tickets"
+          rc=0
+          while IFS= read -r tid; do
+            [[ -z "$tid" ]] && continue
+            echo "--- append-only check: ${tid} (base ${base_sha}) ---"
+            if ! uv run python -m omnibase_core.validation.validator_occ_append_only \
+                --repo . --ticket-id "$tid" --base-ref "$base_sha"; then
+              rc=1
+            fi
+          done <<< "$tickets"
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::APPEND-ONLY GATE FAILED: a PR edited/deleted/renamed a merged dod_evidence entry or receipt. Corrections must be net-new add-only supersession files."
+          fi
+          exit "$rc"
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -651,7 +848,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate]
     if: always()
     steps:
       - name: Check all jobs passed

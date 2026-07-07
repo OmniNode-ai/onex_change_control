@@ -1,0 +1,92 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13351"
+title: "fix(omnimarket): repoint dead Anthropic delegation ceiling to resolvable Gemini frontier backend"
+summary: >-
+  The delegation escalation ceiling tier (``claude`` in routing_tiers.yaml) mapped to backend_id cloud-sonnet
+  (claude-sonnet-4-6, secret_ref llm.anthropic.api_key). This org has NO Anthropic key and NO OpenAI key
+  — Claude Code + Codex are OAuth. The 2026-06-19 stability-test escalation reprove (docs/evidence/2026-06-19-sea-escalation-reprove.md
+  §2d) proved live, in omninode-stability-test-runtime, that resolve_api_key('llm.anthropic.api_key',
+  required=False) returns None, so the ceiling terminated no_routable_backend_for_task on every escalation.
+  A live key-resolution + 1-token model probe this ticket (same in-container method via omnimarket.inference.secret_store_resolver.resolve_api_key)
+  confirmed: llm.gemini.api_key RESOLVES (len=39) and authenticates (post-auth 200/429, never 401/403);
+  gemini-2.5-pro is quota-zero (HTTP 429) on the only resolvable Gemini key (OMN-12890-class AI Studio
+  free-tier exhaustion); gemini-2.5-flash returns HTTP 200 (echo model=gemini-2.5-flash); llm.openrouter.api_key
+  does NOT resolve; llm.anthropic.api_key and llm.openai.api_key resolve to None. Per the preference order
+  (Gemini 2.5 Pro > OpenRouter frontier > STOP), OpenRouter is out (key None) and gemini-2.5-pro is quota-blocked,
+  so the ceiling is pinned to gemini-2.5-flash — the most capable Gemini model that actually responds
+  on the resolved key, strictly more capable than the cheap_cloud gemini-2.5-flash-lite and a real escalation
+  step above cheap_cloud glm-5.2. Config-only change set: bifrost_delegation.yaml DELETES the dead Anthropic
+  cloud-sonnet/cloud-haiku backends and ADDS resolvable cloud-gemini-pro (complete verbatim AI Studio
+  URL, secret_ref llm.gemini.api_key, model gemini-2.5-flash, max_tokens 65536); repoints every routing_rules
+  backend_ids + default_backends off cloud-sonnet to cloud-gemini-pro; bumps config_version 2.2.0 -> 2.3.0.
+  routing_tiers.yaml repoints the claude ceiling tier model backend_id cloud-sonnet -> cloud-gemini-pro
+  (id gemini-2.5-flash, cost 0.015 -> 0.0). The tier slot is kept named ``claude`` because every task-class
+  escalation_policy.tier_order and the handler cost_tier_map key on this literal tier name; it is a stable
+  ceiling-slot identifier, NOT a provider claim, and the backend it routes to is provider-correct (Gemini).
+  Repo-default-config tests and the shared delegation conftest fixture are aligned to the resolvable Gemini
+  ceiling. secret_ref discipline preserved (no key value committed). Child of OMN-12646 (Delegation, SEA
+  & Model-Routing Quality).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1287"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1287 (jonah/omn-13351-repoint-ceiling-gemini, base=dev).
+      Deletes the dead Anthropic cloud-sonnet/cloud-haiku backends and adds the resolvable cloud-gemini-pro
+      (secret_ref llm.gemini.api_key, model gemini-2.5-flash) ceiling backend in bifrost_delegation.yaml;
+      repoints routing_rules + default_backends off cloud-sonnet; bumps config_version 2.2.0 -> 2.3.0;
+      repoints the claude ceiling tier in routing_tiers.yaml to cloud-gemini-pro; aligns repo-default-config
+      tests + conftest. Binds OMN-13351 to omnimarket PR #1287 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13351/dod-omnimarket-pr-1287/command.yaml
+  - id: "dod-live-key-resolution-probe"
+    description: >-
+      Live key-resolution proof on stability-test. Inside omninode-stability-test-runtime, resolve_api_key(ref,
+      required=False) was called for each candidate ceiling secret_ref, mirroring the 2026-06-19 reprove
+      §2d method. Result: llm.anthropic.api_key -> None, llm.openai.api_key -> None, llm.gemini.api_key
+      -> RESOLVED (len=39), llm.openrouter.api_key -> None, llm.glm.api_key -> RESOLVED (len=49), llm.vertex.access_token
+      -> None. A 1-token model probe with the resolved Gemini key returned HTTP 200 for gemini-2.5-flash
+      and HTTP 429 (quota) for gemini-2.5-pro. This proves the dead Anthropic ceiling and justifies pinning
+      gemini-2.5-flash (verifier = independent rpk/in-container read separate from the resolution runner;
+      no key value recorded).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13351/dod-live-key-resolution-probe/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13351. The change is a config-only repoint of the delegation routing-authority
+      ceiling backend (plus repo-default-config test alignment) in omnimarket. It adds no runtime node,
+      changes no contract topic, and alters no image build inputs. The running stability-test image predates
+      the change, so the repointed ceiling reaches the runtime only on the next normal dev->promotion->image
+      rebuild — this PR gates no separate redeploy and performs no .201 mutation. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13351/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13351 contract, the omnimarket
+      code-PR binding, the live key-resolution probe receipt, and the deploy no-runtime-impact receipt.
+      Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility check can resolve a PASS
+      receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13351/dod-occ-pr-self/command.yaml

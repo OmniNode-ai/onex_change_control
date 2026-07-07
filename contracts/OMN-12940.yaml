@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12940"
+title: "Recursively unwrap double-wrapped transport envelopes in auto-wiring dispatch"
+summary: >
+  The runtime auto-wiring dispatch layer (omnibase_infra) constructs the contract input_model itself via
+  model_validate(_extract_dispatch_payload(envelope)) before the handler runs. _extract_dispatch_payload
+  unwrapped exactly one level, so a double-wrapped delivery stayed an envelope and model_validate raised
+  "N validation errors ... Field required" — bypassing the omnimarket handler-side coerce/unwrap fixes
+  (OMN-12935/12936). A second site, the post-handler correlation read in _normalize_handler_result, called
+  bare UUID() on a non-hex candidate and crashed dispatch with "badly formed hexadecimal UUID string".
+  This makes the unwrap recursive/envelope-aware (mirroring omnimarket's _ENVELOPE_MARKER_KEYS predicate)
+  and routes the correlation read through the existing _coerce_uuid_or_none guard. Code-only fix in src/omnibase_infra/runtime/auto_wiring/handler_wiring.py
+  with a failing-first unit test; no runtime topology, topic schema, or contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-1934"
+    description: >
+      omnibase_infra PR #1934 implements the recursive double-wrapped envelope unwrap + UUID-guard fix
+      with a failing-first unit test.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12940/dod-infra-pr-1934/command.yaml
+          && grep -q '^pr_number: 1934$' drift/dod_receipts/OMN-12940/dod-infra-pr-1934/command.yaml"
+  - id: "dod-focused-checks"
+    description: >
+      Failing-first unit tests reproduce the live ValidationError + UUID crash and now pass; full auto-wiring
+      unit suite green; changed source passes mypy --strict.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12940/dod-focused-checks/command.yaml"
+  - id: "dod-occ-pr-2537"
+    description: >
+      onex_change_control PR #2537 carries the clean OMN-12940 central contract and PASS receipts, replacing
+      oversized dirty PR #2451.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state,baseRefName,headRefName,headRefOid"

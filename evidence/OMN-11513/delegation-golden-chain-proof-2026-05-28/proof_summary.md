@@ -1,7 +1,7 @@
 # W1-1B FINAL RUN (ATTEMPT 3): Delegation Golden Chain Proof Summary
 
 **Date:** 2026-05-28
-**Lane:** stability-test (192.168.86.201)
+**Lane:** stability-test (<onex-host>)
 **correlation_id:** `ec7466b9-ec90-405e-b1f9-3bddee05c806`
 **Overall Result:** BLOCKED
 
@@ -82,7 +82,7 @@ Correlation_id: `3ef21eb7-207e-4ec0-90f4-641858d16072`
 - Quality gate reducer fires; quality_gate_passed=false (score=0.0, 512-token truncation)
 - Projection writes within 9ms
 - GLM key provisioning works
-- Bifrost routing selects local .200 tier
+- Bifrost routing selects local gpu-host tier
 - Result: DEGRADED (quality gate failed, PR #941 not deployed at that time)
 
 ## Next Required Actions

@@ -1,0 +1,505 @@
+---
+# Canonical validator requirements for OmniNode-ai downstream repos.
+#
+# This file is the single source of truth for which validators must be wired
+# on every repo's pre-commit + CI + branch protection. The handshake verifier
+# (validator_requirements_consumer.py) reads this spec and cross-references
+# each downstream repo's .pre-commit-config.yaml + .github/workflows/ + branch
+# protection required-checks, and fails loud on any missing/mis-configured
+# validator.
+#
+# Adding a new validator here automatically propagates to all 12 repos via the
+# OMN-9050 pin-bump bot: spec change → bot opens a bump PR on every downstream
+# repo → each repo's handshake workflow fails until wiring is added.
+#
+# See: OMN-9048 (validator standardization epic), OMN-9051 (spec),
+#      OMN-9115 (spec consumer + enforcement wiring).
+
+schema_version:
+  major: 1
+  minor: 2
+  patch: 0
+
+# Canonical list of all OmniNode repos governed by this spec. The consumer
+# uses this list to reject typos in repo arguments. Keep in sync when
+# onboarding/offboarding a repo; adding a repo here without wiring its
+# validators will surface as gaps on the next handshake run.
+known_repos:
+  - omniclaude
+  - omnibase_compat
+  - omnibase_core
+  - omnibase_spi
+  - omnibase_infra
+  - omnidash
+  - omnimarket
+  - omniintelligence
+  - omnimemory
+  - omninode_infra
+  - omniweb
+  - onex_change_control
+
+# Scopes:
+#   - pre_commit: "required" | "optional"  — entry in .pre-commit-config.yaml
+#   - ci_workflow: "required" | "optional" — .github/workflows/*.yml that runs it
+#   - required_check_on_main: exact context name that must be in branch
+#     protection required_status_checks (or null if not gated at that level)
+#   - silent_skip_allowed: false (no advisory modes per feedback_no_informational_gates)
+#   - excludes.forbidden: regex patterns the exclude list MUST NOT contain
+#   - excludes.allowed: regex patterns the exclude list MAY contain (fixtures only)
+#   - applies_to_repos: which of the 12 repos must have this validator wired.
+#     "all" = all 12. Override with a list for validators that legitimately
+#     skip some repos (e.g., Python validators skip omniweb PHP).
+#   - central_source: canonical module/script location
+#   - pre_commit_hook_ids: list of acceptable pre-commit hook id substrings.
+#     The consumer accepts any repo whose .pre-commit-config.yaml contains at
+#     least one hook whose id matches one of these substrings.
+#   - ci_workflow_keywords: list of acceptable CI workflow step-name / run-line
+#     substrings. The consumer accepts any repo whose .github/workflows/*.yml
+#     contains at least one step mentioning one of these keywords.
+
+required_validators:
+
+  hardcoded-local-paths:
+    description: |
+      Blocks /Users/, /Volumes/, /home/, C:\Users\ absolute paths in source.
+      Violations escape this on any repo without the hook wired.
+    central_source: "omnibase_core.validation.validator_local_paths"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "validate-local-paths / validate"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "validate-local-paths"
+      - "check-local-paths"
+    ci_workflow_keywords:
+      - "validator_local_paths"
+      - "validate-local-paths"
+    excludes:
+      allowed: ["^tests/fixtures/", "^docs/"]
+      forbidden: ["^tests/$", "^tests/[^f]", "^src/"]
+    applies_to_repos: all
+
+  spdx-headers:
+    description: |
+      Enforces MIT SPDX headers on source + tests + scripts + examples.
+    central_source: "omnibase_core CLI: onex spdx validate"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "SPDX Headers / validate"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "validate-spdx-headers"
+      - "spdx-headers"
+    ci_workflow_keywords:
+      - "spdx"
+      - "onex spdx validate"
+    excludes:
+      allowed: ["\\.md$", "\\.ya?ml$", "\\.json$"]
+      forbidden: ["^tests/", "^src/"]
+    applies_to_repos: all
+
+  no-hardcoded-topics:
+    description: |
+      Kafka topic strings must come from contract.yaml, not hardcoded in source.
+    central_source: "onex_change_control (centralized hook)"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "ARCH-Invariants / no-hardcoded-topics"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "no-hardcoded-topics"
+    ci_workflow_keywords:
+      - "no-hardcoded-topics"
+      - "hardcoded-topics"
+    excludes:
+      allowed: ["^docs/", "\\.yaml$"]
+      forbidden: ["^src/", "^tests/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+      - omninode_infra
+      - onex_change_control
+
+  stub-implementations:
+    description: |
+      Blocks NotImplementedError, bare pass, bare TODO docstrings in non-test source.
+    central_source: "omnibase_core.validation.check_stub_implementations"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Stub Implementations / check"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "check-stub-implementations"
+      - "stub-implementations"
+    ci_workflow_keywords:
+      - "check_stub_implementations"
+      - "stub-implementations"
+    excludes:
+      allowed: ["^tests/"]
+      forbidden: ["^src/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+
+  enum-governance:
+    description: |
+      Enforces UPPER_SNAKE_CASE enum members + detects Literal-duplication anti-pattern.
+    central_source: "omnibase_core.validation.checker_enum_governance"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Enum Governance / validate"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "check-enum-governance"
+      - "enum-governance"
+    ci_workflow_keywords:
+      - "checker_enum_governance"
+      - "enum-governance"
+    excludes:
+      allowed: ["^tests/"]
+      forbidden: ["^src/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnibase_compat
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+
+  naming-conventions:
+    description: |
+      File-naming (model_*, enum_*, protocol_*, handler_*, service_*, node_*) +
+      class-naming prefix (Model*, Enum*, Protocol*, Handler*, Service*).
+    central_source: "omnibase_core.validation.validate_naming_conventions"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Naming Conventions / validate"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "validate-naming-conventions"
+      - "validate-file-naming-conventions"
+    ci_workflow_keywords:
+      - "naming-conventions"
+      - "validate_naming"
+    excludes:
+      allowed: ["^tests/", "^archived/"]
+      forbidden: ["^src/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnibase_compat
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+
+  self-gating-workflows:
+    description: |
+      Blocks cross-repo @main refs in .github/workflows/*.yml (retro §4.8).
+      Requires local-path ./.github/workflows/*.yml or pinned SHA/tag.
+    central_source: "scripts/check_self_gating_workflows.py (OMN-9039)"
+    pre_commit: required
+    ci_workflow: optional
+    required_check_on_main: null
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "check-self-gating-workflows"
+      - "self-gating-workflows"
+    ci_workflow_keywords:
+      - "check_self_gating_workflows"
+      - "self-gating"
+    excludes:
+      allowed: []
+      forbidden: []
+    applies_to_repos: all
+
+  branch-protection-rollout-guard:
+    description: |
+      PreToolUse Claude Code hook that blocks gh api PUT/PATCH .../branches/*/protection
+      unless all required_status_checks contexts are emitted by a workflow on the repo.
+      Lives in omniclaude plugin only (runs at Claude-session level).
+    central_source: "omniclaude plugins/onex/hooks/lib/branch_protection_verifier.py (OMN-9038)"
+    pre_commit: optional
+    ci_workflow: optional
+    required_check_on_main: null
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "branch-protection-rollout-guard"
+    ci_workflow_keywords:
+      - "branch_protection_verifier"
+    excludes:
+      allowed: []
+      forbidden: []
+    applies_to_repos:
+      - omniclaude
+
+  bandit-security:
+    description: |
+      Python security linting (medium+ severity).
+    central_source: "bandit (pip); per-repo .bandit config"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Security Gate / bandit"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "bandit"
+    ci_workflow_keywords:
+      - "bandit"
+    excludes:
+      allowed: ["^tests/", "^examples/"]
+      forbidden: ["^src/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnibase_compat
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+      - omninode_infra
+
+  mypy-type-check:
+    description: |
+      Strict mypy on src/.
+    central_source: "mypy (pip); per-repo pyproject.toml [tool.mypy]"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Quality Gate / mypy"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "mypy-type-check"
+      - "mypy"
+    ci_workflow_keywords:
+      - "mypy"
+    excludes:
+      allowed: ["^tests/"]
+      forbidden: ["^src/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnibase_compat
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+
+  ruff-format-check:
+    description: |
+      Ruff format + check, universal across Python repos.
+    central_source: "astral-sh/ruff-pre-commit"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Quality Gate / ruff"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "ruff-format"
+      - "ruff-fix"
+      - "ruff"
+    ci_workflow_keywords:
+      - "ruff"
+    excludes:
+      allowed: []
+      forbidden: []
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnibase_compat
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+      - omninode_infra
+      - onex_change_control
+
+  aislop-patterns:
+    description: |
+      Detects AI-generated boilerplate, narrative docstrings, step_narration anti-patterns.
+    central_source: "omniclaude plugins/onex/skills/aislop_sweep"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "AI Slop / check"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "check-ai-slop"
+      - "aislop"
+    ci_workflow_keywords:
+      - "aislop"
+      - "ai-slop"
+      - "check_ai_slop"
+    excludes:
+      allowed: ["^docs/", "^CHANGELOG\\.md$"]
+      forbidden: ["^src/"]
+    applies_to_repos: all
+
+  pydantic-patterns:
+    description: |
+      Enforces ConfigDict(frozen=True, extra="forbid"), Field(..., description), no Any, PEP 604 unions.
+    central_source: "omnibase_core.validation.validate_pydantic_patterns"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Pydantic Patterns / validate"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "validate-pydantic-patterns"
+      - "validate-pydantic-conventions"
+      - "pydantic-patterns"
+    ci_workflow_keywords:
+      - "pydantic"
+    excludes:
+      allowed: ["^tests/"]
+      forbidden: ["^src/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnibase_compat
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+
+  single-class-per-file:
+    description: |
+      Enforces one class per .py file (protocols + TypedDicts exempt).
+    central_source: "omnibase_core.validation.validate_single_class_per_file"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Single Class / validate"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "onex-single-class-per-file"
+      - "single-class-per-file"
+    ci_workflow_keywords:
+      - "single-class-per-file"
+      - "single_class"
+    excludes:
+      allowed: ["^tests/"]
+      forbidden: ["^src/"]
+    applies_to_repos:
+      - omniclaude
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnibase_compat
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+
+  detect-secrets:
+    description: |
+      Yelp/detect-secrets baseline, catches committed API keys / passwords / PEM keys.
+    central_source: "Yelp/detect-secrets"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Security Gate / detect-secrets"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "detect-secrets"
+    ci_workflow_keywords:
+      - "detect-secrets"
+      - "detect_secrets"
+    excludes:
+      allowed: ["\\.secrets\\.baseline$", "^tests/fixtures/"]
+      forbidden: []
+    applies_to_repos: all
+
+  no-untracked-todos:
+    description: |
+      Blocks bare TODO/FIXME. Requires # TODO(OMN-XXXX): format.
+    central_source: "onex_change_control (centralized)"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "ARCH-Invariants / no-untracked-todos"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "no-untracked-todos"
+    ci_workflow_keywords:
+      - "no-untracked-todos"
+      - "untracked-todos"
+    excludes:
+      allowed: ["^docs/"]
+      forbidden: ["^src/", "^tests/"]
+    applies_to_repos: all
+
+  arch-002-no-transport-imports:
+    description: |
+      Nodes must not import aiokafka/httpx/asyncpg directly (SPI boundary).
+      Only handlers/adapters may import transport libraries.
+    central_source: "omnibase_core.validation.validate_no_transport_imports"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "ARCH-002 / no-transport-imports"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "validate-no-transport-imports"
+      - "no-transport-imports"
+    ci_workflow_keywords:
+      - "validate_no_transport_imports"
+      - "no-transport-imports"
+    excludes:
+      allowed: ["^tests/", "^src/.*/runtime/", "^src/.*/api/", "^src/.*/adapters/"]
+      forbidden: ["^src/.*/nodes/"]
+    applies_to_repos:
+      - omnibase_core
+      - omnibase_infra
+      - omnibase_spi
+      - omnimarket
+      - omnimemory
+      - omniintelligence
+
+  banned-compose-env-vars:
+    description: |
+      Detects docker-compose / Kubernetes manifests that reference env vars the
+      handler code no longer reads. Bidirectional drift guard between kernel
+      version bumps and compose config. Trigger class: OMN-8840 runtime-effects
+      crash where banned ONEX_INPUT_TOPIC persisted in compose after code removal.
+    central_source: "omnibase_core.validation.validator_banned_compose_vars"
+    pre_commit: required
+    ci_workflow: required
+    required_check_on_main: "Compose Drift / validate"
+    silent_skip_allowed: false
+    pre_commit_hook_ids:
+      - "validator-banned-compose-vars"
+      - "banned-compose-vars"
+      - "banned-compose-env-vars"
+    ci_workflow_keywords:
+      - "validator_banned_compose_vars"
+      - "banned-compose-vars"
+      - "banned-compose-env-vars"
+    excludes:
+      allowed: []
+      forbidden: []
+    applies_to_repos:
+      - omnibase_infra
+      - omninode_infra
+
+# Handshake metadata
+
+metadata:
+  generated_by: "manually authored (OMN-9051); consumer added OMN-9115"
+  last_updated: "2026-04-17"
+  next_review: "on any new validator addition — single source of truth, change propagates via OMN-9050
+    bot"
+  related_tickets:
+    - OMN-9048  # validator standardization epic
+    - OMN-9049  # universal handshake coverage
+    - OMN-9050  # pin-bump bot
+    - OMN-9051  # spec file owner
+    - OMN-9058  # env-store abstraction
+    - OMN-9115  # spec consumer + enforcement wiring

@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13350"
+title: "SEA generation-completed projection silently drops every event (UndefinedColumn) + missing corpus
+  columns"
+summary: >-
+  The node-generation completion projection silently dropped every event on stability-test. The omnimarket
+  0.4.3 generation handler emits ModelGenerationBenchmark.model_dump() on onex.evt.omnimarket.node-generation-completed.v1,
+  carrying corpus_checked / corpus_passed / corpus_errors (OMN-13289). generation_events had no such columns,
+  so the projection INSERT raised UndefinedColumn and the consumer committed the offset anyway (enable_auto_commit
+  + a swallowed exception), reporting Stable / LAG=0 while projecting zero rows. omnimarket PR #1285 adds
+  migration 0015 (corpus columns), persists the corpus verdict in both write paths, exposes it on the
+  projection_api, and makes BaseProjectionRunner fail-loud (auto-commit disabled; the offset is committed
+  explicitly only after a successful projection or a genuine non-event, and a projection error is re-raised
+  so the message is re-read instead of committed-and-dropped). omnibase_infra PR #2044 vendors migration
+  0015 into the forward-migration tree and widens the sync psycopg2 projection adapter to JSON-adapt any
+  list/dict bound to a JSONB column (not only _json/_jsonb-suffixed keys), so corpus_errors persists on
+  the live path. Child of OMN-12648 (Projection & Data-Flow Fixes).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1285"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1285 (jonah/omn-13350-generation-projection-corpus-failloud,
+      base=dev). Adds migration 0015_generation_corpus_acceptance.sql, persists corpus_* in both the sync
+      HandlerProjectionDelegation and async DelegationProjectionRunner write paths, exposes the corpus
+      columns on the projection_api, and makes BaseProjectionRunner fail-loud. Targeted projection + runner
+      tests pass (137 local). Binds OMN-13350 to omnimarket PR #1285 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13350/dod-omnimarket-pr-1285/command.yaml
+  - id: "dod-omnibase-infra-pr-2044"
+    description: >-
+      Per-code-PR binding receipt for omnibase_infra PR #2044 (jonah/omn-13350-generation-projection-corpus-failloud,
+      base=dev). Vendors migration 0015 into docker/migrations/forward/nodes/node_projection_delegation/
+      and widens _build_sync_db_adapter to JSON-adapt any list/dict for JSONB columns. Adapter + migration-discovery
+      tests pass (37 local). Binds OMN-13350 to omnibase_infra PR #2044 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13350/dod-omnibase-infra-pr-2044/command.yaml
+  - id: "dod-deploy-user-gated"
+    description: >-
+      Deploy-path DoD evidence for OMN-13350. The change adds a projection schema migration and a projection-handler/adapter
+      fix. The migration is vendored into the omnibase_infra forward-migration tree; live apply to stability-test/prod
+      is the user-gated forward-migration run on the next deploy. No docker exec, no rpk topic produce,
+      and no .201 mutation are performed by these PRs. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13350/dod-deploy-user-gated/command.yaml &&
+          printf '%s\n' 'deploy gate: generation_events corpus migration vendored to the omnibase_infra
+          forward-migration tree; live apply is the user-gated forward-migration run on the next deploy
+          — no docker exec, no rpk topic produce, no .201 mutation in these PRs'
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13350 contract and the two
+      code-PR binding receipts. Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility
+      check can resolve a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13350/dod-occ-pr-self/command.yaml
