@@ -169,6 +169,33 @@ def test_invalid_receipt_fails_model_validation(tmp_path: Path) -> None:
     assert "ModelDodReceipt validation" in violations[0]
 
 
+def test_minimal_supersession_record_is_not_plain_receipt_hardened(
+    tmp_path: Path,
+) -> None:
+    """Supersession wrappers are validated by receipt-gate chain resolution."""
+    _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    supersession = receipt_dir / "command.supersede.0001.yaml"
+    supersession.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "evidence_item_id": "dod-001",
+                "check_type": "command",
+                "supersedes": "drift/dod_receipts/OMN-13060/dod-001/command.yaml",
+                "reason": "test correction",
+                "superseder": "pytest",
+                "created_at": POST_CUTOFF_TS,
+                "tombstone": False,
+                "replacement": _receipt_data(),
+            }
+        )
+    )
+    assert check_receipt_file(supersession, tmp_path / "contracts") == []
+
+
 def test_timestamp_less_receipt_is_exempt(tmp_path: Path) -> None:
     """No timestamp anywhere = pre-schema legacy artifact; the receipt
     gate already rejects it as NONPASS, so this hook exempts it."""
