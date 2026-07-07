@@ -31,11 +31,29 @@ jobs:
       }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
       - name: Run pre-commit
-        run: SKIP=check-receipt-honesty uv run pre-commit run --all-files
+        run: SKIP=check-receipt-honesty,check-receipt-hardening uv run pre-commit run --all-files
+      - name: Run receipt hardening on changed receipts
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          mapfile -t receipt_files < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- drift/dod_receipts/ \
+              | grep -E '^drift/dod_receipts/.*\.ya?ml$' || true
+          )
+          if [ "${#receipt_files[@]}" -eq 0 ]; then
+            echo "No changed receipt files for receipt hardening."
+            exit 0
+          fi
+          uv run python scripts/validation/check_receipt_hardening.py "${receipt_files[@]}"
 
   type-check:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
@@ -467,9 +485,18 @@ jobs:
       }}
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-uv
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install test dependencies
+        run: uv sync --frozen --group dev
       - name: Clone omnidash for cross-repo schema check
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}

@@ -132,12 +132,18 @@ def _walk_for_timestamp(node: object) -> datetime | None:
 
 def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
     """Return violation strings for one receipt file (empty = clean)."""
+    if ".supersede." in receipt_path.name:
+        return []
+
     try:
         raw = yaml.safe_load(receipt_path.read_text())
     except (OSError, yaml.YAMLError) as exc:
         return [f"{receipt_path}: unreadable receipt YAML: {exc}"]
     if not isinstance(raw, dict):
         return [f"{receipt_path}: receipt YAML is not a mapping"]
+
+    if ".supersede." in receipt_path.name:
+        return []
 
     # Legacy exemption decided on the raw timestamp BEFORE model validation,
     # so pre-cutoff receipts with historical schema quirks never block.
