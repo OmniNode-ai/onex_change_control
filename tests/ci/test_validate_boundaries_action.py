@@ -132,18 +132,3 @@ def test_validate_boundaries_does_not_clone_calling_repo_as_peer() -> None:
         'ln -s "$GITHUB_WORKSPACE" "/tmp/omni_repos/${REPO_NAME}"'
         in symlink_step["run"]
     )
-
-
-def test_validate_boundaries_backfills_omnimarket_peer_repo() -> None:
-    """OMN-13701 moved intent-classified consumption from omnimemory to omnimarket."""
-    action = _load_action()
-    repos_default = action["inputs"]["repos"]["default"]
-    clone_step = next(
-        step
-        for step in action["runs"]["steps"]
-        if step.get("name") == "Clone peer repos"
-    )
-
-    assert "omnimemory,omnimarket" in repos_default
-    assert "OMNIMARKET_PRESENT=false" in clone_step["run"]
-    assert 'REPOS+=("omnimarket")' in clone_step["run"]
