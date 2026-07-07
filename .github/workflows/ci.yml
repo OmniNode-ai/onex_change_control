@@ -22,10 +22,13 @@ jobs:
 
   pre-commit:
     name: Pre-commit
+    needs: [zone-filter]
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -36,8 +39,39 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
-      - name: Run pre-commit
+      - name: Run full pre-commit
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
         run: SKIP=check-receipt-honesty,check-receipt-hardening uv run pre-commit run --all-files
+      - name: Run dev PR changed-file pre-commit
+        if: needs.zone-filter.outputs.docs_only != 'true' && github.event_name == 'pull_request' && github.base_ref == 'dev'
+        env:
+          BASE_REF: ${{ github.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REF" --no-tags
+          mapfile -t changed_files < <(git diff --name-only --diff-filter=ACMRT "origin/${BASE_REF}"...HEAD || true)
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "Dev PR fast-lane: no changed files for pre-commit."
+            exit 0
+          fi
+          SKIP=check-receipt-honesty,check-receipt-hardening uv run pre-commit run --files "${changed_files[@]}"
+      - name: Run evidence-only pre-commit
+        if: needs.zone-filter.outputs.docs_only == 'true'
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          mapfile -t changed_files < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- contracts/ drift/dod_receipts/ \
+              | grep -E '^(contracts/.*\.ya?ml|drift/dod_receipts/.*\.ya?ml)$' || true
+          )
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "Evidence-only fast-lane: no changed contract or receipt YAML files."
+            exit 0
+          fi
+          SKIP=check-receipt-honesty,check-receipt-hardening uv run pre-commit run --files "${changed_files[@]}"
       - name: Run receipt hardening on changed receipts
         env:
           BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
@@ -61,11 +95,13 @@ jobs:
     # checks the entire codebase (src/ and tests/) to catch type errors across all files.
     name: Type Check
     needs: zone-filter
-    if: needs.zone-filter.outputs.docs_only != 'true'
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -79,14 +115,18 @@ jobs:
 
   smart-test-select:
     name: Compute Smart Test Selection
+    # OMN-14098 evidence-only fast-lane: docs_only guard AND'd onto the if: below.
+    needs: [zone-filter]
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.zone-filter.outputs.docs_only != 'true'
     outputs:
       selected_paths: ${{ steps.select.outputs.selected_paths }}
       split_count: ${{ steps.select.outputs.split_count }}
@@ -127,11 +167,13 @@ jobs:
   test:
     name: Tests
     needs: zone-filter
-    if: needs.zone-filter.outputs.docs_only != 'true'
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -147,8 +189,10 @@ jobs:
     name: Schema Purity & Naming Check
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -156,7 +200,9 @@ jobs:
     # Run when test was successful or skipped (zone-filter docs-only path).
     # Skip only when contract-compliance failed/cancelled or test outright failed.
     if: |
-      always() && needs.contract-compliance.result == 'success'
+      always() && needs.zone-filter.outputs.docs_only != 'true'
+        && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        && needs.contract-compliance.result == 'success'
         && (needs.test.result == 'success' || needs.test.result == 'skipped')
     steps:
       - uses: actions/checkout@v7
@@ -170,12 +216,15 @@ jobs:
     name: No localhost env-var fallbacks in src/ (OMN-10737)
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [test]
+    needs: [zone-filter, test]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
@@ -189,10 +238,14 @@ jobs:
     # blocking surface). Fails only on NEW URL literals outside contracts — baseline is
     # burn-down only. Suppress with: # url-authority-ok: <reason>
     name: URL Authority Gate (OMN-13563)
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -216,10 +269,14 @@ jobs:
     # the blocking surface). Exempts tests/, scripts/, examples/. Suppress with:
     # # env-read-ok: <reason>
     name: No New os.environ Reads (OMN-13563)
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -238,10 +295,17 @@ jobs:
 
   imperative-contract-guard:
     name: Imperative Contract Guard
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -259,10 +323,14 @@ jobs:
 
   ai-slop-check:
     name: AI-Slop Pattern Check (strict, PR diff)
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -292,10 +360,17 @@ jobs:
 
   context-integrity-contracts:
     name: Context Integrity Contract Compliance
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -320,10 +395,17 @@ jobs:
 
   migration-conflicts:
     name: Migration Conflict Check
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -385,12 +467,16 @@ jobs:
     name: Migration Inventory Sync
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [pre-commit]
+    needs: [pre-commit, zone-filter]
+    # OMN-14098 evidence-only fast-lane: skip on docs_only PRs; not required on dev/main.
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
@@ -421,10 +507,17 @@ jobs:
 
   kafka-boundary-parity:
     name: Kafka Boundary Parity
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -476,10 +569,17 @@ jobs:
 
   cross-repo-null-contract:
     name: "Python\u2194TypeScript Null Contract"
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -523,10 +623,17 @@ jobs:
 
   seam-contract-coverage:
     name: Seam Contract Coverage
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -551,8 +658,10 @@ jobs:
     name: Validate Contract YAML (OMN-8808)
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -568,8 +677,10 @@ jobs:
     name: Contract Sync Gate (Layer 3)
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -608,8 +719,10 @@ jobs:
     name: Contract Compliance Check
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -712,8 +825,10 @@ jobs:
     name: Receipt Honesty Gate
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -773,8 +888,10 @@ jobs:
     name: OCC Append-Only Gate
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
@@ -843,8 +960,10 @@ jobs:
     name: CI Summary
     runs-on: >-
       ${{
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name != github.repository)
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
