@@ -14,6 +14,7 @@ on:
 env:
   PYTHON_VERSION: "3.12"
   UV_VERSION: "0.8.3"
+  UV_HTTP_TIMEOUT: "600"
   REPO_NAME: "onex_change_control"
 
 # ci-health-ok: blocking mypy already enforced in ci.yml mypy job
@@ -43,7 +44,18 @@ jobs:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if uv sync --all-extras; then
+              exit 0
+            fi
+            status=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 10))
+          done
 
       - name: Check for Optional/Union usage (PEP 604)
         run: uv run ruff check src/ --select UP007,UP006
