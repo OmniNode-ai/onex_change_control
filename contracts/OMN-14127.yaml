@@ -3,13 +3,13 @@ schema_version: "1.0.0"
 ticket_id: OMN-14127
 title: "ci(OMN-14127): keep required CI aggregator contexts off saturated self-hosted runners"
 summary: >
-  OCC companion for omniclaude PR #1870. The PR fixes the workflow-structure wedge where required branch-protection
-  contexts could fail to post under self-hosted runner saturation because the lightweight result-reading
-  aggregation layer itself queued behind the saturated fleet. The change keeps the heavy CI leaves on
-  the self-hosted fleet, but moves the required aggregation contexts and their static security leaves
-  to GitHub-hosted ubuntu-latest runners: CI Summary, Security Gate, Quality Gate, Tests Gate, Python
-  Security Scan, and Secret Detection. Job/context names remain stable and no branch-protection change
-  or live runtime mutation is performed by this PR.
+  OCC companion for the OMN-14127 required-check wedge fixes. omniclaude PR #1870 fixes the original workflow-structure
+  wedge where required branch-protection contexts could fail to post under self-hosted runner saturation
+  because the lightweight result-reading aggregation layer itself queued behind the saturated fleet. omnibase_infra
+  PR #2230 ports the proven pattern to infra by converting the required CI Summary context into a no-needs,
+  GitHub-hosted, fail-closed poller that instantiates immediately, preserves the CI Summary context name,
+  and reads job conclusions from the GitHub API. Heavy CI leaves remain on the self-hosted fleet. No branch-protection
+  change, live deploy, service restart, or runner bounce is performed by these PRs.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -32,6 +32,23 @@ evidence_requirements:
   - kind: "manual"
     description: "Self-binding OCC receipt for this OCC companion PR carrying OMN-14127 central evidence"
     command: "git rev-parse --verify HEAD && git status --short --branch"
+  - kind: "manual"
+    description: "Self-binding OCC receipt for onex_change_control PR #3684 carrying the infra #2230 OMN-14127
+      central evidence update"
+    command: "gh pr view 3684 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - kind: "manual"
+    description: "omnibase_infra PR #2230 is open against dev at the validated workflow-poller head and
+      changes only the CI workflow, poller script, and focused tests"
+    command: "gh pr view 2230 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid,baseRefName"
+  - kind: "manual"
+    description: "Independent YAML parse confirms omnibase_infra CI Summary has no needs, runs on ubuntu-latest,
+      retains if: always(), and has read-only actions/content permissions"
+    command: "python3 -c 'import yaml; data=yaml.safe_load(open(\".github/workflows/ci.yml\")); print(data[\"jobs\"][\"ci-summary\"])'"
+  - kind: "manual"
+    description: "Focused local verification passes for the omnibase_infra CI Summary poller and workflow
+      resilience tests"
+    command: "uv run pytest tests/ci/test_ci_summary_gate.py -q && uv run pytest tests/ci/test_ci_workflow_resilience.py
+      -q"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -83,3 +100,40 @@ dod_evidence:
         check_value: >-
           grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-occ-self/command.yaml && grep -q '^evidence_item_id:
           dod-occ-self$' drift/dod_receipts/OMN-14127/dod-occ-self/command.yaml
+  - id: "dod-infra-pr-2230"
+    description: "omnibase_infra PR #2230 is open against dev at head 22e96953b4e76f8238189a49f0fe851567941744
+      and changes only .github/workflows/ci.yml, scripts/ci/ci_summary_gate.py, and tests/ci/test_ci_summary_gate.py."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-infra-pr-2230/command.yaml && grep
+          -q '^pr_number: 2230$' drift/dod_receipts/OMN-14127/dod-infra-pr-2230/command.yaml
+  - id: "dod-infra-ci-summary-poller-parse"
+    description: "Independent YAML parse confirms omnibase_infra CI Summary preserves the required context
+      name, runs on ubuntu-latest, has if: always(), has no needs, and uses read-only actions/content
+      permissions."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-infra-ci-summary-poller-parse/command.yaml
+          && grep -q '^evidence_item_id: dod-infra-ci-summary-poller-parse$' drift/dod_receipts/OMN-14127/dod-infra-ci-summary-poller-parse/command.yaml
+  - id: "dod-infra-local-verification"
+    description: "Focused local verification passed for omnibase_infra PR #2230: CI Summary gate tests,
+      workflow resilience tests, and ruff format/check for the changed Python files."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-infra-local-verification/command.yaml
+          && grep -q '^evidence_item_id: dod-infra-local-verification$' drift/dod_receipts/OMN-14127/dod-infra-local-verification/command.yaml
+  - id: "dod-occ-self-pr-3684"
+    description: "Self-binding OCC receipt: onex_change_control PR #3684 carries the infra #2230 OMN-14127
+      central evidence update and PASS receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-occ-self-pr-3684/command.yaml && grep
+          -q '^pr_number: 3684$' drift/dod_receipts/OMN-14127/dod-occ-self-pr-3684/command.yaml
