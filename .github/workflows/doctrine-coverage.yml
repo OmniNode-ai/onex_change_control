@@ -16,8 +16,18 @@ env:
   UV_VERSION: "0.8.3"
 
 jobs:
+  zone-filter:
+    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      python-version: "3.12"
+
   doctrine-coverage:
     name: Doctrine Coverage Matrix
+    needs: [zone-filter]
+    if: ${{ !cancelled() }}
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -30,16 +40,19 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
+        if: needs.zone-filter.outputs.docs_only != 'true'
         uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
 
       - name: Install dependencies
+        if: needs.zone-filter.outputs.docs_only != 'true'
         env:
           UV_HTTP_TIMEOUT: "600"
           UV_SYNC_ATTEMPTS: "3"
@@ -61,10 +74,18 @@ jobs:
           done
 
       - name: Validate doctrine coverage matrix (dry-run, no file write)
+        if: needs.zone-filter.outputs.docs_only != 'true'
         run: uv run python scripts/generate_doctrine_coverage.py --dry-run
 
       - name: Check for enforcement regressions
+        if: needs.zone-filter.outputs.docs_only != 'true'
         run: >-
           uv run python scripts/generate_doctrine_coverage.py
           --check-regression
           --dry-run
+
+      - name: Evidence-only short-circuit
+        if: needs.zone-filter.outputs.docs_only == 'true'
+        run: |
+          echo "Evidence-only PR (docs_only=true) - doctrine coverage skipped."
+          echo "Required Doctrine Coverage Matrix context reports success. OMN-14098."
