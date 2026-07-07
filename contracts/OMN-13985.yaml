@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13985"
+title: "Install pydantic before sibling-lock-pin preflight so dev candidate runtime image can build"
+summary: >-
+  Fixes the broken build-workspace-candidate-runtime GitHub Actions workflow in omnibase_infra so the
+  DEV runtime image can build (P0, unblocks contractor Daniyal). The "Stage workspace sibling trees into
+  the build context" step runs scripts/runtime_build/stage_workspace.sh, which invokes python3 scripts/runtime_build/check_sibling_lock_pins.py.
+  That script imports pydantic (BaseModel, ConfigDict, Field) at module top level, but the workflow only
+  sets up Python via actions/setup-python and installs no project deps before the step, so the preflight
+  died with ModuleNotFoundError: No module named 'pydantic' and stage_workspace.sh exited 3 before the
+  docker build, ECR push, or digest steps ran. omnibase_infra PR #2214 inserts a minimal "python3 -m pip
+  install --upgrade 'pydantic>=2'" step immediately before the staging step; only pydantic is third-party
+  (everything else the script imports is stdlib). This is a workflow-YAML-only change; no source, runtime
+  contract, or live cluster/runtime mutation was performed. The workflow is workflow_dispatch-only, so
+  the ECR image digest is produced by a separate operator re-dispatch after this lands.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2214"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2214 adds the pydantic install step to .github/workflows/build-workspace-candidate-runtime.yml
+      immediately before the failing "Stage workspace sibling trees into the build context" step, resolving
+      the top-level pydantic import in scripts/runtime_build/check_sibling_lock_pins.py.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13985/dod-omnibase-infra-pr-2214/command.yaml"
+  - id: "dod-no-runtime-deploy"
+    description: >-
+      Deploy-gate evidence for this PR: the change modifies a GitHub Actions workflow YAML file only.
+      It did not run docker compose against .201, restart any service, rebuild or push an image, or mutate
+      any live runtime/cluster state. The candidate image digest is produced by a later operator re-dispatch
+      of the workflow_dispatch-only build.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'No docker compose execution against .201, image build/push, service restart,
+          or live cluster mutation' drift/dod_receipts/OMN-13985/dod-no-runtime-deploy/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding: onex_change_control PR carries the OMN-13985 contract and receipts that omnibase_infra
+      PR #2214 cites via Evidence-Source.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13985/dod-occ-pr-self/command.yaml"
