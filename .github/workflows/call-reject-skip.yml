@@ -24,4 +24,43 @@ permissions:
 
 jobs:
   call-reject-skip-token:
-    uses: OmniNode-ai/omniclaude/.github/workflows/reject-deploy-gate-skip.yml@main
+    name: call-reject-skip-token / scan / reject-skip-gate-token
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    steps:
+      - name: Scan PR body and diff for skip-gate bypass tokens
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "merge_group" ]]; then
+            echo "merge_group scan is covered by pull_request events."
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          DIFF_FILE="$(mktemp)"
+          printf '%s' "${PR_BODY:-}" > "${BODY_FILE}"
+          if [[ -n "${PR_NUMBER:-}" ]]; then
+            gh pr diff "${PR_NUMBER}" --repo "${GH_REPO}" > "${DIFF_FILE}"
+          fi
+
+          if grep -E '\[skip-[^]]+\]' "${BODY_FILE}" "${DIFF_FILE}"; then
+            echo "::error::skip-gate bypass token found."
+            exit 1
+          fi
+
+          echo "No skip-gate bypass tokens found."
