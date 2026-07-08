@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-14134
+title: "WI-14: add ProtocolMessageHandler.handle() adapter to HandlerLedgerAppend — wire ledger-append
+  ingress to durable event_ledger row"
+summary: >
+  node_ledger_write_effect's contract declares operation_match routing with no event_model, so handler_wiring._make_dispatch_callback
+  (omnibase_infra/runtime/auto_wiring/handler_wiring.py:397-529) calls handle(envelope) directly rather
+  than execute(). HandlerLedgerAppend exposed .append() and .execute() but no .handle()/.handle_async(),
+  so auto-wiring bound the _missing_handle sentinel, which raises ModelOnexError on every dispatched onex.cmd.platform.ledger-append.v1
+  command — the audit ledger's external ingress was unwired. Adds a thin handle() adapter mirroring the
+  shipped HandlerBuildLoopProjection.handle() precedent: extracts the payload via getattr(envelope, "payload",
+  envelope), coerces to ModelPayloadLedgerAppend, delegates to the existing append(), and wraps the result
+  with ModelHandlerOutput.for_compute() — the same builder execute() already uses in this file. Strictly
+  scoped to this one handler (sibling handlers HandlerLedgerProjection/HandlerBuildLoopAppend are OMN-14135;
+  the omninode-runtime crashloop that blocks the durable-row proof is OMN-14136).
+is_seam_ticket: false
+interface_change: false
+evidence_requirements:
+  - kind: "tests"
+    description: "New handle() adapter routes an envelope to append() and returns a ModelHandlerOutput;
+      existing append()/execute() coverage is unaffected"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-unit-tests/command.yaml"
+  - kind: "tests"
+    description: "Governed change-aware selector (detect_test_paths.py) picked tests/unit/ for this diff;
+      full unit suite run confirms no regression"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-full-unit-suite/command.yaml"
+  - kind: "ci"
+    description: "ruff format/check, mypy, and pre-commit hooks pass on the changed handler + test files"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-lint-typecheck/command.yaml"
+  - kind: "manual"
+    description: "omnibase_infra PR #2232 carries the OMN-14134 handle() adapter"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-infra-pr-2232/command.yaml"
+  - kind: "manual"
+    description: "Runtime deploy is intentionally deferred — the omninode-runtime CrashLoopBackOff (OMN-14136)
+      blocks a consumer from attaching, so the durable event_ledger row proof cannot be produced until
+      that sibling ticket resolves and the runtime redeploys"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-deploy-deferred/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: "TestHandlerLedgerAppendHandle (6 new tests) proves handle() extracts the payload, coerces
+      a raw dict payload, delegates to append(), propagates/falls back correlation_id, and that _safe_correlation_id
+      never raises; all 24 tests in the file (18 pre-existing + 6 new) pass"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-unit-tests/command.yaml
+          && grep -q '^ticket_id: OMN-14134$' drift/dod_receipts/OMN-14134/dod-unit-tests/command.yaml"
+  - id: "dod-full-unit-suite"
+    description: "Governed selector (scripts/ci/detect_test_paths.py) resolved this diff to tests/unit/
+      only (no full-suite escalation reason fired); full tests/unit/ run confirms no regression"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-full-unit-suite/command.yaml
+          && grep -q '^ticket_id: OMN-14134$' drift/dod_receipts/OMN-14134/dod-full-unit-suite/command.yaml"
+  - id: "dod-lint-typecheck"
+    description: "ruff format/check, mypy, and pre-commit hooks pass on the changed handler + test files"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-lint-typecheck/command.yaml
+          && grep -q '^ticket_id: OMN-14134$' drift/dod_receipts/OMN-14134/dod-lint-typecheck/command.yaml"
+  - id: "dod-infra-pr-2232"
+    description: "omnibase_infra PR #2232 carries the OMN-14134 handle() adapter + tests"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14134/dod-infra-pr-2232/command.yaml
+          && grep -q '^pr_number: 2232$' drift/dod_receipts/OMN-14134/dod-infra-pr-2232/command.yaml"
+  - id: "dod-deploy-deferred"
+    description: "This PR is code-only; the actual deploy of the fixed handler is deferred until OMN-14136
+      (omninode-runtime CrashLoopBackOff) resolves and the runtime is redeployed — recorded explicitly
+      rather than fabricating a live-deploy claim"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "N/A — no live deploy was run; deploy is intentionally deferred to OMN-14136 (see
+          drift/dod_receipts/OMN-14134/dod-deploy-deferred/command.yaml, status: PENDING, for the full
+          rationale)"
