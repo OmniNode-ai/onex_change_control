@@ -1,0 +1,220 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-14127
+title: "ci(OMN-14127): keep required CI aggregator contexts off saturated self-hosted runners"
+summary: >
+  OCC companion for the OMN-14127 required-check wedge fixes. omniclaude PR #1870 fixes the original workflow-structure
+  wedge where required branch-protection contexts could fail to post under self-hosted runner saturation
+  because the lightweight result-reading aggregation layer itself queued behind the saturated fleet. omnibase_infra
+  PR #2230 ports the proven pattern to infra by converting the required CI Summary context into a no-needs,
+  GitHub-hosted, fail-closed poller that instantiates immediately, preserves the CI Summary context name,
+  and reads job conclusions from the GitHub API. Heavy CI leaves remain on the self-hosted fleet. No branch-protection
+  change, live deploy, service restart, or runner bounce is performed by these PRs.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omniclaude PR #1870 is open against dev at the validated workflow head and changes only
+      .github/workflows/ci.yml"
+    command: "gh pr view 1870 --repo OmniNode-ai/omniclaude --json number,state,headRefName,headRefOid,baseRefName"
+  - kind: "manual"
+    description: "Independent YAML parse confirms the required CI aggregation contexts and static security
+      leaves use ubuntu-latest; all gate aggregators retain if: always()"
+    command: "python3 -c 'import yaml; data=yaml.safe_load(open(\".github/workflows/ci.yml\")); print(len(data[\"jobs\"]))'"
+  - kind: "manual"
+    description: "Local pre-commit verification passes for the changed workflow file"
+    command: "pre-commit run --files .github/workflows/ci.yml"
+  - kind: "manual"
+    description: "Deploy-scope evidence: PR #1870 changes CI workflow structure only and performs no live
+      deploy, restart, runner bounce, or branch-protection mutation"
+    command: "git diff --name-only origin/dev...HEAD"
+  - kind: "manual"
+    description: "Self-binding OCC receipt for this OCC companion PR carrying OMN-14127 central evidence"
+    command: "git rev-parse --verify HEAD && git status --short --branch"
+  - kind: "manual"
+    description: "Self-binding OCC receipt for onex_change_control PR #3684 carrying the infra #2230 OMN-14127
+      central evidence update"
+    command: "gh pr view 3684 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - kind: "manual"
+    description: "omnibase_infra PR #2230 is open against dev at the validated workflow-poller head and
+      changes only the CI workflow, poller script, and focused tests"
+    command: "gh pr view 2230 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid,baseRefName"
+  - kind: "manual"
+    description: "Independent YAML parse confirms omnibase_infra CI Summary has no needs, runs on ubuntu-latest,
+      retains if: always(), and has read-only actions/content permissions"
+    command: "python3 -c 'import yaml; data=yaml.safe_load(open(\".github/workflows/ci.yml\")); print(data[\"jobs\"][\"ci-summary\"])'"
+  - kind: "manual"
+    description: "Focused local verification passes for the omnibase_infra CI Summary poller and workflow
+      resilience tests"
+    command: "uv run pytest tests/ci/test_ci_summary_gate.py -q && uv run pytest tests/ci/test_ci_workflow_resilience.py
+      -q"
+  - kind: "manual"
+    description: "omnibase_core PR #1397 is open against dev at the validated workflow-poller head and
+      changes the CI workflow, CI Summary poller, rollup-coverage validator, and focused tests"
+    command: "gh pr view 1397 --repo OmniNode-ai/omnibase_core --json number,state,headRefName,headRefOid,baseRefName,files"
+  - kind: "manual"
+    description: "Independent YAML parse confirms omnibase_core CI Summary has no needs, runs on ubuntu-latest,
+      retains if: always(), and has read-only actions/content permissions"
+    command: "python3 -c 'import yaml; data=yaml.safe_load(open(\".github/workflows/ci.yml\")); print(data[\"jobs\"][\"ci-summary\"])'"
+  - kind: "manual"
+    description: "Focused local verification passes for the omnibase_core CI Summary poller and rollup-coverage
+      tests using the worktree source path"
+    command: "PYTHONPATH=src uv run pytest tests/unit/scripts/ci/test_ci_summary_gate.py tests/validation/test_validator_rollup_coverage.py
+      -q"
+  - kind: "manual"
+    description: "Self-binding OCC receipt for onex_change_control PR #3685 carrying the core #1397 OMN-14127
+      central evidence update"
+    command: "gh pr view 3685 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - kind: "manual"
+    description: "omnibase_core PR #1398 is open against dev at the validated zone-filter head and changes
+      only the reusable zone-filter workflow"
+    command: "gh pr view 1398 --repo OmniNode-ai/omnibase_core --json number,state,headRefName,headRefOid,baseRefName,files"
+  - kind: "manual"
+    description: "Independent YAML parse confirms the omnibase_core reusable zone-filter classify job
+      runs on ubuntu-latest while preserving the Zone Filter context"
+    command: "python3 -c 'import yaml; data=yaml.safe_load(open(\".github/workflows/zone-filter.yml\"));
+      print(data[\"jobs\"][\"classify\"])'"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1870"
+    description: "omniclaude PR #1870 is open at head 62a55ad63e9125ea6e91adf10a98e008db7c51d7 against
+      dev and changes only .github/workflows/ci.yml."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-omniclaude-pr-1870/command.yaml &&
+          grep -q '^pr_number: 1870$' drift/dod_receipts/OMN-14127/dod-omniclaude-pr-1870/command.yaml
+  - id: "dod-hosted-aggregator-parse"
+    description: "Independent YAML parse confirms CI Summary, Security Gate, Quality Gate, Tests Gate,
+      Python Security Scan, and Secret Detection run on ubuntu-latest; the gate aggregators retain if:
+      always()."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-hosted-aggregator-parse/command.yaml
+          && grep -q '^evidence_item_id: dod-hosted-aggregator-parse$' drift/dod_receipts/OMN-14127/dod-hosted-aggregator-parse/command.yaml
+  - id: "dod-precommit-workflow"
+    description: "Local pre-commit verification passed for .github/workflows/ci.yml, including workflow
+      guard hooks relevant to runner selector and skip-token safety."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-precommit-workflow/command.yaml &&
+          grep -q '^evidence_item_id: dod-precommit-workflow$' drift/dod_receipts/OMN-14127/dod-precommit-workflow/command.yaml
+  - id: "dod-deploy-scope"
+    description: "Deploy-scope evidence: PR #1870 changes only .github/workflows/ci.yml and does not deploy,
+      restart services, bounce runners, or change branch protection."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-deploy-scope/command.yaml && grep
+          -q '^pr_number: 1870$' drift/dod_receipts/OMN-14127/dod-deploy-scope/command.yaml
+  - id: "dod-occ-self"
+    description: "Self-binding OCC receipt: this onex_change_control PR carries the OMN-14127 central
+      contract and PASS receipts consumed by omniclaude PR #1870."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-occ-self/command.yaml && grep -q '^evidence_item_id:
+          dod-occ-self$' drift/dod_receipts/OMN-14127/dod-occ-self/command.yaml
+  - id: "dod-infra-pr-2230"
+    description: "omnibase_infra PR #2230 is open against dev at head 22e96953b4e76f8238189a49f0fe851567941744
+      and changes only .github/workflows/ci.yml, scripts/ci/ci_summary_gate.py, and tests/ci/test_ci_summary_gate.py."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-infra-pr-2230/command.yaml && grep
+          -q '^pr_number: 2230$' drift/dod_receipts/OMN-14127/dod-infra-pr-2230/command.yaml
+  - id: "dod-infra-ci-summary-poller-parse"
+    description: "Independent YAML parse confirms omnibase_infra CI Summary preserves the required context
+      name, runs on ubuntu-latest, has if: always(), has no needs, and uses read-only actions/content
+      permissions."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-infra-ci-summary-poller-parse/command.yaml
+          && grep -q '^evidence_item_id: dod-infra-ci-summary-poller-parse$' drift/dod_receipts/OMN-14127/dod-infra-ci-summary-poller-parse/command.yaml
+  - id: "dod-infra-local-verification"
+    description: "Focused local verification passed for omnibase_infra PR #2230: CI Summary gate tests,
+      workflow resilience tests, and ruff format/check for the changed Python files."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-infra-local-verification/command.yaml
+          && grep -q '^evidence_item_id: dod-infra-local-verification$' drift/dod_receipts/OMN-14127/dod-infra-local-verification/command.yaml
+  - id: "dod-occ-self-pr-3684"
+    description: "Self-binding OCC receipt: onex_change_control PR #3684 carries the infra #2230 OMN-14127
+      central evidence update and PASS receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-occ-self-pr-3684/command.yaml && grep
+          -q '^pr_number: 3684$' drift/dod_receipts/OMN-14127/dod-occ-self-pr-3684/command.yaml
+  - id: "dod-core-pr-1397"
+    description: "omnibase_core PR #1397 is open against dev at head 6026ab5ef76ece03dabda364a77f009bf18b8117
+      and changes the CI workflow, CI Summary poller, rollup-coverage validator, and focused tests."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-core-pr-1397/command.yaml && grep
+          -q '^pr_number: 1397$' drift/dod_receipts/OMN-14127/dod-core-pr-1397/command.yaml
+  - id: "dod-core-ci-summary-poller-parse"
+    description: "Independent YAML parse confirms omnibase_core CI Summary preserves the required context
+      name, runs on ubuntu-latest, has if: always(), has no needs, and uses read-only actions/content
+      permissions."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-core-ci-summary-poller-parse/command.yaml
+          && grep -q '^evidence_item_id: dod-core-ci-summary-poller-parse$' drift/dod_receipts/OMN-14127/dod-core-ci-summary-poller-parse/command.yaml
+  - id: "dod-core-local-verification"
+    description: "Focused local verification passed for omnibase_core PR #1397: CI Summary poller tests
+      and rollup-coverage validator tests using the worktree source path."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-core-local-verification/command.yaml
+          && grep -q '^evidence_item_id: dod-core-local-verification$' drift/dod_receipts/OMN-14127/dod-core-local-verification/command.yaml
+  - id: "dod-occ-self-pr-3685"
+    description: "Self-binding OCC receipt: onex_change_control PR #3685 carries the core OMN-14127 central
+      evidence update and PASS receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-occ-self-pr-3685/command.yaml && grep
+          -q '^pr_number: 3685$' drift/dod_receipts/OMN-14127/dod-occ-self-pr-3685/command.yaml
+  - id: "dod-core-pr-1398"
+    description: "omnibase_core PR #1398 is open against dev at head 57c48ebfe45b6661b5637022854c511f054718c2
+      and changes only .github/workflows/zone-filter.yml."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-core-pr-1398/command.yaml && grep
+          -q '^pr_number: 1398$' drift/dod_receipts/OMN-14127/dod-core-pr-1398/command.yaml
+  - id: "dod-core-zone-filter-hosted-parse"
+    description: "Independent YAML parse confirms the reusable omnibase_core zone-filter classify job
+      preserves the Zone Filter context and runs on ubuntu-latest."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14127/dod-core-zone-filter-hosted-parse/command.yaml
+          && grep -q '^evidence_item_id: dod-core-zone-filter-hosted-parse$' drift/dod_receipts/OMN-14127/dod-core-zone-filter-hosted-parse/command.yaml
