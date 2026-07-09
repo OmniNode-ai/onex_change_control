@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14218"
+title: "fix(OMN-14218): give delegation task type 'refactor' a real acceptance authority (authors code
+  locally at $0)"
+summary: >-
+  omnimarket PR #1660 gives the delegation task type `refactor` a real acceptance authority so a valid
+  LOCAL code artifact PASSES the quality gate instead of force-escalating to a PAID cloud tier. `refactor`
+  was accepted at the delegation surface (allowed_task_types, the CLI --task-type enum, task_model_overrides,
+  routing_tiers.yaml `use_for`) but absent from all three gate authorities: the `task_classes` contract
+  in task_class_contracts.v1.yaml, `_VERIFIABLE_TASK_TYPES` (handler_quality_gate.py), and `JUDGE_COMBINABLE_TASK_TYPES`
+  (handler_quality_gate_intent.py). The fix adds a `refactor` task-class contract mirroring `code_generation`
+  (same deterministic acceptance_authority, required_bar 0.85, and closed tier_order local->cheap_cloud->cheap_frontier->claude)
+  plus `refactor` to both frozensets. An independent verifier (separate from the implementing agent) reproduced
+  the fix end-to-end via live before/after delegate probes on the co-installed infra venv deploy surface.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1660"
+    description: >-
+      Independent verification (a separate verifier, NOT the implementing agent) reproduced the delegation
+      before/after live on the co-installed infra venv. BEFORE (refactor absent from the three authorities):
+      `onex delegate --task-type refactor` walked local(quality_gate_passed=False despite quality_score=1.0,
+      cost=$0) -> cheap_cloud(quality_gate_passed=False, PAID cost_usd=0.002182) -> cheap_frontier(429)
+      -> terminal status=failed, escalation_count=2 — a valid local artifact was rejected because refactor
+      had no acceptance authority, and real money was spent escalating. AFTER (fix applied to all three
+      authorities): the same prompt routed LOCAL to Qwen3.6-35B-A3B at http://omninode-pc.tail75df5e.ts.net:8000,
+      status=completed, escalation_count=0, quality_gate_passed=True, quality_score=1.0, cost_usd=0.0,
+      and produced a correct TYPE_CHECKING refactor. Diff is exactly the three authority files (no foreign
+      content); the refactor contract mirrors code_generation with an identical required_bar (0.85) and
+      closed tier_order (no gate weakened, no skip token, no --no-verify). Focused delegation tests green
+      (636 passed, 2 skipped, 0 failed).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14218/dod-omnimarket-pr-1660/command.yaml &&
+          grep -q '^pr_number: 1660$' drift/dod_receipts/OMN-14218/dod-omnimarket-pr-1660/command.yaml
+  - id: "dod-deploy-venv-run"
+    description: >-
+      Honest deploy-surface run for a local-CLI delegation node. The PR-branch omnimarket package (the
+      three changed files) was applied to the co-installed omnibase_infra venv site-packages — the real
+      deploy surface the fix targets — and `onex delegate --task-type refactor` was executed for real
+      from that venv. Terminal payload: status=completed, provider=http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions,
+      model_name=Qwen3.6-35B-A3B, cost_usd=0.0, escalation_count=0, quality_gate_passed=True. The shared
+      venv was restored to its dev state (byte-identical to origin/dev for the three files) afterward
+      so concurrent agents are not left on branch code. This satisfies the deploy-gate runtime-path requirement
+      honestly: the delegation node's deploy surface is the co-installed venv, not a .201 container.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14218/dod-deploy-venv-run/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14218 contract and the PASS
+      receipts consumed by omnimarket PR #1660 via its Evidence-Source line. It binds itself to occ-preflight
+      by commit_sha (contract commit C1), which is a member of this PR's commit set, so occ-preflight
+      verifies the companion without OCC PR-number prediction.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14218/dod-occ-self/command.yaml
