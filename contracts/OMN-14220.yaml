@@ -15,10 +15,15 @@ summary: >-
   covers_dependencies as real reject-only checks (they previously hard-failed MALFORMED); and fixes two
   documentation false positives — the substring refusal phrase "error:" is moved to a word-boundary regex
   so a bare leading "Error:" still trips while an in-word "...ZeroDivisionError:" does not, and the docstring
-  "raises:" section is made optional so a non-raising function is not rejected. An independent verifier
-  (separate from the implementing agent) reproduced the before/after end-to-end: the pure delta() resolution
-  per class via the merge-base (pre-fix) handler+contract vs the HEAD (post-fix) handler+contract, plus
-  a live before/after `onex delegate --task-type review` on the co-installed infra venv deploy surface.
+  "raises:" section is made optional so a non-raising function is not rejected. The PR also fixes the
+  terminal-failure return path in the local delegation dispatch port: if a lower tier authors a non-empty,
+  high-scoring artifact but the ladder later fails, the terminal payload now returns the best authored
+  artifact instead of discarding it in favor of an empty final-hop result. An independent verifier (separate
+  from the implementing agent) reproduced the before/after end-to-end: the pure delta() resolution per
+  class via the merge-base (pre-fix) handler+contract vs the HEAD (post-fix) handler+contract, focused
+  regression tests for both the acceptance-authority and best-artifact paths, broader delegation/quality
+  tests, and a live before/after `onex delegate --task-type review` on the co-installed infra venv deploy
+  surface for the quality-gate path.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -42,12 +47,12 @@ dod_evidence:
       missing-docstring output (TASK_MISMATCH missing args:, returns:), and a bare leading "Error:" message
       (REFUSAL error:) — while an in-word "...ZeroDivisionError:" docstring PASSES and a truncated fragment
       ("...the change adds a") FAILS semantic_adequacy (WEAK_OUTPUT truncated mid-clause), i.e. semantic_adequacy
-      genuinely evaluates completeness rather than blanket-passing. Diff is exactly the three files (src/omnimarket/configs/task_class_contracts.v1.yaml,
-      the quality-gate handler, and the added regression test test_local_acceptance_authority_omn14220.py)
-      with no foreign content; no gate weakened by disabling markers (they were IMPLEMENTED, not deleted),
-      no skip token, no --no-verify. Focused tests green: 11 regression + delegation (-k delegation) 1247
-      passed / 34 skipped + quality (-k quality) 238 passed / 2 skipped, 0 failed. ruff format --check
-      + ruff check + mypy --strict clean.
+      genuinely evaluates completeness rather than blanket-passing. Current PR head `73911578` changes
+      exactly five files: the task-class contract, the quality-gate handler, the local delegation dispatch
+      port, and two OMN-14220 regression test files. No foreign content, no skip token, no --no-verify.
+      Focused current-head tests green: 12 regression tests passed; broader delegation/quality selection
+      passed 1334 with 37 skipped and 11065 deselected. ruff format --check, ruff check, and mypy --strict
+      are clean for the changed Python implementation files.
     source: "manual"
     status: "verified"
     checks:
@@ -76,6 +81,20 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           grep -q '^status: PASS$' drift/dod_receipts/OMN-14220/dod-deploy-venv-run/command.yaml
+  - id: "dod-best-artifact-terminal-failure"
+    description: >-
+      Independent current-head verification for the second #1661 commit: the local delegation dispatch
+      terminal-failure path now returns the best authored artifact seen across attempts instead of returning
+      an empty final-hop result. The regression simulates a local tier that authors a correct non-empty
+      artifact, then forces every gate verdict to reject so the ladder reaches a later empty result; the
+      terminal failed payload returns the local artifact. This proves the current PR head `73911578` covers
+      both the local-acceptance-authority fix and the best-artifact return fix.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14220/dod-best-artifact-terminal-failure/command.yaml
   - id: "dod-occ-self"
     description: >-
       OCC companion self-binding: this onex_change_control PR carries the OMN-14220 contract and the PASS
