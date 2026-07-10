@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14343"
+title: "fix(OMN-14343): harden OCC-Preflight-Dependency poller against rate-limit false-reds"
+summary: >-
+  omnimarket product PR #1709 (branch jonah/omn-14343-occ-preflight-poller-backoff, head c5a47c5765e6bd21cf7890682a5029d140b43ad1)
+  fixes the OCC-Preflight-Dependency rate-limit poller storm. 33 top-level omnimarket workflow files each
+  carried an identical wait-loop polling the Checks API every 10s for occ-preflight / eligibility to conclude
+  (GH Actions needs: cannot cross workflow-file boundaries). All 33 fire on the same pull_request event
+  and share one per-repo GitHub App rate-limit bucket; under set -euo pipefail a 403 aborted the gh api
+  call before the case statement ran, so a rate-limited poller reported failure even though occ-preflight
+  had already passed. The fix adds start-jitter (0-14s), explicit rate-limit detection with bounded exponential
+  backoff (5s doubling to a 60s cap), and an elapsed-wall-clock deadline (720s) replacing the fixed 60-iteration
+  count -- while any non-rate-limit gh error, and any genuine failure/cancelled/timed_out/action_required/
+  startup_failure conclusion, still fails fast with zero backoff.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent adversarial verification at product head c5a47c5765e6bd21cf7890682a5029d140b43ad1. (1)
+      All 33 changed workflow files carry a byte-identical poller patch: diffed pairwise after normalizing
+      the one documented wording variant (ci.yml says "refusing to start heavy CI", the other 32 say "refusing
+      to start this workflow") -- zero other divergence. All 33 files parse as valid YAML (python yaml.safe_load)
+      and the extracted poller script passes bash -n on every file. (2) Enforcement-preservation harness:
+      extracted the exact loop body verbatim from the PR branch and drove it against a scripted fake gh
+      on PATH for 4 required cases plus 2 extra: (a) immediate success -> exit 0 immediately; (b) gh fails
+      twice with "rate limit" stderr text then succeeds -> backs off 5s then 10s (doubling) then exits
+      0; (c1) genuine "failure" conclusion -> exits 1 immediately, no backoff, no retry; (c2) genuine
+      "cancelled" conclusion -> exits 1 immediately, same; (d) non-rate-limit gh error (404) -> exits
+      1 on the FIRST call, not retried as if transient; (e) always-empty conclusion with deadline shortened
+      to 15s -> times out and exits 1 (never 0); (f) gh always rate-limited (never recovers) with deadline
+      shortened to 20s -> backoff sequence 5s/10s/20s observed (matches the doubling-to-60s-cap formula),
+      then still exits 1 at deadline, no infinite loop, no false pass. The fix cannot turn a real failure
+      into a pass and cannot loop forever. (3) Live: PR #1709's own 33 "OCC Preflight Dependency" checks
+      and its occ-preflight / eligibility check are visible on GitHub. occ-preflight / eligibility genuinely
+      failed (PR body was missing the required Evidence-Source line -- the exact gap this OCC companion
+      closes) in 7s; all 33 pollers correctly detected that genuine failure and failed fast (13-48s: startup
+      jitter plus at most one 10s wait cycle), with the log for the auto-merge.yml poller instance showing
+      the exact "OCC preflight concluded failure; refusing to start heavy CI." error path -- no rate-limit
+      misfire, no backoff swallowing a real failure, matching the harness prediction exactly.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14343/dod-001/command.yaml && grep -q '^pr_number:
+          1709$' drift/dod_receipts/OMN-14343/dod-001/command.yaml && grep -q 'c5a47c5765e6bd21cf7890682a5029d140b43ad1'
+          drift/dod_receipts/OMN-14343/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-surface assessment: product PR #1709 changes only .github/workflows/*.yml poller script logic
+      (start-jitter, rate-limit-aware backoff, wall-clock deadline). No live deploy, restart, .201 mutation,
+      topic mutation, or migration was performed by this OCC companion; product PR merge relies on normal
+      CI gates and GitHub Actions runtime behavior, not a bypass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14343/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14343/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the net-new OMN-14343 central contract
+      and PASS receipts consumed by omnimarket#1709 through its Evidence-Source line. Self-binds via the
+      first commit's SHA for occ-preflight eligibility (no PR-number prediction).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14343/dod-occ-self/command.yaml
