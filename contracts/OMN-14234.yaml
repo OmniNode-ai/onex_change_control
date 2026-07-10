@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14234"
+title: "feat(OMN-14234): retry-local (best-of-N) before escalating off a free tier"
+summary: >-
+  omnimarket product PR #1694 (branch jonah/omn-14234-retry-local, head 4e5500972aca5da25249055506b6f661e20a32fc)
+  adds retry-local (best-of-N) to the delegation ladder: on a sub-bar quality result on a FREE (free_local)
+  tier, the SAME tier is re-run up to its contract-declared max_retries budget (routing_tiers.yaml; local=2
+  -> 1 initial + 2 retries = 3 $0 drafts) BEFORE escalating to a paid tier. Wired on BOTH delegation paths
+  — the bus FSM (handler_delegation_workflow._maybe_retry_local, GATE_EVALUATED -> ROUTED re-route pinning
+  min_tier_name to the same free tier, no escalation_count bump and no escalation event) and the bus-less
+  CLI port (LocalDelegationDispatchPort.dispatch retrying the same backend up to the tier budget). Fail-closed:
+  only a free tier with retry budget remaining is retried; a paid tier or an exhausted per-tier budget
+  escalates exactly as before. Free-tier classification and cost keying are on the typed tier cost model
+  (EnumTierCostType.FREE_LOCAL, single is_free_tier classifier) / terminal payload, never exit_code. This
+  companion supersedes the implementer-self-authored OCC #3833 (closed) with independent verification
+  by an agent distinct from the implementer.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent behavior verification at product head 4e5500972aca5da25249055506b6f661e20a32fc (PR #1694),
+      run by build-verifier-2 (distinct from the implementer retry-local-builder; verifier != runner satisfies
+      the receipt-honesty gate). Confirmed on BOTH paths that N local drafts run before any escalation
+      off the free tier, that retry is fail-closed on paid tiers and exhausted budgets, and that cost/provider
+      gating keys off the typed tier cost model, never exit_code. The 7 new retry-local tests pass, the
+      full delegation + delegate-skill dirs pass (680 passed / 2 skipped) with no regression, and the
+      2 known spawn/network load-flake tests pass at HEAD when run (not a masked regression). mypy --strict
+      on the changed source is clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14234/dod-001/command.yaml && grep -q '4e5500972aca5da25249055506b6f661e20a32fc'
+          drift/dod_receipts/OMN-14234/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Honest deploy-surface assessment: the product PR changes delegation-ladder node logic (the orchestrator
+      handler, the routing reducer helpers, the CLI dispatch port) plus one contract.yaml FSM edge and
+      unit tests. It changes runtime delegation behavior on next deploy but performs no live deploy, restart,
+      topic mutation, migration, or container rebuild itself. No live deploy required or performed by
+      this evidence package.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14234/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14234/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the central OMN-14234 contract and
+      PASS receipts consumed by product PR #1694 through its Evidence-Source line. Self-binds via the
+      first commit's SHA (commit_sha), so no OCC PR number prediction is required under concurrent lanes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14234/dod-occ-self/command.yaml
