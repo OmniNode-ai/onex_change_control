@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14326"
+title: "feat(OMN-14326): node_ast_node_analyzer + node_stub_detector — pure COMPUTE codegen-analysis nodes"
+summary: >-
+  omnimarket product PR #1707 (branch jonah/omn-14326-ast-analyzer-stub-detector, head f6e379329894d7d57383f924463a72367b2dc1e3)
+  adds two pure COMPUTE nodes extracted from dormant codegen analysis logic. node_ast_node_analyzer parses
+  a single ONEX node's source TEXT with the standard-library ast module and returns {class_name, base_class,
+  mixins[], methods[], docstring, io_operations[]}, classifying I/O operation classes from import names
+  and source substrings. node_stub_detector walks class bodies and flags each async method carrying an
+  incomplete-method marker, matching comment markers against real comment tokens (tokenize) and NotImplementedError
+  against the AST (a real raise node) so a marker inside a string literal is never a false positive. Both
+  are stateless, deterministic, and perform NO I/O — they operate on source text supplied in the request
+  model, not on files read from disk. CONTRACT + NODE + HANDLER only (rule 7a canonical); no Plugin* base,
+  no node-calling-node.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent adversarial verification at product head f6e379329894d7d57383f924463a72367b2dc1e3 (verifier
+      did not implement the PR). Tests: node_ast_node_analyzer + node_stub_detector protocol suites pass
+      34/34 (18 + 16). Mutation-discrimination: four semantic mutations across the two handlers were each
+      caught RED then reverted (analyzer HTTP-detection disabled -> 2 fail; analyzer mixin-extraction
+      disabled -> 1 fail; stub-detector marker guard inverted -> 10 fail; stub-detector NotImplementedError
+      changed from AST-Raise to naive substring -> the string-literal false-positive test failed by flagging
+      method 'describe'), proving the suites are behavior-discriminating, not vacuous; worktree left clean.
+      COMPUTE purity: neither handler performs file/network I/O — the analyzer parses request.source_text
+      (the module-name and "open("/"Path(" constants are detection needles matched against the analyzed
+      source, not imports/calls); the stub detector uses in-memory io.StringIO + tokenize only. No Plugin*
+      base and no cross-node imports (each node imports only its own models). Gates: ruff check clean,
+      ruff format clean (13 files), mypy --strict clean (13 source files), runtime import-check clean
+      (352 entry points, both new nodes registered), node metadata dependency scope PASS.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14326/dod-001/command.yaml && grep -q '^pr_number:
+          1707$' drift/dod_receipts/OMN-14326/dod-001/command.yaml && grep -q 'f6e379329894d7d57383f924463a72367b2dc1e3'
+          drift/dod_receipts/OMN-14326/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-surface assessment: product PR #1707 adds two new pure-logic COMPUTE node source trees (contract
+      + handler + pydantic models) plus their protocol tests, and a two-line onex.nodes entry-point registration
+      in pyproject.toml (no new third-party dependency). No live deploy, restart, .201 mutation, topic
+      mutation, or migration was performed by this OCC companion; product PR merge relies on normal CI
+      gates and downstream deploy validation instead of a bypass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14326/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14326/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the net-new OMN-14326 central contract
+      and PASS receipts consumed by omnimarket#1707 through its Evidence-Source line. Self-binds via the
+      first commit's SHA for occ-preflight eligibility (no PR-number prediction).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14326/dod-occ-self/command.yaml
