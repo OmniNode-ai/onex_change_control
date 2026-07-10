@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14234"
+title: "feat(OMN-14234): retry-local (best-of-N) before escalating off a free tier"
+summary: >-
+  omnimarket product PR #1694 (branch jonah/omn-14234-retry-local, head d757236f235427c6f8ae493830486f8ae19ebb0f)
+  adds retry-local (best-of-N) to the delegation ladder: on a sub-bar quality result on a FREE (free_local)
+  tier, the SAME tier is re-run up to its contract-declared max_retries budget (routing_tiers.yaml; local=2
+  -> 1 initial + 2 retries = 3 $0 drafts) BEFORE escalating to a paid tier. Wired on both delegation paths
+  — the bus FSM (handler_delegation_workflow._maybe_retry_local, GATE_EVALUATED -> ROUTED re-route pinning
+  min_tier_name to the same free tier, no escalation_count bump and no escalation event) and the bus-less
+  CLI port (LocalDelegationDispatchPort.dispatch). Fail-closed: only a free tier with retry budget remaining
+  is retried; a paid tier or an exhausted per-tier budget escalates exactly as before. Free-tier classification
+  and cost keying are on the typed tier cost model (EnumTierCostType.FREE_LOCAL) / terminal payload, never
+  exit_code. Independently verified by a distinct agent (verifier != implementer).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent behavior verification at product head d757236f235427c6f8ae493830486f8ae19ebb0f, run
+      by an agent distinct from the implementer (verifier != runner, satisfying the receipt-honesty gate).
+      Confirmed on BOTH paths that N local drafts run before any escalation off the free tier and that
+      cost/provider gating keys off the tier cost model / terminal payload, never exit_code; the full
+      delegation + delegate-skill test dirs pass with no regression.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14234/dod-001/command.yaml && grep -q 'd757236f235427c6f8ae493830486f8ae19ebb0f'
+          drift/dod_receipts/OMN-14234/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Honest deploy-surface assessment: the product PR changes delegation-ladder node logic (orchestrator
+      handler, routing reducer helpers, a contract.yaml FSM edge) plus unit tests. It changes runtime
+      delegation behavior on next deploy but performs no live deploy, restart, topic mutation, or migration
+      itself. No live deploy required or performed by this evidence package.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14234/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14234/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the central OMN-14234 contract and
+      PASS receipts consumed by the product PR through its Evidence-Source line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14234/dod-occ-self/command.yaml
