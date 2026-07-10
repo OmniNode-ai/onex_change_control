@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14285"
+title: "feat(OMN-14285): RSD-1 -- pure node_occ_companion_compute (COMPUTE core + attestation oracle)"
+summary: >-
+  omnimarket product PR #1706 (branch jonah/omn-14285-rsd1-occ-companion-compute, head bdd0681d54bece5bccd1ff3a322f2131e376b832)
+  adds node_occ_companion_compute, a pure/stateless/deterministic COMPUTE node that renders the exact
+  OCC companion (contract + downstream receipt + self-bind + OMN-14233 two-audiences supersede) from a
+  fully-populated ModelOccCompanionRequest with ZERO I/O, and doubles as the OMN-14055 attestation oracle
+  via deterministic_fingerprint. RSD-1 slice only: the read-EFFECT (node_occ_state_effect, RSD-2), write-EFFECT,
+  orchestrator wiring, and RSD-5 gate integration are explicit follow-slices, not in this PR. Sibling
+  PR #1704 (converge-adapters approach) is parked as a draft under the rev-2 reshape and is not superseded
+  by this contract.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent verification at product head bdd0681d54bece5bccd1ff3a322f2131e376b832, executed by an
+      agent that implemented neither #1706 nor #1704 (no-self-authored-evidence, OMN-14055). Re-ran the
+      claimed evidence rather than trusting the PR body: checked out the branch into a scratch worktree,
+      `uv sync`, then `uv run pytest tests/unit/nodes/node_occ_companion_compute/test_occ_companion_compute_seam.py
+      -v` -> 18 passed in 0.15s, covering T1 determinism, T2 reproducibility/attestation-digest-stability
+      (byte-diff oracle: digest stable across observed-fact-only changes, digest changes on a tampered
+      deterministic field), T3 two-audiences net-new supersede, T6 net-new-only, the ported trivial-infra
+      fast-path + verifier!=runner checks, and TestZeroIoPurity (an AST walk over handler_occ_companion_compute.py
+      that fails on any subprocess/network/filesystem/datetime.now() import or call). Read the 571-line
+      handler directly: compute_companion_plan and HandlerOccCompanionCompute.handle perform genuinely
+      zero I/O; all observed facts (run_timestamp, probe stdout, PR/OCC contract state) are request fields,
+      never fetched. Also independently re-ran `ruff check` (clean), `ruff format --check` (8 files already
+      formatted), `mypy --strict` (clean, 7 source files), `scripts/ci/check_node_metadata_dependencies.py`
+      (PASS), and `python -m omnimarket.nodes.node_runtime_sweep --import-check` (status=clean, entry_points_checked=351);
+      pyproject.toml:228 registers `node_occ_companion_compute` as a package entry point.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-001/command.yaml && grep -q '^pr_number:
+          1706$' drift/dod_receipts/OMN-14285/dod-001/command.yaml && grep -q 'bdd0681d54bece5bccd1ff3a322f2131e376b832'
+          drift/dod_receipts/OMN-14285/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-surface assessment: product PR #1706 adds a wholly new, unwired node (net-new files only
+      -- contract.yaml, metadata.yaml, handlers/, models/ -- plus one added pyproject.toml entry-point
+      line and its unit test file). It is not registered into any orchestrator, dispatch table, or live
+      gate; RSD-2/RSD-3 wiring is a follow-slice. No live deploy, restart, .201 mutation, topic mutation,
+      or migration was performed by this OCC companion or by #1706 itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14285/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the net-new OMN-14285 central contract
+      and PASS receipts consumed by omnimarket#1706 through its Evidence-Source line. Self-binds via the
+      first commit's SHA for occ-preflight eligibility (no PR-number prediction).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-self/command.yaml
