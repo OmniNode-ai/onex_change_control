@@ -1,0 +1,76 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14260"
+title: "fix(OMN-14260): revert nested occ-preflight from deploy-gate-reusable (unblock org-wide deploy-gate)"
+summary: >-
+  omniclaude PR #1884 reverts a nested cross-repo `occ-preflight` job that the OMN-14249 dev→main promotion
+  (#1879, merge commit 3650658b3) carried into `.github/workflows/deploy-gate-reusable.yml`. All caller
+  repos (omnibase_infra / omnibase_core / omnimarket) resolve this reusable at `@main`, so the break went
+  live for everyone: the nested job runs in a reusable-within-reusable context (caller `deploy-gate.yml`'s
+  `deploy-gate` job, which has no `permissions:` block, calls this reusable, which itself calls a nested
+  `occ-preflight` requesting job-level `permissions: pull-requests: read`). A nested reusable can only
+  narrow the token its caller job passed down, so the request is a compile-time permissions escalation
+  — the whole "Deploy Gate" workflow `startup_failure`s (0 jobs, empty check-suite) on every caller PR,
+  taking the required `deploy-gate` status check down org-wide. The fix removes the nested `occ-preflight`
+  job and the `deploy-gate` job's `needs: occ-preflight` line, restoring the job body byte-identical to
+  its pre-#1879 form (verified: `git diff 3650658b3^ <PR-head> -- deploy-gate-reusable.yml` shows only
+  an added explanatory comment, zero behavioral diff). No OCC-preflight coverage is lost: every caller
+  repo already gates its own `deploy-gate` job behind its own TOP-LEVEL `occ-preflight` job, which is
+  a structurally different (non-nested) case that does not hit the permissions-escalation constraint —
+  omnibase_infra `deploy-gate.yml` (`occ-preflight: uses: .../occ-preflight.yml@<pinned-sha>` with its
+  own `permissions:` block, `deploy-gate: needs: occ-preflight`), omnibase_core `deploy-gate.yml` (local
+  `occ-preflight: uses: ./.github/workflows/occ-preflight.yml`, `deploy-gate: needs: occ-preflight`),
+  and omnimarket `deploy-gate.yml` (`occ-preflight: name: OCC Preflight Dependency`, an inline job that
+  waits on the repo's own required OCC check). An independent verifier (separate from the implementing
+  agent) reproduced the root-cause claim live and confirmed the fix is a minimal, coverage-preserving
+  revert.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1884"
+    description: >-
+      Independent verification (a separate verifier, NOT the implementing agent) reproduced omniclaude
+      PR #1884 (head 2819dd5b5c5d606c759aa2ca471f2c5b3d84044e, base dev) in the OMN-14260 omniclaude worktree.
+      Confirmed live, with hard evidence independent of the PR/ticket's own framing: (1) omnibase_infra
+      "Deploy Gate" run 29083665508 (PR #2246) has conclusion `startup_failure` with check-suite 78685755440
+      showing 0 check-runs — reproduced via `gh run view` / `gh api .../check-suites/78685755440/check-runs`
+      directly, not taken on the requester's word; (2) the MOST RECENT omnibase_infra "Deploy Gate" pull_request
+      run (29084575585, created 2026-07-10T09:53:59Z) also shows `startup_failure`, confirming the breakage
+      is persistent, not a one-off blip; (3) `git show 5fa434d06:.github/workflows/deploy-gate-reusable.yml`
+      (omniclaude dev head pre-promotion) already contains the nested `occ-preflight` job — the bug predates
+      the 9-commit dev→main delta and was carried wholesale by the `-s ours` unrelated-histories promotion
+      merge, not introduced by any single reviewed commit; (4) `git diff 3650658b3^ <PR-1884-head> --
+      .github/workflows/deploy-gate-reusable.yml` shows the ONLY diff from the pre-#1879 form is the new
+      13-line explanatory comment — the `deploy-gate` job body is otherwise byte-identical, confirming
+      the fix is a clean, minimal revert with no collateral changes; (5) `python3 -c "import yaml; ..."`
+      parse of the PR-head file confirms exactly one job (`deploy-gate`), no `occ-preflight` job, no `needs:`
+      key — the nested job and its dependency edge are fully removed; (6) spot-checked all three caller
+      repos' own `deploy-gate.yml` and confirmed each already has an independent TOP-LEVEL `occ-preflight`
+      gate wired via its own `needs:` (omnibase_infra: pinned-SHA reusable call with its own permissions
+      block; omnibase_core: local `./.github/workflows/occ-preflight.yml`; omnimarket: inline "OCC Preflight
+      Dependency" job) — confirming the "no coverage lost" claim in the PR body is accurate, not just
+      asserted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14260/dod-omniclaude-pr-1884/command.yaml &&
+          grep -q '^pr_number: 1884$' drift/dod_receipts/OMN-14260/dod-omniclaude-pr-1884/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14260 contract and the PASS
+      receipt consumed by omniclaude PR #1884 via its Evidence-Source line. It binds itself to occ-preflight
+      by commit_sha (the contract commit C1), which is a member of this PR's commit set, so occ-preflight
+      verifies the companion without OCC PR-number prediction under concurrent lanes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14260/dod-occ-self/command.yaml
