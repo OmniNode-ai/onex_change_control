@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14298"
+title: "fix(OMN-14298): RuntimeLocal calls initialize() before execute() + kills false-green over error-shaped
+  returns"
+summary: >-
+  omnibase_core product PR #1418 (branch jonah/omn-14298-runtimelocal-init-lifecycle, head 6e412e03031878d172da090cb0b3ab383bd087f5)
+  fixes two coupled RuntimeLocal defects. (1) Init lifecycle: RuntimeLocal invoked a handler's execute()/run()
+  WITHOUT first calling its initialize(), so every init/execute-lifecycle node returned a "Handler not
+  initialized" error envelope; _ensure_handler_initialized now calls initialize() before the entry method,
+  guarded and idempotent (no-op if already initialized or if initialize() declares required params the
+  runtime cannot supply — in which case execute() surfaces the real not-initialized state; exceptions
+  inside a zero-arg initialize() propagate to FAILED). (2) False-green: _classify_result previously mapped
+  only status=="failure" to FAILED, so a returned (not raised) error envelope (status="error" + error_message,
+  e.g. "Handler not initialized") was misclassified COMPLETED / exit_code 0 — the exit-0-over-a-broken-run
+  false green the operator bans; it now maps status in {failure,failed,error} and a populated error_message/error
+  string to FAILED, with an explicit-success / no_results short-circuit. Independently verified by a distinct
+  agent (verifier != implementer).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent RED->GREEN verification at product head 6e412e03031878d172da090cb0b3ab383bd087f5, run
+      by an agent distinct from the implementer (verifier != runner, satisfying the receipt-honesty gate).
+      The false-green and init-lifecycle tests fail when runtime_local.py is reverted to origin/dev (RED)
+      and pass at the PR head (GREEN); the full runtime test dir passes with no regression.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14298/dod-001/command.yaml && grep -q '6e412e03031878d172da090cb0b3ab383bd087f5'
+          drift/dod_receipts/OMN-14298/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Honest deploy-surface assessment: the product PR changes only RuntimeLocal library code (runtime_local.py)
+      plus unit tests. It corrects runtime classification/lifecycle behavior on next deploy but performs
+      no live deploy, restart, topic mutation, or migration itself. No live deploy required or performed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14298/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14298/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the central OMN-14298 contract and
+      PASS receipts consumed by the product PR through its Evidence-Source line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14298/dod-occ-self/command.yaml
