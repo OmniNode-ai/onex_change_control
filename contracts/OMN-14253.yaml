@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14253"
+title: "omniclaude deep-dive script: GIT_AUTHOR default crashes under set -e when git user.name is unconfigured"
+summary: >-
+  omniclaude PR #1881 fixes `plugins/onex/skills/ticketing_insights/deep-dive`'s `GIT_AUTHOR` default
+  so a failing `git config user.name` (exit 1 when unconfigured) doesn't abort the whole script under
+  `set -e` before any output — `|| true` restores the documented "empty matches all" fallback semantics.
+  Second, independent bug from OMN-14251 (the `OMNI_HOME` unbound-variable crash) in the same script/test,
+  discovered blocking the omniclaude dev->main promotion PR #1879 (OMN-14249) a second time after OMN-14251
+  merged.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1881"
+    description: >-
+      Live GitHub verification shows omniclaude PR #1881 (head 045d05369dbf189a52f9f0c4fb0e00a65c3c4262)
+      targets dev from branch jonah/omn-14253-fix-git-author-set-e-crash. The diff is a single line in
+      plugins/onex/skills/ticketing_insights/deep-dive (adds `|| true` to the GIT_AUTHOR command substitution).
+      No src/ or runtime-path change, so deploy-gate is deploy-neutral. Reproduced the fix locally: `env
+      -u OMNI_HOME uv run pytest tests/skills/linear-insights/deep-dive/test_deep_dive_repo_discovery.py
+      -v -m unit` — before this fix 6/10 pass (the 4 tests overriding HOME to a fresh tmp_path fail);
+      after this fix 10/10 pass. Root cause confirmed via `bash -x` trace: the script died at the GIT_AUTHOR
+      assignment line, immediately after OUTPUT_DIR, with zero output, whenever the effective $HOME lacked
+      a configured git user.name. ruff format/check clean (bash file, no Python lint applicable); pre-commit
+      run --all-files (staged) all hooks passed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14253/dod-omniclaude-pr-1881/command.yaml &&
+          grep -q '^pr_number: 1881$' drift/dod_receipts/OMN-14253/dod-omniclaude-pr-1881/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14253 contract and the PASS
+      receipt consumed by omniclaude PR #1881 via its Evidence-Source line. Self-binds by commit_sha (the
+      contract commit), which is a member of this PR's commit set.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14253/dod-occ-self/command.yaml"
