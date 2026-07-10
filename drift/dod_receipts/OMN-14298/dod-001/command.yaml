@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14298"
+evidence_item_id: "dod-001"
+check_type: "command"
+check_value: >-
+  independent RED->GREEN of RuntimeLocal init-lifecycle + false-green kill, plus full runtime regression,
+  at product head 6e412e03031878d172da090cb0b3ab383bd087f5
+status: PASS
+run_timestamp: "2026-07-10T20:30:00Z"
+commit_sha: "6e412e03031878d172da090cb0b3ab383bd087f5"
+runner: "runtime-init-fixer"
+verifier: "build-verifier"
+pr_number: 1418
+probe_command: >-
+  env -u PYTHONPATH uv run pytest tests/unit/runtime/test_runtime_local.py -q (GREEN at head); then git
+  checkout origin/dev -- src/omnibase_core/runtime/runtime_local.py and re-run the OMN-14298 tests (RED);
+  then restore and run tests/unit/runtime/ -q
+probe_stdout: |
+  omnibase_core.__file__ = .../omni_worktrees/OMN-14245-verify/omnibase_core/src/omnibase_core/__init__.py
+  GREEN (fix present at head): 47 passed in 3.55s
+  RED (runtime_local.py reverted to origin/dev, tests kept): 5 failed, 3 passed
+    test_runtime_local_error_envelope_surfaces_failed_not_false_green: assert completed == FAILED
+    test_classify_result_status_values[error-Handler not initialized-failed]: assert completed == FAILED
+    test_runtime_local_initializes_handler_before_execute: assert 'error' == 'success'
+    test_runtime_local_skips_required_arg_initialize_and_fails_closed: assert completed == FAILED
+    test_ensure_handler_initialized_is_idempotent_and_guarded: AttributeError no _ensure_handler_initialized
+  restored to head; full runtime dir: 215 passed in 10.22s
+actual_output: >-
+  PASS: independent verification at product head 6e412e03031878d172da090cb0b3ab383bd087f5 by build-verifier
+  (distinct from the implementer runtime-init-fixer, satisfying the receipt-honesty runner!=verifier gate).
+  In a clean worktree (source path confirmed to resolve to the PR head, not ambient), the OMN-14298 tests
+  pass at head (GREEN) and fail when runtime_local.py is reverted to origin/dev while the tests are kept
+  (RED). The money proof is demonstrated directly: pre-fix, a returned error envelope (status="error"
+  + error_message="Handler not initialized") classifies COMPLETED / exit_code 0 - the banned exit-0-over-a-
+  broken-run false green - and both the false-green test and the parametrized "Handler not initialized"
+  classify case assert completed == FAILED (fail); at head they classify FAILED / exit 1. The init->execute
+  lifecycle (execute() no longer returns a not-initialized error because initialize() runs first), the
+  required-arg fail-closed path, and _ensure_handler_initialized idempotency also flip RED->GREEN. The
+  full runtime test dir passes at head (215 passed) with no regression. Consistent with the fixer's correct
+  narrowing to the RuntimeLocal level; node_model_router (a separate no-resolvable-entry-method failure)
+  is out of scope and not touched by this diff.
+exit_code: 0
+branch: "jonah/omn-14298-runtimelocal-init-lifecycle"
+contract_sha256: "sha256:ec9a6f8701e12a73503400a3faf6fe9a798d5d1f18b7403f4a01bf997a0a524d"
