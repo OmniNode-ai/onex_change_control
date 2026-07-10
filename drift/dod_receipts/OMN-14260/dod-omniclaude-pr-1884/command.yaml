@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14260"
+evidence_item_id: "dod-omniclaude-pr-1884"
+check_type: "command"
+check_value: "gh pr view 1884 --repo OmniNode-ai/omniclaude --json headRefOid,isDraft,body,files"
+status: PASS
+run_timestamp: "2026-07-10T10:08:03Z"
+commit_sha: 2819dd5b5c5d606c759aa2ca471f2c5b3d84044e
+runner: "omn-14260-independent-verifier"
+verifier: "occ-evidence-lane"
+probe_command: >-
+  gh run view 29083665508 --repo OmniNode-ai/omnibase_infra --json status,conclusion,workflowName && gh
+  api repos/OmniNode-ai/omnibase_infra/check-suites/78685755440/check-runs --jq '.total_count' && gh api
+  'repos/OmniNode-ai/omnibase_infra/actions/runs?event=pull_request&per_page=10' --jq '.workflow_runs[]
+  | select(.name=="Deploy Gate")' && git show 5fa434d06:.github/workflows/deploy-gate-reusable.yml &&
+  git diff 3650658b3^ 2819dd5b5c5d606c759aa2ca471f2c5b3d84044e -- .github/workflows/deploy-gate-reusable.yml
+  && python3 -c "import yaml; d=yaml.safe_load(open('.github/workflows/deploy-gate-reusable.yml')); print(list(d['jobs'].keys()))"
+probe_stdout: |
+  {"conclusion":"startup_failure","status":"completed","workflowName":"Deploy Gate"}
+  check-suite 78685755440 total_count: 0
+  {"id":29084575585,"status":"completed","conclusion":"startup_failure","head_sha":"895380081ee4522eb69f71ae3d39ad3d950f8a6c","created_at":"2026-07-10T09:53:59Z"}
+    (most recent Deploy Gate pull_request run on omnibase_infra at verification time — confirms the
+     breakage is persistent, not a one-off)
+  omniclaude dev head (5fa434d06) deploy-gate-reusable.yml jobs: [occ-preflight, deploy-gate]
+    (the nested occ-preflight job was already present pre-promotion; the -s ours unrelated-histories
+     merge carried it to main wholesale, it was not introduced by a single reviewed commit)
+  git diff 3650658b3^ 2819dd5b5c -- deploy-gate-reusable.yml:
+    only the new 13-line explanatory comment is added; the deploy-gate job body is otherwise
+    byte-identical to the pre-#1879 form (needs: occ-preflight removed, occ-preflight job removed)
+  python3 yaml.safe_load: jobs=['deploy-gate']  (occ-preflight fully absent, no needs: key)
+  spot-checked caller top-level gating (independent of the nested job being removed):
+    omnibase_infra deploy-gate.yml: occ-preflight (pinned-sha reusable, own permissions block) ->
+      deploy-gate: needs: occ-preflight
+    omnibase_core deploy-gate.yml: occ-preflight: uses: ./.github/workflows/occ-preflight.yml (local) ->
+      deploy-gate: needs: occ-preflight
+    omnimarket deploy-gate.yml: occ-preflight: name: "OCC Preflight Dependency" (inline wait-job)
+actual_output: >-
+  PASS: omniclaude PR #1884 (head 2819dd5b5c5d606c759aa2ca471f2c5b3d84044e, base dev) reverts the nested
+  cross-repo occ-preflight job that the OMN-14249 promotion (#1879, 3650658b3) carried into deploy-gate-reusable.yml.
+  Root-cause claim reproduced with hard, independently-gathered evidence (not taken on the requester's
+  framing): omnibase_infra's "Deploy Gate" workflow is startup_failure with 0 check-runs both on the cited
+  run (29083665508) AND on the most recent pull_request-triggered run at verification time (29084575585,
+  09:53:59Z) — the breakage is real and persistent. The nested job predates the 9-commit dev->main delta
+  (already present on dev head 5fa434d06 before promotion) — the -s ours unrelated-histories merge carried
+  it to main wholesale; it was not hand-introduced by a reviewed commit. The fix diff is minimal and clean:
+  git diff against 3650658b3^ shows only the added explanatory comment, the deploy-gate job body is otherwise
+  byte-identical to pre-#1879; a YAML parse of the PR-head file confirms exactly one job (deploy-gate),
+  zero occ-preflight job, zero needs: key. The "no coverage lost" claim is verified true, not merely asserted
+  in the PR body: all three caller repos (omnibase_infra, omnibase_core, omnimarket) already gate their
+  own deploy-gate job behind an INDEPENDENT top-level occ-preflight job that is structurally different
+  from (and unaffected by removing) the nested one — infra via a pinned-SHA reusable call with its own
+  permissions block, core via a local ./.github/workflows/occ-preflight.yml, market via an inline "OCC
+  Preflight Dependency" wait-job. No gate weakened, no skip token, no --no-verify.
+exit_code: 0
+pr_number: 1884
+branch: "jonah/omn-14260-revert-nested-occ-preflight"
+contract_sha256: "sha256:8d8941c4d77b0e0afbe0f461429912ae163eed9960c0c611084e1cd3b0e00ffa"
