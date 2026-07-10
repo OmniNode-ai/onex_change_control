@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14248"
+title: "fix(OMN-14248): scope mypy ignore_missing_imports per-module (stop masking unresolvable imports)"
+summary: >-
+  omnibase_core PR #1413 replaces mypy.ini's blanket global `ignore_missing_imports = True` with 27 narrow
+  per-module `[mypy-<module>]` overrides (mirroring pyproject.toml's existing scoped pattern), closing
+  a typecheck blind spot where any nonexistent-import path (typo or hallucinated) silently passed mypy
+  repo-wide. Removing the blanket surfaced 40 import-not-found errors across 26 files: 4 genuine third-party
+  soft dependencies (jinja2, boto3, dotenv, jsonpath_ng) and ~28 first-party stale-refactor targets. Of
+  those, 5 files with live runtime bugs (ModuleNotFoundError on import, or a Pydantic model-not-fully-defined
+  crash on instantiation) were fixed to their real import paths; 21 further first-party modules were scoped
+  with `# TODO(OMN-14248)` markers documenting real-target-vs-orphaned triage as tracked follow-up, not
+  fixed in this PR. Independent verification (this contract) found the initial head's claim that model_onex_batch_result.py's
+  live instantiation crash was fixed did not hold — `ModelOnexBatchResult(results=[])` still raised PydanticUserError,
+  now blocked on a nested TYPE_CHECKING-only `datetime` import in model_unified_run_metadata.py (unchanged
+  by the initial diff). The PR was corrected at head cc89e492238f6982e5ad9e733393f4b7b89b1a5c to also
+  move that `datetime` import out of TYPE_CHECKING into a real runtime import, which independently re-verified
+  as fixing the instantiation crash for real.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1413"
+    description: >-
+      Independent verification (not the implementing agent) of omnibase_core PR #1413 at head cc89e492238f6982e5ad9e733393f4b7b89b1a5c:
+      (a) mypy.ini carries no blanket global `ignore_missing_imports = True` — only 27 scoped `[mypy-<module>]`
+      overrides (4 third-party + 23 first-party, TODO-tagged where not fixed). (b) canonical `uv run mypy
+      src/omnibase_core` is green: "Success: no issues found in 4074 source files". (c) all 5 first-party-fixed
+      files import cleanly at runtime (model_template_validation_result, model_service_resolution_result,
+      model_execution_capabilities, model_onex_message_result, model_onex_batch_result), and `ModelOnexBatchResult(results=[])`
+      instantiates cleanly — the live Pydantic not-fully-defined crash claimed fixed by the PR is confirmed
+      actually fixed at this head (a prior head, e9f60bbdd41261180735cc4e7e1df75e0f03235d, was independently
+      found to still crash on a different undefined name — `datetime` via nested model_unified_run_metadata.py
+      — and was kicked back for a real fix rather than accepted on a corrected-but-still-false claim).
+      (d) the blind-spot probe (synthetic `from omnibase_core.this_module_totally_does_not_exist import
+      Whatever`) is correctly flagged `[import-not-found]` by mypy — the blind spot this ticket exists
+      to close is confirmed closed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14248/dod-omnibase-core-pr-1413/command.yaml
+          && grep -q '^pr_number: 1413$' drift/dod_receipts/OMN-14248/dod-omnibase-core-pr-1413/command.yaml
+          && grep -q '^commit_sha: "cc89e492238f6982e5ad9e733393f4b7b89b1a5c"$' drift/dod_receipts/OMN-14248/dod-omnibase-core-pr-1413/command.yaml
+  - id: "dod-occ-companion-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14248 contract and the dod-omnibase-core-pr-1413
+      PASS receipt consumed by omnibase_core PR #1413 through its Evidence-Source line. The receipt binds
+      this companion by a commit in this PR's commit set so occ-preflight can validate the companion without
+      relying on predicted PR numbers.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14248/dod-occ-companion-self/command.yaml
