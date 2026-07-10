@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14244"
+title: "fix(OMN-14244): narrow deploy-gate runtime-path matcher (stop false-positiving non-deploy CLIs,
+  catch real deploy CLIs)"
+summary: >-
+  omniclaude PR #1876 fixes the deploy-gate `RUNTIME_PATH_PATTERNS` heuristic in `.github/actions/deploy-gate/validate_pr_deploy_required.py`,
+  which gated every file under a `src/*/cli/` tree unconditionally (added in OMN-9685). That heuristic
+  was both too broad (false-positived `src/omnibase_infra/cli/cli_occ.py`, a pure click/text-parser CLI
+  with zero docker/subprocess/kafka/ssh surface, purely for living in a directory named "cli") and too
+  narrow (missed `src/omnibase_infra/docker/catalog/cli.py`, a genuine `subprocess`+`docker compose` deploy
+  CLI, because "cli" is the filename there, not a directory segment). The fix splits `CLI_PATH_PATTERNS`
+  out of the unconditional set so a `src/*/cli/*.py` file is a runtime-path hit only when its own content
+  references a deploy-relevant surface (docker/subprocess/paramiko/fabric/kafka/rpk/compose/ssh/deploy,
+  word-boundary, case-insensitive), fail-closed on unreadable files, and adds an unconditional `src/*/docker/*.py`
+  + `src/*/docker/**/*.py` inclusion that does not sweep in `src/*/models/docker/*` pure data models.
+  An independent verifier (separate from the implementing agent) reproduced the fix end-to-end.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1876"
+    description: >-
+      Independent verification (a separate verifier, NOT the implementing agent) reproduced omniclaude
+      PR #1876 (head 30f86d250f26ad028bbdc7579eb87a89a36f2fb1, base dev, draft) in the OMN-14244 omniclaude
+      worktree. The diff is exactly two files: `.github/actions/deploy-gate/validate_pr_deploy_required.py`
+      (68 additions / 7 deletions) and the new `tests/workflows/test_validate_pr_deploy_required.py` (231
+      lines, 11 tests). Ran the new regression suite standalone: 11/11 passed, confirming (a) a `cli_occ.py`-shaped
+      module (pure text/YAML CLI, no deploy-signal content) is NOT matched, (b) a `docker/catalog/cli.py`-shaped
+      module (subprocess + docker content) IS matched, (c) the unconditional `src/*/docker/*.py` path
+      inclusion matches without needing a content check while `src/*/models/docker/*` pure data models
+      are NOT matched (regression guard on the new pattern), (d) OMN-9685 intent is preserved — `cli_commands.py`-,
+      `cli_run_node.py`-, `cli_kafka.py`-shaped modules and a subprocess+docker omnimarket CLI-shaped
+      module all stay matched, (e) an unreadable/deleted CLI file still fails CLOSED (still matched),
+      and (f) node/handler/enum categories are untouched by the change. Ran the full `tests/workflows/`
+      directory (25 tests, includes auto-merge, blocking-validation, deploy-gate-reusable, and main-target-guard
+      suites) to confirm no cross-suite regressions: 25/25 passed. Independently ran `ruff format --check`
+      and `ruff check` on both touched files: both clean. Independently ran `mypy --ignore-missing-imports`
+      on both touched files: exactly 1 pre-existing `no-any-return` error on the untouched `_run_gh_json`
+      helper (line 236), matching the PR body's own disclosure — no new mypy errors introduced by the
+      diff.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14244/dod-omniclaude-pr-1876/command.yaml &&
+          grep -q '^pr_number: 1876$' drift/dod_receipts/OMN-14244/dod-omniclaude-pr-1876/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14244 contract and the PASS
+      receipt consumed by omniclaude PR #1876 via its Evidence-Source line. It binds itself to occ-preflight
+      by commit_sha (the contract commit C1), which is a member of this PR's commit set, so occ-preflight
+      verifies the companion without OCC PR-number prediction under concurrent lanes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14244/dod-occ-self/command.yaml
