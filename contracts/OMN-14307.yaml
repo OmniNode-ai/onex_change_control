@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14307"
+title: "feat(OMN-14307): typed GitHub repo status gateway (read-only CLI) to replace raw gh in verify
+  loops"
+summary: >-
+  omnimarket product PR #1703 (branch jonah/omn-14307-typed-github-repo-gateway-read, head 1ce87561fe32fbe2923e723b4908f0a84507df9c)
+  adds node_github_repo_gateway_effect — a CLI-invoked, read-only GitHub status reader that returns ONE
+  small typed object per operation (pr_status, ci_checks, open_prs_list, branch_protection, review_gate,
+  merge_commit_sha, ticket_ref) so the verify-before-accept loop can replace raw `gh pr checks/view --json`
+  (large token burn). Additive: it does not touch the live node_pr_lifecycle_* merge path. Reuses the
+  existing typed GitHub transport (GitHubHttpClient + github_api.graphql) — no subprocess gh. This first
+  slice is CLI-only and DECLARED experimental (contract lifecycle: experimental, metadata full_runtime:
+  false); the live-Kafka runtime path and the merge-execute effect leaves are deferred, human-gated, and
+  out of scope.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent verification of the read slice at product head 1ce87561fe32fbe2923e723b4908f0a84507df9c
+      (PR #1703), run by build-verifier-2 (distinct from the implementer gateway-builder; verifier !=
+      runner). Confirmed live that the CLI returns ONE typed object per operation (not a gh dump) with
+      the token resolved via the secret store (no gh shell); that the 25 protocol tests pass AND are mutation-discriminating
+      (mis-routing ci_checks -> pr_status turns protocol A + B RED, then restored); and injected-transport
+      purity (no read leaf calls another; token via contract_secret_ref -> resolve_api_key, never a raw
+      env read, never logged). mypy --strict on the node is clean, and the deferred scope is honestly
+      declared (lifecycle: experimental, full_runtime: false).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14307/dod-001/command.yaml && grep -q '1ce87561fe32fbe2923e723b4908f0a84507df9c'
+          drift/dod_receipts/OMN-14307/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Honest deploy-surface assessment: the product PR adds a new CLI-only, read-only node (node_github_repo_gateway_effect)
+      plus its tests, and registers it in pyproject entry-points. It is declared experimental / full_runtime:
+      false and is not wired into any live-Kafka consumer or the merge path. Verification exercised only
+      read-only GitHub API calls; no container deploy, restart, topic mutation, migration, or write occurred.
+      No live deploy required or performed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14307/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14307/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the central OMN-14307 contract and
+      PASS receipts consumed by product PR #1703 through its Evidence-Source line. Self-binds via the
+      first commit's SHA (commit_sha), so no OCC PR number prediction is required under concurrent lanes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14307/dod-occ-self/command.yaml
