@@ -1,0 +1,37 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14367
+evidence_item_id: dod-001
+check_type: command
+check_value: >-
+  env -u PYTHONPATH uv run pytest tests/unit/shared/test_tenant_stamp.py tests/unit/runtime/auto_wiring/test_handler_wiring_tenant_scoped_ingress.py
+  -v && python3 differential_noop_proof.py  # old inlined {**payload,"tenant_id":slug} vs helper, 6 edge
+  inputs && env -u PYTHONPATH uv run mypy src/omnibase_infra/shared/tenant_stamp.py src/omnibase_infra/runtime/auto_wiring/handler_wiring.py
+status: PASS
+run_timestamp: "2026-07-11T06:30:00Z"
+commit_sha: 42538219d0d21af6de127553ae0882c0161ea84c
+runner: claude-opus-4-8
+verifier: omn14367-independent-verify
+pr_number: 2257
+probe_command: >-
+  cd omni_worktrees/OMN-14367/wt2257 && env -u PYTHONPATH .venv/bin/python -m pytest tests/unit/shared/test_tenant_stamp.py
+  tests/unit/runtime/auto_wiring/test_handler_wiring_tenant_scoped_ingress.py -v; then a differential
+  proof comparing the pre-refactor expression {**payload, "tenant_id": slug} against stamp_verified_tenant_slug
+  across six edge inputs (empty, normal, overwrite, overwrite+key-order, unrelated-key) asserting identical
+  value AND key-order; then mypy on the two changed source files.
+probe_stdout: |
+  helper + #2254 regression suites = 11 passed (6 new helper + 5 existing no-op regression)
+  differential no-op proof = identical(value+order)=True for all 6 edge inputs -> BYTE-IDENTICAL
+  mypy = Success: no issues found in 2 source files
+actual_output: >-
+  PASS: omnibase_infra PR #2257 head 42538219d0d21af6de127553ae0882c0161ea84c adds omnibase_infra.shared.tenant_stamp.stamp_verified_tenant_slug
+  (returns exactly {**payload, "tenant_id": slug} — verified slug wins, no tenant_slug key, copy not in-place)
+  and routes the #2254 auto-wiring stamp through it. The refactor is a genuine byte-identical no-op: a
+  differential proof over six edge inputs matched the old inlined expression in value AND key-order, and
+  the pre-existing 5-test tenant-scoped regression suite plus 6 new helper tests all pass. The helper
+  is a stdlib-only leaf (imports only collections.abc.Mapping), does not touch #2252 handler_consume_inbound,
+  and leaves the emitted shape unchanged so it cannot trip the omnimarket OMN-14208 xfail. mypy clean
+  on both files.
+exit_code: 0
+branch: jonah/omn-14367-shared-tenant-stamp-helper
+contract_sha256: sha256:91528187ace320647c239fd3f55abf4f810990a7f942c6cdf87059b405bac61f
