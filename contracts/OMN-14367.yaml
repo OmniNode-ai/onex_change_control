@@ -1,0 +1,65 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14367
+title: "refactor(OMN-14367): shared canonical tenant-stamp helper (slug in tenant_id)"
+summary: >-
+  omnibase_infra PR #2257 introduces omnibase_infra.shared.tenant_stamp.stamp_verified_tenant_slug as
+  the single source of truth for the verified-tenant payload shape (payload["tenant_id"] = DNS-safe slug,
+  no separate tenant_slug key) and routes the #2254 auto-wiring tenant_scoped_ingress stamp (handler_wiring._stamp_tenant_id_from_topic_prefix)
+  through it. This is a behavior-preserving no-op refactor — the stamp already emitted {**payload, "tenant_id":
+  slug}; it now produces the identical dict via the helper so the two tenant-stamp producers cannot diverge
+  on the shape again. Gateway (#2252) adoption and the ommarket OMN-14208 xfail flip are separate paired
+  follow-ups (do not auto-close).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-001
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2257 at head 42538219d0d21af6de127553ae0882c0161ea84c.
+      Confirmed stamp_verified_tenant_slug returns exactly {**payload, "tenant_id": slug} (verified slug
+      wins; no tenant_slug key; copy, not in-place mutation) and that the handler_wiring refactor is a
+      genuine byte-identical no-op: a differential proof compared the old inlined expression against the
+      helper across six edge inputs (empty, normal, overwrite, overwrite+key-order, unrelated-key) with
+      identical value AND key-order every time, and the pre-existing 5-test #2254 tenant-scoped regression
+      suite plus the 6 new helper tests all pass (11 passed). mypy clean on both changed source files.
+      The helper is a stdlib-only leaf (imports only collections.abc.Mapping), does not touch #2252 handler_consume_inbound,
+      and leaves the emitted shape unchanged.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-001/command.yaml && grep -q '^pr_number:
+          2257$' drift/dod_receipts/OMN-14367/dod-001/command.yaml && grep -q '42538219d0d21af6de127553ae0882c0161ea84c'
+          drift/dod_receipts/OMN-14367/dod-001/command.yaml
+  - id: dod-deploy-assessment
+    description: >-
+      Deploy-surface assessment for PR #2257. The change adds a pure stdlib-only leaf helper module plus
+      a behavior-preserving no-op refactor of the runtime auto-wiring stamp and unit tests. It adds no
+      runtime service, no daemon, no topic, no migration, no deployable runtime container change, and
+      no live .201 mutation. Because the refactor is byte-identical, runtime dispatch behavior is unchanged;
+      the helper only centralizes the already-emitted payload shape so the two producers cannot diverge
+      again.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14367/dod-deploy-assessment/command.yaml
+  - id: dod-occ-self
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the central OMN-14367 contract and
+      receipts consumed by omnibase_infra #2257 through its Evidence-Source line. Self-binds via the first
+      commit SHA so occ-preflight eligibility does not require predicting the OCC PR number.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-occ-self/command.yaml
