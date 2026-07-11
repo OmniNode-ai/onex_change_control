@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14350"
+title: "feat(OMN-14350): non-canonical lifecycle-class ratchet gate (omnibase_core canary)"
+summary: >-
+  omnibase_core PR #1430 adds a new ratchet validator (src/omnibase_core/validators/no_noncanonical_lifecycle_classes.py)
+  that flags CamelCase classes carrying a non-canonical lifecycle type-word (Service/Engine/Adapter/Router/Daemon/Manager/Runner/Registry/Controller/
+  Server/Client) against a frozen 61-FQN allowlist (noncanonical_class_allowlist.yaml), wired as a pre-commit
+  hook and a required Quality-Gate CI job (--check-stale, count-only-down). Canonical constructs (Model*/Protocol*/Enum*/Mixin*/TypedDict*/Node*/Handler*
+  prefixes, *Error/*Result/*State/*Config DTO suffixes, per-node DI registries) are excluded as false
+  positives. Canary scope: omnibase_core only, no cross-repo fan-out. No runtime contract, topic, migration,
+  or deployed-service surface is touched; validator + CI-gate + tests only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-001
+    description: >-
+      Independent adversarial verification of omnibase_core PR #1430 at head 793399ff9a48374fd74b4d635fad0ee09f8f2a72.
+      Fail-closed proven: a fresh `class FooService` (and a bespoke `ServiceFooManager`, `BespokeDeploymentController`,
+      `OrdersConnectionManager`) each drive the validator RED (exit 1), while the current tree + the 61-FQN
+      allowlist is GREEN in both default and --check-stale modes. Over-suppression hunt: the 130 suppressed
+      classes are all genuinely canonical (125 structural-prefix Model*/Protocol*/Enum*/Mixin*/TypedDict*,
+      4 *Error DTO-suffix, 1 canonical per-node registry) — no bespoke lifecycle owner hides behind an
+      exclusion; the 61 hard-fail residuals exactly equal the 61-FQN allowlist. --check-stale proven:
+      renaming an allowlisted class so its FQN disappears makes the gate RED with exactly that stale entry
+      (count-only-down holds); default mode stays GREEN. The gate's own unit suite passes 22/22.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14350/dod-001/command.yaml && grep -q '^pr_number:
+          1430$' drift/dod_receipts/OMN-14350/dod-001/command.yaml && grep -q '793399ff9a48374fd74b4d635fad0ee09f8f2a72'
+          drift/dod_receipts/OMN-14350/dod-001/command.yaml
+  - id: dod-deploy-assessment
+    description: >-
+      Deploy-surface assessment for PR #1430. The change adds a validator module, a Pydantic finding DTO,
+      a frozen allowlist YAML, a unit test, one pre-commit hook, and one required Quality-Gate CI job.
+      It adds no runtime service, no daemon, no topic, no migration, no dependency, no deployable runtime
+      container change, and no live .201 mutation. The pre-commit-only `validate-no-backward-compatibility`
+      hook was SKIP-ed for the commit; independent verification confirmed it is ALREADY red on origin/dev
+      (util_name_validation.py:14 + validator_utils.py:634, pre-existing debt from 80560deb) with 2/2
+      failure parity and zero new failures from #1430's files, and it is not a CI gate — so the skip is
+      a pre-existing-debt friction, not a rule-#10 bypass.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14350/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14350/dod-deploy-assessment/command.yaml
+  - id: dod-occ-self
+    description: >-
+      OCC companion self-binding for omnibase_core #1430. This onex_change_control PR carries the central
+      OMN-14350 contract and PASS receipts consumed by #1430 through its Evidence-Source line. Self-binds
+      via the first commit SHA so occ-preflight eligibility does not require predicting the OCC PR number.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14350/dod-occ-self/command.yaml
