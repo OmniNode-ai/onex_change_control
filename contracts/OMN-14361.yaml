@@ -1,0 +1,62 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14361
+title: "fix(OMN-14361): stop dispatch-parity-gate re-breaking on package-version drift"
+summary: >-
+  omnibase_infra PR #2256 makes the dispatch-parity-gate staleness check strip the volatile header fields
+  (generated_at_utc + installed_package_versions) from both the committed and live snapshots via a single
+  source-of-truth harness helper before the byte-comparison, so a routine tracked-package release (e.g.
+  omnibase-core 0.46.5 -> 0.46.7) no longer re-breaks dev's frozen baseline on every open PR. The dispatch
+  corpus (contracts / dispatchers / routes / topics / probes, required_missing_packages, exclusions[].installed)
+  is still byte-compared, so genuine selection drift still fails the gate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-001
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2256 at head 76e57e3e2db60ffaf07ec303a75ffa995704ee5b.
+      The PR adds VOLATILE_HEADER_FIELDS + strip_volatile_header_fields() to tests/fixtures/dispatch_parity/harness.py,
+      rewires the dispatch-parity-gate.yml staleness step to call that shared helper on both the committed
+      and live snapshots, regenerates baseline-selection-v2.json (2 volatile lines only), and adds an
+      8-test unit suite. Independent verification confirmed the 8 unit tests pass, and an adversarial
+      gate-neutering probe against the REAL committed baseline proved every genuine corpus drift (route/dispatcher/probe
+      tuple, corpus count, required_missing_packages, exclusions[].installed) still trips while a version+clock-only
+      delta is suppressed.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14361/dod-001/command.yaml && grep -q '^pr_number:
+          2256$' drift/dod_receipts/OMN-14361/dod-001/command.yaml && grep -q '76e57e3e2db60ffaf07ec303a75ffa995704ee5b'
+          drift/dod_receipts/OMN-14361/dod-001/command.yaml
+  - id: dod-deploy-assessment
+    description: >-
+      Deploy-surface assessment for PR #2256. The change touches only CI test-harness and workflow surfaces
+      (tests/fixtures/dispatch_parity/harness.py, .github/workflows/dispatch-parity-gate.yml, a regenerated
+      test fixture, and a new unit test). It adds no runtime service, no daemon, no topic, no migration,
+      no deployable runtime container change, and no live .201 mutation. Runtime dispatch behavior is
+      unchanged; only the CI staleness comparison stops counting package-version metadata as corpus drift.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14361/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14361/dod-deploy-assessment/command.yaml
+  - id: dod-occ-self
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the central OMN-14361 contract and
+      receipts consumed by omnibase_infra #2256 through its Evidence-Source line. Self-binds via the first
+      commit SHA so occ-preflight eligibility does not require predicting the OCC PR number.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14361/dod-occ-self/command.yaml
