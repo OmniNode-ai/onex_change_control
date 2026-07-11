@@ -956,6 +956,32 @@ jobs:
           fi
           exit "$rc"
 
+  no-noncanonical-lifecycle-classes:
+    name: no-noncanonical-lifecycle-classes
+    # OMN-14350: non-canonical lifecycle-class ratchet. Unconditional (no needs/if) so
+    # it never skips; wired into required CI Summary via needs: + strict success-only check.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.3"
+      - name: Ratchet non-canonical lifecycle-word classes against frozen allowlist (OMN-14350)
+        run: |
+          uv run --no-project \
+            --with 'omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core@63635097705d832e0ee9c4811093efb31349105c' \
+            python -m omnibase_core.validators.no_noncanonical_lifecycle_classes \
+            --check-stale \
+            --allowlist .onex_ratchets/noncanonical_class_allowlist.yaml \
+            src/onex_change_control
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -967,11 +993,18 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes]
     if: always()
     steps:
       - name: Check all jobs passed
         run: |
+          # OMN-14350: strict fail-closed gate on the non-canonical lifecycle-class
+          # ratchet. Only 'success' passes; skipped/cancelled/failure ALL block. The
+          # ratchet is in needs: so this job WAITS for it (no race).
+          if [[ "${{ needs.no-noncanonical-lifecycle-classes.result }}" != "success" ]]; then
+            echo "::error::no-noncanonical-lifecycle-classes ratchet did not pass (result: ${{ needs.no-noncanonical-lifecycle-classes.result }}) - fail-closed (OMN-14350)"
+            exit 1
+          fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
             echo "One or more required jobs failed or were cancelled"
             exit 1
