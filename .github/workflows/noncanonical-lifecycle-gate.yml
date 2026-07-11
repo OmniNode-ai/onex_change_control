@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-14350: non-canonical lifecycle-class ratchet — dedicated CI gate.
+#
+# Uniform merge-gating enforcement (Operating Rule #5): installs the omnibase_core
+# validator from the pinned core dev SHA in an isolated env and ratchets onex_change_control's frozen
+# allowlist (.onex_ratchets/noncanonical_class_allowlist.yaml). Any NEW non-canonical
+# class outside the baseline — or a stale allowlist entry (--check-stale) — fails.
+# Runs on pull_request with no OCC dependency. The pre-commit hook stays for local dev;
+# THIS workflow is what makes the ratchet a real merge gate. The pinned core ref is a
+# specific dev SHA carrying the validator + export — never a moving ref.
+name: Non-Canonical Lifecycle-Class Ratchet
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, dev]
+  push:
+    branches: [main, dev, "hotfix/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: noncanonical-lifecycle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  no-noncanonical-lifecycle-classes:
+    name: no-noncanonical-lifecycle-classes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.3"
+
+      - name: Ratchet non-canonical lifecycle-word classes against frozen allowlist (OMN-14350)
+        run: |
+          uv run --no-project \
+            --with 'omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core@63635097705d832e0ee9c4811093efb31349105c' \
+            python -m omnibase_core.validators.no_noncanonical_lifecycle_classes \
+            --check-stale \
+            --allowlist .onex_ratchets/noncanonical_class_allowlist.yaml \
+            src/onex_change_control
