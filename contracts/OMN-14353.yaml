@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14353"
+title: "feat(OMN-14353): compute-golden equivalence oracle primitive + non-vacuous canary"
+summary: >-
+  omnibase_core PR #1425 lands scripts/ci/compute_golden.py — a pure typed input->output golden recorder
+  plus a masked equivalence comparator (record_golden, apply_mask, diff_paths, compare_output, outputs_equivalent)
+  — and tests/unit/canary/ proving the oracle is NON-VACUOUS on a real pure COMPUTE node (NodeRoutingAuthorityCheckCompute).
+  This is the seed equivalence-oracle primitive for the self-verifying codegen factory. It is documented
+  as COMPLEMENTARY to (not a duplicate of) omnibase_core.runtime.golden_chain.record_fixture, which freezes
+  an LLM provider's response bytes over an HTTP transport seam and does not fit a pure COMPUTE node whose
+  golden is typed input -> typed output with no provider/model/endpoint. Scripts + tests only; no runtime
+  node handler, no deploy scope.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_core-pr-1425"
+    description: >-
+      Independent adversarial verification against omnibase_core PR #1425 head 2f9a72c55fc66c35fd9bf2db42f4dc9113f85245
+      in the isolated worktree with PYTHONPATH cleared. compute_golden.py is pure (imports only json +
+      typing; no I/O, clock, or random) and correctly serializes typed input->output and masks volatile
+      fields symmetrically on both sides of the compare; its docstring documents it as complementary to
+      golden_chain.record_fixture (the LLM-delegation-only recorder), not a duplicate. All 8 canary tests
+      pass (3 determinism, 3 record-then-replay-equivalence, 1 discrimination, 1 volatile-mask). Hermetic:
+      grep of the canary test shows it perturbs the recorded golden output dict (golden["output"][...])
+      and NEVER edits/monkeypatches handler source. TWO-WAY mask discrimination proven three ways: (a)
+      the committed test_comparator_discriminates_a_regression perturbs non-masked fields (residue_ok/passed)
+      and the comparator flags them RED; (b) the committed test_volatile_mask_excludes_declared_fields
+      perturbs a masked field and the compare stays GREEN; (c) an independent verifier harness confirmed
+      a masked-field perturb -> [] (GREEN), a real-field perturb -> ['passed: True != False'] (RED), and
+      a simultaneous real+masked perturb flags only the real field (the mask is not blind). Non-vacuity:
+      neutering compare_output to return [] drove test_comparator_discriminates_a_regression RED, then
+      reverted. Determinism (out1==out2) and replay-equivalence (record -> re-validate input from the
+      SERIALIZED golden -> re-run handler -> compare==[]) are real, not tautological. ruff clean on both
+      files. FINDING (low, non-blocking): mypy --strict on scripts/ci/compute_golden.py reports one no-any-return
+      at line 42 (return of a json.loads(...) value typed Any from a dict-returning function); no CI gate
+      type-checks this path (pre-commit mypy scopes to src/omnibase_core; mypy-validation-scripts runs
+      a hardcoded file list that excludes it; pyright include is src/omnibase_core only), so it will not
+      block CI — a one-line annotation fixes it. The worktree was left clean of all verification residue
+      (an unrelated Task-#41 follow-up file present in the shared worktree was not touched).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14353/dod-omnibase_core-pr-1425/command.yaml
+          && grep -q '^pr_number: 1425$' drift/dod_receipts/OMN-14353/dod-omnibase_core-pr-1425/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14353 contract and PASS
+      receipt for omnibase_core PR #1425, binding itself to occ-preflight by commit_sha (contract commit
+      C1), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14353/dod-occ-self/command.yaml
