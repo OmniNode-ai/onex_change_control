@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14358"
+title: "feat(OMN-14358): effect_golden — contract-driven declared-effect readback oracle"
+summary: >-
+  omnibase_core PR #1427 lands scripts/ci/effect_golden.py — the EFFECT analog of compute_golden. An EFFECT
+  node's output is its side effect (published event, written file), so this harness proves the DECLARED
+  side-effects actually happened by READBACK against a REAL recording sink, not by "didn't throw" (the
+  MagicMock blind spot, OMN-14294). RecordingEventSink captures every publish; readback_effects asserts
+  effects CONJUNCTIVELY (every declared topic captured AND every declared file glob matches a non-empty
+  file) into a typed ModelEffectReadback carrying missing_effects; topics are contract-driven (parsed
+  + Pydantic-validated from contract.yaml publish_topics); a volatile mask excludes run_id/timestamp/correlation_id
+  from effect-payload equivalence. tests/unit/canary/test_effect_golden.py proves the oracle is non-vacuous
+  on a real EFFECT node (NodeComplianceEvidenceEffect). Scripts + tests only; no runtime node handler,
+  no deploy scope.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_core-pr-1427"
+    description: >-
+      Independent adversarial verification against omnibase_core PR #1427 head 5453be738251124f0ea1638dab83ed984ee813ea
+      in an isolated detached worktree with PYTHONPATH cleared. RecordingEventSink is a REAL sink (a plain
+      class appending every publish to a captured list) — grep confirms the only MagicMock references
+      are docstrings/comments explaining the anti-pattern; there is no Mock/MagicMock/mocker instantiation
+      in the module or test. readback_effects is CONJUNCTIVE: published_ok = every declared topic present
+      in the sink's captured set, files_ok = every declared file glob matches a non-empty file, ok = both;
+      it returns a typed ModelEffectReadback whose _check enforces ok == (published_ok and files_ok),
+      forbids missing_effects when ok, and requires >=1 missing_effect when not ok. DISCRIMINATION proven
+      two ways: the committed test_readback_CATCHES_a_suppressed_effect drives the REAL node with event_bus=None
+      so execute() returns a Path WITHOUT throwing ("didn't throw" would pass) yet readback FAILS with
+      the declared topic in missing_effects; and an independent verifier probe (run under pytest's correct
+      import order) confirmed baseline all-present -> ok True, suppress-topic -> ok False + topic missing,
+      suppress-file (whitespace-only = empty) -> ok False + files_ok False, and conjunctive 2-topic-1-published
+      -> ok False with only the missing topic flagged. Contract-driven topic parsing via parse_publish_topics
+      (Pydantic _ContractPublishTopics over contract.yaml); volatile mask (run_id/timestamp/correlation_id)
+      applied in record/compare; compare catches a real payload change. 7 tests pass, genuinely exercising
+      all of the above (not tautological); ruff clean. LOW FINDING (non-blocking): mypy --strict reports
+      one no-any-return at effect_golden.py:142 (_apply_mask returns a json.loads(...) value typed Any
+      from a dict-returning function) — the identical nit that was annotated away in compute_golden.py:42
+      but copied unfixed here; no CI gate type-checks scripts/ci/, so it will not block CI, and a one-line
+      annotation (masked: dict[str, Any] = ...) resolves it. Side note (not this PR's defect): omnibase_core.utils.util_safe_yaml_loader
+      has a pre-existing cold-import cycle with mixins/models.contracts that only resolves when core is
+      imported in dependency order (pytest does; a bare import of the util first does not) — effect_golden
+      works because its consumers import it after core is initialized.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14358/dod-omnibase_core-pr-1427/command.yaml
+          && grep -q '^pr_number: 1427$' drift/dod_receipts/OMN-14358/dod-omnibase_core-pr-1427/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14358 contract and PASS
+      receipt for omnibase_core PR #1427, binding itself to occ-preflight by commit_sha (contract commit
+      C1), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14358/dod-occ-self/command.yaml
