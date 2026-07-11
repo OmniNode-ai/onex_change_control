@@ -6,8 +6,8 @@ check_type: "command"
 check_value: "cd omnibase_core && env -u PYTHONPATH uv run pytest tests/unit/canary/test_adequacy_receipt.py
   -q"
 status: PASS
-run_timestamp: "2026-07-11T02:16:00Z"
-commit_sha: 54b7bb3710a84a8b92332fd40f66f3636356118e
+run_timestamp: "2026-07-11T02:35:00Z"
+commit_sha: 0eac0aeee9c7982ab050d70ae11b5b688ae3eb6b
 runner: "omn-14354-independent-verifier"
 verifier: "occ-evidence-lane"
 probe_command: >-
@@ -16,10 +16,12 @@ probe_command: >-
   (4 canonical waiver cases + the meets_target-lie forge + scrub + stale-hash); env -u PYTHONPATH uv run
   ruff check; env -u PYTHONPATH uv run mypy --strict scripts/ci/adequacy_receipt.py
 probe_stdout: |
-  9 passed in 3.53s
+  re-bind: verified at head 54b7bb37 (had an open forge finding); head advanced to 0eac0aee with the fix ("reject receipts whose meets_target lies about the coverage numbers"); re-verified at 0eac0aee
+  11 passed in 1.89s (was 9; +2 committed forge tests)
   waiver invariant: below-target+no-waiver REJECTED; above-target+waiver REJECTED; above+no-waiver accepted; below+waiver accepted
   degenerate guard: meets_target=True + selected_count==0 REJECTED
-  FORGE (meets_target=True, pct=10, target=80, selected_count=1, no waiver): ACCEPTED  <-- MEDIUM finding (meets_target not derived/cross-checked)
+  FORGE (meets_target=True, pct=10, target=80, selected_count=1, no waiver): REJECTED (finding CLOSED - _check now raises unless meets_target == (pct >= target))
+  MIRROR forge (pct>=target, meets_target=False): REJECTED
   scrub: redacts api_key/password/token at all depths; keeps non-sensitive; PASS
   stale-hash: one-byte handler change -> different sha256 -> stale receipt detectable; PASS
   ruff check: All checks passed!
@@ -30,13 +32,13 @@ actual_output: >-
   the new hardening guard rejects a degenerate zero-input pass; the deny-by-default scrub redacts sensitive
   values at every depth; provenance (recorded_at, per-input canonical hash, handler_module_sha256) is
   present; the handler hash is byte-sensitive so a stale receipt is detectable by the consuming gate;
-  and the 9 tests genuinely exercise all of this (not tautological). ruff and mypy --strict are clean.
-  ONE MEDIUM finding beyond the stated criteria (non-blocking): the model enforces the waiver<->meets_target
-  consistency but does not derive meets_target from branch_coverage_pct vs coverage_target, so a hand-built
-  receipt that lies about meets_target (pct below target, meets_target=True, one selected input, no waiver)
-  is accepted. build_receipt always computes meets_target correctly so the honest flow is safe, but the
-  consuming ratchet-gate MUST re-derive meets_target (or _check should add the one-line cross-check) so
-  a forged receipt cannot certify a below-target node as canonical.
+  and the 11 tests genuinely exercise all of this (not tautological). ruff and mypy --strict are clean.
+  Re-bound to head 0eac0aeee9c7982ab050d70ae11b5b688ae3eb6b: the earlier MEDIUM finding is CLOSED. _check
+  now derives the verdict — it raises unless meets_target == (branch_coverage_pct >= coverage_target)
+  — so the forge that previously slipped through (pct=10, target=80, meets_target=True, no waiver) is
+  now REJECTED at construction, as is the mirror (pct>=target with meets_target=False). Both forge cases
+  are committed as regression tests. The fail-closed uncovered-waiver is now a clean, non-bypassable invariant
+  on the receipt data itself, not just the honest build_receipt path.
 exit_code: 0
 pr_number: 1426
 branch: "jonah/omn-14354-adequacy-receipt"
