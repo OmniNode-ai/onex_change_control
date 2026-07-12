@@ -77,3 +77,28 @@ dod_evidence:
         check_value: >-
           grep -q 'jonah/omn-14418-occ-companion' drift/dod_receipts/OMN-14418/dod-occ-self-commit/command.yaml
           && grep -q 'pr_number: 4008' drift/dod_receipts/OMN-14418/dod-occ-self-commit/command.yaml
+  - id: "dod-deploy-assessment-head-dbfc5d6b"
+    description: >-
+      Deploy-surface assessment for omnimarket#1724 head dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28, required
+      because deploy-gate flags the PR as touching runtime paths (the two node_pr_lifecycle_fix_effect
+      handler modules). The claim under test is NARROW and falsifiable: #1724 changes no deploy surface
+      — no Dockerfile, no docker-compose, no deploy/, no migrations/, no Terraform, no chart/k8s/helm
+      manifest. It is a pure source + unit-test change, so there is no live deploy to perform and no runtime
+      to restart. This is NOT the conventional self-grep. The established deploy-assessment form (grep
+      -q '^status: PASS$' on its own receipt, plus a grep for the literal 'no live deploy' in that same
+      receipt) is circular — it greps the receipt for strings the receipt itself contains, and would pass
+      identically if #1724 added a Dockerfile tomorrow. Instead this check reads #1724's ACTUAL changed-file
+      list from the GitHub pulls/files API and asserts that ZERO of those paths match a deploy surface.
+      It observes the product PR, not this receipt. Bidirectionally proven by execution against real controls:
+      #1724's file list contains 4 files (2 handlers + 2 unit tests) and 0 deploy-surface paths, so the
+      command exits 0; the IDENTICAL command pointed at omnimarket#4 — a real PR that touches Dockerfile.projection
+      and docker-compose.projection.yml — exits 1. If #1724 ever grows a deploy surface, this check goes
+      RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/omnimarket/pulls/1724/files --paginate --jq '.[].filename'
+          | grep -icE 'dockerfile|docker-compose|(^|/)deploy/|(^|/)migrations/|\.tf$|(^|/)charts/|(^|/)k8s/|(^|/)helm/')"
+          -eq 0
