@@ -17,6 +17,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from types import ModuleType
 from pathlib import Path
 
 import pytest
@@ -31,7 +35,7 @@ _ALLOWLIST = _REPO_ROOT / "scripts" / "ci" / "dod_runner_legacy_allowlist.txt"
 CUTOFF_TICKET_COUNT = 6919
 
 
-def _load_runner():  # type: ignore[no-untyped-def]
+def _load_runner() -> ModuleType:
     """Import the CI runner by path (it is a script, not a package module)."""
     path = _REPO_ROOT / "scripts" / "ci" / "run_contract_compliance_check.py"
     spec = importlib.util.spec_from_file_location("_dod_runner", path)
