@@ -160,7 +160,9 @@ def _contract_hash_violation(
     ``contract_entry_sha256`` / ``contract_sha256`` is set. Returns ``None``
     when the receipt is bound cleanly to the current contract.
     """
-    if receipt.contract_entry_sha256 is not None:
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    contract_sha256 = getattr(receipt, "contract_sha256", None)
+    if contract_entry_sha256 is not None:
         try:
             contract_data = yaml.safe_load(contract_path.read_text())
         except (OSError, yaml.YAMLError) as exc:
@@ -176,10 +178,10 @@ def _contract_hash_violation(
                 "The entry was removed or renamed after this receipt was "
                 "produced (append-only violation) — do not fabricate a hash."
             )
-        if receipt.contract_entry_sha256 != expected_entry:
+        if contract_entry_sha256 != expected_entry:
             return (
                 "contract_entry_sha256 mismatch — receipt has "
-                f"{receipt.contract_entry_sha256!r} but "
+                f"{contract_entry_sha256!r} but "
                 f"dod_evidence[{receipt.evidence_item_id!r}] in {contract_path} "
                 f"hashes to {expected_entry!r}. That entry was edited after this "
                 "receipt was produced; rerun probes and regenerate the receipt."
@@ -187,9 +189,9 @@ def _contract_hash_violation(
         return None
 
     expected_whole = f"sha256:{compute_contract_sha256(contract_path)}"
-    if receipt.contract_sha256 != expected_whole:
+    if contract_sha256 != expected_whole:
         return (
-            f"contract_sha256 mismatch — receipt has {receipt.contract_sha256!r} "
+            f"contract_sha256 mismatch — receipt has {contract_sha256!r} "
             f"but sha256({contract_path}) is {expected_whole!r}. The contract "
             "mutated after this receipt was produced; rerun probes and "
             "regenerate the receipt (mint contract_entry_sha256 per OMN-13888 "
@@ -209,8 +211,10 @@ def _receipt_binding_violations(
     their own.
     """
     violations: list[str] = []
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    contract_sha256 = getattr(receipt, "contract_sha256", None)
 
-    if receipt.contract_sha256 is None and receipt.contract_entry_sha256 is None:
+    if contract_sha256 is None and contract_entry_sha256 is None:
         violations.append(
             "missing contract_sha256 (OMN-13060/A-5). Tool-generate the "
             "receipt; never hand-author. Prefer contract_entry_sha256 "
