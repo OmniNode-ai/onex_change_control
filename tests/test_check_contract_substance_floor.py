@@ -88,11 +88,79 @@ def _item(
     }
 
 
+class TestNoOpFamilyIsRejected:
+    """A command that cannot fail cannot be evidence.
+
+    The first cut of this gate defaulted UNRECOGNIZED commands to L1, so the
+    floor effectively read "any check that is not literally `gh pr view`" — and
+    `check_value: "true"` satisfied it. The polarity is now inverted: default
+    L0, with an explicit allowlist of falsifiable shapes.
+    """
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            "true",
+            ":",
+            "exit 0",
+            "echo ok",
+            "echo deploy: docker exec omninode-runtime python -c 'import x'",
+            "ls",
+            "pwd",
+            "test -f README.md",
+        ],
+    )
+    def test_no_op_probe_derives_l0(self, probe: str) -> None:
+        assert derive_proof_tier("command", probe) is EnumProofTier.L0
+
+    def test_contract_whose_only_check_is_true_fails(self, tmp_path: Path) -> None:
+        """The regression that motivated the inversion."""
+        path = _write_contract(tmp_path, "OMN-3", [_item("dod-001", "true")])
+        assert not evaluate_contract(path).passed
+
+    def test_unrecognized_command_defaults_to_l0(self) -> None:
+        """Default REJECT: a probe must be recognizably falsifiable to count."""
+        assert derive_proof_tier("command", "frobnicate --widgets") is EnumProofTier.L0
+
+    def test_self_referential_grep_is_identified_but_ungated(self) -> None:
+        """The OMN-14417 circular class: correctly identified, deliberately NOT gated.
+
+        Gating it derives L0 and rejects 98.4% of new contract traffic (measured
+        2026-07-12), so ``GATE_SELF_REFERENTIAL`` is False until the generator is
+        fixed. This pins the *deliberate* current behavior so the flip is a
+        conscious act, not an accident.
+        """
+        probe = "grep -q '^status: PASS$' drift/dod_receipts/OMN-1/dod-001/command.yaml"
+        assert _mod.GATE_SELF_REFERENTIAL is False
+        assert _mod._SELF_REFERENTIAL_RE.search(probe) is not None
+        assert derive_proof_tier("command", probe).satisfies(EnumProofTier.L1)
+
+
 class TestDeriveProofTier:
     """The tier is derived from the probe — the input OMN-13338 never had."""
 
     def test_existence_probe_derives_l0(self) -> None:
         assert derive_proof_tier("command", _AUTOBIND_PR_PROBE) is EnumProofTier.L0
+
+    def test_merge_state_probe_derives_l0(self) -> None:
+        """`state == MERGED` proves the PR merged, not that the code is right."""
+        probe = "gh pr view 1 --repo o/r --json state --jq .state | grep -q MERGED"
+        assert derive_proof_tier("command", probe) is EnumProofTier.L0
+
+    def test_diff_assertion_is_substantive(self) -> None:
+        """Naming the files the PR must touch IS falsifiable about the change."""
+        probe = "gh pr view 1 --repo o/r --json files --jq '[.files[].path]'"
+        assert derive_proof_tier("command", probe).satisfies(EnumProofTier.L1)
+
+    def test_ci_outcome_is_substantive(self) -> None:
+        """The shape OMN-14425 will have the autobind emit."""
+        probe = "gh pr checks 1721 --repo OmniNode-ai/omnimarket"
+        assert derive_proof_tier("command", probe).satisfies(EnumProofTier.L1)
+
+    def test_precommit_run_is_substantive(self) -> None:
+        assert derive_proof_tier("command", "pre-commit run --all-files").satisfies(
+            EnumProofTier.L1
+        )
 
     def test_bare_gh_pr_view_derives_l0(self) -> None:
         assert derive_proof_tier("command", "gh pr view 1721") is EnumProofTier.L0

@@ -98,24 +98,71 @@ _RUNTIME_PROBE_RE = re.compile(
 # Probes that execute the test suite — they establish L1 (the changed behavior
 # is exercised).
 _TEST_PROBE_RE = re.compile(
-    r"\b(pytest|npm\s+test|vitest|jest|go\s+test|cargo\s+test)\b"
+    r"\b(pytest|npm\s+test|vitest|jest|go\s+test|cargo\s+test|tox|make\s+test)\b"
 )
+
+# Probes that read a real CI verdict for the PR — falsifiable: they fail when CI
+# fails. `gh pr view --json statusCheckRollup` carries the same signal.
+_CI_OUTCOME_RE = re.compile(
+    r"(\bgh\s+(pr\s+checks|run\s+view)\b|statusCheckRollup)", re.IGNORECASE
+)
+
+# Static assertions over SOURCE — a grep/rg that pins a symbol or line in the
+# tree is falsifiable about the change (it fails if the code is not there).
+_STATIC_ASSERT_RE = re.compile(r"\b(grep|rg|ast-grep)\b")
+
+# Type/lint/gate runs, and executing an actual program. All can fail on bad code.
+# `pre-commit run` is the strongest of these — it runs the whole hook suite.
+_ANALYSIS_RE = re.compile(
+    r"\b(pre-commit|mypy|ruff|pyright|eslint|tsc|import-linter|lint-imports"
+    r"|python|node|bash\s+-n|sh\s+-n)\b"
+)
+
+# A diff assertion: `gh pr view --json files --jq '[.files[].path]'` names the
+# files the PR must touch. It is falsifiable about the change (it fails if the
+# diff is not what was claimed), so it is substantive — NOT an existence probe.
+_DIFF_ASSERT_RE = re.compile(r"(--json[=\s]+[^|]*\bfiles\b|\.files\[)")
 
 _GH_PR_VIEW_RE = re.compile(r"\bgh\s+pr\s+view\b")
 _JSON_FLAG_RE = re.compile(r"--json[=\s]+([A-Za-z0-9_,]+)")
 
-# NOTE (OMN-14417): a second content-free class exists and is NOT gated here —
-# the self-referential check, whose probe greps its own receipt:
-#
+# ---------------------------------------------------------------------------
+# Content-free probe families — all derive L0 (cannot satisfy the floor).
+# ---------------------------------------------------------------------------
+
+# The no-op family: commands that pass unconditionally. `check_value: "true"`
+# is not evidence of anything; it is an unconditional PASS with extra steps.
+_NO_OP_RE = re.compile(
+    r"""^(
+          true | : | exit\s+0 | echo(\s|$).* | printf(\s|$).* |
+          ls(\s+[^|;&]*)? | pwd | test\s+-[fed]\s+\S+ | \[\s+-[fed]\s+\S+\s+\]
+        )$""",
+    re.VERBOSE,
+)
+
+# Self-referential: the probe reads the receipt corpus — i.e. its OWN evidence.
 #     grep -q '^status: PASS$' drift/dod_receipts/OMN-XXXX/dod-001/command.yaml
-#
 # The receipt says PASS because the agent wrote PASS; the check confirms the
-# agent wrote PASS. It is circular and establishes nothing about the work.
-# Measured 2026-07-12: 2,137 additional contracts (31.3% of the corpus) rely on
-# this pattern as their only substantive check. Gating it fail-closed today
-# would reject a third of live traffic, so it is tracked separately (OMN-14417)
-# rather than folded in here. Deriving it to L0 is a one-line change in
-# `derive_proof_tier` once the corpus is remediated.
+# agent wrote PASS. Circular by construction; it establishes nothing about the
+# work. This is the OMN-14417 class.
+_SELF_REFERENTIAL_RE = re.compile(r"drift/dod_receipts/")
+
+# OMN-14417 KILL SWITCH — deliberately OFF.
+#
+# Deriving the self-referential class to L0 is correct, and it is a one-line
+# flip. It is off because the pattern is not merely legacy debt — it is the
+# CURRENT house style. Measured 2026-07-12 against the live corpus:
+#
+#   flag ON  -> 2,286 / 6,916 contracts rejected (33.1%), and
+#               184 / 187 contracts created in the last 7 days rejected (98.4%)
+#   flag OFF ->    32 / 6,916 rejected (0.46%), all grandfathered
+#
+# Grandfathering does NOT rescue the ON case: at a 98.4% forward rate the gate
+# would reject essentially all new contract traffic, which is the
+# reject-everything trap this ticket exists to avoid. The generator must be
+# fixed first (OMN-14417 asks exactly that); then flip this to True and the
+# substance floor gates the circular class with no further code change.
+GATE_SELF_REFERENTIAL = False
 
 
 def _is_existence_probe(command: str) -> bool:
@@ -154,24 +201,45 @@ def derive_proof_tier(check_type: str, check_value: str) -> EnumProofTier:
     """
     command = (check_value or "").strip()
 
+    # --- Content-free families: reject first, unconditionally. ---------------
     if not command:
         # No probe at all cannot establish anything.
         return EnumProofTier.L0
 
-    if _is_existence_probe(command):
+    if _NO_OP_RE.match(command):
+        # `true`, `:`, `echo ok`, `exit 0`, bare `ls`, `test -f <path>`.
+        # A command that cannot fail cannot be evidence.
         return EnumProofTier.L0
 
+    if GATE_SELF_REFERENTIAL and _SELF_REFERENTIAL_RE.search(command):
+        # Reads its own receipt. Circular (OMN-14417). Off by default — see the
+        # kill-switch comment: ON rejects 98.4% of new contract traffic.
+        return EnumProofTier.L0
+
+    if _is_existence_probe(command):
+        # Proves the PR object exists; passes whether the code is right or not.
+        return EnumProofTier.L0
+
+    # --- Substantive families: an explicit allowlist. ------------------------
     if _RUNTIME_PROBE_RE.search(command):
         return EnumProofTier.L2
 
-    if check_type == "test_passes" or _TEST_PROBE_RE.search(command):
+    if (
+        check_type == "test_passes"
+        or _TEST_PROBE_RE.search(command)
+        or _CI_OUTCOME_RE.search(command)
+        or _DIFF_ASSERT_RE.search(command)
+        or _STATIC_ASSERT_RE.search(command)
+        or _ANALYSIS_RE.search(command)
+    ):
         return EnumProofTier.L1
 
-    # Everything else (grep/static assertions over source, `gh pr checks` CI
-    # outcomes, custom commands) asserts something falsifiable about the change.
-    # Treated as substantive: this gate rejects only what is provably
-    # content-free, never what is merely hard to classify.
-    return EnumProofTier.L1
+    # --- Default: REJECT. ----------------------------------------------------
+    # The polarity is deliberately inverted (OMN-14409 review): an unrecognized
+    # command is NOT assumed substantive. Defaulting to L1 meant the floor read
+    # as "any check that is not literally `gh pr view`" — which `true` satisfies.
+    # A probe must be recognizably falsifiable to count as proof.
+    return EnumProofTier.L0
 
 
 @dataclass

@@ -212,6 +212,34 @@ jobs:
       - name: Check schema purity and naming conventions
         run: uv run check-schema-purity
 
+  substance-floor:
+    name: Contract Substance Floor (OMN-14409)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    # Deliberately UNCONDITIONAL — no zone-filter gate, no path filter, no
+    # docs_only skip. The pre-commit hook only fires when a PR touches
+    # contracts/*.yaml, so a PR that changes the gate itself (like the one that
+    # introduced it) would never execute it: the hook logs "(no files to check)
+    # Skipped" and CI goes green having proven nothing. That is precisely the
+    # OMN-14416 failure — a defense that never runs — and it nearly shipped
+    # inside the fix for it. This job executes the gate on every PR.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Unit tests for the deriver + floor
+        run: uv run pytest tests/test_check_contract_substance_floor.py -v
+      - name: Sweep the full contract corpus
+        run: uv run python scripts/validation/check_contract_substance_floor.py --all
+
   no-localhost-fallbacks:
     name: No localhost env-var fallbacks in src/ (OMN-10737)
     runs-on: >-
