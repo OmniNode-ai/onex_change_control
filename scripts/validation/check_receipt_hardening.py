@@ -1,16 +1,32 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-"""Receipt hardening gate (OMN-13060, retro item A-5).
+"""Receipt hardening gate (OMN-13060, retro item A-5; per-entry hash OMN-14411).
 
 Enforces three invariants on DoD receipts produced on/after the gate
 introduction date (``run_timestamp >= 2026-06-12T00:00:00Z``):
 
-1. ``contract_sha256`` must be present. Hand-authored sha-less receipts
-   (the 2530/2533/2534 failure mode) are rejected at commit time instead
-   of wedging the OCC PR at the merge gate.
-2. ``contract_sha256`` must match ``sha256(contracts/<ticket_id>.yaml)``
-   at the staged state. A mismatch means the contract mutated after the
-   receipt was produced — rerun probes, regenerate the receipt.
+1. A contract hash binding must be present: ``contract_entry_sha256``
+   (preferred, OMN-13888) or ``contract_sha256`` (legacy, whole-file).
+   Hand-authored sha-less receipts (the 2530/2533/2534 failure mode) are
+   rejected at commit time instead of wedging the OCC PR at the merge gate.
+2. The binding must match the pinned contract at the staged state
+   (OMN-14411):
+   - ``contract_entry_sha256``, when present, is authoritative and is
+     checked against ``compute_contract_entry_sha256`` of the receipt's own
+     ``dod_evidence[evidence_item_id]`` — the same per-entry hash the
+     append-only gate (``validator_occ_append_only``) already enforces.
+     Because this hash only folds in the receipt's own entry plus the
+     immutable header, appending a *new* dod_evidence item to the contract
+     does not change it, so prior receipts stay valid across appends.
+   - ``contract_sha256`` (legacy, no ``contract_entry_sha256`` present) is
+     checked against the whole-file ``sha256(contracts/<ticket_id>.yaml)``.
+     This binding is inherently incompatible with the append-only contract
+     model — it goes stale on *every* append to the contract, regardless of
+     which entry changed — and exists only for receipts minted before
+     OMN-13888. Do not mint new receipts against it.
+   A mismatch means the bound entry (or, for legacy receipts, the whole
+   file) mutated after the receipt was produced — rerun probes, regenerate
+   the receipt.
 3. PASS receipts may not use a session-local / generic verifier alias
    (``agent``, ``automated``, bare container ids, ...). A PASS receipt
    must name an identifiable independent verifier.
@@ -36,7 +52,11 @@ from pathlib import Path
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
-from omnibase_core.validation.validator_receipt_gate import compute_contract_sha256
+from omnibase_core.validation.validator_receipt_gate import (
+    ContractEntryNotFoundError,
+    compute_contract_entry_sha256,
+    compute_contract_sha256,
+)
 from pydantic import ValidationError
 
 # Receipts produced on/after this UTC instant are subject to the gate.
@@ -86,6 +106,100 @@ def _supersession_candidates(receipt_path: Path) -> list[Path]:
     return sorted(receipt_path.parent.glob(f"{stem}.supersede.*{receipt_path.suffix}"))
 
 
+def _contract_hash_violation(
+    receipt: ModelDodReceipt, contract_path: Path
+) -> str | None:
+    """Return a violation string if receipt's contract hash binding is stale.
+
+    Honors the entry-hash-first dual-accept policy (OMN-13888 mint order,
+    OMN-14411 gate parity): the caller has already confirmed at least one of
+    ``contract_entry_sha256`` / ``contract_sha256`` is set. Returns ``None``
+    when the receipt is bound cleanly to the current contract.
+    """
+    if receipt.contract_entry_sha256 is not None:
+        try:
+            contract_data = yaml.safe_load(contract_path.read_text())
+        except (OSError, yaml.YAMLError) as exc:
+            return f"unreadable contract YAML at {contract_path}: {exc}"
+        try:
+            expected_entry = compute_contract_entry_sha256(
+                contract_data, receipt.evidence_item_id
+            )
+        except ContractEntryNotFoundError:
+            return (
+                f"dod_evidence item {receipt.evidence_item_id!r} not found in "
+                f"{contract_path}; contract_entry_sha256 cannot be validated. "
+                "The entry was removed or renamed after this receipt was "
+                "produced (append-only violation) — do not fabricate a hash."
+            )
+        if receipt.contract_entry_sha256 != expected_entry:
+            return (
+                "contract_entry_sha256 mismatch — receipt has "
+                f"{receipt.contract_entry_sha256!r} but "
+                f"dod_evidence[{receipt.evidence_item_id!r}] in {contract_path} "
+                f"hashes to {expected_entry!r}. That entry was edited after this "
+                "receipt was produced; rerun probes and regenerate the receipt."
+            )
+        return None
+
+    expected_whole = f"sha256:{compute_contract_sha256(contract_path)}"
+    if receipt.contract_sha256 != expected_whole:
+        return (
+            f"contract_sha256 mismatch — receipt has {receipt.contract_sha256!r} "
+            f"but sha256({contract_path}) is {expected_whole!r}. The contract "
+            "mutated after this receipt was produced; rerun probes and "
+            "regenerate the receipt (mint contract_entry_sha256 per OMN-13888 "
+            "so future appends to other entries do not invalidate it again)."
+        )
+    return None
+
+
+def _receipt_binding_violations(
+    receipt: ModelDodReceipt, contracts_dir: Path
+) -> list[str]:
+    """Return contract-binding + verifier violation fragments for one receipt.
+
+    Shared core for both the primary per-file check and supersession
+    replacement validation (OMN-14411), so the two paths cannot drift out of
+    sync. Fragments carry no receipt/candidate path prefix; callers prepend
+    their own.
+    """
+    violations: list[str] = []
+
+    if receipt.contract_sha256 is None and receipt.contract_entry_sha256 is None:
+        violations.append(
+            "missing contract_sha256 (OMN-13060/A-5). Tool-generate the "
+            "receipt; never hand-author. Prefer contract_entry_sha256 "
+            f"(OMN-13888) — the per-entry hash of "
+            f"dod_evidence[{receipt.evidence_item_id!r}] in "
+            f"contracts/{receipt.ticket_id}.yaml — which survives later "
+            "appends to the contract; legacy contract_sha256 is "
+            f"sha256(contracts/{receipt.ticket_id}.yaml)."
+        )
+    else:
+        contract_path = contracts_dir / f"{receipt.ticket_id}.yaml"
+        if not contract_path.is_file():
+            violations.append(
+                f"contract {contract_path} does not exist for ticket "
+                f"{receipt.ticket_id}"
+            )
+        else:
+            mismatch = _contract_hash_violation(receipt, contract_path)
+            if mismatch is not None:
+                violations.append(mismatch)
+
+    if receipt.status is EnumReceiptStatus.PASS and _is_denylisted_verifier(
+        receipt.verifier
+    ):
+        violations.append(
+            f"PASS receipt uses session-local verifier alias "
+            f"{receipt.verifier!r} (OMN-13060/A-5). Name an identifiable "
+            "independent verifier."
+        )
+
+    return violations
+
+
 def _valid_supersession_replacement(
     receipt_path: Path, contracts_dir: Path
 ) -> tuple[bool, list[str]]:
@@ -122,28 +236,9 @@ def _valid_supersession_replacement(
             )
             continue
 
-        contract_path = contracts_dir / f"{receipt.ticket_id}.yaml"
-        if not contract_path.is_file():
-            errors.append(
-                f"{candidate}: contract {contract_path} does not exist for "
-                f"ticket {receipt.ticket_id}"
-            )
-            continue
-        expected = f"sha256:{compute_contract_sha256(contract_path)}"
-        if receipt.contract_sha256 != expected:
-            errors.append(
-                f"{candidate}: replacement contract_sha256 mismatch — receipt has "
-                f"{receipt.contract_sha256!r} but sha256({contract_path}) is "
-                f"{expected!r}."
-            )
-            continue
-        if receipt.status is EnumReceiptStatus.PASS and _is_denylisted_verifier(
-            receipt.verifier
-        ):
-            errors.append(
-                f"{candidate}: PASS replacement uses session-local verifier alias "
-                f"{receipt.verifier!r} (OMN-13060/A-5)."
-            )
+        violations = _receipt_binding_violations(receipt, contracts_dir)
+        if violations:
+            errors.extend(f"{candidate}: replacement {v}" for v in violations)
             continue
         return True, []
 
@@ -153,41 +248,10 @@ def _valid_supersession_replacement(
 def _validate_hardened_receipt(
     receipt_path: Path, receipt: ModelDodReceipt, contracts_dir: Path
 ) -> list[str]:
-    violations: list[str] = []
-
-    if receipt.contract_sha256 is None:
-        violations.append(
-            f"{receipt_path}: missing contract_sha256 (OMN-13060/A-5). "
-            "Tool-generate the receipt; never hand-author. The field must be "
-            f"sha256(contracts/{receipt.ticket_id}.yaml)."
-        )
-    else:
-        contract_path = contracts_dir / f"{receipt.ticket_id}.yaml"
-        if not contract_path.is_file():
-            violations.append(
-                f"{receipt_path}: contract {contract_path} does not exist for "
-                f"ticket {receipt.ticket_id}"
-            )
-        else:
-            expected = f"sha256:{compute_contract_sha256(contract_path)}"
-            if receipt.contract_sha256 != expected:
-                violations.append(
-                    f"{receipt_path}: contract_sha256 mismatch — receipt has "
-                    f"{receipt.contract_sha256!r} but sha256({contract_path}) is "
-                    f"{expected!r}. The contract mutated after this receipt was "
-                    "produced; rerun probes and regenerate the receipt."
-                )
-
-    if receipt.status is EnumReceiptStatus.PASS and _is_denylisted_verifier(
-        receipt.verifier
-    ):
-        violations.append(
-            f"{receipt_path}: PASS receipt uses session-local verifier alias "
-            f"{receipt.verifier!r} (OMN-13060/A-5). Name an identifiable "
-            "independent verifier."
-        )
-
-    return violations
+    return [
+        f"{receipt_path}: {fragment}"
+        for fragment in _receipt_binding_violations(receipt, contracts_dir)
+    ]
 
 
 def _coerce_timestamp(raw: object) -> datetime | None:
