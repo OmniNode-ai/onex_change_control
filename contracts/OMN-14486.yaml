@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14486"
+title: "state_io wiring fails LOUD not silent — DSN-unset swallow hardening (omnibase_infra #2277)"
+summary: >
+  Independent-verifier DoD companion for omnibase_infra#2277 (OMN-14486). Before the fix, handler_wiring.py's
+  non-strict per-contract exception handler CAUGHT a StateIoUnconfiguredError (a REQUIRED state_io durability
+  seam with OMNIBASE_INFRA_DB_URL unset), wrapped it into a generic ModelOnexError, and COLLECTED it as
+  a logged FAILED result -- so the runtime booted "healthy" while silently dropping every dispatcher of
+  the contract. node_delegation_orchestrator is the only state_io contract, so on any lane missing the
+  DSN this meant 100% of its command/event traffic hit the dispatch engine with no registered dispatcher
+  and was routed to the DLQ. The fix adds two `except StateIoUnconfiguredError: raise` clauses (in wire_from_manifest
+  and _prepare_contract_wiring) so the error PROPAGATES and boot crashes loudly (OMN-14208 declared state_io
+  a fail-CLOSED seam; the non-strict swallow had turned it fail-SILENT). The independent verifier proved
+  the RED->GREEN behaviourally, not just structurally: at PR head the full state_io test file is 14/14
+  GREEN; reverting handler_wiring.py to the pre-fix (exists-but-WRONG, swallowing) parent 132cf776 made
+  test_state_io_missing_db_url_fails_loud_through_wire_from_manifest go RED with "DID NOT RAISE StateIoUnconfiguredError",
+  and the captured logs showed the exact silent-swallow ("Auto-wiring failed for 1 contract(s) (non-strict)").
+  The check_values below are workspace-INDEPENDENT gh-api content reads at #2277's head (DoD-runner-cwd-safe),
+  each proven RED against the exists-but-WRONG parent where the files exist but lack the propagation /
+  the wire_from_manifest regression guard.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2277 head 8c225700 propagates StateIoUnconfiguredError loud and pins
+      the wire_from_manifest fail-loud regression guard"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-state-io-propagates-loud"
+    description: >-
+      Asserts handler_wiring.py at #2277's head carries the fix: at least two `except StateIoUnconfiguredError`
+      clauses, EACH followed within 12 lines by a `raise` -- i.e. the unconfigured REQUIRED state_io seam
+      PROPAGATES (fail loud) rather than being caught, wrapped, and collected under non-strict mode (fail
+      silent). This is the exact swallow that DLQ'd 100% of node_delegation_orchestrator traffic on a
+      DSN-less lane. RED PROVEN against the EXISTS-but-WRONG parent 132cf776, where handler_wiring.py
+      EXISTS (4186 lines) but has ZERO such clauses -> the count is 0 -> exit 1. GREEN is non-vacuous:
+      it requires BOTH the two except clauses AND that each propagates (raise), so a green cannot come
+      from an absent file or from a swallow-and-collect variant.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          H=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=8c2257002be6ec3c6c9c966281f5dbc07f3f7319"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); P=$(printf '%s' "$H" | grep -c 'except StateIoUnconfiguredError');
+          R=$(printf '%s' "$H" | grep -A12 'except StateIoUnconfiguredError' | grep -c '^ *raise$'); test
+          "$P" -ge 2 && test "$R" -ge 2
+  - id: "dod-state-io-wire-from-manifest-regression-guard"
+    description: >-
+      Asserts the test file at #2277's head pins the LIVE-path regression guard, not just the unit-level
+      one. It requires at least two `pytest.raises(StateIoUnconfiguredError` assertions AND at least one
+      reference to `wire_from_manifest` -- the pre-fix test file had only the unit-level _prepare_handler_wiring
+      raise (which the swallow bypassed at runtime); the fix adds test_state_io_missing_db_url_fails_loud_through_wire_from_manifest
+      (DSN unset -> raise) plus test_state_io_with_db_url_registers_command_dispatcher (DSN set -> COMMAND
+      route registered, >0 dispatchers, no over-fire). RED PROVEN against the EXISTS-but-WRONG parent
+      132cf776, where the test file EXISTS but has ZERO wire_from_manifest references (and only one raise)
+      -> exit 1. GREEN requires the wire_from_manifest-level guard to be present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          T=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/test_handler_wiring_state_io.py?ref=8c2257002be6ec3c6c9c966281f5dbc07f3f7319"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); RA=$(printf '%s' "$T" | grep -Fc 'pytest.raises(StateIoUnconfiguredError');
+          W=$(printf '%s' "$T" | grep -Fc 'wire_from_manifest'); test "$RA" -ge 2 && test "$W" -ge 1
+  - id: "dod-occ-self-14486"
+    description: >-
+      Self-bind item for THIS OCC PR. occ-preflight / validator_occ_merge_eligibility require a PASS receipt
+      bound to the OCC PR under check. Intentionally self-referential and legitimately so -- it asserts
+      a fact ABOUT this OCC companion PR (its branch). It is a binding item, NOT substantive evidence:
+      the two entries above carry that, each a workspace-independent gh-api content read at #2277's head
+      proven RED against the exists-but-WRONG parent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14486-state-io-occ-companion' drift/dod_receipts/OMN-14486/dod-occ-self-14486/command.yaml

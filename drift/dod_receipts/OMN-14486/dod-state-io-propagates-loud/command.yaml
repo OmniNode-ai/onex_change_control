@@ -1,0 +1,38 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14486"
+evidence_item_id: "dod-state-io-propagates-loud"
+check_type: "command"
+check_value: >-
+  H=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=8c2257002be6ec3c6c9c966281f5dbc07f3f7319"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); P=$(printf '%s' "$H" | grep -c 'except StateIoUnconfiguredError');
+  R=$(printf '%s' "$H" | grep -A12 'except StateIoUnconfiguredError' | grep -c '^ *raise$'); test "$P"
+  -ge 2 && test "$R" -ge 2
+status: PASS
+run_timestamp: "2026-07-12T19:15:00Z"
+commit_sha: "8c2257002be6ec3c6c9c966281f5dbc07f3f7319"
+runner: "occ-dod-runner"
+verifier: "rt1-builder"
+pr_number: 2277
+probe_command: >-
+  # verbatim check_value re-run at #2277 head 8c225700 and the pre-fix parent 132cf776 by the RT-7 # (state_io)
+  independent verifier. P counts except-StateIoUnconfigured clauses; R counts the raise # within 12 lines
+  of each (propagate, not swallow).
+probe_stdout: |
+  # bound check_value exit codes, run verbatim by rt1-builder (independent verifier):
+  #   ref=8c225700 (#2277 head)     -> P=2 R=2 -> exit 0  GREEN
+  #   ref=132cf776 (pre-fix parent) -> P=0 R=0 -> exit 1  RED  <- handler_wiring EXISTS (4186 lines) but swallows
+exit_code: 0
+actual_output: >-
+  PASS: handler_wiring.py at #2277's head carries two `except StateIoUnconfiguredError` clauses, each
+  propagating (raise within 12 lines) -- so an unconfigured REQUIRED state_io seam fails LOUD at boot
+  instead of being caught, wrapped into ModelOnexError, and collected under non-strict mode (which silently
+  dropped every dispatcher of node_delegation_orchestrator and DLQ'd 100% of its traffic on a DSN-less
+  lane). The independent verifier confirmed the behaviour by reverting handler_wiring.py to this exact
+  parent (132cf776): test_state_io_missing_db_url_fails_loud_through_wire_from_manifest then went RED
+  ("DID NOT RAISE StateIoUnconfiguredError") with logs showing "Auto-wiring failed for 1 contract(s) (non-strict)".
+  RED PROVEN against the EXISTS-but-WRONG parent where the file exists (4186 lines) but has zero propagation
+  clauses (P=0 -> exit 1); GREEN is non-vacuous (requires both clauses AND that each raises).
+branch: "jonah/omn-14486-state-io-occ-companion"
+contract_sha256: "sha256:4b0ce5d3395ca47439b6b53cc6d89758d11e9203276ae2d97ee97a278cd5dae8"
+contract_entry_sha256: "sha256:264370469d1f39b75e6617f08fe1abcfd758717ca78d225ffc51750d134104ba"
