@@ -44,6 +44,8 @@ Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 import sys
 from datetime import UTC, datetime
@@ -52,9 +54,49 @@ from pathlib import Path
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
+
+try:
+    from omnibase_core.validation.validator_receipt_gate import (
+        ContractEntryNotFoundError,
+        compute_contract_entry_sha256,
+    )
+except ImportError:
+    ContractEntryNotFoundError = LookupError
+
+    def compute_contract_entry_sha256(
+        contract_data: object, evidence_item_id: str
+    ) -> str:
+        """Compute the OMN-13888 per-entry contract hash locally.
+
+        Hosted OCC CI can run against an older omnibase_core wheel that has the
+        whole-file hash helper but not the per-entry helper. Keep this gate
+        self-contained so new receipts can still prefer contract_entry_sha256.
+        """
+        entry: dict[str, object] | None = None
+        if isinstance(contract_data, dict):
+            items = contract_data.get("dod_evidence", [])
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and item.get("id") == evidence_item_id:
+                        entry = item
+                        break
+        if entry is None:
+            msg = f"dod_evidence item {evidence_item_id!r} not found in contract"
+            raise ContractEntryNotFoundError(msg)
+        header = {
+            key: (contract_data.get(key) if isinstance(contract_data, dict) else None)
+            for key in ("ticket_id", "schema_version")
+        }
+        blob = json.dumps(
+            {"header": header, "entry": entry},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        return f"sha256:{hashlib.sha256(blob.encode('utf-8')).hexdigest()}"
+
+
 from omnibase_core.validation.validator_receipt_gate import (
-    ContractEntryNotFoundError,
-    compute_contract_entry_sha256,
     compute_contract_sha256,
 )
 from pydantic import ValidationError
@@ -116,7 +158,8 @@ def _contract_hash_violation(
     ``contract_entry_sha256`` / ``contract_sha256`` is set. Returns ``None``
     when the receipt is bound cleanly to the current contract.
     """
-    if receipt.contract_entry_sha256 is not None:
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    if contract_entry_sha256 is not None:
         try:
             contract_data = yaml.safe_load(contract_path.read_text())
         except (OSError, yaml.YAMLError) as exc:
@@ -132,10 +175,10 @@ def _contract_hash_violation(
                 "The entry was removed or renamed after this receipt was "
                 "produced (append-only violation) — do not fabricate a hash."
             )
-        if receipt.contract_entry_sha256 != expected_entry:
+        if contract_entry_sha256 != expected_entry:
             return (
                 "contract_entry_sha256 mismatch — receipt has "
-                f"{receipt.contract_entry_sha256!r} but "
+                f"{contract_entry_sha256!r} but "
                 f"dod_evidence[{receipt.evidence_item_id!r}] in {contract_path} "
                 f"hashes to {expected_entry!r}. That entry was edited after this "
                 "receipt was produced; rerun probes and regenerate the receipt."
@@ -166,7 +209,8 @@ def _receipt_binding_violations(
     """
     violations: list[str] = []
 
-    if receipt.contract_sha256 is None and receipt.contract_entry_sha256 is None:
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    if receipt.contract_sha256 is None and contract_entry_sha256 is None:
         violations.append(
             "missing contract_sha256 (OMN-13060/A-5). Tool-generate the "
             "receipt; never hand-author. Prefer contract_entry_sha256 "
@@ -306,6 +350,31 @@ def _walk_for_timestamp(node: object) -> datetime | None:
     return None
 
 
+def _validate_receipt_model(
+    receipt_path: Path, raw: dict[str, object]
+) -> tuple[ModelDodReceipt | None, str | None]:
+    """Validate a receipt across old/new omnibase_core receipt schemas."""
+    try:
+        return ModelDodReceipt.model_validate(raw), None
+    except ValidationError as exc:
+        if "contract_entry_sha256" not in raw:
+            return (
+                None,
+                f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}",
+            )
+        legacy_raw = dict(raw)
+        contract_entry_sha256 = legacy_raw.pop("contract_entry_sha256")
+        try:
+            receipt = ModelDodReceipt.model_validate(legacy_raw)
+        except ValidationError:
+            return (
+                None,
+                f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}",
+            )
+        object.__setattr__(receipt, "contract_entry_sha256", contract_entry_sha256)
+        return receipt, None
+
+
 def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
     """Return violation strings for one receipt file (empty = clean)."""
     if ".supersede." in receipt_path.name:
@@ -337,10 +406,11 @@ def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
     if supersession_errors:
         return supersession_errors
 
-    try:
-        receipt = ModelDodReceipt.model_validate(raw)
-    except ValidationError as exc:
-        return [f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}"]
+    receipt, error = _validate_receipt_model(receipt_path, raw)
+    if error is not None:
+        return [error]
+    if receipt is None:
+        return [f"{receipt_path}: receipt validation returned no model"]
 
     return _validate_hardened_receipt(receipt_path, receipt, contracts_dir)
 
