@@ -1151,6 +1151,29 @@ jobs:
           # secret is unset OR withheld by GitHub for a fork-origin PR.
           TOKEN_SOURCE: ${{ secrets.CROSS_REPO_PAT != '' && 'cross_repo_pat' || 'fallback' }}
         run: uv run check-platform-leads-review-tripwire --credential-origin "$TOKEN_SOURCE"
+      - name: Report CROSS_REPO_PAT expiry (OMN-14448 follow-up context)
+        # Purely informational, never blocks: answers "is CROSS_REPO_PAT a
+        # classic PAT (no visible expiry via API) or fine-grained (GitHub
+        # echoes a github-authentication-token-expiration response header)?"
+        # so OMN-14448's proactive-expiry-warning follow-up can be
+        # prioritized against a real date instead of a guess.
+        # continue-on-error: this step's own failure never affects the
+        # tripwire's pass/fail verdict above -- it is read-only reporting.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "CROSS_REPO_PAT not present in this run's secret scope (fork PR, or unset) -- cannot probe expiry this run."
+            exit 0
+          fi
+          headers="$(gh api -i /user 2>&1 || true)"
+          expiry_line="$(printf '%s\n' "$headers" | grep -i '^github-authentication-token-expiration:' || true)"
+          if [ -n "$expiry_line" ]; then
+            echo "CROSS_REPO_PAT is a FINE-GRAINED PAT. $expiry_line"
+          else
+            echo "No github-authentication-token-expiration header returned -- CROSS_REPO_PAT is most likely a CLASSIC PAT (GitHub only emits that header for fine-grained tokens). A classic PAT may still have an expiry set at creation; that is not visible via this API probe."
+          fi
 
   ci-summary:
     name: CI Summary
