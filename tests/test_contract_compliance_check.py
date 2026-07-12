@@ -585,3 +585,43 @@ def test_contract_with_failing_check_returns_block(tmp_path: Path) -> None:
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 1
+
+
+def test_superseded_dod_item_is_warn_not_block(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "final_head.py").touch()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1004"
+        summary: "Test ticket with superseded dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-old-live-head
+            description: "Old moving-head proof now stale"
+            checks:
+              - check_type: file_exists
+                check_value: "tests/old_head.py"
+            status: verified
+          - id: dod-final-live-head
+            evidence_artifact: supersedes_dod_evidence:dod-old-live-head
+            description: "Final moving-head proof"
+            checks:
+              - check_type: file_exists
+                check_value: "tests/final_head.py"
+            status: verified
+    """)
+    (contracts / "OMN-1004.yaml").write_text(contract_yaml)
+    with patch(
+        "run_contract_compliance_check._extract_ticket_id", return_value="OMN-1004"
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    assert rc == 0
