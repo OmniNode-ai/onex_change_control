@@ -1,0 +1,79 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14468
+title: 'fix(OMN-14468): repair release.yml auto-tag->publish chain (RT-8)'
+summary: 'Independent verification (rt7-builder, who implemented RT-7 not RT-8; no self-authored evidence)
+  of omnibase_infra PR #2274 at head b6a685ed2482a6c2e245a6b40891848e3f9216e1. Confirmed the 8a root cause
+  against live gh (v0.38.0-3 are github-actions[bot] annotated tags with zero release.yml runs -- GITHUB_TOKEN
+  recursive-suppression), the fix wires an explicit release.yml workflow_dispatch after the tag push,
+  the 8b publish_with_retry wrapper + widened cascade window are present, and the backlog was NOT cut
+  (no v0.38.4 tag). 26/26 RT-8 tests passed on an independent run. Two non-blocking SHOULD-FIX findings
+  noted on the PR (classify_failure phrasing sensitivity; dispatch not fully effect-asserted); fail-closed
+  is preserved in both.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-infra-pr-2274-head-b6a685ed
+    description: 'omnibase_infra PR #2274 (RT-8) is bound to head b6a685ed on branch jonah/omn-14468-repair-release-chain
+      targeting dev -- the exact tree independently verified.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: test "$(gh pr view 2274 --repo OmniNode-ai/omnibase_infra --json headRefName,baseRefName,headRefOid
+          --jq '.headRefName + " " + .baseRefName + " " + .headRefOid')" = "jonah/omn-14468-repair-release-chain
+          dev b6a685ed2482a6c2e245a6b40891848e3f9216e1"
+  - id: dod-rootcause-bot-tag-token-suppression
+    description: 'Root cause confirmed live: v0.38.3 is a github-actions[bot] ANNOTATED tag -- the GITHUB_TOKEN
+      recursive-suppression signature. Bot-pushed tags never fired release.yml (on: push: tags), so v0.38.0-v0.38.3
+      published nothing while v0.37.2 (lightweight/non-bot) did trigger a release run. This is the diagnosed
+      8a root cause, verified against live gh rather than the PR body.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: test "$(gh api repos/OmniNode-ai/omnibase_infra/git/tags/$(gh api repos/OmniNode-ai/omnibase_infra/git/refs/tags/v0.38.3
+          --jq .object.sha) --jq .tagger.name)" = "github-actions[bot]"
+  - id: dod-auto-tag-release-dispatch-wired
+    description: 'The load-bearing 8a fix is present at the pinned head: auto-tag-on-merge.yml pushes
+      the tag then dispatches release.yml via `gh workflow run` (the documented workflow_dispatch exception
+      to GITHUB_TOKEN suppression), replacing the token-pushing reusable.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/auto-tag-on-merge.yml?ref=b6a685ed2482a6c2e245a6b40891848e3f9216e1"
+          --jq .content | base64 -d | grep -c 'gh workflow run release.yml')" -ge 1
+  - id: dod-publish-retry-wrapper-present
+    description: The 8b publish-resilience wrapper (scripts/ci/publish_with_retry.py) exists at the pinned
+      head and is wired into release.yml; it retries transient 5xx (the v0.37.2 500 failure mode) and
+      is idempotent on already-published. 26/26 RT-8 tests passed on an independent run.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/publish_with_retry.py?ref=b6a685ed2482a6c2e245a6b40891848e3f9216e1"
+          --jq .content | base64 -d | grep -c 'def publish_with_retry')" -ge 1
+  - id: dod-backlog-not-cut-no-v0-38-4-tag
+    description: '8c gated-action guard: the PR repairs the chain but does NOT cut the backlog. No v0.38.4
+      tag exists on omnibase_infra -- the release action stays uncut (a gated action, out of scope).'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: test "$(gh api "repos/OmniNode-ai/omnibase_infra/tags?per_page=20" --jq '[.[].name]
+          | map(select(. == "v0.38.4")) | length')" = "0"
+  - id: dod-occ-self-pr-4047
+    description: 'This OCC companion PR #4047 carries the append-only OMN-14468 RT-8 evidence for omnibase_infra#2274
+      and is itself bound by PR number (the eligibility self-bind).'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: test "$(gh pr view 4047 --repo OmniNode-ai/onex_change_control --json headRefName,baseRefName
+          --jq '.headRefName + " " + .baseRefName')" = "jonah/omn-14468-rt8-occ-companion dev"
