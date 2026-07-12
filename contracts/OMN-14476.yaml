@@ -1,0 +1,93 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14476"
+title: "OCC companion for omniclaude#1895 — planning-phase canonical-scripts lint gate"
+summary: >
+  OCC evidence companion for OmniNode-ai/omniclaude#1895 (OMN-14476). The product PR adds a planning-phase
+  gate (scripts/lint_plan_canonical_scripts.py) that BLOCKS a plan under docs/plans/** or docs/tracking/**
+  which proposes creating a NEW scripts/**.{py,sh,bash} file (create-verb preceding the path, same line)
+  UNLESS the plan carries a canonical-form: (node-backed|justified-shim|convert|exception) declaration.
+  It moves the OMN-14475 default-deny-scripts decision earlier (planning time) and is wired as a CI gate
+  (plan-canonical-scripts-gate.yml, fail-closed exit 1) + a pre-commit hook. The evidence below reads
+  the PR head directly and asserts the load-bearing properties: (1) the linter has the create-verb detector,
+  the canonical-form exemption, and the exit-1 block path; (2) it is wired as both the CI gate and the
+  pre-commit hook scoped to docs/(plans|tracking) markdown; (3) the test suite drives BOTH the block case
+  AND the false-positive control (a mere mention of an existing script is NOT flagged) plus fail-closed-on-unreadable.
+  Independently reproduced by the verifier (distinct from the implementer): a plan proposing 'create scripts/new_tool.py'
+  with no declaration -> exit 1 (BLOCK); with 'canonical-form: node-backed' -> exit 0; 'the existing scripts/foo.py'
+  (no create verb) -> exit 0; and the 9-test suite passes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omniclaude#1895 head adds a fail-closed planning-phase canonical-scripts lint, wired
+      as CI + pre-commit."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1895-lint-blocks-undeclared"
+    description: >-
+      Product-observing check against omniclaude#1895 head 135f9b31ada7a55a2f9ac3f4383dac2dbc0d9766. Reads
+      scripts/lint_plan_canonical_scripts.py from the PR head and asserts the block logic exists: the
+      create-verb proposal detector (_PROPOSE_SCRIPT_RE over create|add|new|write|implement|introduce|build),
+      the canonical-form clearing declaration (_DECLARATION_RE over node-backed|justified-shim|convert|exception),
+      and the 'proposes new script ... with no canonical-form' violation. Without these a plan proposing
+      a new script would not be blocked.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omniclaude/contents/scripts/lint_plan_canonical_scripts.py?ref=135f9b31ada7a55a2f9ac3f4383dac2dbc0d9766"
+          --jq .content | base64 -d > "$tmp" && grep -F -- '_PROPOSE_SCRIPT_RE' "$tmp" && grep -F -- '_DECLARATION_RE'
+          "$tmp" && grep -F -- '(create|add|new|write|implement|introduce|build)' "$tmp" && grep -F --
+          'node-backed|justified-shim|convert|exception' "$tmp" && grep -F -- 'proposes new script' "$tmp"
+  - id: "dod-verify-1895-wired-gate-and-precommit"
+    description: >-
+      Product-observing check against the PR head. Reads .github/workflows/plan-canonical-scripts-gate.yml
+      and .pre-commit-config.yaml and asserts the linter is wired BOTH as a fail-closed CI gate that runs
+      the linter over the tree AND as a pre-commit hook scoped to docs/(plans|tracking) markdown. The
+      CI trigger paths include docs/plans + docs/tracking so the gate fires on the exact plan changes
+      it must catch.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          wf="$(mktemp)" && pc="$(mktemp)" && gh api "repos/OmniNode-ai/omniclaude/contents/.github/workflows/plan-canonical-scripts-gate.yml?ref=135f9b31ada7a55a2f9ac3f4383dac2dbc0d9766"
+          --jq .content | base64 -d > "$wf" && gh api "repos/OmniNode-ai/omniclaude/contents/.pre-commit-config.yaml?ref=135f9b31ada7a55a2f9ac3f4383dac2dbc0d9766"
+          --jq .content | base64 -d > "$pc" && grep -F -- 'python3 scripts/lint_plan_canonical_scripts.py'
+          "$wf" && grep -F -- 'docs/plans/**/*.md' "$wf" && grep -F -- 'lint-plan-canonical-scripts' "$pc"
+          && grep -F -- 'docs/(plans|tracking)/.*\.md$' "$pc"
+  - id: "dod-verify-1895-fp-control-and-tests"
+    description: >-
+      Product-observing check against the PR head. Reads tests/scripts/test_lint_plan_canonical_scripts.py
+      and asserts the suite drives BOTH the block case (test_proposes_new_py_script_without_declaration_fails)
+      AND the false-positive control (test_mention_of_existing_script_not_flagged — a mere mention of
+      an existing script must NOT be flagged) plus fail-closed-on-unreadable (test_unreadable_plan_fails_closed).
+      A suite lacking the FP-control test could regress into flagging every plan that references any scripts/
+      path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omniclaude/contents/tests/scripts/test_lint_plan_canonical_scripts.py?ref=135f9b31ada7a55a2f9ac3f4383dac2dbc0d9766"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'def test_proposes_new_py_script_without_declaration_fails'
+          "$tmp" && grep -F -- 'def test_mention_of_existing_script_not_flagged' "$tmp" && grep -F --
+          'def test_unreadable_plan_fails_closed' "$tmp"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the three entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14476-occ-omniclaude-1895-canonical-scripts-gate' drift/dod_receipts/OMN-14476/dod-occ-self-commit/command.yaml
