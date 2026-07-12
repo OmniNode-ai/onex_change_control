@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14397"
+evidence_item_id: "dod-omnibase-infra-pr-2265-head-3e5e86d8"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-14397/dod-omnibase-infra-pr-2265-head-3e5e86d8/command.yaml
+  && grep -q '^pr_number: 2265$' drift/dod_receipts/OMN-14397/dod-omnibase-infra-pr-2265-head-3e5e86d8/command.yaml
+  && grep -q '3e5e86d890cc624860906f0fd32fdf5e23589084' drift/dod_receipts/OMN-14397/dod-omnibase-infra-pr-2265-head-3e5e86d8/command.yaml
+status: PASS
+run_timestamp: "2026-07-12T00:21:58Z"
+commit_sha: "3e5e86d890cc624860906f0fd32fdf5e23589084"
+runner: "fix-14397"
+verifier: "verify-14397"
+pr_number: 2265
+probe_command: >-
+  uv run pytest tests/unit/cli/test_cli_delegate.py -v && uv run pytest tests/unit/cli/ -q && uv run ruff
+  check src/omnibase_infra/cli/cli_delegate.py tests/unit/cli/test_cli_delegate.py && uv run ruff format
+  --check src/omnibase_infra/cli/cli_delegate.py tests/unit/cli/test_cli_delegate.py && uv run mypy src/omnibase_infra/cli/cli_delegate.py
+probe_stdout: |
+  round 1 behavioral RED->GREEN: reverted correlation_id payload write ->
+  test_two_runs_get_distinct_correlation_ids FAILED (KeyError: 'correlation_id'); restored -> GREEN.
+  reverted SIGALRM backstop (forced _hard_timeout no-op path) ->
+  test_hard_timeout_aborts_blocking_call FAILED (DID NOT RAISE) and
+  test_run_delegate_aborts_hung_dispatch_within_bound FAILED (assert 0 == 1); restored -> GREEN.
+  round 2 behavioral RED->GREEN (post-remediation commit 3e5e86d8): reverted
+  DelegateTimeoutExceededError(BaseException) -> RuntimeError ->
+  test_run_delegate_aborts_hung_dispatch_despite_receipt_mode_broad_except FAILED
+  (AssertionError: timeout signal did not survive the broad except -- stderr: ''); restored -> GREEN.
+  empirically reproduced receipt_mode.py's real try/except-Exception shape around a blocking call under
+  the real _hard_timeout(1): the inner except Exception fired zero times post-fix; run_delegate's
+  DelegateTimeoutExceededError handler correctly caught it (propagated=True, elapsed=1.00s).
+  confirmed issubclass(DelegateTimeoutExceededError, Exception) is False and
+  issubclass(DelegateTimeoutExceededError, BaseException) is True.
+  confirmed finally-block integrity under BaseException unwind: signal.alarm(0) returned 0 (no dangling
+  alarm) and signal.getsignal(SIGALRM) matched the pre-existing handler after propagation.
+  grepped every except clause across cli_delegate.py, receipt_mode.py, and the venv-resolved
+  omnibase_core/runtime/runtime_local.py -- zero bare except: anywhere, no BaseException escape path.
+  tests/unit/cli/test_cli_delegate.py: 34 passed.
+  tests/unit/cli/ -q: 335 passed, 15 pre-existing unrelated skips (ModuleNotFoundError: omnimarket in
+  test_cli_skill.py).
+  ruff check: All checks passed!
+  ruff format --check: 2 files already formatted.
+  mypy: Success, no issues found in 1 source file.
+  gh pr checks 2265 at head 3e5e86d8: only non-green checks are the occ-preflight/eligibility cascade
+  (31 entries) plus the aggregating CI Summary, whose own job log shows
+  "strict-gate failures: ... occ-preflight / eligibility" as the sole completed/failure gate -- every
+  other strict gate is completed/skipped (cascade, not independent red).
+actual_output: >-
+  PASS: omnibase_infra#2265 head 3e5e86d890cc624860906f0fd32fdf5e23589084 (round-2 remediated head) mints
+  a fresh correlation_id per onex delegate invocation and adds a SIGALRM-based hard timeout backstop whose
+  DelegateTimeoutExceededError subclasses BaseException so it cannot be swallowed by run_receipt_mode's
+  broad except Exception around the exact call that hangs. Both original fixes and the round-2 remediation
+  were independently reproduced via behavioral RED/GREEN reverts, not accepted from the implementer's
+  self-report. No BaseException escape path exists on the call path. No regressions in tests/unit/cli/.
+  CI is cascade-only red (occ-preflight), no independent failure.
+exit_code: 0
+branch: "jonah/omn-14397-occ-pr2265"
+contract_sha256: "sha256:f669deb201ecbf62af35e29cf1f04268f07da36de0bf65c882a3a206b1ce0fc7"
