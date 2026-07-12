@@ -1,0 +1,368 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+"""Contract substance floor (OMN-14409).
+
+A ticket contract must declare at least one dod_evidence check that could
+*fail if the work were wrong*. A check that only proves the PR object exists
+(``gh pr view <n> --json number,state``) establishes binding, not correctness:
+it passes identically whether the code is right or catastrophically broken.
+
+The live defect this gate closes
+--------------------------------
+The Evidence-Source autobind (OMN-13317 F1) mints a contract when a product PR
+fails the Receipt Gate, and then mints the receipts that satisfy it — so it
+authors *both the bar and the proof*. ``contracts/OMN-14400.yaml`` is the live
+instance: every one of its autobind-declared checks is a ``gh pr view`` probe.
+Every gate passed. The receipt did not lie and the receipt-gate was not broken —
+the contract simply set a bar that nothing about the work had to clear.
+
+Nothing in the chain required a ticket's DoD to be *related to the work the
+ticket did*. This gate is that requirement.
+
+Policy
+------
+Each dod_evidence check is mapped to the :class:`EnumProofTier` it can actually
+establish (see :func:`derive_proof_tier`). A contract PASSES when at least one
+check reaches **L1 or above**. Existence probes derive to **L0** and therefore
+can never satisfy the floor on their own.
+
+Binding/stamp items keep working
+--------------------------------
+This gate does NOT reject existence probes, and does NOT touch receipt
+``status``. Evidence-Source binding items (``occ-self-bind-pr-*`` and the
+autobind's ``gh pr view`` probes) remain completely valid for the job they
+exist to do — stamping the Evidence-Source line. They simply do not *count*
+toward the substance floor. A contract carrying a substantive item plus any
+number of binding items passes. The autobind stamp path is therefore rejected
+at a rate of exactly zero; only a DoD consisting *entirely* of existence probes
+fails.
+
+Independence, without touching receipt status
+---------------------------------------------
+"An automated producer may not supply the substantive proof" is enforced
+structurally rather than by identity comparison: the autobind emits only
+existence probes, which derive to L0 and can never be substantive. This
+deliberately avoids the ``verifier``/``runner`` PASS→ADVISORY downgrade — the
+receipt gate treats ADVISORY as FAIL, so that approach would fail every
+autobind receipt and kill the stamp path (OMN-14409 analysis, M4).
+
+Reuses the existing OMN-13338 vocabulary (``EnumProofTier``); introduces no
+second proof taxonomy.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+from omnibase_core.enums.ticket.enum_proof_tier import EnumProofTier
+
+# The floor. A contract needs at least one check at or above this tier.
+SUBSTANCE_FLOOR = EnumProofTier.L1
+
+# `gh pr view --json <fields>` restricted to these fields reads pure object
+# metadata: it proves the PR record exists and what state it is in. It cannot
+# discriminate correct code from broken code, so it derives to L0.
+_EXISTENCE_JSON_FIELDS = frozenset(
+    {
+        "number",
+        "state",
+        "url",
+        "title",
+        "body",
+        "headrefname",
+        "headrefoid",
+        "baserefname",
+        "author",
+        "isdraft",
+        "mergedat",
+        "createdat",
+        "updatedat",
+        "closedat",
+        "mergeable",
+        "mergestatestatus",
+        "mergecommit",
+    }
+)
+
+# Probes that read live runtime state — they establish L2 (the change is live),
+# not merely that it merged.
+_RUNTIME_PROBE_RE = re.compile(
+    r"\b(kubectl|docker\s+(exec|inspect|ps)|psql|rpk|curl|httpx|wget)\b"
+)
+
+# Probes that execute the test suite — they establish L1 (the changed behavior
+# is exercised).
+_TEST_PROBE_RE = re.compile(
+    r"\b(pytest|npm\s+test|vitest|jest|go\s+test|cargo\s+test)\b"
+)
+
+_GH_PR_VIEW_RE = re.compile(r"\bgh\s+pr\s+view\b")
+_JSON_FLAG_RE = re.compile(r"--json[=\s]+([A-Za-z0-9_,]+)")
+
+# NOTE (OMN-14417): a second content-free class exists and is NOT gated here —
+# the self-referential check, whose probe greps its own receipt:
+#
+#     grep -q '^status: PASS$' drift/dod_receipts/OMN-XXXX/dod-001/command.yaml
+#
+# The receipt says PASS because the agent wrote PASS; the check confirms the
+# agent wrote PASS. It is circular and establishes nothing about the work.
+# Measured 2026-07-12: 2,137 additional contracts (31.3% of the corpus) rely on
+# this pattern as their only substantive check. Gating it fail-closed today
+# would reject a third of live traffic, so it is tracked separately (OMN-14417)
+# rather than folded in here. Deriving it to L0 is a one-line change in
+# `derive_proof_tier` once the corpus is remediated.
+
+
+def _is_existence_probe(command: str) -> bool:
+    """Return True when ``command`` can only prove that the PR object exists.
+
+    A ``gh pr view`` that requests *only* metadata fields is an existence probe.
+    The same command requesting ``statusCheckRollup`` (CI outcome) or reviews is
+    NOT — those fields say something falsifiable about the change, so they are
+    left to derive a higher tier.
+    """
+    if not _GH_PR_VIEW_RE.search(command):
+        return False
+
+    fields: set[str] = set()
+    for match in _JSON_FLAG_RE.finditer(command):
+        fields.update(f.strip().lower() for f in match.group(1).split(",") if f.strip())
+
+    # `gh pr view <n>` with no --json at all prints the PR body/metadata: still
+    # pure existence.
+    if not fields:
+        return True
+
+    # Any field outside the metadata set (e.g. statusCheckRollup) carries real
+    # signal about the change — not an existence probe.
+    return fields.issubset(_EXISTENCE_JSON_FIELDS)
+
+
+def derive_proof_tier(check_type: str, check_value: str) -> EnumProofTier:
+    """Map a dod_evidence check to the :class:`EnumProofTier` it can establish.
+
+    This is the input the OMN-13338 tier apparatus never had. ``proof_packet``
+    is populated on 0 of 10,164 live receipts, so a gate requiring a
+    hand-authored packet is unsatisfiable. ``check_value`` is present on every
+    check, so the tier can be *derived* rather than authored — no new authoring
+    burden, and the existing tier vocabulary becomes operable.
+    """
+    command = (check_value or "").strip()
+
+    if not command:
+        # No probe at all cannot establish anything.
+        return EnumProofTier.L0
+
+    if _is_existence_probe(command):
+        return EnumProofTier.L0
+
+    if _RUNTIME_PROBE_RE.search(command):
+        return EnumProofTier.L2
+
+    if check_type == "test_passes" or _TEST_PROBE_RE.search(command):
+        return EnumProofTier.L1
+
+    # Everything else (grep/static assertions over source, `gh pr checks` CI
+    # outcomes, custom commands) asserts something falsifiable about the change.
+    # Treated as substantive: this gate rejects only what is provably
+    # content-free, never what is merely hard to classify.
+    return EnumProofTier.L1
+
+
+@dataclass
+class CheckFinding:
+    """One dod_evidence check and the tier it derives to."""
+
+    item_id: str
+    check_type: str
+    check_value: str
+    tier: EnumProofTier
+
+    @property
+    def is_substantive(self) -> bool:
+        return self.tier.satisfies(SUBSTANCE_FLOOR)
+
+
+@dataclass
+class ContractResult:
+    """Substance-floor verdict for a single contract."""
+
+    path: Path
+    ticket_id: str
+    findings: list[CheckFinding] = field(default_factory=list)
+
+    @property
+    def has_checks(self) -> bool:
+        return bool(self.findings)
+
+    @property
+    def substantive(self) -> list[CheckFinding]:
+        return [f for f in self.findings if f.is_substantive]
+
+    @property
+    def passed(self) -> bool:
+        # A contract with no dod_evidence checks is out of scope for this gate
+        # (the Receipt Gate governs whether a contract is required at all).
+        if not self.has_checks:
+            return True
+        return bool(self.substantive)
+
+    def failure_message(self) -> str:
+        probes = "\n".join(
+            f"      - [{f.tier.value}] {f.item_id}: {f.check_value[:100]}"
+            for f in self.findings
+        )
+        return (
+            f"{self.path}: SUBSTANCE FLOOR FAILED — {self.ticket_id} declares "
+            f"{len(self.findings)} dod_evidence check(s), and every one of them is "
+            f"an existence probe (tier L0). An existence probe proves the PR object "
+            f"exists; it passes identically whether the code is correct or broken.\n"
+            f"    Declared checks:\n{probes}\n"
+            f"    Fix: add at least one check at tier {SUBSTANCE_FLOOR.value}+ that "
+            f"could fail if the work were wrong (a test, a behavioral assertion, a "
+            f"guard/gate outcome, or a runtime readback). Existence/binding probes "
+            f"stay valid for Evidence-Source stamping — they just cannot stand in "
+            f"for proof of correctness."
+        )
+
+
+def evaluate_contract(path: Path) -> ContractResult:
+    """Evaluate one contract YAML against the substance floor."""
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    result = ContractResult(path=path, ticket_id=str(raw.get("ticket_id") or path.stem))
+
+    for item in raw.get("dod_evidence") or []:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "<unnamed>")
+        for check in item.get("checks") or []:
+            if not isinstance(check, dict):
+                continue
+            check_type = str(check.get("check_type") or "")
+            check_value = str(check.get("check_value") or "")
+            result.findings.append(
+                CheckFinding(
+                    item_id=item_id,
+                    check_type=check_type,
+                    check_value=check_value,
+                    tier=derive_proof_tier(check_type, check_value),
+                )
+            )
+
+    return result
+
+
+_ALLOWLIST_PATH = Path(__file__).parent / "substance_floor_legacy_allowlist.yaml"
+
+
+def load_legacy_allowlist(path: Path = _ALLOWLIST_PATH) -> set[str]:
+    """Return the grandfathered ticket ids (OMN-14419 backfill).
+
+    These contracts predate the floor and declare only existence probes. They are
+    exempt so the gate does not wedge CI on pre-existing debt — the gate stays
+    fail-closed for every NEW contract. The list is a ratchet: it may only shrink
+    (see :func:`main`).
+    """
+    if not path.exists():
+        return set()
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {str(t) for t in (raw.get("legacy_contracts") or [])}
+
+
+@dataclass
+class SweepReport:
+    """Partitioned verdicts over a set of contracts."""
+
+    failures: list[ContractResult] = field(default_factory=list)
+    grandfathered: list[str] = field(default_factory=list)
+    # Ratchet: a listed contract that now PASSES must be delisted in the same PR,
+    # otherwise the allowlist silently goes stale and hides future regressions.
+    stale_allowlist: list[str] = field(default_factory=list)
+
+
+def sweep(paths: list[Path], allowlist: set[str]) -> SweepReport:
+    """Partition ``paths`` into new failures, grandfathered legacy, and stale
+    allowlist entries."""
+    report = SweepReport()
+    for path in paths:
+        if not path.exists():
+            continue
+        result = evaluate_contract(path)
+        listed = result.ticket_id in allowlist
+
+        if result.passed:
+            if listed:
+                report.stale_allowlist.append(result.ticket_id)
+        elif listed:
+            report.grandfathered.append(result.ticket_id)
+        else:
+            report.failures.append(result)
+    return report
+
+
+def _resolve_paths(args: argparse.Namespace) -> list[Path]:
+    if args.all or not args.paths:
+        return sorted(Path("contracts").glob("*.yaml"))
+    # CI feeds the changed-file list, which can include non-contract paths.
+    return [
+        p for p in args.paths if p.suffix == ".yaml" and p.parent.name == "contracts"
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        type=Path,
+        help="Contract YAML files to check. Defaults to all of contracts/.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Check the entire contracts/ corpus (used by the audit, not by CI).",
+    )
+    args = parser.parse_args(argv)
+
+    paths = _resolve_paths(args)
+    report = sweep(paths, load_legacy_allowlist())
+
+    if report.grandfathered:
+        print(
+            f"substance floor: {len(report.grandfathered)} grandfathered legacy "
+            f"contract(s) skipped (OMN-14419 backfill)"
+        )
+
+    exit_code = 0
+
+    if report.failures:
+        print(
+            f"\n{len(report.failures)} contract(s) failed the substance floor "
+            f"(OMN-14409):\n"
+        )
+        for result in report.failures:
+            print(f"  {result.failure_message()}\n")
+        exit_code = 1
+
+    if report.stale_allowlist:
+        listed = ", ".join(sorted(report.stale_allowlist))
+        print(
+            f"\n{len(report.stale_allowlist)} contract(s) now PASS the substance "
+            f"floor but are still grandfathered. The allowlist is a ratchet — it "
+            f"may only shrink.\n    Remove from "
+            f"scripts/validation/substance_floor_legacy_allowlist.yaml: {listed}\n"
+        )
+        exit_code = 1
+
+    if exit_code == 0:
+        print(f"substance floor OK: {len(paths)} contract(s) checked")
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
