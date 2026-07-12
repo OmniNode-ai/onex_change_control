@@ -89,6 +89,80 @@ jobs:
           fi
           uv run python scripts/validation/check_receipt_hardening.py "${receipt_files[@]}"
 
+      # OMN-14428: every gate above is scoped to the data files it validates
+      # (drift/dod_receipts/, contracts/, ...), so a PR that edits the gate's
+      # own code but touches zero data files never executes it. That exact
+      # hole is how OCC#3986 merged green with a stale-import ImportError in
+      # check_receipt_hardening.py — the file-scoped diff was empty, so the
+      # gate script never ran, and only the caught-ImportError compat shim it
+      # shipped with kept the (never-exercised) import path "succeeding".
+      # A change to a gate must run the gate. `--help` forces full
+      # module-level import execution (argparse handles -h before validating
+      # required positionals, so this needs no fixture data and works
+      # uniformly for any argparse-based validator); check_receipt_hardening
+      # additionally gets a real corpus run so a broken gate can't hide
+      # behind an import that merely succeeds but a runtime path that
+      # doesn't.
+      - name: Validator self-check — a gate must run when its own code changes
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          mapfile -t changed_validators < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- scripts/validation/ \
+              | grep -E '^scripts/validation/check_[^/]*\.py$' || true
+          )
+          if [ "${#changed_validators[@]}" -eq 0 ]; then
+            echo "No changed validator scripts; skipping self-check."
+            exit 0
+          fi
+          echo "Validator code changed — executing (not just importing via tests) so the gate can't merge broken behind an empty data-file diff:"
+          printf '  %s\n' "${changed_validators[@]}"
+          fail=0
+          for validator in "${changed_validators[@]}"; do
+            if [ ! -f "$validator" ]; then
+              echo "  $validator: deleted, skipping."
+              continue
+            fi
+            if ! uv run python "$validator" --help > /tmp/validator_help.log 2>&1; then
+              echo "  $validator: FAILED to execute even --help — the gate itself is broken:"
+              cat /tmp/validator_help.log
+              fail=1
+              continue
+            fi
+            echo "  $validator: --help OK (module-level imports execute cleanly)."
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more changed validators cannot execute. Fix the gate before merging."
+            exit 1
+          fi
+
+          # Stronger, corpus-backed check for check_receipt_hardening.py specifically:
+          # a script that imports fine but breaks on real data (e.g. a lazily-imported
+          # symbol) wouldn't be caught by --help alone.
+          for validator in "${changed_validators[@]}"; do
+            if [ "$(basename "$validator")" != "check_receipt_hardening.py" ] || [ ! -f "$validator" ]; then
+              continue
+            fi
+            mapfile -t corpus_receipts < <(find drift/dod_receipts -name '*.yaml' ! -name '*.supersede.*')
+            echo "Running $validator against the full corpus (${#corpus_receipts[@]} receipts)..."
+            set +e
+            uv run python "$validator" "${corpus_receipts[@]}" > /tmp/validator_corpus.log 2>&1
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              echo "Corpus run: clean (0 violations)."
+            elif [ "$status" -eq 1 ] && grep -q "violation(s):" /tmp/validator_corpus.log; then
+              echo "Corpus run: gate executed and reported expected violations (legacy corpus debt, not a gate defect)."
+            else
+              echo "Corpus run FAILED — the gate crashed instead of reporting violations:"
+              cat /tmp/validator_corpus.log
+              exit 1
+            fi
+          done
+
   type-check:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
     # Pre-commit hook runs mypy only on changed files (pre-push stage), while this job

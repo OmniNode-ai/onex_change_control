@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14375"
+title: "feat(OMN-14375): pr_state projection — WS-L GitHub-state fan-in producer"
+summary: >-
+  omnibase_infra PR #2262 adds node_pr_state_projection_compute (subscribes to onex.evt.github.pr-status.v1
+  and emits a ModelPayloadPrStateUpsert intent) and node_pr_state_write_effect (UPSERTs the intent into
+  the new public.pr_state latest-known-state table via ON CONFLICT DO UPDATE), plus migration 091_pr_state.sql,
+  topic enum entries, service_kernel.py DispatchResultApplier wiring, and an intent_effects bridge. This
+  is the WS-L fan-in producer backing the OMN-14374 structured-only pr_state read skill.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2262-head-b134fc47"
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2262 at head b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd.
+      Read the full diff (28 files: migration, 2 new nodes, topic enums, service_kernel wiring, intent_effects
+      bridge, unit + integration tests). Checked out the branch in an isolated worktree, ran the full
+      focused suite (19 unit + 3 integration auto-wiring gate tests) green, then performed two RED->GREEN
+      mutation proofs: (1) neutered the repo/pr_number required-field guard in HandlerPrStateProjection._require_str
+      -- the corresponding test failed as expected (DID NOT RAISE), confirming the guard is real and test-covered;
+      (2) forced was_insert=True unconditionally in HandlerPrStateUpsert.upsert -- the test_refreshed_pr_is_update
+      test failed as expected, confirming the RETURNING (xmax = 0) insert-vs-update detection is real
+      and test-covered. Both mutations were reverted and the suite reconfirmed green (22/22) with a clean
+      worktree. ruff check and ruff format --check passed on all touched source. CI on the live PR shows
+      all reds classify as occ-preflight dependency cascade (missing Evidence-Source), not real product
+      failures -- confirmed by reading the actual failed-job logs, not just the check rollup.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14375/dod-omnibase-infra-pr-2262-head-b134fc47/command.yaml
+          && grep -q '^pr_number: 2262$' drift/dod_receipts/OMN-14375/dod-omnibase-infra-pr-2262-head-b134fc47/command.yaml
+          && grep -q 'b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd' drift/dod_receipts/OMN-14375/dod-omnibase-infra-pr-2262-head-b134fc47/command.yaml
+  - id: "dod-deploy-assessment-head-b134fc47"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2262 head b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd:
+      the diff adds a new forward migration (091_pr_state.sql, additive CREATE TABLE IF NOT EXISTS / CREATE
+      INDEX IF NOT EXISTS, no destructive DDL) plus two new declarative nodes registered via pyproject.toml
+      entry points and a new DispatchResultApplier branch in service_kernel.py gated on an existing env
+      var (build_loop_dsn / OMNIBASE_INFRA_DB_URL) that already gates the neighboring build_loop applier.
+      It does not perform a live deploy or restart, does not mutate running runtime configuration, and
+      does not touch .201. The migration only applies on the next runtime deploy cycle through the existing
+      migration-runner path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14375/dod-deploy-assessment-head-b134fc47/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14375/dod-deploy-assessment-head-b134fc47/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14375 central contract and PASS
+      receipts for omnibase_infra PR #2262 head b134fc473aa7a4e32d7c99a67fb4a6d88fe91fdd. The receipt
+      binds the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14375/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14375-occ-infra-2262' drift/dod_receipts/OMN-14375/dod-occ-self-commit/command.yaml
