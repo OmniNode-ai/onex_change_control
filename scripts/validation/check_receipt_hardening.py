@@ -44,6 +44,8 @@ Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import re
 import sys
 from datetime import UTC, datetime
@@ -52,12 +54,54 @@ from pathlib import Path
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
-from omnibase_core.validation.validator_receipt_gate import (
-    ContractEntryNotFoundError,
-    compute_contract_entry_sha256,
-    compute_contract_sha256,
-)
+from omnibase_core.validation import validator_receipt_gate
 from pydantic import ValidationError
+
+ContractEntryNotFoundError = getattr(
+    validator_receipt_gate, "ContractEntryNotFoundError", LookupError
+)
+compute_contract_sha256 = validator_receipt_gate.compute_contract_sha256
+
+
+def compute_contract_entry_sha256(contract_data: object, evidence_item_id: str) -> str:
+    """Return the canonical per-entry contract hash.
+
+    Older CI environments can have an omnibase_core wheel that provides the
+    hash algorithm but not the exported ContractEntryNotFoundError symbol.
+    Keeping the tiny algorithm local preserves OCC gate compatibility across
+    that skew without weakening the entry binding.
+    """
+    core_compute = getattr(
+        validator_receipt_gate, "compute_contract_entry_sha256", None
+    )
+    if core_compute is not None:
+        try:
+            return str(core_compute(contract_data, evidence_item_id))
+        except ContractEntryNotFoundError:
+            raise
+        except LookupError:
+            message = f"dod_evidence item {evidence_item_id!r} not found in contract"
+            raise ContractEntryNotFoundError(message) from None
+
+    entry: dict[str, object] | None = None
+    if isinstance(contract_data, dict):
+        items = contract_data.get("dod_evidence", [])
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and item.get("id") == evidence_item_id:
+                    entry = item
+                    break
+    if entry is None:
+        message = f"dod_evidence item {evidence_item_id!r} not found in contract"
+        raise ContractEntryNotFoundError(message)
+
+    header = {key: contract_data.get(key) for key in ("ticket_id", "schema_version")}
+    canonical = {"header": header, "entry": entry}
+    blob = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return f"sha256:{hashlib.sha256(blob.encode('utf-8')).hexdigest()}"
+
 
 # Receipts produced on/after this UTC instant are subject to the gate.
 # Earlier receipts are legacy migration debt (see module docstring).
