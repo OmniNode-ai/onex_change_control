@@ -72,6 +72,55 @@ dod_evidence:
           core-only-install, contract-compliance, e2e-workflow-runner, golden-chains, sea-e2e-chains,
           generated-node-golden-chain, dep-health, uv-lock-pin-reachability, aislop-sweep, workflow-module-refs,
           no-noncanonical-lifecycle-classes]' "$tmp"
+  - id: "dod-verify-1727-fetch-failure-fails-closed"
+    description: >-
+      Product-observing check against omnimarket#1727 head f119c4932ef8a159af2d0c639fef7db693dc66d0. Reads
+      scripts/ci/check_uv_lock_pin_reachability.py from the PR head and asserts the CodeRabbit-required
+      fail-closed behavior: if git fetch origin --prune fails, the checker returns False before consulting
+      local cat-file or branch state. Without this, a transient fetch failure could reuse stale remote-tracking
+      refs and recreate the false-green stale-branch bug this gate exists to prevent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/check_uv_lock_pin_reachability.py?ref=f119c4932ef8a159af2d0c639fef7db693dc66d0"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'fetch = _git(["fetch", "origin", "--prune",
+          "--quiet"], cwd=repo_dir)' "$tmp" && grep -F -- 'if fetch.returncode != 0:' "$tmp" && grep -F
+          -- 'return False' "$tmp"
+  - id: "dod-verify-1727-missing-clone-fails-gate"
+    description: >-
+      Product-observing check against omnimarket#1727 head f119c4932ef8a159af2d0c639fef7db693dc66d0. Reads
+      scripts/ci/check_uv_lock_pin_reachability.py and its focused tests from the PR head and asserts
+      that a missing sibling clone is treated as UNVERIFIED and returns exit code 1. This prevents clone/setup
+      failures from leaving every pin unchecked while the job exits green.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          script="$(mktemp)" && test_file="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/check_uv_lock_pin_reachability.py?ref=f119c4932ef8a159af2d0c639fef7db693dc66d0"
+          --jq .content | base64 -d > "$script" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/scripts/ci/test_check_uv_lock_pin_reachability.py?ref=f119c4932ef8a159af2d0c639fef7db693dc66d0"
+          --jq .content | base64 -d > "$test_file" && grep -F -- 'UNVERIFIED  ' "$script" && grep -F --
+          'no clone at' "$script" && grep -F -- 'unverified.append((repo, rev, repo_dir))' "$script" &&
+          grep -F -- 'if unverified:' "$script" && grep -F -- 'return 1' "$script" && grep -F -- 'test_missing_clone_fails_gate'
+          "$test_file"
+  - id: "dod-verify-1727-focused-local-checks-f119"
+    description: >-
+      Focused local verification run for the current omnimarket#1727 product head f119c4932ef8a159af2d0c639fef7db693dc66d0
+      after the CodeRabbit fixes. The suite now covers the original stale-ref false pass plus the new
+      fail-closed cases for fetch failure and missing clones.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          script="$(mktemp)" && test_file="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/check_uv_lock_pin_reachability.py?ref=f119c4932ef8a159af2d0c639fef7db693dc66d0"
+          --jq .content | base64 -d > "$script" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/scripts/ci/test_check_uv_lock_pin_reachability.py?ref=f119c4932ef8a159af2d0c639fef7db693dc66d0"
+          --jq .content | base64 -d > "$test_file" && grep -F -- 'test_fetch_failure_fails_closed' "$test_file"
+          && grep -F -- 'test_missing_clone_fails_gate' "$test_file" && grep -F -- 'test_naive_unpruned_check_gives_a_false_pass'
+          "$test_file" && grep -F -- 'fetch.returncode != 0' "$script" && grep -F -- 'unverified.append((repo,
+          rev, repo_dir))' "$script"
   - id: "dod-occ-self-commit"
     description: >-
       Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
@@ -83,3 +132,15 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           grep -q 'jonah/omn-14450-occ-omnimarket-1727' drift/dod_receipts/OMN-14450/dod-occ-self-commit/command.yaml
+  - id: "dod-occ-self-pr-4028"
+    description: >-
+      Self-bind item for the follow-up OCC companion PR that refreshes OMN-14450 evidence after omnimarket#1727
+      advanced to f119c4932ef8a159af2d0c639fef7db693dc66d0. It binds onex_change_control#4028 to this
+      branch and commit so hosted OCC eligibility can validate the OCC PR under review.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'pr_number: 4028' drift/dod_receipts/OMN-14450/dod-occ-self-pr-4028/command.yaml &&
+          grep -q 'jonah/omn-14450-occ-omnimarket-1727-head-f119' drift/dod_receipts/OMN-14450/dod-occ-self-pr-4028/command.yaml
