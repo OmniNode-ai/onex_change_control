@@ -21,6 +21,57 @@ emergency_bypass:
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-verify-source-pr-merge-status"
+    description: >-
+      Primary product-observing evidence: reads the ACTUAL merge status of the source PR (OmniNode-ai/onex_change_control#3995)
+      directly from the GitHub API at verification time — not a grep against this companion's own receipt
+      file. This check is honest about its own limitation and therefore currently reports the true state:
+      #3995 remained unmerged as of this writing, so the check genuinely fails right now. Bidirectional
+      discrimination was proven against a real control: the identical command pattern run against OmniNode-ai/onex_change_control#3994
+      (a merged companion PR) returns true/exit 0. This companion PR (#4000) is not itself gated by Contract
+      Compliance Check — it is advisory, absent from both dev's required_status_checks and CI Summary's
+      needs: list — so an honestly red entry here does not block this companion from landing; it will
+      flip green once #3995 merges.
+    source: "manual"
+    status: "failed"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/pulls/3995 --jq .merged)" = "true"
+  - id: "dod-verify-source-pr-content-at-head"
+    description: >-
+      Primary product-observing evidence: reads the actual pyproject.toml content at #3995's exact head
+      commit SHA (b60544ffe09918055337d4b6248cbe366458897d) via the GitHub contents API, and asserts the
+      specific pin string the PR claims to have written is genuinely present at that ref — not merely
+      that a file with some SHA exists there (the weaker existence-only check_value form that OCC#4002
+      used). Bidirectionally proven: this exact command form returns the pin string at #3995's head SHA,
+      and returns false when run against dev's pre-#3995 HEAD (e1dc544696a0c45695988b8f50487dca1cbeaf34),
+      where the file still carries the old 0.45.0 pin.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/contents/pyproject.toml?ref=b60544ffe09918055337d4b6248cbe366458897d
+          --jq .content | base64 -d | grep -c 'omnibase-core>=0.46.5,<0.47.0')" -ge 1
+  - id: "dod-verify-source-pr-ci-status"
+    description: >-
+      Primary product-observing evidence: reads the actual check-run conclusions recorded by GitHub for
+      #3995's head commit SHA, excluding only the two checks (verify/verify, occ-preflight/eligibility)
+      that are EXPECTED to fail until this very companion lands — that exclusion is the documented, self-fulfilling
+      missing_contract dependency, not an attempt to hide a real defect. No other check on #3995's head
+      SHA carries a failure conclusion. Bidirectionally proven against a real control: the identical check-runs
+      query run against OmniNode-ai/omnibase_infra#2264's head SHA (26e1c3e915a98832519ad9f2a35534915bb6c071,
+      a PR independently reported to have 32 failing checks) correctly returns a failure conclusion and
+      the check_value correctly fails closed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/commits/b60544ffe09918055337d4b6248cbe366458897d/check-runs
+          --jq '([.check_runs[] | select(.name != "verify / verify" and .name != "occ-preflight / eligibility")
+          | .conclusion] | index("failure")) // "none"')" = "none"
   - id: "dod-verify-pin-floor-wheel-grep"
     description: >-
       Independent re-derivation of the pin floor, not a read of the implementer's claim. Downloaded every
