@@ -173,6 +173,44 @@ The Ticket Contract template (`ticket_contract.template.yaml`) is used to create
   command: null  # or simply omit this field
 ```
 
+#### `dod_evidence`
+- **Type**: List of objects (optional; omit if not needed)
+- **Description**: Executable DoD checks. Each item's `checks[].check_value` is a shell command (`check_type: "command"`) run from the `onex_change_control` repo root by `scripts/ci/run_contract_compliance_check.py`; exit 0 = pass.
+- **`check_value` must be falsifiable — it must be able to fail if the work is actually wrong.** A command that reads the receipt file the check itself is stamped in and greps that file for `status: PASS` is **not evidence**: the receipt says PASS because the author wrote PASS, and the check confirms the author wrote PASS. It passes identically whether the code is correct or broken.
+
+  > **⚠️ DO NOT DO THIS** (measured OMN-14417 at 2,137/6,915 = 31.3% of the live corpus, and 98.4% of contracts created in the last 7 days — this exact shape, copy-pasted PR to PR):
+  > ```yaml
+  > checks:
+  >   - check_type: "command"
+  >     check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-XXXX/dod-001/command.yaml"
+  > ```
+  > This derives tier **L0** (content-free) under the contract substance floor (`scripts/validation/check_contract_substance_floor.py`, OMN-14409) and cannot satisfy it.
+
+  Use a command that actually asserts something about the change instead — for evidence bound to a product PR, `gh pr checks <n> --repo <owner>/<repo>` (or the `$PR_NUMBER`/`$REPO` placeholders, auto-injected by the compliance-check runner whenever the command contains `gh `) derives **L1**: it fails when CI fails, and it satisfies the "no cross-repo filesystem paths" execution constraint (below) exactly as well as a self-grep does, without being circular. A test run (`pytest ...`), a static assertion over source (`grep`/`rg` pinning a real symbol in the tree, not in the receipt corpus), or a runtime readback (`psql`/`rpk`/`curl`) are the other substantive families the deriver recognizes.
+
+  A **binding/stamp item** — one whose only job is to prove the OCC PR's own identity (e.g. `dod-occ-self`, matching this contract to its own PR/commit) rather than to prove the *product* work is correct — is exempt from this rule; a self-referential or existence check is legitimate there. It is only the item(s) meant to be *the* proof of the ticket's work that must clear L1.
+
+  **Execution constraint**: `run_contract_compliance_check.py` sets `$CONTRACT_REPO_DIR` (this repo's root) but does **not** set `$OMNI_HOME`, so a `check_value` that greps a path in a sibling repo (`docs/handoff/...` in `omni_home`, etc.) will always fail — not because self-reference is required, but because the command must not depend on a filesystem path outside this checkout. A `gh`/API-based check has no such path dependency and works unmodified.
+
+**Example (correct, falsifiable, for a product-PR evidence item):**
+```yaml
+dod_evidence:
+  - id: "dod-omnimarket-pr-1719"
+    description: "omnimarket PR #1719 CI green at head <sha>."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks 1719 --repo OmniNode-ai/omnimarket"
+  - id: "dod-occ-self"
+    description: "OCC self-binding: this branch carries the contract + PASS receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-XXXX/dod-occ-self/command.yaml"
+```
+
 #### `emergency_bypass`
 - **Type**: Object
 - **Required**: Yes
