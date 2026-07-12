@@ -1,0 +1,76 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14487"
+title: "OCC companion for omnibase_infra#2279 — JSON-adapt recent_responses (projection dict-adapt crash)"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2279 (OMN-14487). The inference-response projection
+  write crashed on a psycopg2 dict-adapt: recent_responses is a JSONB array-of-objects column (projection_delegation_inference_response_text,
+  CHECK jsonb_typeof(recent_responses)='array') named without a _json/_jsonb suffix, so the SyncPsycopg2Adapter
+  handed the raw list[dict] to psycopg2 un-wrapped; psycopg2 could not adapt the inner dicts ("can't adapt
+  type 'dict'"), the projection write raised, and — with no dlq_topics on that node's contract — the erroring
+  event was silently dropped (live cid a7edc49a on the stability lane). The one-line fix adds recent_responses
+  to the _JSONB_LIST_COLUMNS allowlist so it is JSON-adapted. The evidence reads the PR head directly
+  and asserts: (1) recent_responses is in the allowlist and the adapter test asserts the value is wrapped
+  in psycopg2.extras.Json; (2) the fix does NOT over-fire — the adapter wraps ONLY on the _json/_jsonb
+  suffix OR an exact _JSONB_LIST_COLUMNS member, so a genuine Postgres text[] array column (e.g. swarm_runs.models_used)
+  is preserved un-wrapped. Independently verified: reverting the recent_responses allowlist entry makes
+  the adapter test go RED (assert isinstance(params["recent_responses"], psycopg2.extras.Json) fails on
+  the raw list[dict] — the un-adaptable live-crash path); GREEN at head (31 passed); the text[]-preservation
+  test still passes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2279 head JSON-adapts recent_responses via the _JSONB_LIST_COLUMNS allowlist
+      without over-firing on text[] columns."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2279-recent-responses-json-adapted"
+    description: >-
+      Product-observing check against omnibase_infra#2279 head f973c737d1383f31bf3e6146a0ad893801230696.
+      Reads handler_wiring.py and the adapter test from the PR head and asserts recent_responses is added
+      to the _JSONB_LIST_COLUMNS allowlist, and the test test_sync_db_adapter_json_adapts_recent_responses_list_of_objects
+      asserts the adapted param is wrapped in psycopg2.extras.Json. Without the allowlist entry the raw
+      list[dict] is handed to psycopg2 un-wrapped and the inference-response projection write crashes
+      (can't adapt type 'dict').
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          hw="$(mktemp)" && t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=f973c737d1383f31bf3e6146a0ad893801230696"
+          --jq .content | base64 -d > "$hw" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py?ref=f973c737d1383f31bf3e6146a0ad893801230696"
+          --jq .content | base64 -d > "$t" && grep -F -- 'frozenset({"corpus_errors", "recent_responses"})'
+          "$hw" && grep -F -- 'def test_sync_db_adapter_json_adapts_recent_responses_list_of_objects'
+          "$t" && grep -F -- 'params["recent_responses"], psycopg2.extras.Json' "$t"
+  - id: "dod-verify-2279-no-overfire-exact-allowlist"
+    description: >-
+      Product-observing check against the PR head. Reads handler_wiring.py and asserts the adapter wraps
+      a list value in Json ONLY when the column key ends with _json/_jsonb OR is an EXACT member of _JSONB_LIST_COLUMNS
+      — an exact-name allowlist, so adding recent_responses cannot affect a differently-named genuine
+      Postgres text[] array column (the comment names swarm_runs.models_used as the preserved case). This
+      is the no-over-reach guard: the fix is surgically scoped to the one crashing column.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          hw="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=f973c737d1383f31bf3e6146a0ad893801230696"
+          --jq .content | base64 -d > "$hw" && grep -F -- 'str(key).endswith(("_json", "_jsonb"))' "$hw"
+          && grep -F -- 'str(key) in _JSONB_LIST_COLUMNS' "$hw" && grep -F -- 'models_used' "$hw"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the two entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14487-occ-infra-2279-jsonb-adapt' drift/dod_receipts/OMN-14487/dod-occ-self-commit/command.yaml
