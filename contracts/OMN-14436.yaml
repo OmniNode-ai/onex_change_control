@@ -59,3 +59,57 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state,headRefName,headRefOid"
+  - id: "dod-verify-14436-digest-binding-in-source"
+    description: >-
+      Asserts the shipped runner carries _contract_digest -- the function that binds the grandfather to
+      a contract's CONTENT HASH rather than its ticket id. This is the load-bearing property of OMN-14436
+      and NOTHING ELSE IN THIS CONTRACT GUARDS IT: pytest, mypy --strict and ruff would ALL still pass
+      if the grandfather reverted to ticket-keyed. That version is an AMNESTY, not a ratchet -- a fresh
+      circular dod_evidence entry appended under an old ticket id would inherit that ticket's exemption
+      forever. A green build proving the code COMPILES, while the invariant the code exists to ENFORCE
+      quietly evaporates, is exactly the failure class this ticket was opened to kill. Content read pinned
+      to #4022's merge commit (7266a4f1b2fff2bf5a362a60bb1f099dd94d1835). RED PROVEN across three refs:
+      exit 0 at the merge commit; exit 1 at its pre-fix parent (f60887191c1d1e5ad4530807e69c61e9d32888c8,
+      where the symbol does not exist); exit 1 at a bogus SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/onex_change_control/contents/scripts/ci/run_contract_compliance_check.py?ref=7266a4f1b2fff2bf5a362a60bb1f099dd94d1835"
+          --jq .content | base64 -d | grep -c 'def _contract_digest')" -ge 1
+  - id: "dod-verify-14436-allowlist-fully-digest-bound"
+    description: >-
+      Asserts the grandfather allowlist EXISTS, is NON-EMPTY, and that EVERY non-comment line matches
+      the digest-bound form 'OMN-<n> <64-hex>'. A digest-less line is a ticket-keyed exemption and is
+      precisely how the laundering hole comes back, so a PARTIAL migration is treated as FAILURE, not
+      progress. The obvious form of this check -- "count the digest-less lines and require zero" -- is
+      a FALSE GREEN and was caught and rejected here: at the pre-fix parent the allowlist file does not
+      exist at all, so "zero digest-less lines" is trivially true and the check PASSES against the very
+      state it is supposed to reject. A check that passes because the thing it inspects is ABSENT asserts
+      nothing. This form therefore requires total > 0 AND total == digest-bound-count. RED PROVEN across
+      three refs: exit 0 at #4022's merge commit (6919 lines, 6919 digest-bound); exit 1 at the pre-fix
+      parent (file absent -> total 0); exit 1 at a bogus SHA. It also goes RED against any allowlist carrying
+      even one digest-less line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          A=$(gh api "repos/OmniNode-ai/onex_change_control/contents/scripts/ci/dod_runner_legacy_allowlist.txt?ref=7266a4f1b2fff2bf5a362a60bb1f099dd94d1835"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); T=$(printf '%s' "$A" | grep -vcE '^[[:space:]]*#|^[[:space:]]*$');
+          B=$(printf '%s' "$A" | grep -cE '^OMN-[0-9]+ [0-9a-f]{64}$'); test "$T" -gt 0 && test "$T" =
+          "$B" #magic___^_^___line
+  - id: "dod-occ-self-ratchet-invariant"
+    description: >-
+      Self-bind item for THIS OCC PR. occ-preflight (_receipt_bound_to_pr) requires a PASS receipt bound
+      to the PR under check; the merged receipts bind #4022 and #4023, so this appends the binding for
+      this one. Intentionally self-referential and legitimately so -- it asserts a fact ABOUT this PR
+      (its branch). It is a binding item, NOT substantive evidence: the two entries above carry that,
+      and both are product-observing content reads proven RED across three refs.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14436-assert-ratchet-invariant' drift/dod_receipts/OMN-14436/dod-occ-self-ratchet-invariant/command.yaml
