@@ -27,11 +27,18 @@ from onex_change_control.scanners.handler_contract_compliance import (
     cross_reference,
     scan_freestanding_imperative_io,
 )
+from onex_change_control.scanners.script_canonical_form import (
+    DEFAULT_SHIM_CEILING,
+    classify_script,
+    is_governed_script,
+)
 from onex_change_control.validators.arch_handler_contract_compliance import (
     _find_freestanding_modules,
     _find_node_dirs,
     _infer_repo_name,
     _load_allowlist,
+    _load_scripts_baseline,
+    _load_scripts_exceptions,
 )
 
 if TYPE_CHECKING:
@@ -41,6 +48,10 @@ if TYPE_CHECKING:
     from onex_change_control.models.model_handler_compliance_result import (
         ModelHandlerComplianceResult,
     )
+    from onex_change_control.models.model_script_canonical_result import (
+        ModelScriptCanonicalResult,
+    )
+    from onex_change_control.models.model_script_exception import ModelScriptException
 
 _SKIP_REPO_DIRS = frozenset(
     {
@@ -515,6 +526,251 @@ def scan_repos(
     ]
 
 
+# --- scripts/** canonical-form guard (DEFAULT-DENY new scripts, OMN-14475) ---
+
+_SCRIPTS_SKIP_DIRS = frozenset({"__pycache__", ".venv", "node_modules"})
+
+# The central CODEOWNERS-approved exceptions registry. Resolved from the
+# allowlists dir (onex_change_control@main in CI) so approved_by != author.
+_SCRIPTS_EXCEPTIONS_FILENAME = "scripts_exceptions.yaml"
+
+
+@dataclass(frozen=True)
+class RepoScriptsSummary:
+    """Repo-level scripts/** canonical-form scan summary."""
+
+    repo: str
+    repo_root: Path
+    allowlist_path: Path | None
+    script_count: int
+    baselined_count: int
+    passing_new_count: int
+    blocking_count: int
+    results: list[ModelScriptCanonicalResult]
+
+    def to_json(self) -> dict[str, Any]:
+        """Return JSON-serializable summary data."""
+        return {
+            "repo": self.repo,
+            "repo_root": str(self.repo_root),
+            "allowlist_path": str(self.allowlist_path) if self.allowlist_path else None,
+            "script_count": self.script_count,
+            "baselined_count": self.baselined_count,
+            "passing_new_count": self.passing_new_count,
+            "blocking_count": self.blocking_count,
+            "blocking_scripts": [
+                result.model_dump(mode="json")
+                for result in self.results
+                if result.blocking
+            ],
+            "passing_new_scripts": [
+                result.model_dump(mode="json")
+                for result in self.results
+                if result.is_new and not result.blocking
+            ],
+        }
+
+
+def _find_script_files(repo_root: Path) -> list[Path]:
+    """Enumerate governed files under ``scripts/**`` (deterministic order)."""
+    scripts_dir = repo_root / "scripts"
+    if not scripts_dir.exists():
+        return []
+    files: list[Path] = []
+    for path in scripts_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in _SCRIPTS_SKIP_DIRS for part in path.parts):
+            continue
+        if is_governed_script(path):
+            files.append(path)
+    return sorted(files)
+
+
+def _resolve_scripts_exceptions(
+    *,
+    repo_label: str,
+    repo_name: str,
+    allowlists_dir: Path | None,
+) -> dict[str, ModelScriptException]:
+    """Load the central exceptions registry and index entries for this repo.
+
+    The registry is a single file (``scripts_exceptions.yaml``) in the central
+    allowlists dir — in CI that dir is checked out from onex_change_control@main,
+    so an entry cannot be self-added on the PR branch. Returns a
+    ``rel_path -> ModelScriptException`` map for entries whose ``repo`` matches
+    this repo (by directory label or inferred package name).
+    """
+    if allowlists_dir is None:
+        return {}
+    registry_path = allowlists_dir / _SCRIPTS_EXCEPTIONS_FILENAME
+    registry = _load_scripts_exceptions(registry_path)
+    repo_keys = {repo_label, repo_name}
+    return {
+        path: exception
+        for (repo, path), exception in registry.items()
+        if repo in repo_keys
+    }
+
+
+def scan_repo_scripts(
+    repo_root: Path,
+    *,
+    allowlists_dir: Path | None = None,
+    shim_ceiling: int = DEFAULT_SHIM_CEILING,
+) -> RepoScriptsSummary:
+    """Scan a repository's ``scripts/**`` under the deny-new canonical-form policy."""
+    repo_root = repo_root.resolve()
+    repo_name = _infer_repo_name(repo_root)
+    repo_label = repo_root.name
+    allowlist_path = _resolve_allowlist_path(
+        repo_root=repo_root,
+        repo_label=repo_label,
+        repo_name=repo_name,
+        allowlists_dir=allowlists_dir,
+    )
+    baseline = (
+        _load_scripts_baseline(allowlist_path)
+        if allowlist_path is not None
+        else frozenset()
+    )
+    exceptions = _resolve_scripts_exceptions(
+        repo_label=repo_label,
+        repo_name=repo_name,
+        allowlists_dir=allowlists_dir,
+    )
+
+    results: list[ModelScriptCanonicalResult] = []
+    for script_file in _find_script_files(repo_root):
+        rel_path = str(script_file.relative_to(repo_root))
+        results.append(
+            classify_script(
+                script_file,
+                repo=repo_label,
+                in_baseline=rel_path in baseline,
+                exception=exceptions.get(rel_path),
+                rel_path=rel_path,
+                shim_ceiling=shim_ceiling,
+            )
+        )
+
+    return RepoScriptsSummary(
+        repo=repo_label,
+        repo_root=repo_root,
+        allowlist_path=allowlist_path,
+        script_count=len(results),
+        baselined_count=sum(1 for r in results if not r.is_new),
+        passing_new_count=sum(1 for r in results if r.is_new and not r.blocking),
+        blocking_count=sum(1 for r in results if r.blocking),
+        results=results,
+    )
+
+
+def scan_repos_scripts(
+    repo_roots: list[Path],
+    *,
+    allowlists_dir: Path | None = None,
+    shim_ceiling: int = DEFAULT_SHIM_CEILING,
+) -> list[RepoScriptsSummary]:
+    """Scan multiple repositories' scripts in deterministic order."""
+    return [
+        scan_repo_scripts(
+            repo_root=repo_root,
+            allowlists_dir=allowlists_dir,
+            shim_ceiling=shim_ceiling,
+        )
+        for repo_root in sorted(repo_roots, key=lambda path: path.name)
+    ]
+
+
+def render_scripts_text_report(summaries: list[RepoScriptsSummary]) -> str:
+    """Render a human-readable scripts canonical-form report."""
+    lines = [
+        "Scripts canonical-form guard (DEFAULT-DENY new scripts)",
+        "",
+        (
+            f"{'repo':28} {'scripts':>7} {'baseline':>8} "
+            f"{'new-ok':>6} {'blocked':>7} allowlist"
+        ),
+        "-" * 90,
+    ]
+    for summary in summaries:
+        allowlist = (
+            str(summary.allowlist_path)
+            if summary.allowlist_path is not None
+            else "(none)"
+        )
+        lines.append(
+            f"{summary.repo:28} {summary.script_count:7} "
+            f"{summary.baselined_count:8} {summary.passing_new_count:6} "
+            f"{summary.blocking_count:7} {allowlist}"
+        )
+
+    blocking = [
+        result for summary in summaries for result in summary.results if result.blocking
+    ]
+    if blocking:
+        lines.extend(["", "BLOCKED new/non-canonical scripts:"])
+        for result in blocking:
+            lines.append(f"- {result.script_path}: {result.verdict.value}")
+            lines.append(f"  - {result.detail}")
+
+    passing_new = [
+        result
+        for summary in summaries
+        for result in summary.results
+        if result.is_new and not result.blocking
+    ]
+    if passing_new:
+        lines.extend(["", "Accepted new scripts (declared exceptions):"])
+        for result in passing_new:
+            disposition = result.disposition.value if result.disposition else "-"
+            lines.append(
+                f"- {result.script_path}: {result.verdict.value} "
+                f"[{disposition}] (score {result.logic_score})"
+            )
+
+    advisories = [
+        result
+        for summary in summaries
+        for result in summary.results
+        if result.logic_advisory
+    ]
+    if advisories:
+        lines.extend(
+            ["", "LOUD ADVISORY (CODEOWNERS reviewer, please confirm glue not logic):"]
+        )
+        for result in advisories:
+            lines.append(
+                f"- {result.script_path}: permanent exception scores "
+                f"{result.logic_score} — is this genuinely glue, not logic that "
+                "belongs in a node?"
+            )
+    return "\n".join(lines)
+
+
+def generate_scripts_baseline(summaries: list[RepoScriptsSummary]) -> str:
+    """Emit the ``allowlisted_scripts:`` YAML baseline for current scripts.
+
+    Freezes every governed ``scripts/**`` file as pre-existing debt. Paste the
+    output into the repo's ``allowlists/<repo>.yaml`` (burn-down only).
+    """
+    entries = [
+        {
+            "path": result.script_path,
+            "reason": "pre-existing script frozen as debt (OMN-14475 baseline)",
+            "ticket": "OMN-14475",
+        }
+        for summary in summaries
+        for result in summary.results
+    ]
+    return yaml.dump(
+        {"allowlisted_scripts": entries},
+        default_flow_style=False,
+        sort_keys=False,
+    )
+
+
 def _resolve_allowlist_path(
     *,
     repo_root: Path,
@@ -784,6 +1040,32 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "inference params, topics, LAN IPs, and subprocess network ops."
         ),
     )
+    parser.add_argument(
+        "--scan-scripts",
+        action="store_true",
+        help=(
+            "Run the scripts/** canonical-form guard (DEFAULT-DENY new scripts, "
+            "OMN-14475): every new scripts/** file must be a node-backed shim "
+            "or a declared justified-shim; existing scripts are ratcheted debt."
+        ),
+    )
+    parser.add_argument(
+        "--generate-scripts-baseline",
+        action="store_true",
+        help=(
+            "Emit the allowlisted_scripts: YAML baseline for the current "
+            "scripts/** inventory and exit 0 (seed/refresh the ratchet)."
+        ),
+    )
+    parser.add_argument(
+        "--shim-ceiling",
+        type=int,
+        default=DEFAULT_SHIM_CEILING,
+        help=(
+            "Logic-score ceiling above which a justified-shim is rejected as "
+            f"logic-hiding-in-a-shim (default {DEFAULT_SHIM_CEILING})."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -799,6 +1081,35 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Scripts baseline generation is a standalone, non-scanning mode.
+    if args.generate_scripts_baseline:
+        script_summaries = scan_repos_scripts(
+            repo_roots=repo_roots,
+            allowlists_dir=args.allowlists_dir,
+            shim_ceiling=args.shim_ceiling,
+        )
+        print(generate_scripts_baseline(script_summaries))
+        return 0
+
+    # Scripts-only mode: run just the scripts/** canonical-form guard.
+    if args.scan_scripts:
+        script_summaries = scan_repos_scripts(
+            repo_roots=repo_roots,
+            allowlists_dir=args.allowlists_dir,
+            shim_ceiling=args.shim_ceiling,
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    [summary.to_json() for summary in script_summaries], indent=2
+                )
+            )
+        else:
+            print(render_scripts_text_report(script_summaries))
+        if args.no_fail:
+            return 0
+        return 1 if any(summary.blocking_count for summary in script_summaries) else 0
 
     summaries = scan_repos(
         repo_roots=repo_roots,
