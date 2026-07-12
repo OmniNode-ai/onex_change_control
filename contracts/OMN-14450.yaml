@@ -1,0 +1,85 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14450"
+title: "OCC companion for omnimarket#1727 — uv.lock pin reachability gate"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1727 (OMN-14450). The product PR adds a CI gate that
+  rejects git-SHA pins in uv.lock when the pinned commit is not reachable from any remote branch in a
+  fresh/pruned clone. This is the recurrence guard for OMN-14447, where omnimarket pinned omnibase-core
+  to a deleted feature-branch head and made fresh workspace builds impossible. The evidence below reads
+  the product PR head directly and asserts the load-bearing properties: the check prunes before testing
+  reachability, the regression test proves the unpruned false pass, and the job is wired into ci.yml's
+  required CI Summary rollup rather than living in an invisible standalone workflow.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket#1727 head contains a product-observing uv.lock pin reachability gate"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1727-script-prunes-before-reachability"
+    description: >-
+      Product-observing check against omnimarket#1727 head db02983a2e0cc1309d1f17d98a8d3484d578881e. Reads
+      scripts/ci/check_uv_lock_pin_reachability.py from the PR head and asserts the load-bearing implementation
+      details: the script exposes a --no-prune control only for proving the false pass, defaults to pruning,
+      and calls git fetch origin --prune before git branch -r --contains. Without this, the gate would
+      reproduce the OMN-14447 failure mode by reporting deleted branch heads as reachable on stale clones.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/check_uv_lock_pin_reachability.py?ref=db02983a2e0cc1309d1f17d98a8d3484d578881e"
+          --jq .content | base64 -d > "$tmp" && grep -F -- '"--no-prune"' "$tmp" && grep -F -- 'prune=not
+          args.no_prune' "$tmp" && grep -F -- '"fetch", "origin", "--prune", "--quiet"' "$tmp" && grep
+          -F -- '"branch", "-r", "--contains", rev' "$tmp"
+  - id: "dod-verify-1727-test-proves-unpruned-false-pass"
+    description: >-
+      Product-observing test check against the PR head. The regression test must prove both sides of the
+      invariant: a deleted feature branch commit returns True when prune=False, then False when prune=True.
+      That is the exact false pass OMN-14450 exists to prevent; a test that only checks happy-path reachable
+      commits would not guard the bug class.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/scripts/ci/test_check_uv_lock_pin_reachability.py?ref=db02983a2e0cc1309d1f17d98a8d3484d578881e"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'test_naive_unpruned_check_gives_a_false_pass'
+          "$tmp" && grep -F -- 'assert is_reachable(repo, doomed, prune=False) is True' "$tmp" && grep
+          -F -- 'assert is_reachable(repo, doomed, prune=True) is False' "$tmp" && grep -F -- 'branch",
+          "-q", "-D", "feature"' "$tmp"
+  - id: "dod-verify-1727-ci-summary-wires-reachability-job"
+    description: >-
+      Product-observing workflow check against the PR head. The uv.lock reachability check must live inside
+      .github/workflows/ci.yml and be listed in the ci-summary needs array. A standalone workflow or unrolled
+      job would be structurally invisible to the required CI Summary check, recreating the non-blocking-gate
+      defect class from OMN-14415.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci.yml?ref=db02983a2e0cc1309d1f17d98a8d3484d578881e"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'uv-lock-pin-reachability:' "$tmp" && grep
+          -F -- 'python3 scripts/ci/check_uv_lock_pin_reachability.py' "$tmp" && grep -F -- 'needs: [occ-preflight,
+          zone-filter, lint, typecheck, detect-changes, test, integration-guard, topic-naming-lint, runtime-sweep,
+          core-only-install, contract-compliance, e2e-workflow-runner, golden-chains, sea-e2e-chains,
+          generated-node-golden-chain, dep-health, uv-lock-pin-reachability, aislop-sweep, workflow-module-refs,
+          no-noncanonical-lifecycle-classes]' "$tmp"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the PR under check before a PR number exists. Product-observing evidence
+      is carried by the three entries above; this item is binding evidence only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14450-occ-omnimarket-1727' drift/dod_receipts/OMN-14450/dod-occ-self-commit/command.yaml
