@@ -1,0 +1,98 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14454"
+title: "Execute DoD check_values against the product tree (OMN-14436 canary, omnibase_infra)"
+summary: >
+  Canary for OMN-14436. omnibase_infra#2267 decouples contract-compliance from the test pipeline, replaces
+  the dead validate-yaml executor with the real runner bound to --workspace $GITHUB_WORKSPACE (the PRODUCT),
+  and pins the previously-unpinned onex_change_control checkout. This contract exists separately from
+  OMN-14436 because of a constraint that only became visible once check_values began executing: a contract
+  belongs to a TICKET, but its check_values run in whatever REPO cites that ticket. OMN-14436's contract
+  is OCC-specific (pytest/mypy/ruff over OCC paths) and BLOCKs when executed with cwd = the infra tree.
+  A cross-repo ticket cannot have one contract that passes in both repos. Every check below is a gh api
+  CONTENT READ -- deliberately workspace-INDEPENDENT, so it observes the product regardless of which tree
+  the runner is pointed at. That is the same property that makes OMN-14418 / OMN-14409 the known-good
+  control group for this very canary.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2267 head carries the decouple, the product-workspace runner, and a pinned
+      OCC ref"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2267-runner-executes-against-product"
+    description: >-
+      Asserts omnibase_infra's ci.yml at #2267's head actually INVOKES run_contract_compliance_check.py.
+      The job previously ran 'uv run validate-yaml $CONTRACTS', which never executed a single check_value
+      -- it only parsed OCC's YAML, so a green "Contract Compliance Check" meant exactly "OCC's ~6,900
+      files are valid YAML" and nothing about the PR. The DoD gate was dead platform-wide for ~3 months
+      behind that green check. RED PROVEN against a ref where the artifact EXISTS BUT IS WRONG, not merely
+      absent: omnibase_infra dev (b22a2a2e0316ccf7d2817e43ee407c6e48b6e8ee) HAS a ci.yml and HAS a contract-compliance
+      job -- it just still runs the dead executor. The identical command exits 1 there, and 1 at a bogus
+      SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=d5da8826a2cc7e5af0f442c0ae2e5c3cd27c1e1c"
+          --jq .content | base64 -d | grep -c -- 'run_contract_compliance_check.py')" -ge 1
+  - id: "dod-verify-2267-gate-cannot-suppress-tests"
+    description: >-
+      Asserts contract-compliance appears in NO needs: list in ci.yml at #2267's head, while ci.yml still
+      HAS needs: lists. It was a hard needs: predecessor of detect-changes and test-parallel, so a BLOCK
+      did not fail one job -- it SKIPPED THE ENTIRE TEST PIPELINE. Turning the runner on without this
+      would let a single circular contract silently un-run the test suite: hardening the evidence layer
+      by disabling the test layer. Merge-blocking and test-suppressing are two different powers; a gate
+      gets only the first. Enforcement is NOT weakened, and that is structural rather than asserted: ci-summary
+      is a fail-closed POLLER with no needs: at all -- it reads the run's job conclusions directly --
+      and "Contract Compliance Check" is already in its gating list (scripts/ci/ci_summary_gate.py:100).
+      A BLOCK still fails CI Summary, the required context, and still blocks the merge. The naive form
+      of this check ("count coupled needs: lines, require zero") is a VACUOUS GREEN and was rejected:
+      it passes against any ref with no ci.yml at all, since zero lines trivially contain zero couplings.
+      This form requires needs: lists to EXIST (N > 0) and none of them to couple contract-compliance.
+      RED PROVEN at a ref where the artifact exists but is wrong: infra dev couples it in 2 needs: lists
+      -> exit 1. Exit 1 at a bogus SHA (no ci.yml -> N == 0), so the check is not vacuous.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=d5da8826a2cc7e5af0f442c0ae2e5c3cd27c1e1c"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); N=$(printf '%s' "$C" | grep -cE '^[[:space:]]+needs:
+          \['); X=$(printf '%s' "$C" | grep -E '^[[:space:]]+needs: \[' | grep -c 'contract-compliance');
+          test "$N" -gt 0 && test "$X" -eq 0
+  - id: "dod-verify-2267-occ-checkout-pinned"
+    description: >-
+      Asserts the onex_change_control checkout in ci.yml at #2267's head carries an explicit 40-hex ref.
+      It was UNPINNED -- cloning OCC's default branch -- which is the same class of hazard that caused
+      the original incident: the executor was reported "missing" and deleted platform-wide only because
+      OCC's default branch lagged the branch that actually had it. An unpinned checkout makes this gate
+      a function of whatever OCC's dev happens to be at the moment it runs. RED PROVEN at a ref where
+      the artifact exists but is wrong: infra dev HAS the checkout step, just with no ref: -> exit 1.
+      Exit 1 at a bogus SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=d5da8826a2cc7e5af0f442c0ae2e5c3cd27c1e1c"
+          --jq .content | base64 -d | grep -cE '^ +ref: [0-9a-f]{40}$')" -ge 1
+  - id: "dod-occ-self-14454"
+    description: >-
+      Self-bind item for THIS OCC PR. occ-preflight requires a PASS receipt bound to the PR under check.
+      Intentionally self-referential and legitimately so -- it asserts a fact ABOUT this PR. It is a binding
+      item, NOT substantive evidence: the three entries above carry that, and each is a workspace-independent
+      content read proven RED against a ref where infra's ci.yml EXISTS but is WRONG.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14454-occ-contract' drift/dod_receipts/OMN-14454/dod-occ-self-14454/command.yaml
