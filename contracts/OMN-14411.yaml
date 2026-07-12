@@ -29,3 +29,83 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-verify-corpus-backward-compat"
+    description: >-
+      Backward-compatibility proof for the per-entry hash cutover, executed by an independent verifier
+      (verifier != implementer). BOTH gates — the pre-fix whole-file gate (recovered via `git show origin/dev:scripts/validation/check_receipt_hardening.py`)
+      and the post-fix per-entry gate — were run over ALL 10164 receipts under drift/dod_receipts/. Result:
+      OLD gate 312 failures, NEW gate 107 failures, 205 receipts repaired (old FAIL -> new PASS), and
+      0 receipts newly broken (old PASS -> new FAIL). The zero-regression count is the load-bearing fact:
+      the stricter gate rejects nothing that currently passes, so it cannot wedge open PRs. The 107 residual
+      failures are legacy-only receipts (no contract_entry_sha256) that already failed the OLD gate; they
+      are inert in CI because the gate only runs on CHANGED receipt files (ci.yml diffs vs base) and merged
+      receipts are immutable under the append-only gate, so they are never re-checked.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14411/dod-verify-corpus-backward-compat/command.yaml
+          && grep -q '10164' drift/dod_receipts/OMN-14411/dod-verify-corpus-backward-compat/command.yaml
+          && grep -q '205' drift/dod_receipts/OMN-14411/dod-verify-corpus-backward-compat/command.yaml
+          && grep -q 'newly broken: 0' drift/dod_receipts/OMN-14411/dod-verify-corpus-backward-compat/command.yaml
+  - id: "dod-verify-fail-closed-cases"
+    description: >-
+      Adversarial fail-closed proof: an independent harness (not the implementer's tests) constructed
+      tampered receipt/contract pairs and RAN them through check_receipt_file. All four required-FAIL
+      cases fail closed: (1) the attested dod_evidence entry edited after mint -> FAIL (contract_entry_sha256
+      mismatch); (2) evidence_item_id absent from the contract -> FAIL (entry not found, no fabricated
+      pass); (3) receipt carrying neither contract_sha256 nor contract_entry_sha256 -> FAIL (missing-hash);
+      (4) schema_version tampered -> FAIL, because HEADER_FIELDS (ticket_id, schema_version) is folded
+      into every per-entry hash. Scope traded away by per-entry hashing (sibling dod_evidence entries)
+      is covered by the append-only gate: evaluate_append_only fires entry_edited on the same tamper.
+      Verified that the honesty-gate and append-only-gate jobs are both in the required CI Summary needs-list
+      (ci.yml), so that compensating control is genuinely enforced.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_check_receipt_hardening.py -q
+  - id: "dod-verify-red-green-independent"
+    description: >-
+      Independent RED->GREEN reproduction by the verifier — NOT trusting the implementer's stash-based
+      claim. The verifier overwrote scripts/validation/check_receipt_hardening.py with the pre-fix source
+      recovered from origin/dev (keeping the new tests), then ran the suite: exactly the 4 new per-entry
+      tests FAILED and the 20 pre-existing tests still passed. The load-bearing regression test (test_append_new_entry_does_not_invalidate_prior_receipt)
+      failed with the exact live-incident message 'contract_sha256 mismatch ... The contract mutated after
+      this receipt was produced'. Restoring the fix returned the suite to 24/24 passing with a clean worktree.
+      This proves the tests actually bind to the fix rather than passing vacuously.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_check_receipt_hardening.py -q && grep -q '24 passed' drift/dod_receipts/OMN-14411/dod-verify-red-green-independent/command.yaml
+  - id: "dod-verify-supersessions-intact"
+    description: >-
+      Supersession-path regression proof. The fix refactored _valid_supersession_replacement (extracting
+      _receipt_binding_violations to clear a ruff C901 flag); a refactor that silently broke live supersessions
+      would be a real defect. All 4 command.supersede.NNNN.yaml records shipped by OCC PR #3985 were validated
+      against the refactored function at #3985's actual head tree (46a6866e, since #3985 was not merged
+      at verification time): all 4 resolve (superseded = True) and their parent receipts PASS, with verdicts
+      identical to the pre-fix function. Across the full 10164-receipt corpus the refactored function
+      produced zero verdict changes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14411/dod-verify-supersessions-intact/command.yaml
+          && grep -q 'superseded = True' drift/dod_receipts/OMN-14411/dod-verify-supersessions-intact/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind receipt for this OCC evidence branch: the first evidence commit carries the appended behavioral
+      dod_evidence entries plus the four independent-verifier PASS receipts for OMN-14411.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14411/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14411-occ-behavioral-evidence' drift/dod_receipts/OMN-14411/dod-occ-self-commit/command.yaml

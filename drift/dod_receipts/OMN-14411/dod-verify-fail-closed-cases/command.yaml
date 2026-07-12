@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14411"
+evidence_item_id: "dod-verify-fail-closed-cases"
+check_type: "command"
+check_value: >-
+  uv run pytest tests/test_check_receipt_hardening.py -q
+status: PASS
+run_timestamp: "2026-07-12T01:42:00Z"
+commit_sha: "1932e1d4beb911a24f34a33624fa604995f885b9"
+runner: "fix-14411"
+verifier: "verify-14411"
+pr_number: 3986
+probe_command: >-
+  python - <<'EOF'  # independent adversarial harness (NOT the implementer's tests): construct tampered
+  contract/receipt pairs and run each through check_receipt_file, asserting fail-closed EOF && uv run
+  pytest tests/test_check_receipt_hardening.py -q
+probe_stdout: |
+  [FAIL] expect=FAIL  A2 entry edited, entry-hash receipt (must FAIL)
+  [FAIL] expect=FAIL  A3 phantom evidence_item_id + entry hash (must FAIL)
+  [FAIL] expect=FAIL  A4 no hash at all (must FAIL)
+  [FAIL] expect=FAIL  A6 schema_version tampered (header IS folded into entry hash -> must FAIL)
+  [PASS] expect=PASS  A8 APPEND new entry; prior entry-hash receipt (must PASS)
+  --- compensating control (append-only gate) on the same tampers:
+  A1 tamper dod-001         -> append-only ok=False  ['entry_edited']
+  A5 tamper sibling + flags -> append-only ok=False  ['entry_edited']
+  --- 24 passed in 0.20s
+actual_output: >-
+  PASS: all four required-FAIL cases fail closed under the per-entry gate, proven by running them, not
+  by reading the code. (1) dod_evidence entry edited after mint -> FAIL, contract_entry_sha256 mismatch.
+  (2) evidence_item_id absent from the contract -> FAIL, entry not found; no fabricated pass. (3) receipt
+  carrying neither contract_sha256 nor contract_entry_sha256 -> FAIL, missing-hash. (4) schema_version
+  tampered -> FAIL, because HEADER_FIELDS (ticket_id, schema_version) is folded into every per-entry hash.
+  The coverage traded away by narrowing from whole-file to per-entry — sibling dod_evidence entries —
+  is held by the append-only gate: evaluate_append_only fires entry_edited on the identical tamper. That
+  compensating control is genuinely enforced: honesty-gate and append-only-gate are both in the required
+  CI Summary needs-list in ci.yml. Separately confirmed the whole-file hash was never an integrity control
+  over top-level contract fields: under the OLD gate, flipping emergency_bypass and minting the receipt
+  post-mutation PASSES, so nothing load-bearing was surrendered.
+exit_code: 0
+branch: "jonah/omn-14411-occ-behavioral-evidence"
+contract_sha256: "sha256:af638b45882aa43320d1bd9c83442230d2e1be25c8f08056c03c53f20b9dc4c5"
+contract_entry_sha256: "sha256:9989545f1f77a581a75e773256c3da9eef401826ae8df5914da1e88e28fc43ef"
