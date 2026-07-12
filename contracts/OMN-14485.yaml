@@ -1,0 +1,113 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14485"
+title: "OCC companion for omnimarket#1730 — carry tenant_id onto the delegate-skill response seam"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1730 (OMN-14485, multitenant write-path, OMN-14208
+  epic). The multitenant write-path was a LIVE NO-OP for tenant-carry: a tenant-tagged request dispatched,
+  the FSM completed, and node_projection_delegation wrote a delegation_events row — but the row's tenant_id
+  was the 'omninode' column default, never the injected tenant. The dropped hop was the RESPONSE: HandlerDelegateSkill
+  threaded request.tenant_id into the dispatch PORT (already tested) but the ModelDelegateSkillResponse
+  it returned had no tenant_id field, so the auto-published delegate-skill-completed.v1 terminal event
+  was tenant-less and the projection fell back to the default. The fix adds tenant_id to the SHARED wire
+  ModelDelegateSkillResponse and carries the resolved tenant (request.tenant_id, else ONEX_TENANT_ID interim,
+  else None) onto the response including the failed-dispatch path. The evidence reads the PR head directly
+  and asserts: (1) the tenant_id field on the shared response + the handler carry incl. the failed path;
+  (2) a cross-boundary RED->GREEN test that drives request->handle->terminal(model_dump)->projection row
+  (not a unit DTO test); (3) the no-over-reach case (no tenant -> None -> column default). Independently
+  reproduced by the verifier (distinct from the implementer): the new test goes RED on pre-fix code (row
+  tenant None != injected) and GREEN with the fix; a failed dispatch also carries the tenant to the projection
+  row.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+  - events
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket#1730 head carries tenant_id request->response->terminal->projection with
+      a cross-boundary RED->GREEN test."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1730-tenant-on-response-and-handler"
+    description: >-
+      Product-observing check against omnimarket#1730 head 6128bbf883d383465ee46f35db3dd5483850d2bc. Reads
+      the SHARED wire model_delegate_skill_response.py and handler_delegate_skill.py from the PR head
+      and asserts: the tenant_id field is on ModelDelegateSkillResponse, and the handler resolves the
+      tenant once (request.tenant_id or ONEX_TENANT_ID interim or None) and carries it onto the response
+      — the tenant_id=resolved_tenant_id assignment appears on BOTH the success (_response_from_result)
+      and the failed-dispatch path. Without the response field the terminal is tenant-less and the row
+      defaults.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          m="$(mktemp)" && h="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/models/delegation/wire/model_delegate_skill_response.py?ref=6128bbf883d383465ee46f35db3dd5483850d2bc"
+          --jq .content | base64 -d > "$m" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_delegate_skill_orchestrator/handlers/handler_delegate_skill.py?ref=6128bbf883d383465ee46f35db3dd5483850d2bc"
+          --jq .content | base64 -d > "$h" && grep -F -- 'tenant_id: str | None = Field' "$m" && grep
+          -F -- 'resolved_tenant_id = request.tenant_id or get_settings().onex_tenant_id or None' "$h"
+          && test "$(grep -Fc -- 'tenant_id=resolved_tenant_id' "$h")" -ge 2
+  - id: "dod-verify-1730-cross-boundary-red-test"
+    description: >-
+      Product-observing check against the PR head. Reads the regression test and asserts it drives the
+      REAL cross-boundary seam — request -> HandlerDelegateSkill.handle() -> response.model_dump(mode="json")
+      (the terminal event payload the runtime publishes) -> HandlerProjectionDelegation.handle() -> delegation_events
+      row — and asserts the row carries the injected tenant. This is the seam-driving test the OMN-14208
+      'two green suites, silent no-op' failure requires, NOT a unit test on the request DTO. Verifier
+      independently confirmed RED on pre-fix (row tenant None != injected) and GREEN with the fix.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          t="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_delegate_skill_orchestrator/test_tenant_carry_response_to_projection_omn14485.py?ref=6128bbf883d383465ee46f35db3dd5483850d2bc"
+          --jq .content | base64 -d > "$t" && grep -F -- 'HandlerDelegateSkill' "$t" && grep -F -- 'response.model_dump(mode="json")'
+          "$t" && grep -F -- 'HandlerProjectionDelegation' "$t" && grep -F -- 'delegation_events' "$t"
+          && grep -F -- 'def test_request_tenant_carries_through_response_to_projection_row' "$t"
+  - id: "dod-verify-1730-no-overreach"
+    description: >-
+      Product-observing check against the PR head. Reads the regression test and asserts the no-over-reach
+      case is covered: when no tenant is resolved (request tenant absent AND ONEX_TENANT_ID unset) the
+      response resolves to None and the projection applies the column default rather than a forced tenant
+      (test_no_tenant_resolves_to_none_and_omits_the_column). This guards against the fix over-stamping
+      a tenant when none was supplied.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          t="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_delegate_skill_orchestrator/test_tenant_carry_response_to_projection_omn14485.py?ref=6128bbf883d383465ee46f35db3dd5483850d2bc"
+          --jq .content | base64 -d > "$t" && grep -F -- 'def test_no_tenant_resolves_to_none_and_omits_the_column'
+          "$t" && grep -F -- 'def test_env_tenant_interim_carries_through_response_to_projection_row'
+          "$t"
+  - id: "dod-verify-1730-contract-declares-tenant-seam"
+    description: >-
+      Product-observing check against omnimarket#1730 head bf6290eb3c06686c6a4071ac67e95eaacd250fcb (folded
+      in after the code fix, 6128bbf8 -> bf6290eb). Reads the node_delegate_skill_orchestrator contract.yaml
+      and asserts the tenant seam is declared on the RESPONSE/terminal side of the contract (not only
+      the request inputs) so the seam is 4-of-4 by contract (request tenant_id -> response/terminal tenant_id
+      -> delegation_events.tenant_id) and a future regeneration cannot silently drop it.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          t="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_delegate_skill_orchestrator/contract.yaml?ref=bf6290eb3c06686c6a4071ac67e95eaacd250fcb"
+          --jq .content | base64 -d > "$t" && grep -F -- 'declare the tenant seam on the RESPONSE/terminal
+          side' "$t" && grep -F -- 'delegation_events.tenant_id' "$t"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the three entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14485-occ-omnimarket-1730-tenant-carry' drift/dod_receipts/OMN-14485/dod-occ-self-commit/command.yaml
