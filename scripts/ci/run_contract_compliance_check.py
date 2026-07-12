@@ -582,9 +582,21 @@ def _run_dod_checks(
 ) -> list[tuple[str, str, str, str]]:
     """Run all DoD checks and return (dod_id, check_type, result, detail) list."""
     results: list[tuple[str, str, str, str]] = []
+    superseded = _superseded_dod_ids(dod_evidence)
     for dod_item in dod_evidence:
         item_id = dod_item.get("id", "?")
         item_desc = dod_item.get("description", "")
+        if item_id in superseded:
+            print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
+            detail = (
+                "SUPERSEDED -- a later append-only dod_evidence item declares "
+                f"evidence_artifact='supersedes_dod_evidence:{item_id}'; old "
+                "evidence is preserved for audit but not re-executed against "
+                "the moved PR head."
+            )
+            results.append((item_id, "superseded", _RESULT_WARN, detail))
+            print(f"  [~] superseded: {detail}", flush=True)
+            continue
         checks = dod_item.get("checks", [])
         print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
         for check in checks:
@@ -595,6 +607,32 @@ def _run_dod_checks(
             tag = f"{label} " if label else ""
             print(f"  [{icon}] {tag}{check_type}: {detail}", flush=True)
     return results
+
+
+def _superseded_dod_ids(dod_evidence: list[Any]) -> set[str]:
+    """Return dod_evidence ids explicitly superseded by later appended items."""
+    seen: set[str] = set()
+    superseded: set[str] = set()
+    for dod_item in dod_evidence:
+        if not isinstance(dod_item, dict):
+            continue
+        item_id = dod_item.get("id")
+        supersedes = _supersedes_marker(dod_item.get("evidence_artifact"))
+        if supersedes in seen:
+            superseded.add(supersedes)
+        if isinstance(item_id, str):
+            seen.add(item_id)
+    return superseded
+
+
+def _supersedes_marker(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    prefix = "supersedes_dod_evidence:"
+    if not value.startswith(prefix):
+        return None
+    superseded = value[len(prefix) :].strip()
+    return superseded or None
 
 
 def _has_effective_check(dod_evidence: list[Any]) -> bool:
