@@ -115,6 +115,36 @@ def test_inert_only_contract_blocks_a_new_ticket() -> None:
     assert runner._has_effective_check(dod) is False
 
 
+# --------------------------------------------------------------------------
+# "Inert" is relative to the repo under test. Greping the receipt store proves
+# nothing about omnibase_infra -- but it IS a real assertion about OCC's own
+# tree, where the receipt is the shipped artifact. Getting this backwards would
+# demote every check on every OCC companion PR, block the ones on new tickets,
+# and jam the evidence pipeline platform-wide.
+# --------------------------------------------------------------------------
+
+_RECEIPT_GREP = "grep -q '^status: PASS$' drift/dod_receipts/OMN-1/d1/command.yaml"
+
+
+def test_receipt_grep_is_inert_for_a_foreign_product() -> None:
+    assert runner._is_inert_check(_RECEIPT_GREP, "OmniNode-ai/omnibase_infra") is True
+
+
+def test_receipt_grep_is_not_inert_for_occ_itself() -> None:
+    """In OCC, drift/dod_receipts IS the product. Demoting here would jam CI."""
+    assert (
+        runner._is_inert_check(_RECEIPT_GREP, "OmniNode-ai/onex_change_control")
+        is False
+    )
+
+
+def test_occ_companion_with_only_receipt_checks_still_has_an_effective_check() -> None:
+    """An OCC PR whose checks read its own receipts is NOT an empty contract."""
+    dod = [{"id": "d1", "checks": [{"check_value": _RECEIPT_GREP}]}]
+    assert runner._has_effective_check(dod, "OmniNode-ai/onex_change_control") is True
+    assert runner._has_effective_check(dod, "OmniNode-ai/omnibase_infra") is False
+
+
 def test_one_product_check_is_enough_to_be_effective() -> None:
     dod = [
         {

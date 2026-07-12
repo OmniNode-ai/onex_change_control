@@ -74,12 +74,24 @@ _INERT_CHECK_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
-def _is_inert_check(check_value: Any) -> bool:
+_OCC_REPO_SUFFIX = "/onex_change_control"
+
+
+def _is_inert_check(check_value: Any, repo: str = "") -> bool:
     """True if the check can only observe the OCC receipt/contract store.
 
     Such a check is structurally incapable of saying anything about the product
-    repo the PR actually changes.
+    repo the PR actually changes -- UNLESS that product repo IS
+    onex_change_control, where the receipt store is genuinely the shipped
+    artifact. "Inert" is a statement about the check relative to the repo under
+    test, not about the string in isolation: greping a receipt proves nothing
+    about omnibase_infra, but it is a real assertion about OCC's own tree.
+
+    Getting this wrong would block every new OCC companion PR and jam the
+    evidence pipeline, so the repo is load-bearing here, not decoration.
     """
+    if repo.endswith(_OCC_REPO_SUFFIX):
+        return False
     text = str(check_value)
     return any(p.search(text) for p in _INERT_CHECK_PATTERNS)
 
@@ -557,7 +569,7 @@ def _demote(
     inert (it can only see the OCC store, so its failure says nothing about the
     product) or when the ticket is grandfathered. Everything else stands.
     """
-    if _is_inert_check(check.get("check_value", "")):
+    if _is_inert_check(check.get("check_value", ""), context.repo):
         # Inert checks are demoted whatever they returned: an inert PASS is
         # exactly the laundering this ticket exists to stop.
         return (
@@ -597,7 +609,7 @@ def _run_dod_checks(
     return results
 
 
-def _has_effective_check(dod_evidence: list[Any]) -> bool:
+def _has_effective_check(dod_evidence: list[Any], repo: str = "") -> bool:
     """True if any check can actually observe the product.
 
     A contract whose every check is inert carries zero proof about the code it
@@ -610,7 +622,7 @@ def _has_effective_check(dod_evidence: list[Any]) -> bool:
             continue
         for check in dod_item.get("checks", []) or []:
             if isinstance(check, dict) and not _is_inert_check(
-                check.get("check_value", "")
+                check.get("check_value", ""), repo
             ):
                 return True
     return False
@@ -693,7 +705,7 @@ def run_compliance_check(
     # A contract with no check that can observe the product proves nothing about
     # it. The legacy corpus is grandfathered (it was authored against a runner
     # that only ever showed it the receipt store); a new ticket is not.
-    if not _has_effective_check(dod_evidence):
+    if not _has_effective_check(dod_evidence, repo):
         if is_legacy:
             print(
                 "[WARN] Every check is INERT (OCC-store-only). Grandfathered "
