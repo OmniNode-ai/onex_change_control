@@ -158,7 +158,8 @@ def _contract_hash_violation(
     ``contract_entry_sha256`` / ``contract_sha256`` is set. Returns ``None``
     when the receipt is bound cleanly to the current contract.
     """
-    if receipt.contract_entry_sha256 is not None:
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    if contract_entry_sha256 is not None:
         try:
             contract_data = yaml.safe_load(contract_path.read_text())
         except (OSError, yaml.YAMLError) as exc:
@@ -174,10 +175,10 @@ def _contract_hash_violation(
                 "The entry was removed or renamed after this receipt was "
                 "produced (append-only violation) — do not fabricate a hash."
             )
-        if receipt.contract_entry_sha256 != expected_entry:
+        if contract_entry_sha256 != expected_entry:
             return (
                 "contract_entry_sha256 mismatch — receipt has "
-                f"{receipt.contract_entry_sha256!r} but "
+                f"{contract_entry_sha256!r} but "
                 f"dod_evidence[{receipt.evidence_item_id!r}] in {contract_path} "
                 f"hashes to {expected_entry!r}. That entry was edited after this "
                 "receipt was produced; rerun probes and regenerate the receipt."
@@ -208,7 +209,8 @@ def _receipt_binding_violations(
     """
     violations: list[str] = []
 
-    if receipt.contract_sha256 is None and receipt.contract_entry_sha256 is None:
+    contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    if receipt.contract_sha256 is None and contract_entry_sha256 is None:
         violations.append(
             "missing contract_sha256 (OMN-13060/A-5). Tool-generate the "
             "receipt; never hand-author. Prefer contract_entry_sha256 "
@@ -348,6 +350,31 @@ def _walk_for_timestamp(node: object) -> datetime | None:
     return None
 
 
+def _validate_receipt_model(
+    receipt_path: Path, raw: dict[str, object]
+) -> tuple[ModelDodReceipt | None, str | None]:
+    """Validate a receipt across old/new omnibase_core receipt schemas."""
+    try:
+        return ModelDodReceipt.model_validate(raw), None
+    except ValidationError as exc:
+        if "contract_entry_sha256" not in raw:
+            return (
+                None,
+                f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}",
+            )
+        legacy_raw = dict(raw)
+        contract_entry_sha256 = legacy_raw.pop("contract_entry_sha256")
+        try:
+            receipt = ModelDodReceipt.model_validate(legacy_raw)
+        except ValidationError:
+            return (
+                None,
+                f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}",
+            )
+        object.__setattr__(receipt, "contract_entry_sha256", contract_entry_sha256)
+        return receipt, None
+
+
 def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
     """Return violation strings for one receipt file (empty = clean)."""
     if ".supersede." in receipt_path.name:
@@ -379,10 +406,11 @@ def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
     if supersession_errors:
         return supersession_errors
 
-    try:
-        receipt = ModelDodReceipt.model_validate(raw)
-    except ValidationError as exc:
-        return [f"{receipt_path}: receipt fails ModelDodReceipt validation: {exc}"]
+    receipt, error = _validate_receipt_model(receipt_path, raw)
+    if error is not None:
+        return [error]
+    if receipt is None:
+        return [f"{receipt_path}: receipt validation returned no model"]
 
     return _validate_hardened_receipt(receipt_path, receipt, contracts_dir)
 
