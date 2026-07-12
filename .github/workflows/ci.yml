@@ -89,6 +89,80 @@ jobs:
           fi
           uv run python scripts/validation/check_receipt_hardening.py "${receipt_files[@]}"
 
+      # OMN-14428: every gate above is scoped to the data files it validates
+      # (drift/dod_receipts/, contracts/, ...), so a PR that edits the gate's
+      # own code but touches zero data files never executes it. That exact
+      # hole is how OCC#3986 merged green with a stale-import ImportError in
+      # check_receipt_hardening.py — the file-scoped diff was empty, so the
+      # gate script never ran, and only the caught-ImportError compat shim it
+      # shipped with kept the (never-exercised) import path "succeeding".
+      # A change to a gate must run the gate. `--help` forces full
+      # module-level import execution (argparse handles -h before validating
+      # required positionals, so this needs no fixture data and works
+      # uniformly for any argparse-based validator); check_receipt_hardening
+      # additionally gets a real corpus run so a broken gate can't hide
+      # behind an import that merely succeeds but a runtime path that
+      # doesn't.
+      - name: Validator self-check — a gate must run when its own code changes
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          mapfile -t changed_validators < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- scripts/validation/ \
+              | grep -E '^scripts/validation/check_[^/]*\.py$' || true
+          )
+          if [ "${#changed_validators[@]}" -eq 0 ]; then
+            echo "No changed validator scripts; skipping self-check."
+            exit 0
+          fi
+          echo "Validator code changed — executing (not just importing via tests) so the gate can't merge broken behind an empty data-file diff:"
+          printf '  %s\n' "${changed_validators[@]}"
+          fail=0
+          for validator in "${changed_validators[@]}"; do
+            if [ ! -f "$validator" ]; then
+              echo "  $validator: deleted, skipping."
+              continue
+            fi
+            if ! uv run python "$validator" --help > /tmp/validator_help.log 2>&1; then
+              echo "  $validator: FAILED to execute even --help — the gate itself is broken:"
+              cat /tmp/validator_help.log
+              fail=1
+              continue
+            fi
+            echo "  $validator: --help OK (module-level imports execute cleanly)."
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more changed validators cannot execute. Fix the gate before merging."
+            exit 1
+          fi
+
+          # Stronger, corpus-backed check for check_receipt_hardening.py specifically:
+          # a script that imports fine but breaks on real data (e.g. a lazily-imported
+          # symbol) wouldn't be caught by --help alone.
+          for validator in "${changed_validators[@]}"; do
+            if [ "$(basename "$validator")" != "check_receipt_hardening.py" ] || [ ! -f "$validator" ]; then
+              continue
+            fi
+            mapfile -t corpus_receipts < <(find drift/dod_receipts -name '*.yaml' ! -name '*.supersede.*')
+            echo "Running $validator against the full corpus (${#corpus_receipts[@]} receipts)..."
+            set +e
+            uv run python "$validator" "${corpus_receipts[@]}" > /tmp/validator_corpus.log 2>&1
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              echo "Corpus run: clean (0 violations)."
+            elif [ "$status" -eq 1 ] && grep -q "violation(s):" /tmp/validator_corpus.log; then
+              echo "Corpus run: gate executed and reported expected violations (legacy corpus debt, not a gate defect)."
+            else
+              echo "Corpus run FAILED — the gate crashed instead of reporting violations:"
+              cat /tmp/validator_corpus.log
+              exit 1
+            fi
+          done
+
   type-check:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
     # Pre-commit hook runs mypy only on changed files (pre-push stage), while this job
@@ -988,6 +1062,96 @@ jobs:
             --allowlist .onex_ratchets/noncanonical_class_allowlist.yaml \
             src/onex_change_control
 
+  validate-prod-promotion-grants:
+    name: validate-prod-promotion-grants
+    # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
+    # a validator that ran, could fail, and could NOT block a merge — it lived
+    # in a standalone workflow file (.github/workflows/validate-prod-promotion-grants.yml,
+    # now retired), invisible to this required CI Summary rollup (a separate
+    # workflow file gets a separate run_id; OMN-14415 instance #1). Folded in
+    # here, unconditional (no needs/if) so it never skips — mirrors
+    # no-noncanonical-lifecycle-classes (OMN-14350) below. Deliberately bypasses
+    # zone-filter: a grants-file change must never be able to be misclassified
+    # into a short-circuited zone.
+    runs-on: >-
+      ${{
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate prod-promotion-grants trust anchor (OMN-14441)
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          base_sha=""
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            git fetch origin "$base_ref" --no-tags
+            base_sha="$(git merge-base "origin/${base_ref}" HEAD)"
+          fi
+          args=(--file grants/prod_promotion_grants.yaml)
+          if [[ -n "$PR_AUTHOR" && -n "$base_sha" ]]; then
+            args+=(--pr-author "$PR_AUTHOR" --base-ref "$base_sha")
+          fi
+          uv run validate-prod-promotion-grants "${args[@]}"
+
+  check-platform-leads-review-tripwire:
+    name: check-platform-leads-review-tripwire
+    # OMN-14445: validate-prod-promotion-grants' approved_by != PR-author check
+    # (above) is a COMPLETE defense against forged self-approval only while
+    # @OmniNode-ai/platform-leads has exactly one member — required_pull_
+    # request_reviews (CODEOWNERS enforcement) is intentionally OFF on dev
+    # (enabling it would deadlock a solo-lead grant PR; GitHub blocks
+    # self-approval of your own PR). This job is the tripwire: it fails the
+    # moment platform-leads grows past one member while that gap remains, so
+    # the safety property can't silently expire. Unconditional (no needs/if),
+    # mirrors validate-prod-promotion-grants / no-noncanonical-lifecycle-classes.
+    #
+    # NOTE: reading org team membership requires org-scoped read access the
+    # default GITHUB_TOKEN does not have (GitHub restricts it to repository-
+    # scoped resources). This job uses CROSS_REPO_PAT, verified live on this
+    # PR (run 29182101941, job 86621583642) to have sufficient scope: it read
+    # a real member count (1) and a real branch-protection fact (False) on
+    # the first push. If a future PAT rotation loses read:org scope, this
+    # job reports INCONCLUSIVE (exit 2) and fails closed via ci-summary's
+    # explicit check below — never a silent pass.
+    runs-on: >-
+      ${{
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Check platform-leads-review tripwire (OMN-14445)
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          # OMN-14445 review: names which token backed this run so an
+          # INCONCLUSIVE failure reads as "token problem" instead of a
+          # mystery. secrets.CROSS_REPO_PAT != '' is '' (falsy) when the
+          # secret is unset OR withheld by GitHub for a fork-origin PR.
+          TOKEN_SOURCE: ${{ secrets.CROSS_REPO_PAT != '' && 'cross_repo_pat' || 'fallback' }}
+        run: uv run check-platform-leads-review-tripwire --credential-origin "$TOKEN_SOURCE"
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -999,7 +1163,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1009,6 +1173,19 @@ jobs:
           # ratchet is in needs: so this job WAITS for it (no race).
           if [[ "${{ needs.no-noncanonical-lifecycle-classes.result }}" != "success" ]]; then
             echo "::error::no-noncanonical-lifecycle-classes ratchet did not pass (result: ${{ needs.no-noncanonical-lifecycle-classes.result }}) - fail-closed (OMN-14350)"
+            exit 1
+          fi
+          # OMN-14441: same strict fail-closed pattern for the prod-promotion-grant
+          # validator. Only 'success' passes; skipped/cancelled/failure ALL block.
+          if [[ "${{ needs.validate-prod-promotion-grants.result }}" != "success" ]]; then
+            echo "::error::validate-prod-promotion-grants did not pass (result: ${{ needs.validate-prod-promotion-grants.result }}) - fail-closed (OMN-14441)"
+            exit 1
+          fi
+          # OMN-14445: same strict fail-closed pattern for the platform-leads
+          # review tripwire. Only 'success' passes; skipped/cancelled/failure/
+          # INCONCLUSIVE (exit 2, surfaces as 'failure') ALL block.
+          if [[ "${{ needs.check-platform-leads-review-tripwire.result }}" != "success" ]]; then
+            echo "::error::check-platform-leads-review-tripwire did not pass (result: ${{ needs.check-platform-leads-review-tripwire.result }}) - fail-closed (OMN-14445)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then

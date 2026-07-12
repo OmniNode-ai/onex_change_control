@@ -1,0 +1,151 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14418"
+title: "OCC companion for omnimarket#1724 — autobind mints contract_entry_sha256"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1724 (OMN-14418). #1724 fixes the OCC autobind emitter
+  so it mints a per-entry contract_entry_sha256 for every receipt it generates, instead of emitting receipts
+  bound only by the whole-file contract_sha256 (which any later append to the contract invalidates — "receipts
+  are born pre-rotted"). It carves the rendering seam out into a pure occ_evidence_stamp module and imports
+  the canonical compute_contract_entry_sha256 from omnibase_core rather than re-implementing it. Every
+  substantive check below is a CONTENT READ pinned to #1724's head commit SHA (dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28).
+  It observes the source code #1724 actually wrote, so it does not depend on #1724's CI at all — which
+  matters here, because #1724's CI is red precisely BECAUSE this contract was missing (occ-preflight/eligibility
+  -> missing_contract, cascading into OCC Preflight Dependency and four gates that then refuse to start).
+  A check keyed on #1724's CI would therefore be circular: it would be red because the evidence is absent,
+  and the evidence cannot land until it is green. No check greps this repo's own receipt corpus for "status:
+  PASS".
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket#1724 head SHA carries the contract_entry_sha256 minting seam"
+    command: "see dod_evidence check_values (content reads pinned to dbfc5d6b)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1724-emitter-mints-entry-hash"
+    description: >-
+      Product-observing: reads the actual source of occ_companion_emitter.py at #1724's exact head commit
+      SHA (dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28) via the GitHub contents API and asserts the emitter
+      genuinely references compute_contract_entry_sha256 — the canonical per-entry hash function imported
+      from omnibase_core, which is the entire substance of the fix (previously the emitter minted only
+      the whole-file contract_sha256, so every receipt it produced was invalidated by the next append
+      to the contract). This reads the product tree, not this receipt; nothing in the command touches
+      the OCC checkout, so it cannot pass merely because someone wrote "status: PASS" in a receipt. RED
+      DIRECTION PROVEN by execution: the identical command run against omnimarket's dev HEAD (5c6894294e3d207556017273d534d6dd0eee51d7),
+      where #1724 has not landed, finds ZERO occurrences of compute_contract_entry_sha256 in that file
+      and exits 1. It exits 0 only at a ref where #1724's change is genuinely present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py?ref=dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28"
+          --jq .content | base64 -d | grep -c "compute_contract_entry_sha256")" -ge 1
+  - id: "dod-verify-1724-evidence-stamp-seam"
+    description: >-
+      Product-observing: reads the actual source of occ_evidence_stamp.py — the pure rendering seam #1724
+      carves out — at #1724's head commit SHA, and asserts it carries CONTRACT_ENTRY_SHA_LINE_RE, the
+      regex that recognizes and rewrites the per-entry hash line in a generated receipt. This is the concrete
+      mechanism by which the emitter stamps contract_entry_sha256, so its presence is a direct read of
+      the fix rather than a restatement of the PR's claim. RED DIRECTION PROVEN by execution: the file
+      already exists on omnimarket dev (#1724 extends it rather than creating it), so a bare existence
+      check would NOT discriminate and is deliberately not used. The symbol does discriminate: CONTRACT_ENTRY_SHA_LINE_RE
+      occurs 3 times at #1724's head SHA and ZERO times in the same file at dev HEAD (5c6894294e3d207556017273d534d6dd0eee51d7),
+      so the command exits 0 at #1724's head and exits 1 at dev.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_evidence_stamp.py?ref=dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28"
+          --jq .content | base64 -d | grep -c "CONTRACT_ENTRY_SHA_LINE_RE")" -ge 1
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind receipt for this OCC evidence branch. This item is intentionally self-referential: it
+      proves this companion's own identity (that the evidence landed on the expected branch), not the
+      correctness of the product. It is a binding item, not substantive evidence — the two entries above
+      carry the substantive, product-observing proof.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14418-occ-companion' drift/dod_receipts/OMN-14418/dod-occ-self-commit/command.yaml
+          && grep -q 'pr_number: 4008' drift/dod_receipts/OMN-14418/dod-occ-self-commit/command.yaml
+  - id: "dod-deploy-assessment-head-dbfc5d6b"
+    description: >-
+      Deploy-gate assessment for omnimarket#1724 head dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28. The PR
+      touches runtime handler paths, so the merge gate requires central deploy evidence. This item proves
+      the PR itself does not modify Dockerfiles, compose files, deploy scripts, or other deployment assets;
+      it is a source-change deploy assessment only, not a live runtime rollout. Runtime rebuild, deployment,
+      and readback remain explicitly tracked outside this product merge in OMN-14437/OMN-14429 and require
+      operator approval before any live deploy or restart.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1724 --repo OmniNode-ai/omnimarket --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
+  - id: "dod-occ-deploy-gate-self-commit"
+    description: >-
+      Self-bind receipt for the OMN-14418 deploy-gate evidence repair. This item binds the add-only OCC
+      repair PR that appends deploy assessment evidence; it is not product-behavior evidence.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14418-deploy-gate-evidence' drift/dod_receipts/OMN-14418/dod-occ-deploy-gate-self-commit/command.yaml
+          && grep -q 'pr_number: 4011' drift/dod_receipts/OMN-14418/dod-occ-deploy-gate-self-commit/command.yaml
+  - id: "dod-verify-1724-head-33c12c-emitter-entry-hash"
+    description: >-
+      Current-head product proof for omnimarket#1724 after the branch merged origin/dev. Reads the actual
+      occ_companion_emitter.py source at head 33c12c2625e7fb5278f6180d794e4887e9d8edff and asserts the
+      emitter still references compute_contract_entry_sha256.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py?ref=33c12c2625e7fb5278f6180d794e4887e9d8edff"
+          --jq .content | base64 -d | grep -c "compute_contract_entry_sha256")" -ge 1
+  - id: "dod-verify-1724-head-33c12c-evidence-stamp-seam"
+    description: >-
+      Current-head product proof for omnimarket#1724 after the branch merged origin/dev. Reads the actual
+      occ_evidence_stamp.py source at head 33c12c2625e7fb5278f6180d794e4887e9d8edff and asserts the CONTRACT_ENTRY_SHA_LINE_RE
+      seam still exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_evidence_stamp.py?ref=33c12c2625e7fb5278f6180d794e4887e9d8edff"
+          --jq .content | base64 -d | grep -c "CONTRACT_ENTRY_SHA_LINE_RE")" -ge 1
+  - id: "dod-deploy-assessment-head-33c12c"
+    description: >-
+      Deploy-gate assessment for current omnimarket#1724 head 33c12c2625e7fb5278f6180d794e4887e9d8edff.
+      The PR still does not modify Dockerfiles, compose files, deploy scripts, or deployment assets; it
+      touches runtime handlers and focused tests only. Runtime rebuild/deploy/readback remains tracked
+      separately in OMN-14437/OMN-14429 and requires operator approval.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1724 --repo OmniNode-ai/omnimarket --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
+  - id: "dod-occ-head-33c12c-self-commit"
+    description: >-
+      Self-bind receipt for the OCC repair that refreshes OMN-14418 evidence to omnimarket#1724 current
+      head 33c12c2625e7fb5278f6180d794e4887e9d8edff.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14418-head-33c12c-evidence' drift/dod_receipts/OMN-14418/dod-occ-head-33c12c-self-commit/command.yaml
+          && grep -q 'pr_number: 4013' drift/dod_receipts/OMN-14418/dod-occ-head-33c12c-self-commit/command.yaml
