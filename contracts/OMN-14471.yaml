@@ -1,0 +1,106 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14471
+title: 'refactor(OMN-14471): check_release_identity.py -> canonical node_release_identity_compute'
+summary: >-
+  Independent verification (rt8-builder, who implemented RT-8 not this refactor; no self-authored evidence,
+  OMN-14055) of omnibase_infra PR #2275 at head fe3048daecd61c1f80217c2fcea1feee928f14b4. The legacy freestanding
+  gate scripts/check_release_identity.py was refactored into the canonical node_release_identity_compute
+  COMPUTE node fronted by a thin CLI shim at the same path. Verified against live gh at the pinned head:
+  (1) the cross-boundary equivalence is NOT vacuous -- the frozen legacy fixture is byte-identical (same
+  git blob f3b670e8) to the pre-PR legacy gate on dev, and the 13-scenario regression asserts identical
+  exit_code + stdout + stderr between the frozen legacy gate and the new shim, with independently pinned
+  expected exits (33 tests passed on an independent run); (2) the handler is def-B handle(request: ModelReleaseIdentityRequest)
+  -> ModelReleaseIdentityDecision with zero ModelEventEnvelope references (OMN-14355 clean; the head fixup
+  fe3048da dropped the last literal token from the docstring); (3) the node lives under src/omnibase_infra,
+  not omnimarket; (4) the fresh-deploy-fitness release-identity job + pre-commit check-release-identity
+  still invoke the shim, now via `uv run --frozen` (the shim imports the node) with an unchanged command/base
+  and timeout raised 10->30 to absorb the ~14s import; behavior is byte-identical, proven by the equivalence
+  test exercising the same main(argv) CI invokes. Both flagged decisions (uv-workspace execution; ~14s
+  import tax) validated. Import-tax follow-up filed as OMN-14480. Non-blocking note: PR head moved 8bb6b199
+  -> fe3048da under verification (builder still active on the refactor task); this companion binds fe3048da
+  and must be re-bound if the head advances again.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-infra-pr-2275-head-fe3048da
+    description: >-
+      omnibase_infra PR #2275 (crid-refactor, OMN-14471) is bound to head fe3048daecd61c1f80217c2fcea1feee928f14b4
+      on branch jonah/omn-14471-release-identity-node targeting dev -- the exact tree independently verified.
+      Read from the source PR, never a self-poll of this companion.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          test "$(gh pr view 2275 --repo OmniNode-ai/omnibase_infra --json headRefName,baseRefName,headRefOid
+          --jq '.headRefName + " " + .baseRefName + " " + .headRefOid')" = "jonah/omn-14471-release-identity-node
+          dev fe3048daecd61c1f80217c2fcea1feee928f14b4"
+  - id: dod-equivalence-fixture-byte-faithful
+    description: >-
+      The cross-boundary equivalence regression is NOT vacuous: the frozen legacy fixture tests/scripts/fixtures/legacy_check_release_identity.py.txt
+      at the pinned head is byte-identical (git blob f3b670e82a9d3c76067a4698ab90b858ed1908a4) to the
+      real pre-PR legacy gate scripts/check_release_identity.py that still lives on dev. Because the fixture
+      is a verbatim capture, the 13-scenario test's byte-for-byte exit_code+stdout+stderr assertions bind
+      the new node/shim to the genuine legacy behavior (33 tests passed on an independent run).
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/fixtures/legacy_check_release_identity.py.txt?ref=fe3048daecd61c1f80217c2fcea1feee928f14b4"
+          --jq .sha)" = "f3b670e82a9d3c76067a4698ab90b858ed1908a4"
+  - id: dod-def-b-handler-no-envelope
+    description: >-
+      Criterion 2: the handler at the pinned head is canonical definition B -- def handle(request: ModelReleaseIdentityRequest)
+      -> ModelReleaseIdentityDecision -- and references ModelEventEnvelope zero times anywhere in the
+      file (it would fail the OMN-14355 gate otherwise).
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          H=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_release_identity_compute/handlers/handler_release_identity.py?ref=fe3048daecd61c1f80217c2fcea1feee928f14b4"
+          --jq .content | base64 -d); printf '%s' "$H" | grep -q 'def handle(' && printf '%s' "$H" | grep
+          -q 'ModelReleaseIdentityDecision' && ! printf '%s' "$H" | grep -q 'ModelEventEnvelope'
+  - id: dod-node-under-infra-not-market
+    description: >-
+      Criterion 3: the new node lives under src/omnibase_infra (the handler file resolves as a file at
+      the pinned head in the omnibase_infra repo), not in omnimarket -- infra must not depend on market.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_release_identity_compute/handlers/handler_release_identity.py?ref=fe3048daecd61c1f80217c2fcea1feee928f14b4"
+          --jq .type)" = "file"
+  - id: dod-wiring-uv-workspace-preserved
+    description: >-
+      Criterion 4: the fresh-deploy-fitness release-identity job at the pinned head still invokes scripts/check_release_identity.py,
+      now via `uv run --frozen` (the shim imports the node). The gate command and --base are unchanged;
+      behavior is byte-identical (proven by the equivalence test exercising the same main(argv) CI invokes).
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/fresh-deploy-fitness.yml?ref=fe3048daecd61c1f80217c2fcea1feee928f14b4"
+          --jq .content | base64 -d | grep -c 'uv run --frozen python scripts/check_release_identity.py')"
+          -ge 1
+  - id: occ-self-bind-pr-4053
+    description: >-
+      OCC companion self-bind: this receipt binds OMN-14471 evidence to onex_change_control PR #4053 and
+      the hosted head SHA that failed pr_ticket_mismatch. This is not product evidence; product evidence
+      is carried by the product-observing receipts above.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^pr_number: 4053$' drift/dod_receipts/OMN-14471/occ-self-bind-pr-4053/command.yaml
+          && grep -q '1c353314fc28e4d2d9f136395c7de14519ebd7e2' drift/dod_receipts/OMN-14471/occ-self-bind-pr-4053/command.yaml
