@@ -1108,6 +1108,42 @@ jobs:
           fi
           uv run validate-prod-promotion-grants "${args[@]}"
 
+  check-platform-leads-review-tripwire:
+    name: check-platform-leads-review-tripwire
+    # OMN-14445: validate-prod-promotion-grants' approved_by != PR-author check
+    # (above) is a COMPLETE defense against forged self-approval only while
+    # @OmniNode-ai/platform-leads has exactly one member — required_pull_
+    # request_reviews (CODEOWNERS enforcement) is intentionally OFF on dev
+    # (enabling it would deadlock a solo-lead grant PR; GitHub blocks
+    # self-approval of your own PR). This job is the tripwire: it fails the
+    # moment platform-leads grows past one member while that gap remains, so
+    # the safety property can't silently expire. Unconditional (no needs/if),
+    # mirrors validate-prod-promotion-grants / no-noncanonical-lifecycle-classes.
+    #
+    # NOTE (live, unverified as of this commit): reading org team membership
+    # requires org-scoped read access the default GITHUB_TOKEN does not have
+    # (GitHub restricts it to repository-scoped resources). This job uses
+    # CROSS_REPO_PAT; if that PAT lacks read:org scope this job will report
+    # INCONCLUSIVE (exit 2), not silently pass — see the script's docstring.
+    runs-on: >-
+      ${{
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Check platform-leads-review tripwire (OMN-14445)
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+        run: uv run check-platform-leads-review-tripwire
+
   ci-summary:
     name: CI Summary
     runs-on: >-
