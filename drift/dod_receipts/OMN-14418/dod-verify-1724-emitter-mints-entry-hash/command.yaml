@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14418"
+evidence_item_id: "dod-verify-1724-emitter-mints-entry-hash"
+check_type: "command"
+check_value: >-
+  test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py?ref=dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28"
+  --jq .content | base64 -d | grep -c "compute_contract_entry_sha256")" -ge 1
+status: PASS
+run_timestamp: "2026-07-12T06:05:00Z"
+commit_sha: "dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28"
+runner: "occ-queue-runner"
+verifier: "occ-queue-verifier"
+pr_number: 1724
+probe_command: >-
+  gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py?ref=dbfc5d6bc72b0bddd83c3d6313ac03fff6165d28"
+  --jq .content | base64 -d | grep -nc "compute_contract_entry_sha256"  # then the bound check_value re-run
+  verbatim with ref=<omnimarket dev HEAD 5c689429>, where #1724 has not landed, as the RED control
+probe_stdout: |
+  # omnimarket#1724 head dbfc5d6b — occ_companion_emitter.py references the canonical core fn:
+  61:# OMN-14418 residual 3: compute_contract_entry_sha256 is the SAME canonical
+  68:    compute_contract_entry_sha256,
+  # RED control — same file at omnimarket dev HEAD 5c6894294e3d207556017273d534d6dd0eee51d7
+  # (#1724 unmerged, so the fix is absent):
+  0
+  # bound check_value exit codes, run verbatim:
+  #   ref=dbfc5d6b (#1724 head) -> exit 0   GREEN: emitter mints contract_entry_sha256
+  #   ref=5c689429 (dev HEAD)   -> exit 1   RED:   zero occurrences, fix absent
+exit_code: 0
+actual_output: >-
+  PASS: reads the actual source of occ_companion_emitter.py at omnimarket#1724's exact head commit SHA
+  and confirms the emitter references compute_contract_entry_sha256 — the canonical per-entry hash function
+  imported from omnibase_core, which is the substance of OMN-14418 (before the fix the emitter minted
+  only the whole-file contract_sha256, so every receipt it generated was invalidated by the next append
+  to the contract — "receipts are born pre-rotted"). This observes the PRODUCT tree, not this receipt.
+  The command touches no file in the OCC checkout, so it cannot self-certify the way a grep of its own
+  "status: PASS" line does. It is deliberately a CONTENT read pinned to a SHA rather than a CI-outcome
+  check: #1724's CI is red precisely BECAUSE this contract was missing (occ-preflight/eligibility -> reason=missing_contract,
+  cascading into OCC Preflight Dependency plus Omni Standards Gate / Hostile Review Gate / PR Arch Review
+  Gate / CI Summary, which then refuse to start). A CI-keyed check would be circular — red because the
+  evidence is absent, and the evidence cannot land until it is green. RED DIRECTION PROVEN by execution,
+  not assertion: the identical command against omnimarket dev HEAD (5c6894294e3d207556017273d534d6dd0eee51d7)
+  finds ZERO occurrences of compute_contract_entry_sha256 in that file and exits 1. The check exits 0
+  only at a ref where #1724's code genuinely exists.
+branch: "jonah/omn-14418-occ-companion"
+contract_sha256: "sha256:344b019fb5eb603bb70b566f3fc37d5edb6b2c952408e9d8dfd5f3d1ad3e0445"
+contract_entry_sha256: "sha256:b7f1639908b54784046a757b208a0b33eea7349d7610fe170383747cba238be8"
