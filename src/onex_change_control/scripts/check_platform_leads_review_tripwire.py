@@ -34,6 +34,19 @@ Exit codes:
     2: INCONCLUSIVE — could not determine one or both facts (e.g. the
        token lacks scope to read team membership or branch protection).
        Treated as a failure: an unproven safety property does not pass.
+
+Wedge-risk note (OMN-14445 review): unlike this repo's other cross-repo `gh`
+usage (which clones PUBLIC repos and works even with no token at all), the
+two API reads here are ORG-PRIVATE with no unauthenticated fallback — this
+job has a hard dependency on a token with `read:org` scope
+(`CROSS_REPO_PAT` in CI). If that PAT is ever absent, expired, or rotated
+without the replacement carrying `read:org`, this job goes INCONCLUSIVE on
+EVERY PR, not just the PR that changed the grants file, because it's
+unconditional. That is a real fail-closed trade-off, not a hypothetical:
+GitHub also withholds repo secrets entirely from `pull_request` runs
+triggered by a fork (this repo has none historically, but the code path
+exists). `--credential-origin` exists so the failure message names which case
+applies instead of leaving an operator to guess at 3am.
 """
 
 from __future__ import annotations
@@ -66,13 +79,52 @@ def _run_gh(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def get_team_member_count(org: str, team_slug: str) -> int:
+def _diagnose(action: str, stderr: str, credential_origin: str) -> str:
+    """Build a legible diagnostic that names token-vs-policy before anything else.
+
+    OMN-14445 review: a fail-closed gate whose failure can't be decoded at
+    3am invites `--no-verify` habits. This is explicit about the most likely
+    cause FIRST, then the raw gh error, so "this is a token problem, not a
+    policy violation" is the first thing an operator reads.
+    """
+    raw = stderr.strip() or "unknown gh api error"
+    if credential_origin == "fallback":
+        cause = (
+            "TOKEN PROBLEM, NOT A POLICY VIOLATION: CROSS_REPO_PAT was not "
+            "available for this run (unset, expired/revoked, or withheld by "
+            "GitHub for a fork-originated PR) — this job fell back to the "
+            "default GITHUB_TOKEN, which cannot read org-private resources "
+            "(org team membership / branch protection) by GitHub design. "
+            "Fix: restore a valid CROSS_REPO_PAT with read:org scope in "
+            "repo secrets. This is NOT evidence that platform-leads grew or "
+            "that anyone did anything wrong."
+        )
+    elif credential_origin == "cross_repo_pat":
+        cause = (
+            "TOKEN PROBLEM, NOT A POLICY VIOLATION: CROSS_REPO_PAT was "
+            "present but the API call still failed — most likely it lacks "
+            "read:org scope, or lost org access. Fix: verify the PAT's "
+            "scopes and that its owner is still an org member."
+        )
+    else:
+        cause = (
+            "Could not determine whether CROSS_REPO_PAT was available for "
+            "this run; treat as a possible token problem before assuming a "
+            "policy violation."
+        )
+    return f"{cause}\n{action}: {raw}"
+
+
+def get_team_member_count(
+    org: str, team_slug: str, *, credential_origin: str = "unknown"
+) -> int:
     """Return the live member count of `org/team_slug`, or raise if unreadable."""
     result = _run_gh(["api", f"orgs/{org}/teams/{team_slug}/members", "--jq", "length"])
     if result.returncode != 0:
-        msg = (
-            f"could not read membership of {org}/{team_slug}: "
-            f"{result.stderr.strip() or 'unknown gh api error'}"
+        msg = _diagnose(
+            f"could not read membership of {org}/{team_slug}",
+            result.stderr,
+            credential_origin,
         )
         raise TripwireInconclusiveError(msg)
     try:
@@ -82,7 +134,9 @@ def get_team_member_count(org: str, team_slug: str) -> int:
         raise TripwireInconclusiveError(msg) from exc
 
 
-def is_review_required(repo: str, branch: str) -> bool:
+def is_review_required(
+    repo: str, branch: str, *, credential_origin: str = "unknown"
+) -> bool:
     """Return True if `required_pull_request_reviews` is configured on `repo@branch`."""
     result = _run_gh(
         [
@@ -93,9 +147,10 @@ def is_review_required(repo: str, branch: str) -> bool:
         ]
     )
     if result.returncode != 0:
-        msg = (
-            f"could not read branch protection for {repo}@{branch}: "
-            f"{result.stderr.strip() or 'unknown gh api error'}"
+        msg = _diagnose(
+            f"could not read branch protection for {repo}@{branch}",
+            result.stderr,
+            credential_origin,
         )
         raise TripwireInconclusiveError(msg)
     return result.stdout.strip() == "true"
@@ -139,11 +194,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--team", default=DEFAULT_TEAM)
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
+    parser.add_argument(
+        "--credential-origin",
+        default="unknown",
+        choices=["cross_repo_pat", "fallback", "unknown"],
+        help=(
+            "Which token supplied GH_TOKEN for this run — 'cross_repo_pat' if "
+            "the elevated secret was present, 'fallback' if it fell back to "
+            "the default GITHUB_TOKEN. Enriches the INCONCLUSIVE diagnostic; "
+            "does not change pass/fail logic."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
-        member_count = get_team_member_count(args.org, args.team)
-        review_required = is_review_required(args.repo, args.branch)
+        member_count = get_team_member_count(
+            args.org, args.team, credential_origin=args.credential_origin
+        )
+        review_required = is_review_required(
+            args.repo, args.branch, credential_origin=args.credential_origin
+        )
     except TripwireInconclusiveError as exc:
         print(f"TRIPWIRE INCONCLUSIVE: {exc}", file=sys.stderr)
         return 2

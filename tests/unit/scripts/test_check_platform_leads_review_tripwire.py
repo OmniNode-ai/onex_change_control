@@ -22,6 +22,7 @@ import pytest
 
 from onex_change_control.scripts.check_platform_leads_review_tripwire import (
     TripwireInconclusiveError,
+    _diagnose,
     evaluate,
     get_team_member_count,
     is_review_required,
@@ -154,6 +155,56 @@ class TestIsReviewRequiredOMN14445:
             is_review_required("OmniNode-ai/onex_change_control", "dev")
 
 
+class TestDiagnoseTokenSourceOMN14445:
+    """OMN-14445 review: an INCONCLUSIVE gate must be legible, not a mystery.
+
+    The wedge risk is real: unlike this repo's other cross-repo `gh` usage
+    (public-repo clones that work with no token at all), these two API reads
+    are ORG-PRIVATE with no unauthenticated fallback. If CROSS_REPO_PAT ever
+    lapses, this job goes INCONCLUSIVE on every PR. These tests prove the
+    diagnostic names "token problem" before the raw gh error, for each
+    credential_origin case, so that failure reads as a token issue, not a
+    platform-leads policy violation.
+    """
+
+    def test_fallback_names_token_problem_first(self) -> None:
+        msg = _diagnose("could not read membership of x/y", "HTTP 403", "fallback")
+        assert "TOKEN PROBLEM, NOT A POLICY VIOLATION" in msg
+        assert msg.index("TOKEN PROBLEM") < msg.index("HTTP 403")
+        assert "CROSS_REPO_PAT" in msg
+        assert "fork-originated PR" in msg
+
+    def test_cross_repo_pat_present_but_failing_names_scope_problem(self) -> None:
+        msg = _diagnose(
+            "could not read membership of x/y", "HTTP 403", "cross_repo_pat"
+        )
+        assert "TOKEN PROBLEM, NOT A POLICY VIOLATION" in msg
+        assert "read:org scope" in msg
+
+    def test_unknown_credential_origin_still_flags_possible_token_problem(self) -> None:
+        msg = _diagnose("could not read membership of x/y", "HTTP 403", "unknown")
+        assert "possible token problem" in msg
+
+    def test_raw_gh_error_always_preserved(self) -> None:
+        msg = _diagnose("could not read membership of x/y", "HTTP 403", "fallback")
+        assert "could not read membership of x/y" in msg
+        assert "HTTP 403" in msg
+
+
+class TestGetTeamMemberCountTokenSourceOMN14445:
+    def test_inconclusive_message_carries_credential_origin_diagnostic(self) -> None:
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+                return_value=_completed(returncode=1, stderr="HTTP 403"),
+            ),
+            pytest.raises(TripwireInconclusiveError, match="TOKEN PROBLEM"),
+        ):
+            get_team_member_count(
+                "OmniNode-ai", "platform-leads", credential_origin="fallback"
+            )
+
+
 class TestCliMainOMN14445:
     def test_exit_0_when_review_required(self) -> None:
         with (
@@ -202,3 +253,18 @@ class TestCliMainOMN14445:
             ),
         ):
             assert main([]) == 2
+
+    def test_credential_origin_flag_threads_into_both_gh_calls(self) -> None:
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire.get_team_member_count",
+                return_value=1,
+            ) as mock_members,
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire.is_review_required",
+                return_value=False,
+            ) as mock_reviews,
+        ):
+            assert main(["--credential-origin", "fallback"]) == 0
+            assert mock_members.call_args.kwargs["credential_origin"] == "fallback"
+            assert mock_reviews.call_args.kwargs["credential_origin"] == "fallback"
