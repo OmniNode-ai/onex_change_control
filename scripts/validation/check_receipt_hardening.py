@@ -159,6 +159,7 @@ def _contract_hash_violation(
     when the receipt is bound cleanly to the current contract.
     """
     contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
+    contract_sha256 = getattr(receipt, "contract_sha256", None)
     if contract_entry_sha256 is not None:
         try:
             contract_data = yaml.safe_load(contract_path.read_text())
@@ -186,9 +187,9 @@ def _contract_hash_violation(
         return None
 
     expected_whole = f"sha256:{compute_contract_sha256(contract_path)}"
-    if receipt.contract_sha256 != expected_whole:
+    if contract_sha256 != expected_whole:
         return (
-            f"contract_sha256 mismatch — receipt has {receipt.contract_sha256!r} "
+            f"contract_sha256 mismatch — receipt has {contract_sha256!r} "
             f"but sha256({contract_path}) is {expected_whole!r}. The contract "
             "mutated after this receipt was produced; rerun probes and "
             "regenerate the receipt (mint contract_entry_sha256 per OMN-13888 "
@@ -210,7 +211,8 @@ def _receipt_binding_violations(
     violations: list[str] = []
 
     contract_entry_sha256 = getattr(receipt, "contract_entry_sha256", None)
-    if receipt.contract_sha256 is None and contract_entry_sha256 is None:
+    contract_sha256 = getattr(receipt, "contract_sha256", None)
+    if contract_sha256 is None and contract_entry_sha256 is None:
         violations.append(
             "missing contract_sha256 (OMN-13060/A-5). Tool-generate the "
             "receipt; never hand-author. Prefer contract_entry_sha256 "
