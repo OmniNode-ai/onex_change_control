@@ -1062,6 +1062,52 @@ jobs:
             --allowlist .onex_ratchets/noncanonical_class_allowlist.yaml \
             src/onex_change_control
 
+  validate-prod-promotion-grants:
+    name: validate-prod-promotion-grants
+    # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
+    # a validator that ran, could fail, and could NOT block a merge — it lived
+    # in a standalone workflow file (.github/workflows/validate-prod-promotion-grants.yml,
+    # now retired), invisible to this required CI Summary rollup (a separate
+    # workflow file gets a separate run_id; OMN-14415 instance #1). Folded in
+    # here, unconditional (no needs/if) so it never skips — mirrors
+    # no-noncanonical-lifecycle-classes (OMN-14350) below. Deliberately bypasses
+    # zone-filter: a grants-file change must never be able to be misclassified
+    # into a short-circuited zone.
+    runs-on: >-
+      ${{
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate prod-promotion-grants trust anchor (OMN-14441)
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          base_sha=""
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            git fetch origin "$base_ref" --no-tags
+            base_sha="$(git merge-base "origin/${base_ref}" HEAD)"
+          fi
+          args=(--file grants/prod_promotion_grants.yaml)
+          if [[ -n "$PR_AUTHOR" && -n "$base_sha" ]]; then
+            args+=(--pr-author "$PR_AUTHOR" --base-ref "$base_sha")
+          fi
+          uv run validate-prod-promotion-grants "${args[@]}"
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -1073,7 +1119,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1083,6 +1129,12 @@ jobs:
           # ratchet is in needs: so this job WAITS for it (no race).
           if [[ "${{ needs.no-noncanonical-lifecycle-classes.result }}" != "success" ]]; then
             echo "::error::no-noncanonical-lifecycle-classes ratchet did not pass (result: ${{ needs.no-noncanonical-lifecycle-classes.result }}) - fail-closed (OMN-14350)"
+            exit 1
+          fi
+          # OMN-14441: same strict fail-closed pattern for the prod-promotion-grant
+          # validator. Only 'success' passes; skipped/cancelled/failure ALL block.
+          if [[ "${{ needs.validate-prod-promotion-grants.result }}" != "success" ]]; then
+            echo "::error::validate-prod-promotion-grants did not pass (result: ${{ needs.validate-prod-promotion-grants.result }}) - fail-closed (OMN-14441)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
