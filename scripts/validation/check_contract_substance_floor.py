@@ -89,16 +89,36 @@ _EXISTENCE_JSON_FIELDS = frozenset(
     }
 )
 
+# COMMAND POSITION. A bare verb token must be *invoked*, not merely mentioned
+# inside a path or argument. This anchor is the load-bearing lesson of this file.
+#
+# `\b` is NOT sufficient: `.` is a non-word character, so `\bsh\b` matches the
+# EXTENSION in `scripts/verify.sh`, and `\bmake\b` / `\bdiff\b` match path
+# SEGMENTS like `src/make/build.py` or `docs/diff/report.md`. `.sh` is the most
+# common script extension in this repo, so an unanchored `sh` silently accepted
+# every `gh api .../contents/*.sh` file-exists probe as if it were a real script
+# run. The same bug was first caught on `onex` (path segment, via the ratchet on
+# OMN-11220) — that instance was fixed without generalizing to its siblings.
+#
+# A verb counts at the start of the command, after a pipe/semicolon/&&/||, inside
+# a `$(...)`, after a shell keyword (`then`/`do`/`else` — these ARE command
+# position), or as the argument of a runner (`uv run X`, `exec X`, `xargs X`).
+#
+# `then`/`do` matter: omitting them silently gated a SUBSET of the circular
+# self-attestation class (`if test -f …; then grep -q 'status: PASS' <own
+# receipt>`), which GATE_SELF_REFERENTIAL deliberately leaves ungated. A partial,
+# accidental activation of a class we consciously deferred is worse than either
+# gating it or not — it makes the policy incoherent.
+_CMD = r"(?:^|[|;&]\s*|\$\(\s*|\b(?:run|exec|xargs|sudo|time|env|then|do|else)\s+)"
+
 # Probes that read live runtime state — they establish L2 (the change is live),
 # not merely that it merged.
-_RUNTIME_PROBE_RE = re.compile(
-    r"\b(kubectl|docker\s+(exec|inspect|ps)|psql|rpk|curl|httpx|wget)\b"
-)
+_RUNTIME_PROBE_RE = re.compile(rf"{_CMD}(kubectl|docker|psql|rpk|curl|httpx|wget)\b")
 
 # Probes that execute the test suite — they establish L1 (the changed behavior
 # is exercised).
 _TEST_PROBE_RE = re.compile(
-    r"\b(pytest|npm\s+test|vitest|jest|go\s+test|cargo\s+test|tox|make\s+test)\b"
+    rf"{_CMD}(pytest|vitest|jest|tox)\b|\b(npm\s+test|go\s+test|cargo\s+test|make\s+test)\b"
 )
 
 # Probes that read a real CI verdict for the PR — falsifiable: they fail when CI
@@ -109,11 +129,11 @@ _CI_OUTCOME_RE = re.compile(
 
 # Static assertions over SOURCE — a grep/rg that pins a symbol or line in the
 # tree is falsifiable about the change (it fails if the code is not there).
-_STATIC_ASSERT_RE = re.compile(r"\b(grep|rg|ast-grep)\b")
+_STATIC_ASSERT_RE = re.compile(rf"{_CMD}(grep|rg|ast-grep)\b")
 
 # Type/lint/gate runs. All fail on bad code.
 _ANALYSIS_RE = re.compile(
-    r"\b(pre-commit|mypy|ruff|pyright|eslint|tsc|import-linter|lint-imports)\b"
+    rf"{_CMD}(pre-commit|mypy|ruff|pyright|eslint|tsc|import-linter|lint-imports)\b"
 )
 
 # Executing a program, script, or assertion — the general falsifiable family.
@@ -132,24 +152,46 @@ _ANALYSIS_RE = re.compile(
 # manufacturing the very debt OMN-14417 tracks. When in doubt, ACCEPT: a false
 # accept costs one weak receipt; a false reject teaches authors that writing
 # honest evidence does not pay.
+#
+# Every bare verb below is anchored to command position (see _CMD).
 _EXECUTABLE_RE = re.compile(
-    r"""(
-          ^\s*\.{0,2}/\S+                        # ./verify.sh, /usr/bin/x, ../y
-        | \b(bash|sh|zsh|make|just|task)\b       # shells + task runners
-        | \b(python3?|node|deno|ruby|perl)\b     # interpreters
-        | \b(uv\s+run|poetry\s+run|npx|npm\s+run|pnpm|yarn)\b  # package runners
-        # ONEX/OCC validators. `onex` is anchored to COMMAND position: an
-        # unanchored \bonex\b matches the path segment in
-        # `gh api .../contents/plugins/onex/skills/...` — which is a file-exists
-        # probe over the API, not a validator run. Nearly every OmniNode path
-        # contains "onex", so the loose form silently accepted content-free
-        # probes (caught by the ratchet on OMN-11220).
-        | (?:^|[|;&]\s*|\brun\s+)onex\b
-        | \b(validate-[\w-]+|check-[\w-]+|scan-[\w-]+|verify-[\w-]+)\b
+    rf"""(
+          ^\s*\.{{0,2}}/\S+                      # ./verify.sh, /usr/bin/x, ../y
+        | {_CMD}(bash|sh|zsh|make|just|task)\b               # shells + task runners
+        | {_CMD}(python3?|node|deno|ruby|perl)\b             # interpreters
+        | {_CMD}(uv|poetry|npm|npx|pnpm|yarn)\b              # package runners
+        | {_CMD}onex\b                                       # ONEX CLI
+        | {_CMD}(validate-[\w-]+|check-[\w-]+|scan-[\w-]+|verify-[\w-]+)\b  # OCC
         | \bjq\s+-\w*e\b                         # `jq -e`: the -e flag IS the assert
-        | \b(diff|cmp)\b                         # output comparison
+        | {_CMD}(diff|cmp)\b                                 # output comparison
     )""",
     re.VERBOSE,
+)
+
+# `gh api .../contents/<path>` is a file-EXISTS read over the GitHub API — the
+# same family as `gh pr view`. It proves a file is present in a repo; it passes
+# identically whether the code is correct or broken. Rejected outright rather
+# than relying on the verb anchor, because its URL path is adversarially shaped:
+# it routinely contains `.sh`, `make`, `diff`, `onex` — exactly the tokens a verb
+# matcher trips over. Rejecting the command is durable; whack-a-mole on its path
+# contents is not.
+#
+# Matched as a WHOLE command (fullmatch), never as a substring. Two compounds
+# proved a blanket `gh api` reject does real damage:
+#
+#   * `gh api .../pulls/<n>/files --jq '.[].filename' | grep -cE '<pat>'`
+#     — a genuine DIFF ASSERTION (fails when the PR doesn't touch those files).
+#   * `if test -f <r>; then grep -q PASS <r>; else gh api .../contents/<r>
+#     --jq .content | base64 -d | grep -q PASS; fi`
+#     — the circular class, which GATE_SELF_REFERENTIAL deliberately leaves
+#     ungated; rejecting it here would partially activate a deferred policy.
+#
+# The verb ANCHOR is what actually closes the path-token hole (`.sh`, `make`,
+# `diff`, `onex` inside a URL are no longer in command position), and a bare
+# `gh api .../pulls/1` still derives L0 via the default-reject branch. This rule
+# is therefore a narrow, explicit statement of intent, not the load-bearing fix.
+_GH_API_CONTENTS_RE = re.compile(
+    r"\s*gh\s+api\s+\S*contents/\S*(\s+--\S+(\s+\S+)?)*\s*"
 )
 
 # A diff assertion: `gh pr view --json files --jq '[.files[].path]'` names the
@@ -253,6 +295,11 @@ def derive_proof_tier(check_type: str, check_value: str) -> EnumProofTier:
     if GATE_SELF_REFERENTIAL and _SELF_REFERENTIAL_RE.search(command):
         # Reads its own receipt. Circular (OMN-14417). Off by default — see the
         # kill-switch comment: ON rejects 98.4% of new contract traffic.
+        return EnumProofTier.L0
+
+    if _GH_API_CONTENTS_RE.fullmatch(command.strip()):
+        # A WHOLE command that is nothing but a file-exists read over the API.
+        # Compounds are deliberately excluded (see the regex comment).
         return EnumProofTier.L0
 
     if _is_existence_probe(command):

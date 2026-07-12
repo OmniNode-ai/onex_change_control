@@ -206,6 +206,56 @@ class TestFalsifiableChecksAreAccepted:
         )
         assert derive_proof_tier("command", probe) is EnumProofTier.L0
 
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            "gh api repos/o/r/contents/scripts/verify.sh",  # `sh` = file EXTENSION
+            "gh api repos/o/r/contents/docs/diff/report.md",  # `diff` = path segment
+            "gh api repos/o/r/contents/src/make/build.py",  # `make` = path segment
+            "cat scripts/verify.sh",  # prints a file
+            "wc -l scripts/deploy.sh",  # counts lines
+            "stat src/make/build.py",  # file metadata
+        ],
+    )
+    def test_verb_mentioned_in_a_path_is_not_an_invocation(self, probe: str) -> None:
+        r"""A verb counts only when INVOKED — not when mentioned in a path.
+
+        ``\b`` is not enough: ``.`` is a non-word char, so ``\bsh\b`` matches the
+        EXTENSION in ``scripts/verify.sh``, and ``\bmake\b``/``\bdiff\b`` match
+        path SEGMENTS. ``.sh`` is the most common script extension in this repo,
+        so an unanchored ``sh`` accepted every ``gh api .../contents/*.sh``
+        file-exists probe as though it were a real script run.
+
+        This is the SAME bug the ratchet caught on ``onex`` — fixed for that one
+        token without generalizing to its siblings. When a guard catches one
+        token, ask immediately which sibling tokens share the shape.
+        """
+        assert derive_proof_tier("command", probe) is EnumProofTier.L0
+
+    def test_gh_api_is_rejected_outright(self) -> None:
+        """`gh api` is a metadata read — same family as `gh pr view`.
+
+        Rejecting the command is durable; whack-a-mole on its URL path is not,
+        because that path routinely contains `.sh` / `make` / `diff` / `onex`.
+        """
+        probe = "gh api repos/o/r/pulls/1"
+        assert derive_proof_tier("command", probe) is EnumProofTier.L0
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            "./scripts/verify_thing.sh",
+            "bash script.sh",
+            "make verify",
+            "diff -u expected actual",
+            "cd build && make verify",  # after `&&` IS command position
+            "uv run validate-yaml contracts/OMN-1.yaml",
+            "npm run verify",
+        ],
+    )
+    def test_anchor_does_not_cost_the_legitimate_forms(self, probe: str) -> None:
+        assert derive_proof_tier("command", probe).satisfies(EnumProofTier.L1)
+
     def test_bare_gh_pr_view_derives_l0(self) -> None:
         assert derive_proof_tier("command", "gh pr view 1721") is EnumProofTier.L0
 
