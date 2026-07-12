@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14488"
+title: "OCC companion for omnibase_infra#2278 — dispatcher route-coverage gate"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2278 (OMN-14488, child of OMN-14208). The product
+  PR adds a durable route-coverage invariant test: a dispatcher registered with a payload_type_matcher
+  (built from a contract's declared handler event_model, OMN-12416) MUST resolve for a VALID instance
+  of that same event_model — registration alone is not enough, the message must actually ROUTE. A registered-but-unroutable
+  dispatcher (valid payload still dropped by type-scoping) is a wiring defect and must fail the gate.
+  This is the exact trap that hid the OMN-14484 arc: the only prior coverage asserted a dispatcher is
+  REGISTERED but never dispatched a payload, so a registered-but-unroutable dispatcher passed green while
+  the live runtime DLQ'd every message. The evidence reads the PR head directly and asserts: (1) the load-bearing
+  invariant test drives _find_matching_dispatchers with a valid event_model instance and asserts exactly
+  one match; (2) the non-vacuity discriminator test proves a nonconforming payload yields zero matches
+  (the matcher discriminates, not accept-everything). Independently verified: the full auto_wiring suite
+  is 344 passed, and a verifier RED probe (registration untouched, matcher broken to drop the valid payload)
+  yields 0 matches — the gate's assert==1 goes RED on exactly the registered-but-unroutable defect.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2278 head adds a non-vacuous route-coverage gate: registered type-scoped
+      dispatcher must route its event_model."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2278-route-coverage-invariant"
+    description: >-
+      Product-observing check against omnibase_infra#2278 head 8750bd9828b5842ce8bea38b0649b0d642c8dafa.
+      Reads the route-coverage test and asserts the load-bearing invariant: test_valid_event_model_instance_routes_to_dispatcher
+      validates a real ModelDelegationRequest instance, drives engine._find_matching_dispatchers with
+      it, and asserts exactly one match — so a registered-but-unroutable dispatcher (valid payload dropped)
+      fails. This is the coverage the registration-only test lacked (the trap that hid OMN-14484).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_dispatcher_route_coverage_omn14488.py?ref=8750bd9828b5842ce8bea38b0649b0d642c8dafa"
+          --jq .content | base64 -d > "$t" && grep -F -- 'def test_valid_event_model_instance_routes_to_dispatcher'
+          "$t" && grep -F -- 'ModelDelegationRequest.model_validate' "$t" && grep -F -- '_find_matching_dispatchers'
+          "$t" && grep -F -- 'assert len(matches) == 1' "$t" && grep -F -- 'registered-but-unroutable'
+          "$t"
+  - id: "dod-verify-2278-non-vacuity-discriminator"
+    description: >-
+      Product-observing check against the PR head. Reads the route-coverage test and asserts the non-vacuity
+      discriminator: test_nonconforming_payload_is_dropped_by_type_scoping feeds a payload that fails
+      the declared event_model and asserts zero matches (matches == []) — proving the type-scoping matcher
+      actually discriminates rather than accepting everything, without which the route-coverage assertion
+      would be vacuous. A suite with only the positive assertion could pass with a wildcard matcher.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_dispatcher_route_coverage_omn14488.py?ref=8750bd9828b5842ce8bea38b0649b0d642c8dafa"
+          --jq .content | base64 -d > "$t" && grep -F -- 'def test_nonconforming_payload_is_dropped_by_type_scoping'
+          "$t" && grep -F -- 'assert matches == []' "$t"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the two entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14488-occ-infra-2278-route-coverage' drift/dod_receipts/OMN-14488/dod-occ-self-commit/command.yaml
