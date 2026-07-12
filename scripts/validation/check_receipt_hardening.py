@@ -44,8 +44,6 @@ Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import re
 import sys
 from datetime import UTC, datetime
@@ -54,49 +52,9 @@ from pathlib import Path
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
-
-try:
-    from omnibase_core.validation.validator_receipt_gate import (
-        ContractEntryNotFoundError,
-        compute_contract_entry_sha256,
-    )
-except ImportError:
-    ContractEntryNotFoundError = LookupError
-
-    def compute_contract_entry_sha256(
-        contract_data: object, evidence_item_id: str
-    ) -> str:
-        """Compute the OMN-13888 per-entry contract hash locally.
-
-        Hosted OCC CI can run against an older omnibase_core wheel that has the
-        whole-file hash helper but not the per-entry helper. Keep this gate
-        self-contained so new receipts can still prefer contract_entry_sha256.
-        """
-        entry: dict[str, object] | None = None
-        if isinstance(contract_data, dict):
-            items = contract_data.get("dod_evidence", [])
-            if isinstance(items, list):
-                for item in items:
-                    if isinstance(item, dict) and item.get("id") == evidence_item_id:
-                        entry = item
-                        break
-        if entry is None:
-            msg = f"dod_evidence item {evidence_item_id!r} not found in contract"
-            raise ContractEntryNotFoundError(msg)
-        header = {
-            key: (contract_data.get(key) if isinstance(contract_data, dict) else None)
-            for key in ("ticket_id", "schema_version")
-        }
-        blob = json.dumps(
-            {"header": header, "entry": entry},
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
-        return f"sha256:{hashlib.sha256(blob.encode('utf-8')).hexdigest()}"
-
-
 from omnibase_core.validation.validator_receipt_gate import (
+    ContractEntryNotFoundError,
+    compute_contract_entry_sha256,
     compute_contract_sha256,
 )
 from pydantic import ValidationError
