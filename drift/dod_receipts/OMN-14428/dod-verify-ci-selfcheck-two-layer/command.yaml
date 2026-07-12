@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14428"
+evidence_item_id: "dod-verify-ci-selfcheck-two-layer"
+check_type: "command"
+check_value: "gh pr checks 3995 --repo OmniNode-ai/onex_change_control"
+status: PASS
+run_timestamp: "2026-07-12T03:13:09Z"
+commit_sha: "b60544ffe09918055337d4b6248cbe366458897d"
+runner: "fix-occ-pin"
+verifier: "verify-occ-pin"
+pr_number: 3995
+probe_command: >-
+  git worktree add <scratch> b60544ffe --detach && plant a nonexistent-symbol import, commit, then run
+  the ci.yml "Validator self-check" bash logic verbatim against BASE_REF=dev; separately plant a runtime-only
+  raise inside check_receipt_file (uncatchable by --help since argparse short-circuits before main() runs)
+  and rerun both layers; separately: gh api repos/OmniNode-ai/onex_change_control/actions/jobs/86608910163
+  --jq '.steps[]' and gh run view --job 86608910163 --log, for the live Pre-commit job on #3995 itself
+probe_stdout: |
+  # sandbox negative test 1 — import-time bug:
+  scripts/validation/check_receipt_hardening.py: FAILED to execute even --help — the gate itself is broken:
+  ImportError: cannot import name 'this_symbol_does_not_exist_anywhere' from
+  'omnibase_core.validation.validator_receipt_gate'
+  One or more changed validators cannot execute. Fix the gate before merging.
+  EXIT CODE: 1
+
+  # sandbox negative test 2 — runtime-only bug (--help alone is blind to this class):
+  help exit: 0
+  status=1
+  Corpus run FAILED — the gate crashed instead of reporting violations:
+  RuntimeError: sandbox negative test: planted runtime-only bug
+
+  # live CI log, job 86608910163, step "Validator self-check — a gate must run when its own code changes",
+  # conclusion=success, on #3995's own diff:
+  Validator code changed — executing (not just importing via tests) so the gate can't merge broken behind
+  an empty data-file diff:
+  scripts/validation/check_receipt_hardening.py: --help OK (module-level imports execute cleanly).
+  Running scripts/validation/check_receipt_hardening.py against the full corpus (9853 receipts)...
+  Corpus run: gate executed and reported expected violations (legacy corpus debt, not a gate defect).
+actual_output: >-
+  PASS: reproduced both bug classes the CI self-check step in #3995 exists to catch, in an isolated sandbox
+  git worktree that never touched #3995's own branch. (1) An import of a nonexistent core symbol was planted
+  in check_receipt_hardening.py; running the bash logic extracted verbatim from ci.yml exits 1 with the
+  ImportError surfaced — the exact class of bug that let OMN-14411/#3986 merge broken. (2) Beyond the
+  dispatched ask: a runtime-only bug was planted (a raise inside check_receipt_file, unreachable by --help
+  because argparse resolves -h and exits before main() body runs) — confirmed --help alone passes, but
+  the corpus-run second layer of the same step catches it, proving the two-layer design closes a real
+  gap rather than duplicating coverage. Separately confirmed on the live PR: job 86608910163's "Validator
+  self-check" step actually fired on #3995's own diff (it changes check_receipt_hardening.py), ran --help
+  clean, executed the full 9853-receipt corpus, and correctly classified the 110 pre-existing violations
+  as legacy corpus debt rather than a gate crash — reachable in practice, with no if:/SKIP= condition
+  suppressing it, not merely reachable in theory.
+exit_code: 0
+branch: "jonah/omn-14428-occ-behavioral-evidence"
+contract_sha256: "sha256:e74821bfe9c1bfa68b4f9df93739252db360e7ffc29edbde2151939379212a31"
+contract_entry_sha256: "sha256:1991b3d4044e86309abe788d072532de2907dc1d4eaed7e0afe9ad32735bd373"

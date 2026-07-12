@@ -1,0 +1,93 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14428"
+title: "Independent-verifier OCC companion for the omnibase-core pin bump + shim deletion"
+summary: >
+  OCC companion for OmniNode-ai/onex_change_control#3995 (OMN-14428), authored by the independent verifier
+  (verify-occ-pin), not the implementer, per OMN-14055. #3995 bumps the omnibase-core pin to fix an ImportError
+  that let OMN-14411/#3986 merge broken on dev, deletes a local re-implementation of a security-relevant
+  per-entry hash now that the pin makes the canonical core function importable, and adds a CI self-check
+  step that closes the gap where a validator gate never runs against its own code change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3995 CI checks green (apart from the expected missing_contract self-reference before
+      this companion lands)"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-pin-floor-wheel-grep"
+    description: >-
+      Independent re-derivation of the pin floor, not a read of the implementer's claim. Downloaded every
+      published omnibase-core wheel from PyPI directly (0.45.0, 0.46.1, 0.46.3, 0.46.4, 0.46.5, 0.46.6,
+      0.46.7 — 0.46.2 does not exist on PyPI at all, confirmed via pip's candidate list) and grepped the
+      unpacked .py sources of each for actual class/def definitions of the three symbols scripts/validation/check_receipt_hardening.py
+      imports directly: compute_contract_entry_sha256 and ContractEntryNotFoundError in omnibase_core/validation/validator_receipt_gate.py,
+      and EnumProofTier in omnibase_core/enums/ticket/enum_proof_tier.py. Result: 0.46.5 is the first
+      release carrying all three; 0.45.0/0.46.1/0.46.3/0.46.4 each lack at least one of the two validator_receipt_gate
+      symbols. This matches the pin change in #3995 (>=0.45.0,<0.46.0 -> >=0.46.5,<0.47.0) and confirms
+      uv.lock's resolved 0.46.7 genuinely has all three.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - id: "dod-verify-shim-byte-identical"
+    description: >-
+      Independent reproduction of the shim-vs-core equivalence claim underlying the deletion in #3995
+      — the highest-risk change in the PR, since a divergence would silently corrupt every receipt hash
+      minted while the shim was live. Reimplemented the exact deleted compute_contract_entry_sha256 fallback
+      from the PR diff and ran it against omnibase_core's real implementation over every dod_evidence
+      entry in every contracts/*.yaml file on #3995's branch: 27699 entries, 0 mismatches, 0 errors. The
+      shim never diverged from core; deleting it changes no existing receipt binding.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - id: "dod-verify-import-sweep-clean"
+    description: >-
+      Independent confirmation that no other file in the repository is exposed by the pin bump. Imported
+      every .py module under src/onex_change_control/ and scripts/ (212 files) against the pinned 0.46.7
+      wheel installed in a clean env -u PYTHONPATH venv, registering each module in sys.modules before
+      exec so dataclass/pydantic type-hint resolution behaves as it would under a normal import. Result:
+      212/212 import cleanly, matching the count claimed in the PR body.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - id: "dod-verify-ci-selfcheck-two-layer"
+    description: >-
+      Independent, adversarial reproduction that the new "Validator self-check" CI step in #3995 actually
+      catches the bug class that let OMN-14411/#3986 merge broken — not merely that the step exists. Two
+      negative tests were constructed and run in an isolated sandbox git worktree (never touching #3995's
+      branch): (1) planted an import of a nonexistent core symbol in check_receipt_hardening.py and ran
+      the exact bash logic extracted from ci.yml — exits 1 with the ImportError surfaced; (2) went beyond
+      the dispatched ask and planted a runtime-only bug (a raise inside check_receipt_file, which --help
+      alone cannot catch because argparse short-circuits before main() executes) — confirmed --help passes
+      but the corpus-run second layer of the same step correctly reports the crash instead of reporting
+      violations, proving the two-layer design is load-bearing, not redundant. Separately pulled the live
+      CI log for #3995's own Pre-commit job (step "Validator self-check", job 86608910163, conclusion
+      success): it fired for real on the PR's own diff, ran --help clean, then ran the full corpus (9853
+      receipts) and correctly classified the 110 pre-existing violations as legacy corpus debt rather
+      than a gate defect.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind receipt for this OCC evidence branch: the first evidence commit carries the four behavioral
+      dod_evidence entries above plus the independent-verifier PASS receipts for OMN-14428.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
