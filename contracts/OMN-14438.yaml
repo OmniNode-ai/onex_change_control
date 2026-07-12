@@ -1,0 +1,88 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14438"
+title: "RT-1: clean-ref deploy source + vendored-SHA assertion (omnibase_infra #2270)"
+summary: >
+  OCC evidence companion for omnibase_infra#2270 (RT-1 / WS-RT, mechanical-release-trains plan §3). RT-1
+  fixes the unreliable-narrator build: stage_workspace.sh rsync'd each sibling from the AMBIENT ${OMNI_HOME}/<repo>
+  working copy on .201 (routinely detached, behind, dirty), so merging a PR never changed what got built,
+  and a vendored-SHA manifest was emitted but never asserted equal to the intended ref. #2270 adds deploy_source_ref.py
+  (checkout: clean-ref checkout before staging; assert: HARD-ASSERT the vendored-SHA manifest == the ref
+  for every sibling, exit 4 on a stale/wrong SHA), wires both halves into stage_workspace.sh, and adds
+  cut-lab-ref.sh. proof_class = code-only (build/CI green + real- git-tree tests); runtime readback (a
+  lab deploy actually landing the ref) is RT-4/RT-6, owed separately (see evidence_requirements). Every
+  check below is a workspace-INDEPENDENT gh api content read against the infra product tree at #2270's
+  head, deliberately so: the DoD runner's cwd is the OCC clone, so a filesystem check over the infra tree
+  would be circular; a gh api content read observes the product regardless of which tree the runner is
+  pointed at (same property that makes OMN-14454's checks the known-good shape).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: >-
+      omnibase_infra#2270 head wires deploy_source_ref.py (clean-ref checkout + vendored-SHA assert) into
+      stage_workspace.sh and adds the fail-closed assertion module.
+    command: "see dod_evidence check_values"
+  - kind: "manual"
+    description: >-
+      OWED post-merge closure (NOT claimed here as a pre-merge PASS, to avoid a false PASS): (a) source-lands
+      proof once #2270 merges to dev -- `test "$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2270 --jq
+      .merged)" = "true"`; (b) runtime readback that a lab deploy actually vendors the intended ref SHA
+      on .201. Both are RT-4/RT-6 territory (deploy readback), tracked separately; RT-1 is the deploy-
+      source root fix only. Pre-merge this check is RED by construction, so it is intentionally not a
+      dod_evidence item (every dod_evidence item requires a PASS receipt for eligibility).
+    command: "post-merge / RT-4 / RT-6"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-14438-stage-wires-clean-ref-assert"
+    description: >-
+      Asserts stage_workspace.sh at #2270's head WIRES the load-bearing RT-1 vendored-SHA assertion: it
+      invokes deploy_source_ref.py with `--expected-refs`, the flag that only the after-staging `assert`
+      step passes. This is the gate that fails the build (exit 4) when a behind/dirty clone leaked a stale
+      SHA into the staged tree -- previously no such assertion existed, so a stale SHA passed silently.
+      RED PROVEN against a ref where the artifact EXISTS but is WRONG, not merely absent: infra dev HAS
+      scripts/runtime_build/ stage_workspace.sh (233 lines) -- it simply has no clean-ref assert wiring,
+      so the identical command exits 1 there (grep count 0), and exits 1 at a bogus SHA (gh api returns
+      no content). Workspace-INDEPENDENT: a gh api content read of the infra product.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/stage_workspace.sh?ref=4ae149642d3e6006142ef627943ed65fae88f213"
+          --jq .content | base64 -d | grep -c -- '--expected-refs')" -ge 1
+  - id: "dod-14438-stage-wires-clean-ref-checkout"
+    description: >-
+      Asserts stage_workspace.sh at #2270's head ENGAGES the RT-1 clean-checkout-before-staging block
+      (the RT1_ENGAGED guard, present 3x: set on DEPLOY_REF/DEPLOY_HOTPATCH, gating the pre-staging checkout,
+      and gating the post-staging assert). This is the half that brings each sibling to a clean checkout
+      of the named ref BEFORE the rsync, so the tree that gets built is provably the intended commit rather
+      than the ambient detached/behind/dirty tree. RED PROVEN against a ref where the artifact EXISTS
+      but is WRONG: infra dev's stage_workspace.sh exists but carries no RT1_ENGAGED guard -> grep count
+      0 -> exit 1; exit 1 at a bogus SHA (no content). Workspace-INDEPENDENT gh api content read.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/stage_workspace.sh?ref=4ae149642d3e6006142ef627943ed65fae88f213"
+          --jq .content | base64 -d | grep -c 'RT1_ENGAGED')" -ge 2
+  - id: "dod-occ-self-14438"
+    description: >-
+      Self-bind item for THIS OCC companion PR. occ-preflight (both the omnibase_infra#2270 cross-repo
+      run and OCC's own in-tree run) requires a PASS receipt bound to the PR under check; this item's
+      receipt binds to the OCC companion by pr_number so OCC's own gate is satisfied. Intentionally self-referential
+      and legitimately so -- it asserts a fact ABOUT this PR (its branch). It is a BINDING item, NOT substantive
+      evidence: the two entries above carry that, each a workspace-independent gh api content read proven
+      RED against a ref where infra's stage_workspace.sh EXISTS but is WRONG (not merely absent) and a
+      bogus SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14438-occ-contract' drift/dod_receipts/OMN-14438/dod-occ-self-14438/command.yaml
