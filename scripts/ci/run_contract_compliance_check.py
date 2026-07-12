@@ -31,6 +31,7 @@ Scope:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -50,6 +51,97 @@ _OMN_TICKET_PATTERN = re.compile(r"\b(OMN-\d+)\b", re.IGNORECASE)
 _RESULT_PASS = "PASS"  # noqa: S105
 _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
+_ALLOWLIST_FIELDS = 2  # each entry is 'OMN-1234 <sha256>'
+
+# OMN-14436 -- checks that can only ever observe the OCC tree.
+#
+# Until this ticket, every non-OCC invocation of this runner passed --workspace
+# pointing at the *onex_change_control clone* rather than the product checkout,
+# so a check_value's cwd was the receipt store. The only files an author could
+# reach were the receipt and the contract itself, and ~32% of the corpus greps
+# exactly those. That is a wiring defect, not an authoring one.
+#
+# With --workspace now bound to the product, such a check can never pass: the
+# path does not exist in the product tree. It is INERT -- it proves nothing
+# about the code under test. An inert check is reported loudly and demoted to
+# WARN so it cannot gate; it is never allowed to produce a PASS that would
+# launder a red PR into green evidence (the OMN-14391 / omnibase_infra#2264
+# case). See _has_effective_check for why an inert-only contract still BLOCKs
+# on a non-grandfathered ticket.
+_INERT_CHECK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"drift/dod_receipts/"),
+    re.compile(r"(?<![\w/])contracts/OMN-"),
+)
+
+
+def _is_inert_check(check_value: Any) -> bool:
+    """True if the check can only observe the OCC receipt/contract store.
+
+    Such a check is structurally incapable of saying anything about the product
+    repo the PR actually changes.
+    """
+    text = str(check_value)
+    return any(p.search(text) for p in _INERT_CHECK_PATTERNS)
+
+
+def _contract_digest(contract_path: Path) -> str:
+    """sha256 of the contract file's exact bytes.
+
+    The grandfather is bound to CONTENT, not to a ticket id (see
+    _load_legacy_allowlist). Hashing the raw bytes means any edit at all --
+    appending an entry, tweaking a check_value -- changes the digest and
+    un-grandfathers the contract.
+    """
+    return hashlib.sha256(contract_path.read_bytes()).hexdigest()
+
+
+def _load_legacy_allowlist(path: Path | None) -> dict[str, str]:
+    """Load the OMN-14436 grandfather ratchet: ticket id -> contract digest.
+
+    Contracts that predate product-workspace execution still EXECUTE and are
+    REPORTED, but their failures are demoted BLOCK -> WARN so turning the runner
+    on does not wedge in-flight work on pre-existing debt. New tickets are NOT
+    in the list and are enforced from their first PR.
+
+    The grandfather is bound to the contract's CONTENT DIGEST, not merely to its
+    ticket id. A ticket-keyed allowlist would be a permanent laundering channel:
+    anyone could append a fresh circular dod_evidence entry under an old ticket
+    id and inherit its exemption forever. Binding to the digest means the moment
+    a grandfathered contract is MODIFIED it stops being grandfathered, and must
+    then carry at least one product-observing check or BLOCK. Frozen debt stays
+    frozen; touched debt must be paid.
+
+    This is a ratchet, not a paydown machine: the list may only shrink (pinned by
+    tests/test_dod_runner_ratchet.py). It is deliberately NOT expiry-dated -- an
+    expiry would manufacture paydown pressure on a corpus that RSD (OMN-14427) is
+    slated to delete outright.
+
+    Format: ``OMN-1234<whitespace><sha256>`` per line; ``#`` comments and blanks
+    ignored. A line with no digest is REJECTED -- a digest-less entry would
+    silently restore the ticket-keyed hole this binding exists to close.
+    """
+    if path is None:
+        return {}
+    if not path.exists():
+        # Fail loudly. A silently-absent allowlist would enforce the entire
+        # legacy corpus and wedge every repo -- the opposite of a safe default.
+        msg = f"legacy allowlist not found: {path}"
+        raise FileNotFoundError(msg)
+    entries: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) != _ALLOWLIST_FIELDS:
+            msg = (
+                f"malformed allowlist entry {line!r} in {path}: expected "
+                "'OMN-1234 <sha256>'. A digest-less entry would reopen the "
+                "ticket-keyed laundering hole (OMN-14436)."
+            )
+            raise ValueError(msg)
+        entries[parts[0].upper()] = parts[1].lower()
+    return entries
 
 
 @dataclass(frozen=True)
@@ -58,6 +150,7 @@ class _CheckContext:
     repo: str
     ticket_id: str = ""
     contracts_dir: Path | None = None
+    is_legacy: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +545,36 @@ def _run_single_check(
     return check_type, result, detail
 
 
+def _demote(
+    check: dict[str, Any],
+    result: str,
+    detail: str,
+    context: _CheckContext,
+) -> tuple[str, str, str]:
+    """Apply the OMN-14436 demotion rules to one check result.
+
+    Returns (result, detail, label). A BLOCK becomes a WARN when the check is
+    inert (it can only see the OCC store, so its failure says nothing about the
+    product) or when the ticket is grandfathered. Everything else stands.
+    """
+    if _is_inert_check(check.get("check_value", "")):
+        # Inert checks are demoted whatever they returned: an inert PASS is
+        # exactly the laundering this ticket exists to stop.
+        return (
+            _RESULT_WARN,
+            f"INERT -- reads the OCC receipt/contract store, not the product; "
+            f"proves nothing about {context.repo}. Original: {detail}",
+            "INERT",
+        )
+    if result == _RESULT_BLOCK and context.is_legacy:
+        return (
+            _RESULT_WARN,
+            f"GRANDFATHERED (OMN-14436 ratchet) -- would BLOCK. {detail}",
+            "GRANDFATHERED",
+        )
+    return result, detail, ""
+
+
 def _run_dod_checks(
     dod_evidence: list[Any],
     workspace: Path,
@@ -466,10 +589,31 @@ def _run_dod_checks(
         print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
         for check in checks:
             check_type, result, detail = _run_single_check(check, workspace, context)
+            result, detail, label = _demote(check, result, detail, context)
             results.append((item_id, check_type, result, detail))
             icon = {"PASS": "+", "WARN": "~", "BLOCK": "X"}.get(result, "?")
-            print(f"  [{icon}] {check_type}: {detail}", flush=True)
+            tag = f"{label} " if label else ""
+            print(f"  [{icon}] {tag}{check_type}: {detail}", flush=True)
     return results
+
+
+def _has_effective_check(dod_evidence: list[Any]) -> bool:
+    """True if any check can actually observe the product.
+
+    A contract whose every check is inert carries zero proof about the code it
+    claims to certify. Before OMN-14436 that was the norm, because the runner
+    only ever showed authors the receipt store -- so the legacy corpus is
+    grandfathered. A NEW ticket gets no such pass.
+    """
+    for dod_item in dod_evidence:
+        if not isinstance(dod_item, dict):
+            continue
+        for check in dod_item.get("checks", []) or []:
+            if isinstance(check, dict) and not _is_inert_check(
+                check.get("check_value", "")
+            ):
+                return True
+    return False
 
 
 def run_compliance_check(
@@ -477,6 +621,7 @@ def run_compliance_check(
     repo: str,
     contracts_dir: Path,
     workspace: Path,
+    legacy_tickets: dict[str, str] | None = None,
 ) -> int:
     """Run all contract compliance checks. Returns exit code (0=pass, 1=block)."""
     ticket_id = _extract_ticket_id(pr_number, repo)
@@ -512,10 +657,27 @@ def run_compliance_check(
         print("[PASS] No executable DoD checks. Contract acknowledged.", flush=True)
         return 0
 
+    allow = legacy_tickets or {}
+    recorded = allow.get(ticket_id.upper())
+    actual = _contract_digest(contract_path)
+    is_legacy = recorded is not None and recorded == actual
+    if recorded is not None and not is_legacy:
+        print(
+            f"[INFO] {ticket_id} is in the grandfather allowlist but its contract "
+            "has been MODIFIED since the cutoff -- exemption REVOKED. A touched "
+            "contract must carry at least one product-observing check.",
+            flush=True,
+        )
+    print(
+        f"[INFO] Workspace (product under test): {workspace}\n"
+        f"[INFO] Grandfathered (OMN-14436 ratchet): {is_legacy}",
+        flush=True,
+    )
+
     results = _run_dod_checks(
         dod_evidence,
         workspace,
-        _CheckContext(pr_number, repo, ticket_id, contracts_dir),
+        _CheckContext(pr_number, repo, ticket_id, contracts_dir, is_legacy),
     )
 
     total = len(results)
@@ -528,12 +690,45 @@ def run_compliance_check(
         flush=True,
     )
 
+    # A contract with no check that can observe the product proves nothing about
+    # it. The legacy corpus is grandfathered (it was authored against a runner
+    # that only ever showed it the receipt store); a new ticket is not.
+    if not _has_effective_check(dod_evidence):
+        if is_legacy:
+            print(
+                "[WARN] Every check is INERT (OCC-store-only). Grandfathered "
+                "under the OMN-14436 ratchet -- reported, not enforced.",
+                flush=True,
+            )
+        else:
+            print(
+                f"[BLOCK] {ticket_id}: every check is INERT -- each one reads the "
+                f"OCC receipt/contract store rather than {repo}. This contract "
+                "cannot certify the code it claims to. Add at least one check "
+                "that observes the product, e.g.\n"
+                "  check_value: 'test -f src/path/touched_by_this_pr.py'\n"
+                "  check_value: 'gh api repos/OWNER/REPO/pulls/<src_pr> --jq .merged'",
+                flush=True,
+            )
+            return 1
+
     if blocks > 0:
         print(
             f"[BLOCK] {blocks} check(s) failed. PR cannot merge until resolved.",
             flush=True,
         )
         return 1
+
+    if warns and not passes:
+        # Do not call this "all checks satisfied" -- nothing was proven. Saying
+        # so is the same declaration-in-place-of-verification this ticket exists
+        # to remove.
+        print(
+            f"[PASS] No enforceable DoD check failed, but {warns}/{total} were "
+            "WARN and 0 proved anything about the product.",
+            flush=True,
+        )
+        return 0
 
     print("[PASS] All executable DoD checks satisfied.", flush=True)
     return 0
@@ -551,7 +746,22 @@ def main() -> int:
     parser.add_argument("--repo", required=True, help="GitHub repo (org/name)")
     parser.add_argument("--contracts-dir", default=None, help="Path to contracts dir")
     parser.add_argument(
-        "--workspace", default=None, help="Workspace root (default: CWD)"
+        "--workspace",
+        default=None,
+        help=(
+            "Product checkout the DoD checks run against (default: CWD). "
+            "This MUST be the repo the PR changes -- pointing it at the "
+            "onex_change_control clone is the OMN-14436 defect."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-allowlist",
+        default=None,
+        help=(
+            "Path to the OMN-14436 grandfather ratchet (one OMN ticket id per "
+            "line). Listed tickets still execute and report, but their failures "
+            "are demoted BLOCK -> WARN. Omit to enforce every ticket."
+        ),
     )
     args = parser.parse_args()
 
@@ -574,12 +784,15 @@ def main() -> int:
     script_path = Path(__file__).resolve()
     contracts_dir = _find_contracts_dir(args.contracts_dir, script_path)
     workspace = Path(args.workspace).resolve() if args.workspace else Path.cwd()
+    legacy_path = Path(args.legacy_allowlist) if args.legacy_allowlist else None
+    legacy_tickets = _load_legacy_allowlist(legacy_path)
 
     return run_compliance_check(
         pr_number=args.pr,
         repo=args.repo,
         contracts_dir=contracts_dir,
         workspace=workspace,
+        legacy_tickets=legacy_tickets,
     )
 
 
