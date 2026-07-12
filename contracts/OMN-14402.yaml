@@ -1,0 +1,128 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14402"
+title: "Same-tier local backend fallback -- try a sibling before escalating to cloud"
+summary: "omnimarket#1722 threads a per-tier excluded_backend_refs set through the delegation orchestrator/routing
+  reducer so a transport failure on the selected local backend retries a same-tier sibling before escalating
+  to cheap_cloud; omnibase_core#1432 adds the additive ModelRoutingIntent.excluded_backend_refs wire field
+  that carries the exclusion set across the orchestrator/routing-reducer boundary."
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "tests"
+    description: "Independent verifier reproduces the neuter attack proving excluded_backend_refs is load-bearing
+      across the omnimarket<->omnibase_core seam"
+    command: "cd omni_worktrees/OMN-14402/omnimarket && env -u PYTHONPATH uv run pytest -q -m unit -k
+      test_neutered_excluded_backend_refs_reselects_the_same_failed_backend"
+  - kind: "tests"
+    description: "Independent verifier reproduces RED (pre-fix, 6 failed + 4 errors) then GREEN (post-fix,
+      11 passed) against the OMN-14402 fallback test file"
+    command: "cd omni_worktrees/OMN-14402/omnimarket && git checkout origin/dev -- src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py
+      src/omnimarket/nodes/node_delegation_routing_reducer/handlers/handler_delegation_routing.py src/omnimarket/nodes/node_delegation_routing_reducer/handlers/handler_routing_intent.py
+      src/omnimarket/nodes/node_delegation_routing_reducer/models/model_routing_decision.py && env -u
+      PYTHONPATH uv run pytest tests/unit/delegation/test_same_tier_backend_fallback_omn14402.py -q; git
+      checkout HEAD -- src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py
+      src/omnimarket/nodes/node_delegation_routing_reducer/handlers/handler_delegation_routing.py src/omnimarket/nodes/node_delegation_routing_reducer/handlers/handler_routing_intent.py
+      src/omnimarket/nodes/node_delegation_routing_reducer/models/model_routing_decision.py && env -u
+      PYTHONPATH uv run pytest tests/unit/delegation/test_same_tier_backend_fallback_omn14402.py -q"
+  - kind: "tests"
+    description: "Real-dispatch-chain proof that zero cloud calls occur until all local siblings are exhausted,
+      plus a structural grep proving the OMN-14234 quality-gate retry path never calls the new sibling-fallback
+      authority"
+    command: "cd omni_worktrees/OMN-14402/omnimarket && env -u PYTHONPATH uv run pytest tests/unit/delegation/test_same_tier_backend_fallback_omn14402.py
+      -k TestSameTierBackendFallbackRealDispatchChain -v && grep -n '_maybe_retry_sibling_backend(\\|_maybe_retry_local('
+      src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py"
+  - kind: "tests"
+    description: "Focused delegation regression suite (636 passed) and broader delegation-keyword sweep
+      (1293 passed) show zero regressions from the same-tier fallback change"
+    command: "cd omni_worktrees/OMN-14402/omnimarket && env -u PYTHONPATH uv run pytest tests/unit/delegation/
+      tests/nodes/node_delegation_routing_reducer/ tests/integration/node_delegation_routing_reducer/
+      -m 'not kafka' -q && env -u PYTHONPATH uv run pytest tests/ -k delegation -m 'not kafka' -q"
+  - kind: "tests"
+    description: "omnibase_core#1432 excluded_backend_refs field addition: wire-model tests pass and mypy
+      is clean on the touched model file"
+    command: "cd omni_worktrees/OMN-14402/omnibase_core && env -u PYTHONPATH uv run pytest tests/unit/models/delegation/wire/test_delegation_wire_models.py
+      -v && env -u PYTHONPATH uv run mypy src/omnibase_core/models/delegation/wire/model_orchestrator_intents.py"
+  - kind: "tests"
+    description: "omnimarket's temporary git-rev pin (af567d7c) to omnibase_core#1432's PR head is a strict
+      descendant of the prior OMN-14280 tenant_id pin (38a05eb1, no silent rollback), and the pinned commit
+      contains excluded_backend_refs"
+    command: "cd omni_worktrees/OMN-14402/omnibase_core && git merge-base --is-ancestor 38a05eb1ddc9a5f25b7a905e92a4097176cb44c1
+      af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7 && echo ANCESTRY_OK && git show af567d7cc9a45edfc0fd3a44860e7b2a4f97a4b7:src/omnibase_core/models/delegation/wire/model_orchestrator_intents.py
+      | grep -n 'excluded_backend_refs\\|tenant_id'"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn14402-neuter-attack"
+    description: "Neuter attack: forcing excluded_backend_refs empty at the exact seam crossing point
+      makes HandlerRoutingIntent.handle reselect the already-failed backend (local-heavy-reasoning); the
+      real, populated field selects an untried sibling (local-reasoner). Proves the field is load-bearing,
+      not a two-green-PRs no-op (OMN-14208 hazard class)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14402/dod-omn14402-neuter-attack/command.yaml
+          && grep -q 'ticket_id: OMN-14402' drift/dod_receipts/OMN-14402/dod-omn14402-neuter-attack/command.yaml
+          && grep -q 'pr_number: 1722' drift/dod_receipts/OMN-14402/dod-omn14402-neuter-attack/command.yaml
+          && grep -q 'NEUTER-ATTACK PASS' drift/dod_receipts/OMN-14402/dod-omn14402-neuter-attack/command.yaml"
+  - id: "dod-omn14402-red-green-regression"
+    description: "RED->GREEN independently reproduced (not trusting the implementer's stash claim): pre-fix
+      source (origin/dev handlers) gives 6 failed + 4 errors against the OMN-14402 fallback test file;
+      restoring the fix gives 11 passed."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14402/dod-omn14402-red-green-regression/command.yaml
+          && grep -q 'pr_number: 1722' drift/dod_receipts/OMN-14402/dod-omn14402-red-green-regression/command.yaml
+          && grep -q '6 failed, 1 passed, 4 errors' drift/dod_receipts/OMN-14402/dod-omn14402-red-green-regression/command.yaml
+          && grep -q '11 passed' drift/dod_receipts/OMN-14402/dod-omn14402-red-green-regression/command.yaml"
+  - id: "dod-omn14402-real-dispatch-cloud-prevention"
+    description: "Real routing-reducer dispatch chain (delta() via HandlerRoutingIntent against the committed
+      routing_tiers.yaml) proves the retry stays on tier 'local' and lands on a sibling backend, never
+      calling cloud on the first failure; structural grep proves _maybe_retry_sibling_backend and _maybe_retry_local
+      each have exactly one call site (handle_inference_response and handle_gate_result respectively),
+      so the OMN-14234 quality-gate retry path cannot reach the new sibling-fallback authority."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14402/dod-omn14402-real-dispatch-cloud-prevention/command.yaml
+          && grep -q 'pr_number: 1722' drift/dod_receipts/OMN-14402/dod-omn14402-real-dispatch-cloud-prevention/command.yaml
+          && grep -q '2 passed, 9 deselected' drift/dod_receipts/OMN-14402/dod-omn14402-real-dispatch-cloud-prevention/command.yaml
+          && grep -q 'handle_gate_result' drift/dod_receipts/OMN-14402/dod-omn14402-real-dispatch-cloud-prevention/command.yaml"
+  - id: "dod-omn14402-regression-suite"
+    description: "Independently reran (not trusting the PR body) the focused delegation regression suite
+      and the broader delegation-keyword sweep; both match the PR's claimed counts exactly with zero failures."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14402/dod-omn14402-regression-suite/command.yaml
+          && grep -q 'pr_number: 1722' drift/dod_receipts/OMN-14402/dod-omn14402-regression-suite/command.yaml
+          && grep -q '636 passed' drift/dod_receipts/OMN-14402/dod-omn14402-regression-suite/command.yaml
+          && grep -q '1293 passed' drift/dod_receipts/OMN-14402/dod-omn14402-regression-suite/command.yaml"
+  - id: "dod-omn14402-core-field-addition"
+    description: "omnibase_core#1432 ModelRoutingIntent.excluded_backend_refs field: wire-model tests
+      pass (94 passed, incl. the 2 new default-empty/round-trip cases) and mypy is clean on the touched
+      model file."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14402/dod-omn14402-core-field-addition/command.yaml
+          && grep -q 'pr_number: 1432' drift/dod_receipts/OMN-14402/dod-omn14402-core-field-addition/command.yaml
+          && grep -q '94 passed' drift/dod_receipts/OMN-14402/dod-omn14402-core-field-addition/command.yaml
+          && grep -q 'Success: no issues found' drift/dod_receipts/OMN-14402/dod-omn14402-core-field-addition/command.yaml"
+  - id: "dod-omn14402-core-pin-ancestry"
+    description: "omnimarket's temporary git-rev pin to omnibase_core#1432's PR head (af567d7c) is verified
+      a strict descendant of the prior OMN-14280 tenant_id pin (38a05eb1) -- no silent rollback -- and
+      the pinned commit's source carries both excluded_backend_refs and the OMN-14280 tenant_id field."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14402/dod-omn14402-core-pin-ancestry/command.yaml
+          && grep -q 'pr_number: 1432' drift/dod_receipts/OMN-14402/dod-omn14402-core-pin-ancestry/command.yaml
+          && grep -q 'ANCESTRY_OK' drift/dod_receipts/OMN-14402/dod-omn14402-core-pin-ancestry/command.yaml
+          && grep -q 'excluded_backend_refs' drift/dod_receipts/OMN-14402/dod-omn14402-core-pin-ancestry/command.yaml
+          && grep -q 'tenant_id' drift/dod_receipts/OMN-14402/dod-omn14402-core-pin-ancestry/command.yaml"
