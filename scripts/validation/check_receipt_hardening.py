@@ -52,8 +52,14 @@ from pathlib import Path
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
+try:
+    from omnibase_core.validation.validator_receipt_gate import (
+        ContractEntryNotFoundError,
+    )
+except ImportError:
+    ContractEntryNotFoundError = LookupError
+
 from omnibase_core.validation.validator_receipt_gate import (
-    ContractEntryNotFoundError,
     compute_contract_entry_sha256,
     compute_contract_sha256,
 )
