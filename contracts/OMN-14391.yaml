@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14391"
+title: "test(OMN-14391): durable dispatch-seam regression for HandlerLedgerAppend.handle()"
+summary: >-
+  omnibase_infra PR #2264 adds a durable, re-runnable integration test that drives a real dict-shaped
+  envelope through the actual dispatch seam (wire_from_manifest -> MessageDispatchEngine.dispatch -> _make_dispatch_callback
+  -> HandlerLedgerAppend.handle()) wired from the real on-disk node_ledger_write_effect/contract.yaml
+  via discover_contracts(). Only HandlerLedgerAppend.append() (the Postgres I/O boundary) is mocked. Independent
+  adversarial verification reproduced the RED-before claim: renaming handle() to handle_disabled() (simulating
+  the pre-OMN-14134 state) made the primary test fail with the exact predicted _missing_handle ModelOnexError;
+  reverting restored GREEN with a clean worktree. This is ask (1) of OMN-14391 only (local/CI dispatch-seam
+  test, no live dependency); ask (2) (live Kafka produce -> consume -> event_ledger readback) remains
+  blocked on OMN-14136 and is not attempted in this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2264-head-a5dfd4e2"
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2264 at head a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a.
+      Reproduced (not merely trusted) the RED-before/GREEN-after claim: baseline run of tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py
+      passed (2 passed); renamed HandlerLedgerAppend.handle to handle_disabled in the worktree to simulate
+      the pre-OMN-14134 state and re-ran -- test_ledger_append_dispatches_through_real_engine_to_handle
+      FAILED with the exact predicted failure (status=handler_error, ModelOnexError "does not expose a
+      callable handle() or handle_async() dispatch entrypoint"); reverted the mutation and re-ran -- 2
+      passed again, git status clean. Confirmed the only mocked boundary is HandlerLedgerAppend.append()
+      (Postgres I/O) by reading the diff and by the mutation result itself (breaking handle() broke the
+      test, proving handle() runs for real). Confirmed via source read of message_dispatch_engine.py that
+      _materialize_envelope_with_bindings ALWAYS converts the envelope to a dict before invoking the dispatch
+      callback, so the test exercises the real dict-shape class of bug OMN-14139/14140 fixed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+          && grep -q '^pr_number: 2264$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+          && grep -q 'a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+  - id: "dod-deploy-assessment-head-a5dfd4e2"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2264 head a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a:
+      the diff is limited to one net-new integration test file (tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py).
+      It does not change production source, register a new service deployment, mutate runtime configuration,
+      perform a deploy or restart, change topics, add a migration, or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-a5dfd4e2/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-a5dfd4e2/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14391 central contract and PASS
+      receipts for omnibase_infra PR #2264 head a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a. The receipt
+      binds the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14391-occ-pr2264' drift/dod_receipts/OMN-14391/dod-occ-self-commit/command.yaml
