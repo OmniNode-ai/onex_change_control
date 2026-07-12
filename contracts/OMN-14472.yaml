@@ -1,0 +1,48 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14472"
+title: "Fix OCC migration-inventory drift -- infra migrations 088/089/090/091/092 unlisted"
+summary: >
+  Platform blocker. The onex_change_control ci.yml `migration-inventory` job (`uv run check-migration-inventory
+  --repos-root /tmp/repos`) failed on every non-docs-only OCC PR whose base is main (and every dev->main
+  promotion) because five omnibase_infra forward migrations existed on omnibase_infra dev disk but were
+  absent from the OCC boundary inventory src/onex_change_control/boundaries/migration_inventory.yaml.
+  The job clones peer repos with `git clone --depth=1` (no --branch), reading omnibase_infra's default
+  branch (dev), which carries 088_create_overseer_tick_ledger, 089_create_verification_receipt_ledger,
+  090_create_delegation_workflow_state, 091_pr_state, and 092_pr_state_add_is_draft. The job skips on
+  dev-targeting PRs, so the drift accumulated silently and only surfaced at the main promotion boundary
+  (discovered via RT-10 / onex_change_control#4041). This ticket adds the five entries to the omnibase_infra
+  / docker/migrations/forward migration_set so the sync check passes at the main boundary again.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "The OCC boundary inventory lists all five omnibase_infra forward migrations (088-092)
+      that exist on omnibase_infra dev disk."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-inventory-lists-five-infra-migrations"
+    description: >-
+      Falsifiable static assertion over the changed source file. The OCC boundary inventory src/onex_change_control/boundaries/migration_inventory.yaml
+      now lists all five omnibase_infra forward migrations that check-migration-inventory reported as
+      UNLISTED_FILE: 088_create_overseer_tick_ledger, 089_create_verification_receipt_ledger, 090_create_delegation_workflow_state,
+      091_pr_state, and 092_pr_state_add_is_draft. It goes RED if any of the five entries is absent from
+      the inventory. The complementary red->green proof was run locally: check-migration-inventory against
+      a repos-root with omnibase_infra migrations extracted at origin/dev exited 1 with exactly these
+      five UNLISTED_FILE errors on the pre-fix inventory and exited 0 with zero omnibase_infra errors
+      on the fixed inventory.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '088_create_overseer_tick_ledger.sql' src/onex_change_control/boundaries/migration_inventory.yaml
+          && grep -q '089_create_verification_receipt_ledger.sql' src/onex_change_control/boundaries/migration_inventory.yaml
+          && grep -q '090_create_delegation_workflow_state.sql' src/onex_change_control/boundaries/migration_inventory.yaml
+          && grep -q '091_pr_state.sql' src/onex_change_control/boundaries/migration_inventory.yaml &&
+          grep -q '092_pr_state_add_is_draft.sql' src/onex_change_control/boundaries/migration_inventory.yaml
