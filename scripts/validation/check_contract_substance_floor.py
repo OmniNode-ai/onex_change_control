@@ -111,11 +111,45 @@ _CI_OUTCOME_RE = re.compile(
 # tree is falsifiable about the change (it fails if the code is not there).
 _STATIC_ASSERT_RE = re.compile(r"\b(grep|rg|ast-grep)\b")
 
-# Type/lint/gate runs, and executing an actual program. All can fail on bad code.
-# `pre-commit run` is the strongest of these — it runs the whole hook suite.
+# Type/lint/gate runs. All fail on bad code.
 _ANALYSIS_RE = re.compile(
-    r"\b(pre-commit|mypy|ruff|pyright|eslint|tsc|import-linter|lint-imports"
-    r"|python|node|bash\s+-n|sh\s+-n)\b"
+    r"\b(pre-commit|mypy|ruff|pyright|eslint|tsc|import-linter|lint-imports)\b"
+)
+
+# Executing a program, script, or assertion — the general falsifiable family.
+#
+# The test is FALSIFIABILITY, not membership in a hand-curated list: a check is
+# substantive if it CAN FAIL when the work is wrong. `diff -u expected actual`
+# fails when the output is wrong. `jq -e` fails when the assertion is false.
+# `make verify` fails when the target fails. `uv run validate-yaml` — OCC's own
+# canonical validator — fails when the contract is malformed. These are exactly
+# the checks we want authors writing, so this matcher is deliberately GENEROUS.
+#
+# A too-narrow allowlist here is not friction, it is a PERVERSE INCENTIVE:
+# rejecting `diff` while accepting a self-referential `grep 'status: PASS'`
+# (which GATE_SELF_REFERENTIAL currently permits) would push authors away from
+# real evidence and toward the circular pattern this gate exists to eliminate —
+# manufacturing the very debt OMN-14417 tracks. When in doubt, ACCEPT: a false
+# accept costs one weak receipt; a false reject teaches authors that writing
+# honest evidence does not pay.
+_EXECUTABLE_RE = re.compile(
+    r"""(
+          ^\s*\.{0,2}/\S+                        # ./verify.sh, /usr/bin/x, ../y
+        | \b(bash|sh|zsh|make|just|task)\b       # shells + task runners
+        | \b(python3?|node|deno|ruby|perl)\b     # interpreters
+        | \b(uv\s+run|poetry\s+run|npx|npm\s+run|pnpm|yarn)\b  # package runners
+        # ONEX/OCC validators. `onex` is anchored to COMMAND position: an
+        # unanchored \bonex\b matches the path segment in
+        # `gh api .../contents/plugins/onex/skills/...` — which is a file-exists
+        # probe over the API, not a validator run. Nearly every OmniNode path
+        # contains "onex", so the loose form silently accepted content-free
+        # probes (caught by the ratchet on OMN-11220).
+        | (?:^|[|;&]\s*|\brun\s+)onex\b
+        | \b(validate-[\w-]+|check-[\w-]+|scan-[\w-]+|verify-[\w-]+)\b
+        | \bjq\s+-\w*e\b                         # `jq -e`: the -e flag IS the assert
+        | \b(diff|cmp)\b                         # output comparison
+    )""",
+    re.VERBOSE,
 )
 
 # A diff assertion: `gh pr view --json files --jq '[.files[].path]'` names the
@@ -151,13 +185,18 @@ _SELF_REFERENTIAL_RE = re.compile(r"drift/dod_receipts/")
 #
 # Deriving the self-referential class to L0 is correct, and it is a one-line
 # flip. It is off because the pattern is not merely legacy debt — it is the
-# CURRENT house style. Measured 2026-07-12 against the live corpus:
+# CURRENT house style. Re-measured 2026-07-12 in a clean env against the pinned
+# omnibase-core 0.46.7 wheel, with the deriver as it ships here:
 #
-#   flag ON  -> 2,286 / 6,916 contracts rejected (33.1%), and
-#               184 / 187 contracts created in the last 7 days rejected (98.4%)
-#   flag OFF ->    32 / 6,916 rejected (0.46%), all grandfathered
+#   flag OFF (shipped) ->   120 / 6,916 rejected (1.74%) — ALL grandfathered,
+#                           0 un-grandfathered, and 0 / 187 contracts created in
+#                           the last 7 days blocked (0.0% forward).
+#   flag ON            -> 2,277 / 6,916 rejected (32.9%), of which 2,157 are NOT
+#                           grandfathered, and 184 / 187 new contracts blocked
+#                           (98.4% forward; an independent sweep over a slightly
+#                           wider window measured 190/190 = 100%).
 #
-# Grandfathering does NOT rescue the ON case: at a 98.4% forward rate the gate
+# Grandfathering does NOT rescue the ON case: at a ~100% forward rate the gate
 # would reject essentially all new contract traffic, which is the
 # reject-everything trap this ticket exists to avoid. The generator must be
 # fixed first (OMN-14417 asks exactly that); then flip this to True and the
@@ -231,6 +270,7 @@ def derive_proof_tier(check_type: str, check_value: str) -> EnumProofTier:
         or _DIFF_ASSERT_RE.search(command)
         or _STATIC_ASSERT_RE.search(command)
         or _ANALYSIS_RE.search(command)
+        or _EXECUTABLE_RE.search(command)
     ):
         return EnumProofTier.L1
 

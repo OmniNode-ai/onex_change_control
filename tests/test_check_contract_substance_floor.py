@@ -162,6 +162,50 @@ class TestDeriveProofTier:
             EnumProofTier.L1
         )
 
+
+class TestFalsifiableChecksAreAccepted:
+    """Rejecting real evidence is the worst failure this gate can have.
+
+    A too-narrow allowlist is a PERVERSE INCENTIVE: if `diff -u expected actual`
+    is rejected while a self-referential `grep 'status: PASS'` is accepted (which
+    GATE_SELF_REFERENTIAL currently permits), authors are pushed away from real
+    evidence and toward the circular pattern this gate exists to eliminate. The
+    test is falsifiability — can it FAIL when the work is wrong?
+    """
+
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            "./scripts/verify_thing.sh",
+            "bash scripts/verify.sh",
+            "make verify",
+            "jq -e '.status==\"ok\"' out.json",
+            "diff -u expected.json actual.json",
+            "cmp -s expected.bin actual.bin",
+            "uv run validate-yaml contracts/OMN-1.yaml",  # OCC's own validator
+            "uv run check-drift",
+            "onex validate",
+            "python scripts/assert_invariant.py",
+            "npm run verify",
+        ],
+    )
+    def test_falsifiable_probe_is_substantive(self, probe: str) -> None:
+        assert derive_proof_tier("command", probe).satisfies(EnumProofTier.L1)
+
+    def test_onex_in_a_path_is_not_a_validator_run(self) -> None:
+        r"""Regression: an unanchored ``\bonex\b`` matched the PATH, not a command.
+
+        ``gh api .../contents/plugins/onex/skills/...`` is a file-exists probe
+        over the API, not a validator run — but nearly every OmniNode path
+        contains "onex", so the loose form silently accepted content-free probes.
+        The allowlist ratchet caught this on OMN-11220.
+        """
+        probe = (
+            "gh api repos/OmniNode-ai/omniclaude/contents/"
+            "plugins/onex/skills/verified_dispatch/SKILL.md"
+        )
+        assert derive_proof_tier("command", probe) is EnumProofTier.L0
+
     def test_bare_gh_pr_view_derives_l0(self) -> None:
         assert derive_proof_tier("command", "gh pr view 1721") is EnumProofTier.L0
 
