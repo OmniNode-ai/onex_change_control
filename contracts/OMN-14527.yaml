@@ -1,0 +1,126 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14527"
+title: "OCC companion for omnimarket#1734 — contract topic graph: static producer/consumer oracle + fail-closed
+  CI gate"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1734 (OMN-14527). Every runtime wiring check the platform
+  had before this asked the RUNTIME "are you alive?" (consumer groups, row counts, wiring reports) --
+  diagnosing from the effect side, one node at a time, only ever seeing nodes someone remembered to look
+  at. This asks the opposite of every node at once: who is SUPPOSED to talk to whom, and do they? Nodes
+  are contracts; edges are topics; a producer declares publish_topics, a consumer declares subscribe_topics,
+  an edge exists when the names match -- static, cheap, complete, no broker. It proves statically what
+  five merged, CI-green, Done tickets (OMN-14134 / 13532 / 4828 / 13989 / 13997) missed: node_ledger_write_effect
+  has a fully wired handler_routing and subscribes to onex.cmd.platform.ledger-append.v1, but no contract
+  publishes that topic and the node declares no runtime_dispatch entry point, so nothing could ever send
+  it a message -- it was alive, healthy, and starved for its entire life. A second, rival 4-node ledger
+  subgraph (ledger_append_effect/ledger_hash_compute/ledger_orchestrator/ ledger_state_reducer) is fully
+  wired internally with no inbound edge. node_contract_registry_reducer subscribes to onex.evt.platform.node-heartbeat.v1
+  (1,004,676 messages) with no handler_routing, silently dropping every one. Four defect classes: ORPHANED_CONSUMER,
+  ORPHANED_PRODUCER, DECLARED_BUT_UNWIRED, DISCONNECTED_SUBGRAPH. Soundness requires the whole active
+  runtime surface (omnibase_infra + omnimarket) co-installed, or build_graph() fails closed rather than
+  reporting phantom orphans; discover_contract_roots() also fails closed if PYTHONPATH is set, since an
+  ambient PYTHONPATH silently reroutes resolution to a different clone and produced 9 phantom defects
+  while this was built. 744 pre-existing defects are frozen in a ratchet baseline that may only shrink;
+  a NEW defect hard-fails, and removing a baseline entry without actually fixing the underlying wiring
+  also fails (the fixed-defect-still-baselined guard). Wired as both a required CI gate (.github/workflows/contract-topic-graph.yml)
+  and a pre-commit hook in the same PR. All numeric claims below (481 contracts, 1080 topics, 283 edges,
+  744 baselined defects, 290 passed / 5 xfailed) were independently reproduced from a local worktree at
+  the PR head, not taken from the implementer's PR body, including a RED reproduction obtained by stripping
+  the 10 ledger-related lines out of the baseline file and re-running the gate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1734 head adds a static contract topic graph oracle (src/omnimarket/validators/contract_topic_graph.py)
+      with a 744-entry ratchet baseline, wires it as both a required CI gate and a pre-commit hook, and
+      the gate/test-suite/RED-reproduction numbers were independently reproduced against a local worktree
+      at the PR head, not merely the implementer's own claim."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1734-defect-classes-and-baseline"
+    description: >-
+      Product-observing check against omnimarket#1734 head cedce469306eab31a69a7e928242339c900de147. Reads
+      contract_topic_graph.py from the PR head and asserts all four defect classes (ORPHANED_CONSUMER,
+      ORPHANED_PRODUCER, DECLARED_BUT_UNWIRED, DISCONNECTED_SUBGRAPH) are declared, that discover_contract_roots()
+      fails closed on an ambient PYTHONPATH, and that the shipped baseline file carries the frozen 744-entry
+      pre-existing defect population.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/validators/contract_topic_graph.py?ref=cedce469306eab31a69a7e928242339c900de147"
+          --jq .content | base64 -d > "$f" && grep -Fq -- '"ORPHANED_CONSUMER",' "$f" && grep -Fq -- '"ORPHANED_PRODUCER",'
+          "$f" && grep -Fq -- '"DECLARED_BUT_UNWIRED",' "$f" && grep -Fq -- '"DISCONNECTED_SUBGRAPH",'
+          "$f" && grep -Fq -- 'Contract graph refuses to run with PYTHONPATH set' "$f" && b="$(mktemp)"
+          && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/validators/data/contract_topic_graph_baseline.yaml?ref=cedce469306eab31a69a7e928242339c900de147"
+          --jq .content | base64 -d > "$b" && [ "$(grep -c '^- ' "$b")" -eq 744 ]
+  - id: "dod-verify-1734-ledger-defects-named"
+    description: >-
+      Product-observing check against the PR head. Asserts the baseline file names the exact ledger defects
+      the PR body claims as the motivating case: the orphaned onex.cmd.platform.ledger-append.v1 consumer
+      on node_ledger_write_effect and the DISCONNECTED_SUBGRAPH entry for ledger_append_effect (the rival
+      4-node ledger cluster with no inbound edge).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          b="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/validators/data/contract_topic_graph_baseline.yaml?ref=cedce469306eab31a69a7e928242339c900de147"
+          --jq .content | base64 -d > "$b" && grep -Fq -- 'ORPHANED_CONSUMER::node_ledger_write_effect::onex.cmd.platform.ledger-append.v1'
+          "$b" && grep -Fq -- 'DISCONNECTED_SUBGRAPH::ledger_append_effect::-' "$b"
+  - id: "dod-verify-1734-wired-as-gate-and-hook"
+    description: >-
+      Product-observing check against the PR head. Asserts the PR ships a required CI workflow (.github/workflows/contract-topic-graph.yml)
+      that runs the gate on pull_request against main/dev plus merge_group, AND a matching pre-commit
+      hook entry in .pre-commit-config.yaml -- detection wired as enforcement in the same PR, not left
+      opt-in.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          w="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/contract-topic-graph.yml?ref=cedce469306eab31a69a7e928242339c900de147"
+          --jq .content | base64 -d > "$w" && grep -Fq -- 'branches: [main, dev]' "$w" && grep -Fq --
+          'python -m omnimarket.validators.contract_topic_graph' "$w" && p="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/.pre-commit-config.yaml?ref=cedce469306eab31a69a7e928242339c900de147"
+          --jq .content | base64 -d > "$p" && grep -Fq -- 'id: contract-topic-graph' "$p"
+  - id: "dod-verify-1734-red-green-reproduced"
+    description: >-
+      Independent reproduction against a local worktree checked out at the PR head, not trusting the implementer's
+      commit message. GREEN: `python -m omnimarket.validators.contract_topic_graph` reported "OK: contract
+      graph clean -- 481 contracts, 1080 topics, 283 edges, 744 baselined defect(s) pending burn-down"
+      (exit 0), and `pytest tests/validators/test_contract_topic_graph.py` reported 290 passed, 5 xfailed.
+      RED: the 10 ledger-related lines were stripped out of src/omnimarket/validators/data/contract_topic_graph_baseline.yaml
+      (un-baselining the exact defects the PR body cites as motivating) and the gate was re-run: exit
+      1, "CONTRACT GRAPH GATE FAILED -- 10 new static defect(s)", naming the DISCONNECTED_SUBGRAPH ledger_append_effect
+      cluster and all 4 orphaned ledger topics by name. The baseline was then restored and the gate re-verified
+      clean (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+          && grep -q '481 contracts, 1080 topics, 283 edges, 744 baselined' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+          && grep -q '290 passed, 5 xfailed' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+          && grep -q '10 new static defect' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-cedce469"
+    description: >-
+      Deploy assessment for omnimarket PR #1734 at head cedce469306eab31a69a7e928242339c900de147. The
+      PR adds a static validator module, a ratchet baseline data file, a CI workflow, a pre-commit hook,
+      and tests; this evidence package performs no live deploy, runtime restart, docker exec, rpk topic
+      produce, database mutation, or .201/.200 runtime mutation. The gate is enforced at CI/pre-commit
+      time only; no prod promotion is requested or performed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14527/dod-deploy-assessment-head-cedce469/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14527/dod-deploy-assessment-head-cedce469/command.yaml
