@@ -1,10 +1,18 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-"""Tests for scripts/ci/run_contract_compliance_check.py."""
+"""Tests for onex_change_control.scripts.contract_compliance_check.
+
+OMN-14458: the engine under test moved from the repo-root
+scripts/ci/run_contract_compliance_check.py (excluded from the built wheel,
+so no downstream repo could import it) into the installed package at
+onex_change_control.scripts.contract_compliance_check. The repo-root script
+is now a thin re-exporting wrapper covered separately by
+test_ci_script_exists.py; this file tests the canonical implementation
+directly.
+"""
 
 from __future__ import annotations
 
-import sys
 import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,10 +21,7 @@ from unittest.mock import patch
 if TYPE_CHECKING:
     import pytest
 
-# Add scripts/ci to path so we can import directly
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts" / "ci"))
-
-from run_contract_compliance_check import (  # type: ignore[import-not-found]
+from onex_change_control.scripts.contract_compliance_check import (
     _RESULT_BLOCK,
     _RESULT_PASS,
     _RESULT_WARN,
@@ -38,7 +43,10 @@ def test_extract_ticket_id_from_title() -> None:
     pr_json = (
         '{"title": "fix: something [OMN-1234]", "headRefName": "main", "body": ""}'
     )
-    with patch("run_contract_compliance_check._run", return_value=(0, pr_json, "")):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, pr_json, ""),
+    ):
         result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
     assert result == "OMN-1234"
 
@@ -47,21 +55,28 @@ def test_extract_ticket_id_from_branch() -> None:
     pr_json = (
         '{"title": "no ticket", "headRefName": "jonah/omn-5678-my-fix", "body": ""}'
     )
-    with patch("run_contract_compliance_check._run", return_value=(0, pr_json, "")):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, pr_json, ""),
+    ):
         result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
     assert result == "OMN-5678"
 
 
 def test_extract_ticket_id_none_when_missing() -> None:
     pr_json = '{"title": "chore: housekeeping", "headRefName": "fix-stuff", "body": ""}'
-    with patch("run_contract_compliance_check._run", return_value=(0, pr_json, "")):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, pr_json, ""),
+    ):
         result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
     assert result is None
 
 
 def test_extract_ticket_id_gh_failure() -> None:
     with patch(
-        "run_contract_compliance_check._run", return_value=(1, "", "auth error")
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(1, "", "auth error"),
     ):
         result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
     assert result is None
@@ -81,7 +96,7 @@ def test_find_contracts_dir_explicit(tmp_path: Path) -> None:
 
 def test_find_contracts_dir_local_fallback(tmp_path: Path) -> None:
     # Explicit path resolves correctly regardless of CWD
-    script = tmp_path / "scripts" / "ci" / "run_contract_compliance_check.py"
+    script = tmp_path / "scripts" / "ci" / "contract_compliance_check.py"
     script.parent.mkdir(parents=True)
     script.touch()
     contracts = tmp_path / "contracts"
@@ -158,7 +173,10 @@ def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
         captured.append(cmd)
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command(
             "gh pr view {pr} --repo {repo} --json state",
             tmp_path,
@@ -195,7 +213,10 @@ def test_check_command_shell_style_dollar_substitution(tmp_path: Path) -> None:
         captured.append(cmd)
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command(
             "gh pr checks ${PR_NUMBER} --repo ${REPO} && echo ${TICKET_ID}",
             tmp_path,
@@ -228,7 +249,10 @@ def test_check_command_exports_pr_number_repo_ticket_env(tmp_path: Path) -> None
         captured_envs.append(env)
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command(
             "echo hi",
             tmp_path,
@@ -264,7 +288,10 @@ def test_check_command_exports_contract_paths(tmp_path: Path) -> None:
         captured_envs.append(env)
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command(
             'grep -q PASS "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-1/command.yaml"',
             workspace,
@@ -291,7 +318,10 @@ def test_check_command_workspace_passed_as_cwd(tmp_path: Path) -> None:
 
     workspace = tmp_path / "my_workspace"
     workspace.mkdir()
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command("echo hello", workspace)
 
     assert result == _RESULT_PASS
@@ -318,7 +348,7 @@ def test_check_command_precommit_missing_not_ci_warns(
     """When pre-commit is absent outside CI, demote to WARN."""
     monkeypatch.delenv("CI", raising=False)
     with patch(
-        "run_contract_compliance_check._run",
+        "onex_change_control.scripts.contract_compliance_check._run",
         side_effect=[
             (1, "", "not found"),  # which pre-commit → not installed
         ],
@@ -334,7 +364,7 @@ def test_check_command_precommit_absent_and_ci_warns(
     """Binary absent + CI=true demotes to WARN."""
     monkeypatch.setenv("CI", "true")
     with patch(
-        "run_contract_compliance_check._run",
+        "onex_change_control.scripts.contract_compliance_check._run",
         side_effect=[
             (1, "", "not found"),  # which pre-commit → not installed
         ],
@@ -357,7 +387,10 @@ def test_check_command_precommit_present_in_ci_enforces(
             return 0, "/usr/bin/pre-commit", ""
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command("pre-commit run --all-files", tmp_path)
     assert result == _RESULT_PASS
     assert calls == [
@@ -385,7 +418,10 @@ def test_check_command_injects_gh_repo_env_when_repo_set(tmp_path: Path) -> None
         captured_envs.append(env)
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command(
             "gh pr checks {pr} --repo {repo}",
             tmp_path,
@@ -417,7 +453,10 @@ def test_check_command_no_gh_repo_when_no_gh_in_cmd(tmp_path: Path) -> None:
         captured_envs.append(env)
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command(
             "echo hello",
             tmp_path,
@@ -448,7 +487,10 @@ def test_check_command_no_gh_repo_when_no_repo_arg(tmp_path: Path) -> None:
         captured_envs.append(env)
         return 0, "", ""
 
-    with patch("run_contract_compliance_check._run", side_effect=fake_run):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
         result, _ = _check_command("gh pr checks 1", tmp_path)
 
     assert result == _RESULT_PASS
@@ -465,7 +507,7 @@ def test_emergency_bypass_skips_all_checks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("EMERGENCY_BYPASS", "jonah-prod-incident")
-    from run_contract_compliance_check import main
+    from onex_change_control.scripts.contract_compliance_check import main
 
     with patch("sys.argv", ["prog", "--pr", "1", "--repo", "OmniNode-ai/omnimarket"]):
         rc = main()
@@ -478,7 +520,10 @@ def test_emergency_bypass_skips_all_checks(
 
 
 def test_no_ticket_id_returns_pass(tmp_path: Path) -> None:
-    with patch("run_contract_compliance_check._extract_ticket_id", return_value=None):
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value=None,
+    ):
         rc = run_compliance_check(
             1, "OmniNode-ai/omnimarket", tmp_path / "contracts", tmp_path
         )
@@ -491,7 +536,8 @@ def test_no_contract_file_returns_pass_with_warn(
     contracts = tmp_path / "contracts"
     contracts.mkdir()
     with patch(
-        "run_contract_compliance_check._extract_ticket_id", return_value="OMN-9999"
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-9999",
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     out = capsys.readouterr().out
@@ -517,7 +563,8 @@ def test_contract_with_no_dod_evidence_returns_pass(tmp_path: Path) -> None:
     """)
     (contracts / "OMN-1001.yaml").write_text(contract_yaml)
     with patch(
-        "run_contract_compliance_check._extract_ticket_id", return_value="OMN-1001"
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1001",
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 0
@@ -550,7 +597,8 @@ def test_contract_with_passing_file_exists_check(tmp_path: Path) -> None:
     """)
     (contracts / "OMN-1002.yaml").write_text(contract_yaml)
     with patch(
-        "run_contract_compliance_check._extract_ticket_id", return_value="OMN-1002"
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1002",
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 0
@@ -581,7 +629,8 @@ def test_contract_with_failing_check_returns_block(tmp_path: Path) -> None:
     """)
     (contracts / "OMN-1003.yaml").write_text(contract_yaml)
     with patch(
-        "run_contract_compliance_check._extract_ticket_id", return_value="OMN-1003"
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1003",
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 1
@@ -621,7 +670,8 @@ def test_superseded_dod_item_is_warn_not_block(tmp_path: Path) -> None:
     """)
     (contracts / "OMN-1004.yaml").write_text(contract_yaml)
     with patch(
-        "run_contract_compliance_check._extract_ticket_id", return_value="OMN-1004"
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1004",
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 0
