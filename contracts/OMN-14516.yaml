@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14516"
+title: "OCC companion for omnibase_infra#2286 — event_ledger has never held a row; ledger projection was
+  SKIPPED at wiring"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2286 (OMN-14516, child of OMN-14135). The audit
+  ledger `event_ledger` has held ZERO rows on every lane since node_ledger_projection_compute shipped,
+  while its 7 subscribed topics carried live traffic (638 events on node-registration alone) and the consumer
+  group never existed among 562 live groups. Nothing was ever red. ROOT CAUSE (proven by running the real
+  discovery+wiring path, not by reading): the contract declares consumer_purpose "audit", making it a
+  raw event projection contract, and handler_wiring.py:3329 SKIPS such a contract outright unless the
+  kernel registered a result applier for it BY NAME — otherwise the node would consume Kafka offsets while
+  dropping every intent it emits. No applier was registered, so the contract never wired and no consumer
+  was ever created. This is NOT the operation_match/handler_routing_loader theory: that loader is a legacy
+  path auto-wiring never calls, operation_match is first-class (~70 contracts use it including the healthy
+  node_ledger_write_effect), and the routing entry parses fine and is assigned all 7 topics — rewriting
+  the contract to payload_type_match would have papered over the real defect, so the contract is UNCHANGED.
+  Two independent defects, either of which alone keeps the table empty: (1) the missing kernel result
+  applier (load-bearing), and (2) the missing def-B handle() entrypoint, without which handler_wiring
+  binds the _missing_handle sentinel that raises on every event and is then log-and-discarded by the auto-wired
+  consume boundary (no DLQ, no redelivery). handle() alone = still zero rows; applier alone = still zero
+  rows.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2286 head registers the ledger-projection result applier and adds the
+      def-B handle() entrypoint; live stability-test readback shows non-zero event_ledger rows."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2286-ledger-projection-wiring"
+    description: >-
+      Product-observing check against omnibase_infra#2286 head 5f64390c3d703d328ecd46fc04aba0757dbacb84.
+      Asserts BOTH load-bearing halves of the fix are present at the pinned head, because either one alone
+      leaves event_ledger at zero rows: (1) service_kernel registers a result applier under the exact
+      contract name node_ledger_projection_compute AND registers the ledger.append intent handler — without
+      this the contract is SKIPPED at wiring and no consumer is ever created; (2) HandlerLedgerProjection
+      exposes an async handle() dispatch entrypoint — without this auto-wiring binds _missing_handle,
+      which raises on every dispatched event and is swallowed by the consume boundary; (3) IntentEffectLedgerAppend
+      exists to carry the emitted intent to the write effect. The check reads the PR head content directly,
+      so it goes RED on the EXISTS-but-WRONG mutations, not merely on file absence: deleting the applier
+      registration line drops K to 0 (exit 1) while every file still exists and the routing entry still
+      parses; deleting handle() drops H to 0 (exit 1) while the applier is still registered. Both mutations
+      were executed locally and both produced the expected RED before this evidence was written.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          S=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+          --jq .content | base64 -d); H=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/handlers/handler_ledger_projection.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+          --jq .content | base64 -d); E=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/intent_effects/intent_effect_ledger_append.py?ref=5f64390c3d703d328ecd46fc04aba0757dbacb84"
+          --jq .content | base64 -d); K=$(printf '%s' "$S" | grep -c 'auto_wiring_result_appliers\["node_ledger_projection_compute"\]');
+          R=$(printf '%s' "$S" | grep -c '"ledger.append"'); D=$(printf '%s' "$H" | grep -c 'async def
+          handle('); C=$(printf '%s' "$H" | grep -c '_coerce_event_message'); I=$(printf '%s' "$E" | grep
+          -c 'class IntentEffectLedgerAppend'); test "$K" -ge 1 && test "$R" -ge 1 && test "$D" -ge 1
+          && test "$C" -ge 1 && test "$I" -ge 1
