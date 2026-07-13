@@ -1,0 +1,92 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14493
+title: OCC companion for omnibase_infra#2296 - in-row outbox P3b
+summary: >-
+  OCC evidence companion for OMN-14493. omnibase_infra#2296 closes the state_io CAS-retry finalize race
+  by persisting emitted intents into an in-row outbox, publishing from the committed row, and finalizing
+  the batch within the leg. The concrete surfaces are delegation_workflow_state.pending_emissions, delegation_workflow_state.publish_attempts,
+  StateStoreAdapter.select_recoverable_batches, and the state_io dispatch callback publish-from-row path.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: tests
+    description: >-
+      omnibase_infra#2296 must prove the P3b state_io outbox seam with local RED-to-green tests and preserve
+      the known P3a strict-xfail boundary.
+    command: >-
+      gh pr view 2296 --repo OmniNode-ai/omnibase_infra --json headRefOid,files,body and inspect product
+      content at head 6d338020d63bc3ae8f8f06768258fffc81e1ad27.
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-2296-head-6d338020-surface-boundary
+    description: >-
+      Product-observing verification that omnibase_infra#2296 head 6d338020d63bc3ae8f8f06768258fffc81e1ad27
+      changes only the migration, state_io adapter, handler wiring, and state_io outbox seam test surfaces
+      needed for OMN-14493.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          f="$(mktemp)" && gh pr view 2296 --repo OmniNode-ai/omnibase_infra --json headRefOid,files,commits
+          --jq '.headRefOid + "\n" + ((.files | map(.path)) | join("\n")) + "\n" + ((.commits | map(.oid))
+          | join("\n"))' > "$f" && grep -Fq '6d338020d63bc3ae8f8f06768258fffc81e1ad27' "$f" && grep -Fq
+          '56fdea0cc5b358d67f2b619afa5bdee90a05a80f' "$f" && grep -Fq 'docker/migrations/forward/093_add_delegation_workflow_state_outbox_columns.sql'
+          "$f" && grep -Fq 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py' "$f" && grep -Fq
+          'src/omnibase_infra/runtime/state_io/state_store_adapter.py' "$f" && grep -Fq 'tests/integration/test_state_io_outbox_seam_red.py'
+          "$f" && ! grep -Eq '(^|/)docker-compose|k3s|helm|deploy/|runtime_build/' "$f"
+  - id: dod-2296-head-6d338020-outbox-wiring
+    description: >-
+      Product content verification that the PR head adds pending_emissions and publish_attempts storage,
+      recoverable-batch selection, publish-from-row state_io wiring, and state_io-only publish-failure
+      propagation.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          d="$(mktemp -d)" && for p in docker/migrations/forward/093_add_delegation_workflow_state_outbox_columns.sql
+          src/omnibase_infra/runtime/state_io/state_store_adapter.py src/omnibase_infra/runtime/auto_wiring/handler_wiring.py;
+          do mkdir -p "$d/$(dirname "$p")" && { gh api "repos/OmniNode-ai/omnibase_infra/contents/${p}?ref=6d338020d63bc3ae8f8f06768258fffc81e1ad27"
+          --jq .content | base64 --decode > "$d/$p"; }; done && grep -Fq 'pending_emissions' "$d/docker/migrations/forward/093_add_delegation_workflow_state_outbox_columns.sql"
+          && grep -Fq 'publish_attempts' "$d/docker/migrations/forward/093_add_delegation_workflow_state_outbox_columns.sql"
+          && grep -Fq 'select_recoverable_batches' "$d/src/omnibase_infra/runtime/state_io/state_store_adapter.py"
+          && grep -Fq 'recover_stale_rows' "$d/src/omnibase_infra/runtime/state_io/state_store_adapter.py"
+          && grep -Fq 'publish-from-row' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'propagate_publish_failures' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'pending_emissions' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+  - id: dod-2296-head-6d338020-proof-body
+    description: >-
+      Product PR body verification that OMN-14493 documents the CAS-retry root cause, RED-to-green local
+      state_io proof, the honest P3a strict-xfail, and the residual live-readback DoD instead of claiming
+      live deployment.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          f="$(mktemp)" && gh pr view 2296 --repo OmniNode-ai/omnibase_infra --json headRefOid,body --jq
+          '.headRefOid + "\n" + .body' > "$f" && grep -Fq '6d338020d63bc3ae8f8f06768258fffc81e1ad27' "$f"
+          && grep -Fq 'CAS-retry result-selection race' "$f" && grep -Fq 'migration 093' "$f" && grep
+          -Fq 'pending_emissions JSONB' "$f" && grep -Fq 'publish-from-row' "$f" && grep -Fq 'tests/integration/test_state_io_outbox_seam_red.py'
+          "$f" && grep -Fq '7 passed, 1 xfailed' "$f" && grep -Fq '409 state_io + auto_wiring + real-manifest
+          tests' "$f" && grep -Fq 'Test 5 stays an HONEST `xfail(strict=True)`' "$f" && grep -Fq 'Residual
+          DoD owed = live-readback' "$f" && grep -Fq 'OMN-14576' "$f"
+  - id: dod-occ-self-4114
+    description: >-
+      OCC self-binding receipt for onex_change_control#4114. This binds the central OMN-14493 evidence
+      companion to the opened OCC PR number and the initial evidence commit before hosted merge eligibility.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^pr_number: 4114$' drift/dod_receipts/OMN-14493/dod-occ-self-4114/command.yaml && grep
+          -q '85c0ebe5e57cdcc2e73f3b39fe398f6fc860e66a' drift/dod_receipts/OMN-14493/dod-occ-self-4114/command.yaml
+          && grep -q '^status: PASS$' drift/dod_receipts/OMN-14493/dod-occ-self-4114/command.yaml
