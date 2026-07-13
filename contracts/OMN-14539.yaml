@@ -1,0 +1,112 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14539"
+title: "OCC companion for omnimarket#1736 — coverage_sweep fails CLOSED on missing/unmeasured coverage
+  census"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1736 (OMN-14539). coverage_sweep exists to flag test-coverage
+  gaps and auto-ticket them, but nothing in any repo ever generated coverage.json, the artifact the handler
+  reads. The handler's only response to a missing artifact was a silent `continue` that left repos_scanned
+  incremented, gaps empty, and total_modules at 0 — the unconditional roll-up `status = "clean" if not
+  gaps else "gaps_found"` then reported "clean" for a repo that was never measured, byte-identical to
+  a genuinely healthy repo. This was the only branch that ever fired in production: omnimarket/coverage.json
+  never existed on disk, and the default-scope repos either had no coverage.json at all or one stale since
+  2026-04-12. Part of the OMN-14531 shelf-wide audit. The fix: a resolved target dir with no readable
+  coverage.json is now recorded in a new coverage_missing field and forces status="error"; a scanned-but-zero-modules
+  scope also forces status="error"; a new harness script (scripts/ci/run_coverage_sweep_gate.py) generates
+  a real coverage.json via `pytest --cov` before dispatching the sweep and is wired as a required ci-summary
+  job (coverage-sweep-gate), scoped explicitly to omnimarket's own checkout. The evidence below is an
+  INDEPENDENT reproduction (not the implementer's own claim): the exact test corpus was run against the
+  PR head (24/24 passed), then the handler source alone was reverted to origin/dev with the new/modified
+  tests kept in place, reproducing a real EXISTS-but-WRONG RED (5 failed / 19 passed, including "AssertionError:
+  assert 'clean' == 'error'" and a KeyError on the new coverage_missing field), then the fix was restored
+  and re-verified GREEN (24/24).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1736 head adds a required coverage_missing field to CoverageSweepResult,
+      makes a missing/unparseable coverage.json (or a scanned-but-zero-modules scope) force status=\"error\"
+      instead of a silent continue-to-clean, adds a real coverage-generation harness (scripts/ci/run_coverage_sweep_gate.py)
+      driven by pytest --cov, and wires it as a required coverage-sweep-gate CI job — proven by an independent
+      RED (revert handler only, keep tests: 5 failed / 19 passed) then GREEN (24/24) reproduction, not
+      merely the implementer's own claim."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1736-required-inner-census-fails-closed"
+    description: >-
+      Product-observing check against omnimarket#1736 head ffdb64cee13c22e1ce56042cca4fe39c0a411493. Reads
+      handler_coverage_sweep.py from the PR head and asserts CoverageSweepResult now declares a `coverage_missing:
+      list[str]` field, that a missing coverage.json appends to coverage_missing instead of silently `continue`ing
+      to a clean verdict, that an unparseable coverage.json is also recorded (not swallowed), and that
+      the roll-up sets `status = "error"` whenever coverage_missing is non-empty OR total_modules is 0
+      — closing the fail-open path where a never-measured repo reported the same "clean" verdict as a
+      fully-covered one.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_coverage_sweep/handlers/handler_coverage_sweep.py?ref=ffdb64cee13c22e1ce56042cca4fe39c0a411493"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'coverage_missing: list[str] = Field(default_factory=list)'
+          "$f" && grep -Fq -- 'coverage_missing.append(f"{target_dir} (directory not found)")' "$f" &&
+          grep -Fq -- 'coverage_missing.append(f"{repo_name} (coverage.json not found)")' "$f" && grep
+          -Fq -- 'if coverage_missing:' "$f" && grep -Fq -- 'elif total_modules == 0:' "$f" && grep -Fq
+          -- 'status = "error"' "$f"
+  - id: "dod-verify-1736-harness-and-ci-gate-wired"
+    description: >-
+      Product-observing check against the PR head. Asserts scripts/ci/run_coverage_sweep_gate.py exists
+      and is real subprocess-driven code (invokes `pytest` with `--cov-report=json`, not a prose description),
+      and that .github/workflows/ci.yml declares a `coverage-sweep-gate` job which is listed in the required
+      `ci-summary` job's `needs:` array and its result-check loop — so the sweep can no longer silently
+      pass over an unmeasured scope in CI.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f1="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/run_coverage_sweep_gate.py?ref=ffdb64cee13c22e1ce56042cca4fe39c0a411493"
+          --jq .content | base64 -d > "$f1" && grep -Fq -- '"--cov-report=json' "$f1" && grep -Fq -- 'subprocess.run'
+          "$f1" && f2="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci.yml?ref=ffdb64cee13c22e1ce56042cca4fe39c0a411493"
+          --jq .content | base64 -d > "$f2" && grep -Fq -- 'coverage-sweep-gate:' "$f2" && grep -Fq --
+          'aislop-sweep, coverage-sweep-gate, workflow-module-refs' "$f2" && grep -Fq -- 'coverage-sweep-gate=${{
+          needs.coverage-sweep-gate.result }}' "$f2"
+  - id: "dod-verify-1736-red-green-reproduced"
+    description: >-
+      Independent RED-then-GREEN reproduction against a local worktree checked out at the PR head, not
+      trusting the implementer's commit message. The full coverage_sweep test corpus (tests/ci/test_run_coverage_sweep_gate.py,
+      tests/test_golden_chain_coverage_sweep.py, tests/integration/node_coverage_sweep/, 4 files) passed
+      24/24 at head. handler_coverage_sweep.py alone was then reverted to origin/dev (keeping the new/modified
+      test files in place) and the identical corpus re-run: 5 failed / 19 passed, including a genuine
+      EXISTS-but-WRONG assertion failure ("AssertionError: assert 'clean' == 'error'" from test_missing_coverage_file,
+      which the old handler silently reported clean for) and a KeyError on the new coverage_missing field
+      the old handler never populated. The handler was then restored to the PR head and the corpus re-verified
+      24/24 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14539/dod-verify-1736-red-green-reproduced/command.yaml
+          && grep -q '24 passed' drift/dod_receipts/OMN-14539/dod-verify-1736-red-green-reproduced/command.yaml
+          && grep -q '5 failed, 19 passed' drift/dod_receipts/OMN-14539/dod-verify-1736-red-green-reproduced/command.yaml
+          && grep -q "assert 'clean' == 'error'" drift/dod_receipts/OMN-14539/dod-verify-1736-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-ffdb64ce"
+    description: >-
+      Deploy assessment for omnimarket PR #1736 at head ffdb64cee13c22e1ce56042cca4fe39c0a411493. The
+      PR changes a diagnostic sweep node (node_coverage_sweep), a new CI-only harness script, and its
+      tests; this evidence package performs no live deploy, runtime restart, docker exec, rpk topic produce,
+      database mutation, or .201/.200 runtime mutation. The sweep and its CI gate are deployed as part
+      of the normal runtime/CI rollout; no prod promotion is requested or performed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14539/dod-deploy-assessment-head-ffdb64ce/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14539/dod-deploy-assessment-head-ffdb64ce/command.yaml
