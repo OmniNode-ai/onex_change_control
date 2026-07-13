@@ -1,0 +1,55 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14538
+evidence_item_id: dod-verify-1735-red-green-reproduced
+check_type: command
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+  && grep -q '46 passed' drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+  && grep -q '8 failed' drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+  && grep -q "must never report 'recorded'" drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+contract_sha256: sha256:767682b736298cb1ac51fb311a47583ea3dffa3060b6aecda3120ecc0fd2ccf6
+contract_entry_sha256: sha256:f18d8ac8aa6517c496fa1ece5a477cbe629d2632583e433eef7c2d29f9fdd285
+status: PASS
+run_timestamp: '2026-07-13T05:12:02Z'
+commit_sha: e2f4b06abf7bb60f807b07bdba08a314e7bcf65e
+runner: claude-sonnet-5
+verifier: occ-interim-manual-verify
+pr_number: 1735
+probe_command: >-
+  cd omni_worktrees/OMN-14538/omnimarket && env -u PYTHONPATH uv run pytest tests/test_integration_sweep_fail_closed_status.py
+  tests/test_golden_chain_integration_sweep_orchestrator.py tests/test_integration_sweep_dispatch_path.py
+  tests/integration/node_integration_sweep_orchestrator/ -v
+probe_stdout: |
+  GREEN at PR head (e2f4b06abf7bb60f807b07bdba08a314e7bcf65e), full impacted corpus (new fail-closed
+  test module + node_integration_sweep_orchestrator's existing regression corpus): 46 passed in 0.28s.
+
+  Then git checkout 84274d5d -- src/omnimarket/nodes/node_integration_sweep_orchestrator/handlers/handler_integration_sweep_orchestrator.py
+  (handler source ONLY reverted to the pre-fix dev-tip commit; the new test file left untouched) and the
+  new test_integration_sweep_fail_closed_status.py module alone re-run:
+
+    8 failed in 0.46s
+
+  Failures are a real EXISTS-but-WRONG defect, not vacuous absence-of-code:
+    TypeError: HandlerIntegrationSweepOrchestrator._resolve_status() got an unexpected keyword argument
+      'surface_fail_count'  (5 unit tests -- proves the tests exercise the real fixed signature)
+    AssertionError: a dead runtime lane with every scanned probe failing must never report 'recorded'
+      assert 'recorded' != 'recorded'
+      (test_red_dead_runtime_lane_does_not_report_recorded -- the pre-fix handler, driven through the
+      diagnosis's exact scope (run_surface_probes=True, dead SSH host, zero census, mocked subprocess.run
+      returning real nonzero exits), returned status='recorded' -- the literal KNOWN DEFECT.)
+    AssertionError: assert 'recorded' == 'blocked'
+      (test_red_populated_census_but_every_probe_fails -- same, with a fully-configured census)
+    KeyError: 'surface_probe_failures'
+      (test_green_fully_healthy_populated_scope_records -- the pre-fix details dict lacks the new key)
+
+  git checkout HEAD -- src/omnimarket/nodes/node_integration_sweep_orchestrator/handlers/handler_integration_sweep_orchestrator.py
+  restored the fix; the full 46-test corpus re-verified: 46 passed in 0.84s. Working tree confirmed
+  clean (git status --short empty) after restoration.
+exit_code: 0
+actual_output: |
+  46 passed (head) -> 8 failed (handler reverted to origin/dev 84274d5d) -> 46 passed (restored).
+  Independent reproduction, not the implementer's own claim: performed in the same worktree at the exact
+  PR head SHA, confirming the fix is load-bearing (the pre-fix code genuinely reproduces the known defect
+  -- status=recorded against a dead runtime lane) rather than cosmetic.
+branch: jonah/omn-14538-occ-companion
