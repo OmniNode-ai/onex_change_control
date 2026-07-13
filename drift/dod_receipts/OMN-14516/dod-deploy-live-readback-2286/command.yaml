@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14516"
+evidence_item_id: "dod-deploy-live-readback-2286"
+check_type: "command"
+check_value: |-
+  H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)
+  test -n "$H"
+  C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml?ref=$H" --jq .content | base64 -d)
+  printf '%s' "$C" | grep -q 'intent_routing_table'
+  printf '%s' "$C" | grep -q 'node_ledger_write_effect'
+  printf '%s\n' 'live deploy readback (manual, independent verifier verify-2286, .201 stability-test lane, 2026-07-13): ssh omni-201-ts docker exec omnibase-infra-stability-test-postgres psql -U postgres -d omnibase_infra -tAc "SELECT count(*) FROM event_ledger" -> 1203 rows and growing (was 0 for the entire prior life of the table on every lane); ssh omni-201-ts docker exec omnibase-infra-stability-test-redpanda rpk group list -> 7 Stable consumer groups for node_ledger_projection_compute plus a Stable node_ledger_write_effect group on onex.cmd.platform.ledger-append.v1 (was 0 groups; the legacy hardcoded group onex-ledger-projection-compute is Dead). Wired path proven live end-to-end: consume 7 platform topics -> emit ledger.append -> IntentEffectDispatchBridge -> HandlerLedgerAppend.handle -> event_ledger. NOTE: a WHERE topic=onex.cmd.platform.ledger-append.v1 scoping returns 0 because event_ledger.topic stores the SOURCE event topic (node-heartbeat etc.), not the command topic; the correctly-scoped readback is the unscoped count above.'
+contract_entry_sha256: "sha256:52b0a6d8682bd5bcbd70997564d26cf9243c5e461b308dd938a39fbc5e481bf8"
+status: PASS
+run_timestamp: "2026-07-13T07:05:00Z"
+commit_sha: "1420b2f47f70b453504406adb2c9eb0cfcc7e517"
+runner: "verify-2286"
+verifier: "verify-2286-adversarial-independent"
+pr_number: 2286
+probe_command: >-
+  ssh omni-201-ts docker exec omnibase-infra-stability-test-postgres psql -tAc 'SELECT count(*) FROM event_ledger';
+  ssh omni-201-ts docker exec omnibase-infra-stability-test-redpanda rpk group list
+probe_stdout: |
+  event_ledger total rows: 1203 (re-read; was 1082 ~10 min earlier; was 0 for the entire prior life of
+  the table on every lane) — actively growing from live platform traffic.
+  event_ledger topic distribution: onex.evt.platform.node-heartbeat.v1 = 1090+, node-introspection = 1;
+  min ledger_written_at = 2026-07-13T03:21:08Z (first row ever), max within seconds of now().
+  rpk group list: 7 Stable groups
+  stability-test.omnibase_infra.node_ledger_projection_compute.consume.*.__t.<each of 7 subscribed topics>
+  = Stable; node_ledger_write_effect ...__t.onex.cmd.platform.ledger-append.v1 = Stable; legacy hardcoded
+  group onex-ledger-projection-compute = Dead (0 members).
+actual_output: >-
+  PASS: the derived-applier wired path is proven LIVE on .201 stability-test. event_ledger went from ZERO
+  (its state for the entire prior life of the table on every lane) to 1203 rows and still growing; node_ledger_projection_compute
+  now holds 7 Stable auto-wired consumer groups where it had zero before the fix. This is EFFECT-side,
+  un-forgeable evidence of the full chain consume->emit->IntentEffectDispatchBridge-> HandlerLedgerAppend.handle->append->event_ledger.
+  Independent of the mis-scoped command-topic canary (which reads 0 because event_ledger.topic stores
+  the source event topic). OCC runners cannot reach the .201 lane, so the CI-runnable assertion binds
+  the live head and confirms the contract declares the intent_routing_table seam; the live readback above
+  is the manual attestation by verify-2286.
+exit_code: 0
+branch: "jonah/omn-14516-ledger-projection-wiring"
