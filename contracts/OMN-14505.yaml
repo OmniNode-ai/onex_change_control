@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14505"
+title: "OCC companion for omniclaude#1896 — deploy-gate evidence must be falsifiable, not contain the
+  word 'deploy'"
+summary: >
+  OCC evidence companion for OmniNode-ai/omniclaude#1896 (OMN-14505). The REQUIRED deploy-gate (omnibase_core
+  / omnibase_infra / omnimarket / omniclaude, via deploy-gate-reusable.yml@main) decided whether a ticket
+  had deploy evidence by substring-matching check_value against ["docker exec", "rpk topic produce", "deploy"].
+  Because the bare word "deploy" was a keyword, ANY check_value containing that word satisfied the gate
+  — including one that verifies nothing. The receipt directories are themselves named dod-deploy-*, so
+  a check passed on the FILENAME alone. Audit of onex_change_control@dev (6,944 contracts): 1,167 contracts
+  had deploy evidence per the legacy rule; only 27 declare a falsifiable live probe; 1,140 (97.7%) are
+  accepted ONLY by the substring rule. 1,123 of 1,268 satisfying checks grep back drift/dod_receipts/
+  — the receipt the same OCC companion PR authored — for `status: PASS`, text its own author wrote, so
+  they can never go RED. 297 merged PRs (1,102 runtime files) cleared the required gate on that evidence
+  since it became required on 2026-06-24. A stricter keyword list is NOT the fix: 66 of the circular checks
+  already embed `docker exec` / `rpk topic produce` as quoted text, so a tightened list passes them unchanged.
+  The fix replaces the substring test with a falsifiability test that (1) DENIES self-reference unconditionally
+  and first, and (2) ALLOWS only a live-surface probe in COMMAND POSITION (shlex-lexed, split on operator
+  tokens, recursing into $(...) and `bash -c`), so `echo 'docker exec'` cannot qualify. Ships report-only
+  by default — exit status stays on the legacy rule so none of the 4 consuming repos wedge — with enforcement
+  behind the DEPLOY_GATE_FALSIFIABILITY org variable. #magic___^_^___line The evidence below is deliberately
+  RED-against-EXISTS-but-WRONG, not red-against-absence: it probes `has_deploy_evidence`, which exists
+  in BOTH the pre-fix and post-fix matcher, and asserts the pre-existing function returns the OPPOSITE
+  verdict on the exact check_value that closed the gate on omnibase_infra#2279 (OCC PR #4067). Verified:
+  against origin/dev the probe prints `has_deploy_evidence(#4067 vacuous value) = True` and FAILS; against
+  the PR head it prints `False` and PASSES. A probe that merely asserted `classify_check_value` was absent
+  on dev would have been a green-on-absence and would have proven nothing — which is precisely the defect
+  class under repair.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: >
+      omniclaude#1896 head rejects the exact vacuous check_value that closed the required deploy-gate
+      on omnibase_infra#2279, rejects the quoted-keyword embed trap, and still accepts a genuine docker-exec
+      probe (no false negatives).
+    command: "see dod_evidence check_values"
+dod_evidence:
+  - id: "dod-matcher-rejects-4067"
+    description: >
+      RED against EXISTS-but-WRONG. Fetches the matcher source from omniclaude at the pinned PR-head SHA,
+      executes it under DEPLOY_GATE_FALSIFIABILITY=enforce, and asserts has_deploy_evidence() REJECTS
+      the exact #4067 check_value, REJECTS the embed trap, and ACCEPTS a real docker-exec probe. Goes
+      RED against pre-fix code (which returns True for the vacuous value).
+    checks:
+      - check_type: "command"
+        check_value: |
+          d="$(mktemp -d)" && gh api "repos/OmniNode-ai/omniclaude/contents/.github/actions/deploy-gate/validate_pr_deploy_required.py?ref=c69a565cb8681107c780791be366ef61c61c49f4" --jq .content | base64 -d > "$d/v.py" && DEPLOY_GATE_FALSIFIABILITY=enforce python3 -c '
+          import importlib.util, sys, pathlib
+          d = pathlib.Path(sys.argv[1])
+          spec = importlib.util.spec_from_file_location("v", d / "v.py")
+          m = importlib.util.module_from_spec(spec); sys.modules["v"] = m; spec.loader.exec_module(m)
+          def contract(name, cv):
+              p = d / (name + ".yaml")
+              p.write_text("dod_evidence:\n  - id: x\n    checks:\n      - check_value: " + repr(cv) + "\n")
+              return p
+          VACUOUS = ("grep -q \"^status: PASS$\" drift/dod_receipts/OMN-14487/dod-deploy-assessment-head-f973c737/command.yaml "
+                     "&& grep -qi \"no live deploy\" drift/dod_receipts/OMN-14487/dod-deploy-assessment-head-f973c737/command.yaml")
+          REAL = "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c \"import omnimarket; print(1)\""
+          EMBED = "echo \"docker exec\" && grep -q PASS my_own_receipt"
+          vac = m.has_deploy_evidence(contract("OMN-14487", VACUOUS))
+          real = m.has_deploy_evidence(contract("OMN-10124", REAL))
+          embed = m.has_deploy_evidence(contract("OMN-EMBED", EMBED))
+          print("vacuous(#4067)=%s real(docker exec)=%s embed_trap=%s" % (vac, real, embed))
+          assert vac is False, "FIX ABSENT/VACUOUS: #4067 check_value still satisfies deploy-gate"
+          assert embed is False, "EMBED TRAP still accepted"
+          assert real is True, "FALSE NEGATIVE: genuine docker-exec probe rejected"
+          print("PASS")
+          ' "$d"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by dod-matcher-rejects-4067; this item is binding only.
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14505-occ-deploy-gate-falsifiability' drift/dod_receipts/OMN-14505/dod-occ-self-commit/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
