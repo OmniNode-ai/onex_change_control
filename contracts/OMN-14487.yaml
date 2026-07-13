@@ -99,3 +99,43 @@ dod_evidence:
         check_value: >-
           gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefName --jq '.number == 4067 and .headRefName
           == "jonah/omn-14487-deploy-assessment-2279"'
+  - id: "dod-deploy-class-live-jsonb-adapt-probe"
+    description: >-
+      Live deploy-class proof, strictly stronger than dod-deploy-assessment-head-f973c737 (which only
+      asserts that no live deploy was performed — a statement about this OCC PR's own actions, not a proof
+      of the fix). This item runs the exact RED/GREEN psycopg2 adaptation behavior from OMN-14487 INSIDE
+      the live stability-test lane's running runtime container (omninode-stability-test-runtime, docker
+      exec), against the REAL deployed Postgres (omnibase-infra-stability-test-postgres) — the same driver
+      (psycopg2 2.9.12) and Postgres engine (postgres:16-alpine) the production projection handler writes
+      through, not a local unit test with an in-memory `_db` double. The committed probe script (probe_omn14487_jsonb_adapt.py,
+      this directory) creates a scratch table with the EXACT DDL shape of projection_delegation_inference_response_text.recent_responses
+      (JSONB NOT NULL DEFAULT '[]'::jsonb CHECK jsonb_typeof(recent_responses)='array' — the real migration
+      table does not exist yet on this lane, migration 0001_create_projection_delegation_inference_response_text.sql
+      is not yet applied there, so a scratch table replicating the real column DDL is used instead), then:
+      RED — inserts a raw Python list[dict] unwrapped (the pre-fix behavior) and asserts psycopg2.ProgrammingError
+      with message containing "can't adapt type 'dict'" (the exact live cid a7edc49a crash text); GREEN
+      — inserts the same value wrapped in psycopg2.extras.Json(...) (the fix pattern) and asserts the
+      insert succeeds and the row round-trips with jsonb_typeof='array'. The scratch table is dropped
+      in a finally block regardless of outcome, leaving zero persistent state on the shared lane. Non-vacuous:
+      the RED branch independently verified to fail with the exact defect message before any fix-pattern
+      code runs; this is not a check that can pass regardless of whether the defect is real.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ssh -o ConnectTimeout=8 omni-201-ts "docker exec -i omninode-stability-test-runtime python3"
+          < drift/dod_receipts/OMN-14487/dod-deploy-class-live-jsonb-adapt-probe/probe_omn14487_jsonb_adapt.py
+          | grep -q 'PROBE_RESULT=PASS'
+  - id: "occ-self-bind-live-probe"
+    description: >-
+      Self-bind item for this OCC live-deploy-probe supplement PR. It asserts a fact about this companion
+      branch so validator_occ_merge_eligibility can bind a PASS receipt before a PR number exists. Product-observing
+      evidence is carried by the dod-deploy-class-live-jsonb-adapt-probe entry above; this item is binding
+      only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14487-live-deploy-jsonb-probe' drift/dod_receipts/OMN-14487/occ-self-bind-live-probe/command.yaml
