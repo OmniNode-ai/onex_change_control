@@ -1,0 +1,133 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14552
+title: OCC companion for omnimarket#1744 + omnibase_infra#2289 — verification_sweep dispatchable + fail-closed
+  over empty set
+summary: OCC evidence companion for OMN-14552 (child of OMN-14531 detector-shelf audit). node_verification_sweep_orchestrator
+  is the post-orchestration false-Done verifier; it was UNDISPATCHABLE (3-line __main__, no correlation_id
+  on the extra=forbid request model so the runtime-injected envelope was rejected, absent from skill_mapping.yaml)
+  and greened over an empty verification set (overall_status='skip'). The paired PRs make it dispatchable
+  (main() + correlation_id + skill_mapping row) and fail-closed (empty census -> overall_status 'fail'
+  + empty_scope adapter-error, scanned_count>0 required). Evidence below is an independent RED-against-exists-but-wrong
+  reproduction plus product-observing checks against both PR heads.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: omnimarket#1744 makes node_verification_sweep_orchestrator dispatchable and fail-closed
+      over an empty verification set; omnibase_infra#2289 registers the skill mapping and the dogfood
+      gate. Proven by an independent RED (empty set greens 'skip' pre-fix) then GREEN (26/26) reproduction
+      plus product-observing grep of both PR heads.
+    command: see dod_evidence check_values
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-verify-1744-dispatchable
+    description: 'Product-observing check against omnimarket#1744 head 494f776f28d5facef0278242429e6c54c58356b1.
+      Asserts the extra="forbid" request model now carries correlation_id: UUID (so the runtime-injected
+      envelope payload no longer raises extra_forbidden before handle()), the handler fail-closes an empty
+      verification set (phase="empty_scope", scanned_count computed in the harness, "certified nothing"),
+      and __main__ has a real main() — the three defects that made the false-Done verifier undispatchable.'
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_verification_sweep_orchestrator/models/model_verification_sweep_orchestrator_request.py?ref=494f776f28d5facef0278242429e6c54c58356b1"
+          --jq .content | base64 -d > "$f" && grep -Fq -- ''correlation_id: UUID'' "$f"'
+      - check_type: command
+        check_value: f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_verification_sweep_orchestrator/handlers/handler_verification_sweep_orchestrator.py?ref=494f776f28d5facef0278242429e6c54c58356b1"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'phase="empty_scope"' "$f" && grep -Fq -- 'scanned_count
+          = len(targets)' "$f" && grep -Fq -- 'certified nothing' "$f"
+      - check_type: command
+        check_value: f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_verification_sweep_orchestrator/__main__.py?ref=494f776f28d5facef0278242429e6c54c58356b1"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'def main() -> None:' "$f"
+  - id: dod-verify-1744-result-scanned-count
+    description: Product-observing check against omnimarket#1744 head 494f776f28d5facef0278242429e6c54c58356b1.
+      Asserts scanned_count is a first-class field on the result model (the census size a trustworthy
+      verdict requires > 0).
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_verification_sweep_orchestrator/models/model_verification_sweep_orchestrator_result.py?ref=494f776f28d5facef0278242429e6c54c58356b1"
+          --jq .content | base64 -d > "$f" && grep -Fq -- ''scanned_count: int'' "$f"'
+  - id: dod-verify-2289-skill-registered
+    description: Product-observing check against omnibase_infra#2289 head 5fc97865eee113850d183b27af2f9738ac0444b2.
+      Asserts verification_sweep is registered in cli/skill_mapping.yaml (so `onex skill verification_sweep`
+      no longer returns "Unknown skill") and is wired fail-closed into the dogfood-registration gate (_NODE_BACKED_DOGFOOD_SKILLS
+      in test_cli_skill.py).
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'f="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/skill_mapping.yaml?ref=5fc97865eee113850d183b27af2f9738ac0444b2"
+          --jq .content | base64 -d > "$f" && grep -Fq -- ''skill_name: verification_sweep'' "$f"'
+      - check_type: command
+        check_value: 'f="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/cli/test_cli_skill.py?ref=5fc97865eee113850d183b27af2f9738ac0444b2"
+          --jq .content | base64 -d > "$f" && grep -Fq -- ''"verification_sweep": "node_verification_sweep_orchestrator"''
+          "$f"'
+  - id: dod-verify-1744-red-green-reproduced
+    description: 'Independent RED-then-GREEN reproduction. The new TestEmptyVerificationSetFailsClosed
+      corpus was run against the pre-fix handler: handle(empty request) returned overall_status=''skip'',
+      so the assertion `assert ''skip'' == ''fail''` FAILED (RED against the exists-but-wrong empty verification
+      set that the pre-fix code greens over), and ModelVerificationSweepOrchestratorRequest(correlation_id=...)
+      raised extra_forbidden. After the fix, the full node + adapter-DI + state-coverage corpus ran 26
+      passed, and the empty set returns overall_status=''fail'' with an empty_scope adapter-error.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14552/dod-verify-1744-red-green-reproduced/command.yaml
+          && grep -q "assert ''skip'' == ''fail''" drift/dod_receipts/OMN-14552/dod-verify-1744-red-green-reproduced/command.yaml
+          && grep -q ''26 passed'' drift/dod_receipts/OMN-14552/dod-verify-1744-red-green-reproduced/command.yaml
+          && grep -q ''extra_forbidden'' drift/dod_receipts/OMN-14552/dod-verify-1744-red-green-reproduced/command.yaml'
+  - id: dod-deploy-assessment-head-494f776f
+    description: Deploy assessment for omnimarket#1744 + omnibase_infra#2289. These PRs change a diagnostic
+      sweep node, its models/tests, and a declarative skill_mapping.yaml row; this evidence package performs
+      no live deploy, runtime restart, docker exec, rpk topic produce, database mutation, or .201/.200
+      runtime mutation. No prod promotion is requested or performed.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14552/dod-deploy-assessment-head-494f776f/command.yaml
+          && grep -qi ''no live deploy'' drift/dod_receipts/OMN-14552/dod-deploy-assessment-head-494f776f/command.yaml'
+  - id: dod-occ-self-4095
+    description: 'Self-bind item for OCC companion PR #4095. Binds OMN-14552 to the actual onex_change_control
+      PR number after PR creation; product-observing evidence is carried by the entries above, this item
+      is binding only. Uses the durable branch name for the third assertion.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14552/dod-occ-self-4095/command.yaml
+          && grep -q ''pr_number: 4095'' drift/dod_receipts/OMN-14552/dod-occ-self-4095/command.yaml &&
+          grep -q ''jonah/omn-14552-occ-companion'' drift/dod_receipts/OMN-14552/dod-occ-self-4095/command.yaml'
+  - id: dod-rebind-1744-head-5d080806
+    description: >-
+      Append-only rebind for live omnimarket#1744 head 5d080806edea9afc09e86a86e57d2457fba34d8f. The delta
+      from the evidenced head 494f776f28d5facef0278242429e6c54c58356b1 is an empty OCC-preflight retrigger
+      commit with no file changes, so the product-observing evidence above still applies to the live head.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14552/dod-rebind-1744-head-5d080806/command.yaml
+          && grep -q 'no file diff' drift/dod_receipts/OMN-14552/dod-rebind-1744-head-5d080806/command.yaml
+  - id: dod-rebind-2289-head-d9a8d507
+    description: >-
+      Append-only rebind for live omnibase_infra#2289 head d9a8d5074143792881c6fc5b078a6a5d3538c8a9. The
+      delta from the evidenced head 5fc97865eee113850d183b27af2f9738ac0444b2 is an empty OCC-preflight
+      retrigger commit with no file changes, so the product-observing evidence above still applies to
+      the live head.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14552/dod-rebind-2289-head-d9a8d507/command.yaml
+          && grep -q 'no file diff' drift/dod_receipts/OMN-14552/dod-rebind-2289-head-d9a8d507/command.yaml
