@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14594"
+title: "fix(OMN-14594): type-scope + per-topic-category the ledger/validation projections"
+summary: >-
+  omnibase_infra PR #2303 fixes ledger projection dispatch contamination by splitting node_ledger_projection_compute's
+  mixed-category operation_match route into per-topic topic_match routes with ModelEventMessage event_model
+  scoping, and adds event_model scoping for node_validation_ledger_projection_compute. The PR also updates
+  handler wiring tests and dispatch parity fixtures for the topic-scoped dispatcher-ID shape from OMN-14580.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - topics
+  - public_api
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2303-ledger-projection-fix"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2303 head f900163261b373abbcac2454ef01f7ecdf9c14aa.
+      The evidence reads the PR files/body and changed contract/test files from the PR head to confirm
+      the ledger projection contract split, ModelEventMessage event_model scoping, dispatch parity fixture
+      update, and regression tests named in the PR proof.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2303; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=f900163261b373abbcac2454ef01f7ecdf9c14aa;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,files,body
+          --jq '.headRefOid + "\n" + ((.files | map(.path)) | join("\n")) + "\n" + .body' > "$d/pr.txt"
+          && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fq 'src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml'
+          "$d/pr.txt" && grep -Fq 'src/omnibase_infra/nodes/node_validation_ledger_projection_compute/contract.yaml'
+          "$d/pr.txt" && grep -Fq 'tests/unit/runtime/test_ledger_projection_dispatch_reachability.py'
+          "$d/pr.txt" && for p in src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml
+          src/omnibase_infra/nodes/node_validation_ledger_projection_compute/contract.yaml tests/unit/runtime/test_ledger_projection_dispatch_reachability.py;
+          do mkdir -p "$d/$(dirname "$p")"; gh api "repos/OmniNode-ai/omnibase_infra/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'topic_match' "$d/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml"
+          && grep -Fq 'ModelEventMessage' "$d/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml"
+          && grep -Fq 'ModelEventMessage' "$d/src/omnibase_infra/nodes/node_validation_ledger_projection_compute/contract.yaml"
+          && grep -Fq 'NO_DISPATCHER' "$d/tests/unit/runtime/test_ledger_projection_dispatch_reachability.py"
+  - id: "dod-deploy-gate-assessment"
+    description: >-
+      Deploy-gate assessment for omnibase_infra PR #2303 runtime dispatch/projection changes. The PR touches
+      runtime handler wiring and node contract routing, so it requires deploy evidence. This merge sweep
+      does not perform a live deploy, restart, docker exec, rpk topic produce, database mutation, or .201
+      mutation. Product proof is unit/integration dispatch reachability and parity evidence; post-merge
+      runtime validation remains a separate deploy/readback lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2303; PRODUCT_REPO=OmniNode-ai/omnibase_infra; DEPLOY_SCOPE=runtime-dispatch-deploy-assessment;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json files,body
+          --jq '(.files | map(.path) | join("\n")) + "\n" + .body' > "$d/pr.txt" && grep -Fq 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py'
+          "$d/pr.txt" && grep -Fq 'node_ledger_projection_compute' "$d/pr.txt" && test "$DEPLOY_SCOPE"
+          = "runtime-dispatch-deploy-assessment"
+  - id: "dod-occ-self-4126"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4126. This binding item asserts that the
+      OCC PR carries the central OMN-14594 contract and receipts consumed by omnibase_infra PR #2303 through
+      its Evidence-Source line; substantive product evidence is carried by the preceding DoD items.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4126; OCC_REPO=OmniNode-ai/onex_change_control; test "$(gh pr view "$OCC_PR_NUMBER"
+          --repo "$OCC_REPO" --json headRefName --jq .headRefName)" = "jonah/omn-14594-occ-ledger-projection-fix"
