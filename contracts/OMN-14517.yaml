@@ -1,0 +1,60 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14517
+title: OCC companion for omnibase_infra#2297 - cross-profile intent-routing cold boot
+summary: >-
+  OCC evidence companion for OMN-14517. omnibase_infra#2297 fixes the cold-boot crash where node_pr_state_projection_compute's
+  intent_routing_table names node_pr_state_write_effect, but the derivation looked up effect targets in
+  the runtime-profile-filtered manifest instead of the full discovery manifest.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: tests
+    description: >-
+      omnibase_infra#2297 must prove the cross-profile intent-routing regression with product-observing
+      checks against the PR head and regression tests.
+    command: >-
+      gh pr view 2297 --repo OmniNode-ai/omnibase_infra --json headRefOid,files,body and inspect product
+      content at head 8a6634093f044e3e7ec1e99014a89a8c36c4ff5b.
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-2297-head-8a663409-cross-profile-routing
+    description: >-
+      Product-observing verification that omnibase_infra#2297 head 8a6634093f044e3e7ec1e99014a89a8c36c4ff5b
+      changes only service_kernel.py and the cross-profile intent-routing regression test, and that the
+      product content resolves effect-node targets from the full discovery manifest while preserving the
+      real regression test against profile-filtered lookup.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          d="$(mktemp -d)" && gh pr view 2297 --repo OmniNode-ai/omnibase_infra --json headRefOid,files,body
+          --jq '.headRefOid + "\n" + ((.files | map(.path)) | join("\n")) + "\n" + .body' > "$d/pr.txt"
+          && grep -Fq '8a6634093f044e3e7ec1e99014a89a8c36c4ff5b' "$d/pr.txt" && grep -Fq 'src/omnibase_infra/runtime/service_kernel.py'
+          "$d/pr.txt" && grep -Fq 'tests/unit/runtime/test_pr_state_cross_profile_intent_routing.py' "$d/pr.txt"
+          && grep -Fq '3 passed' "$d/pr.txt" && grep -Fq 'Residual proof owed' "$d/pr.txt" && for p in
+          src/omnibase_infra/runtime/service_kernel.py tests/unit/runtime/test_pr_state_cross_profile_intent_routing.py;
+          do mkdir -p "$d/$(dirname "$p")" && { gh api "repos/OmniNode-ai/omnibase_infra/contents/${p}?ref=8a6634093f044e3e7ec1e99014a89a8c36c4ff5b"
+          --jq .content | base64 --decode > "$d/$p"; }; done && grep -Fq '_effect_lookup_manifest = ('
+          "$d/src/omnibase_infra/runtime/service_kernel.py" && grep -Fq 'auto_wiring_manifest_discovered'
+          "$d/src/omnibase_infra/runtime/service_kernel.py" && grep -Fq '_effect_lookup_manifest' "$d/src/omnibase_infra/runtime/service_kernel.py"
+          && grep -Fq 'test_main_profile_filtered_manifest_excludes_the_effect_node' "$d/tests/unit/runtime/test_pr_state_cross_profile_intent_routing.py"
+          && grep -Fq 'test_pr_state_routing_resolves_from_the_full_discovery_manifest' "$d/tests/unit/runtime/test_pr_state_cross_profile_intent_routing.py"
+  - id: dod-occ-self-4118
+    description: >-
+      OCC self-binding receipt for onex_change_control#4118. This binds the OMN-14517 evidence companion
+      to the opened OCC PR number and initial evidence commit before hosted merge eligibility.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^pr_number: 4118$' drift/dod_receipts/OMN-14517/dod-occ-self-4118/command.yaml && grep
+          -q '5f529a8ac' drift/dod_receipts/OMN-14517/dod-occ-self-4118/command.yaml && grep -q '^status:
+          PASS$' drift/dod_receipts/OMN-14517/dod-occ-self-4118/command.yaml
