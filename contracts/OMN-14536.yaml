@@ -1,0 +1,109 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14536
+title: "OCC companion for omnimarket#1740 — golden_chain census gate reads node verdict"
+summary: "OCC evidence companion for OmniNode-ai/omnimarket#1740 (OMN-14536, child of OMN-14531 detector-shelf
+  audit). The golden_chain_sweep required CI check was vacuous-green: ci.yml gated the E2E step on workflow_result.json
+  result=='completed' (the workflow RAN) rather than handler_result.overall_status (the node's verdict).
+  CI ran with projected_rows={}, so all 13 chains timed out, the node correctly returned overall_status=fail,
+  and CI passed anyway — 0 of 13 chains were ever verified. The work PR (1) rewires the required check
+  onto the node's overall_status + scanned_count fail-closed, (2) adds census_collector.py, a real in-memory
+  harness that drives each locally-reachable chain's REAL projection on an InmemoryDatabaseAdapter and
+  reads the tail row back, and (3) adds reachability.py which DERIVES the Group A / Group B split from
+  contracts (Group B routed to omnibase_infra). Evidence below is an INDEPENDENT reproduction: populated
+  census -> GREEN (pass, scanned_count=7); the exact pre-fix input (empty census) -> EXISTS-but-WRONG
+  RED (not_collected, scanned_count=0)."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: "omnimarket#1740 head makes the required golden-chain CI check gate on the node's overall_status
+      + scanned_count (fail-closed), supplies a real harness-collected census for the 7 locally-reachable
+      chains, and derives the 6 cross-repo chains routed to omnibase_infra — proven by an independent
+      GREEN(populated)/RED(empty census) reproduction, not the implementer's claim."
+    command: see dod_evidence check_values
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-verify-1740-gate-reads-verdict
+    description: Product-observing check against omnimarket#1740 head f589ef7498f120fdc474f70a8285a7bf89a07d2d.
+      Reads .github/workflows/ci.yml from the PR head and asserts the required E2E check now runs the
+      golden-chain census gate keyed on the node's overall_status + scanned_count, replacing the deaf
+      result=='completed' check that made the required golden_chain_sweep gate vacuous-green (workflow
+      RAN, verdict ignored, 0/13 chains verified).
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci.yml?ref=f589ef7498f120fdc474f70a8285a7bf89a07d2d"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'Golden-chain census gate (OMN-14536)' "$f"
+          && grep -Fq -- 'census_collector' "$f" && grep -Fq -- 'scanned_count' "$f" && grep -Fq -- 'overall_status'
+          "$f"
+  - id: dod-verify-1740-census-real-probe
+    description: "Product-observing check against the PR head. Reads census_collector.py and asserts it
+      drives each reachable chain's REAL projection handler on an InmemoryDatabaseAdapter (handler.project(event,
+      db)), counts a scanned tail surface per chain, and fails closed unless overall_status==pass and
+      scanned_count>0 — the harness that makes the census real rather than empty."
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_golden_chain_sweep/census_collector.py?ref=f589ef7498f120fdc474f70a8285a7bf89a07d2d"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'handler.project(event, db)' "$f" && grep -Fq
+          -- 'scanned += 1' "$f" && grep -Fq -- 'if scanned <= 0:' "$f" && grep -Fq -- 'if status != "pass":'
+          "$f"
+  - id: dod-verify-1740-derived-split
+    description: Product-observing check against the PR head. Reads reachability.py and asserts the Group
+      A / Group B split is DERIVED from node contracts + handler introspection (derive_chain_reachability
+      + _has_sync_project_seam + a closing-projection scan), never a hand-maintained list. Group B is
+      routed to omnibase_infra CI.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_golden_chain_sweep/reachability.py?ref=f589ef7498f120fdc474f70a8285a7bf89a07d2d"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'def derive_chain_reachability' "$f" && grep
+          -Fq -- '_has_sync_project_seam' "$f" && grep -Fq -- 'def _closing_projection' "$f" && grep -Fq
+          -- 'routed' "$f"
+  - id: dod-verify-1740-red-green-reproduced
+    description: 'Independent RED-then-GREEN reproduction, not trusting the implementer''s commit message.
+      Populated census: census_collector exits 0 with overall_status=pass and scanned_count=7 (7/7 Group
+      A chains GREEN). The exact pre-fix CI input (Group A chains, projected_rows={}, no census) reproduces
+      a genuine EXISTS-but-WRONG RED: overall_status=not_collected, scanned_count=0, gate exits 1. A drifted
+      row (expected field dropped) -> chain FAIL, RED. Durable guard: tests/test_golden_chain_census_gate.py.
+      Full local corpus: 2844 golden/census tests pass.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14536/dod-verify-1740-red-green-reproduced/command.yaml
+          && grep -q ''scanned_count=7'' drift/dod_receipts/OMN-14536/dod-verify-1740-red-green-reproduced/command.yaml
+          && grep -q ''not_collected'' drift/dod_receipts/OMN-14536/dod-verify-1740-red-green-reproduced/command.yaml
+          && grep -q ''2844 passed'' drift/dod_receipts/OMN-14536/dod-verify-1740-red-green-reproduced/command.yaml'
+  - id: dod-deploy-assessment-head-f589ef74
+    description: 'Deploy assessment for omnimarket PR #1740 at head f589ef7498f120fdc474f70a8285a7bf89a07d2d.
+      The PR changes a diagnostic sweep node (node_golden_chain_sweep) + its CI wiring; this evidence
+      package performs no live deploy, runtime restart, docker exec, rpk produce, database mutation, or
+      .201/.200 runtime mutation. Enforcement IS wired in this PR: the required E2E ci.yml check now runs
+      the census gate fail-closed. Group B (6 cross-repo chains) routing is derived (census_collector
+      --mode route); the omnibase_infra CI job that proves them against the live delegation runtime is
+      a tracked follow-up. No prod promotion requested or performed.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14536/dod-deploy-assessment-head-f589ef74/command.yaml
+          && grep -qi ''no live deploy'' drift/dod_receipts/OMN-14536/dod-deploy-assessment-head-f589ef74/command.yaml'
+  - id: dod-occ-self-4088
+    description: 'Self-bind item for OCC companion PR #4088. Binds a PASS receipt to the companion PR
+      number so OCC merge eligibility can associate OMN-14536 with the onex_change_control PR under check.
+      Product-observing evidence is carried by the entries above; this item is binding only.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14536/dod-occ-self-4088/command.yaml
+          && grep -q ''pr_number: 4088'' drift/dod_receipts/OMN-14536/dod-occ-self-4088/command.yaml'
