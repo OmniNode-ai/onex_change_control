@@ -146,3 +146,66 @@ dod_evidence:
         check_value: >-
           test "$(gh pr view 4087 --repo OmniNode-ai/onex_change_control --json headRefName --jq .headRefName)"
           = "jonah/omn-14516-ledger-projection-evidence" && grep -q 'dod-occ-self-4087' contracts/OMN-14516.yaml
+  - id: "dod-reshape-derivation-verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-head-e5ccbcd5-contract-appliers"
+    description: >-
+      Reshape-aware product-observing check for omnibase_infra#2286. It reads the LIVE merge-candidate
+      head dynamically (gh pr view headRefOid) rather than pinning a snapshot SHA, so a test-only advance
+      of the product branch (e.g. f72f9b47 -> 1420b2f4, which touched only test files) does not stale
+      it; it always verifies whatever head Codex is about to land. It supersedes the e5ccbcd5-bound contract-appliers
+      item that pins a now-stale head. Re-verified INDEPENDENTLY by verify-2286 (adversarial verifier,
+      not the ledger-reshape implementer): the by-name kernel result-applier allowlist for node_ledger_projection_compute
+      is DELETED and appliers are DERIVED from each projection contract's intent_consumption.intent_routing_table
+      via load_intent_routing_table plus the single generic IntentEffectDispatchBridge; the raw-projection
+      wiring outcome is FAILED (not SKIPPED) when no applier is wired. The check reads file CONTENT at
+      the pinned head, so it is RED against EXISTS-but-WRONG mutations, not merely on file absence: re-adding
+      auto_wiring_result_appliers["node_ledger_projection_compute"] drives A to non-zero (RED, proven
+      by a mutation dry-run); reverting the SKIPPED->FAILED reshape brings back the old "requires dedicated
+      raw event projection wiring" reason (O non-zero, RED). The verifier independently reproduced both
+      the derivation-without-allowlist proof and the SKIPPED->FAILED revert-run-restore RED-proof before
+      this receipt was written.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)
+          test -n "$H"
+          S=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=$H" --jq .content | base64 -d)
+          W=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=$H" --jq .content | base64 -d)
+          B=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/intent_effects/intent_effect_dispatch_bridge.py?ref=$H" --jq .content | base64 -d)
+          D=$(printf '%s' "$S" | grep -c 'load_intent_routing_table'; true)
+          U=$(printf '%s' "$S" | grep -c 'IntentEffectDispatchBridge'; true)
+          A=$(printf '%s' "$S" | grep -c 'auto_wiring_result_appliers\["node_ledger_projection_compute"\]'; true)
+          F=$(printf '%s' "$W" | grep -c 'no result applier is wired'; true)
+          O=$(printf '%s' "$W" | grep -c 'requires dedicated raw event projection wiring'; true)
+          G=$(printf '%s' "$B" | grep -c 'class IntentEffectDispatchBridge'; true)
+          test "$D" -ge 1 && test "$U" -ge 1 && test "$A" -eq 0 && test "$F" -ge 1 && test "$O" -eq 0 && test "$G" -ge 1
+  - id: "dod-deploy-live-readback-2286"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment-2286-head-e5ccbcd5"
+    description: >-
+      Deploy-class evidence for omnibase_infra#2286, superseding the e5ccbcd5 deploy-assessment which
+      recorded only "post-merge runtime validation is required" and never carried a live readback. The
+      CI-runnable assertion reads the live merge-candidate head dynamically (not a pinned snapshot SHA).
+      verify-2286 performed the readback INDEPENDENTLY on the .201 stability-test lane (docker exec psql
+      + rpk): event_ledger went from ZERO (its state for the entire prior life of the table, on every
+      lane) to 1203 rows and still growing, and node_ledger_projection_compute now holds 7 Stable auto-wired
+      consumer groups (one per subscribed topic) with node_ledger_write_effect Stable on onex.cmd.platform.ledger-append.v1
+      — where before the fix it had zero consumer groups. This proves the derived-applier wired path is
+      live end to end: consume the 7 platform topics -> emit ledger.append -> IntentEffectDispatchBridge
+      -> HandlerLedgerAppend.handle -> event_ledger. The CI-runnable assertion binds the head and confirms
+      the ledger projection contract declares the intent_routing_table to node_ledger_write_effect (the
+      seam the kernel derivation reads); the live docker-exec readback command and its result are recorded
+      in the check_value and receipt as the manual attestation, since OCC runners cannot reach the .201
+      lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)
+          test -n "$H"
+          C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml?ref=$H" --jq .content | base64 -d)
+          printf '%s' "$C" | grep -q 'intent_routing_table'
+          printf '%s' "$C" | grep -q 'node_ledger_write_effect'
+          printf '%s\n' 'live deploy readback (manual, independent verifier verify-2286, .201 stability-test lane, 2026-07-13): ssh omni-201-ts docker exec omnibase-infra-stability-test-postgres psql -U postgres -d omnibase_infra -tAc "SELECT count(*) FROM event_ledger" -> 1203 rows and growing (was 0 for the entire prior life of the table on every lane); ssh omni-201-ts docker exec omnibase-infra-stability-test-redpanda rpk group list -> 7 Stable consumer groups for node_ledger_projection_compute plus a Stable node_ledger_write_effect group on onex.cmd.platform.ledger-append.v1 (was 0 groups; the legacy hardcoded group onex-ledger-projection-compute is Dead). Wired path proven live end-to-end: consume 7 platform topics -> emit ledger.append -> IntentEffectDispatchBridge -> HandlerLedgerAppend.handle -> event_ledger. NOTE: a WHERE topic=onex.cmd.platform.ledger-append.v1 scoping returns 0 because event_ledger.topic stores the SOURCE event topic (node-heartbeat etc.), not the command topic; the correctly-scoped readback is the unscoped count above.'

@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14516"
+evidence_item_id: "dod-reshape-derivation-verified"
+check_type: "command"
+check_value: |-
+  H=$(gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid --jq .headRefOid)
+  test -n "$H"
+  S=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=$H" --jq .content | base64 -d)
+  W=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=$H" --jq .content | base64 -d)
+  B=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/intent_effects/intent_effect_dispatch_bridge.py?ref=$H" --jq .content | base64 -d)
+  D=$(printf '%s' "$S" | grep -c 'load_intent_routing_table'; true)
+  U=$(printf '%s' "$S" | grep -c 'IntentEffectDispatchBridge'; true)
+  A=$(printf '%s' "$S" | grep -c 'auto_wiring_result_appliers\["node_ledger_projection_compute"\]'; true)
+  F=$(printf '%s' "$W" | grep -c 'no result applier is wired'; true)
+  O=$(printf '%s' "$W" | grep -c 'requires dedicated raw event projection wiring'; true)
+  G=$(printf '%s' "$B" | grep -c 'class IntentEffectDispatchBridge'; true)
+  test "$D" -ge 1 && test "$U" -ge 1 && test "$A" -eq 0 && test "$F" -ge 1 && test "$O" -eq 0 && test "$G" -ge 1
+contract_entry_sha256: "sha256:bad9cc28439d9df80f95c8be5112c4a64fac3e7eb4e7a6ac731f2cc148707318"
+status: PASS
+run_timestamp: "2026-07-13T07:05:00Z"
+commit_sha: "1420b2f47f70b453504406adb2c9eb0cfcc7e517"
+runner: "verify-2286"
+verifier: "verify-2286-adversarial-independent"
+pr_number: 2286
+probe_command: >-
+  gh pr view 2286 --repo OmniNode-ai/omnibase_infra --json headRefOid; gh api product file content at
+  the live head (service_kernel.py, handler_wiring.py, intent_effect_dispatch_bridge.py) via the contents
+  API
+probe_stdout: |
+  live head at read time: 1420b2f47f70b453504406adb2c9eb0cfcc7e517 (f72f9b47 + a test-only commit
+  "mirror derived projection appliers in boot gates"; product source byte-identical to f72f9b47).
+  load_intent_routing_table (derivation) count = 2 (>=1)
+  IntentEffectDispatchBridge in service_kernel count = 3 (>=1)
+  auto_wiring_result_appliers["node_ledger_projection_compute"] count = 0 (allowlist DELETED)
+  'no result applier is wired' in handler_wiring count = 2 (FAILED branch present)
+  'requires dedicated raw event projection wiring' count = 0 (old SKIPPED reason gone)
+  class IntentEffectDispatchBridge count = 1 (single generic bridge)
+actual_output: >-
+  PASS on the live head: appliers are contract-derived (load_intent_routing_table + single generic IntentEffectDispatchBridge),
+  the by-name node_ledger_projection_compute allowlist is DELETED, and the raw-projection wiring outcome
+  is FAILED not SKIPPED. Independently re-verified by verify-2286: the SKIPPED->FAILED gate was RED-proven
+  by revert-run-restore against the pre-fix tree, and a mutation dry-run (allowlist re-added) drove this
+  check RED, confirming it is fail-closed against EXISTS-but-WRONG, not merely file-absence.
+exit_code: 0
+branch: "jonah/omn-14516-ledger-projection-wiring"
