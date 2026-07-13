@@ -1,0 +1,93 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14504"
+title: "OCC companion for omnibase_infra#2282 — check_release_identity.py PYTHONPATH-shadow bootstrap
+  actually protects"
+summary: >
+  Non-implementer DoD companion for omnibase_infra#2282 (OMN-14504, follow-up to OMN-14471/#2275). #2275's
+  primary refactor (freestanding scripts/check_release_identity.py → canonical node_release_identity_compute
+  COMPUTE node) is real and unaffected — its 13/13 cross-boundary equivalence proof stands. #2282 fixes
+  ONE dead defensive line added mid-#2275 to repair a CI subprocess-import failure: `if _SRC_DIR.is_dir()
+  and str(_SRC_DIR) not in sys.path: sys.path.insert(0, str(_SRC_DIR))`. That guard is a no-op at BOTH
+  real call sites (the .pre-commit-config.yaml check-release-identity hook and the fresh-deploy-fitness.yml
+  release-identity CI job — both `uv run` inside this project's own venv), because the venv's editable
+  install already appends the IDENTICAL `_SRC_DIR` string to sys.path via a plain-path .pth file at interpreter
+  startup, BEFORE the shim's bootstrap line runs — so `str(_SRC_DIR) not in sys.path` is already False
+  and the insert never fires, letting an adversarial PYTHONPATH entry ahead of it win the import race.
+  The fix strips any existing occurrence(s) of _SRC_DIR from sys.path then inserts unconditionally at
+  index 0, making the promotion idempotent and unconditional instead of a no-op in the realistic invocation
+  shape. HONESTY NOTE ON THE PROOF STANDARD — read before trusting the greens below. This is RED-against-
+  EXISTS-but-WRONG, not RED-on-absence: the defect is a guard that LOOKS protective and IS present, not
+  a missing guard. dod-verify-2282-static-markers proves both states via gh-api reads at pinned SHAs (merged
+  #2275 132cf776 vs. #2282 head d2b8ad4e): the vulnerable conditional line is present verbatim in the
+  OLD file and absent (as executable code, not merely absent from a comment restating it) from the NEW
+  file, and the NEW file's replacement lines (strip-then-unconditional-insert) are present. This check_value
+  does NOT re-prove the runtime RED-then-GREEN behavior — the DoD runner's cwd is the OCC clone (OMN-14427
+  taxonomy), so it cannot execute omnibase_infra's pytest against a local worktree, and a local-path check_value
+  would be INERT in CI (OMN-14436) and must not be allowed to launder a red PR into green evidence. That
+  dynamic proof WAS independently performed by this companion's author (not #2282's implementer), workspace-locally:
+  swapped #2282's fixed scripts/check_release_identity.py for the verbatim merged-#2275 content, ran ONLY
+  the new regression test (test_real_shim_resists_pythonpath_shadow_from_editable_install) → FAILED, decoy
+  sentinel CRID_DECOY_SENTINEL_9f3a observed winning the import race (RED); restored the fix and ran the
+  full test file → 15/15 PASSED (GREEN); worktree left clean afterward. That transcript is recorded in
+  this PR's discussion as audit narrative, not as a machine-replayable dod_evidence check. occ-self-bind-pr-4081
+  binds this OCC companion to its own PR number, required by the occ-preflight eligibility gate because
+  this PR's title token (OMN-14504) makes it self-referential under ticket-token extraction.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2282 head d2b8ad4e strips the dead PYTHONPATH-shadow guard's no-op condition,
+      makes the src/ promotion unconditional, and is independently proven RED against the merged #2275
+      code and GREEN after the fix, via both static gh-api markers and a live pytest re-run."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2282-static-markers"
+    description: >-
+      Product-observing check against omnibase_infra#2282 head d2b8ad4e41c8e965f91c5110007c519da5ffc2ad
+      and the merged #2275 commit 132cf776c397e5ea8e9522297af392e1a265738b it follows up on. Asserts,
+      via gh-api content reads (no local checkout required, hermetically reproducible by anyone with gh
+      access): (1) the OLD file at the merged #2275 SHA contains the vulnerable conditional verbatim —
+      `if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:` — establishing the RED premise is a real,
+      present defect, not an absence; (2) the NEW file at #2282's head does NOT contain that conditional
+      as executable code (its only occurrence in the new file is inside an explanatory comment, so the
+      check targets the `if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:` line form specifically,
+      not a bare substring); (3) the NEW file contains both replacement lines — the strip-prior-occurrences
+      filter and the unconditional `sys.path.insert(0, _src_str)` — proving the fix is the strip-then-insert
+      shape described in the PR, not merely a deleted guard; (4) the NEW test file tests/scripts/test_check_release_identity.py
+      contains the new regression test `test_real_shim_resists_pythonpath_shadow_from_editable_install`
+      by name and its decoy-sentinel marker `CRID_DECOY_SENTINEL_9f3a`, proving the regression coverage
+      is real and not merely claimed in prose.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          old="$(mktemp)" && new="$(mktemp)" && t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/check_release_identity.py?ref=132cf776c397e5ea8e9522297af392e1a265738b"
+          --jq .content | base64 -d > "$old" && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/check_release_identity.py?ref=d2b8ad4e41c8e965f91c5110007c519da5ffc2ad"
+          --jq .content | base64 -d > "$new" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/test_check_release_identity.py?ref=d2b8ad4e41c8e965f91c5110007c519da5ffc2ad"
+          --jq .content | base64 -d > "$t" && grep -F -- 'if _SRC_DIR.is_dir() and str(_SRC_DIR) not in
+          sys.path:' "$old" && ! grep -F -- 'if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:'
+          "$new" && grep -F -- 'sys.path[:] = [p for p in sys.path if p != _src_str]' "$new" && grep -F
+          -- 'sys.path.insert(0, _src_str)' "$new" && grep -F -- 'def test_real_shim_resists_pythonpath_shadow_from_editable_install'
+          "$t" && grep -F -- 'CRID_DECOY_SENTINEL_9f3a' "$t"
+  - id: "occ-self-bind-pr-4081"
+    description: >-
+      Self-bind for this OCC companion PR (#4081), required by the occ-preflight eligibility gate: at
+      OCC's own PR, ticket-token extraction picks up OMN-14504 from THIS PR's title (no `Closes` line
+      in the body), so eligibility requires a PASS receipt bound to PR #4081 itself, not only to the product
+      PR #2282. Asserts #4081 carries both the Evidence-Source and Evidence-Ticket lines and is on the
+      expected branch.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          B=$(gh api repos/OmniNode-ai/onex_change_control/pulls/4081 --jq .body); N=$(printf '%s' "$B"
+          | grep -c 'Evidence-Ticket: OMN-14504'); R=$(gh api repos/OmniNode-ai/onex_change_control/pulls/4081
+          --jq .head.ref); test "$N" -ge 1 && test "$R" = "jonah/omn-14504-occ-infra-2282-pythonpath-shadow"
