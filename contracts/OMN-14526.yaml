@@ -1,0 +1,122 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14526"
+title: "OCC companion for omnimarket#1733 — database_sweep fails CLOSED on an unscannable DB and reports
+  a zero-row table as EMPTY"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1733 (OMN-14526). database_sweep exists to flag empty
+  projection tables and auto-file tickets for them; it was blind in two independent, stacked ways and
+  reported tables_empty=0 in both — byte-identical to a clean bill of health. Defect 1: _get_all_tables
+  returned a bare [] on a FAILED psql probe (unreachable host, wrong container, auth error) and discarded
+  stderr, so the caller could not tell "I checked and found nothing" from "I checked nothing" — an unreachable
+  database aggregated to tables_empty=0. Defect 2: _check_table short-circuited to UNKNOWN for any table
+  absent from the Drizzle schema WITHOUT ever counting rows, so every empty non-Drizzle table (e.g. pr_lifecycle_ledger_entries)
+  was invisible, because UNKNOWN is not an issue state. Also: the default runtime host was the private
+  LAN address 192.168.86.201, not routable off-network, so every off-LAN run reached no database and silently
+  reported health. The fix: _get_all_tables now returns (tables, scan_error) and a failed/zero-table probe
+  sets status=error with table_scan_error populated; _check_table counts rows for non-Drizzle tables so
+  a genuine zero is EMPTY (and EMPTY is no longer overwritten by the ORPHAN reclassification); the default
+  host is now the Tailscale MagicDNS name. Live EFFECT-side readback against the stability-test lane:
+  tables scanned 0 -> 57, EMPTY found 0 -> 43. The evidence below is an INDEPENDENT reproduction (not
+  the implementer's own claim): the exact test corpus was run against the PR head (49/49 passed), then
+  the handler source alone was reverted to origin/dev with the new tests kept in place, reproducing a
+  real EXISTS-but-WRONG RED (14 failed / 35 passed, including "TypeError: unhashable type: 'list'" and
+  the two fail-closed tests test_zero_tables_is_a_scan_error / test_psql_failure_is_a_scan_error_not_an_empty_list),
+  then the fix was restored and re-verified GREEN (49/49).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1733 head makes _get_all_tables return (tables, scan_error) instead of a
+      bare list, makes a failed or zero-table scan set status=error with table_scan_error populated, makes
+      _check_table count rows for non-Drizzle tables so a genuine zero is EMPTY instead of UNKNOWN, and
+      switches the default runtime host off the unroutable private LAN address — proven by an independent
+      RED (revert handler only, keep tests: 14 failed / 35 passed) then GREEN (49/49) reproduction, not
+      merely the implementer's own claim."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1733-scan-error-fails-closed"
+    description: >-
+      Product-observing check against omnimarket#1733 head db21f7e1e7e6bb067fa42b176877181a27533041. Reads
+      handler_database_sweep.py from the PR head and asserts _get_all_tables now returns tuple[list[str],
+      str] (tables, scan_error) instead of the old bare list[str], that a psql rc != 0 AND a zero-table
+      result both produce a populated scan_error (a failed probe is no longer indistinguishable from a
+      table-less database), that DatabaseSweepResult carries the new table_scan_error field, and that
+      the handler sets status="error" whenever table_scan_error is non-empty — closing the fail-open path
+      where an unreachable database aggregated to tables_empty=0.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_database_sweep/handlers/handler_database_sweep.py?ref=db21f7e1e7e6bb067fa42b176877181a27533041"
+          --jq .content | base64 -d > "$f" && grep -Eq '^def _get_all_tables\(' "$f" && grep -Fq -- '->
+          tuple[list[str], str]' "$f" && grep -Fq -- 'table_scan_error: str = ""' "$f" && grep -Fq --
+          'if table_scan_error:' "$f" && grep -Fq -- 'status = "error"' "$f"
+  - id: "dod-verify-1733-empty-not-unknown"
+    description: >-
+      Product-observing check against the PR head. Asserts _check_table now issues a real row-count query
+      (SELECT count(*)) for tables absent from the Drizzle schema instead of short-circuiting to UNKNOWN
+      without ever measuring, that a zero-row result is classified EMPTY, and that the ORPHAN reclassification
+      pass no longer overwrites EMPTY (it previously only preserved MISSING/UNKNOWN) — the second half
+      of why OMN-14525's empty ledger tables went unseen.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_database_sweep/handlers/handler_database_sweep.py?ref=db21f7e1e7e6bb067fa42b176877181a27533041"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'SELECT count(*) FROM {table}' "$f" && grep
+          -Fq -- 'status="EMPTY"' "$f" && grep -Fq -- '"MISSING",' "$f" && grep -Fq -- '"UNKNOWN",' "$f"
+          && grep -Fq -- '"EMPTY",' "$f"
+  - id: "dod-verify-1733-tailscale-default-host"
+    description: >-
+      Product-observing check against the PR head. Asserts _DEFAULT_RUNTIME_HOST is no longer the unroutable
+      private LAN address 192.168.86.201 and is now the Tailscale MagicDNS name, so off-LAN runs of the
+      sweep reach a real database instead of silently scanning nothing.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_database_sweep/handlers/handler_database_sweep.py?ref=db21f7e1e7e6bb067fa42b176877181a27533041"
+          --jq .content | base64 -d > "$f" && grep -Fq -- '_DEFAULT_RUNTIME_HOST = "omninode-pc.tail75df5e.ts.net"'
+          "$f" && ! grep -Fq -- '_DEFAULT_RUNTIME_HOST = "192.168.86.201"' "$f"
+  - id: "dod-verify-1733-red-green-reproduced"
+    description: >-
+      Independent RED-then-GREEN reproduction against a local worktree checked out at the PR head, not
+      trusting the implementer's commit message. The full database_sweep test corpus (unit + integration
+      + golden-chain, 5 files) passed 49/49 at head. handler_database_sweep.py alone was then reverted
+      to origin/dev (keeping the new/modified tests in place) and the identical corpus re-run: 14 failed
+      / 35 passed, including a genuine EXISTS-but-WRONG crash ("TypeError: unhashable type: 'list'" from
+      the old _get_all_tables bare-list return feeding into the new tuple-aware caller) and the two fail-closed
+      tests test_zero_tables_is_a_scan_error and test_psql_failure_is_a_scan_error_not_an_empty_list failing
+      by design. The handler was then restored to the PR head and the corpus re-verified 49/49 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14526/dod-verify-1733-red-green-reproduced/command.yaml
+          && grep -q '49 passed' drift/dod_receipts/OMN-14526/dod-verify-1733-red-green-reproduced/command.yaml
+          && grep -q '14 failed, 35 passed' drift/dod_receipts/OMN-14526/dod-verify-1733-red-green-reproduced/command.yaml
+          && grep -q "unhashable type: 'list'" drift/dod_receipts/OMN-14526/dod-verify-1733-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-db21f7e1"
+    description: >-
+      Deploy assessment for omnimarket PR #1733 at head db21f7e1e7e6bb067fa42b176877181a27533041. The
+      PR changes a diagnostic sweep node (node_database_sweep) and its tests; this evidence package performs
+      no live deploy, runtime restart, docker exec, rpk topic produce, database mutation, or .201/.200
+      runtime mutation. The sweep is deployed as part of the normal runtime rollout; no prod promotion
+      is requested or performed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14526/dod-deploy-assessment-head-db21f7e1/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14526/dod-deploy-assessment-head-db21f7e1/command.yaml
