@@ -1,0 +1,127 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14541"
+title: "OCC companion for omnimarket#1738 — compliance_sweep missing-routing check implemented for real
+  + scanned_count>0 gate"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1738 (OMN-14541, child of OMN-14531 "16/16 sweeps
+  structurally blind"). compliance_sweep advertised a "missing-routing" check in ALL_CHECKS, the node
+  docstring, and contract.yaml's description with zero implementation behind it — no code path ever emitted
+  MISSING_HANDLER_ROUTING. Combined with the shared detector-shelf class defect, an unresolvable/empty
+  scan scope (bad repo name, nonexistent target_dirs) silently reported status="compliant" because the
+  roll-up only checked `if not violations`, never `handlers_scanned > 0`. The fix: _check_missing_routing
+  is now real (a node's canonical contract.yaml handler must be reachable through its own handler_routing
+  table — calibrated against the live workspace to zero false positives across 318 real node contracts
+  and 3 real contract dialects); ComplianceSweepResult gained contracts_checked + a scanned_count property,
+  and handle() refuses to report a verdict (status="error") whenever scanned_count == 0; __main__.py gained
+  --target-dirs so the census is collected by real harness code (the CI checkout root), not an operator-typed
+  repo name; a new compliance-sweep CI job is wired into the CI Summary required check (fail-closed enforcement,
+  not detection). RED-proof: an unresolvable scope refuses (not compliant); a real fixture whose canonical
+  handler is absent from its own routing table flips the sweep to violations_found with a MISSING_HANDLER_ROUTING
+  violation; the mirror-image correctly-routed fixture stays green; a real-scale regression against a
+  clean copy of the omnimarket source tree (827 handlers, 365 contracts) confirms zero false positives.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1738 head implements _check_missing_routing for real (previously MISSING_HANDLER_ROUTING
+      was never emitted anywhere), adds contracts_checked/scanned_count and a status=\"error\" refusal
+      when scanned_count == 0, adds --target-dirs to __main__.py, and wires a required compliance-sweep
+      CI gate into CI Summary — proven by reading the PR head source directly, not merely the implementer's
+      own claim."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1738-missing-routing-implemented"
+    description: >-
+      Product-observing check against omnimarket#1738 head bc50ff85880e6ceb2019d68e4a05e2dc4e805237. Reads
+      handler_compliance_sweep.py from the PR head and asserts _check_missing_routing is a real method
+      that emits violation_type="MISSING_HANDLER_ROUTING" — closing the false-advertised check (pre-fix:
+      zero occurrences of the emitted violation type anywhere in the handler).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_compliance_sweep/handlers/handler_compliance_sweep.py?ref=bc50ff85880e6ceb2019d68e4a05e2dc4e805237"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'def _check_missing_routing(' "$f" && grep -Fq
+          -- 'violation_type="MISSING_HANDLER_ROUTING"' "$f" && grep -Fq -- 'def _handler_is_routed('
+          "$f"
+  - id: "dod-verify-1738-scanned-count-gate"
+    description: >-
+      Product-observing check against the PR head. Asserts ComplianceSweepResult carries contracts_checked
+      and a scanned_count property (handlers_scanned + contracts_checked), and that handle() refuses to
+      report a verdict (status="error") whenever scanned_count == 0 — closing the class defect where "scanned
+      nothing" and "all healthy" were arithmetically identical.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_compliance_sweep/handlers/handler_compliance_sweep.py?ref=bc50ff85880e6ceb2019d68e4a05e2dc4e805237"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'contracts_checked: int = 0' "$f" && grep -Fq
+          -- 'def scanned_count(self) -> int:' "$f" && grep -Fq -- 'if scanned_count == 0:' "$f" && grep
+          -Fq -- 'status="error",' "$f" && grep -Fq -- 'scan_error: str | None = None' "$f"
+  - id: "dod-verify-1738-ci-gate-wired"
+    description: >-
+      Product-observing check against the PR head. Asserts a compliance-sweep CI job exists in ci.yml,
+      that it runs the sweep via --target-dirs . (real harness-collected census, not an operator-typed
+      flag), and that it is fed into the CI Summary needs/results loop (the sole required status check
+      on omnimarket dev, verified live via `gh api .../branches/dev/protection/required_status_checks`)
+      — fail-closed enforcement, not an ignored detection-only sweep (Rule 5).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci.yml?ref=bc50ff85880e6ceb2019d68e4a05e2dc4e805237"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'compliance-sweep:' "$f" && grep -Fq -- 'python
+          -m omnimarket.nodes.node_compliance_sweep --target-dirs .' "$f" && grep -Fq -- '"compliance-sweep=${{
+          needs.compliance-sweep.result }}"' "$f"
+  - id: "dod-deploy-assessment-head-bc50ff85"
+    description: >-
+      Deploy assessment for omnimarket PR #1738 at head bc50ff85880e6ceb2019d68e4a05e2dc4e805237. The
+      PR changes a diagnostic sweep node (node_compliance_sweep) and a required CI job definition; this
+      evidence package performs no live deploy, runtime restart, docker exec, rpk topic produce, database
+      mutation, or .201/.200 runtime mutation. The sweep gate takes effect as a CI check the next time
+      this PR (or a later PR) runs CI; no prod promotion is requested or performed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14541/dod-deploy-assessment-head-bc50ff85/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14541/dod-deploy-assessment-head-bc50ff85/command.yaml
+  - id: "dod-verify-1738-red-green-proof"
+    description: >-
+      Product-observing check against the PR head. Asserts the mandatory RED-proof test module exists
+      with both halves of the class fix covered: a SCOPE-EMPTY RED test (unresolvable scope must refuse,
+      not report compliant) and an EXISTS-but-WRONG RED/GREEN pair for the missing-routing check (a real
+      orphaned-handler fixture flips red; the correctly-routed mirror fixture stays green), plus a real-scale
+      regression against the omnimarket source tree.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/integration/node_compliance_sweep/test_compliance_sweep_class_fix.py?ref=bc50ff85880e6ceb2019d68e4a05e2dc4e805237"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'class TestScopeEmptyRedProof:' "$f" && grep
+          -Fq -- 'def test_nonexistent_target_dir_is_refused_not_compliant(' "$f" && grep -Fq -- 'class
+          TestMissingRoutingRedProof:' "$f" && grep -Fq -- 'def test_orphaned_handler_flips_status_red('
+          "$f" && grep -Fq -- 'def test_routed_handler_is_green(' "$f" && grep -Fq -- 'class TestMissingRoutingRealScaleRegression:'
+          "$f"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the four entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14541-occ-companion-compliance-sweep' drift/dod_receipts/OMN-14541/dod-occ-self-commit/command.yaml
