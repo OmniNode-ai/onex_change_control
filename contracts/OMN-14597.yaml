@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14597"
+title: "fix(OMN-14597): add Postgres TLS/SSL support for RDS"
+summary: >-
+  omnibase_infra PR #2304 adds contract-driven PostgreSQL SSL/TLS configuration for RDS-backed runtime
+  Postgres pools. The product change adds ssl_mode and ssl_ca_file to ModelPostgresPoolConfig, threads
+  POSTGRES_SSL_MODE and POSTGRES_SSL_CA_FILE through from_env/from_dsn, and passes either asyncpg sslmode
+  strings or an explicit SSLContext into ProviderPostgresPool.create().
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2304-postgres-ssl"
+    description: >-
+      Product-observing verification that omnibase_infra PR #2304 head f363fdca9e15a0db88dc1ca56fbaa787d284c3ed
+      changes the PostgreSQL pool config/provider and targeted tests for SSL/TLS support. Focused local
+      validation passed 24/24 tests covering config defaults, fail-fast ssl_mode validation, env/DSN passthrough,
+      asyncpg ssl kwarg passthrough, and explicit SSLContext creation for verify-full.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2304; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=f363fdca9e15a0db88dc1ca56fbaa787d284c3ed;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,files,body
+          --jq '.headRefOid + "\n" + ((.files | map(.path)) | join("\n")) + "\n" + .body' > "$d/pr.txt"
+          && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fq 'src/omnibase_infra/runtime/models/model_postgres_pool_config.py'
+          "$d/pr.txt" && grep -Fq 'src/omnibase_infra/runtime/providers/provider_postgres_pool.py' "$d/pr.txt"
+          && grep -Fq 'tests/unit/runtime/models/test_model_postgres_pool_config_ssl.py' "$d/pr.txt" &&
+          grep -Fq 'tests/unit/runtime/providers/test_provider_postgres_pool.py' "$d/pr.txt" && for p
+          in src/omnibase_infra/runtime/models/model_postgres_pool_config.py src/omnibase_infra/runtime/providers/provider_postgres_pool.py;
+          do mkdir -p "$d/$(dirname "$p")"; gh api "repos/OmniNode-ai/omnibase_infra/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'POSTGRES_SSL_MODE' "$d/src/omnibase_infra/runtime/models/model_postgres_pool_config.py"
+          && grep -Fq 'POSTGRES_SSL_CA_FILE' "$d/src/omnibase_infra/runtime/models/model_postgres_pool_config.py"
+          && grep -Fq '_resolve_ssl_context' "$d/src/omnibase_infra/runtime/providers/provider_postgres_pool.py"
+          && grep -Fq 'ssl=ssl_param' "$d/src/omnibase_infra/runtime/providers/provider_postgres_pool.py"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2304. The PR touches runtime PostgreSQL pool configuration
+      and provider code, so it needs deploy-gate evidence. This merge sweep did not perform an AWS/RDS
+      mutation, live database connection, live deploy, restart, or .201 runtime mutation. The merge evidence
+      records that the product scope is configuration passthrough plus unit-level provider proof, with
+      live cloud data-plane verification deferred to the separate runtime/RDS validation lane named in
+      the product PR body.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2304; PRODUCT_REPO=OmniNode-ai/omnibase_infra; gh pr view "$PRODUCT_PR_NUMBER"
+          --repo "$PRODUCT_REPO" --json files,body --jq '(.files | map(.path) | join("\n")) + "\n" + .body'
+          | grep -Fq 'src/omnibase_infra/runtime/providers/provider_postgres_pool.py' && gh pr view "$PRODUCT_PR_NUMBER"
+          --repo "$PRODUCT_REPO" --json body --jq .body | grep -Fq 'No AWS mutation, no live RDS connection
+          attempted'
+  - id: "dod-occ-self-4123"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4123. This binding item asserts that the
+      OCC PR carries the central OMN-14597 contract and receipts consumed by omnibase_infra PR #2304 through
+      its Evidence-Source line; substantive product evidence is carried by the preceding DoD items.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4123; OCC_REPO=OmniNode-ai/onex_change_control; test "$(gh pr view "$OCC_PR_NUMBER"
+          --repo "$OCC_REPO" --json headRefName --jq .headRefName)" = "jonah/omn-14597-occ-postgres-tls-rds"
