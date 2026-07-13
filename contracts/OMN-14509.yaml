@@ -1,0 +1,105 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14509"
+title: "§11 RED seam-test suite gating P3b (state_io in-row outbox) — omnibase_infra #2284"
+summary: >
+  Non-implementer DoD companion for omnibase_infra#2284 (OMN-14509, child of the OMN-14403 RSD-factory
+  epic). #2284 is TESTS-ONLY: it adds tests/integration/test_state_io_outbox_seam_red.py, the RED-first
+  suite that P3b (the state_io in-row outbox, spec 2026-07-12-multi-event-publish-seam-spec.md rev 3.2
+  §4/§8/§11) must pass. The suite lands BEFORE the implementation and FAILS against today's code — that
+  ordering is the structural fix for self-certifying evidence. HONESTY NOTE ON THE PROOF STANDARD — read
+  before trusting the greens below. The "RED against EXISTS-but-WRONG, never absence" standard belongs
+  to the SIX TESTS, and it is satisfied by them: each names a specific live behavior that runs today and
+  returns the wrong answer — commit-then-publish losing the batch (handler_wiring _load_handle_persist
+  commits and returns; the publish happens outside the retry unit); recover_stale_rows blind-FAILing /
+  TTL-skipping the crashed row; the auto-wired consume boundary at handler_wiring.py:2021 log-and-DISCARDING
+  both a publish exception and a conflict-retry exhaustion (ACKed, no DLQ, no redelivery); cas_update
+  being unconditional on in_flight so a concurrent leg clobbers the winner's un-published intent; and
+  uuid5(correlation_id, "class:idx") COLLIDING across FSM legs (both legs were observed computing the
+  identical UUID d7032b8a-4d1a-553a-b10f-65bb6ff108e1). That runtime RED was captured by running the suite
+  with --runxfail: 6 failed, 2 passed, each failure on its own named AssertionError. The check_values
+  BELOW do NOT re-prove that runtime RED — the DoD runner's cwd is the OCC clone, so it cannot execute
+  omnibase_infra's pytest (the OMN-14427 taxonomy). What they DO prove, workspace-independently via gh-api
+  reads at #2284's head 455ca16a, is the STRUCTURE that makes those REDs BINDING rather than decorative:
+  that §11.11 (the resume-on-redelivery test guarding Fable's E1 liveness deadlock) is actually present;
+  that its meta-guard is present; that every xfail carries BOTH strict=True (so the RED is self-retiring
+  — CI goes red when P3b lands until the marker is removed) AND raises=AssertionError (so a structural
+  break ERRORS loudly instead of hiding inside a green xfail); and that the PR is genuinely tests-only.
+  Each check was proven RED before being written here, against EXISTS-but-WRONG mutations and not merely
+  against absence: a suite whose xfails drop the AssertionError constraint (vacuous xfails) fails check
+  1; a suite with §11.11 deleted fails check 1; a PR that touches src/ fails check 2 (verified against
+  #2281, which has 1 src/ file). Do not read these greens as a claim that the outbox works. It does not
+  exist yet. That is the point.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2284 head 455ca16a carries a binding, non-vacuous §11 RED suite (incl.
+      §11.11) and touches zero product source"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-red-suite-binding-structure"
+    description: >-
+      Asserts the RED suite at #2284's head is BINDING, not decorative. Requires ALL of: (a) the §11.11
+      resume-on-redelivery test is present by name (test_redelivery_of_same_input_resumes_publish_from_row_without_rerunning_handler)
+      — the ONLY test that catches Fable's E1 liveness deadlock, where a resume predicate keyed on incoming.causation_id
+      (the input's GRANDPARENT) instead of incoming.envelope_id never matches on a redelivery, so the
+      dead batch never finalizes; without this case that bug ships GREEN. (b) Its meta-guard (test_e1_guard_causation_and_envelope_ids_must_differ)
+      is present — E1 is observable only while causation_id != envelope_id on the fixture input, so collapsing
+      them must be a loud failure, not a silent de-fanging. (c) The xfail keyword set carries BOTH strict=True
+      AND raises=AssertionError — strict makes the RED self-retiring, and the AssertionError constraint
+      is what stops a structural break (AttributeError/ValidationError) from masquerading as a green xfail.
+      (d) At least 6 xfail markers and at least one causation_envelope_id reference. RED PROVEN against
+      two EXISTS-but-WRONG mutations of the head content, not merely against absence: stripping the raises=AssertionError
+      constraint — a file that still exists, still has 6 xfails, but whose REDs are now vacuous — drops
+      the count to 0 and exits 1; deleting the §11.11 test drops its count to 0 and exits 1. GREEN is
+      therefore non-vacuous: it cannot come from an absent file, a stub, or a suite of decorative xfails.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          F=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/integration/test_state_io_outbox_seam_red.py?ref=455ca16a57037f9c1360951f1d875d846f36c326"
+          --jq .content | base64 -d); R=$(printf '%s' "$F" | grep -c 'def test_redelivery_of_same_input_resumes_publish_from_row_without_rerunning_handler');
+          G=$(printf '%s' "$F" | grep -c 'def test_e1_guard_causation_and_envelope_ids_must_differ');
+          S=$(printf '%s' "$F" | grep -c '"strict": True, "raises": AssertionError'); X=$(printf '%s'
+          "$F" | grep -c '@pytest.mark.xfail'); C=$(printf '%s' "$F" | grep -c 'causation_envelope_id');
+          test "$R" -ge 1 && test "$G" -ge 1 && test "$S" -ge 1 && test "$X" -ge 6 && test "$C" -ge 1
+  - id: "dod-tests-only-no-product-source"
+    description: >-
+      Asserts #2284 is genuinely TESTS-ONLY: zero changed files under src/, and the RED test file is present
+      in the changed set. This is load-bearing for the RED-first ordering — a non-implementer gate that
+      quietly shipped product source alongside its own tests would be grading its own implementation,
+      the exact self-certifying-evidence failure the suite exists to prevent. RED PROVEN against an EXISTS-but-WRONG
+      comparator: the identical check run against omnibase_infra#2281 (the state_io fail-loud fix, a PR
+      that DOES touch product source) counts 1 src/ file and exits 1. GREEN cannot come from an empty
+      or absent PR: the file list is read live from the GitHub API, and the second clause requires the
+      test file to actually be in it, so a PR that changed nothing would fail.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          SRC=$(gh api "repos/OmniNode-ai/omnibase_infra/pulls/2284/files" --paginate --jq '.[].filename'
+          | grep '^src/' | wc -l | tr -d ' '); RED=$(gh api "repos/OmniNode-ai/omnibase_infra/pulls/2284/files"
+          --paginate --jq '.[].filename' | grep 'tests/integration/test_state_io_outbox_seam_red.py' |
+          wc -l | tr -d ' '); test "$SRC" -eq 0 && test "$RED" -ge 1
+  - id: "occ-self-bind-pr-2284"
+    description: >-
+      Binds this OCC companion to its product PR by head SHA. Asserts omnibase_infra#2284's live head
+      is exactly 455ca16a57037f9c1360951f1d875d846f36c326 — the commit the two content checks above are
+      pinned to. This is a live gh-api read of the PRODUCT PR's head, NOT a `gh pr checks` self-poll on
+      the companion (which would only ever prove the companion's own CI and never the product PR's state).
+      If #2284 is force-pushed, this check goes RED and the pinned content evidence above must be re-verified
+      against the new head rather than silently inherited.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2284 --jq .head.sha)" = "455ca16a57037f9c1360951f1d875d846f36c326"
