@@ -84,3 +84,31 @@ dod_evidence:
         check_value: >-
           gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefName --jq '.number == 4069 and .headRefName
           == "jonah/omn-14489-occ-infra-2280"'
+  - id: "dod-verify-2280-scope-boundary-hop13-unreachable"
+    description: >-
+      SCOPE-LIMITING disclosure, not a defect fix. Product-observing check against omnibase_infra#2280
+      head 07d15c6b0380bb822b080f7517fdebfe4daef96e AND the same-head copy of runtime/auto_wiring/handler_wiring.py
+      (unchanged by this PR). This PR's fix is real and necessary — it stops validate_runtime_local_ingress_payload
+      from rejecting the real producer payload against the old stub contract (the HW=19-IN/HW=0-OUT starvation).
+      It does NOT make the agent.a2a_task operation reachable end to end: HandlerA2ATask (handler_a2a_task.py:316)
+      exposes only async submit()/watch(), no handle()/handle_async() anywhere in the class or its MRO.
+      _make_dispatch_callback (handler_wiring.py:412-462) falls through to _missing_handle when neither
+      is present, which raises ModelOnexError("...does not expose a callable handle() or handle_async()
+      dispatch entrypoint.") on the first real dispatch to this operation. This PR's own dod_evidence
+      (test_remote_agent_invoke_effect_contract.py) drives validate_runtime_local_ingress_payload directly
+      and never exercises _make_dispatch_callback, so it neither catches nor claims to fix this. Tracked
+      as a third confirmed instance on the pre-existing systemic ticket OMN-14135 (added 2026-07-13, not
+      a new ticket — HandlerLedgerProjection and HandlerBuildLoopAppend were the first two instances).
+      This item exists so the gap is a durable, checked fact rather than a silent omission from this companion's
+      claim of what OMN-14489/#2280 fixes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          h="$(mktemp)" && w="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_remote_agent_invoke_effect/handlers/handler_a2a_task.py?ref=07d15c6b0380bb822b080f7517fdebfe4daef96e"
+          --jq .content | base64 -d > "$h" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=07d15c6b0380bb822b080f7517fdebfe4daef96e"
+          --jq .content | base64 -d > "$w" && grep -F -- 'class HandlerA2ATask' "$h" && grep -F -- 'async
+          def submit(self, command' "$h" && grep -F -- 'async def watch(' "$h" && ! grep -E -- '(async
+          )?def handle(_async)?\(' "$h" && grep -F -- 'def _missing_handle' "$w" && grep -F -- 'does not
+          expose a callable' "$w"
