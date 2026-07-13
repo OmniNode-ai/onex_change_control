@@ -1,0 +1,107 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14538"
+title: "OCC companion for omnimarket#1735 — integration_sweep _resolve_status fail-closes on scanned evidence"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1735 (OMN-14538, child of OMN-14531 detector-shelf
+  audit). node_integration_sweep_orchestrator's _resolve_status previously returned STATUS_RECORDED unless
+  a runtime-SHA receipt happened to be stale. RUNTIME probe fail + SSH-dead CONTAINER_HEALTH + KAFKA fail
+  + empty DB tables still yielded status=recorded because the roll-up never inspected whether the surface
+  probes that actually ran (surface_probes.py never raises -- a dead host surfaces as a structured fail/error
+  dict, not an exception) reported success, and never required that any integration census dimension (tickets
+  / kafka / db / projection / golden_chains) be positively declared before claiming recorded. The fix
+  threads a new surface_fail_count (any scanned probe status in {fail, error}) and census_dimensions_configured
+  into _resolve_status: either condition alone now routes the verdict to BLOCKED. The evidence below is
+  an INDEPENDENT reproduction (not the implementer's own claim): the new test corpus was run GREEN at
+  the PR head (8/8, plus the full node's 46/46 regression corpus), then the handler source alone was reverted
+  to origin/dev (84274d5d) with the new tests kept in place, reproducing a genuine EXISTS-but-WRONG RED
+  (8 failed, including a literal assertion failure showing the pre-fix code returning status='recorded'
+  against a dead-runtime-lane scope), then the fix was restored and the full corpus re-verified GREEN
+  (46/46).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1735 head makes _resolve_status accept surface_fail_count and census_dimensions_configured,
+      routes any scanned surface-probe fail/error to BLOCKED (previously only stale runtime-SHA receipts
+      gated the verdict), and routes a zero-census wet run to BLOCKED even when the 3 baseline health/CI
+      probes pass -- proven by an independent RED (revert handler only, keep tests: 8 failed, including
+      the literal known-defect reproduction) then GREEN (46/46) reproduction, not merely the implementer's
+      own claim."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1735-surface-fail-blocks"
+    description: >-
+      Product-observing check against omnimarket#1735 head e2f4b06abf7bb60f807b07bdba08a314e7bcf65e. Reads
+      handler_integration_sweep_orchestrator.py from the PR head and asserts _resolve_status now accepts
+      a surface_fail_count keyword argument, that handle() computes it from surface_results entries whose
+      status is in {fail, error}, and that the terminal-status branch routes on (stale_count or surface_fail_count)
+      instead of stale_count alone -- closing the fail-open path where RUNTIME fail + SSH-dead CONTAINER_HEALTH
+      + KAFKA fail still returned recorded as long as no runtime-SHA receipt happened to be stale.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_integration_sweep_orchestrator/handlers/handler_integration_sweep_orchestrator.py?ref=e2f4b06abf7bb60f807b07bdba08a314e7bcf65e"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'surface_fail_count: int' "$f" && grep -Fq --
+          '_SURFACE_NON_SUCCESS_STATUSES = frozenset({"fail", "error"})' "$f" && grep -Fq -- 'if entry.get("status")
+          in _SURFACE_NON_SUCCESS_STATUSES' "$f" && grep -Fq -- 'stale_count or surface_fail_count' "$f"
+  - id: "dod-verify-1735-census-required"
+    description: >-
+      Product-observing check against the PR head. Asserts handle() now computes census_dimensions_configured
+      from tickets and the four infra-surface census lists (kafka, db, projection, golden_chains), and
+      that _resolve_status routes a wet run with zero census dimensions configured to BLOCKED even when
+      probe_count is non-zero -- closing the silent-skip path where a caller declaring nothing on every
+      census dimension still got a recorded verdict off 3 baseline health/CI probes alone.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_integration_sweep_orchestrator/handlers/handler_integration_sweep_orchestrator.py?ref=e2f4b06abf7bb60f807b07bdba08a314e7bcf65e"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'census_dimensions_configured' "$f" && grep
+          -Fq -- 'if not census_dimensions_configured:' "$f" && grep -Fq -- 'return STATUS_BLOCKED' "$f"
+  - id: "dod-verify-1735-red-green-reproduced"
+    description: >-
+      Independent RED-then-GREEN reproduction against a local worktree checked out at the PR head, not
+      trusting the implementer's commit message. The new test_integration_sweep_fail_closed_status.py
+      corpus (8 tests) plus the node's existing regression corpus (test_golden_chain_integration_sweep_orchestrator.py,
+      test_integration_sweep_dispatch_path.py, tests/integration/node_integration_sweep_orchestrator/)
+      passed 46/46 at head e2f4b06a. handler_integration_sweep_orchestrator.py alone was then reverted
+      to origin/dev (84274d5d), keeping the new tests in place, and the new corpus alone re-run: 8 failed,
+      including a genuine EXISTS-but-WRONG assertion failure ("a dead runtime lane with every scanned
+      probe failing must never report 'recorded'" -- assert 'recorded' != 'recorded', i.e. the pre-fix
+      code returned status=recorded against the exact dead-runtime-lane scope from the diagnosis) and
+      a TypeError-class signature mismatch (_resolve_status() got an unexpected keyword argument 'surface_fail_count')
+      proving the tests exercise the real fixed signature, not a vacuous stub. The handler was then restored
+      to the PR head and the full 46-test corpus re-verified 46/46 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+          && grep -q '46 passed' drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+          && grep -q '8 failed' drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+          && grep -q "must never report 'recorded'" drift/dod_receipts/OMN-14538/dod-verify-1735-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-e2f4b06a"
+    description: >-
+      Deploy assessment for omnimarket PR #1735 at head e2f4b06abf7bb60f807b07bdba08a314e7bcf65e. The
+      PR changes a diagnostic sweep node (node_integration_sweep_orchestrator) and its tests; this evidence
+      package performs no live deploy, runtime restart, docker exec, rpk topic produce, database mutation,
+      or .201/.200 runtime mutation. The sweep is not currently wired into any CI workflow (zero references
+      in omnimarket/.github/workflows/*.yml, verified via grep) -- live CI/deploy-gate enforcement wiring
+      is an explicitly-flagged follow-up, not performed here. No prod promotion is requested or performed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14538/dod-deploy-assessment-head-e2f4b06a/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14538/dod-deploy-assessment-head-e2f4b06a/command.yaml
