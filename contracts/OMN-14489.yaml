@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14489"
+title: "OCC companion for omnibase_infra#2280 — remote-agent invoke canonical models"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2280 (OMN-14489). The node_remote_agent_invoke_effect
+  contract declared local stub input/output models while the live producer and consumer use the canonical
+  omnibase_core delegation models. Because the node routes with operation_match, dispatch did not type-scope
+  the payload, but runtime local ingress still validates the payload against the contract-declared input_model.
+  The stub rejected the real producer payload, starving remote-agent-invoke.v1 to agent-task-lifecycle.v1.
+  The product PR repoints the contract to canonical omnibase_core ModelInvocationCommand and ModelAgentTaskLifecycleEvent,
+  deletes the now-unused local stub models, and adds a cross-boundary test that drives the producer-shaped
+  payload through the real runtime ingress validator against the contract-declared model.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+  - "topics"
+evidence_requirements:
+  - kind: "manual"
+    description: "Product PR #2280 head declares canonical omnibase_core delegation models and proves
+      the producer payload validates through runtime ingress."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2280-canonical-model-contract"
+    description: >-
+      Product-observing check against omnibase_infra#2280 head 07d15c6b0380bb822b080f7517fdebfe4daef96e.
+      Reads the node contract and unit scaffold test from the PR head and asserts the contract declares
+      the canonical omnibase_core ModelInvocationCommand and ModelAgentTaskLifecycleEvent modules instead
+      of the removed local stub model package.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          c="$(mktemp)" && t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_remote_agent_invoke_effect/contract.yaml?ref=07d15c6b0380bb822b080f7517fdebfe4daef96e"
+          --jq .content | base64 -d > "$c" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_remote_agent_invoke_effect/test_node_scaffold.py?ref=07d15c6b0380bb822b080f7517fdebfe4daef96e"
+          --jq .content | base64 -d > "$t" && grep -F -- 'module: "omnibase_core.models.delegation.model_invocation_command"'
+          "$c" && grep -F -- 'module: "omnibase_core.models.delegation.model_agent_task_lifecycle_event"'
+          "$c" && grep -F -- 'test_input_output_models_use_canonical_core_module' "$t"
+  - id: "dod-verify-2280-runtime-ingress-cross-boundary"
+    description: >-
+      Product-observing check against the PR head. Reads the integration test and asserts it imports the
+      canonical producer/consumer models, builds a ModelRuntimeLocalIngressRoute from the contract, calls
+      validate_runtime_local_ingress_payload, and checks rich producer fields survive validation. This
+      is the load-bearing exists-but-wrong RED surface: the old local stub contract rejected the real
+      payload.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/integration/test_remote_agent_invoke_effect_contract.py?ref=07d15c6b0380bb822b080f7517fdebfe4daef96e"
+          --jq .content | base64 -d > "$t" && grep -F -- 'ModelRuntimeLocalIngressRoute' "$t" && grep
+          -F -- 'validate_runtime_local_ingress_payload(route, payload)' "$t" && grep -F -- 'test_producer_payload_validates_through_runtime_ingress'
+          "$t" && grep -F -- 'test_contract_output_model_validates_handler_event' "$t" && grep -F -- 'for
+          field in ("task_id", "invocation_kind", "target_ref")' "$t"
+  - id: "dod-deploy-assessment-head-07d15c6b"
+    description: >-
+      Deploy assessment for omnibase_infra PR #2280 at head 07d15c6b0380bb822b080f7517fdebfe4daef96e.
+      The PR touches node contract/model/test paths for runtime-discovered remote-agent invocation behavior,
+      but this OCC evidence update performs no live deploy, runtime restart, docker exec, rpk topic produce,
+      database mutation, topic mutation, or .201/.200 runtime mutation. Runtime rollout/readback remains
+      under the normal post-merge deploy path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14489/dod-deploy-assessment-head-07d15c6b/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14489/dod-deploy-assessment-head-07d15c6b/command.yaml
