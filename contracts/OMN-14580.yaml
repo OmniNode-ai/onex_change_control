@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14580"
+title: "fix(OMN-14580): fold topic into topic_match dispatcher IDs"
+summary: >-
+  omnibase_infra PR #2301 fixes a cold-boot crash where multiple topic_match entries used the same operation
+  and handler class but different topics, causing duplicate dispatcher registration. The product change
+  folds each entry's declared topic into the dispatcher-entry key while preserving operation-only dispatcher
+  IDs.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - protocols
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2301-dispatcher-topic-fold"
+    description: >-
+      Product-observing verification that omnibase_infra PR #2301 head c269fd32c95c9db684415160398f27d9255cf2ef
+      changes the auto-wiring dispatcher-entry key and adds the topic_match same-operation regression
+      coverage plus regenerated dispatch-parity baseline.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2301; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=c269fd32c95c9db684415160398f27d9255cf2ef;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,files,body
+          --jq '.headRefOid + "\n" + ((.files | map(.path)) | join("\n")) + "\n" + .body' > "$d/pr.txt"
+          && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fq 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py'
+          "$d/pr.txt" && grep -Fq 'tests/integration/runtime/test_auto_wiring_topic_match_same_operation.py'
+          "$d/pr.txt" && grep -Fq 'tests/fixtures/dispatch_parity/baseline-selection-v2.json' "$d/pr.txt"
+          && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/handler_wiring.py" && grep -Fq 'entry.topic' "$d/handler_wiring.py"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-gate-compatible assessment for omnibase_infra PR #2301. The PR changes runtime auto-wiring
+      code that participates in cold-boot dispatcher registration, so deploy-gate evidence is required.
+      This merge sweep did not perform a live deploy, restart, docker exec, rpk topic produce, or .201
+      runtime mutation. Live cold-boot evidence is recorded in the product PR body from the builder's
+      prior approved verification lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2301; PRODUCT_REPO=OmniNode-ai/omnibase_infra; DEPLOY_SCOPE=runtime-cold-boot-dispatcher-assessment;
+          d="$(mktemp -d)"; gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json files,body --jq
+          '(.files | map(.path) | join("\n")) + "\n" + .body' > "$d/pr.txt" && grep -Fq 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py'
+          "$d/pr.txt" && grep -Fq 'Real `.201` dev-lane cold `--profile runtime` bring-up' "$d/pr.txt"
+          && grep -Fq 'Health=healthy' "$d/pr.txt" && grep -Fq 'RestartCount=0' "$d/pr.txt" && test "$DEPLOY_SCOPE"
+          = "runtime-cold-boot-dispatcher-assessment"
