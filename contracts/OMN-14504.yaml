@@ -1,0 +1,99 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14504"
+title: "OCC companion for omnibase_infra#2282 — check_release_identity.py PYTHONPATH-shadow bootstrap
+  actually protects"
+summary: >
+  Non-implementer DoD companion for omnibase_infra#2282 (OMN-14504, follow-up to OMN-14471/#2275). #2275's
+  primary refactor (freestanding scripts/check_release_identity.py → canonical node_release_identity_compute
+  COMPUTE node) is real and unaffected — its 13/13 cross-boundary equivalence proof stands. #2282 fixes
+  ONE dead defensive line added mid-#2275 to repair a CI subprocess-import failure: `if _SRC_DIR.is_dir()
+  and str(_SRC_DIR) not in sys.path: sys.path.insert(0, str(_SRC_DIR))`. That guard is a no-op at BOTH
+  real call sites (the .pre-commit-config.yaml check-release-identity hook and the fresh-deploy-fitness.yml
+  release-identity CI job — both `uv run` inside this project's own venv), because the venv's editable
+  install already appends the IDENTICAL `_SRC_DIR` string to sys.path via a plain-path .pth file at interpreter
+  startup, BEFORE the shim's bootstrap line runs — so `str(_SRC_DIR) not in sys.path` is already False
+  and the insert never fires, letting an adversarial PYTHONPATH entry ahead of it win the import race.
+  The fix strips any existing occurrence(s) of _SRC_DIR from sys.path then inserts unconditionally at
+  index 0, making the promotion idempotent and unconditional instead of a no-op in the realistic invocation
+  shape. HONESTY NOTE ON THE PROOF STANDARD — read before trusting the greens below. This is RED-against-
+  EXISTS-but-WRONG, not RED-on-absence: the defect is a guard that LOOKS protective and IS present, not
+  a missing guard. dod-verify-2282-static-markers proves both states via gh-api reads at pinned SHAs (merged
+  #2275 132cf776 vs. #2282 head d2b8ad4e): the vulnerable conditional line is present verbatim in the
+  OLD file and absent (as executable code, not merely absent from a comment restating it) from the NEW
+  file, and the NEW file's replacement lines (strip-then-unconditional-insert) are present. dod-verify-2282-live-red-
+  then-green-reproduction is the independent DYNAMIC proof: the OCC-companion author (not #2282's implementer)
+  temporarily swapped the PR's own tests/scripts/test_check_release_identity.py:: test_real_shim_resists_pythonpath_shadow_from_editable_install
+  regression test against the PRE-fix script content (the merged #2275 version, restored verbatim via
+  `git show`) inside #2282's own worktree/venv, observed it FAIL with the decoy sentinel `CRID_DECOY_SENTINEL_9f3a`
+  winning the import race (RED), then restored the PR's fixed script and observed the full 15/15 file
+  pass, including that regression test (GREEN). This is a from-scratch adversarial re-run, not a re-statement
+  of the implementer's own claimed numbers — the implementer's PR body asserts the identical RED-then-GREEN
+  result, and this receipt is the independent confirmation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2282 head d2b8ad4e strips the dead PYTHONPATH-shadow guard's no-op condition,
+      makes the src/ promotion unconditional, and is independently proven RED against the merged #2275
+      code and GREEN after the fix, via both static gh-api markers and a live pytest re-run."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2282-static-markers"
+    description: >-
+      Product-observing check against omnibase_infra#2282 head d2b8ad4e41c8e965f91c5110007c519da5ffc2ad
+      and the merged #2275 commit 132cf776c397e5ea8e9522297af392e1a265738b it follows up on. Asserts,
+      via gh-api content reads (no local checkout required, hermetically reproducible by anyone with gh
+      access): (1) the OLD file at the merged #2275 SHA contains the vulnerable conditional verbatim —
+      `if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:` — establishing the RED premise is a real,
+      present defect, not an absence; (2) the NEW file at #2282's head does NOT contain that conditional
+      as executable code (its only occurrence in the new file is inside an explanatory comment, so the
+      check targets the `if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:` line form specifically,
+      not a bare substring); (3) the NEW file contains both replacement lines — the strip-prior-occurrences
+      filter and the unconditional `sys.path.insert(0, _src_str)` — proving the fix is the strip-then-insert
+      shape described in the PR, not merely a deleted guard; (4) the NEW test file tests/scripts/test_check_release_identity.py
+      contains the new regression test `test_real_shim_resists_pythonpath_shadow_from_editable_install`
+      by name and its decoy-sentinel marker `CRID_DECOY_SENTINEL_9f3a`, proving the regression coverage
+      is real and not merely claimed in prose.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          old="$(mktemp)" && new="$(mktemp)" && t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/check_release_identity.py?ref=132cf776c397e5ea8e9522297af392e1a265738b"
+          --jq .content | base64 -d > "$old" && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/check_release_identity.py?ref=d2b8ad4e41c8e965f91c5110007c519da5ffc2ad"
+          --jq .content | base64 -d > "$new" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/test_check_release_identity.py?ref=d2b8ad4e41c8e965f91c5110007c519da5ffc2ad"
+          --jq .content | base64 -d > "$t" && grep -F -- 'if _SRC_DIR.is_dir() and str(_SRC_DIR) not in
+          sys.path:' "$old" && ! grep -F -- 'if _SRC_DIR.is_dir() and str(_SRC_DIR) not in sys.path:'
+          "$new" && grep -F -- 'sys.path[:] = [p for p in sys.path if p != _src_str]' "$new" && grep -F
+          -- 'sys.path.insert(0, _src_str)' "$new" && grep -F -- 'def test_real_shim_resists_pythonpath_shadow_from_editable_install'
+          "$t" && grep -F -- 'CRID_DECOY_SENTINEL_9f3a' "$t"
+  - id: "dod-verify-2282-live-red-then-green-reproduction"
+    description: >-
+      Independent DYNAMIC reproduction performed by the OCC-companion author (not #2282's implementer)
+      inside #2282's own worktree ($OMNI_HOME/omni_worktrees/OMN-14504/omnibase_infra, branch jonah/omn-14504-crid-pythonpath-shadow-fix,
+      HEAD d2b8ad4e). Backed up the fixed scripts/check_release_identity.py, overwrote it with the verbatim
+      merged-#2275 content (`git show 132cf776:scripts/check_release_identity.py`), and ran ONLY the new
+      regression test via the worktree's own venv (`env -u PYTHONPATH .venv/bin/python3 -m pytest tests/scripts/test_check_release_identity.py::test_real_shim_resists_pythonpath_shadow_from_editable_install
+      -v`): result FAILED — the decoy sentinel CRID_DECOY_SENTINEL_9f3a appeared in the subprocess traceback,
+      proving the PYTHONPATH shadow won under the pre-fix code (RED against EXISTS-but-WRONG). Restored
+      the fixed script from the backup and re-ran the FULL file (`tests/scripts/test_check_release_identity.py`):
+      15/15 passed, including the regression test (GREEN). git status was clean after restoration — the
+      verification left no diff on the worktree. This is the strongest available proof: a from-scratch,
+      independently-executed dynamic RED-then-GREEN, not a re-statement of the PR body's own claimed numbers.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          cd "$OMNI_HOME/omni_worktrees/OMN-14504/omnibase_infra" && git rev-parse HEAD | grep -qi '^d2b8ad4e'
+          && cp scripts/check_release_identity.py /tmp/crid_fixed_backup.py && git show 132cf776:scripts/check_release_identity.py
+          > scripts/check_release_identity.py && ( env -u PYTHONPATH .venv/bin/python3 -m pytest tests/scripts/test_check_release_identity.py::test_real_shim_resists_pythonpath_shadow_from_editable_install
+          -v ; echo "exit=$?" ) | grep -q 'exit=1' && cp /tmp/crid_fixed_backup.py scripts/check_release_identity.py
+          && env -u PYTHONPATH .venv/bin/python3 -m pytest tests/scripts/test_check_release_identity.py
+          -v | grep -qE '15 passed' && git diff --quiet scripts/check_release_identity.py
