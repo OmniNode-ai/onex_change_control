@@ -112,3 +112,71 @@ dod_evidence:
           def submit(self, command' "$h" && grep -F -- 'async def watch(' "$h" && ! grep -E -- '(async
           )?def handle(_async)?\(' "$h" && grep -F -- 'def _missing_handle' "$w" && grep -F -- 'does not
           expose a callable' "$w"
+  - id: "dod-verify-2280-dispatch-entrypoint-head-38d78e6b"
+    description: >-
+      Follow-up product-observing check against omnibase_infra#2280 head 38d78e6b31ad0504c5387c35181df793ff9a6964.
+      The live PR head now closes the dispatch-reachability gap disclosed by the prior OCC#4069 evidence:
+      the contract declares handler_routing.handlers[].event_model for ModelInvocationCommand so operation_match
+      can register the payload-class alias, HandlerA2ATask exposes async handle(self, request: ModelInvocationCommand)
+      returning ModelAgentTaskLifecycleEvent, and the new tests cover both the concrete A2A dispatch path
+      and the platform-wide handler-dispatch entrypoint regression class.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          c="$(mktemp)" && h="$(mktemp)" && it="$(mktemp)" && ut="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_remote_agent_invoke_effect/contract.yaml?ref=38d78e6b31ad0504c5387c35181df793ff9a6964"
+          --jq .content | base64 -d > "$c" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_remote_agent_invoke_effect/handlers/handler_a2a_task.py?ref=38d78e6b31ad0504c5387c35181df793ff9a6964"
+          --jq .content | base64 -d > "$h" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_remote_agent_invoke_effect/test_a2a_dispatch_entrypoint_omn14489.py?ref=38d78e6b31ad0504c5387c35181df793ff9a6964"
+          --jq .content | base64 -d > "$it" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_handler_dispatch_entrypoint_coverage_omn14489.py?ref=38d78e6b31ad0504c5387c35181df793ff9a6964"
+          --jq .content | base64 -d > "$ut" && grep -F -- 'patch: 3' "$c" && grep -F -- 'event_model:'
+          "$c" && grep -F -- 'module: "omnibase_core.models.delegation.model_invocation_command"' "$c"
+          && grep -F -- 'async def handle(' "$h" && grep -F -- 'ModelAgentTaskLifecycleEvent(' "$h" &&
+          grep -F -- 'test_real_dispatch_callback_invokes_handler_and_emits_lifecycle_event' "$it" &&
+          grep -F -- 'test_no_new_entrypointless_handlers' "$ut" && grep -F -- 'test_entrypoint_predicate_discriminates'
+          "$ut"
+  - id: "dod-deploy-assessment-head-38d78e6b"
+    description: >-
+      Deploy assessment for omnibase_infra PR #2280 at head 38d78e6b31ad0504c5387c35181df793ff9a6964.
+      The follow-up head changes the node contract and runtime handler dispatch path, but this OCC evidence
+      update performs no live deploy, runtime restart, docker exec, rpk topic produce, database mutation,
+      topic mutation, or .201/.200 runtime mutation. Runtime rollout/readback remains under the normal
+      post-merge deploy path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14489/dod-deploy-assessment-head-38d78e6b/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14489/dod-deploy-assessment-head-38d78e6b/command.yaml
+  - id: "dod-verify-2280-dispatch-parity-head-b401f5fa"
+    description: >-
+      Final product-observing check against omnibase_infra#2280 head b401f5fa2a0c93880caf514ac233fa3da0a78ec9.
+      After the dispatch-entrypoint repair, CI correctly rejected the stale dispatch parity oracle because
+      the A2A route became type-scoped and gained the ModelInvocationCommand probe. This item verifies
+      the committed baseline now includes that intentional semantic change and that the focused parity
+      test passes locally.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          env -u PYTHONPATH uv run pytest tests/integration/runtime/test_dispatch_selection_parity.py::test_mode_a_selection_parity_against_committed_oracle
+          -q && grep -F -- '"P4::dispatcher.auto.node_remote_agent_invoke_effect.HandlerA2ATask.agent_a2a_task_8289e52e::onex.cmd.omnibase-infra.remote-agent-invoke.v1"'
+          tests/fixtures/dispatch_parity/baseline-selection-v2.json && grep -F -- '"type_scoped_dispatchers":
+          42' tests/fixtures/dispatch_parity/baseline-selection-v2.json && grep -F -- '"probe_count":
+          331' tests/fixtures/dispatch_parity/baseline-selection-v2.json
+  - id: "dod-deploy-assessment-head-b401f5fa"
+    description: >-
+      Deploy assessment for omnibase_infra PR #2280 at head b401f5fa2a0c93880caf514ac233fa3da0a78ec9.
+      The final head changes the dispatch parity fixture only, after the node contract and runtime handler
+      dispatch-path change at 38d78e6b. This OCC evidence update performs no live deploy, runtime restart,
+      docker exec, rpk topic produce, database mutation, topic mutation, or .201/.200 runtime mutation.
+      Runtime rollout/readback remains under the normal post-merge deploy path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14489/dod-deploy-assessment-head-b401f5fa/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14489/dod-deploy-assessment-head-b401f5fa/command.yaml
