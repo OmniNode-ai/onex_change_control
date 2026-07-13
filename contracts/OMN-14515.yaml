@@ -1,0 +1,138 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14515"
+title: 'OCC companion for omnibase_core#1437 — extra="forbid" ratchet gate (assert the positive; absence
+  is a violation)'
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_core#1437 (OMN-14515, parent OMN-14208). Operator ruling:
+  extra is "forbid" for everything; extra="ignore"/"allow" are default-deny. The load-bearing risk this
+  gate had to avoid is VACUITY: Pydantic's default for an UNDECLARED extra is "ignore", so a model with
+  no model_config at all is ALREADY silently dropping unknown fields — it just never said so. A validator
+  that greps for the literal string extra="ignore" catches only the honest minority and proves nothing.
+  Measured on core with real introspection, the silent-by-omission population (675 IMPLICIT_DEFAULT) is
+  LARGER than the explicit ignore/allow population (433). So the validator asserts the POSITIVE — every
+  Pydantic model must resolve to an explicit extra="forbid" (inheriting it counts) — and ABSENCE IS A
+  VIOLATION. This is not theoretical: four confirmed live silent-data-loss bugs came from exactly this
+  shape, where a consumer hand-rolled a slim copy of a producer's event model with a permissive extra
+  and fields vanished on every message (OMN-14490, OMN-14506, OMN-14513, OMN-14514). Resolution is runtime-authoritative
+  — the validator imports the module and reads the real cls.model_config, which Pydantic has already merged
+  down the MRO, so inherited forbid is exact with no hand-rolled MRO walk to get wrong (2,203 of 2,206
+  core models resolve this way; static AST is the fallback for the 3 modules that are genuinely unimportable).
+  The evidence below asserts the three things that separate a real gate from a decorative one: (1) the
+  validator is NOT vacuous — it flags the no-model_config case, which a string-grep gate cannot see; (2)
+  the CI job is wired into the REQUIRED Quality Gate rollup and fails closed, because a workflow that
+  merely RUNS gates nothing; (3) it is a RATCHET, not an allowlist — new models block outright, editing
+  a baselined broken model blocks, the baseline may only shrink, and the sole suppression is an EXPIRING
+  ticket+PR-keyed waiver whose expiry is a hard failure.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: 'omnibase_core#1437 head asserts the positive (absence of an explicit extra="forbid"
+      is a violation), wires the gate into the required CI rollup + pre-commit, and enforces a shrink-only
+      ratchet with expiring waivers.'
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1437-not-vacuous-absence-is-a-violation"
+    description: >-
+      Product-observing check against omnibase_core#1437 head 4ba239da5e8ab3d2e340108d7e5810bc3b8625fd.
+      THE anti-vacuity check. Reads the validator and its test from the PR head and asserts that a model
+      declaring NO model_config at all resolves to STATUS_IMPLICIT_DEFAULT and is treated as a violation
+      — the case a grep-for-'extra="ignore"' validator cannot see, and the larger half of the real population
+      (675 implicit-default vs 433 explicit ignore/allow on core). Asserts: the runtime engine maps an
+      absent extra to STATUS_IMPLICIT_DEFAULT; only EXPLICIT_FORBID is compliant (is_violation is defined
+      as status != EXPLICIT_FORBID, so absence is a violation by construction, not by a special case that
+      could be dropped); and the proof-(b) regression test exists and asserts exactly that. If this check
+      passes but the gate were vacuous, the is_violation definition would have to be inverted — which
+      the third grep pins.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          v="$(mktemp)" && m="$(mktemp)" && t="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/validators/pydantic_extra_forbid.py?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$v" && gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/validation/model_extra_forbid_finding.py?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$m" && gh api "repos/OmniNode-ai/omnibase_core/contents/tests/unit/validators/test_pydantic_extra_forbid.py?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$t" && grep -F -- 'if extra is None:' "$v" && grep -F -- 'return
+          STATUS_IMPLICIT_DEFAULT, None, False' "$v" && grep -F -- 'return self.status != STATUS_EXPLICIT_FORBID'
+          "$m" && grep -F -- 'def test_proof_b_no_model_config_at_all_is_a_violation' "$t" && grep -F
+          -- 'assert statuses["ModelNoConfigAtAll"] == STATUS_IMPLICIT_DEFAULT' "$t"
+  - id: "dod-verify-1437-ci-gate-inside-required-rollup"
+    description: >-
+      Product-observing check against the PR head. A workflow that merely RUNS gates nothing (reference:
+      the OMN-14350 CI-gate-enforcement lesson) — the check must be inside the single REQUIRED rollup
+      and must fail closed. Reads .github/workflows/ci.yml from the PR head and asserts the pydantic-extra-forbid
+      job exists, is listed in the quality-gate `needs:` (so it cannot be silently skipped), AND is evaluated
+      in the quality-gate pass condition with an `== "success"` comparison (so a skipped/cancelled/failed
+      result turns the required Quality Gate red rather than passing it). Also asserts the job checks
+      out with fetch-depth 0, without which --enforce-modified cannot read the diff — and that path fails
+      CLOSED, not open.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          c="$(mktemp)" && v="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_core/contents/.github/workflows/ci.yml?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$c" && gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/validators/pydantic_extra_forbid.py?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$v" && grep -F -- '  pydantic-extra-forbid:' "$c" && grep -F --
+          'no-noncanonical-lifecycle-classes, pydantic-extra-forbid, spdx-headers]' "$c" && grep -F --
+          'extra_forbid="${{ needs.pydantic-extra-forbid.result }}"' "$c" && grep -F -- '[[ "$extra_forbid"
+          == "success" ]]' "$c" && grep -F -- 'fetch-depth: 0' "$c" && grep -F -- 'could not read the
+          diff, ' "$v"
+  - id: "dod-verify-1437-precommit-hook-and-remote-export"
+    description: >-
+      Product-observing check against the PR head. CLAUDE.md rule 5 requires a new check to ship as a
+      CI gate AND a pre-commit hook in the SAME PR — a detection tool that is not wired pre-merge is advisory
+      and gets ignored. Reads .pre-commit-config.yaml (core's own local hook, language: system so the
+      validator runs in the repo venv and can introspect the real model_config) and .pre-commit-hooks.yaml
+      (the remote export consumer repos reference during the compat -> spi -> infra -> market rollout)
+      from the PR head and asserts the pydantic-extra-forbid hook id is present in both, and that the
+      local hook is the enforcing invocation (--enforce-modified :staged), not a bare advisory scan.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          cfg="$(mktemp)" && hooks="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_core/contents/.pre-commit-config.yaml?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$cfg" && gh api "repos/OmniNode-ai/omnibase_core/contents/.pre-commit-hooks.yaml?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$hooks" && grep -F -- '- id: pydantic-extra-forbid' "$cfg" && tr
+          '\n' ' ' < "$cfg" | tr -s ' ' | grep -F -- 'omnibase_core.validators.pydantic_extra_forbid --enforce-modified
+          :staged src/omnibase_core' && grep -F -- '- id: pydantic-extra-forbid' "$hooks"
+  - id: "dod-verify-1437-ratchet-not-allowlist"
+    description: >-
+      Product-observing check against the PR head. Asserts the gate is a RATCHET, not an allowlist — the
+      failure mode the operator explicitly named ("allowlists are how enforcement rots"). Reads the validator
+      and the shipped waivers file from the PR head and asserts all four ratchet properties are implemented:
+      (1) --check-stale exists, so a baselined entry that became compliant must be deleted and the count
+      may only shrink; (2) --enforce-modified exists, so editing the body of a baselined broken model
+      fails — you may not touch a broken model and leave it broken; (3) an EXPIRED waiver is a HARD FAILURE
+      (the property that stops the waiver file decaying into a permanent allowlist), and a waiver without
+      a ticket / PR / expiry is rejected; (4) the waivers file ships EMPTY, so nothing is grandfathered
+      through it today.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          v="$(mktemp)" && w="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/validators/pydantic_extra_forbid.py?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$v" && gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/validators/extra_forbid_waivers.yaml?ref=4ba239da5e8ab3d2e340108d7e5810bc3b8625fd"
+          --jq .content | base64 -d > "$w" && grep -F -- '"--check-stale",' "$v" && grep -F -- '"--enforce-modified",'
+          "$v" && grep -F -- 'EXPIRED on ' "$v" && grep -F -- "'ticket' must be an OMN-NNNN reference"
+          "$v" && grep -F -- "'pr' (the in-flight PR) is required" "$v" && grep -E -- '^waivers: \[\]$'
+          "$w"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the four entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14515-occ-core-1437-extra-forbid-ratchet' drift/dod_receipts/OMN-14515/dod-occ-self-commit/command.yaml
