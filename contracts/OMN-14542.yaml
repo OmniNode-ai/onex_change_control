@@ -1,0 +1,152 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14542"
+title: "OCC companion for omnimarket#1739 — contract_sweep required full-corpus census + scanned_count>0
+  gate"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1739 (OMN-14542). node_contract_sweep's ContractSweepRequest.repos
+  defaulted to an empty list, which the handler silently reinterpreted as "scan whatever top-level omni_home
+  dirs happen to have a src/" — a prior receipt reported 9 contracts checked clean while 941 actually
+  existed (~1% coverage). The handler also fell back to a guessed OMNI_HOME via Path(__file__).parents[6]
+  when the env var was unset. node_contract_sweep had zero CI/pre-commit callers anywhere before this
+  PR. Part of the OMN-14531 shelf-wide sweep audit. The fix: repos is now a required, non-empty field
+  (no default); OMNI_HOME is required (no guessed fallback); ContractSweepResult gains scanned_count/status(PASS|FAIL|ERROR)/missing_repos/scope_error,
+  and a scope that resolves to zero contracts (or has any missing requested repo, even alongside valid
+  ones) is a hard ERROR verdict, never a silent PASS; a new harness script (scripts/ci/run_contract_sweep_gate.py)
+  collects the census from its own on-disk location and independently re-counts contract.yaml files via
+  a second, separately-implemented probe, and is wired as a required ci-summary job (contract-sweep-gate)
+  plus a pre-commit hook. The evidence below is an INDEPENDENT reproduction (not the implementer's own
+  claim): the exact test corpus was run against the PR head (31/31 passed), then handler_contract_sweep.py
+  and __main__.py alone were reverted to origin/dev with the new/modified tests kept in place, reproducing
+  a real EXISTS-but-WRONG RED (8 failed / 7 passed / 2 collection errors, including an ImportError on
+  the new EnumSweepStatus symbol and CLI/gate-script subprocess failures), then the fix was restored and
+  re-verified GREEN (31/31).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1739 head makes ContractSweepRequest.repos a required non-empty field (no
+      more 'empty = scan everything' default), removes the guessed Path(__file__).parents[6] OMNI_HOME
+      fallback, adds scanned_count/status/missing_repos/ scope_error to ContractSweepResult with a hard
+      ERROR verdict over any unresolvable or partially-narrowed scope, adds a real harness script (scripts/ci/run_contract_sweep_gate.py)
+      with an independent contract-count cross-check, and wires it as a required contract-sweep-gate CI
+      job — proven by an independent RED (revert handler+__main__ only, keep tests: 8 failed / 7 passed
+      / 2 collection errors) then GREEN (31/31) reproduction, not merely the implementer's own claim."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1739-required-census-fails-closed"
+    description: >-
+      Product-observing check against omnimarket#1739 head 34118dc1611f797b9ab53a4532f426ac1b0571e3. Reads
+      handler_contract_sweep.py from the PR head and asserts ContractSweepRequest.repos is declared with
+      Field(..., min_length=1) (required, non-empty — no default_factory=list), that OMNI_HOME is read
+      via os.environ["OMNI_HOME"] inside a try/except KeyError (no Path(__file__).parents fallback survives),
+      that ContractSweepResult declares scanned_count, status, missing_repos, and scope_error fields,
+      and that the handler returns EnumSweepStatus.ERROR both when missing_repos is non-empty and when
+      contracts_checked == 0 — closing the fail-open path where an unresolvable or partially-narrowed
+      scope reported the same silent PASS as a genuinely healthy one.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_contract_sweep/handlers/handler_contract_sweep.py?ref=34118dc1611f797b9ab53a4532f426ac1b0571e3"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'repos: list[str] = Field(' "$f" && grep -Fq
+          -- 'min_length=1' "$f" && grep -Fq -- 'env_omni_home = os.environ["OMNI_HOME"]' "$f" && grep
+          -Fq -- 'except KeyError:' "$f" && grep -Fq -- 'scanned_count: int = Field(' "$f" && grep -Fq
+          -- 'missing_repos: list[str] = Field(' "$f" && grep -Fq -- 'scope_error: str = Field(' "$f"
+          && grep -Fq -- 'if missing_repos:' "$f" && grep -Fq -- 'if contracts_checked == 0:' "$f" &&
+          grep -Fq -- 'status=EnumSweepStatus.ERROR,' "$f"
+  - id: "dod-verify-1739-harness-and-ci-gate-wired"
+    description: >-
+      Product-observing check against the PR head. Asserts scripts/ci/run_contract_sweep_gate.py exists
+      and is real code that (a) independently re-counts contract.yaml files via its own rglob probe (not
+      calling into the node's own scan function) and (b) refuses to exit 0 when that independent count
+      disagrees with the node's own scanned_count, and that .github/workflows/ci.yml declares a `contract-sweep-gate:`
+      job which is listed in the required `ci-summary` job's `needs:` array and its result-check loop
+      — so the sweep can no longer silently pass over an unmeasured or narrowed scope in CI.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f1="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/run_contract_sweep_gate.py?ref=34118dc1611f797b9ab53a4532f426ac1b0571e3"
+          --jq .content | base64 -d > "$f1" && grep -Fq -- 'def _independent_contract_count' "$f1" &&
+          grep -Fq -- 'result.scanned_count != expected_count' "$f1" && f2="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci.yml?ref=34118dc1611f797b9ab53a4532f426ac1b0571e3"
+          --jq .content | base64 -d > "$f2" && grep -Fq -- 'contract-sweep-gate:' "$f2" && grep -Fq --
+          'contract-compliance, contract-sweep-gate, e2e-workflow-runner' "$f2" && grep -Fq -- 'contract-sweep-gate=${{
+          needs.contract-sweep-gate.result }}' "$f2"
+  - id: "dod-verify-1739-red-green-reproduced"
+    description: >-
+      Independent RED-then-GREEN reproduction against a local worktree checked out at the PR head, not
+      trusting the implementer's commit message. The full contract_sweep test corpus (tests/nodes/node_contract_sweep/,
+      tests/integration/node_contract_sweep/, tests/ci/test_run_contract_sweep_gate_script.py, tests/test_golden_chain_contract_sweep.py,
+      6 files) passed 31/31 at head. handler_contract_sweep.py and __main__.py alone were then reverted
+      to origin/dev (keeping the new/modified test files in place) and the identical corpus re-run: 8
+      failed / 7 passed / 2 collection errors, including a genuine EXISTS-but-WRONG defect (ImportError:
+      cannot import name 'EnumSweepStatus' from handler_contract_sweep — the old handler never declared
+      that symbol, which test_handler_contract_sweep.py and test_golden_chain_contract_sweep.py both import)
+      and 6 CLI/gate-script test failures caused by the same missing symbol. The handler and __main__
+      were then restored to the PR head and the corpus re-verified 31/31 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14542/dod-verify-1739-red-green-reproduced/command.yaml
+          && grep -q '31 passed' drift/dod_receipts/OMN-14542/dod-verify-1739-red-green-reproduced/command.yaml
+          && grep -q '8 failed, 7 passed' drift/dod_receipts/OMN-14542/dod-verify-1739-red-green-reproduced/command.yaml
+          && grep -q "cannot import name 'EnumSweepStatus'" drift/dod_receipts/OMN-14542/dod-verify-1739-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-34118dc1"
+    description: >-
+      Deploy assessment for omnimarket PR #1739 at head 34118dc1611f797b9ab53a4532f426ac1b0571e3. The
+      PR changes a diagnostic sweep node (node_contract_sweep), a new CI-only harness script, a pre-commit
+      hook, and its tests; this evidence package performs no live deploy, runtime restart, docker exec,
+      rpk topic produce, database mutation, or .201/.200 runtime mutation. The sweep and its CI gate are
+      deployed as part of the normal runtime/CI rollout; no prod promotion is requested or performed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14542/dod-deploy-assessment-head-34118dc1/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14542/dod-deploy-assessment-head-34118dc1/command.yaml
+  - id: "dod-verify-1897-runtime-mode-removed"
+    description: >-
+      Product-observing check against OmniNode-ai/omniclaude#1897 head 457605598b467ca0f5a5369151c3dec018074cf1
+      (companion docs PR for OMN-14542, same ticket as omnimarket#1739). Reads SKILL.md from the PR head
+      and asserts the fictional "Runtime Mode" section (which documented a registration_only field and
+      an `onex run-node node_contract_sweep` invocation that never existed on ContractSweepRequest, an
+      extra="forbid" model) is gone, replaced by a "Compliance Mode" section documenting the real CLI
+      (`uv run python -m omnimarket.nodes.node_contract_sweep --repos <repo,...>`) with --repos required
+      (no scan-everything default) and no live-runtime/registration probe claim. Independently re-verified
+      against origin/dev (pre-fix): the Runtime Mode heading is present and the real CLI string is absent
+      — confirming this is a genuine RED-to-GREEN change, not a vacuous absence check.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omniclaude/contents/plugins/onex/skills/contract_sweep/SKILL.md?ref=457605598b467ca0f5a5369151c3dec018074cf1"
+          --jq .content | base64 -d > "$f" && ! grep -Fq -- '## Runtime Mode' "$f" && ! grep -Fq -- 'onex
+          run-node node_contract_sweep \' "$f" && grep -Fq -- '## Compliance Mode' "$f" && grep -Fq --
+          'uv run python -m omnimarket.nodes.node_contract_sweep --repos omnimarket' "$f" && grep -Fq
+          -- 'is REQUIRED on the underlying CLI' "$f"
+  - id: "dod-occ-self-4085"
+    description: >-
+      Self-bind item for OCC companion PR #4085. Binds a PASS receipt to the actual companion PR number
+      after PR creation, so OCC merge eligibility can associate OMN-14542 with the onex_change_control
+      PR under check. Product-observing evidence for omnimarket#1739 is carried by the entries above;
+      this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14542/dod-occ-self-4085/command.yaml && grep
+          -q 'pr_number: 4085' drift/dod_receipts/OMN-14542/dod-occ-self-4085/command.yaml && grep -q
+          '888153a3b' drift/dod_receipts/OMN-14542/dod-occ-self-4085/command.yaml
