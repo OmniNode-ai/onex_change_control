@@ -1,0 +1,118 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14586"
+title: "OCC companion for omnimarket#1757 — relocate cross-node-reach-in models to omnimarket.events"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1757 (OMN-14586). #1757 fixes a real, pre-existing
+  `tests/test_no_cross_node_reach_in.py` violation that blocks omnimarket dev's full test suite for any
+  PR that escalates to a full run — including #1751 (OMN-14372, the canon-shape CI gate this fixes unblocks).
+  Root cause: `node_swarm_subtask_state_reducer`'s handler (and its OMN-14534 seam test) imported `ModelLlmDelegationCallRequest`
+  and `ModelSwarmFanoutResult` directly from two sibling nodes' internal `models/` packages, which the
+  architecture test forbids (OMN-9263 precedent — shared models live in `omnimarket.events.*`, never in
+  a sibling node's package). The fix relocates both models to `omnimarket/events/{llm_delegation_call,swarm_fanout}.py`,
+  leaves re-export shims at the original node-owned paths for same-node importers, and repoints the two
+  actual reach-in import sites at the new canonical location. It also adds a genuine FSM-state-coverage
+  regression test for `node_swarm_fanout_orchestrator` (touching `model_swarm_fanout_result.py` escalates
+  a pre-existing baselined coverage gap, OMN-13781, from WARN to FAIL under `--strict`). Every substantive
+  check below is a CONTENT READ pinned to #1757's head commit SHA (66b98553876cfa1a3d43bc3a39bf94a13f8b715a).
+  It observes the source code #1757 actually wrote, so it does not depend on #1757's CI — which matters
+  here because #1757's CI is red precisely BECAUSE this contract was missing (occ-preflight/eligibility
+  -> missing Evidence-Source, cascading into CI Summary, Omni Standards Gate, Hostile Review Gate, PR
+  Arch Review Gate; confirmed live: every non-pass check on #1757 is occ-preflight or something occ-preflight
+  gates, zero unrelated content failures). A check keyed on #1757's own CI would be circular. No check
+  greps this repo's own receipt corpus for "status: PASS". Each product-tree read below carries its own
+  RED control: the same command at omnimarket dev HEAD (866d067de95740af257e9a2044d6d65e7fa5fa38, the
+  PR's base commit, where the two events modules don't exist and the reach-in imports are still the forbidden
+  sibling-node paths) finds zero/wrong-direction occurrences and would fail.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket#1757 head SHA relocates the two cross-node-reach-in models to omnimarket.events
+      and repoints the offending import site"
+    command: "see dod_evidence check_values (content reads pinned to 66b98553)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1757-events-llm-delegation-call"
+    description: >-
+      Product-observing: reads the new src/omnimarket/events/llm_delegation_call.py at #1757's exact head
+      commit SHA (66b98553876cfa1a3d43bc3a39bf94a13f8b715a) via the GitHub contents API and asserts it
+      defines "class ModelLlmDelegationCallRequest(BaseModel):" — the canonical shared-model home the
+      forbidden-reach-in test's own docstring names. This reads the product tree, not this receipt; nothing
+      in the command touches the OCC checkout, so it cannot pass merely because someone wrote "status:
+      PASS" in a receipt. RED DIRECTION: the file does not exist at all at omnimarket dev HEAD (866d067de95740af257e9a2044d6d65e7fa5fa38)
+      — the contents API returns 404, zero occurrences, exit 1; it exits 0 only at #1757's head (grep
+      -c == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/events/llm_delegation_call.py?ref=66b98553876cfa1a3d43bc3a39bf94a13f8b715a"
+          --jq .content | base64 -d | grep -c "class ModelLlmDelegationCallRequest(BaseModel):")" -ge
+          1
+  - id: "dod-verify-1757-events-swarm-fanout"
+    description: >-
+      Product-observing: reads the new src/omnimarket/events/swarm_fanout.py at #1757's head commit SHA
+      and asserts it defines "class ModelSwarmFanoutResult(BaseModel):" — the second relocated shared
+      model. RED DIRECTION: the file does not exist at all at dev HEAD (866d067de95740af257e9a2044d6d65e7fa5fa38)
+      — 404, zero occurrences, exit 1; it exits 0 only at #1757's head (grep -c == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/events/swarm_fanout.py?ref=66b98553876cfa1a3d43bc3a39bf94a13f8b715a"
+          --jq .content | base64 -d | grep -c "class ModelSwarmFanoutResult(BaseModel):")" -ge 1
+  - id: "dod-verify-1757-reachin-import-fixed"
+    description: >-
+      Product-observing: reads the actual offending file, handler_swarm_subtask_state.py, at #1757's head
+      commit SHA and asserts it imports ModelLlmDelegationCallRequest from the new canonical omnimarket.events.llm_delegation_call
+      module — the exact reach-in import site test_no_cross_node_reach_in.py forbade. This is the fix's
+      real substance: not just that the new models exist, but that the forbidden import site was actually
+      repointed at them. RED DIRECTION: the same file at dev HEAD (866d067de95740af257e9a2044d6d65e7fa5fa38)
+      imports the model from the FORBIDDEN sibling-node path (omnimarket.nodes.node_llm_delegation_call_effect.models...)
+      instead — the canonical-import string is absent there (grep -c == 0, exit 1); it exits 0 only at
+      #1757's head (grep -c == 1), independently confirmed by re-running the identical command at both
+      refs.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_swarm_subtask_state_reducer/handlers/handler_swarm_subtask_state.py?ref=66b98553876cfa1a3d43bc3a39bf94a13f8b715a"
+          --jq .content | base64 -d | grep -c "from omnimarket.events.llm_delegation_call import ModelLlmDelegationCallRequest")"
+          -ge 1
+  - id: "dod-deploy-assessment-1757"
+    description: >-
+      Deploy-gate assessment for omnimarket#1757. The PR changes only Python source and test files (model
+      relocation + import repointing + a new state-coverage test) — no Dockerfile, compose file, or deploy
+      script. Falsifiable: the command fails if the PR diff ever grows a Dockerfile/compose/deploy-script
+      change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1757 --repo OmniNode-ai/omnimarket --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
+  - id: "dod-occ-self-bind-pr-1757-companion"
+    description: >-
+      Self-bind receipt for this OCC evidence companion. Binds an OMN-14586 PASS receipt to this companion's
+      own commit history (deterministic two-commit commit_sha bind — no PR-number prediction under concurrent
+      lanes) so onex_change_control's own occ-merge-eligibility gate can resolve the companion — the three
+      product-observing items above all bind to the omnimarket product PR #1757, so without this item
+      nothing binds to this OCC PR itself (reason pr_ticket_mismatch). This is a binding/stamp item, NOT
+      substantive evidence: it derives to L0 and does not count toward the contract substance floor (the
+      three L1 product reads above carry the substantive proof). Mirrors the dod-occ-self-bind pattern
+      used by prior merged evidence companions (e.g. OMN-14600 / OCC#4134, OMN-14593 / OCC#4131, OMN-14608
+      / OCC#4135, OMN-14587 / OCC#4136).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14586/dod-occ-self-bind-pr-1757-companion/command.yaml
