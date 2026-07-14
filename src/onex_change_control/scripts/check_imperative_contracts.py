@@ -39,6 +39,7 @@ from onex_change_control.validators.arch_handler_contract_compliance import (
     _load_allowlist,
     _load_scripts_baseline,
     _load_scripts_exceptions,
+    validate_allowlist_tickets,
 )
 
 if TYPE_CHECKING:
@@ -87,6 +88,7 @@ class RepoImperativeSummary:
     freestanding_results: list[ModelFreestandingImperativeResult] = field(
         default_factory=list
     )
+    ticket_format_violations: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         """Return JSON-serializable summary data."""
@@ -102,6 +104,7 @@ class RepoImperativeSummary:
             "non_live_violation_count": self.non_live_violation_count,
             "freestanding_scanned": self.freestanding_scanned,
             "freestanding_module_count": self.freestanding_module_count,
+            "ticket_format_violations": self.ticket_format_violations,
             "new_violations": [
                 result.model_dump(mode="json")
                 for result in self.results
@@ -169,6 +172,9 @@ def scan_repo(
         frozenset(_load_allowlist(allowlist_path).keys())
         if allowlist_path is not None
         else frozenset()
+    )
+    ticket_format_violations = (
+        validate_allowlist_tickets(allowlist_path) if allowlist_path is not None else []
     )
 
     node_dirs = _find_node_dirs(repo_root)
@@ -238,6 +244,7 @@ def scan_repo(
         freestanding_scanned=scan_freestanding,
         freestanding_module_count=freestanding_module_count,
         freestanding_results=freestanding_results,
+        ticket_format_violations=ticket_format_violations,
     )
 
 
@@ -889,10 +896,20 @@ def render_text_report(  # noqa: C901  Why: report has separate live/non-live se
                 f"- {fs_result.module_path}: {fs_result.verdict.value} "
                 f"({fs_result.reachability.value})"
             )
+
+    ticket_format_violations = [
+        violation
+        for summary in summaries
+        for violation in summary.ticket_format_violations
+    ]
+    if ticket_format_violations:
+        lines.extend(["", "Blocking allowlist ticket-format violations (OMN-11878):"])
+        for violation in ticket_format_violations:
+            lines.append(f"- {violation}")
     return "\n".join(lines)
 
 
-def render_markdown_report(  # noqa: C901  Why: report has separate live/non-live sections.
+def render_markdown_report(  # noqa: C901, PLR0912  Why: separate live/non-live sections.
     summaries: list[RepoImperativeSummary],
 ) -> str:
     """Render a Markdown report suitable for durable sweep evidence."""
@@ -991,6 +1008,17 @@ def render_markdown_report(  # noqa: C901  Why: report has separate live/non-liv
         lines.append(f"### `{fs_result.module_path}`")
         lines.append(f"- Verdict: `{fs_result.verdict.value}`")
         lines.append(f"- Reachability: `{fs_result.reachability.value}`")
+
+    ticket_format_violations = [
+        violation
+        for summary in summaries
+        for violation in summary.ticket_format_violations
+    ]
+    lines.extend(["", "## Blocking Allowlist Ticket-Format Violations (OMN-11878)"])
+    if not ticket_format_violations:
+        lines.extend(["", "None."])
+    for violation in ticket_format_violations:
+        lines.append(f"- {violation}")
     return "\n".join(lines) + "\n"
 
 
@@ -1127,7 +1155,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.no_fail:
         return 0
-    return 1 if any(summary.new_violation_count for summary in summaries) else 0
+    return (
+        1
+        if any(
+            summary.new_violation_count or summary.ticket_format_violations
+            for summary in summaries
+        )
+        else 0
+    )
 
 
 if __name__ == "__main__":

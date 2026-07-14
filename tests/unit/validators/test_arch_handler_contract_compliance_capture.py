@@ -40,6 +40,7 @@ from onex_change_control.validators.arch_handler_contract_compliance import (
     _infer_repo_name,
     _load_allowlist,
     run_scan,
+    validate_allowlist_tickets,
 )
 
 # ---------------------------------------------------------------------------
@@ -166,6 +167,89 @@ def test_load_allowlist_empty_list_returns_empty(tmp_path: Path) -> None:
     al.write_text("allowlisted_handlers: []\n")
     result = _load_allowlist(al)
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# validate_allowlist_tickets — OMN-11878
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_validate_allowlist_tickets_missing_file_returns_empty(tmp_path: Path) -> None:
+    """Missing allowlist file has no ticket-format violations (no crash)."""
+    result = validate_allowlist_tickets(tmp_path / "nonexistent.yaml")
+    assert result == []
+
+
+@pytest.mark.unit
+def test_validate_allowlist_tickets_accepts_real_ticket(tmp_path: Path) -> None:
+    """A well-formed OMN-#### ticket passes validation."""
+    al = tmp_path / "allowlist.yaml"
+    al.write_text(
+        "allowlisted_handlers:\n"
+        "  - path: src/test_repo/nodes/node_test/handlers/handler_test.py\n"
+        "    violations:\n"
+        "      - missing_handler_routing\n"
+        "    ticket: OMN-9999\n"
+    )
+    result = validate_allowlist_tickets(al)
+    assert result == []
+
+
+@pytest.mark.unit
+def test_validate_allowlist_tickets_rejects_placeholder(tmp_path: Path) -> None:
+    """The '# migration pending' placeholder fails validation (OMN-11878)."""
+    al = tmp_path / "allowlist.yaml"
+    al.write_text(
+        "allowlisted_handlers:\n"
+        "  - path: src/test_repo/nodes/node_test/handlers/handler_test.py\n"
+        "    violations:\n"
+        "      - missing_handler_routing\n"
+        "    ticket: '# migration pending'\n"
+    )
+    result = validate_allowlist_tickets(al)
+    assert len(result) == 1
+    assert "handler_test.py" in result[0]
+
+
+@pytest.mark.unit
+def test_validate_allowlist_tickets_rejects_missing_ticket_field(
+    tmp_path: Path,
+) -> None:
+    """An entry with no ticket field at all fails validation."""
+    al = tmp_path / "allowlist.yaml"
+    al.write_text(
+        "allowlisted_handlers:\n"
+        "  - path: src/test_repo/nodes/node_test/handlers/handler_test.py\n"
+        "    violations:\n"
+        "      - missing_handler_routing\n"
+    )
+    result = validate_allowlist_tickets(al)
+    assert len(result) == 1
+
+
+@pytest.mark.unit
+def test_validate_allowlist_tickets_rejects_non_omn_ticket(tmp_path: Path) -> None:
+    """A ticket id from an unrelated tracker format fails validation."""
+    al = tmp_path / "allowlist.yaml"
+    al.write_text(
+        "allowlisted_handlers:\n"
+        "  - path: src/test_repo/nodes/node_test/handlers/handler_test.py\n"
+        "    violations:\n"
+        "      - missing_handler_routing\n"
+        "    ticket: JIRA-123\n"
+    )
+    result = validate_allowlist_tickets(al)
+    assert len(result) == 1
+
+
+@pytest.mark.unit
+def test_validate_allowlist_tickets_empty_list_returns_empty(tmp_path: Path) -> None:
+    """Allowlist with no entries has no ticket-format violations."""
+    al = tmp_path / "allowlist.yaml"
+    al.write_text("allowlisted_handlers: []\n")
+    result = validate_allowlist_tickets(al)
+    assert result == []
 
 
 # ---------------------------------------------------------------------------
