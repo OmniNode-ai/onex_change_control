@@ -1,0 +1,125 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14593"
+title: "OCC companion for omnimarket#1759 — node_projection_registration raw-kafka-wrapper recovery"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1759 (OMN-14593). #1759 stops node_projection_registration
+  from silently dropping node-introspection / node-heartbeat / node-state-change events. Root cause: the
+  shared MessageDispatchEngine fans a single dispatch(topic, envelope) call out to EVERY dispatcher registered
+  for that topic, not just the consumer group whose callback made the call. Those three topics are ALSO
+  subscribed by a sibling raw/audit consumer whose callback builds its envelope as payload=ModelEventMessage.model_dump(mode="json")
+  (the undecoded kafka record — topic/key/value/headers/offset/partition), and its dispatch() reaches
+  this typed projection handler too, handing it the raw wrapper instead of the decoded domain event. That
+  is a guaranteed ValidationError against the extra="forbid" canonical models (missing node_id/...; extra
+  topic/partition/value), and with no dlq_topics declared the wiring layer logged "... dropped a malformed/erroring
+  event with NO DLQ topic declared" and dropped it forever. The fix (a) detects the raw ModelEventMessage
+  shape in the handler and recovers the real domain event from its value field before validating, and
+  (b) declares event_bus.dlq_topics so any unrecoverable shape is durably routed instead of dropped. Every
+  substantive check below is a CONTENT READ pinned to #1759's head commit SHA (dfcc88a4a175936db4174686f5b99d7a509f65b2).
+  It observes the source code #1759 actually wrote, so it does not depend on #1759's CI — which matters
+  here because #1759's CI is red precisely BECAUSE this contract was missing (occ-preflight/eligibility
+  -> missing Evidence-Source, cascading into the OCC Preflight Dependency and gate jobs). A check keyed
+  on #1759's CI would be circular. No check greps this repo's own receipt corpus for "status: PASS". The
+  RED direction of every read was verified independently: an implementer-blind reviewer added a worktree
+  off the PR head, reverted ONLY the two source hunks (handler + contract.yaml, test file untouched),
+  and observed 3 of the 5 regression tests fail with the exact "10 validation errors for ModelNodeIntrospectionEvent"
+  drop the ticket describes; restoring the fix returned 5/5 green. Each product-tree read below carries
+  its own RED control: the same command at omnimarket dev HEAD (c624422dbe5a5dc246c54c318f44d00fbed9ec22,
+  the fix commit's exact parent), where the fix has not landed, finds zero occurrences and would fail.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket#1759 head SHA carries the raw-kafka-wrapper recovery + DLQ-route fix"
+    command: "see dod_evidence check_values (content reads pinned to dfcc88a4)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1759-raw-wrapper-recovery"
+    description: >-
+      Product-observing: reads the actual source of handler_projection_registration.py at #1759's exact
+      head commit SHA (dfcc88a4a175936db4174686f5b99d7a509f65b2) via the GitHub contents API and asserts
+      the handler genuinely defines/calls _recover_domain_payload_from_raw_wrapper — the recovery routine
+      that pulls the real domain event out of the raw ModelEventMessage 'value' field, which is the entire
+      substance of the data-loss fix (previously the raw shape reached the canonical model and raised
+      ValidationError, then was dropped with no DLQ). This reads the product tree, not this receipt; nothing
+      in the command touches the OCC checkout, so it cannot pass merely because someone wrote "status:
+      PASS" in a receipt. RED DIRECTION: the identical command run against omnimarket dev HEAD (c624422dbe5a5dc246c54c318f44d00fbed9ec22
+      — the fix commit's parent), where #1759 has not landed, finds ZERO occurrences (grep -c == 0) and
+      exits 1. It exits 0 only at a ref where the fix is genuinely present (head SHA: grep -c == 2).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_projection_registration.py?ref=dfcc88a4a175936db4174686f5b99d7a509f65b2"
+          --jq .content | base64 -d | grep -c "_recover_domain_payload_from_raw_wrapper")" -ge 1
+  - id: "dod-verify-1759-raw-wrapper-detection"
+    description: >-
+      Product-observing: reads the actual source of handler_projection_registration.py at #1759's head
+      commit SHA and asserts it carries _looks_like_raw_kafka_wrapper — the shape-detection predicate
+      (topic+partition+value present and domain node_id absent) that gates the recovery path. Its presence
+      is a direct read of the fix's detection seam rather than a restatement of the PR's claim. RED DIRECTION:
+      the same file at dev HEAD (c624422dbe5a5dc246c54c318f44d00fbed9ec22) contains ZERO occurrences (grep
+      -c == 0) and the command exits 1; it exits 0 only at #1759's head (grep -c == 3).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_projection_registration.py?ref=dfcc88a4a175936db4174686f5b99d7a509f65b2"
+          --jq .content | base64 -d | grep -c "_looks_like_raw_kafka_wrapper")" -ge 1
+  - id: "dod-verify-1759-dlq-topic-declared"
+    description: >-
+      Product-observing: reads the actual contract.yaml of node_projection_registration at #1759's head
+      commit SHA and asserts it declares the DLQ topic onex.dlq.omnimarket.projection-registration-malformed.v1
+      under event_bus.dlq_topics. This is the durable-route half of the fix (OMN-13548 D-03 pattern):
+      before it, an unrecoverable payload was logged-and-dropped forever because no DLQ was declared.
+      RED DIRECTION: the same contract at dev HEAD (c624422dbe5a5dc246c54c318f44d00fbed9ec22) declares
+      NO such topic (grep -c == 0) and the command exits 1; it exits 0 only at #1759's head (grep -c ==
+      1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/contract.yaml?ref=dfcc88a4a175936db4174686f5b99d7a509f65b2"
+          --jq .content | base64 -d | grep -c "onex.dlq.omnimarket.projection-registration-malformed.v1")"
+          -ge 1
+  - id: "dod-verify-1759-regression-drives-real-entrypoint"
+    description: >-
+      Product-observing: reads the new regression test tests/test_omn14593_raw_kafka_wrapper_recovery.py
+      at #1759's head commit SHA and asserts it carries test_pre_fix_reproduction_would_have_raised_pydantic_validation_error
+      — the RED-vs-exists-but-wrong test that proves the poisoned raw-wrapper shape genuinely fails canonical
+      validation (not a fixture artifact), driven through the REAL protocol entrypoint HandlerProjectionRegistration.handle()
+      rather than the project_introspection()/project_heartbeat() helpers the pre-existing golden-chain
+      tests call (which pass even with the defect present, since it lives in handle()'s payload extraction
+      — feedback_test_the_artifact_that_runs). RED DIRECTION: the test file does not exist at all at dev
+      HEAD (c624422dbe5a5dc246c54c318f44d00fbed9ec22 — 404 from the contents API, grep -c == 0, exit 1);
+      it exits 0 only at #1759's head where the test is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn14593_raw_kafka_wrapper_recovery.py?ref=dfcc88a4a175936db4174686f5b99d7a509f65b2"
+          --jq .content | base64 -d | grep -c "test_pre_fix_reproduction_would_have_raised_pydantic_validation_error")"
+          -ge 1
+  - id: "dod-deploy-assessment-1759"
+    description: >-
+      Deploy-gate assessment for omnimarket#1759. The PR touches a runtime handler path, so the merge
+      gate requires a deploy assessment. This item proves the PR itself does not modify Dockerfiles, compose
+      files, or deploy scripts; it is a source-change deploy assessment only, not a live runtime rollout
+      (the PR changes exactly three files: contract.yaml, the handler, and the new regression test). Runtime
+      rebuild, deployment, and readback on the .201 stability-test lane remain explicitly out of this
+      product merge and require operator approval before any live deploy or restart. Falsifiable: the
+      command fails if the PR diff ever grows a Dockerfile/compose/deploy-script change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1759 --repo OmniNode-ai/omnimarket --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
