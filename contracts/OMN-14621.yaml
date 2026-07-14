@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14621"
+title: "OCC companion for omnibase_core#1441 — model_dump(mode=\"json\") ratchet restoration"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_core#1441 (OMN-14621). #1441 restores the validate-model-dump-json-mode
+  advisory ratchet from 311 -> 310 by adding mode="json" to the model_dump() call inside _coerce_reloaded_command_registry(),
+  where the stale ModelCliCommandRegistry instance is immediately re-validated via model_validate(registry_data).
+  Every substantive check below is product-observing and pinned to the actual #1441 head commit 1cde8287c769d9432c1a88916316328e1c1954a9.
+  The checks read the source tree or live PR metadata for #1441 directly, so they do not depend on #1441's
+  own CI, which is currently blocked only by missing central OCC evidence and the resulting occ-preflight
+  / Receipt Gate cascade. No check greps this repo's own receipt corpus for "status: PASS".
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_core#1441 head SHA carries the model_dump(mode=\"json\") ratchet fix"
+    command: "see dod_evidence check_values (content reads pinned to 1cde8287)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1441-head-1cde8287"
+    description: >-
+      Product-observing PR-head bind for omnibase_core#1441. Reads live GitHub PR metadata and asserts
+      the open product PR is still bound to exact head commit 1cde8287c769d9432c1a88916316328e1c1954a9
+      on branch jonah/omn-14621-fix-model-dump-json-mode-ratchet.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1441 --repo OmniNode-ai/omnibase_core --json number,headRefOid,headRefName,state
+          --jq '[(.number|tostring), .headRefOid, .headRefName, .state] | @tsv')" = $'1441\t1cde8287c769d9432c1a88916316328e1c1954a9\tjonah/omn-14621-fix-model-dump-json-mode-ratchet\tOPEN'
+  - id: "dod-verify-1441-model-dump-json-mode-present"
+    description: >-
+      Product-observing content read pinned to #1441 head 1cde8287. Reads the actual model_cli_command_registry.py
+      contents from GitHub and asserts the fix adds the exact model_dump(mode="json") call at the stale-registry
+      reload boundary.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/core/model_cli_command_registry.py?ref=1cde8287c769d9432c1a88916316328e1c1954a9"
+          --jq .content | base64 -d | grep -c 'registry.model_dump(mode=\"json\")')" -eq 1
+  - id: "dod-verify-1441-diff-is-single-callsite-fix"
+    description: >-
+      Product-observing PR-diff assertion for omnibase_core#1441. Proves the live PR diff is the single
+      intended callsite repair by asserting the diff touches exactly src/omnibase_core/models/core/model_cli_command_registry.py
+      and adds the registry.model_dump(mode="json") line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr diff 1441 --repo OmniNode-ai/omnibase_core --name-only | wc -l | tr -d ' ')" -eq
+          1 && gh pr diff 1441 --repo OmniNode-ai/omnibase_core --name-only | grep -qx 'src/omnibase_core/models/core/model_cli_command_registry.py'
+          && test "$(gh pr diff 1441 --repo OmniNode-ai/omnibase_core | grep -c '^+.*registry.model_dump(mode=\"json\")')"
+          -eq 1
+  - id: "dod-deploy-assessment-1441"
+    description: >-
+      Deploy-gate assessment for omnibase_core#1441. The PR changes only a core source file and does not
+      touch Dockerfiles, compose files, or deploy scripts; this is a source-only ratchet repair, not a
+      live runtime rollout.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1441 --repo OmniNode-ai/omnibase_core --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
