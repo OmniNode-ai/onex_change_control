@@ -1,0 +1,91 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14628"
+title: "OCC companion for omnibase_infra#2312 - RuntimeDelegationDispatchPort tenant_id compatibility"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2312 (OMN-14628). #2312 fixes the live RuntimeDelegationDispatchPort.dispatch()
+  call-shape crash by adding tenant_id to the infra-owned dispatch port protocol and concrete RuntimeDelegationDispatchPort,
+  then threading that tenant_id into the ModelDispatchBusCommand payload. The regression test drives the
+  real handler_wiring auto-wiring path and the real RuntimeDelegationDispatchPort.dispatch() method with
+  the exact omnimarket HandlerDelegateSkill keyword shape that previously raised TypeError. The product
+  PR is blocked by missing central OCC evidence; the checks below bind the exact product head and read
+  the product files directly from GitHub.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - protocols
+  - public_api
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2312 head SHA carries the tenant_id dispatch compatibility fix"
+    command: "see dod_evidence check_values pinned to ca746d9f"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2312-head-ca746d9-pr-head"
+    description: >
+      Product-observing PR-head bind for omnibase_infra#2312. Reads live GitHub PR metadata and asserts
+      the product PR is still open on exact head ca746d9faaac3e29b202f35413b14312cbac4a27 and branch jonah/omn-14628-fix-runtimedelegationdispatchport-tenant-id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2312 --jq '.number == 2312 and .head.sha == "ca746d9faaac3e29b202f35413b14312cbac4a27"
+          and .head.ref == "jonah/omn-14628-fix-runtimedelegationdispatchport-tenant-id" and .state ==
+          "open"' | grep -qx true
+  - id: "dod-verify-2312-tenant-id-dispatch-signature"
+    description: >
+      Product-observing content read pinned to #2312 head ca746d9f. Fetches the infra dispatch port protocol
+      and concrete service from GitHub and asserts both dispatch signatures accept tenant_id, and the
+      concrete service threads tenant_id into the outgoing ModelDispatchBusCommand payload.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          proto="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && service="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && printf '%s' "$proto" | grep -q 'tenant_id: str | None = None'
+          && printf '%s' "$service" | grep -q 'tenant_id: str | None = None' && printf '%s' "$service"
+          | grep -q '"tenant_id": tenant_id'
+  - id: "dod-verify-2312-real-auto-wiring-regression-test"
+    description: >
+      Product-observing content read pinned to #2312 head ca746d9f. Fetches the regression test and asserts
+      it drives the real auto-wired RuntimeDelegationDispatchPort with the omnimarket call shape, including
+      tenant_id, and verifies tenant_id reaches the captured dispatch payload.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tests="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/test_handler_wiring_resolver_integration.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && printf '%s' "$tests" | grep -q 'test_auto_wired_dispatch_port_accepts_omnimarket_call_shape'
+          && printf '%s' "$tests" | grep -q 'RuntimeDelegationDispatchPort' && printf '%s' "$tests" |
+          grep -q 'tenant_id="omn-14628-regression-tenant"' && printf '%s' "$tests" | grep -q 'captured_payloads\[0\]\["tenant_id"\]'
+  - id: "dod-deploy-assessment-2312"
+    description: >
+      Deploy-gate assessment for omnibase_infra#2312. The PR changes Python runtime protocol/service code
+      and a unit regression test; it does not touch Dockerfiles, compose files, deploy scripts, or runtime
+      deployment manifests. The command fails if the live PR diff grows a deploy-surface file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 2312 --repo OmniNode-ai/omnibase_infra --name-only | grep -qE 'docker-compose|Dockerfile|deploy/')
+  - id: "dod-occ-self-bind-pr-4164"
+    description: >
+      Self-bind receipt for this OMN-14628 OCC evidence companion. Binds onex_change_control#4164 on branch
+      jonah/omn-14628-occ-infra2312-head-ca746d9 to initial evidence commit 44dcdc404ef1bb4c025ecda9acf109d7c8f4f0e7
+      so onex_change_control's own OCC preflight and Receipt Gate can resolve the companion PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'branch: jonah/omn-14628-occ-infra2312-head-ca746d9' drift/dod_receipts/OMN-14628/dod-occ-self-bind-pr-4164/command.yaml
+          && grep -q 'pr_number: 4164' drift/dod_receipts/OMN-14628/dod-occ-self-bind-pr-4164/command.yaml
+          && grep -q '44dcdc404ef1bb4c025ecda9acf109d7c8f4f0e7' drift/dod_receipts/OMN-14628/dod-occ-self-bind-pr-4164/command.yaml
