@@ -107,3 +107,85 @@ dod_evidence:
         check_value: >-
           grep -q 'jonah/omn-14600-occ-companion' drift/dod_receipts/OMN-14600/dod-occ-self-bind-pr-4134/command.yaml
           && grep -q 'pr_number: 4134' drift/dod_receipts/OMN-14600/dod-occ-self-bind-pr-4134/command.yaml
+  - id: "dod-infra-pr-2309"
+    description: >-
+      Product-observing (2nd-consumer / merged-path bridge, OMN-14623): reads pyproject.toml at omnibase_infra#2309's
+      exact head commit SHA (36c17914660d83644e9435f680353e104ca6c0be) via the GitHub contents API and
+      asserts the [tool.uv.sources] git-rev override pins omnibase-core to rev "a9f25887a51851ddf24258e6a7a507e7e56b28d8"
+      — the MERGED squash commit of #1439 on dev that carries the ModelDelegationCompleted/ModelDelegationFailed
+      terminal classes this OMN-14600 contract already covers. #2309 is the infra half of the downstream
+      re-pin (the core fix already merged via OCC#4134; this item binds the SECOND consumer PR to the
+      same ticket). RED DIRECTION: the override is absent at omnibase_infra dev HEAD (84f7a940ec537062db04b4183a3014cd98bb39a8
+      — the commit #2309 is based on; grep -c == 0, exit 1); it exits 0 only at #2309's head (grep -c
+      == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=36c17914660d83644e9435f680353e104ca6c0be"
+          --jq '.content' | base64 -d | grep -c 'rev = "a9f25887a51851ddf24258e6a7a507e7e56b28d8"')" -ge
+          1
+  - id: "dod-infra-pr-2309-recovery-sweep"
+    description: >-
+      Product-observing: reads src/omnibase_infra/runtime/auto_wiring/handler_wiring.py at #2309's head
+      commit SHA and asserts it defines the module-level constant "_STATE_IO_RECOVERY_SWEEP_INTERVAL_SECONDS
+      = 30.0" — the periodic re-run interval that makes the state_io outbox recovery sweep opportunistic
+      (re-runs every 30s instead of once per adapter lifetime), the substance of #2309's in-flight-lock
+      defer-strand recovery fix. RED DIRECTION: the constant is absent at omnibase_infra dev HEAD (84f7a940ec537062db04b4183a3014cd98bb39a8;
+      grep -c == 0, exit 1); it exits 0 only at #2309's head (grep -c == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=36c17914660d83644e9435f680353e104ca6c0be"
+          --jq '.content' | base64 -d | grep -c '_STATE_IO_RECOVERY_SWEEP_INTERVAL_SECONDS = 30.0')" -ge
+          1
+  - id: "dod-market-pr-1762"
+    description: >-
+      Product-observing (2nd-consumer / merged-path bridge, OMN-14623): reads pyproject.toml at omnimarket#1762's
+      exact head commit SHA (4fbf642ad83a4a36b9909decafc33a989518bfdf) via the GitHub contents API and
+      asserts the [tool.uv.sources] git-rev override pins omnibase-core to rev "a9f25887a51851ddf24258e6a7a507e7e56b28d8"
+      — the same merged #1439 commit dod-infra-pr-2309 above binds to, superseding the prior OMN-14402
+      pin (d08bb231, a strict ancestor). #1762 is the market half of the downstream re-pin. RED DIRECTION:
+      the override still points at d08bb231 (not a9f25887) at omnimarket dev HEAD (b4839eac4a615cd0df787e71e8ca8570704b64a8;
+      grep -c == 0, exit 1); it exits 0 only at #1762's head (grep -c == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/pyproject.toml?ref=4fbf642ad83a4a36b9909decafc33a989518bfdf"
+          --jq '.content' | base64 -d | grep -c 'rev = "a9f25887a51851ddf24258e6a7a507e7e56b28d8"')" -ge
+          1
+  - id: "dod-market-pr-1762-terminal-emit"
+    description: >-
+      Product-observing: reads src/omnimarket/models/delegation/wire/__init__.py at #1762's head commit
+      SHA and asserts it re-exports ModelDelegationCompleted (import + __all__ entry, grep count == 2)
+      — the market-side consumption of core#1439's two-class terminal split (replaces the retired bespoke
+      ModelDelegationEventEnvelope carrier). RED DIRECTION: the symbol is absent from the same file at
+      omnimarket dev HEAD (b4839eac4a615cd0df787e71e8ca8570704b64a8; grep -c == 0, exit 1); it exits 0
+      only at #1762's head (grep -c == 2).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/models/delegation/wire/__init__.py?ref=4fbf642ad83a4a36b9909decafc33a989518bfdf"
+          --jq '.content' | base64 -d | grep -c 'ModelDelegationCompleted')" -ge 2
+  - id: "dod-occ-self-bind-pr-4147"
+    description: >-
+      Self-bind receipt for this OCC evidence companion (merged-path 2nd-consumer bridge). Binds an OMN-14600
+      PASS receipt to this companion's own PR (OCC#4147, branch jonah/omn-14600-merged-path-occ-companion)
+      so onex_change_control's own occ-merge-eligibility gate resolves the companion — the product-observing
+      items above bind to omnibase_infra#2309 and omnimarket#1762, so without this item nothing binds
+      to #4147 itself (reason pr_ticket_mismatch). Binding/stamp item only (L0); the product content-reads
+      above carry the substance floor.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14600-merged-path-occ-companion' drift/dod_receipts/OMN-14600/dod-occ-self-bind-pr-4147/command.yaml
+          && grep -q 'pr_number: 4147' drift/dod_receipts/OMN-14600/dod-occ-self-bind-pr-4147/command.yaml
