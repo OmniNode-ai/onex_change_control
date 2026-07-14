@@ -1,0 +1,109 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14600"
+title: "OCC companion for omnibase_core#1439 — ModelDelegationCompleted/ModelDelegationFailed terminal
+  subclasses"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_core#1439 (OMN-14600). #1439 adds two thin terminal
+  subclasses of ModelDelegationResult — ModelDelegationCompleted and ModelDelegationFailed — in src/omnibase_core/models/delegation/wire/model_delegation_result.py,
+  and exports them from the wire package __init__. The two classes add NO new fields and model_dump()
+  is byte-identical to a plain ModelDelegationResult; their SOLE purpose is distinct class identity so
+  the delegation routing layer (one topic per class) can map COMPLETED and FAILED terminals to separate
+  topics, replacing the earlier single bespoke ModelDelegationEventEnvelope{topic,payload} carrier the
+  routing layer could never resolve (one wrapped class covered both outcomes on one topic-per-class map).
+  Every substantive check below is a CONTENT READ pinned to #1439's head commit SHA (b2d2b43dce147da823b009bffef9d8ff31e44c87).
+  It observes the source #1439 actually wrote, so it does not depend on #1439's CI — which matters because
+  #1439's occ-preflight is red precisely BECAUSE this contract was missing (missing Evidence-Source).
+  A check keyed on #1439's CI would be circular. No check greps this repo's own receipt corpus for "status:
+  PASS". The GREEN direction was verified independently: an implementer-blind reviewer (not the author
+  of #1439) checked out the PR head in a worktree and ran `uv run pytest tests/ -k delegation -m "not
+  slow"` -> 215 passed, 4 skipped (matching the PR's cited proof), then imported both subclasses and asserted
+  each subclasses ModelDelegationResult with a distinct class identity. Each product-tree read below carries
+  its own RED control: the same command at omnibase_core dev HEAD (79c620f904526f773f6b92eb98743b011fe2eb12
+  — the fix commit's exact parent), where #1439 has not landed, finds zero occurrences and would fail.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_core#1439 head SHA defines and exports the two terminal delegation subclasses"
+    command: "see dod_evidence check_values (content reads pinned to b2d2b43d)"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1439-completed-subclass"
+    description: >-
+      Product-observing: reads the actual source of src/omnibase_core/models/delegation/wire/model_delegation_result.py
+      at #1439's exact head commit SHA (b2d2b43dce147da823b009bffef9d8ff31e44c87) via the GitHub contents
+      API and asserts it defines "class ModelDelegationCompleted(ModelDelegationResult)" — the COMPLETED
+      terminal subclass whose distinct class identity is the entire substance of the fix (it lets the
+      topic-per-class routing map the success terminal to its own topic). RED DIRECTION: the class does
+      not exist at omnibase_core dev HEAD (79c620f904526f773f6b92eb98743b011fe2eb12 — the fix commit's
+      parent; grep -c == 0, exit 1); it exits 0 only at #1439's head (grep -c == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/model_delegation_result.py?ref=b2d2b43dce147da823b009bffef9d8ff31e44c87"
+          --jq .content | base64 -d | grep -c "class ModelDelegationCompleted(ModelDelegationResult)")"
+          -ge 1
+  - id: "dod-verify-1439-failed-subclass"
+    description: >-
+      Product-observing: reads the same source at #1439's head commit SHA and asserts it defines "class
+      ModelDelegationFailed(ModelDelegationResult)" — the FAILED terminal subclass, the second half of
+      the two-class split (the failure terminal routes to its own topic). RED DIRECTION: the class does
+      not exist at dev HEAD (79c620f904526f773f6b92eb98743b011fe2eb12 — grep -c == 0, exit 1); it exits
+      0 only at #1439's head (grep -c == 1).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/model_delegation_result.py?ref=b2d2b43dce147da823b009bffef9d8ff31e44c87"
+          --jq .content | base64 -d | grep -c "class ModelDelegationFailed(ModelDelegationResult)")" -ge
+          1
+  - id: "dod-verify-1439-wire-exports"
+    description: >-
+      Product-observing: reads src/omnibase_core/models/delegation/wire/__init__.py at #1439's head commit
+      SHA and asserts it re-exports ModelDelegationCompleted (both the import and the __all__ entry —
+      grep count == 2), so downstream consumers and the routing layer can import the new terminal classes
+      from the canonical wire package. RED DIRECTION: the symbol is absent from the same file at dev HEAD
+      (79c620f904526f773f6b92eb98743b011fe2eb12 — grep -c == 0, exit 1); it exits 0 only at #1439's head
+      (grep -c == 2).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/delegation/wire/__init__.py?ref=b2d2b43dce147da823b009bffef9d8ff31e44c87"
+          --jq .content | base64 -d | grep -c "ModelDelegationCompleted")" -ge 1
+  - id: "dod-deploy-assessment-1439"
+    description: >-
+      Deploy-gate assessment for omnibase_core#1439. The PR changes exactly two files — the delegation
+      wire result model and its package __init__ — neither a Dockerfile, compose file, nor deploy script;
+      it is a pure model/wire-schema change (byte-identical model_dump), not a live runtime rollout, and
+      deploy-gate resolves it deploy-neutral. Falsifiable: the command fails if the PR diff ever grows
+      a Dockerfile/compose/deploy change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1439 --repo OmniNode-ai/omnibase_core --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
+  - id: "dod-occ-self-bind-pr-4134"
+    description: >-
+      Self-bind receipt for this OCC evidence companion. Binds an OMN-14600 PASS receipt to this companion's
+      own PR (OCC#4134, branch jonah/omn-14600-occ-companion) so onex_change_control's own occ-merge-eligibility
+      gate resolves the companion — the product-observing items above all bind to omnibase_core PR #1439,
+      so without this item nothing binds to #4134 itself (reason pr_ticket_mismatch). Binding/stamp item
+      only (L0); the product content-reads above carry the substance floor.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14600-occ-companion' drift/dod_receipts/OMN-14600/dod-occ-self-bind-pr-4134/command.yaml
+          && grep -q 'pr_number: 4134' drift/dod_receipts/OMN-14600/dod-occ-self-bind-pr-4134/command.yaml
