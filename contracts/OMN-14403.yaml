@@ -104,3 +104,83 @@ dod_evidence:
           grep -q 'branch: jonah/omn-14403-occ-core1440' drift/dod_receipts/OMN-14403/dod-occ-self-bind-pr-4146/command.yaml
           && grep -q 'pr_number: 4146' drift/dod_receipts/OMN-14403/dod-occ-self-bind-pr-4146/command.yaml
           && grep -q '8f98e2dc6bbf506b2d36b23b2fa8e815c1eb45ed' drift/dod_receipts/OMN-14403/dod-occ-self-bind-pr-4146/command.yaml
+
+  - id: "dod-verify-1440-head-9b39a7ff-resolver-functions"
+    description: >-
+      Product-observing content read for refreshed omnibase_core#1440 head 9b39a7ff0888042f67d0da73510ce4320fafabb7
+      after the GitHub Advanced Security review-blocker repair. Fetches runtime_fanout_resolver.py and
+      asserts the shared resolver still defines normalize_fanout_elements, resolve_published_topic, resolve_fanout_topics,
+      assert_published_events_injective, and explicit carrier rejection for ModelEventEnvelope / ModelDelegationEventEnvelope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          content="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_fanout_resolver.py?ref=9b39a7ff0888042f67d0da73510ce4320fafabb7'
+          --jq .content | base64 -d)" && printf '%s' "$content" | grep -q 'def normalize_fanout_elements'
+          && printf '%s' "$content" | grep -q 'def resolve_published_topic' && printf '%s' "$content"
+          | grep -q 'def resolve_fanout_topics' && printf '%s' "$content" | grep -q 'def assert_published_events_injective'
+          && printf '%s' "$content" | grep -q 'ModelEventEnvelope' && printf '%s' "$content" | grep -q
+          'ModelDelegationEventEnvelope'
+  - id: "dod-verify-1440-head-9b39a7ff-local-adapter-fanout"
+    description: >-
+      Product-observing content read for refreshed omnibase_core#1440 head 9b39a7ff0888042f67d0da73510ce4320fafabb7.
+      Fetches runtime_local_adapter.py and the fan-out adapter test file, asserts the LocalRuntimeBusAdapter
+      fan-out seam remains wired, and asserts the CodeQL unused-import repair uses the imported protocol
+      objects in cast() calls rather than string-only references.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          adapter="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_local_adapter.py?ref=9b39a7ff0888042f67d0da73510ce4320fafabb7'
+          --jq .content | base64 -d)" && tests="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/tests/unit/runtime/test_runtime_local_adapter_fanout.py?ref=9b39a7ff0888042f67d0da73510ce4320fafabb7'
+          --jq .content | base64 -d)" && printf '%s' "$adapter" | grep -q 'resolve_fanout_topics' && printf
+          '%s' "$adapter" | grep -q 'is_fanout_sequence(result)' && printf '%s' "$adapter" | grep -q 'published_events'
+          && printf '%s' "$adapter" | grep -q 'multi_event_seam_enabled' && printf '%s' "$tests" | grep
+          -q 'test_fanout_seam_on_publishes_two_topics_in_order' && printf '%s' "$tests" | grep -q 'test_fanout_seam_off_drops_and_publishes_nothing'
+          && printf '%s' "$tests" | grep -q 'test_fanout_unmapped_class_fails_closed' && printf '%s' "$tests"
+          | grep -q 'cast(ProtocolLocalRuntimeCallableTarget, handler)' && printf '%s' "$tests" | grep
+          -q 'cast(ProtocolLocalRuntimeBus, bus)' && ! printf '%s' "$tests" | grep -q 'cast("ProtocolLocalRuntimeCallableTarget"'
+  - id: "dod-verify-1440-head-9b39a7ff-runtime-local-wiring"
+    description: >-
+      Product-observing content read for refreshed omnibase_core#1440 head 9b39a7ff0888042f67d0da73510ce4320fafabb7.
+      Fetches runtime_local.py and asserts RuntimeLocal still loads published_events from the contract,
+      asserts injective class-to-topic mappings at boot, reads ONEX_MULTI_EVENT_PUBLISH_SEAM, and passes
+      published_events plus multi_event_seam_enabled into each LocalRuntimeBusAdapter.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          content="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_local.py?ref=9b39a7ff0888042f67d0da73510ce4320fafabb7'
+          --jq .content | base64 -d)" && printf '%s' "$content" | grep -q 'def _load_published_events_map'
+          && printf '%s' "$content" | grep -q 'assert_published_events_injective' && printf '%s' "$content"
+          | grep -q 'multi_event_publish_seam_enabled()' && printf '%s' "$content" | grep -q 'published_events=published_events'
+          && printf '%s' "$content" | grep -q 'multi_event_seam_enabled=multi_event_seam_enabled'
+  - id: "dod-deploy-assessment-1440-head-9b39a7ff"
+    description: >-
+      Deploy-gate assessment for refreshed omnibase_core#1440 head 9b39a7ff0888042f67d0da73510ce4320fafabb7.
+      The PR still changes Python runtime/helper/test files only plus source-level ratchet cleanup; it
+      does not touch Dockerfiles, compose files, deploy scripts, or runtime deployment manifests. Falsifiable:
+      the command fails if the PR diff grows a deploy-surface file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1440 --repo OmniNode-ai/omnibase_core --name-only | grep -qE 'docker-compose|Dockerfile|deploy/')
+  - id: "dod-verify-1440-head-9b39a7ff-hook-clean"
+    description: >-
+      Local verifier evidence for the refreshed product head 9b39a7ff0888042f67d0da73510ce4320fafabb7.
+      Asserts the pushed commit is the PR head and records the focused hook-clean validation used to resolve
+      the GitHub Advanced Security conversation without bypassing commit hooks: ruff check, env -u PYTHONPATH
+      focused pytest, and env -u PYTHONPATH file-scoped pre-commit on the five touched files all passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1440 --repo OmniNode-ai/omnibase_core --json headRefOid --jq .headRefOid)"
+          = "9b39a7ff0888042f67d0da73510ce4320fafabb7" && git -C /Users/jonah/Code/omni_home/omni_worktrees/OMN-14403/omnibase_core
+          rev-parse HEAD | grep -q '^9b39a7ff0888042f67d0da73510ce4320fafabb7$'
