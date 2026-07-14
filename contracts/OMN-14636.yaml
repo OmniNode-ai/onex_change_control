@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14636"
+title: "fix(OMN-14636): anchor env gitignore patterns so workspace wheels keep compat env module"
+summary: >-
+  Central OCC evidence for omnibase_compat PR #176. The product PR fixes a workspace-mode wheel packaging
+  defect where hatchling applied the repo .gitignore and an unanchored env/ pattern excluded the real
+  src/omnibase_compat/env package and tests from git-stripped workspace builds. The fix anchors virtualenv
+  patterns to the repo root and adds a real wheel-content regression test.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-compat-pr-176-product-head"
+    description: >-
+      Product-observing verification for omnibase_compat PR #176 at head 182447f7749ff588d0ad6ffc79770314b6c2e431.
+      The proof reads PR metadata and changed files directly from GitHub, verifies the branch targets
+      dev, verifies the root-level env virtualenv ignore patterns are anchored, and verifies the wheel-packaging
+      regression test asserts the real env package and tests are present in a built wheel.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=176; PRODUCT_REPO=OmniNode-ai/omnibase_compat; PRODUCT_HEAD=182447f7749ff588d0ad6ffc79770314b6c2e431;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + ((.files | map(.path)) | join("\n"))' > "$d/pr.txt"
+          && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq '.gitignore'
+          "$d/pr.txt" && grep -Fq 'src/omnibase_compat/tests/env/test_wheel_packaging.py' "$d/pr.txt"
+          && for p in .gitignore src/omnibase_compat/tests/env/test_wheel_packaging.py src/omnibase_compat/env/util_is_strict_mode.py;
+          do mkdir -p "$d/$(dirname "$p")" && gh api "repos/OmniNode-ai/omnibase_compat/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fxq '/env/' "$d/.gitignore" && ! grep
+          -Fxq 'env/' "$d/.gitignore" && grep -Fq 'env/util_is_strict_mode.py' "$d/src/omnibase_compat/tests/env/test_wheel_packaging.py"
+          && grep -Fq 'tests/env/test_is_strict_mode.py' "$d/src/omnibase_compat/tests/env/test_wheel_packaging.py"
+          && grep -Fq 'uv build --wheel' "$d/src/omnibase_compat/tests/env/test_wheel_packaging.py" &&
+          grep -Fq 'AUTOWIRE_STRICT' "$d/src/omnibase_compat/env/util_is_strict_mode.py"
+  - id: "dod-omnibase-compat-pr-176-local-verification"
+    description: >-
+      Local verification proof for omnibase_compat PR #176 at head 182447f7749ff588d0ad6ffc79770314b6c2e431.
+      The PR body records the focused lint, type, full compat test, build/install, and pre-commit gates
+      that were run by the product author before handing the merge to Codex.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=176; PRODUCT_REPO=OmniNode-ai/omnibase_compat; PRODUCT_HEAD=182447f7749ff588d0ad6ffc79770314b6c2e431;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("402 passed")) and (.body | contains("uv build"))
+          and (.body | contains("uv run mypy src/omnibase_compat --strict")) and (.body | contains("pre-commit
+          run")) and (.body | contains("OCC companion is owed"))' | grep -qx true
+  - id: "dod-omnibase-compat-pr-176-deploy-scope"
+    description: >-
+      Deploy-surface assessment for omnibase_compat PR #176. The diff is packaging metadata, .gitignore,
+      and regression tests only; it does not touch deploy workflows, Dockerfiles, compose manifests, migrations,
+      runtime service manifests, or live infrastructure. No live deploy, restart, database mutation, or
+      .201 mutation was performed or required by this OCC evidence lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=176; PRODUCT_REPO=OmniNode-ai/omnibase_compat; PRODUCT_HEAD=182447f7749ff588d0ad6ffc79770314b6c2e431;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|k8s|terraform)(/|$)'
