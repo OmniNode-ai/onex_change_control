@@ -89,3 +89,82 @@ dod_evidence:
           --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
           != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
           --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-infra-pr-2298-product-head-ee4430"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2298-product-head"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2298 after the product head moved to ee4430bf566cc181681892a9482be2c90ea11b70.
+      The proof verifies the original ARCH_GRAPH_BOLT_URI runtime-policy binding plus the follow-up compose
+      fixture coverage and required vendored node migration sync files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2298; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=ee4430bf566cc181681892a9482be2c90ea11b70;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14297): bind ARCH_GRAPH_BOLT_URI in the dev-lane runtime policy contract' "$d/pr.txt"
+          && for p in contracts/services/runtime_policy.contract.yaml docker/docker-compose.infra.yml
+          docker/runtime-policy.env scripts/render_runtime_policy_env.py src/omnibase_infra/runtime/models/model_runtime_policy_contract.py
+          tests/ci/test_env_parity.py tests/integration/docker/test_docker_integration.py docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql
+          docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'arch_graph_bolt_uri' "$d/contracts/services/runtime_policy.contract.yaml"
+          && grep -Fq 'bolt://omnibase-infra-memgraph:7687' "$d/contracts/services/runtime_policy.contract.yaml"
+          && grep -Fq 'ARCH_GRAPH_BOLT_URI=bolt://omnibase-infra-memgraph:7687' "$d/docker/runtime-policy.env"
+          && grep -Fq '"ARCH_GRAPH_BOLT_URI": "bolt://omnibase-infra-memgraph:7687"' "$d/tests/integration/docker/test_docker_integration.py"
+          && grep -Fq 'baselines_quality_snapshots' "$d/docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql"
+          && grep -Fq 'baselines_roi_snapshots' "$d/docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql"
+  - id: "dod-infra-pr-2298-local-verification-ee4430"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2298-local-verification"
+    description: >-
+      Current-head verification evidence recorded in the omnibase_infra PR #2298 body after the compose
+      required-env fixture repair and node migration vendor sync moved the product head to ee4430bf566cc181681892a9482be2c90ea11b70.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2298; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=ee4430bf566cc181681892a9482be2c90ea11b70;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("Post-repair verification (head ee4430bf)")) and
+          (.body | contains("test_compose_required_env_coverage.py")) and (.body | contains("1 passed"))
+          and (.body | contains("test_compose_config_valid")) and (.body | contains("Docker daemon is
+          unavailable")) and (.body | contains("sync-node-migrations.sh --check")) and (.body | contains("Product
+          pre-commit passed without bypass"))' | grep -qx true
+  - id: "dod-infra-pr-2298-deploy-scope-ee4430"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2298-deploy-scope"
+    description: >-
+      Runtime-surface audit for omnibase_infra PR #2298 after the product head moved to ee4430bf566cc181681892a9482be2c90ea11b70.
+      The PR now includes runtime-policy/compose env configuration, a compose validation fixture update,
+      and vendored node migration sync files required by the repo gate. No live deploy or restart was
+      performed by this merge lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2298; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=ee4430bf566cc181681892a9482be2c90ea11b70;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("dev lane")) and (.body | contains("out of scope
+          for this ticket"))' | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -Fxq docker/docker-compose.infra.yml && gh pr diff "$PRODUCT_PR_NUMBER" --repo
+          "$PRODUCT_REPO" --name-only | grep -Fxq tests/integration/docker/test_docker_integration.py
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(systemd|deploy/scripts)(/|$)'
+  - id: "dod-occ-self-bind-pr-4206"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4206. Verifies the PR is on the expected
+      OMN-14297 ee4430 head-refresh evidence branch and contains the initial refresh evidence commit 5623217be7dd171262f83301628bf32764c85d41.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4206; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14297-occ-infra-2298-head-ee4430;
+          INITIAL_EVIDENCE_COMMIT=5623217be7dd171262f83301628bf32764c85d41; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
