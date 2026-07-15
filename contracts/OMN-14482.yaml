@@ -92,3 +92,84 @@ dod_evidence:
           --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
           != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
           --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-infra-pr-2276-product-head-f3ee"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2276 at head f3ee34ef24fabe707771c0a0dad46ad5515b159d
+      after syncing the vendored node migration tree to omnimarket dev commit 535323ac7c71226e352f3380fc864f5adf80d584.
+      The proof checks the tenant_scoped_ingress gate files plus the two newly vendored baseline projection
+      migrations required by the post-OMN-14529 omnimarket dev tip.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2276-product-head"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2276; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=f3ee34ef24fabe707771c0a0dad46ad5515b159d;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'feat(OMN-14482): tenant_scoped_ingress gate' "${d}/pr.txt" && for p in src/omnibase_infra/validators/tenant_scoped_ingress_schema.py
+          config/validation/tenant_scoped_ingress_allowlist.yaml tests/unit/validators/test_tenant_scoped_ingress_schema.py
+          .pre-commit-config.yaml .github/workflows/ci.yml docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql
+          docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql;
+          do grep -Fq "$p" "${d}/pr.txt" && mkdir -p "${d}/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "${d}/$p"; done && grep -Fq 'trusted_internal_topics' "${d}/src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"
+          && grep -Fq 'TRUSTED_INTERNAL_HAS_PRODUCER' "${d}/src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"
+          && grep -Fq 'NO_PREFIXED_TOPIC' "${d}/src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"
+          && grep -Fq 'test_trusted_internal_carveout_rejected_when_a_producer_exists' "${d}/tests/unit/validators/test_tenant_scoped_ingress_schema.py"
+          && grep -Fq 'baselines_quality_snapshots' "${d}/docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql"
+          && grep -Fq 'baselines_roi_snapshots' "${d}/docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql"
+  - id: "dod-infra-pr-2276-local-verification-f3ee"
+    description: >-
+      Local verification for omnibase_infra PR #2276 head f3ee34ef24fabe707771c0a0dad46ad5515b159d. The
+      foreground controller ran scripts/sync-node-migrations.sh --check against omnimarket dev commit
+      535323ac7c71226e352f3380fc864f5adf80d584 and focused pre-commit with OMNIMARKET_SRC set to that
+      source worktree before pushing the product repair.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2276-local-verification"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2276; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=f3ee34ef24fabe707771c0a0dad46ad5515b159d;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,commits --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ([.commits[].messageHeadline] | any(. == "fix(OMN-14482): sync node
+          migration vendor baselines"))' | grep -qx true && gh api "repos/${PRODUCT_REPO}/contents/docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode | grep -Fq 'CREATE TABLE IF NOT EXISTS baselines_quality_snapshots'
+          && gh api "repos/${PRODUCT_REPO}/contents/docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode | grep -Fq 'CREATE TABLE IF NOT EXISTS baselines_roi_snapshots'
+  - id: "dod-infra-pr-2276-deploy-scope-f3ee"
+    description: >-
+      Deploy-scope audit for omnibase_infra PR #2276 head f3ee34ef24fabe707771c0a0dad46ad5515b159d. The
+      product change remains limited to validator code, allowlist schema comments, CI/pre-commit wiring,
+      unit tests, and vendored node migration SQL files; it performs no live deploy, restart, .201 mutation,
+      compose change, or deploy script change.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2276-deploy-scope"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2276; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=f3ee34ef24fabe707771c0a0dad46ad5515b159d;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(. == ".github/workflows/ci.yml" or .
+          == ".pre-commit-config.yaml" or . == "config/validation/tenant_scoped_ingress_allowlist.yaml"
+          or . == "src/omnibase_infra/validators/tenant_scoped_ingress_schema.py" or . == "tests/unit/validators/test_tenant_scoped_ingress_schema.py"
+          or . == "docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql"
+          or . == "docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql"))'
+          | grep -qx true && ! gh pr diff "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --name-only
+          | grep -qE '(^|/)(systemd|deploy/scripts|docker/compose)(/|$)'
+  - id: "dod-occ-self-bind-pr-4213"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4213. Verifies the PR is on the expected
+      OMN-14482 f3ee head-refresh evidence branch and contains the initial evidence commit e98c10ebf19e4381ec44698988d0c9ab4569e978.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4213; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14482-occ-infra-2276-head-f3ee;
+          INITIAL_EVIDENCE_COMMIT=e98c10ebf19e4381ec44698988d0c9ab4569e978; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
