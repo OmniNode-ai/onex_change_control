@@ -80,3 +80,120 @@ dod_evidence:
           gh api repos/OmniNode-ai/onex_change_control/pulls/4226 --jq '.head.ref == "codex/omn-14641-omnimarket-1776-occ"
           and .state == "open"' | grep -qx true && gh api repos/OmniNode-ai/onex_change_control/pulls/4226/commits
           --paginate --jq '.[].sha' | grep -Fx d56e18ced5fe2ef76c944d68d7e143c55c3a902a
+  - id: "dod-omnimarket-pr-1776-product-head-98d9c06"
+    description: >-
+      Current-head product verification for omnimarket PR #1776 at head 98d9c06b7494ade618e717d09a37eea39dc1fa1d.
+      Supersedes the stream-only 6bc7490b evidence after hosted CI showed pytest could remain quiet enough
+      to keep the coverage job stale. Verifies the PR still targets dev, touches only the coverage sweep
+      gate and its CI regression test, and now emits a parent heartbeat while coverage generation is running.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1776-product-head"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1776; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=98d9c06b7494ade618e717d09a37eea39dc1fa1d;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14641): stream coverage sweep subprocess output' "$d/pr.txt" && grep -Fxq scripts/ci/run_coverage_sweep_gate.py
+          "$d/pr.txt" && grep -Fxq tests/ci/test_run_coverage_sweep_gate.py "$d/pr.txt" && test "$(tail
+          -n +4 "$d/pr.txt" | wc -l | tr -d ' ')" = "2" && for p in scripts/ci/run_coverage_sweep_gate.py
+          tests/ci/test_run_coverage_sweep_gate.py; do mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'subprocess.Popen(' "$d/scripts/ci/run_coverage_sweep_gate.py"
+          && grep -Fq 'coverage generation still running' "$d/scripts/ci/run_coverage_sweep_gate.py" &&
+          grep -Fq 'heartbeat_s: int = 60' "$d/scripts/ci/run_coverage_sweep_gate.py" && grep -Fq 'test_generate_helper_emits_parent_heartbeat'
+          "$d/tests/ci/test_run_coverage_sweep_gate.py" && grep -Fq 'coverage generation still running
+          after 1s' "$d/tests/ci/test_run_coverage_sweep_gate.py"
+  - id: "dod-omnimarket-pr-1776-local-verification-98d9c06"
+    description: >-
+      Current-head verification record for omnimarket PR #1776 at head 98d9c06b7494ade618e717d09a37eea39dc1fa1d.
+      Supersedes the stream-only local verification. The PR body records the focused coverage gate test
+      with 9 passing tests, ruff format/check, synthetic skip-generate coverage sweep proof, pre-commit
+      hook verification, and the hosted observation that stream-only output was insufficient before the
+      parent heartbeat was added.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1776-local-verification"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1776; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=98d9c06b7494ade618e717d09a37eea39dc1fa1d;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("9 passed; includes parent heartbeat regression"))
+          and (.body | contains("uv run ruff check")) and (.body | contains("synthetic --skip-generate
+          coverage sweep PASS")) and (.body | contains("stream-only fix was insufficient"))' | grep -qx
+          true
+  - id: "dod-omnimarket-pr-1776-deploy-scope-98d9c06"
+    description: >-
+      Current-head deploy-surface assessment for omnimarket PR #1776 at head 98d9c06b7494ade618e717d09a37eea39dc1fa1d.
+      The diff remains limited to CI coverage gate code and a CI regression test; it does not touch Dockerfiles,
+      compose manifests, deploy scripts, migrations, runtime service definitions, systemd, or infrastructure
+      configuration.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1776-deploy-scope"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1776; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=98d9c06b7494ade618e717d09a37eea39dc1fa1d;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
+  - id: "dod-occ-self-bind-pr-4226-merged"
+    description: >-
+      Superseding self-binding verification for the merged onex_change_control PR #4226. The original
+      self-bind receipt proved the PR while open; this append-only entry proves the same companion after
+      merge so future OMN-14641 compliance runs remain executable.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-self-bind-pr-4226"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4226 --jq '.head.ref == "codex/omn-14641-omnimarket-1776-occ"
+          and .state == "closed" and .merged_at != null' | grep -qx true && gh api repos/OmniNode-ai/onex_change_control/pulls/4226/commits
+          --paginate --jq '.[].sha' | grep -Fx a43ca85a182e1355af0fe47eb1a93b94fc0b027b
+  - id: "dod-autobind-product-head-98d9c06-superseded"
+    description: >-
+      Supersedes the auto-generated product-head entry for omnimarket PR #1776 at head 98d9c06. The explicit
+      product-head entry dod-omnimarket-pr-1776-product-head-98d9c06 carries the authoritative content
+      proof for the parent-heartbeat fix.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1776-head-98d9c06-product-head"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=98d9c06b7494ade618e717d09a37eea39dc1fa1d;
+          test "$(gh pr view 1776 --repo "$PRODUCT_REPO" --json headRefOid --jq .headRefOid)" = "$PRODUCT_HEAD"
+          && test -f drift/dod_receipts/OMN-14641/dod-omnimarket-pr-1776-product-head-98d9c06/command.yaml
+  - id: "dod-autobind-local-verification-98d9c06-superseded"
+    description: >-
+      Supersedes the auto-generated local-verification entry for omnimarket PR #1776 at head 98d9c06.
+      The explicit local verification entry records the 9-test heartbeat regression, ruff checks, synthetic
+      sweep proof, and product hook proof.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1776-head-98d9c06-local-verification"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=98d9c06b7494ade618e717d09a37eea39dc1fa1d;
+          gh pr view 1776 --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid == "'$PRODUCT_HEAD'"
+          and (.body | contains("9 passed; includes parent heartbeat regression"))' | grep -qx true
+  - id: "dod-autobind-deploy-scope-98d9c06-superseded"
+    description: >-
+      Supersedes the auto-generated deploy-scope entry for omnimarket PR #1776 at head 98d9c06. The explicit
+      deploy-scope entry remains the authoritative proof that the diff is limited to CI gate code and
+      tests.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1776-head-98d9c06-deploy-scope"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1776; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=98d9c06b7494ade618e717d09a37eea39dc1fa1d;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
