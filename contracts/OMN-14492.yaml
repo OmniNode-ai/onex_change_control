@@ -90,4 +90,72 @@ dod_evidence:
           INITIAL_EVIDENCE_COMMIT=e79b8f73d55d58312aa2cc92897bf394d95a143b; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
           --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
           != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
-          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT" #magic___^_^___line
+  - id: "dod-infra-pr-2314-product-head-c7c9"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-product-head"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2314 after its head moved to c7c9dfee6f1b183f38a24535020b2cbfeebab0af.
+      The proof verifies the original DLQ failure-class surfaces plus the follow-up projection failure
+      integration test assertion that projection failures emit quarantine fallback while terminal events
+      remain suppressed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=c7c9dfee6f1b183f38a24535020b2cbfeebab0af;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'feat(OMN-14492): classify DLQ/no-dispatcher drops as publisher_malformed vs no_dispatcher with
+          real ValidationError detail' "$d/pr.txt" && for p in src/omnibase_infra/enums/enum_dlq_failure_class.py
+          src/omnibase_infra/runtime/message_dispatch_engine.py src/omnibase_infra/runtime/auto_wiring/handler_wiring.py
+          src/omnibase_infra/runtime/event_bus_subcontract_wiring.py src/omnibase_infra/event_bus/mixin_kafka_dlq.py
+          tests/unit/runtime/test_message_dispatch_engine_type_scoping.py tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py
+          tests/unit/runtime/auto_wiring/test_dispatcher_route_coverage_omn14488.py tests/integration/projectors/test_projection_terminal_event_emission.py;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'publisher_malformed' "$d/src/omnibase_infra/enums/enum_dlq_failure_class.py"
+          && grep -Fq 'validation_detail' "$d/src/omnibase_infra/runtime/message_dispatch_engine.py" &&
+          grep -Fq 'PayloadTypeMatcher' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'failure_class' "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq
+          'validation_detail' "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq 'serialization_fallback'
+          "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq 'TestDlqFailureClassification'
+          "$d/tests/unit/runtime/test_message_dispatch_engine_type_scoping.py" && grep -Fq 'build_dlq_topic("quarantine")'
+          "$d/tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py" && grep -Fq 'quarantine_fallback'
+          "$d/tests/integration/projectors/test_projection_terminal_event_emission.py" && grep -Fq 'No
+          terminal event must be published when the handler raises' "$d/tests/integration/projectors/test_projection_terminal_event_emission.py"
+  - id: "dod-infra-pr-2314-local-verification-c7c9"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-local-verification"
+    description: >-
+      Current-head verification evidence for omnibase_infra PR #2314 after the projection-failure test
+      repair moved the product head to c7c9dfee6f1b183f38a24535020b2cbfeebab0af. The proof binds the live
+      head and checks that the PR body still records the original focused verification evidence.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=c7c9dfee6f1b183f38a24535020b2cbfeebab0af;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("5628 passed")) and (.body | contains("ruff format"))
+          and (.body | contains("uv run mypy")) and (.body | contains("pre-commit run")) and (.body |
+          contains("failure_class")) and (.body | contains("quarantine-fallback"))' | grep -qx true
+  - id: "dod-infra-pr-2314-deploy-scope-c7c9"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-deploy-scope"
+    description: >-
+      Runtime-surface audit for omnibase_infra PR #2314 after the product head moved to c7c9dfee6f1b183f38a24535020b2cbfeebab0af.
+      The PR changes runtime dispatch/DLQ classification source and tests, including a projection failure
+      integration assertion. It does not change Dockerfiles, compose manifests, deploy scripts, migrations,
+      or systemd units. No live deploy or restart was performed by this merge lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=c7c9dfee6f1b183f38a24535020b2cbfeebab0af;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -Fxq src/omnibase_infra/runtime/message_dispatch_engine.py && gh pr diff
+          "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq src/omnibase_infra/event_bus/mixin_kafka_dlq.py
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq tests/integration/projectors/test_projection_terminal_event_emission.py
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
