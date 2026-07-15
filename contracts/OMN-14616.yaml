@@ -95,3 +95,81 @@ dod_evidence:
           --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
           != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
           --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-omnimarket-pr-1769-product-head-4d981f"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1769-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1769 after its head moved to 4d981fde68593e6423ed2110ace0eb009c83577e
+      by merging current dev. The proof reads PR metadata and changed files from GitHub at that exact
+      head, verifies the PR still targets dev, and checks that the original broker handle-entrypoint files
+      and regression tests remain present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1769; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=4d981fde68593e6423ed2110ace0eb009c83577e;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14616): add def-B handle() entrypoint to node_pattern_b_broker handlers' "$d/pr.txt"
+          && for p in src/omnimarket/nodes/node_pattern_b_broker/contract.yaml src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_publish.py
+          src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_terminal_consumer.py tests/unit/nodes/node_pattern_b_broker/test_broker_contract_config.py
+          tests/unit/nodes/node_pattern_b_broker/test_broker_handle_entrypoint.py; do grep -Fq "$p" "$d/pr.txt"
+          && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'async def handle(' "$d/src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_publish.py"
+          && grep -Fq 'return await self.publish(request)' "$d/src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_publish.py"
+          && grep -Fq 'async def handle(' "$d/src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_terminal_consumer.py"
+          && grep -Fq 'return await self.wait_for_terminal_event(request)' "$d/src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_terminal_consumer.py"
+          && grep -Fq 'ModelPatternBBrokerDispatchRequest' "$d/src/omnimarket/nodes/node_pattern_b_broker/contract.yaml"
+          && grep -Fq 'test_real_engine_dispatch_binds_missing_handle_pre_fix' "$d/tests/unit/nodes/node_pattern_b_broker/test_broker_handle_entrypoint.py"
+  - id: "dod-pr-1769-state-coverage-4d981f"
+    description: >-
+      Current-head state-coverage proof for omnimarket PR #1769 after merging current dev into the product
+      branch. This records the local reproduction of the hosted state-coverage-gate command that previously
+      failed on stale baselines ROI/quality state coverage from dev drift.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1769; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=4d981fde68593e6423ed2110ace0eb009c83577e;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("Current-head refresh: 4d981fde")) and (.body | contains("validate_state_coverage.py
+          --check-changed origin/dev --strict")) and (.body | contains("PASS (`1 node(s) checked`, `PASS:
+          1  WARN: 0  FAIL: 0`)"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1769-local-verification-4d981f"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1769-local-verification"
+    description: >-
+      Current-head local verification evidence for omnimarket PR #1769 after its head moved to 4d981fde68593e6423ed2110ace0eb009c83577e.
+      The proof verifies the PR body still records the original RED/GREEN and local verification evidence
+      while binding that evidence to the live PR head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1769; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=4d981fde68593e6423ed2110ace0eb009c83577e;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("37/37 pass")) and (.body | contains("RED confirmed
+          against reverted pre-fix source")) and (.body | contains("ruff format --check")) and (.body
+          | contains("mypy src/omnimarket/nodes/node_pattern_b_broker/ --strict")) and (.body | contains("node_runtime_sweep
+          --import-check")) and (.body | contains("pre-commit run"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1769-deploy-scope-4d981f"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnimarket-pr-1769-deploy-scope"
+    description: >-
+      Current-head deploy-surface audit for omnimarket PR #1769 after its head moved to 4d981fde68593e6423ed2110ace0eb009c83577e.
+      The proof rechecks the diff for the broker files and confirms no Dockerfiles, compose manifests,
+      deploy scripts, runtime service definitions, migrations, or systemd units are introduced by this
+      ticket lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1769; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=4d981fde68593e6423ed2110ace0eb009c83577e;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,files --jq '.headRefOid
+          == "'$PRODUCT_HEAD'"' | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -Fxq src/omnimarket/nodes/node_pattern_b_broker/contract.yaml && gh pr diff
+          "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_publish.py
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq src/omnimarket/nodes/node_pattern_b_broker/handlers/adapter_broker_terminal_consumer.py
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
