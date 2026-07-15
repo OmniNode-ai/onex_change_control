@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14630"
+title: "fix(OMN-14630): reconcile baselines ROI/quality projections to producer schema"
+summary: >-
+  Central OCC evidence for omnimarket PR #1770. The product PR realigns the projection_baselines_roi and
+  projection_baselines_quality consumers to the real omnibase_infra ModelBaselinesSnapshotEvent producer
+  schema, adds DLQ topics, declares the missing dependency, and replaces zero-row snapshot tables with
+  producer-schema-compatible migrations.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "topics"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1770-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1770 at head 3e87c560b561f1d4420fb6c88f5369cede8f93fe.
+      Verifies the PR targets dev, touches the expected ROI/quality projection files, contracts consume
+      the real ModelBaselinesSnapshotEvent, handlers use producer-native fields, and DLQ topics are declared.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1770; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=3e87c560b561f1d4420fb6c88f5369cede8f93fe;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14630): reconcile node_projection_baselines_roi/_quality to real producer schema' "$d/pr.txt"
+          && for p in src/omnimarket/nodes/node_projection_baselines_roi/contract.yaml src/omnimarket/nodes/node_projection_baselines_quality/contract.yaml
+          src/omnimarket/nodes/node_projection_baselines_roi/handlers/handler_projection_baselines_roi.py
+          src/omnimarket/nodes/node_projection_baselines_quality/handlers/handler_projection_baselines_quality.py
+          src/omnimarket/nodes/node_projection_baselines_roi/migrations/002_realign_roi_snapshots_to_producer_schema.sql
+          src/omnimarket/nodes/node_projection_baselines_quality/migrations/002_realign_quality_snapshots_to_producer_schema.sql
+          tests/test_omn14630_baselines_roi_quality_seam.py; do grep -Fq "$p" "$d/pr.txt" && mkdir -p
+          "$d/$(dirname "$p")" && gh api "repos/OmniNode-ai/omnimarket/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'ModelBaselinesSnapshotEvent' "$d/src/omnimarket/nodes/node_projection_baselines_roi/contract.yaml"
+          && grep -Fq 'ModelBaselinesSnapshotEvent' "$d/src/omnimarket/nodes/node_projection_baselines_quality/contract.yaml"
+          && grep -Fq 'dlq_topics:' "$d/src/omnimarket/nodes/node_projection_baselines_roi/contract.yaml"
+          && grep -Fq 'dlq_topics:' "$d/src/omnimarket/nodes/node_projection_baselines_quality/contract.yaml"
+          && grep -Fq 'token_delta = control_total_tokens - treatment_total_tokens' "$d/src/omnimarket/nodes/node_projection_baselines_roi/handlers/handler_projection_baselines_roi.py"
+          && grep -Fq 'patterns_significant' "$d/src/omnimarket/nodes/node_projection_baselines_quality/handlers/handler_projection_baselines_quality.py"
+          && grep -Fq 'ValidationError' "$d/tests/test_omn14630_baselines_roi_quality_seam.py" && grep
+          -Fq 'pattern_id' "$d/tests/test_omn14630_baselines_roi_quality_seam.py"
+  - id: "dod-omnimarket-pr-1770-local-verification"
+    description: >-
+      Verification record for omnimarket PR #1770 at head 3e87c560b561f1d4420fb6c88f5369cede8f93fe. The
+      PR body records live .201 pre-checks, non-vacuous RED/GREEN seam proof, focused tests, strict mypy,
+      state coverage, migration/topic/dependency checks, and full pre-commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1770; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=3e87c560b561f1d4420fb6c88f5369cede8f93fe;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("baselines_roi_snapshots=0 rows, baselines_quality_snapshots=0
+          rows")) and (.body | contains("ValidationError: comparisons.0.pattern_id / Field required"))
+          and (.body | contains("34/34 focused tests pass")) and (.body | contains("`mypy --strict` clean"))
+          and (.body | contains("Full local `pre-commit run` clean"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1770-migration-deploy-scope"
+    description: >-
+      Migration/deploy-surface assessment for omnimarket PR #1770. The PR intentionally adds replacement
+      migrations for the ROI and quality snapshot tables, and the PR body records that both target tables
+      were zero rows in every known environment before recreation; no Dockerfiles, compose manifests,
+      deploy scripts, or runtime service definitions changed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1770; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=3e87c560b561f1d4420fb6c88f5369cede8f93fe;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("both tables hold zero rows in every known environment"))'
+          | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep
+          -Fxq src/omnimarket/nodes/node_projection_baselines_roi/migrations/002_realign_roi_snapshots_to_producer_schema.sql
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq src/omnimarket/nodes/node_projection_baselines_quality/migrations/002_realign_quality_snapshots_to_producer_schema.sql
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy)(/|$)'
