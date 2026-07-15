@@ -1,0 +1,94 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14482"
+title: "feat(OMN-14482): tenant_scoped_ingress trusted-internal carve-out"
+summary: >-
+  Central OCC evidence for omnibase_infra PR #2276, which extends the fail-closed tenant_scoped_ingress
+  validator so a flag-true contract may keep a bare subscribe topic only when it is CODEOWNERS-designated
+  as trusted_internal and mechanically proven producer-free. This is the infra prerequisite for the delegate-skill
+  external-ingress tenant path.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "protocols"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2276-product-head"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2276 at head 92aaec94af587a4b3aad5c2bec4ba4b9db53fdfa.
+      The proof reads PR metadata and changed files from GitHub, then checks that the validator, allowlist
+      schema comments, CI/pre-commit wiring, and regression tests contain the trusted_internal carve-out
+      and producer-free/no-op guards.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2276; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=92aaec94af587a4b3aad5c2bec4ba4b9db53fdfa;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'feat(OMN-14482): tenant_scoped_ingress gate' "${d}/pr.txt" && for p in src/omnibase_infra/validators/tenant_scoped_ingress_schema.py
+          config/validation/tenant_scoped_ingress_allowlist.yaml tests/unit/validators/test_tenant_scoped_ingress_schema.py
+          .pre-commit-config.yaml .github/workflows/ci.yml; do grep -Fq "$p" "${d}/pr.txt" && mkdir -p
+          "${d}/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}" --jq
+          .content | base64 --decode > "${d}/$p"; done && grep -Fq 'trusted_internal_topics' "${d}/src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"
+          && grep -Fq 'TRUSTED_INTERNAL_HAS_PRODUCER' "${d}/src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"
+          && grep -Fq 'NO_PREFIXED_TOPIC' "${d}/src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"
+          && grep -Fq -- '--producer-scan-root' "${d}/src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"
+          && grep -Fq 'trusted_internal_topics' "${d}/config/validation/tenant_scoped_ingress_allowlist.yaml"
+          && grep -Fq 'test_trusted_internal_carveout_rejected_when_a_producer_exists' "${d}/tests/unit/validators/test_tenant_scoped_ingress_schema.py"
+          && grep -Fq 'test_trusted_internal_only_bare_is_no_op_optin' "${d}/tests/unit/validators/test_tenant_scoped_ingress_schema.py"
+          && grep -Fq 'tenant_scoped_ingress opt-in gate' "${d}/.pre-commit-config.yaml" && grep -Fq 'tenant_scoped_ingress
+          opt-in gate' "${d}/.github/workflows/ci.yml"
+  - id: "dod-infra-pr-2276-local-verification"
+    description: >-
+      Local verification for omnibase_infra PR #2276 as recorded in the product PR body. The evidence
+      covers the focused unit suite, type check, ruff checks, and whole-tree validator scan that proves
+      the empty infra allowlist remains backward-compatible.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2276; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=92aaec94af587a4b3aad5c2bec4ba4b9db53fdfa;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,body --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and (.body | contains("21 passed")) and (.body | contains("mypy src/omnibase_infra/validators/tenant_scoped_ingress_schema.py"))
+          and (.body | contains("ruff check")) and (.body | contains("Whole-tree infra scan")) and (.body
+          | contains("trusted_internal_only_bare_is_no_op_optin"))' | grep -qx true
+  - id: "dod-infra-pr-2276-deploy-scope"
+    description: >-
+      Deploy-scope audit for omnibase_infra PR #2276. The product change is limited to validator code,
+      allowlist schema comments, CI/pre-commit wiring, and unit tests; it performs no live deploy, restart,
+      .201 mutation, or runtime service change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2276; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=92aaec94af587a4b3aad5c2bec4ba4b9db53fdfa;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(. == ".github/workflows/ci.yml" or .
+          == ".pre-commit-config.yaml" or . == "config/validation/tenant_scoped_ingress_allowlist.yaml"
+          or . == "src/omnibase_infra/validators/tenant_scoped_ingress_schema.py" or . == "tests/unit/validators/test_tenant_scoped_ingress_schema.py"))'
+          | grep -qx true && ! gh pr diff "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --name-only
+          | grep -qE '(^|/)(systemd|deploy/scripts|docker/compose|docker/migrations)(/|$)'
+  - id: "dod-occ-self-bind-pr-4212"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4212. Verifies the PR is on the expected
+      OMN-14482 infra evidence branch and contains the initial evidence commit 2bcc40ed04e6432f29a2fd7c7480913ffe06e37a.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4212; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14482-occ-infra-2276;
+          INITIAL_EVIDENCE_COMMIT=2bcc40ed04e6432f29a2fd7c7480913ffe06e37a; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
