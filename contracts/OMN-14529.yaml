@@ -143,3 +143,89 @@ dod_evidence:
           --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
           != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
           --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-infra-pr-2292-product-head-42f566"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2292-product-head"
+    description: >-
+      Superseding product-observing verification for omnibase_infra PR #2292 at head 42f56600048e3154882300be741f9704dbe6443d.
+      This refresh covers the contract-sync repair that moved node_decision_store_query_compute contract_version/node_version
+      to patch 1 and documents the omnibase_core-compatible row-shaping behavior required by the changed
+      handler.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2292; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=42f56600048e3154882300be741f9704dbe6443d;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'feat(OMN-14529): wire decision_store skill dispatch route' "${d}/pr.txt" && for p
+          in src/omnibase_infra/cli/enum_skill_arg_type.py src/omnibase_infra/cli/cli_skill.py src/omnibase_infra/cli/skill_mapping.yaml
+          src/omnibase_infra/nodes/node_decision_store_query_compute/handlers/handler_query_decisions.py
+          src/omnibase_infra/nodes/node_decision_store_query_compute/contract.yaml tests/unit/cli/test_cli_skill.py
+          tests/unit/nodes/test_decision_store_query_compute.py; do grep -Fq "$p" "${d}/pr.txt" && mkdir
+          -p "${d}/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "${d}/$p"; done && grep -Fq 'JSON = "json"' "${d}/src/omnibase_infra/cli/enum_skill_arg_type.py"
+          && grep -Fq 'json.loads(raw)' "${d}/src/omnibase_infra/cli/cli_skill.py" && grep -Fq 'skill_name:
+          decision_store' "${d}/src/omnibase_infra/cli/skill_mapping.yaml" && grep -Fq 'node_decision_store_orchestrator'
+          "${d}/src/omnibase_infra/cli/skill_mapping.yaml" && grep -Fq 'arg_type: json' "${d}/src/omnibase_infra/cli/skill_mapping.yaml"
+          && grep -Fq 'decision_type": str(row["decision_type"]).lower()' "${d}/src/omnibase_infra/nodes/node_decision_store_query_compute/handlers/handler_query_decisions.py"
+          && grep -Fq 'patch: 1' "${d}/src/omnibase_infra/nodes/node_decision_store_query_compute/contract.yaml"
+          && grep -Fq 'omnibase_core-compatible decision entries' "${d}/src/omnibase_infra/nodes/node_decision_store_query_compute/contract.yaml"
+          && grep -Fq 'test_decision_store_registered_and_wired' "${d}/tests/unit/cli/test_cli_skill.py"
+          && grep -Fq 'test_row_to_entry_lowercases_decision_type_for_omnibase_core_enum' "${d}/tests/unit/nodes/test_decision_store_query_compute.py"
+  - id: "dod-infra-pr-2292-local-verification-42f566"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2292-local-verification"
+    description: >-
+      Superseding local verification for omnibase_infra PR #2292 at head 42f56600048e3154882300be741f9704dbe6443d.
+      Codex reran the focused decision_store/CLI unit suite against the current product head and verified
+      the PR body plus head commit record the contract-sync repair without performing any live deploy,
+      restart, or .201 mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2292; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=42f56600048e3154882300be741f9704dbe6443d;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,body --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and (.body | contains("SELECT count(*) FROM decision_store")) and (.body
+          | contains("0 → 1 → 2 → 3")) and (.body | contains("3 → 4 → 5")) and (.body | contains("full
+          CLI seam proven end-to-end"))' | grep -qx true && gh api "repos/${PRODUCT_REPO}/commits/${PRODUCT_HEAD}"
+          --jq '.commit.message' | grep -Fq 'fix(OMN-14529): sync decision store query contract'
+  - id: "dod-omn14529-deploy-scope-42f566"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn14529-deploy-scope"
+    description: >-
+      Superseding deploy-scope audit for OMN-14529 after omnibase_infra PR #2292 moved to head 42f56600048e3154882300be741f9704dbe6443d.
+      The additional product change is a node contract YAML synchronization for an already-changed handler;
+      this merge lane still performed no live deploy, restart, or .201 mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          INFRA_PR_NUMBER=2292; MARKET_PR_NUMBER=1749; INFRA_REPO=OmniNode-ai/omnibase_infra; MARKET_REPO=OmniNode-ai/omnimarket;
+          INFRA_HEAD=42f56600048e3154882300be741f9704dbe6443d; MARKET_HEAD=bbf248a5ab55887d78558f8f94d5a5f2000139cf;
+          gh pr view "${INFRA_PR_NUMBER}" --repo "${INFRA_REPO}" --json headRefOid,body --jq '.headRefOid
+          == "'${INFRA_HEAD}'" and (.body | contains("no `.201` mutation")) and (.body | contains(".201`
+          stability-test lane readback — OWED"))' | grep -qx true && gh pr view "${MARKET_PR_NUMBER}"
+          --repo "${MARKET_REPO}" --json headRefOid,body --jq '.headRefOid == "'${MARKET_HEAD}'" and (.body
+          | contains("no `.201` mutation")) and (.body | contains(".201` stability-test lane readback
+          — OWED"))' | grep -qx true && gh pr diff "${INFRA_PR_NUMBER}" --repo "${INFRA_REPO}" --name-only
+          | grep -Fxq src/omnibase_infra/nodes/node_decision_store_query_compute/contract.yaml && gh pr
+          diff "${INFRA_PR_NUMBER}" --repo "${INFRA_REPO}" --name-only | grep -Fxq src/omnibase_infra/cli/skill_mapping.yaml
+          && gh pr diff "${MARKET_PR_NUMBER}" --repo "${MARKET_REPO}" --name-only | grep -Fxq src/omnimarket/nodes/node_decision_store_orchestrator/adapters/postgres_decision_store.py
+          && ! gh pr diff "${MARKET_PR_NUMBER}" --repo "${MARKET_REPO}" --name-only | grep -qE '(^|/)(systemd|deploy/scripts)(/|$)'
+  - id: "dod-occ-self-bind-pr-4209"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4209. Verifies the PR is on the expected
+      OMN-14529 infra-head-refresh evidence branch and contains the initial refresh evidence commit 38307daa36274f12a905cc75ff6771817c8a70e0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4209; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14529-occ-infra-2292-head-42f566;
+          INITIAL_EVIDENCE_COMMIT=38307daa36274f12a905cc75ff6771817c8a70e0; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
