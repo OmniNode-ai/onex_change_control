@@ -63,3 +63,130 @@ dod_evidence:
       - check_type: command
         check_value: >-
           grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-occ-self/command.yaml
+  - id: dod-gateway-reconcile
+    description: >-
+      Verification of omnibase_infra PR #2311 at head 40a9ca2c33f76891858b4a66f8e147e34d79af35, which
+      closes the reconciliation gap dod-001 flagged as a separate follow-up: PR #2252 (gateway stamps
+      verified tenant_id) merged before PR #2257 (shared stamp_verified_tenant_slug helper) landed and
+      was never updated to use it — handler_consume_inbound.consume_inbound still hand-built {**envelope.payload,
+      "tenant_id": str(identity.tenant_id), "tenant_slug": identity.tenant_slug} (a UUID plus an extra
+      key) on live origin/dev prior to this PR. Confirmed the PR routes consume_inbound() through omnibase_infra.shared.tenant_stamp.stamp_verified_tenant_slug(envelope.payload,
+      identity.tenant_slug), producing the canonical {**payload, "tenant_id": <slug>} shape with no separate
+      tenant_slug key. Confirmed via direct read of the PR diff (not self-report) and by running the full
+      node_bus_forwarder_effect unit suite (25 passed) plus the shared tenant_stamp suite (6 passed) and
+      mypy (clean) at the PR head.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-gateway-reconcile/command.yaml &&
+          grep -q '^pr_number: 2311$' drift/dod_receipts/OMN-14367/dod-gateway-reconcile/command.yaml
+          && grep -q '40a9ca2c33f76891858b4a66f8e147e34d79af35' drift/dod_receipts/OMN-14367/dod-gateway-reconcile/command.yaml
+  - id: dod-seam-test-flip
+    description: >-
+      Verification of omnimarket PR #1765 at head 116a26c47cd378f9e4362e1d02af913d503eb9cc, the paired
+      companion to omnibase_infra #2311. tests/integration/test_tenant_stamp_seam_omn14208.py previously
+      pinned the #2252 gateway shape as a strict xfail (test_2252_gateway_shape_currently_rejected, reason
+      "OMN-14367: ..."); this PR reconstructs the #2252 shape to match the now-reconciled stamp_verified_tenant_slug
+      output ({**payload, "tenant_id": <slug>}, no separate tenant_slug key), removes the xfail marker,
+      and renames the test to test_2252_gateway_shape_now_matches_consumer asserting model_validate succeeds
+      against the real ModelDelegateSkillRequest consumer contract (extra="forbid"). Also repurposes test_producers_disagree_on_tenant_id_meaning
+      into test_producers_converge_on_tenant_id_meaning proving both producers (#2254 auto-wiring, #2252
+      gateway) now emit the identical slug shape. Confirmed via direct read of the PR diff and by running
+      the full seam test file at the PR head: 5 passed (0 xfail remaining) — the previously-strict-xfail
+      test is now a genuine pass, not a widened/weakened assertion (asserts req.tenant_id == "acme" and
+      no tenant_slug key survives). This is the cross-boundary seam test (OMN-14208 rule) driving the
+      real producer shape against the real consumer model, not two independent unit suites.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-seam-test-flip/command.yaml && grep
+          -q '^pr_number: 1765$' drift/dod_receipts/OMN-14367/dod-seam-test-flip/command.yaml && grep
+          -q '116a26c47cd378f9e4362e1d02af913d503eb9cc' drift/dod_receipts/OMN-14367/dod-seam-test-flip/command.yaml
+  - id: dod-deploy-assessment-002
+    description: >-
+      Deploy-surface assessment for PRs #2311 and #1765. Both changes are logic/test-only: #2311 swaps
+      a hand-built dict literal for a call to an existing shared helper inside an already-deployed handler
+      (no new runtime service, daemon, topic, migration, or deployable container change); #1765 only edits
+      an integration test file. Neither PR touches Dockerfiles, compose manifests, contract.yaml topic
+      declarations, or migration files. No live .201 mutation was performed or required.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-deploy-assessment-002/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14367/dod-deploy-assessment-002/command.yaml
+  - id: dod-occ-self-002
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the dod-gateway-reconcile, dod-seam-test-flip,
+      and dod-deploy-assessment-002 entries consumed by omnibase_infra #2311 and omnimarket #1765 through
+      their Evidence-Source lines. Self-binds via the first commit SHA so occ-preflight eligibility does
+      not require predicting the OCC PR number.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14367/dod-occ-self-002/command.yaml
+  - id: dod-current-2311-1765-product-observed
+    description: >-
+      Current-head product-observing verification for the live OMN-14367 reconciliation PRs. Binds omnibase_infra
+      #2311 at head f1cf92fc01aa55fb39fe51bf2e47cf1d181626fb and omnimarket #1765 at head eb0e3228f7e72e26c84c70a4967512c5988ba0e7,
+      reads the product files directly from GitHub at those exact heads, verifies #2311 calls the shared
+      stamp_verified_tenant_slug helper with identity.tenant_slug, verifies #1765 carries the now-passing
+      consumer seam test names, and verifies neither live PR diff touches deploy/migration/container surfaces.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2311 --jq '.head.sha == "f1cf92fc01aa55fb39fe51bf2e47cf1d181626fb"
+          and .state == "open"' | grep -qx true && gh api repos/OmniNode-ai/omnimarket/pulls/1765 --jq
+          '.head.sha == "eb0e3228f7e72e26c84c70a4967512c5988ba0e7" and .state == "open"' | grep -qx true
+          && infra_handler="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py?ref=f1cf92fc01aa55fb39fe51bf2e47cf1d181626fb'
+          --jq .content | base64 -d)" && printf '%s' "$infra_handler" | grep -q 'stamp_verified_tenant_slug('
+          && printf '%s' "$infra_handler" | grep -q 'identity.tenant_slug' && market_test="$(gh api 'repos/OmniNode-ai/omnimarket/contents/tests/integration/test_tenant_stamp_seam_omn14208.py?ref=eb0e3228f7e72e26c84c70a4967512c5988ba0e7'
+          --jq .content | base64 -d)" && printf '%s' "$market_test" | grep -q 'test_2252_gateway_shape_now_matches_consumer'
+          && printf '%s' "$market_test" | grep -q 'test_producers_converge_on_tenant_id_meaning' && !
+          (gh pr diff 2311 --repo OmniNode-ai/omnibase_infra --name-only | grep -qE 'Dockerfile|docker-compose|deploy/|migrations/')
+          && ! (gh pr diff 1765 --repo OmniNode-ai/omnimarket --name-only | grep -qE 'Dockerfile|docker-compose|deploy/|migrations/')
+  - id: dod-market-1765-head-90b05436-product-observed
+    description: >-
+      Current-head product-observing verification for omnimarket PR #1765 after it was updated onto the
+      fixed dev baseline. Binds #1765 at head 90b05436e7f1f2ec40af6030bfce3e756acbb420, verifies the paired
+      producer change omnibase_infra #2311 is merged at d2c8ec1aef31f3fabf4175117d99dd6b0b3d8d5d, reads
+      the seam test file directly from GitHub at that exact #1765 head, verifies the now-passing tenant-stamp
+      seam test names remain present, and verifies #1765 still does not touch deploy/migration/container
+      surfaces.
+    evidence_artifact: "supersedes_dod_evidence:dod-current-2311-1765-product-observed"
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api repos/OmniNode-ai/omnimarket/pulls/1765 --jq '.head.sha == "90b05436e7f1f2ec40af6030bfce3e756acbb420"
+          and .state == "open"' | grep -qx true && gh api repos/OmniNode-ai/omnibase_infra/pulls/2311
+          --jq '.merged == true and .merge_commit_sha == "d2c8ec1aef31f3fabf4175117d99dd6b0b3d8d5d"' |
+          grep -qx true && market_test="$(gh api 'repos/OmniNode-ai/omnimarket/contents/tests/integration/test_tenant_stamp_seam_omn14208.py?ref=90b05436e7f1f2ec40af6030bfce3e756acbb420'
+          --jq .content | base64 -d)" && printf '%s' "$market_test" | grep -q 'test_2252_gateway_shape_now_matches_consumer'
+          && printf '%s' "$market_test" | grep -q 'test_producers_converge_on_tenant_id_meaning' && !
+          (gh pr diff 1765 --repo OmniNode-ai/omnimarket --name-only | grep -qE 'Dockerfile|docker-compose|deploy/|migrations/')
+  - id: dod-occ-self-bind-pr-4165
+    description: >-
+      Self-binding receipt for onex_change_control PR #4165, the OMN-14367 follow-up OCC refresh that
+      binds omnimarket #1765 at head 90b05436e7f1f2ec40af6030bfce3e756acbb420 after the product branch
+      refreshed onto the fixed dev baseline. Verifies the PR is open on the expected branch and that the
+      original evidence commit 0a20d5649f3404378f42dca8f5198dbded5b8664 is an ancestor of the current
+      PR head.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4165 --jq '.head.ref == "jonah/omn-14367-occ-market1765-head-90b05436"
+          and .state == "open"' | grep -qx true && git merge-base --is-ancestor 0a20d5649f3404378f42dca8f5198dbded5b8664
+          HEAD
