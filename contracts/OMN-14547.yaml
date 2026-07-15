@@ -1,0 +1,97 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14547"
+title: "fix(OMN-14547): node_create_ticket fail-closed Linear create"
+summary: >-
+  Central OCC evidence for omnimarket PR #1748, which changes node_create_ticket from a fake-success facade
+  into a fail-closed Linear ticket creation path. The handler now resolves the contract-declared LINEAR_API_KEY,
+  calls Linear GraphQL issueCreate through LinearTicketHttpGateway, and refuses to emit status="created"
+  when Linear or a test double returns an empty ticket_id.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+  - "protocols"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1748-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1748 at head 0f7e8211358f60c3d8ee5cd91dde3d224a4522a0.
+      The proof reads PR metadata and changed files from GitHub, then checks that node_create_ticket contains
+      the real Linear GraphQL gateway, contract-secret resolution, fail-closed empty-ticket guard, CLI
+      error handling, and regression tests for non-empty ticket ids.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1748; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=0f7e8211358f60c3d8ee5cd91dde3d224a4522a0;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'fix(OMN-14547): node_create_ticket fail-closed + real Linear create call' "${d}/pr.txt"
+          && for p in src/omnimarket/nodes/node_create_ticket/__main__.py src/omnimarket/nodes/node_create_ticket/contract.yaml
+          src/omnimarket/nodes/node_create_ticket/handlers/handler_create_ticket.py tests/nodes/node_create_ticket/test_handler_create_ticket.py
+          tests/integration/node_create_ticket/test_create_ticket_multiparam.py tests/test_golden_chain_create_ticket.py;
+          do grep -Fq "$p" "${d}/pr.txt" && mkdir -p "${d}/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "${d}/$p"; done && grep -Fq 'LinearTicketHttpGateway' "${d}/src/omnimarket/nodes/node_create_ticket/handlers/handler_create_ticket.py"
+          && grep -Fq 'issueCreate(input:' "${d}/src/omnimarket/nodes/node_create_ticket/handlers/handler_create_ticket.py"
+          && grep -Fq 'resolve_api_key_loop_safe' "${d}/src/omnimarket/nodes/node_create_ticket/handlers/handler_create_ticket.py"
+          && grep -Fq 'contract_secret_ref(_CONTRACT_PATH, "LINEAR_API_KEY")' "${d}/src/omnimarket/nodes/node_create_ticket/handlers/handler_create_ticket.py"
+          && grep -Fq 'ticket_id — refusing' "${d}/src/omnimarket/nodes/node_create_ticket/handlers/handler_create_ticket.py"
+          && grep -Fq 'graphql_url: "https://api.linear.app/graphql"' "${d}/src/omnimarket/nodes/node_create_ticket/contract.yaml"
+          && grep -Fq 'except RuntimeError as exc' "${d}/src/omnimarket/nodes/node_create_ticket/__main__.py"
+          && grep -Fq 'test_empty_ticket_id_raises_instead_of_reporting_created' "${d}/tests/nodes/node_create_ticket/test_handler_create_ticket.py"
+          && grep -Fq 'test_successful_create_yields_non_empty_ticket_id' "${d}/tests/nodes/node_create_ticket/test_handler_create_ticket.py"
+          && grep -Fq 'created result must have a non-empty ticket_id' "${d}/tests/integration/node_create_ticket/test_create_ticket_multiparam.py"
+          && grep -Fq 'OMN-90001' "${d}/tests/test_golden_chain_create_ticket.py"
+  - id: "dod-omnimarket-pr-1748-local-verification"
+    description: >-
+      Local verification for omnimarket PR #1748 at head 0f7e8211358f60c3d8ee5cd91dde3d224a4522a0. Codex
+      reran the focused create-ticket and golden-chain pytest suite from the clean OMN-14547 product worktree,
+      plus strict mypy and ruff checks for the changed node/test surface.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1748; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=0f7e8211358f60c3d8ee5cd91dde3d224a4522a0;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,body --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and (.body | contains("44 passed")) and (.body | contains("mypy --strict:
+          Success")) and (.body | contains("ruff check / ruff format --check: All checks passed")) and
+          (.body | contains("Live end-to-end proof against the real Linear API")) and (.body | contains("OMN-14557"))'
+          | grep -qx true
+  - id: "dod-omnimarket-pr-1748-deploy-scope"
+    description: >-
+      Deploy-scope audit for omnimarket PR #1748. The diff is limited to node_create_ticket Python code,
+      its contract, and tests. It performs no live deploy, restart, .201 mutation, compose change, systemd
+      change, deploy script change, or migration change; the only live side effect recorded in the PR
+      body is the explicit Linear API verification ticket OMN-14557, which was cancelled after proof.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1748; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=0f7e8211358f60c3d8ee5cd91dde3d224a4522a0;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files,body --jq
+          '.headRefOid == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(startswith("src/omnimarket/nodes/node_create_ticket/")
+          or startswith("tests/nodes/node_create_ticket/") or startswith("tests/integration/node_create_ticket/")
+          or . == "tests/test_golden_chain_create_ticket.py")) and (.body | contains("OMN-14557")) and
+          (.body | contains("canceled post-verification"))' | grep -qx true && ! gh pr diff "${PRODUCT_PR_NUMBER}"
+          --repo "${PRODUCT_REPO}" --name-only | grep -qE '(^|/)(systemd|deploy/scripts|docker/compose|docker/migrations)(/|$)'
+  - id: "dod-occ-self-bind-pr-4214"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4214. Verifies the PR is on the expected
+      OMN-14547 evidence branch and contains the initial evidence commit a026db0b35ce099a39b67b4352447f1960b58f67.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4214; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14547-occ-market-1748;
+          INITIAL_EVIDENCE_COMMIT=a026db0b35ce099a39b67b4352447f1960b58f67; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and .head.sha == "'$INITIAL_EVIDENCE_COMMIT'" and ((.state
+          == "open") or (.state == "closed" and .merged_at != null))' | grep -qx true
