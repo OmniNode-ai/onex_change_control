@@ -1,0 +1,103 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14494"
+title: "Harden JSONB list adaptation and projection DLQ coverage"
+summary: >-
+  Central OCC evidence for the two same-ticket product PRs that close the OMN-14494 JSONB-list adaptation
+  observability gap: omnimarket PR #1767 adds the missing DLQ declaration and contract tests for node_projection_delegation_inference_response,
+  while omnibase_infra PR #2313 adds the structural JSONB list-of-objects heuristic and focused adapter
+  tests.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1767-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1767 at head 8f8c8225f32823edbc6e686adf50a87011c87f73.
+      The proof reads PR metadata and changed files from GitHub at that exact head, verifies the PR targets
+      dev, and checks that the contract declares the expected DLQ topic plus focused tests for the DLQ
+      declaration and naming convention.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1767; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=8f8c8225f32823edbc6e686adf50a87011c87f73;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14494): declare dlq_topics on node_projection_delegation_inference_response' "$d/pr.txt"
+          && for p in src/omnimarket/nodes/node_projection_delegation_inference_response/contract.yaml
+          tests/nodes/node_projection_delegation_inference_response/test_node_projection_delegation_inference_response_contract.py;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'dlq_topics:' "$d/src/omnimarket/nodes/node_projection_delegation_inference_response/contract.yaml"
+          && grep -Fq 'onex.dlq.omnimarket.projection-delegation-inference-response-malformed.v1' "$d/src/omnimarket/nodes/node_projection_delegation_inference_response/contract.yaml"
+          && grep -Fq 'test_contract_declares_dlq_topic' "$d/tests/nodes/node_projection_delegation_inference_response/test_node_projection_delegation_inference_response_contract.py"
+          && grep -Fq 'test_dlq_topic_follows_onex_dlq_naming_convention' "$d/tests/nodes/node_projection_delegation_inference_response/test_node_projection_delegation_inference_response_contract.py"
+  - id: "dod-infra-pr-2313-product-head"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2313 at head 2cb5917f04bb7cf39cd67083c50a767928aef784.
+      The proof reads PR metadata and changed files from GitHub at that exact head, verifies the PR targets
+      dev, and checks the load-bearing structural heuristic and regression test markers for never-allowlisted
+      list[dict] JSONB columns.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2313; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=2cb5917f04bb7cf39cd67083c50a767928aef784;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14494): structural JSONB-list heuristic for sync psycopg2 adapter' "$d/pr.txt" && for
+          p in src/omnibase_infra/runtime/auto_wiring/handler_wiring.py tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'def _should_jsonb_wrap_list' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'any(isinstance(item, (dict, list)) for item in value)' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq '_should_jsonb_wrap_list(key, value)' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'test_should_jsonb_wrap_list_structural_heuristic_new_unsuffixed_column' "$d/tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py"
+          && grep -Fq 'test_sync_db_adapter_json_adapts_new_unsuffixed_unallowlisted_list_of_dicts_column'
+          "$d/tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py" && grep -Fq 'audit_findings'
+          "$d/tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py"
+  - id: "dod-omn-14494-local-verification"
+    description: >-
+      Verification evidence recorded in the two product PR bodies. The market PR body records RED/GREEN
+      contract proof plus contract-topic/topic-drift checks and 12 passing node tests; the infra PR body
+      records RED/GREEN adapter proof plus 382 passing auto-wiring/integration tests, mypy, ruff, and
+      pre-commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          MARKET_PR_NUMBER=1767; MARKET_REPO=OmniNode-ai/omnimarket; MARKET_HEAD=8f8c8225f32823edbc6e686adf50a87011c87f73;
+          INFRA_PR_NUMBER=2313; INFRA_REPO=OmniNode-ai/omnibase_infra; INFRA_HEAD=2cb5917f04bb7cf39cd67083c50a767928aef784;
+          gh pr view "$MARKET_PR_NUMBER" --repo "$MARKET_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$MARKET_HEAD'" and (.body | contains("RED proven")) and (.body | contains("12 passed"))
+          and (.body | contains("contract_topic_graph")) and (.body | contains("check_topic_drift.py"))
+          and (.body | contains("pre-commit run --files"))' | grep -qx true && gh pr view "$INFRA_PR_NUMBER"
+          --repo "$INFRA_REPO" --json headRefOid,body --jq '.headRefOid == "'$INFRA_HEAD'" and (.body
+          | contains("RED proven")) and (.body | contains("382 passed")) and (.body | contains("uv run
+          mypy src/omnibase_infra/runtime/auto_wiring/handler_wiring.py")) and (.body | contains("ruff
+          format")) and (.body | contains("pre-commit run --files"))' | grep -qx true
+  - id: "dod-occ-self-bind-pr-4185"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4185. Verifies the PR is on the expected
+      OMN-14494 evidence branch, remains bound after merge, and contains the initial batched evidence
+      commit 8dddd6fc79b9fd811c64a69de0d24ad8c042abd4.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4185; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14494-occ-batch;
+          INITIAL_EVIDENCE_COMMIT=8dddd6fc79b9fd811c64a69de0d24ad8c042abd4; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
