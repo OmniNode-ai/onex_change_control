@@ -207,3 +207,103 @@ dod_evidence:
           --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
           != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
           --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-infra-pr-2316-product-head-bca6"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2316-product-head-7393"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2316 after its head moved to bca6e9c77a9426a83487ed0ac9c67974dfc1870c.
+      The proof verifies the def-B handler, node contract update, adequacy/equivalence receipts, baseline,
+      workflow receipts-dir fix, golden-equivalence test, and vendored node migrations.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2316; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=bca6e9c77a9426a83487ed0ac9c67974dfc1870c;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'feat(OMN-14633): canonicalize node_coding_agent_workspace_compute to def-B' "$d/pr.txt" &&
+          for p in src/omnibase_infra/nodes/node_coding_agent_workspace_compute/handlers/handler_workspace_validate.py
+          src/omnibase_infra/nodes/node_coding_agent_workspace_compute/contract.yaml scripts/ci/adequacy_receipts/omnibase_infra.nodes.node_coding_agent_workspace_compute.json
+          scripts/ci/adequacy_receipts/omnibase_infra.nodes.node_coding_agent_workspace_compute.equivalence.json
+          scripts/ci/canonical_handler_shape_baseline.py tests/unit/nodes/node_coding_agent/test_workspace_compute_golden_equivalence.py
+          .github/workflows/ci.yml docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql
+          docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'async def handle(' "$d/src/omnibase_infra/nodes/node_coding_agent_workspace_compute/handlers/handler_workspace_validate.py"
+          && grep -Fq 'handle(command) returns the typed result directly' "$d/src/omnibase_infra/nodes/node_coding_agent_workspace_compute/contract.yaml"
+          && grep -Fq '"meets_target": true' "$d/scripts/ci/adequacy_receipts/omnibase_infra.nodes.node_coding_agent_workspace_compute.json"
+          && grep -Fq '"status": "pass"' "$d/scripts/ci/adequacy_receipts/omnibase_infra.nodes.node_coding_agent_workspace_compute.equivalence.json"
+          && grep -Fq 'test_handle_reproduces_recorded_golden' "$d/tests/unit/nodes/node_coding_agent/test_workspace_compute_golden_equivalence.py"
+          && grep -Fq -- '--receipts-dir' "$d/.github/workflows/ci.yml" && grep -Fq 'OMN-14630' "$d/docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql"
+          && grep -Fq 'OMN-14630' "$d/docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql"
+  - id: "dod-infra-pr-2316-local-verification-bca6"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2316-local-verification-7393"
+    description: >-
+      Current-head verification evidence for omnibase_infra PR #2316 after the contract-sync repair moved
+      the product head to bca6e9c77a9426a83487ed0ac9c67974dfc1870c. The proof binds the live head and
+      checks that the PR body still records the original focused tests, canonical-shape proof, type/lint
+      checks, and pre-commit verification.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2316; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=bca6e9c77a9426a83487ed0ac9c67974dfc1870c;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("74 passed")) and (.body | contains("ruff format"))
+          and (.body | contains("mypy src/omnibase_infra/nodes/node_coding_agent_workspace_compute/"))
+          and (.body | contains("pre-commit run --files")) and (.body | contains("new=0 unproven_flips=0
+          warn=91"))' | grep -qx true
+  - id: "dod-infra-pr-2316-ci-receipts-dir-gap-bca6"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2316-ci-receipts-dir-gap-7393"
+    description: >-
+      Current-head product proof for the CI gap fixed in PR #2316 after the product head moved to bca6e9c77a9426a83487ed0ac9c67974dfc1870c.
+      The CI workflow still passes --receipts-dir to canonical_handler_shape.py so omnibase_infra uses
+      its own committed adequacy receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2316; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=bca6e9c77a9426a83487ed0ac9c67974dfc1870c;
+          f="$(mktemp)" && gh api "repos/${PRODUCT_REPO}/contents/.github/workflows/ci.yml?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$f" && grep -Fq 'canonical_handler_shape.py' "$f" && grep
+          -Fq -- '--receipts-dir' "$f" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json
+          body --jq '.body | contains("CI gap found + fixed") and contains("never passes `--receipts-dir`")'
+          | grep -qx true
+  - id: "dod-infra-pr-2316-deploy-scope-bca6"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2316-deploy-scope-7393"
+    description: >-
+      Deploy-surface audit for omnibase_infra PR #2316 after the contract-sync repair moved the product
+      head to bca6e9c77a9426a83487ed0ac9c67974dfc1870c. The PR changes CI workflow config, canonical-shape
+      receipts/baseline, node contract/handler code, tests, golden fixtures, and vendored node migrations.
+      No live deploy or restart was performed by this merge lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2316; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=bca6e9c77a9426a83487ed0ac9c67974dfc1870c;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -Fxq src/omnibase_infra/nodes/node_coding_agent_workspace_compute/contract.yaml
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq src/omnibase_infra/nodes/node_coding_agent_workspace_compute/handlers/handler_workspace_validate.py
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq .github/workflows/ci.yml
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql
+          && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|systemd)(/|$)'
+  - id: "dod-occ-self-bind-pr-4200"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4200. Verifies the PR is on the expected
+      OMN-14633 bca6 refreshed evidence branch and contains the initial refresh evidence commit 2b535866a5f622bcc45bca299541f5ae63f16da2.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4200; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14633-occ-infra-2316-head-bca6;
+          INITIAL_EVIDENCE_COMMIT=2b535866a5f622bcc45bca299541f5ae63f16da2; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
