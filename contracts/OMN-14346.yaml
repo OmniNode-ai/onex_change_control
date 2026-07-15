@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14346"
+title: "feat(OMN-14346): mirror delegation request into gateway forwarder"
+summary: >-
+  Central OCC evidence for omnibase_infra PR #2317, which adds the delegation-request.v1 command topic
+  to the gateway bus forwarder and keeps inbound tenant stamping on the canonical shared helper shape:
+  payload["tenant_id"] is the verified tenant slug and no separate tenant_slug key is emitted.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "protocols"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2317-product-head"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2317 at rebased head 1a3bd783034c48ae76f763d07408df3113b5f792.
+      The proof reads PR metadata and changed files from GitHub, then checks that the branch declares
+      and publishes the delegation-request.v1 topic, routes inbound tenant stamping through the canonical
+      helper, and includes real ModelDelegationRequest round-trip coverage.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2317; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=1a3bd783034c48ae76f763d07408df3113b5f792;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'feat(OMN-14346): mirror delegation-request.v1 into the gateway forwarder' "${d}/pr.txt"
+          && for p in src/omnibase_infra/enums/generated/enum_omnibase_infra_topic.py src/omnibase_infra/nodes/node_bus_forwarder_effect/contract.yaml
+          src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py;
+          do grep -Fq "$p" "${d}/pr.txt" && mkdir -p "${d}/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "${d}/$p"; done && grep -Fq 'CMD_DELEGATION_REQUEST_V1' "${d}/src/omnibase_infra/enums/generated/enum_omnibase_infra_topic.py"
+          && grep -Fq 'onex.cmd.omnibase-infra.delegation-request.v1' "${d}/src/omnibase_infra/nodes/node_bus_forwarder_effect/contract.yaml"
+          && grep -Fq 'stamp_verified_tenant_slug' "${d}/src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py"
+          && grep -Fq 'verified_payload: dict[str, object]' "${d}/src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py"
+          && grep -Fq 'ModelDelegationRequest' "${d}/tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py"
+          && grep -Fq 'test_delegation_request_payload_stamp_survives_real_model_round_trip' "${d}/tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py"
+          && grep -Fq 'assert "tenant_slug" not in consumer_view.payload' "${d}/tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py"
+  - id: "dod-infra-pr-2317-local-verification"
+    description: >-
+      Local verification for omnibase_infra PR #2317 at rebased head 1a3bd783034c48ae76f763d07408df3113b5f792.
+      Codex resolved the dev rebase conflicts and reran the focused proof surface: 55 forwarder/tenant/ingress
+      tests, 25 protocol/cloud-gateway/integration tests, 399 auto-wiring/dispatcher tests, topic parity,
+      ruff check/format, and strict mypy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2317; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=1a3bd783034c48ae76f763d07408df3113b5f792;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,body --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and (.body | contains("RED/GREEN behavioral proof")) and (.body | contains("check_contract_topic_parity.py"))
+          and (.body | contains("ruff format --check")) and (.body | contains("mypy")) and (.body | contains("pre-commit"))'
+          | grep -qx true
+  - id: "dod-infra-pr-2317-deploy-scope"
+    description: >-
+      Deploy-scope audit for omnibase_infra PR #2317. The rebased product diff is limited to generated
+      topic enum, node_bus_forwarder_effect contract/handler code, and unit tests. Gateway cloud mirroring
+      remains dormant-by-default behind ONEX_GATEWAY_CLOUD_MIRRORING_ENABLED; this lane performs no live
+      deploy, restart, .201 mutation, compose change, deploy script change, or migration change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2317; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=1a3bd783034c48ae76f763d07408df3113b5f792;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files,body --jq
+          '.headRefOid == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(. == "src/omnibase_infra/enums/generated/enum_omnibase_infra_topic.py"
+          or . == "src/omnibase_infra/nodes/node_bus_forwarder_effect/contract.yaml" or . == "src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py"
+          or . == "tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py")) and
+          (.body | contains("ONEX_GATEWAY_CLOUD_MIRRORING_ENABLED=false"))' | grep -qx true && ! gh pr
+          diff "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --name-only | grep -qE '(^|/)(systemd|deploy/scripts|docker/compose|docker/migrations)(/|$)'
