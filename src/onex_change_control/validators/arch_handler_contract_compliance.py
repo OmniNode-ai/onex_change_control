@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
+from onex_change_control.models.model_allowlisted_handler import ModelAllowlistedHandler
 from onex_change_control.models.model_script_exception import ModelScriptException
 from onex_change_control.scanners.handler_contract_compliance import cross_reference
 
@@ -133,6 +134,40 @@ def _load_allowlist(allowlist_path: Path) -> dict[str, list[str]]:
             result[path] = violations
 
     return result
+
+
+def validate_allowlist_tickets(allowlist_path: Path) -> list[str]:
+    """Return one error string per ``allowlisted_handlers`` entry with a bad ticket.
+
+    OMN-11878: every entry must carry a real ``OMN-####`` tracking ticket
+    (``ModelAllowlistedHandler.ticket``, pattern ``^OMN-\\d+$``). A malformed or
+    placeholder ticket (e.g. ``'# migration pending'``) — or a missing ticket —
+    is reported here, never silently accepted. Fail-closed: an unparseable
+    entry is also reported rather than skipped.
+    """
+    if not allowlist_path.exists():
+        return []
+
+    with allowlist_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        return []
+
+    errors: list[str] = []
+    for entry in data.get("allowlisted_handlers", []) or []:
+        path = (
+            entry.get("path", "<missing path>")
+            if isinstance(entry, dict)
+            else "<malformed entry>"
+        )
+        try:
+            ModelAllowlistedHandler.model_validate(entry)
+        except ValidationError as exc:
+            reasons = "; ".join(err["msg"] for err in exc.errors()) or str(exc)
+            errors.append(f"{allowlist_path.name}: {path}: {reasons}")
+
+    return errors
 
 
 def _load_scripts_baseline(allowlist_path: Path) -> frozenset[str]:

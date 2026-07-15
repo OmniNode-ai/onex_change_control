@@ -297,3 +297,37 @@ dod_evidence:
           and ((.state == "open") or (.state == "closed" and .merged_at != null))' | grep -qx true &&
           gh api repos/OmniNode-ai/onex_change_control/pulls/4182/commits --paginate --jq '.[].sha' |
           grep -Fx c54ba64d0692994e3cda1c4a31db87bd1532285c
+  - id: "dod-001-head-current-pr"
+    evidence_artifact: "supersedes_dod_evidence:dod-001-head-6c829d83"
+    description: >-
+      Current product PR proof after #4163 merged dev evidence into its own branch. The check derives
+      the live PR head before validation so this self-referential OCC PR can append evidence without invalidating
+      the proof with a new evidence-only commit SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=4163; PRODUCT_REPO=OmniNode-ai/onex_change_control; PRODUCT_HEAD="$(gh pr
+          view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq .headRefOid)"; gh pr
+          view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json state,baseRefName,headRefOid,files,title
+          --jq '.state == "OPEN" and .baseRefName == "dev" and .headRefOid == "'$PRODUCT_HEAD'" and (.title
+          | contains("OMN-11878")) and ((.files | map(.path)) | index("src/onex_change_control/models/model_allowlisted_handler.py")
+          != null) and ((.files | map(.path)) | index("src/onex_change_control/scripts/check_imperative_contracts.py")
+          != null)' | grep -qx true
+  - id: "dod-004-head-current-pr"
+    evidence_artifact: "supersedes_dod_evidence:dod-004-head-6c829d83"
+    description: >-
+      Current imperative-contract guard proof after #4163 merged dev evidence into its own branch. The
+      command derives the live PR head before cloning so the self-referential evidence commit does not
+      stale the proof it adds.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=4163; PRODUCT_REPO=OmniNode-ai/onex_change_control; PRODUCT_BRANCH=jonah/omn-11878-classify-imperative-guard-baseline-debt-and-bind-every;
+          PRODUCT_HEAD="$(gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq
+          .headRefOid)"; d="$(mktemp -d)" && gh repo clone "$PRODUCT_REPO" "$d/wt" -- --depth 1 --branch
+          "$PRODUCT_BRANCH" && test "$(git -C "$d/wt" rev-parse HEAD)" = "$PRODUCT_HEAD" && cd "$d/wt"
+          && uv run check-imperative-contracts --repo-root . --allowlists-dir allowlists --scan-freestanding
