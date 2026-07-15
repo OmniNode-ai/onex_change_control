@@ -1,0 +1,93 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14631"
+title: "Close workspace runtime build stale-content proof gap"
+summary: >-
+  Central OCC evidence for omnibase_infra PR #2315. The product PR adds an installed-vs-staged content-parity
+  gate to compute_workspace_provenance.py, fixes the OMN-14635 .venv ancestor exclusion bug in that gate,
+  adds focused unit and end-to-end regression coverage, and locks Docker BuildKit uv cache mounts as defense-in-depth
+  for concurrent workspace builds.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2315-product-head"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2315 at head 0ef19799d107bb4dc55e28c558c54effb74cd453.
+      The proof reads PR metadata and changed files from GitHub at that exact head, verifies the PR targets
+      dev, and checks the load-bearing OMN-14631/OMN-14635 implementation surfaces: staged-vs-installed
+      content diffing, installed package resolution through importlib, root-relative transient exclusions,
+      content_diff_files reporting, locked uv cache mounts, and focused regression tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2315; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=0ef19799d107bb4dc55e28c558c54effb74cd453;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14631): close proof gap that let workspace builds ship stale config content' "$d/pr.txt"
+          && for p in docker/Dockerfile.runtime scripts/runtime_build/compute_workspace_provenance.py
+          tests/scripts/test_compute_workspace_provenance_content_parity.py; do grep -Fq "$p" "$d/pr.txt"
+          && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'def _content_parity_diff' "$d/scripts/runtime_build/compute_workspace_provenance.py"
+          && grep -Fq 'importlib.util.find_spec' "$d/scripts/runtime_build/compute_workspace_provenance.py"
+          && grep -Fq 'path.relative_to(root)' "$d/scripts/runtime_build/compute_workspace_provenance.py"
+          && grep -Fq 'content_diff_files' "$d/scripts/runtime_build/compute_workspace_provenance.py"
+          && grep -Fq 'sharing=locked' "$d/docker/Dockerfile.runtime" && grep -Fq 'test_tracked_files_root_nested_under_dot_venv_ancestor_is_still_hashed'
+          "$d/tests/scripts/test_compute_workspace_provenance_content_parity.py" && grep -Fq 'test_main_fails_closed_on_real_drift_when_installed_under_dot_venv_ancestor'
+          "$d/tests/scripts/test_compute_workspace_provenance_content_parity.py"
+  - id: "dod-infra-pr-2315-local-verification"
+    description: >-
+      Verification evidence for omnibase_infra PR #2315 at head 0ef19799d107bb4dc55e28c558c54effb74cd453.
+      The product PR body records focused runtime-build provenance test sweeps, the OMN-14635 RED/GREEN
+      regression proof, formatter/linter/type checks, and pre-commit coverage for the touched files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2315; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=0ef19799d107bb4dc55e28c558c54effb74cd453;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("uv run pytest tests/scripts/")) and (.body | contains("338
+          passed")) and (.body | contains("uv run mypy scripts/runtime_build/compute_workspace_provenance.py"))
+          and (.body | contains("ruff format --check")) and (.body | contains("pre-commit run --files"))
+          and (.body | contains("Verified RED-before/GREEN-after")) and (.body | contains("test_main_fails_closed_on_real_drift_when_installed_under_dot_venv_ancestor"))'
+          | grep -qx true
+  - id: "dod-infra-pr-2315-runtime-scope"
+    description: >-
+      Runtime-surface assessment for omnibase_infra PR #2315. The product diff intentionally touches docker/Dockerfile.runtime
+      and runtime build provenance code, so it is runtime-build-impacting. The proof records the exact
+      file surface and confirms no live deploy, restart, docker exec, rpk topic produce, database mutation,
+      or .201 mutation is encoded in the PR body as a required merge action.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2315; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=0ef19799d107bb4dc55e28c558c54effb74cd453;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,files,body
+          --jq '.headRefOid + "\n---FILES---\n" + ((.files | map(.path)) | join("\n")) + "\n---BODY---\n"
+          + .body' > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq 'docker/Dockerfile.runtime'
+          "$d/pr.txt" && grep -Fxq 'scripts/runtime_build/compute_workspace_provenance.py' "$d/pr.txt"
+          && grep -Fxq 'tests/scripts/test_compute_workspace_provenance_content_parity.py' "$d/pr.txt"
+          && ! grep -Eiq '(docker exec|rpk topic produce|database mutation|live deploy|restart .201|restart.*omninode-pc)'
+          "$d/pr.txt"
+  - id: "dod-occ-self-bind-pr-4184"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4184. Verifies the PR is on the expected
+      OMN-14631 evidence branch, remains bound after merge, and contains the initial evidence commit a39cd9d15e1b8068348a8834c436609b1d6ed8c6.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4184 --jq '.head.ref == "jonah/omn-14631-occ-infra-2315"
+          and ((.state == "open") or (.state == "closed" and .merged_at != null))' | grep -qx true &&
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4184/commits --paginate --jq '.[].sha' |
+          grep -Fx a39cd9d15e1b8068348a8834c436609b1d6ed8c6
