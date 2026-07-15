@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14550"
+title: "fix(OMN-14550): OCC self-bind receipt binds the OCC companion PR"
+summary: >-
+  Central OCC evidence for omnimarket PR #1773. The product PR fixes the OCC companion compute handler
+  so generated self-bind receipts stamp the OCC companion PR number instead of the downstream product
+  PR number, preventing generated companions from failing OCC merge eligibility with pr_ticket_mismatch.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1773-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1773 at head 65b520db11f147a9d6280f14582967022598576a.
+      Verifies the PR targets dev, changes only the OCC companion compute handler and its seam test, the
+      handler supports a receipt pr_number override, and the self-bind call passes request.occ_pr_number.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1773; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=65b520db11f147a9d6280f14582967022598576a;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14550): OCC self-bind receipt binds OCC companion PR, not product PR' "$d/pr.txt" &&
+          for p in src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py
+          tests/unit/nodes/node_occ_companion_compute/test_occ_companion_compute_seam.py; do grep -Fq
+          "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/OmniNode-ai/omnimarket/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'pr_number: int | None = None' "$d/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py"
+          && grep -Fq 'pr_number=request.occ_pr_number' "$d/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py"
+          && grep -Fq 'TestOmn14550SelfBindPrNumber' "$d/tests/unit/nodes/node_occ_companion_compute/test_occ_companion_compute_seam.py"
+          && grep -Fq 'test_self_bind_binds_occ_pr_through_core_validator' "$d/tests/unit/nodes/node_occ_companion_compute/test_occ_companion_compute_seam.py"
+  - id: "dod-omnimarket-pr-1773-local-verification"
+    description: >-
+      Verification record for omnimarket PR #1773 at head 65b520db11f147a9d6280f14582967022598576a. The
+      PR body records non-vacuous RED/GREEN proof for the self-bind pr_number bug, strict local checks,
+      and the node_occ_companion_compute pytest result.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1773; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=65b520db11f147a9d6280f14582967022598576a;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("Proven **RED** against pre-fix code")) and (.body
+          | contains("60 passed")) and (.body | contains("mypy --strict")) and (.body | contains("pre-commit
+          run"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1773-deploy-scope"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1773. The diff is limited to the OCC companion compute
+      handler and its unit seam tests; it does not touch Dockerfiles, compose manifests, deploy scripts,
+      migrations, runtime service definitions, or infrastructure configuration.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1773; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=65b520db11f147a9d6280f14582967022598576a;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations)(/|$)'
