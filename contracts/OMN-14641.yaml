@@ -1,0 +1,82 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14641"
+title: "fix(OMN-14641): stream coverage sweep subprocess output"
+summary: >-
+  Central OCC evidence for omnimarket PR #1776. The product PR updates the coverage sweep gate so the
+  long-running pytest coverage subprocess writes directly to CI logs instead of being hidden behind capture_output=True.
+  This keeps the expensive coverage lane observable while preserving the existing coverage policy.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1776-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1776 at head 6bc7490b957a97d5669bd4e172427f81af40a475.
+      Verifies the PR targets dev, touches only the coverage sweep gate and its CI regression test, and
+      the product head streams the coverage subprocess output instead of capturing stdout/stderr.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1776; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=6bc7490b957a97d5669bd4e172427f81af40a475;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14641): stream coverage sweep subprocess output' "$d/pr.txt" && grep -Fxq scripts/ci/run_coverage_sweep_gate.py
+          "$d/pr.txt" && grep -Fxq tests/ci/test_run_coverage_sweep_gate.py "$d/pr.txt" && test "$(tail
+          -n +4 "$d/pr.txt" | wc -l | tr -d ' ')" = "2" && for p in scripts/ci/run_coverage_sweep_gate.py
+          tests/ci/test_run_coverage_sweep_gate.py; do mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'coverage-sweep-gate: running coverage
+          generation command:' "$d/scripts/ci/run_coverage_sweep_gate.py" && ! grep -Fq 'capture_output=True'
+          "$d/scripts/ci/run_coverage_sweep_gate.py" && grep -Fq 'assert "capture_output" not in captured_kwargs'
+          "$d/tests/ci/test_run_coverage_sweep_gate.py" && grep -Fq 'assert "stdout" not in captured_kwargs'
+          "$d/tests/ci/test_run_coverage_sweep_gate.py" && grep -Fq 'assert "stderr" not in captured_kwargs'
+          "$d/tests/ci/test_run_coverage_sweep_gate.py"
+  - id: "dod-omnimarket-pr-1776-local-verification"
+    description: >-
+      Verification record for omnimarket PR #1776 at head 6bc7490b957a97d5669bd4e172427f81af40a475. The
+      PR body records the focused coverage gate test, ruff format/check, synthetic skip-generate coverage
+      sweep proof, and pre-commit hook verification.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1776; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=6bc7490b957a97d5669bd4e172427f81af40a475;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("uv run pytest tests/ci/test_run_coverage_sweep_gate.py
+          -q")) and (.body | contains("uv run ruff check")) and (.body | contains("synthetic --skip-generate
+          coverage sweep PASS")) and (.body | contains("pre-commit hooks PASS"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1776-deploy-scope"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1776. The diff is limited to CI coverage gate code
+      and a CI regression test; it does not touch Dockerfiles, compose manifests, deploy scripts, migrations,
+      runtime service definitions, or infrastructure configuration.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1776; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=6bc7490b957a97d5669bd4e172427f81af40a475;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
+  - id: "dod-occ-self-bind-pr-4226"
+    description: >-
+      Self-binding verification for onex_change_control PR #4226. Verifies the evidence PR is open on
+      the expected OMN-14641 branch and contains the initial evidence commit that carries the product
+      contract and receipt bundle for omnimarket PR #1776.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4226 --jq '.head.ref == "codex/omn-14641-omnimarket-1776-occ"
+          and .state == "open"' | grep -qx true && gh api repos/OmniNode-ai/onex_change_control/pulls/4226/commits
+          --paginate --jq '.[].sha' | grep -Fx d56e18ced5fe2ef76c944d68d7e143c55c3a902a
