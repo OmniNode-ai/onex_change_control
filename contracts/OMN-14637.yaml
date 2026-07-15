@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14637"
+title: "fix(OMN-14637): re-anchor dod_verify live-OPEN gate after product PR merges"
+summary: >-
+  Central OCC evidence for omnimarket PR #1774. The product PR updates node_dod_verify so self-referential
+  PR-state evidence that is bound to a confirmed merged PR can re-run after a normal product merge by
+  replacing only the .state == "OPEN" predicate with .state == "MERGED", while keeping all other evidence
+  predicates active and fail-closed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1774-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1774 at head 7e8477a568249352776226ba66471f6996e81b6a.
+      Verifies the PR targets dev, touches only node_dod_verify evidence-collector code and its regression
+      test, and the product head contains the merged-PR binding, surgical state-predicate relaxation,
+      and non-vacuous regression coverage.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1774; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=7e8477a568249352776226ba66471f6996e81b6a;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14637): re-anchor dod_verify live-OPEN gate to MERGED after product PR merges' "$d/pr.txt"
+          && grep -Fxq src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py "$d/pr.txt"
+          && grep -Fxq tests/unit/nodes/node_dod_verify/test_omn_14637_merged_pr_state_relaxation.py "$d/pr.txt"
+          && test "$(tail -n +4 "$d/pr.txt" | wc -l | tr -d ' ')" = "2" && for p in src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py
+          tests/unit/nodes/node_dod_verify/test_omn_14637_merged_pr_state_relaxation.py; do mkdir -p "$d/$(dirname
+          "$p")" && gh api "repos/OmniNode-ai/omnimarket/contents/${p}?ref=${PRODUCT_HEAD}" --jq .content
+          | base64 --decode > "$d/$p"; done && grep -Fq 'def _item_bound_to_merged_pr(' "$d/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py"
+          && grep -Fq 'def _relax_merged_pr_state_predicate(' "$d/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py"
+          && grep -Fq '.state == "MERGED"' "$d/tests/unit/nodes/node_dod_verify/test_omn_14637_merged_pr_state_relaxation.py"
+          && grep -Fq 'STILL FAILS' "$d/tests/unit/nodes/node_dod_verify/test_omn_14637_merged_pr_state_relaxation.py"
+  - id: "dod-omnimarket-pr-1774-local-verification"
+    description: >-
+      Verification record for omnimarket PR #1774 at head 7e8477a568249352776226ba66471f6996e81b6a. The
+      PR body records RED/GREEN proof, non-vacuous absent-content failure proof, focused/full local pytest,
+      ruff, strict mypy, and pre-commit verification. Codex also re-ran the focused regression test locally.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1774; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=7e8477a568249352776226ba66471f6996e81b6a;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("RED→GREEN on the identical artifact")) and (.body
+          | contains("STILL FAILS")) and (.body | contains("218 passed")) and (.body | contains("mypy
+          --strict")) and (.body | contains("pre-commit run --files"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1774-deploy-scope"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1774. The diff is limited to node_dod_verify application
+      code plus a unit regression test; it does not touch Dockerfiles, compose manifests, deploy scripts,
+      migrations, runtime service definitions, or infrastructure configuration.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1774; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=7e8477a568249352776226ba66471f6996e81b6a;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations)(/|$)'
+  - id: "dod-occ-self-bind-pr-4223"
+    description: >-
+      Self-binding verification for onex_change_control PR #4223. Verifies the evidence PR is open on
+      the expected branch and contains the initial OMN-14637 evidence commit that carries this contract
+      and receipt bundle for omnimarket PR #1774.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4223 --jq '.head.ref == "jonah/omn-14637-occ-market-1774"
+          and .state == "open"' | grep -qx true && gh api repos/OmniNode-ai/onex_change_control/pulls/4223/commits
+          --paginate --jq '.[].sha' | grep -Fx 19046c324290db98e2688e447eb103921196ca8d
