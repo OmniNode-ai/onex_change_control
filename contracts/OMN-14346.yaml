@@ -90,3 +90,73 @@ dod_evidence:
           --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
           != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
           --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-2317-head-9e5c106"
+    description: >-
+      Current-head product verification for omnibase_infra PR #2317 at repaired head 9e5c106cdcf291ba78a844b312a39b89a3ad0c6e.
+      The proof reads PR metadata and changed files from GitHub, verifies the branch still carries the
+      delegation-request.v1 gateway-forwarder change, and verifies the additional vendored node baseline
+      migration that repaired node-migration-sync drift.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2317-product-head"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2317; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=9e5c106cdcf291ba78a844b312a39b89a3ad0c6e;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'feat(OMN-14346): mirror delegation-request.v1 into the gateway forwarder' "${d}/pr.txt"
+          && for p in src/omnibase_infra/enums/generated/enum_omnibase_infra_topic.py src/omnibase_infra/nodes/node_bus_forwarder_effect/contract.yaml
+          src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py
+          docker/migrations/forward/nodes/node_projection_baselines/0002_realign_child_tables_to_producer_schema.sql;
+          do grep -Fq "$p" "${d}/pr.txt" && mkdir -p "${d}/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "${d}/$p"; done && grep -Fq 'CMD_DELEGATION_REQUEST_V1' "${d}/src/omnibase_infra/enums/generated/enum_omnibase_infra_topic.py"
+          && grep -Fq 'onex.cmd.omnibase-infra.delegation-request.v1' "${d}/src/omnibase_infra/nodes/node_bus_forwarder_effect/contract.yaml"
+          && grep -Fq 'stamp_verified_tenant_slug' "${d}/src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py"
+          && grep -Fq 'verified_payload: dict[str, object]' "${d}/src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py"
+          && grep -Fq 'ModelDelegationRequest' "${d}/tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py"
+          && grep -Fq 'test_delegation_request_payload_stamp_survives_real_model_round_trip' "${d}/tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py"
+          && grep -Fq 'assert "tenant_slug" not in consumer_view.payload' "${d}/tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py"
+          && grep -Fq 'CREATE TABLE IF NOT EXISTS baselines_comparisons' "${d}/docker/migrations/forward/nodes/node_projection_baselines/0002_realign_child_tables_to_producer_schema.sql"
+          && grep -Fq 'CREATE TABLE IF NOT EXISTS baselines_trend' "${d}/docker/migrations/forward/nodes/node_projection_baselines/0002_realign_child_tables_to_producer_schema.sql"
+          && grep -Fq 'CREATE TABLE IF NOT EXISTS baselines_breakdown' "${d}/docker/migrations/forward/nodes/node_projection_baselines/0002_realign_child_tables_to_producer_schema.sql"
+  - id: "dod-2317-sync-9e5c106"
+    description: >-
+      Local repair verification for omnibase_infra PR #2317 at head 9e5c106cdcf291ba78a844b312a39b89a3ad0c6e.
+      Codex ran the node migration vendor sync against omnimarket dev head f624969678748911635d042b444778793e4bbfce,
+      observed exactly one vendored file added, reran sync-node-migrations.sh --check successfully, and
+      committed the repair with hooks enabled.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2317-local-verification"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_PR_NUMBER=2317; PRODUCT_HEAD=9e5c106cdcf291ba78a844b312a39b89a3ad0c6e;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | contains(["docker/migrations/forward/nodes/node_projection_baselines/0002_realign_child_tables_to_producer_schema.sql"]))'
+          | grep -qx true && gh api "repos/${PRODUCT_REPO}/commits/${PRODUCT_HEAD}" --jq '.commit.message
+          | contains("fix(OMN-14346): sync vendored node baselines migration")' | grep -qx true && gh
+          api "repos/${PRODUCT_REPO}/contents/docker/migrations/forward/nodes/node_projection_baselines/0002_realign_child_tables_to_producer_schema.sql?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode | grep -Fq 'baselines_comparisons'
+  - id: "dod-2317-deploy-9e5c106"
+    description: >-
+      Current-head deploy-scope audit for omnibase_infra PR #2317 at repaired head 9e5c106cdcf291ba78a844b312a39b89a3ad0c6e.
+      The diff is limited to the generated topic enum, node_bus_forwarder_effect contract/handler code,
+      unit tests, and one vendored forward node migration required by node-migration-sync. This lane performs
+      no live deploy, restart, .201 mutation, compose change, or deploy script change.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2317-deploy-scope"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2317; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=9e5c106cdcf291ba78a844b312a39b89a3ad0c6e;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files,body --jq
+          '.headRefOid == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(. == "src/omnibase_infra/enums/generated/enum_omnibase_infra_topic.py"
+          or . == "src/omnibase_infra/nodes/node_bus_forwarder_effect/contract.yaml" or . == "src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_consume_inbound.py"
+          or . == "tests/unit/nodes/node_bus_forwarder_effect/test_gateway_forwarder_service.py" or .
+          == "docker/migrations/forward/nodes/node_projection_baselines/0002_realign_child_tables_to_producer_schema.sql"))
+          and (.body | contains("ONEX_GATEWAY_CLOUD_MIRRORING_ENABLED=false"))' | grep -qx true && ! gh
+          pr diff "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --name-only | grep -qE '(^|/)(systemd|deploy/scripts|docker/compose)(/|$)'
