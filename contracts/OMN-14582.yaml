@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14582"
+title: "feat(OMN-14582): wire contract-topic-graph into required CI Summary"
+summary: >-
+  Central OCC evidence for omnimarket PR #1754, which moves the contract-topic-graph gate into ci.yml
+  so CI Summary can depend on it, adds contract-topic-graph to the CI Summary needs list and loose verdict
+  loop for Phase 1 non-enforcing observation, and retires the standalone contract-topic-graph workflow.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1754-product-head"
+    description: >-
+      Product-head verification for omnimarket PR #1754 at 83f0cdae7c33af6481766034cb4b87bdc36c95ed. The
+      proof reads live PR metadata and changed files from GitHub, then checks the branch is based on dev,
+      carries the expected OMN-14582 title, and is limited to the CI workflow migration and pre-commit
+      wiring files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1754; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=83f0cdae7c33af6481766034cb4b87bdc36c95ed;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,title,files
+          --jq '.headRefOid == "'${PRODUCT_HEAD}'" and .baseRefName == "dev" and (.title | contains("OMN-14582"))
+          and ((.files | map(.path) | sort) == [".github/workflows/ci.yml",".github/workflows/contract-topic-graph.yml",".pre-commit-config.yaml"])'
+          | grep -qx true
+  - id: "dod-omnimarket-pr-1754-workflow-wiring"
+    description: >-
+      Workflow-wiring proof for omnimarket PR #1754. Reads ci.yml and the retired standalone workflow
+      path from the product head, then verifies contract-topic-graph is defined in ci.yml, included in
+      ci-summary needs, included in the loose success-or-skipped loop, and that the standalone workflow
+      has been deleted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=83f0cdae7c33af6481766034cb4b87bdc36c95ed;
+          d="$(mktemp -d)" && gh api "repos/${PRODUCT_REPO}/contents/.github/workflows/ci.yml?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 -d > "${d}/ci.yml" && grep -Fq 'contract-topic-graph:' "${d}/ci.yml"
+          && grep -Fq 'contract-topic-graph=${{ needs.contract-topic-graph.result }}' "${d}/ci.yml" &&
+          python -c 'import sys,yaml; data=yaml.safe_load(open(sys.argv[1])); needs=data["jobs"]["ci-summary"]["needs"];
+          assert "contract-topic-graph" in needs; assert "event-registry-drift" in needs and "topic-drift-check"
+          in needs and "topic-enum-drift" in needs' "${d}/ci.yml" && ! gh api "repos/${PRODUCT_REPO}/contents/.github/workflows/contract-topic-graph.yml?ref=${PRODUCT_HEAD}"
+          >/tmp/omn14582-retired-workflow.json 2>/tmp/omn14582-retired-workflow.err
+  - id: "dod-omnimarket-pr-1754-deploy-scope"
+    description: >-
+      Deploy-scope audit for omnimarket PR #1754. The final product diff is limited to GitHub Actions
+      and pre-commit configuration for the static contract-topic graph gate; it does not perform a live
+      deploy, restart, .201 mutation, systemd change, compose change, deploy-script change, migration
+      change, or runtime node wiring change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1754; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=83f0cdae7c33af6481766034cb4b87bdc36c95ed;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(. == ".github/workflows/ci.yml" or .
+          == ".github/workflows/contract-topic-graph.yml" or . == ".pre-commit-config.yaml"))' | grep
+          -qx true && ! gh pr diff "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --name-only | grep
+          -qE '(^|/)(systemd|deploy/scripts|docker/compose|docker/migrations)(/|$)'
