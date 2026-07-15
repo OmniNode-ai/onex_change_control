@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14591"
+title: "fix(OMN-14591): recognize on-demand ingress roots in contract topic graph"
+summary: >-
+  Central OCC evidence for omnimarket PR #1758, which fixes the contract_topic_graph DISCONNECTED_SUBGRAPH
+  false-positive for on-demand ingress-root clusters while preserving the ratchet for genuinely dead islands.
+  The repaired product head 1ae43f6e2e8a5030c81ec4b142b68f615c3244ae is merged with current dev and removes
+  the now-fixed node_gmail_intent_evaluator_effect baseline key.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1758-product-head"
+    description: >-
+      Product-head verification for omnimarket PR #1758 at 1ae43f6e2e8a5030c81ec4b142b68f615c3244ae. The
+      proof reads live PR metadata and changed files from GitHub, then checks that the branch is based
+      on dev, carries the OMN-14591 title, includes the contract_topic_graph validator and tests, and
+      binds the repaired head after the dev conflict merge.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1758; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=1ae43f6e2e8a5030c81ec4b142b68f615c3244ae;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,title,body,files
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + .body + "\n" + ((.files | map(.path))
+          | join("\n"))' > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev
+          "${d}/pr.txt" && grep -Fq 'fix(OMN-14591): contract_topic_graph recognizes on-demand ingress
+          roots' "${d}/pr.txt" && grep -Fq 'src/omnimarket/validators/contract_topic_graph.py' "${d}/pr.txt"
+          && grep -Fq 'tests/validators/test_contract_topic_graph.py' "${d}/pr.txt" && grep -Fq 'src/omnimarket/validators/data/contract_topic_graph_baseline.yaml'
+          "${d}/pr.txt" && grep -Fq 'Merge-sweep conflict repair evidence' "${d}/pr.txt" && grep -Fq '1ae43f6e2e8a5030c81ec4b142b68f615c3244ae'
+          "${d}/pr.txt"
+  - id: "dod-omnimarket-pr-1758-local-verification"
+    description: >-
+      Local verification for omnimarket PR #1758 after the dev conflict repair. Codex preserved the OMN-14591
+      ingress-root behavior, retained the current dev OMN-14575 residual note, removed the fixed node_gmail_intent_evaluator_effect
+      baseline key, and reran the graph gate, focused tests, ruff, diff check, and commit hooks.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1758; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=1ae43f6e2e8a5030c81ec4b142b68f615c3244ae;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,body --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and (.body | contains("CONTRACT_GRAPH_CHECKOUT_ROOT=/Users/jonah/Code/omni_home"))
+          and (.body | contains("703 contracts, 1471 topics, 378 edges, 732 baselined defect(s)")) and
+          (.body | contains("22 passed, 2 skipped")) and (.body | contains("ruff format --check")) and
+          (.body | contains("ruff check")) and (.body | contains("git diff --check")) and (.body | contains("commit
+          hooks PASS"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1758-deploy-scope"
+    description: >-
+      Deploy-scope audit for omnimarket PR #1758. The final product diff is limited to the static contract
+      topic graph validator, its tests, and the ratchet baseline; it does not perform a live deploy, restart,
+      .201 mutation, systemd change, compose change, deploy-script change, migration change, or runtime
+      node wiring change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1758; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=1ae43f6e2e8a5030c81ec4b142b68f615c3244ae;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(. == "src/omnimarket/validators/contract_topic_graph.py"
+          or . == "tests/validators/test_contract_topic_graph.py" or . == "src/omnimarket/validators/data/contract_topic_graph_baseline.yaml"))'
+          | grep -qx true && ! gh pr diff "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --name-only
+          | grep -qE '(^|/)(systemd|deploy/scripts|docker/compose|docker/migrations)(/|$)'
