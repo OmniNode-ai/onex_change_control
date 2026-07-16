@@ -538,7 +538,9 @@ def scan_repos(
 _SCRIPTS_SKIP_DIRS = frozenset({"__pycache__", ".venv", "node_modules"})
 
 # The central CODEOWNERS-approved exceptions registry. Resolved from the
-# allowlists dir (onex_change_control@main in CI) so approved_by != author.
+# allowlists dir (onex_change_control@main in CI) so a downstream PR cannot
+# self-add an entry; the gate is CODEOWNERS review on a separate @main PR
+# (approved_by is advisory, not code-enforced — no approved_by != author check).
 _SCRIPTS_EXCEPTIONS_FILENAME = "scripts_exceptions.yaml"
 
 

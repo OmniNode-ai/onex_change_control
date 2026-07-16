@@ -207,7 +207,10 @@ def _load_scripts_exceptions(
     This is the ONLY way a NEW ``scripts/**`` file may land under the deny-new
     policy (OMN-14475). The registry is a single central file resolved from
     onex_change_control@main in CI (mirroring ``skip_token_approvals.yaml``) so
-    ``approved_by`` is set by a reviewer, never the PR author.
+    a downstream PR cannot self-add an entry; the gate is CODEOWNERS review on a
+    separate @main PR. ``approved_by`` records the reviewer's login but is
+    advisory, not code-enforced (no ``approved_by != author`` check here — that
+    check exists only in ``validate_prod_promotion_grants.py`` for prod grants).
 
     Returns a dict keyed by ``(repo, path)`` -> ``ModelScriptException``.
     Malformed entries are skipped (fail-closed: a bad entry grants nothing).

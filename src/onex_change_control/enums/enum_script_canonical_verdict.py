@@ -7,12 +7,14 @@ Verdict categories for the ``scripts/**`` canonical-form guard (DEFAULT-DENY
 policy, OMN-14475). The gate is a deterministic inventory check: a script passes
 only if its path is in the frozen baseline (pre-existing debt) or in the
 CODEOWNERS-approved exceptions registry (``scripts_exceptions.yaml``, resolved
-from onex_change_control@main so ``approved_by != author`` — no self-written
-excuse). The AST scorer never decides pass/fail on its own: it makes exactly one
-binary hard check — a ``node-backed`` registry claim with no dispatch is a false
-claim (BLOCK) — and otherwise only surfaces a LOUD advisory (``logic_advisory``)
-when a ``permanent`` entry's score is high, so the CODEOWNERS reviewer, not the
-score, decides. CODEOWNERS approval is the authority for a ``permanent`` entry.
+from onex_change_control@main so a downstream PR cannot self-add an entry — the
+gate is CODEOWNERS review on a separate @main PR; ``approved_by`` is advisory,
+not code-enforced). The AST scorer never decides pass/fail on its own: it makes
+exactly one binary hard check — a ``node-backed`` registry claim with no dispatch
+is a false claim (BLOCK) — and otherwise only surfaces a LOUD advisory
+(``logic_advisory``) when a ``permanent`` entry's score is high, so the
+CODEOWNERS reviewer, not the score, decides. CODEOWNERS approval is the authority
+for a ``permanent`` entry.
 """
 
 from enum import Enum, unique
