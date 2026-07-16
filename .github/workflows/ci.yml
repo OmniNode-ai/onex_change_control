@@ -1096,6 +1096,47 @@ jobs:
             --allowlist .onex_ratchets/noncanonical_class_allowlist.yaml \
             src/onex_change_control
 
+  precommit-parity-gate:
+    name: Precommit Parity Gate
+    # OMN-14672 (WS7 fan-out #4, canary OMN-14655 / omnimarket#1783 / omnibase_infra#2318):
+    # CI mirror of the two local pre-commit meta-gates over .pre-commit-config.yaml —
+    #   1. fail-loud meta-gate (exit-0-on-missing / WARN-SKIP-degrade + stages
+    #      coverage: a skipped gate must be byte-indistinguishable from a failing one), and
+    #   2. pin-parity (pre-commit `rev:` vs the omnibase_core SHA ci.yml pins for the
+    #      SAME validator — the no-noncanonical-lifecycle-classes pair).
+    #
+    # UNCONDITIONAL BY DESIGN (OMN-14666/14668 lesson). No `needs:`, no `if:`, no
+    # paths filter, so the byte-match proof fires on EVERY PR and passes/fails on its
+    # own evidence — never conditioned on another job's result (the omnimarket#1783
+    # skip-then-vacuous-green window came from a `needs: occ-preflight`). In OCC a
+    # STANDALONE workflow file is the wrong shape: OMN-14441 REMOVED a standalone
+    # workflow precisely because a separate run_id is invisible to the REQUIRED CI
+    # Summary rollup and so cannot block a merge. This job is folded into ci.yml and
+    # wired into ci-summary's needs + a strict success-only check below, mirroring
+    # no-noncanonical-lifecycle-classes (OMN-14350) — unconditional AND enforced.
+    runs-on: >-
+      ${{
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Fail-loud meta-gate (exit-0-on-missing / stages coverage)
+        run: |
+          uv run --no-project --with pyyaml \
+            python3 src/onex_change_control/scripts/validate_precommit_fail_loud.py
+      - name: Pin-parity check (pre-commit rev vs CI-pinned SHA)
+        run: |
+          uv run --no-project --with pyyaml \
+            python3 src/onex_change_control/scripts/validate_precommit_pin_parity.py
+
   validate-prod-promotion-grants:
     name: validate-prod-promotion-grants
     # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
@@ -1197,7 +1238,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, precommit-parity-gate]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1220,6 +1261,14 @@ jobs:
           # INCONCLUSIVE (exit 2, surfaces as 'failure') ALL block.
           if [[ "${{ needs.check-platform-leads-review-tripwire.result }}" != "success" ]]; then
             echo "::error::check-platform-leads-review-tripwire did not pass (result: ${{ needs.check-platform-leads-review-tripwire.result }}) - fail-closed (OMN-14445)"
+            exit 1
+          fi
+          # OMN-14672: same strict fail-closed pattern for the CI<->pre-commit
+          # byte-match parity gate. Only 'success' passes; skipped/cancelled/
+          # failure ALL block. Unconditional job (no needs/if), so a skip here
+          # means something is wrong, not that the gate legitimately opted out.
+          if [[ "${{ needs.precommit-parity-gate.result }}" != "success" ]]; then
+            echo "::error::precommit-parity-gate did not pass (result: ${{ needs.precommit-parity-gate.result }}) - fail-closed (OMN-14672)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
