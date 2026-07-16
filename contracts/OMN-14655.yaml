@@ -1,0 +1,89 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14655"
+title: "feat(OMN-14655): WS7 canary — wire omniclaude arch-* validators as pre-commit hooks (DRY) + fail-loud
+  false-greens"
+summary: >-
+  Central OCC evidence for omniclaude PR #1904, the WS7 canary (docs/plans/2026-07-15-ci-precommit-gate-parity-plan.md)
+  that closes the local-vs-CI verdict gap for omniclaude by wiring 10 AST-scan arch-* CI validators plus
+  the env-var-registry check into .pre-commit-config.yaml as byte-for-byte DRY invocations of the exact
+  CI entrypoints, converting two silently-skipping wrapper scripts (no-cloud-bus, skill-contract-validation)
+  into fail-loud hard errors, and adding two recurrence-guard meta-gates (fail-loud, pin-parity) wired
+  as both pre-commit hooks and a required CI job. Bound at head 2e17db617c873351a1d77209a54636b6e0a78188.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1904-product-head"
+    description: >-
+      Product-head verification for omniclaude PR #1904 at 2e17db617c873351a1d77209a54636b6e0a78188. The
+      proof reads live PR metadata and changed files from GitHub, then checks the branch is based on dev,
+      carries the expected OMN-14655 title, and includes the new pre-commit config, wrapper fixes, meta-gate
+      validators, and the recurrence-guard CI workflow.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1904; PRODUCT_REPO=OmniNode-ai/omniclaude; PRODUCT_HEAD=2e17db617c873351a1d77209a54636b6e0a78188;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,title,files
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'feat(OMN-14655): WS7 canary — wire omniclaude arch-* validators as pre-commit hooks
+          (DRY) + fail-loud false-greens' "${d}/pr.txt" && for p in .pre-commit-config.yaml .github/workflows/precommit-fail-loud-gate.yml
+          scripts/check_no_cloud_bus_wrapper.sh scripts/validate_skill_contracts_wrapper.sh scripts/validation/validate_precommit_fail_loud.py
+          scripts/validation/validate_precommit_pin_parity.py; do grep -Fq "$p" "${d}/pr.txt"; done
+  - id: "dod-omniclaude-pr-1904-local-proof"
+    description: >-
+      Hosted-portable local-proof verification for omniclaude PR #1904. Reads the live PR body (not a
+      local Mac-path artifact) and asserts it carries the specific evidence markers for the pre-commit
+      installation proof (all three hook types), the three deliberately-broken-commit rejections (arch-no-utcnow,
+      arch-no-hardcoded-ip, arch-no-direct-kafka-producer) byte-matching CI messages, the pin-parity meta-gate
+      catching a real SHA-drift injection, and the clean-tree/no-false-positive result across all 13 new
+      hooks.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1904; PRODUCT_REPO=OmniNode-ai/omniclaude; PRODUCT_HEAD=2e17db617c873351a1d77209a54636b6e0a78188;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'"' | grep -qx true && BODY="$(gh pr view "${PRODUCT_PR_NUMBER}" --repo
+          "${PRODUCT_REPO}" --json body --jq '.body')" && echo "$BODY" | grep -Fq 'pre-commit installed
+          at' && echo "$BODY" | grep -Fq 'FAIL: Found 1 utcnow() violation(s)' && echo "$BODY" | grep
+          -Fq 'hardcoded internal IP(s) found' && echo "$BODY" | grep -Fq 'direct Kafka producer violation(s)'
+          && echo "$BODY" | grep -Fq 'precommit=458f44e vs ci=6363509' && echo "$BODY" | grep -Fq 'All
+          13 new hooks `Passed`'
+  - id: "dod-omniclaude-pr-1904-deploy-scope"
+    description: >-
+      Deploy-scope audit for omniclaude PR #1904. The diff is limited to omniclaude pre-commit/CI config,
+      hooks source, skills allowlist/denylist config, and validation scripts; it does not perform a live
+      deploy, restart, .201 mutation, systemd change, or docker-compose change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1904; PRODUCT_REPO=OmniNode-ai/omniclaude; PRODUCT_HEAD=2e17db617c873351a1d77209a54636b6e0a78188;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all((startswith("src/omniclaude/") or startswith("scripts/")
+          or startswith("plugins/") or startswith(".github/workflows/") or (. == ".pre-commit-config.yaml"))
+          and (. | test("(^|/)(systemd|deploy/scripts|docker/compose)(/|$)") | not)))' | grep -qx true
+  - id: "dod-occ-self-bind-pr-4257"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4257. Verifies the PR is on the expected
+      OMN-14655 evidence branch and contains initial evidence commit 7c67425d5c445942c21c0da7f80ab22980eacc46.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4257; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14655-occ-omniclaude-1904;
+          INITIAL_EVIDENCE_COMMIT=7c67425d5c445942c21c0da7f80ab22980eacc46; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --jq
+          '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
