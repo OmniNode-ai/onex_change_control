@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14657"
+title: "feat(OMN-14657): wire node_occ_companion_effect into CI report-only (dry_run observe)"
+summary: >-
+  Central OCC evidence for omnimarket PR #1782 (WS5, child of OMN-14285; blocks OMN-14393), which adds
+  .github/workflows/call-occ-companion-observe.yml -- a sibling to call-occ-preflight.yml / call-occ-autobind.yml
+  that invokes the already-merged canonical OCC-companion producer (node_occ_companion_effect, RSD-3 /
+  omnimarket#1764) in a hardcoded, never-templated mode="dry_run" on trusted ticketed product-PR events,
+  and logs the returned ModelOccCompanionEffectResult to the job summary and an uploaded artifact. Pure
+  CI observability wiring: zero net-new producer code, no change to compute_companion_plan, OccCompanionEmitter,
+  or call-occ-autobind.yml (the interim live producer, unchanged and still authoritative). Non-blocking
+  by construction (continue-on-error: true, not a required_status_checks context, not referenced by ci.yml's
+  CI Summary needs:). Bound at head fc294454415a3c96e3e21945b5d6303467377927.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-omnimarket-pr-1782-product-head
+    description: >-
+      Product-head verification for omnimarket PR #1782 at fc294454415a3c96e3e21945b5d6303467377927. The
+      proof reads live PR metadata and changed files from GitHub, then checks the branch is based on dev,
+      carries the expected OMN-14657 title, and touches exactly the new report-only observe workflow file.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          PRODUCT_PR_NUMBER=1782; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=fc294454415a3c96e3e21945b5d6303467377927;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,title,files
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'feat(OMN-14657): wire node_occ_companion_effect into CI report-only (dry_run observe)'
+          "${d}/pr.txt" && grep -Fq ".github/workflows/call-occ-companion-observe.yml" "${d}/pr.txt"
+  - id: dod-omnimarket-pr-1782-local-proof
+    description: >-
+      Hosted-portable local-proof verification for omnimarket PR #1782. Reads the live PR body (not a
+      local Mac-path artifact) and asserts it carries the specific evidence markers for the merged RSD-3
+      offline test pass (18 passed), the live CI run of the new job on this PR itself producing a non-no_op
+      companion plan with zero GitHub mutation, and the explicit zero-mutation / non-blocking framing.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          PRODUCT_PR_NUMBER=1782; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=fc294454415a3c96e3e21945b5d6303467377927;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'"' | grep -qx true && BODY="$(gh pr view "${PRODUCT_PR_NUMBER}" --repo
+          "${PRODUCT_REPO}" --json body --jq '.body')" && echo "$BODY" | grep -Fq '18 passed in' && echo
+          "$BODY" | grep -Fq 'conclusion=success' && echo "$BODY" | grep -Fq '"no_op": false' && echo
+          "$BODY" | grep -Fq 'zero GitHub mutation' && echo "$BODY" | grep -Fq '29465480212'
+  - id: dod-omnimarket-pr-1782-deploy-scope
+    description: >-
+      Deploy-scope audit for omnimarket PR #1782. The diff is limited to a single new GitHub Actions workflow
+      file under .github/workflows/; it does not perform a live deploy, restart, .201 mutation, systemd
+      change, or docker-compose change, and does not touch any deploy/scripts path.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          PRODUCT_PR_NUMBER=1782; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=fc294454415a3c96e3e21945b5d6303467377927;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all(startswith(".github/workflows/") and
+          (. | test("(^|/)(systemd|deploy/scripts|docker/compose)(/|$)") | not)))' | grep -qx true
+  - id: dod-occ-self-bind-pr-4261
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4261. Verifies the PR is on the expected
+      OMN-14657 evidence branch and contains initial evidence commit 9c5a206e53d9ea32dfd9df7b68f50a4ce2adb726.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >-
+          OCC_PR_NUMBER=4261; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14657-occ-companion-1782-ccfix;
+          INITIAL_EVIDENCE_COMMIT=9c5a206e53d9ea32dfd9df7b68f50a4ce2adb726; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --jq
+          '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
