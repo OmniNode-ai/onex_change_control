@@ -11,8 +11,9 @@ governs ``scripts/**`` under a deterministic deny-new inventory policy:
   burn-down only).
 - A NEW script (not in the baseline) passes ONLY if it has an entry in the
   CODEOWNERS-approved exceptions registry (``scripts_exceptions.yaml``, resolved
-  from onex_change_control@main so ``approved_by != author`` — no self-written
-  excuse). Otherwise it is BLOCKED (NEW_UNREGISTERED).
+  from onex_change_control@main so a downstream PR cannot self-add an entry — the
+  gate is CODEOWNERS review on a separate @main PR; ``approved_by`` is advisory,
+  not code-enforced). Otherwise it is BLOCKED (NEW_UNREGISTERED).
 
 The AST scorer never decides pass/fail on its own. It makes exactly one binary
 hard check — a registry entry with disposition ``node-backed`` must have a real

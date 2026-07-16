@@ -7,8 +7,15 @@ A single reviewed exception in ``allowlists/scripts_exceptions.yaml`` — the
 CODEOWNERS-approved registry that is the ONLY way a NEW ``scripts/**`` file may
 land under the DEFAULT-DENY policy (OMN-14475). The registry is resolved from
 ``onex_change_control@main`` in CI (mirroring ``skip_token_approvals.yaml``), so
-``approved_by`` is set by a reviewer and cannot equal the PR author — no
-self-written excuse.
+a downstream PR cannot self-add an entry — an entry lands only via a separate,
+CODEOWNERS-reviewed PR against this file.
+
+``approved_by`` merely RECORDS the reviewer's GitHub login on approval; it is
+advisory and NOT code-enforced here. There is no ``approved_by != author`` check
+for scripts exceptions (the field defaults to blank and no validator reads it).
+The only ``approved_by != author`` code check in this repo is in
+``validate_prod_promotion_grants.py`` and applies solely to prod-promotion
+grants.
 """
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,8 +55,9 @@ class ModelScriptException(BaseModel):
     approved_by: str = Field(
         default="",
         description=(
-            "GitHub login of the CODEOWNERS approver. Set by review; must not "
-            "equal the PR author (enforced by the registry workflow, mirroring "
-            "skip_token_approvals.yaml)."
+            "GitHub login of the CODEOWNERS approver, recorded on approval. "
+            "Advisory and NOT code-enforced for scripts exceptions: nothing "
+            "compares it to the PR author, and it defaults to blank. The gate "
+            "is CODEOWNERS review on the separate onex_change_control@main PR."
         ),
     )
