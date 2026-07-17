@@ -204,6 +204,34 @@ _OCC_RED_SIGNALS = frozenset(
 _DEPLOY_FAIL_SIGNALS = frozenset({"failure", "action_required", "error"})
 
 
+# --- Enforcement exit code (ENFORCING shadow — OMN-14709) -------------------
+# The shadow flips from report-only to ENFORCING: it exits NON-ZERO only when the
+# reason-graph root is a genuine PRODUCT defect (``PRODUCT_FAILED`` — lint /
+# typecheck / tests / coverage red). Non-product roots (``RUNNER_INFRA``,
+# ``EVIDENCE_MISSING``, ``GITHUB_API_OUTAGE``, ``POLICY_HELD``,
+# ``DEPLOY_TRIGGER_FAILED``) and a green/READY graph stay exit 0, so the shadow
+# reports without failing on non-product (infra / evidence / policy) causes. The
+# workflow stays NON-required, so a red shadow reports but cannot block merges —
+# it generates red-side parity without gating.
+EXIT_PRODUCT_FAILED = 1
+
+
+def enforcement_exit_code(graph: dict[str, Any]) -> int:
+    """Exit code for ENFORCING mode.
+
+    Returns ``EXIT_PRODUCT_FAILED`` (non-zero) iff the single elected root is a
+    genuine product defect (``PRODUCT_FAILED``); returns 0 for a green/READY
+    graph and for every non-product root. Only a product defect is fatal — infra,
+    evidence-missing, API-outage, policy-hold and deploy-trigger roots are
+    non-blocking so the shadow does not fail on causes outside the product
+    dimension.
+    """
+    root = graph.get("root")
+    if root is not None and root.get("kind") == PRODUCT_FAILED:
+        return EXIT_PRODUCT_FAILED
+    return 0
+
+
 def root_receipt_id(head_sha: str, root_kind: str, primary_signal: str) -> str:
     """Content-addressed, deterministic root receipt id.
 
@@ -478,6 +506,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also print a Markdown summary block to stderr.",
     )
+    p.add_argument(
+        "--enforce",
+        action="store_true",
+        help=(
+            "ENFORCING mode: exit non-zero when the reason-graph root is a "
+            "genuine product defect (PRODUCT_FAILED). Non-product roots and a "
+            "green graph still exit 0. Omit for the legacy report-only surface."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -494,7 +531,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(graph, sort_keys=True))
         if args.summary:
             print(_render_summary(graph), file=sys.stderr)
-        # Report-only: this surface never fails the check.
+        if args.enforce:
+            # ENFORCING: non-zero ONLY on a PRODUCT_FAILED root; non-product
+            # roots and green stay 0. The workflow remains non-required.
+            return enforcement_exit_code(graph)
+        # Report-only (default): this surface never fails the check.
         return 0
 
     parser.error(f"unknown command: {args.command}")

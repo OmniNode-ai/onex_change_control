@@ -1,0 +1,81 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14709
+title: 'feat: enforce product-readiness shadow PRODUCT_FAILED reason graph'
+summary: 'Flip product-readiness shadow reason graph to fail only for genuine product failures while keeping
+  the shadow non-required.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: CI passes on merge PRs
+    command: gh pr checks
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-occ-4329-head
+    description: 'onex_change_control PR #4329 exists on dev on the expected OMN-14709 branch.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: PRODUCT_PR_NUMBER=4329; PRODUCT_REPO=OmniNode-ai/onex_change_control; gh pr view
+          "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json number,state,baseRefName,headRefName --jq
+          '.number == 4329 and .state == "OPEN" and .baseRefName == "dev" and .headRefName == "jonah/omn-14709-onex_change_control-enforcing"'
+          | grep -q true
+  - id: dod-occ-4329-local-proof
+    description: 'onex_change_control PR #4329 body records targeted reason-graph proof and local gates.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: PRODUCT_PR_NUMBER=4329; PRODUCT_REPO=OmniNode-ai/onex_change_control; gh pr view
+          "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json body --jq '.body' | grep -E '26 passed|ruff|mypy|actionlint|pre-commit|PRODUCT_FAILED'
+  - id: dod-occ-4329-no-deploy
+    description: 'onex_change_control PR #4329 changes only product-readiness shadow code, its focused
+      test, and OMN-14709 OCC evidence files; it does not mutate branch protection or required contexts.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: PRODUCT_PR_NUMBER=4329; PRODUCT_REPO=OmniNode-ai/onex_change_control; diff_paths="$(gh
+          pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only)"; printf '%s\n' "$diff_paths"
+          | grep -qx '.github/workflows/product-readiness-shadow.yml'; printf '%s\n' "$diff_paths" | grep
+          -qx 'scripts/ci/product_reason_graph.py'; printf '%s\n' "$diff_paths" | grep -qx 'tests/ci/test_product_reason_graph_omn14704.py';
+          bad_paths="$(printf '%s\n' "$diff_paths" | awk '!/^(\.github\/workflows\/product-readiness-shadow.yml|scripts\/ci\/product_reason_graph.py|tests\/ci\/test_product_reason_graph_omn14704.py|contracts\/OMN-14709.yaml|drift\/dod_receipts\/OMN-14709\/.+\.yaml)$/
+          {print}')"; test -z "$bad_paths"
+  - id: dod-core-1458-head
+    description: 'omnibase_core PR #1458 exists on dev at exact head 2d1c94ee.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: PRODUCT_PR_NUMBER=1458; PRODUCT_REPO=OmniNode-ai/omnibase_core; gh pr view "$PRODUCT_PR_NUMBER"
+          --repo "$PRODUCT_REPO" --json number,state,baseRefName,headRefOid,headRefName --jq '.number
+          == 1458 and .state == "OPEN" and .baseRefName == "dev" and .headRefOid == "2d1c94eec2d1f6dbd4e276bc419367eefbeaa845"'
+          | grep -q true
+  - id: dod-core-1458-local-proof
+    description: 'omnibase_core PR #1458 body records targeted reason-graph proof and local gates.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: PRODUCT_PR_NUMBER=1458; PRODUCT_REPO=OmniNode-ai/omnibase_core; gh pr view "$PRODUCT_PR_NUMBER"
+          --repo "$PRODUCT_REPO" --json body --jq '.body' | grep -E '27 passed|ruff|mypy|actionlint|pre-commit|PRODUCT_FAILED'
+  - id: dod-core-1458-no-deploy
+    description: 'omnibase_core PR #1458 changes only product-readiness shadow code and its focused test;
+      it does not mutate branch protection or required contexts.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: PRODUCT_PR_NUMBER=1458; PRODUCT_REPO=OmniNode-ai/omnibase_core; diff_paths="$(gh
+          pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only)"; printf '%s\n' "$diff_paths"
+          | grep -qx '.github/workflows/product-readiness-shadow.yml'; printf '%s\n' "$diff_paths" | grep
+          -qx 'scripts/ci/product_reason_graph.py'; printf '%s\n' "$diff_paths" | grep -qx 'tests/ci/test_product_reason_graph_omn14705.py';
+          test "$(printf '%s\n' "$diff_paths" | wc -l)" -eq 3
+  - id: occ-self-bind-pr-4329
+    description: 'OCC PR #4329 exists and carries OMN-14709 evidence for the product-readiness shadow
+      enforcement change.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: PR_NUMBER=4329; REPO=OmniNode-ai/onex_change_control; gh pr view ${PR_NUMBER} --repo
+          ${REPO} --json number,state,headRefName

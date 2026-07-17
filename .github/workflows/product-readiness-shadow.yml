@@ -100,10 +100,18 @@ jobs:
       - name: Tests with coverage
         run: uv run pytest --cov=onex_change_control --cov-report=term-missing
 
-  # --- Typed reason-graph (report-only) ------------------------------------
+  # --- Typed reason-graph (ENFORCING on product defects) -------------------
   # NO occ-preflight in this needs-chain. Consumes the product subchecks'
   # conclusions only and emits exactly one typed root. Surfaced NON-required
   # context: `product-readiness-shadow / reason-graph`.
+  #
+  # ENFORCING (OMN-14709): the step exits NON-ZERO when the elected root is a
+  # genuine product defect (PRODUCT_FAILED — lint/typecheck/tests/coverage red).
+  # Non-product roots (RUNNER_INFRA / EVIDENCE_MISSING / GITHUB_API_OUTAGE /
+  # POLICY_HELD / DEPLOY_TRIGGER_FAILED) and a green graph stay exit 0. This
+  # workflow is deliberately kept OUT of `required_status_checks`, so a red
+  # shadow reports a red check conclusion but CANNOT block merges — generating
+  # the red-side parity the fleet needs without gating on it.
   reason-graph:
     name: reason-graph
     needs: [lint-shadow, typecheck-shadow, tests-shadow]
@@ -136,7 +144,7 @@ jobs:
           TYPECHECK_CONCLUSION: ${{ needs.typecheck-shadow.result }}
           TESTS_CONCLUSION: ${{ needs.tests-shadow.result }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           facts="$(python - <<'PY'
           import json, os
           tests = os.environ.get("TESTS_CONCLUSION", "")
@@ -152,12 +160,19 @@ jobs:
           }))
           PY
           )"
-          graph="$(python scripts/ci/product_reason_graph.py graph --facts-json "$facts" --summary 2> summary.md)"
+          # ENFORCING: --enforce makes the emitter exit non-zero ONLY on a
+          # PRODUCT_FAILED root. Capture that exit code WITHOUT set -e swallowing
+          # the summary/annotations, then re-raise it at the end.
+          graph="$(python scripts/ci/product_reason_graph.py graph --facts-json "$facts" --summary --enforce 2> summary.md)"
+          rc=$?
           echo "$graph"
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
           root_kind="$(printf '%s' "$graph" | python -c 'import json,sys; r=json.load(sys.stdin)["root"]; print(r["kind"] if r else "READY")')"
           if [ "$root_kind" = "READY" ]; then
-            echo "::notice title=CI Reason Graph::READY — product dimension is green (report-only)"
+            echo "::notice title=CI Reason Graph::READY — product dimension is green"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error title=CI Reason Graph::ROOT ${root_kind} — enforcing shadow FAILED (product defect; NON-required, does not block merge)"
           else
-            echo "::warning title=CI Reason Graph::ROOT ${root_kind} (report-only shadow; not merge-blocking)"
+            echo "::warning title=CI Reason Graph::ROOT ${root_kind} (non-product root; non-fatal shadow)"
           fi
+          exit "$rc"
