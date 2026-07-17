@@ -85,7 +85,7 @@ def test_exceptions_registry_valid() -> None:
         pytest.skip(f"Registry not found: {registry}")
 
     result = subprocess.run(
-        [  # noqa: S607
+        [
             "uv",
             "run",
             "check-db-boundary",

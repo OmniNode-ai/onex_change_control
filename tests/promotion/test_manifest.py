@@ -22,7 +22,7 @@ from onex_change_control.promotion.manifest import (
 
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
-        ["git", "-C", str(repo), *args],  # noqa: S607
+        ["git", "-C", str(repo), *args],
         check=True,
         capture_output=True,
         text=True,

@@ -31,7 +31,7 @@ def _git(repo: Path, *args: str, commit_date: str | None = None) -> str:
             "GIT_COMMITTER_DATE": commit_date,
         }
     completed = subprocess.run(
-        ["git", "-C", str(repo), *args],  # noqa: S607
+        ["git", "-C", str(repo), *args],
         check=True,
         capture_output=True,
         text=True,
