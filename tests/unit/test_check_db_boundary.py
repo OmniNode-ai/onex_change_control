@@ -222,7 +222,7 @@ class TestCheckDbBoundaryCli:
         # Use the repo root (two levels up from tests/unit/)
         repo_root = Path(__file__).resolve().parents[2]
         result = subprocess.run(
-            ["uv", "run", "check-db-boundary", "--help"],  # noqa: S607
+            ["uv", "run", "check-db-boundary", "--help"],
             capture_output=True,
             text=True,
             cwd=str(repo_root),

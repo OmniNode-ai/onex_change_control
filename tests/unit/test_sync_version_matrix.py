@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-# ruff: noqa: S607
 """Tests for scripts/sync_version_matrix.py."""
 
 from __future__ import annotations
