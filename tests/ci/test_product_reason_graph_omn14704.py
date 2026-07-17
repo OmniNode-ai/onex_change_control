@@ -24,6 +24,7 @@ import pytest
 from scripts.ci.product_reason_graph import (
     DEPLOY_TRIGGER_FAILED,
     EVIDENCE_MISSING,
+    EXIT_PRODUCT_FAILED,
     GITHUB_API_OUTAGE,
     POLICY_HELD,
     PRODUCT_FAILED,
@@ -31,6 +32,7 @@ from scripts.ci.product_reason_graph import (
     STATUS_BLOCKED_UPSTREAM,
     STATUS_FAILED,
     build_reason_graph,
+    enforcement_exit_code,
     root_receipt_id,
 )
 
@@ -263,6 +265,130 @@ def test_cli_graph_is_report_only_exit_zero_on_red() -> None:
     assert proc.returncode == 0
     payload = json.loads(proc.stdout)
     assert payload["root"]["kind"] == PRODUCT_FAILED
+
+
+# --------------------------------------------------------------------------
+# ENFORCING mode (OMN-14709) — exit non-zero ONLY on a PRODUCT_FAILED root.
+# This is the load-bearing evidence the shadow now enforces on product defects
+# while staying non-fatal on non-product roots (and NON-required at the branch-
+# protection layer, so it reports without blocking merges).
+# --------------------------------------------------------------------------
+
+
+def _run_graph(facts: dict[str, Any], *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(_SCRIPT),
+            "graph",
+            "--facts-json",
+            json.dumps(facts),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.unit
+def test_enforcement_exit_code_nonzero_only_on_product_failed() -> None:
+    # Unit-level exit-logic contract: PRODUCT_FAILED -> non-zero; everything
+    # else -> 0.
+    product_fail = build_reason_graph(
+        {"head_sha": _HEAD, "subchecks": {**_green_subchecks(), "tests": "failure"}}
+    )
+    assert product_fail["root"]["kind"] == PRODUCT_FAILED
+    assert enforcement_exit_code(product_fail) == EXIT_PRODUCT_FAILED
+    assert EXIT_PRODUCT_FAILED != 0
+
+    green = build_reason_graph({"head_sha": _HEAD, "subchecks": _green_subchecks()})
+    assert green["root"] is None
+    assert enforcement_exit_code(green) == 0
+
+    # Every non-product root stays non-fatal (exit 0).
+    runner_infra = build_reason_graph(
+        {"head_sha": _HEAD, "subchecks": {**_green_subchecks(), "tests": "skipped"}}
+    )
+    assert runner_infra["root"]["kind"] == RUNNER_INFRA
+    assert enforcement_exit_code(runner_infra) == 0
+
+    evidence_missing = build_reason_graph(
+        {
+            "head_sha": _HEAD,
+            "subchecks": dict.fromkeys(
+                ("change_detection", "lint", "typecheck", "tests", "coverage"),
+                "skipped",
+            ),
+            "occ_eligibility": "failure",
+        }
+    )
+    assert evidence_missing["root"]["kind"] == EVIDENCE_MISSING
+    assert enforcement_exit_code(evidence_missing) == 0
+
+    api_outage = build_reason_graph(
+        {"head_sha": _HEAD, "subchecks": _green_subchecks(), "gh_api": "5xx"}
+    )
+    assert api_outage["root"]["kind"] == GITHUB_API_OUTAGE
+    assert enforcement_exit_code(api_outage) == 0
+
+    policy_held = build_reason_graph(
+        {"head_sha": _HEAD, "subchecks": _green_subchecks(), "policy": "prod-hold"}
+    )
+    assert policy_held["root"]["kind"] == POLICY_HELD
+    assert enforcement_exit_code(policy_held) == 0
+
+    deploy_fail = build_reason_graph(
+        {
+            "head_sha": _HEAD,
+            "subchecks": _green_subchecks(),
+            "deploy_trigger": "failure",
+        }
+    )
+    assert deploy_fail["root"]["kind"] == DEPLOY_TRIGGER_FAILED
+    assert enforcement_exit_code(deploy_fail) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failing_check", ["lint", "typecheck", "tests", "coverage"])
+def test_cli_enforce_product_failed_exits_nonzero(failing_check: str) -> None:
+    subchecks = _green_subchecks()
+    subchecks[failing_check] = "failure"
+    proc = _run_graph({"head_sha": _HEAD, "subchecks": subchecks}, "--enforce")
+    assert proc.returncode == EXIT_PRODUCT_FAILED
+    # The graph JSON is still emitted on stdout even in the failing path.
+    payload = json.loads(proc.stdout)
+    assert payload["root"]["kind"] == PRODUCT_FAILED
+
+
+@pytest.mark.unit
+def test_cli_enforce_green_exits_zero() -> None:
+    proc = _run_graph({"head_sha": _HEAD, "subchecks": _green_subchecks()}, "--enforce")
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["root"] is None
+
+
+@pytest.mark.unit
+def test_cli_enforce_runner_infra_exits_zero() -> None:
+    # A non-product infra root must NOT fail the enforcing shadow.
+    subchecks = _green_subchecks()
+    subchecks["tests"] = "skipped"
+    proc = _run_graph({"head_sha": _HEAD, "subchecks": subchecks}, "--enforce")
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["root"]["kind"] == RUNNER_INFRA
+
+
+@pytest.mark.unit
+def test_cli_enforce_evidence_missing_exits_zero() -> None:
+    subchecks = dict.fromkeys(
+        ("change_detection", "lint", "typecheck", "tests", "coverage"), "skipped"
+    )
+    proc = _run_graph(
+        {"head_sha": _HEAD, "subchecks": subchecks, "occ_eligibility": "failure"},
+        "--enforce",
+    )
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["root"]["kind"] == EVIDENCE_MISSING
 
 
 # --------------------------------------------------------------------------
