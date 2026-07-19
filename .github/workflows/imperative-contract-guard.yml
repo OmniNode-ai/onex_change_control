@@ -67,15 +67,45 @@ jobs:
         run: |
           git config --global http.version HTTP/1.1
           attempt=1
-          until uv sync --locked --all-extras; do
-            status=$?
+          while true; do
+            # NOTE(OMN-14780): GH Actions runs `run:` steps under `bash -e {0}` by
+            # default, and that -e is active here even though we never `set -e`. A
+            # bare `sync_output="$(uv sync ...)"` assignment would abort the whole
+            # step on the first uv failure -- before we can classify it -- so we use
+            # the command substitution as the condition of an `if` (bash does not
+            # trigger -e for a command that is part of an if/while/until condition,
+            # regardless of ambient -e). This also captures uv's output so we can
+            # tell a deterministic lockfile drift apart from a transient transport
+            # error.
+            if sync_output="$(uv sync --locked --all-extras 2>&1)"; then
+              status=0
+            else
+              status=$?
+            fi
+            printf '%s\n' "$sync_output"
+
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+
+            # OMN-14780: a `--locked` lockfile mismatch is a DETERMINISTIC,
+            # resolution-time failure -- not a transient/network flake. Retrying it
+            # burns the entire attempt budget, fails identically every time, and
+            # mislabels a stale lockfile as a transport error ("second failure of
+            # the same check is a bug, not a flake"). Detect uv's stale-lock
+            # signature and fail fast with an actionable message instead of retrying.
+            if printf '%s\n' "$sync_output" | grep -qE 'lockfile.*needs to be updated|was provided\. To update the lockfile'; then
+              echo "::error::uv.lock is stale versus pyproject.toml: uv sync --locked resolved cleanly but the lockfile is out of date (deterministic failure, not a transient flake). Run 'uv lock' in onex_change_control and commit the refreshed uv.lock. Refusing to consume the retry budget (OMN-14780)."
+              exit "$status"
+            fi
+
             if [ "$attempt" -ge "$UV_SYNC_ATTEMPTS" ]; then
-              echo "::error::uv sync failed after ${attempt} attempt(s)"
+              echo "::error::uv sync failed after ${attempt} attempt(s) (last exit ${status}; transient/transport signature)"
               exit "$status"
             fi
 
             sleep_seconds=$((UV_SYNC_RETRY_DELAY_SECONDS * attempt))
-            echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed with exit ${status}; retrying in ${sleep_seconds}s"
+            echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed with exit ${status} (transient/transport); retrying in ${sleep_seconds}s"
             sleep "$sleep_seconds"
             attempt=$((attempt + 1))
           done
