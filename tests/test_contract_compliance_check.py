@@ -29,8 +29,11 @@ from onex_change_control.scripts.contract_compliance_check import (
     _check_file_exists,
     _check_grep,
     _check_test_exists,
+    _command_binaries,
+    _contract_digest,
     _extract_ticket_id,
     _find_contracts_dir,
+    _non_hermetic_reason,
     run_compliance_check,
 )
 
@@ -675,3 +678,189 @@ def test_superseded_dod_item_is_warn_not_block(tmp_path: Path) -> None:
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# OMN-14051 -- non-hermetic check_value guard
+# ---------------------------------------------------------------------------
+
+
+def _cmd(check_value: str) -> dict[str, str]:
+    return {"check_type": "command", "check_value": check_value}
+
+
+def test_non_hermetic_rejects_ssh() -> None:
+    """An ssh probe (the OMN-14001 / PR #3642 case) is rejected with a message."""
+    reason = _non_hermetic_reason(
+        _cmd('ssh jonah@100.109.203.94 "docker ps" && echo no-out-of-band-deploy')
+    )
+    assert reason is not None
+    assert "NON-HERMETIC" in reason
+    assert "ssh" in reason
+    # Steers the author to the canonical receipt-preservation pattern.
+    assert "drift/dod_receipts/" in reason
+    assert "status: PASS" in reason
+
+
+def test_non_hermetic_rejects_live_docker() -> None:
+    """`docker exec` against a live daemon (absent in CI) is rejected."""
+    reason = _non_hermetic_reason(
+        _cmd("docker exec omninode-runtime python -c 'import omnimarket'")
+    )
+    assert reason is not None
+    assert "docker" in reason
+
+
+def test_non_hermetic_rejects_lan_ip_curl() -> None:
+    """Network egress to a LAN/Tailscale host is rejected."""
+    reason = _non_hermetic_reason(_cmd("curl -fsS http://192.168.86.201:8085/health"))
+    assert reason is not None
+    assert "192.168.86.201" in reason
+
+
+def test_non_hermetic_rejects_scp_and_rsync() -> None:
+    assert _non_hermetic_reason(_cmd("scp host:/tmp/x .")) is not None
+    assert _non_hermetic_reason(_cmd("rsync -a host:/src/ ./dst/")) is not None
+
+
+def test_non_hermetic_rejects_sudo_prefixed_ssh() -> None:
+    """A wrapper (sudo/env) does not hide the non-hermetic binary."""
+    assert _non_hermetic_reason(_cmd("sudo ssh box uptime")) is not None
+    assert _non_hermetic_reason(_cmd("env FOO=bar docker ps")) is not None
+
+
+def test_hermetic_receipt_grep_accepted() -> None:
+    """The canonical receipt-grep pattern is NOT flagged as non-hermetic."""
+    receipt = (
+        "grep -q '^status: PASS$' "
+        '"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14051/dod-x/command.yaml"'
+    )
+    assert _non_hermetic_reason(_cmd(receipt)) is None
+
+
+def test_hermetic_local_file_checks_accepted() -> None:
+    assert (
+        _non_hermetic_reason(_cmd("test -f src/onex_change_control/__init__.py"))
+        is None
+    )
+    assert _non_hermetic_reason(_cmd("python -c 'import onex_change_control'")) is None
+
+
+def test_hermetic_loopback_curl_accepted() -> None:
+    """curl to a loopback host is hermetic (the ticket carves out non-loopback)."""
+    assert _non_hermetic_reason(_cmd("curl -fsS http://localhost:8085/health")) is None
+    assert _non_hermetic_reason(_cmd("curl -fsS http://127.0.0.1:9000/ready")) is None
+
+
+def test_hermetic_quoted_docker_word_accepted() -> None:
+    """The word "docker" inside a quoted grep pattern must NOT trip the guard."""
+    check = _cmd("grep -q 'No runtime deploy, docker exec, rpk produce' report.txt")
+    assert _non_hermetic_reason(check) is None
+
+
+def test_non_command_check_types_are_ignored() -> None:
+    """grep/file_exists/test_exists may legitimately contain IPs or "docker"."""
+    assert (
+        _non_hermetic_reason(
+            {"check_type": "grep", "check_value": {"pattern": "192.168.1.1"}}
+        )
+        is None
+    )
+    assert (
+        _non_hermetic_reason(
+            {"check_type": "file_exists", "check_value": "deploy/ssh/config"}
+        )
+        is None
+    )
+
+
+def test_command_binaries_is_quote_aware() -> None:
+    assert _command_binaries("grep -q 'no docker here' f && ssh host") == [
+        "grep",
+        "ssh",
+    ]
+    assert _command_binaries("sudo docker ps") == ["docker"]
+    assert _command_binaries("env FOO=bar docker exec c cmd") == ["docker"]
+    assert _command_binaries("/usr/bin/ssh host") == ["ssh"]
+
+
+def test_non_hermetic_contract_blocks_new_ticket(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A NEW (non-grandfathered) contract with an ssh check_value BLOCKs (rc=1)."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-2051"
+        summary: "Non-hermetic ssh probe in dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-deploy-scope
+            description: "Prove no out-of-band deploy"
+            checks:
+              - check_type: command
+                check_value: "ssh jonah@100.109.203.94 hostname"
+            status: pending
+    """)
+    (contracts / "OMN-2051.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-2051",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NON-HERMETIC" in out
+
+
+def test_non_hermetic_contract_grandfathered_is_warn_not_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A grandfathered (content-pinned) contract demotes the non-hermetic BLOCK to WARN.
+
+    Proves the guard respects the OMN-14436 ratchet: the pre-existing corpus of
+    ssh/docker-exec runtime-proof checks is reported, not wedged.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-2052"
+        summary: "Legacy non-hermetic probe"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-legacy-probe
+            description: "Legacy live probe"
+            checks:
+              - check_type: command
+                check_value: "docker exec omninode-runtime true"
+            status: verified
+    """)
+    contract_path = contracts / "OMN-2052.yaml"
+    contract_path.write_text(contract_yaml)
+    legacy = {"OMN-2052": _contract_digest(contract_path)}
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-2052",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/omnimarket", contracts, tmp_path, legacy_tickets=legacy
+        )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "GRANDFATHERED" in out
