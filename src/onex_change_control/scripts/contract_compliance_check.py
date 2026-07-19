@@ -46,6 +46,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -93,6 +94,197 @@ def _is_inert_check(check_value: Any) -> bool:
     """
     text = str(check_value)
     return any(p.search(text) for p in _INERT_CHECK_PATTERNS)
+
+
+# OMN-14051 -- non-hermetic check_value guard (reject at validation time).
+#
+# A dod_evidence check of check_type "command" has its check_value executed
+# verbatim by this runner inside the CI environment. CI runners have no ssh, no
+# route to the .201 Tailscale/LAN hosts, and no live docker/k8s daemon, so a
+# command that shells out to ssh/scp, a live container daemon, or network egress
+# to a non-loopback host can NEVER pass in CI -- it BLOCKs the PR with a cryptic
+# runtime error ("sh: 1: ssh: not found", exit 127) even when the underlying
+# work is real. Observed on OCC PR #3642 (OMN-14001): a `dod-deploy-scope` item
+# inlined `ssh jonah@100.109.203.94 "docker ps ..."` and produced
+# "3/4 PASS, 1 BLOCK".
+#
+# The canonical, hermetic pattern is to run the live probe OUT OF BAND, record
+# it in a committed receipt, and have the contract grep that receipt:
+#
+#   check_value: >-
+#     grep -q '^status: PASS$'
+#     "$CONTRACT_REPO_DIR/drift/dod_receipts/<TICKET>/<evidence-id>/command.yaml"
+#
+# This guard rejects the non-hermetic form up front with that actionable
+# message, so the failure surfaces at authoring/validation time instead of as a
+# late, cryptic CI error. It is folded into the *existing* validator (no new
+# gate/workflow -- net-negative-surface) and is subject to the same OMN-14436
+# demotion rules as any other BLOCK: a grandfathered (content-pinned legacy)
+# contract is demoted to WARN -- so the pre-existing corpus of `docker exec`
+# runtime-proof checks is reported but not wedged -- while a NEW or touched
+# contract is enforced from its first PR.
+#
+# Detection is deliberately conservative (per the ticket: "start conservative,
+# expand as needed"). Known gap: a binary hidden inside a command substitution
+# (`$(ssh ...)`) is not yet detected; only command-position invocations are.
+_MAX_SNIPPET_LEN = 160
+
+# Shell tokens that begin a new command word (so the next token is in command
+# position). shlex emits these as standalone tokens when whitespace-separated.
+_SHELL_OPERATORS: frozenset[str] = frozenset(
+    {"|", "||", "&&", ";", ";;", "&", "|&", "(", ")", "{", "}"}
+)
+# Command wrappers whose *argument* is the real command; stay in command
+# position past them (and past `env FOO=bar` assignment tokens).
+_WRAPPER_BINS: frozenset[str] = frozenset(
+    {"sudo", "env", "time", "nice", "nohup", "command", "exec", "xargs", "then", "do"}
+)
+# Remote shell / remote copy: always non-hermetic.
+_REMOTE_SHELL_BINS: frozenset[str] = frozenset(
+    {"ssh", "scp", "sftp", "rsync", "telnet"}
+)
+# Container / orchestration: need a live daemon absent from CI runners.
+_DAEMON_BINS: frozenset[str] = frozenset(
+    {"docker", "docker-compose", "podman", "nerdctl", "kubectl"}
+)
+# Network fetch: non-hermetic only when the target host is not loopback.
+_NET_FETCH_BINS: frozenset[str] = frozenset({"curl", "wget", "nc", "ncat"})
+
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Full-octet IPv4 in the private / Tailscale-CGNAT ranges. Anchored to a
+# complete dotted quad so version strings ("10.2") never match.
+_LAN_IP_RE = re.compile(
+    r"\b("
+    r"192\.168\.\d{1,3}\.\d{1,3}"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r"|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}"
+    r")\b"
+)
+_URL_HOST_RE = re.compile(r"https?://([^/\s]+)")
+_LOOPBACK_HOSTS: frozenset[str] = frozenset(
+    {"localhost", "127.0.0.1", "::1", "ip6-localhost"}
+)
+
+
+def _command_binaries(command: str) -> list[str]:
+    """Basenames of the binaries invoked in command position in ``command``.
+
+    Quote-aware via ``shlex`` so a binary name embedded in a quoted argument --
+    e.g. the word "docker" in ``grep -q 'no docker exec' file`` -- is NOT
+    reported; only tokens that actually start a command word are. Shell
+    operators (``;`` ``&&`` ``||`` ``|``) and wrappers (``sudo``, ``env VAR=x``)
+    keep the scan in command position.
+    """
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        # Unbalanced quotes etc. -- best-effort whitespace split rather than
+        # silently passing the guard on a malformed command.
+        tokens = command.split()
+    binaries: list[str] = []
+    expect_command = True
+    for token in tokens:
+        if token in _SHELL_OPERATORS:
+            expect_command = True
+            continue
+        if not expect_command:
+            continue
+        if _ASSIGNMENT_RE.match(token):
+            # `env FOO=bar cmd` -- leading assignments are not the command.
+            continue
+        binary = token.rsplit("/", 1)[-1]
+        if binary in _WRAPPER_BINS:
+            continue  # stay in command position; the next token is the command
+        binaries.append(binary)
+        expect_command = False
+    return binaries
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True if ``host`` (optionally ``user@host:port``) is a loopback target."""
+    text = host.strip().strip("\"'[]").lower()
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    if text.startswith("127.") or text in _LOOPBACK_HOSTS:
+        return True
+    return text.split(":", 1)[0] in _LOOPBACK_HOSTS
+
+
+def _has_nonloopback_url(command: str) -> bool:
+    """True if ``command`` contains an http(s) URL whose host is not loopback."""
+    return any(not _is_loopback_host(h) for h in _URL_HOST_RE.findall(command))
+
+
+def _non_hermetic_message(reason: str, command: str) -> str:
+    """Actionable rejection message steering the author to the receipt pattern."""
+    snippet = (
+        command
+        if len(command) <= _MAX_SNIPPET_LEN
+        else command[:_MAX_SNIPPET_LEN] + "..."
+    )
+    return (
+        f"NON-HERMETIC check_value -- {reason}. A CI runner has no ssh, no route "
+        "to the .201/LAN/Tailscale hosts, and no live docker/k8s daemon, so this "
+        "command can never pass in CI (OMN-14051); it would BLOCK the PR with a "
+        "cryptic runtime error even when the work is real. Run the live probe out "
+        "of band, record it in a committed receipt "
+        "(drift/dod_receipts/<TICKET>/<evidence-id>/command.yaml with fields "
+        "probe_command, probe_stdout, exit_code, status: PASS), then set the "
+        "contract check to grep that receipt:\n"
+        "  check_value: >-\n"
+        "    grep -q '^status: PASS$'\n"
+        '    "$CONTRACT_REPO_DIR/drift/dod_receipts/<TICKET>'
+        '/<evidence-id>/command.yaml"\n'
+        f"  offending check_value: {snippet}"
+    )
+
+
+def _non_hermetic_reason(check: Any) -> str | None:
+    """Rejection message if ``check``'s command check_value is non-hermetic, else None.
+
+    "Non-hermetic" == the command depends on ssh/remote-copy, a live
+    docker/k8s daemon, or network egress to a non-loopback host -- none of which
+    exist on a CI runner. Returns ``None`` for a hermetic command (local file
+    assertions, receipt greps, pure compute, loopback probes) so those still run.
+
+    Only ``check_type: command`` is inspected: its check_value is executed as a
+    shell command, so it is the only surface where these binaries actually run.
+    grep / file_exists / test_exists check_values are file/glob assertions that
+    may legitimately *contain* an IP or the word "docker" (e.g. grepping a
+    committed config), so scanning them would be a false-positive machine.
+    """
+    if not isinstance(check, dict) or check.get("check_type") != "command":
+        return None
+    command = str(check.get("check_value", ""))
+    if not command.strip():
+        return None
+
+    binaries = _command_binaries(command)
+    for binary in binaries:
+        if binary in _REMOTE_SHELL_BINS:
+            return _non_hermetic_message(
+                f"invokes the remote-access binary {binary!r}", command
+            )
+        if binary in _DAEMON_BINS:
+            return _non_hermetic_message(
+                f"invokes {binary!r}, which needs a live container/orchestration "
+                "daemon that CI runners do not have",
+                command,
+            )
+    lan_ip = _LAN_IP_RE.search(command)
+    if lan_ip is not None:
+        return _non_hermetic_message(
+            f"references the non-routable LAN/Tailscale host {lan_ip.group(1)!r}",
+            command,
+        )
+    for binary in binaries:
+        if binary in _NET_FETCH_BINS and _has_nonloopback_url(command):
+            return _non_hermetic_message(
+                f"performs network egress via {binary!r} to a non-loopback host",
+                command,
+            )
+    return None
 
 
 def _contract_digest(contract_path: Path) -> str:
@@ -542,6 +734,15 @@ def _run_single_check(
     context: _CheckContext,
 ) -> tuple[str, str, str]:
     """Run a single ModelDodCheck and return (check_type, result, detail)."""
+    reason = _non_hermetic_reason(check)
+    if reason is not None:
+        # OMN-14051: reject an ssh/live-docker/network-egress check_value up
+        # front with an actionable message instead of executing it and surfacing
+        # a cryptic "command not found" BLOCK. _demote still applies the
+        # OMN-14436 grandfather downgrade, so the legacy corpus is reported, not
+        # wedged.
+        return str(check.get("check_type", "")), _RESULT_BLOCK, reason
+
     check_type = check.get("check_type", "")
     check_value = check.get("check_value", "")
 
