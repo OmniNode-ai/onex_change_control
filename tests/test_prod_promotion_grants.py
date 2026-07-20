@@ -25,6 +25,8 @@ from typing import Any
 
 import yaml
 
+from onex_change_control.scripts.validate_prod_promotion_grants import validate_grants
+
 # Path to the repo root relative to this test file
 _REPO_ROOT = Path(__file__).parent.parent
 _GRANT_FILE = _REPO_ROOT / "grants" / "prod_promotion_grants.yaml"
@@ -337,3 +339,77 @@ class TestGrantSchemaValidation:
             "expires_at strictly after created_at should produce no errors, "
             f"got: {errors}"
         )
+
+
+def _write_grants(path: Path, entries: list[dict[str, Any]]) -> None:
+    path.write_text(yaml.safe_dump({"entries": entries}))
+
+
+def _future_entry(**overrides: Any) -> dict[str, Any]:
+    """A well-formed entry whose expires_at is far in the future so the
+    NO-EXPIRED-entry rule doesn't fire during real-validator tests.
+    """
+    entry = _well_formed_entry()
+    entry["expires_at"] = "2099-01-01T00:00:00Z"
+    entry.update(overrides)
+    return entry
+
+
+class TestDualControlRemovedOMN14814:
+    """OMN-14814: the real validator (validate_grants) no longer rejects a
+    grant whose approved_by equals the requester/author. With a sole
+    CODEOWNER, self-approval is the only reachable state — but every other
+    schema/integrity/freshness check must still fail closed.
+    """
+
+    def test_self_approved_grant_passes_real_validator(self, tmp_path: Path) -> None:
+        grants_file = tmp_path / "grants.yaml"
+        # approved_by == the sole CODEOWNER (would formerly be self-approval).
+        _write_grants(grants_file, [_future_entry(approved_by="jonahgabriel")])
+        result = validate_grants(grants_file)
+        assert result.passed, result.errors
+
+    def test_self_approved_missing_field_fails_real_validator(
+        self, tmp_path: Path
+    ) -> None:
+        entry = _future_entry(approved_by="jonahgabriel")
+        del entry["reason"]
+        grants_file = tmp_path / "grants.yaml"
+        _write_grants(grants_file, [entry])
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("missing required fields" in e for e in result.errors)
+
+    def test_self_approved_expired_fails_real_validator(self, tmp_path: Path) -> None:
+        entry = _future_entry(
+            approved_by="jonahgabriel",
+            expires_at="2020-01-01T00:00:00Z",
+            created_at="2019-01-01T00:00:00Z",
+        )
+        grants_file = tmp_path / "grants.yaml"
+        _write_grants(grants_file, [entry])
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("EXPIRED" in e for e in result.errors)
+
+    def test_self_approved_bad_digest_fails_real_validator(
+        self, tmp_path: Path
+    ) -> None:
+        entry = _future_entry(approved_by="jonahgabriel", image_digest="not-a-digest")
+        grants_file = tmp_path / "grants.yaml"
+        _write_grants(grants_file, [entry])
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("image_digest must match" in e for e in result.errors)
+
+    def test_self_approved_duplicate_ids_fail_real_validator(
+        self, tmp_path: Path
+    ) -> None:
+        gid = "grant-cccccccc-cccc-cccc-cccc-cccccccccccc"
+        entry_a = _future_entry(grant_id=gid, approved_by="jonahgabriel")
+        entry_b = _future_entry(grant_id=gid, approved_by="jonahgabriel")
+        grants_file = tmp_path / "grants.yaml"
+        _write_grants(grants_file, [entry_a, entry_b])
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("duplicate grant_id" in e for e in result.errors)

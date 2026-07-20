@@ -1,21 +1,25 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""Tests for validate_prod_promotion_grants (OMN-14441).
+"""Tests for validate_prod_promotion_grants (OMN-14441 / OMN-14814).
 
 OMN-14415 found this validator runs, can fail, but cannot block a merge
 (standalone workflow file, invisible to the required CI Summary rollup).
-OMN-14441 folds it into the required rollup and adds two integrity checks
+OMN-14441 folded it into the required rollup and added two integrity checks
 the schema-only version never had: duplicate grant_id detection and
-diff-scoped self-approval detection. These tests are the falsifiability
-proof the fix demands — each violation class must be independently
-provable RED, and the "no false positive on historical entries" guard is
-what makes the self-approval check safe to land unconditionally.
+diff-scoped self-approval (approved_by != PR-author) detection.
+
+OMN-14814 REMOVES the self-approval / dual-control check: @OmniNode-ai/
+platform-leads has exactly one member (the sole CODEOWNER), so requiring a
+second, different approver would wedge every prod-promotion grant forever.
+These tests are the falsifiability proof — a self-approved grant with all
+technical fields valid now PASSES, while every surviving schema/integrity
+check (missing field, expired, duplicate id, bad digest) remains provably
+RED.
 """
 
 from __future__ import annotations
 
-import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
@@ -49,19 +53,6 @@ def _valid_entry(**overrides: object) -> dict[str, object]:
     }
     base.update(overrides)
     return base
-
-
-def _init_git_repo(root: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@test.com"], cwd=root, check=True
-    )
-    subprocess.run(["git", "config", "user.name", "test"], cwd=root, check=True)
-
-
-def _git_commit_all(root: Path, message: str) -> None:
-    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True)
 
 
 class TestSchemaChecksPortedFromRetiredWorkflow:
@@ -157,70 +148,83 @@ class TestDuplicateGrantIdOMN14441:
         assert result.passed, result.errors
 
 
-class TestSelfApprovalOMN14441:
-    """NEW check: approved_by must not equal the PR author, but ONLY for
-    entries newly added by this PR — never for pre-existing entries, which
-    would false-positive an unrelated PR from someone who happens to share
-    a login with a historical approver.
+class TestDualControlRemovedOMN14814:
+    """OMN-14814: the approved_by != PR-author (dual-control / self-approval)
+    check is REMOVED. With a sole CODEOWNER, a self-approved grant is the
+    only reachable state; every OTHER schema/integrity/freshness check must
+    still fail closed so the grant stays un-forgeable.
+
+    The would-be self-approver login here (``jonahgabriel``) is the sole
+    CODEOWNER; formerly an approved_by equal to the requester/author was
+    rejected, now it must PASS.
     """
 
-    def test_self_approval_on_new_entry_fails(self, tmp_path: Path) -> None:
-        _init_git_repo(tmp_path)
+    def test_self_approved_grant_with_valid_fields_passes(self, tmp_path: Path) -> None:
+        """The regression the fix demands: a grant self-approved by the sole
+        CODEOWNER, with every technical field valid, is now VALID.
+        """
         grants_file = tmp_path / "grants.yaml"
-        _write_grants(grants_file, [])
-        _git_commit_all(tmp_path, "base: empty grants")
-
-        new_entry = _valid_entry(approved_by="mallory")
-        _write_grants(grants_file, [new_entry])
-        _git_commit_all(tmp_path, "head: mallory self-approves")
-
-        result = validate_grants(grants_file, pr_author="mallory", base_ref="HEAD~1")
-        assert not result.passed
-        assert any("SELF-APPROVAL REJECTED" in e for e in result.errors)
-
-    def test_different_approver_on_new_entry_passes(self, tmp_path: Path) -> None:
-        _init_git_repo(tmp_path)
-        grants_file = tmp_path / "grants.yaml"
-        _write_grants(grants_file, [])
-        _git_commit_all(tmp_path, "base: empty grants")
-
-        new_entry = _valid_entry(approved_by="alice-lead")
-        _write_grants(grants_file, [new_entry])
-        _git_commit_all(tmp_path, "head: alice approves mallory's request")
-
-        result = validate_grants(grants_file, pr_author="mallory", base_ref="HEAD~1")
+        _write_grants(grants_file, [_valid_entry(approved_by="jonahgabriel")])
+        result = validate_grants(grants_file)
         assert result.passed, result.errors
+        assert result.entry_count == 1
 
-    def test_preexisting_entry_not_flagged_for_unrelated_pr(
+    def test_self_approved_grant_missing_expires_at_still_fails(
         self, tmp_path: Path
     ) -> None:
-        """The false-positive guard: an entry approved_by=mallory that
-        ALREADY existed before this PR must not be flagged just because
-        mallory happens to be opening some unrelated PR today.
+        """Freshness is still enforced: a self-approved grant with no
+        expires_at is missing a required field and must FAIL.
         """
-        _init_git_repo(tmp_path)
-        grants_file = tmp_path / "grants.yaml"
-        preexisting_entry = _valid_entry(approved_by="mallory")
-        _write_grants(grants_file, [preexisting_entry])
-        _git_commit_all(
-            tmp_path, "base: mallory's grant, approved by someone else previously"
-        )
-
-        # HEAD == base: this PR doesn't touch the grants file at all.
-        result = validate_grants(grants_file, pr_author="mallory", base_ref="HEAD")
-        assert result.passed, result.errors
-
-    def test_self_approval_skipped_without_pr_context(self, tmp_path: Path) -> None:
-        """Without --pr-author/--base-ref (e.g. a push event with no PR
-        context), self-approval checking is skipped entirely rather than
-        guessing — confirmed here so the "skip" is a deliberate, tested
-        branch, not silent.
-        """
-        entry = _valid_entry(approved_by="mallory")
+        entry = _valid_entry(approved_by="jonahgabriel")
+        del entry["expires_at"]
         grants_file = tmp_path / "grants.yaml"
         _write_grants(grants_file, [entry])
-        result = validate_grants(grants_file)  # no pr_author, no base_ref
-        assert result.passed, result.errors
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("missing required fields" in e for e in result.errors)
+
+    def test_expired_self_approved_grant_still_fails(self, tmp_path: Path) -> None:
+        """The NO-EXPIRED-entry rule still holds for a self-approved grant."""
+        entry = _valid_entry(
+            approved_by="jonahgabriel",
+            expires_at="2020-01-01T00:00:00Z",
+            created_at="2019-01-01T00:00:00Z",
+        )
+        grants_file = tmp_path / "grants.yaml"
+        _write_grants(grants_file, [entry])
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("EXPIRED" in e for e in result.errors)
+
+    def test_self_approved_grant_bad_digest_still_fails(self, tmp_path: Path) -> None:
+        """Digest pinning is still enforced for a self-approved grant."""
+        entry = _valid_entry(approved_by="jonahgabriel", image_digest="not-a-digest")
+        grants_file = tmp_path / "grants.yaml"
+        _write_grants(grants_file, [entry])
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("image_digest must match" in e for e in result.errors)
+
+    def test_duplicate_self_approved_grant_ids_still_fail(self, tmp_path: Path) -> None:
+        """Duplicate grant_id integrity (OMN-14441) is preserved even when
+        both entries are self-approved.
+        """
+        gid = "grant-cccccccc-cccc-cccc-cccc-cccccccccccc"
+        entry_a = _valid_entry(
+            grant_id=gid,
+            approved_by="jonahgabriel",
+            promotion_batch_id="batch-11111111-1111-1111-1111-111111111111",
+        )
+        entry_b = _valid_entry(
+            grant_id=gid,
+            approved_by="jonahgabriel",
+            promotion_batch_id="batch-22222222-2222-2222-2222-222222222222",
+        )
+        grants_file = tmp_path / "grants.yaml"
+        _write_grants(grants_file, [entry_a, entry_b])
+        result = validate_grants(grants_file)
+        assert not result.passed
+        assert any("duplicate grant_id" in e for e in result.errors)
 
 
 class TestCliMain:

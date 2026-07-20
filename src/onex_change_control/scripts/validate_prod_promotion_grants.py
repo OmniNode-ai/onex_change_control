@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""Validate the prod-promotion-grant trust anchor (OMN-13418 / OMN-14441).
+"""Validate the prod-promotion-grant trust anchor (OMN-13418 / OMN-14441 / OMN-14814).
 
 `grants/prod_promotion_grants.yaml` is the un-forgeable trust anchor for
 production promotion approvals (CLAUDE.md §2a/§12). This module is the
@@ -30,23 +30,23 @@ workflow):
 Checks enforced (integrity, NEW as of OMN-14441):
     - No two entries share a `grant_id` (a duplicate would let two grants
       of the same identity resolve ambiguously downstream).
-    - Self-approval: for entries that are NEW in this PR (added since
-      `--base-ref`), `approved_by` must not equal the PR author
-      (case-insensitive). This mirrors the skip-token allowlist's
-      self-approval rejection in `omnibase_core.validation.validator_receipt_gate`.
-      Self-approval checking is diff-scoped (only entries newly added by
-      THIS PR) rather than checked against every entry in the file — an
-      unconditional per-PR check over the whole file would false-positive
-      an unrelated PR opened by someone who happens to share a login with
-      a *historical* approver of an entry they never touched. Requires both
-      `--pr-author` and `--base-ref`; without both, self-approval checking
-      is skipped (there's no reliable way to determine "new" without a
-      base to diff against, or "who's approving" without PR context).
+
+Dual-control REMOVED (OMN-14814):
+    The former `approved_by != PR-author` self-approval check has been
+    removed. `@OmniNode-ai/platform-leads` has exactly one member (the sole
+    CODEOWNER), so requiring a *second, different* approver would wedge every
+    prod-promotion grant permanently — the sole owner can never satisfy
+    `approved_by != requested_by`. The grant remains un-forgeable through the
+    checks that survive: a human must author the entry in a PR that passes
+    CODEOWNERS review (an AI agent cannot self-mint it), the grant must be
+    fresh (unexpired), digest-pinned, uniquely identified, and time-bounded.
+    Stability-proven digest, OCC receipt, declared rollback target, gated-path
+    routing, and the health-conditional waiver are enforced downstream by the
+    prod-promotion gate node — this validator governs only the grants-file
+    schema/integrity and is unchanged in those respects.
 
 Usage:
     uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml
-    uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml \
-        --pr-author jonahgabriel --base-ref origin/dev
 
 Exit codes:
     0: grants file is valid (or `entries: []` at rest)
@@ -57,7 +57,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -112,92 +111,6 @@ class ModelGrantValidationResult:
     passed: bool
     errors: list[str]
     entry_count: int
-
-
-def _resolve_repo_relative_path(file_path: Path) -> tuple[Path, str] | None:
-    """Resolve `file_path`'s git repo root and its path relative to that
-    root. `git show <ref>:<path>` requires a repo-root-relative path, never
-    absolute — file_path.parent is NOT the repo root in production (the
-    grants file lives one level below the checkout root, at
-    `<checkout>/grants/prod_promotion_grants.yaml`).
-    """
-    toplevel = subprocess.run(  # noqa: S603 — trusted git subprocess, no shell, no user-controlled argv
-        ["git", "-C", str(file_path.resolve().parent), "rev-parse", "--show-toplevel"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if toplevel.returncode != 0:
-        return None
-    repo_root = Path(toplevel.stdout.strip())
-    try:
-        relative_path = file_path.resolve().relative_to(repo_root).as_posix()
-    except ValueError:
-        return None
-    return repo_root, relative_path
-
-
-def _load_base_grant_ids(file_path: Path, base_ref: str) -> set[str] | None:
-    """Return the `grant_id`s present in `file_path` at `base_ref`. Returns
-    an empty set if the file didn't exist at `base_ref` (every current
-    entry is then new), or None if the base revision genuinely can't be
-    resolved (git/YAML failure) — callers treat None as "diff unavailable,"
-    distinct from "diff available, zero entries at base."
-    """
-    resolved = _resolve_repo_relative_path(file_path)
-    if resolved is None:
-        return None
-    repo_root, relative_path = resolved
-
-    try:
-        result = subprocess.run(  # noqa: S603 — trusted git subprocess, no shell, no user-controlled argv
-            ["git", "-C", str(repo_root), "show", f"{base_ref}:{relative_path}"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-    if result.returncode != 0:
-        # File didn't exist at base_ref (or base_ref itself doesn't
-        # resolve) — every entry currently in the file is new.
-        return set()
-
-    try:
-        base_data = yaml.safe_load(result.stdout)
-    except yaml.YAMLError:
-        return None
-
-    base_entries = base_data.get("entries", []) if isinstance(base_data, dict) else []
-    if not isinstance(base_entries, list):
-        base_entries = []
-
-    return {
-        entry["grant_id"]
-        for entry in base_entries
-        if isinstance(entry, dict) and isinstance(entry.get("grant_id"), str)
-    }
-
-
-def _compute_new_grant_ids(
-    entries: list[Any], file_path: Path, pr_author: str | None, base_ref: str | None
-) -> set[str] | None:
-    """Return the set of grant_ids newly added in this PR, or None if
-    self-approval checking isn't possible (missing PR context, or the base
-    revision couldn't be resolved).
-    """
-    if not pr_author or not base_ref:
-        return None
-    base_ids = _load_base_grant_ids(file_path, base_ref)
-    if base_ids is None:
-        return None
-    head_ids = {
-        entry["grant_id"]
-        for entry in entries
-        if isinstance(entry, dict) and isinstance(entry.get("grant_id"), str)
-    }
-    return head_ids - base_ids
 
 
 def _check_duplicate_grant_ids(entries: list[Any]) -> list[str]:
@@ -290,37 +203,9 @@ def _check_timestamps(prefix: str, entry: dict[str, Any], file_path: Path) -> li
     return errors
 
 
-def _check_self_approval(
-    prefix: str,
-    entry: dict[str, Any],
-    new_grant_ids: set[str] | None,
-    pr_author: str | None,
-) -> list[str]:
-    """OMN-14441: only for entries this PR newly added — see module
-    docstring for why this is diff-scoped rather than checked globally.
-    """
-    gid = entry.get("grant_id")
-    approved_by = entry.get("approved_by")
-    if (
-        new_grant_ids is not None
-        and gid in new_grant_ids
-        and pr_author
-        and isinstance(approved_by, str)
-        and approved_by.strip().casefold() == pr_author.strip().casefold()
-    ):
-        return [
-            f"{prefix}: SELF-APPROVAL REJECTED — approved_by={approved_by!r} equals "
-            f"the PR author {pr_author!r}. A different platform-lead must approve "
-            "this grant (CLAUDE.md §2a: approved_by != requested_by)."
-        ]
-    return []
-
-
 def _validate_entry(
     idx: int,
     entry: Any,
-    new_grant_ids: set[str] | None,
-    pr_author: str | None,
     file_path: Path,
 ) -> list[str]:
     prefix = f"Entry[{idx}]"
@@ -344,19 +229,12 @@ def _validate_entry(
         *_check_lifecycle_markers(prefix, entry),
         *_check_identity_fields(prefix, entry),
         *_check_timestamps(prefix, entry, file_path),
-        *_check_self_approval(prefix, entry, new_grant_ids, pr_author),
     ]
 
 
-def validate_grants(
-    file_path: Path,
-    *,
-    pr_author: str | None = None,
-    base_ref: str | None = None,
-) -> ModelGrantValidationResult:
+def validate_grants(file_path: Path) -> ModelGrantValidationResult:
     """Validate a prod-promotion-grants YAML file. Pure(ish) — the only I/O
-    is reading `file_path` and, when `base_ref` is given, one `git show`
-    subprocess call to diff against the base revision.
+    is reading `file_path`.
     """
     try:
         with file_path.open(encoding="utf-8") as fh:
@@ -393,10 +271,9 @@ def validate_grants(
     if len(entries) == 0:
         return ModelGrantValidationResult(passed=True, errors=[], entry_count=0)
 
-    new_grant_ids = _compute_new_grant_ids(entries, file_path, pr_author, base_ref)
     errors = _check_duplicate_grant_ids(entries)
     for idx, entry in enumerate(entries):
-        errors.extend(_validate_entry(idx, entry, new_grant_ids, pr_author, file_path))
+        errors.extend(_validate_entry(idx, entry, file_path))
 
     return ModelGrantValidationResult(
         passed=not errors, errors=errors, entry_count=len(entries)
@@ -407,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Validate the prod-promotion-grant trust anchor "
-            "(schema + duplicate-id + self-approval integrity checks)."
+            "(schema + duplicate-id integrity checks)."
         )
     )
     parser.add_argument(
@@ -415,28 +292,10 @@ def main(argv: list[str] | None = None) -> int:
         default="grants/prod_promotion_grants.yaml",
         help="Path to the grants YAML file.",
     )
-    parser.add_argument(
-        "--pr-author",
-        default=None,
-        help=(
-            "GitHub login of the PR author, for self-approval detection. "
-            "Requires --base-ref to be meaningful."
-        ),
-    )
-    parser.add_argument(
-        "--base-ref",
-        default=None,
-        help=(
-            "Git ref to diff against to determine which entries are NEW in "
-            "this PR (self-approval is only checked for new entries)."
-        ),
-    )
     args = parser.parse_args(argv)
 
     file_path = Path(args.file)
-    result = validate_grants(
-        file_path, pr_author=args.pr_author, base_ref=args.base_ref
-    )
+    result = validate_grants(file_path)
 
     if not result.passed:
         print(f"FAIL: {file_path} has {len(result.errors)} violation(s):")
