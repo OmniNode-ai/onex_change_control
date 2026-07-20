@@ -36,12 +36,18 @@ jobs:
       }}
     timeout-minutes: 5
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
       - name: Scan PR body and diff for skip-gate bypass tokens
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.base_ref || 'dev' }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
@@ -56,7 +62,11 @@ jobs:
           FILTERED_DIFF_FILE="$(mktemp)"
           printf '%s' "${PR_BODY:-}" > "${BODY_FILE}"
           if [[ -n "${PR_NUMBER:-}" ]]; then
-            gh pr diff "${PR_NUMBER}" --repo "${GH_REPO}" > "${DIFF_FILE}"
+            if ! gh pr diff "${PR_NUMBER}" --repo "${GH_REPO}" > "${DIFF_FILE}"; then
+              echo "::warning::gh pr diff failed; falling back to local git diff against origin/${BASE_REF}"
+              git fetch origin "${BASE_REF}" --no-tags --depth=1
+              git diff --no-ext-diff --unified=0 "origin/${BASE_REF}"...HEAD > "${DIFF_FILE}"
+            fi
           fi
 
           awk '
