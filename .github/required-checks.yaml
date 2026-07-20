@@ -1,0 +1,259 @@
+---
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+# required-checks.yaml v3 (OMN-14864 — fan-out from the omniclaude canary, OMN-14854)
+# Location: .github/required-checks.yaml
+#
+# This is the OPERATIONAL input to the Required-Check Skip-Vector Guard
+# (validate_no_required_check_skip_vectors.py, canonical source hosted in
+# OmniNode-ai/omniclaude, invoked here via
+# required-check-skip-guard-caller.yml -> required-check-skip-guard-reusable.yml@main).
+#
+# Scope note: this manifest is `dev`-scoped only, mirroring OMN-14854's own
+# precedent (the omniclaude canary manifest is also dev-only). onex_change_control's
+# `main` required_status_checks set is verifiably different from `dev`'s (extra
+# contexts: "CodeQL / CodeQL Analysis (python)", "Kafka Boundary Parity",
+# "Migration Conflict Check", "Migration Inventory Sync",
+# "Python↔TypeScript Null Contract", "Seam Contract Coverage",
+# "Imperative Contract Guard", "AI-Slop Pattern Check (strict, PR diff)",
+# "Context Integrity Contract Compliance", "PEP 604 Type Union Check (UP007)";
+# missing: several dev-only contexts) — a per-branch schema is an open,
+# unresolved follow-up, not invented in this PR.
+#
+# Exhaustive for `dev`: every context in required_status_checks.contexts for
+# onex_change_control's `dev` branch has a `mode: REQUIRED` row below (fetched via
+# `gh api repos/OmniNode-ai/onex_change_control/branches/dev/protection/required_status_checks`,
+# 23 contexts, verified 2026-07-20), plus one `mode: ADVISORY` row for this
+# guard's own composed context (not yet added to required_status_checks — see
+# the caller workflow's header comment for the flip-timing rule).
+#
+# Do NOT rename/remove a REQUIRED row without following the Branch Protection
+# Migration Safety procedure — flip branch protection first (or same PR), then
+# update this file, so the reconcile job never observes a divergence window.
+#
+# `job_path` len 1 = Shape A (direct job); len 2 = Shape B/C
+# ([caller_job_id, reusable_job_id]) per the design spec's context->job
+# resolution algorithm (OMN-14854 ticket, spec section 1). NOTE: these
+# `workflow`/`job_path`/`caller_workflow`/`cross_repo_ref` fields are
+# documentation for humans — the validator itself resolves every context
+# algorithmically by scanning `.github/workflows/` (see
+# `_workflow_model.py::resolve_context_to_job`), so they are never a source of
+# drift for the pass/fail verdict, only for readability.
+
+schema_version: 3
+classification: toolchain
+repo: onex_change_control
+
+gates:
+  - name: "verify / verify"
+    mode: REQUIRED
+    producer_kind: cross_repo
+    caller_workflow: call-receipt-gate.yml
+    caller_job: verify
+    cross_repo_ref: "OmniNode-ai/omnibase_core/.github/workflows/receipt-gate.yml@main"
+    skip_semantics: never
+    rationale: "Receipt Gate (cross-repo reusable hosted in omnibase_core). Live required status check
+      on onex_change_control dev branch protection."
+
+  - name: "Pre-commit"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["pre-commit"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "CI Summary"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["ci-summary"]
+    skip_semantics: never
+    rationale: "Fail-closed if: always() aggregator over ci.yml sub-jobs; DO NOT rename."
+
+  - name: "call-reject-skip-token / scan / reject-skip-gate-token"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: call-reject-skip.yml
+    job_path: ["call-reject-skip-token"]
+    skip_semantics: never
+    rationale: "Skip-token bypass scanner (OMN-10422) — the gate this guard's own design is modeled on.
+      The job's own `name:` field literally contains the composed-looking context string (Shape A, not
+      a nested reusable call)."
+
+  - name: "occ-preflight / eligibility"
+    mode: REQUIRED
+    producer_kind: cross_repo
+    caller_workflow: call-occ-preflight.yml
+    caller_job: occ-preflight
+    cross_repo_ref: "OmniNode-ai/omnibase_core/.github/workflows/occ-preflight.yml@main"
+    skip_semantics: never
+    rationale: "Central OCC eligibility gate (cross-repo reusable hosted in omnibase_core)."
+
+  - name: "Dep Provenance Gate"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: dep-provenance-gate.yml
+    job_path: ["dep-provenance-gate"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "Doctrine Coverage Matrix"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: doctrine-coverage.yml
+    job_path: ["doctrine-coverage"]
+    skip_semantics: neutral_ok
+    rationale: "KNOWN FINDING (OMN-14864 guard build): job 'doctrine-coverage' uses `if: ${{ !cancelled()
+      }}` — the guard's classifier only recognizes `always()`/absent/`github.event_name`-only predicates
+      as provably-safe, so this idiom (functionally always-true-for-PR barring an actual workflow cancellation)
+      is flagged as vector-2. skip_semantics: neutral_ok pending triage in a follow-up ticket (mirrors
+      OMN-14856's treatment of the analogous omniclaude findings)."
+
+  - name: "reason-graph"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: product-readiness-shadow.yml
+    job_path: ["reason-graph"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection (if: always())."
+
+  - name: "CI Naming Convention"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: omni-standards-compliance.yml
+    job_path: ["ci-naming-convention"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "Contract Substance Floor (OMN-14409)"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["substance-floor"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "No Divergent Automation PRs (OMN-14778)"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["divergent-automation-pr-guard"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "OCC Append-Only Gate"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["append-only-gate"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "Receipt Honesty Gate"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["honesty-gate"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "Precommit Parity Gate"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["precommit-parity-gate"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "validate-prod-promotion-grants"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["validate-prod-promotion-grants"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "check-platform-leads-review-tripwire"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["check-platform-leads-review-tripwire"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "no-noncanonical-lifecycle-classes"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["no-noncanonical-lifecycle-classes"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "Validate Contract YAML (OMN-8808)"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: ci.yml
+    job_path: ["validate-contracts"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "zone-filter / Zone Filter (docs-only check)"
+    mode: REQUIRED
+    producer_kind: cross_repo
+    caller_workflow: ci.yml
+    caller_job: zone-filter
+    cross_repo_ref: "OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@dev"
+    skip_semantics: never
+    rationale: "Docs-only PR classifier (cross-repo reusable hosted in omnibase_core). Multiple local
+      workflows (ci.yml, doctrine-coverage.yml, omni-standards-compliance.yml, security-scan.yml) each
+      call this same reusable from a job also named 'zone-filter'; the guard's resolver matches the first
+      (ci.yml, alphabetically) — all four have an identical, unconditional trigger/if shape, so this is
+      not a coverage gap."
+
+  - name: "call / validate-docs"
+    mode: REQUIRED
+    producer_kind: cross_repo
+    caller_workflow: docs-validate.yml
+    caller_job: call
+    cross_repo_ref: "OmniNode-ai/omnibase_core/.github/workflows/validate-docs.yml@main"
+    skip_semantics: never
+    rationale: "Documentation validation (cross-repo reusable hosted in omnibase_core)."
+
+  - name: "Stale TODO Gate"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: stale-todo-gate.yml
+    job_path: ["stale-todo-gate"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "main-target-guard"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: main-target-guard.yml
+    job_path: ["main-target-guard"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "Enforce validator-requirements.yaml (OMN-13299)"
+    mode: REQUIRED
+    producer_kind: local
+    workflow: validate-validator-requirements.yml
+    job_path: ["validate-validator-requirements"]
+    skip_semantics: never
+    rationale: "Live required status check on onex_change_control dev branch protection."
+
+  - name: "required-check-skip-guard / check-skip-vectors"
+    mode: ADVISORY
+    producer_kind: cross_repo
+    caller_workflow: required-check-skip-guard-caller.yml
+    caller_job: required-check-skip-guard
+    cross_repo_ref: "OmniNode-ai/omniclaude/.github/workflows/required-check-skip-guard-reusable.yml@main"
+    skip_semantics: never
+    rationale: "OMN-14864: this guard's own required check (fan-out from the OMN-14854 omniclaude canary).
+      Runs on every PR but is NOT YET in required_status_checks — the branch-protection flip happens only
+      after 2 independent green runs on dev, tracked as a follow-up. mode stays ADVISORY until that flip
+      lands (same PR as the flip, per schema-v3 rule: mode changes and branch-protection changes land
+      together)."
