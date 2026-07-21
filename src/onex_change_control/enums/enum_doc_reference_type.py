@@ -16,7 +16,7 @@ class EnumDocReferenceType(StrEnum):
     FUNCTION_NAME - e.g., classify_node()
     CLASS_NAME    - e.g., ModelBaselinesSnapshotEvent
     COMMAND       - e.g., uv run pytest tests/unit/
-    URL           - e.g., http://localhost:8080
+    URL           - e.g., http://localhost:8080  # onex-allow-internal-ip
     ENV_VAR       - e.g., KAFKA_BOOTSTRAP_SERVERS
     PR_NUMBER     - e.g., omnimarket#1034
     TICKET_STATE  - e.g., OMN-12691 Done

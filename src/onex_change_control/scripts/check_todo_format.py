@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
+# onex-allow-file-todo-marker OMN-14068 reason="subject IS the marker token"
 
 """Pre-commit hook: require all TODO/FIXME/HACK comments to reference a Linear ticket.
 
