@@ -52,3 +52,31 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-omnibase-infra-pr-2357-deploy-scope-real-probe"
+    description: >-
+      OMN-14443 backfill: supersedes dod-omnibase-infra-pr-2357-deploy-scope above, which was a printf-only
+      attestation (classify_check_value falsifiable=False — no live-surface probe in command position).
+      This item reads the ACTUAL merged content of the regenerated handler file at PR #2357's real merge
+      commit (4ce41205395d41d50b71046042ad44dc7989ba48) via the GitHub contents API, pinned to that immutable
+      SHA, and asserts two real symbols: the handler class is present, and the legacy envelope-dict shim
+      signature the def-B regen removed ("envelope: dict[str, object]", the `execute()` overload the base
+      commit still carried) is ABSENT. RED direction proven by execution: the identical command run against
+      PR #2357's base SHA (a87e5057f1b930c31bbad5e1e5fa215f962629d4, pre-regen) finds the legacy signature
+      present and exits 1; it exits 0 only at a ref where the def-B regen genuinely landed. Uses `gh api`
+      (not curl/docker/kubectl/etc.) because this check must be hermetic under onex_change_control's own
+      OMN-14051 non-hermetic-command guard (contract_compliance_check.py) for a dev-targeting PR — see
+      OMN-14443 comment thread for the full cross-gate analysis.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          CONTENT="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_pr_state_projection_compute/handlers/handler_pr_state_projection.py?ref=4ce41205395d41d50b71046042ad44dc7989ba48"
+          --jq .content | base64 -d)" && echo "$CONTENT" | grep -q "class HandlerPrStateProjection" &&
+          ! echo "$CONTENT" | grep -q 'envelope: dict\[str, object\]'
+  - id: "occ-self-bind-deploy-real-probe"
+    description: "OCC deploy-gate real-probe backfill companion — self-bind for OMN-14826 (OMN-14443)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
