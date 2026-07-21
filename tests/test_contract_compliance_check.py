@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-if TYPE_CHECKING:
-    import pytest
+import pytest
+import yaml
 
 from onex_change_control.scripts.contract_compliance_check import (
     _RESULT_BLOCK,
@@ -864,3 +863,131 @@ def test_non_hermetic_contract_grandfathered_is_warn_not_block(
     out = capsys.readouterr().out
     assert rc == 0
     assert "GRANDFATHERED" in out
+
+
+# ---------------------------------------------------------------------------
+# OMN-14875 -- dod_evidence PR-binding rebind (found during OMN-14431)
+#
+# contracts/OMN-14400.yaml carried 3 dod_evidence check_values (+1
+# evidence_requirements command) using the OMN-14431 "endorsed" workaround:
+# ``PR_NUMBER=<n> REPO=<repo> gh pr view ${PR_NUMBER} --repo ${REPO} ...``.
+# _substitute_tokens() pre-replaces every ${PR_NUMBER}/${REPO} occurrence in
+# the WHOLE check_value string with the RUNNER's own injected values before
+# sh -c ever runs -- before the VAR=literal prefix assignment could take
+# effect. So these checks never actually pinned PR #1721/#3971/#3981; they
+# silently re-checked whatever PR the compliance runner happened to be
+# evaluating for OMN-14400 (any future PR whose title/branch mentions
+# OMN-14400). These tests load the REAL contract file and prove the resolved
+# shell command targets the pinned PR regardless of the runner's own
+# pr_number/repo -- RED against the pre-fix contract (the runner's injected
+# PR/repo leak into the resolved command), GREEN after the standalone
+# hardcoded rebind.
+# ---------------------------------------------------------------------------
+
+_OMN_14400_CONTRACT = (
+    Path(__file__).resolve().parent.parent / "contracts" / "OMN-14400.yaml"
+)
+
+
+def _load_omn_14400_dod_check_value(evidence_item_id: str) -> str:
+    data = yaml.safe_load(_OMN_14400_CONTRACT.read_text())
+    for item in data.get("dod_evidence", []):
+        if item.get("id") == evidence_item_id:
+            return str(item["checks"][0]["check_value"])
+    msg = f"dod_evidence item {evidence_item_id!r} not found in {_OMN_14400_CONTRACT}"
+    raise AssertionError(msg)
+
+
+def _load_omn_14400_evidence_requirement_command(index: int) -> str:
+    data = yaml.safe_load(_OMN_14400_CONTRACT.read_text())
+    return str(data["evidence_requirements"][index]["command"])
+
+
+# A runner PR/repo deliberately different from every PR pinned below, so any
+# leakage of the runner's own context into the resolved command is visible.
+_UNRELATED_RUNNER_PR = 999999
+_UNRELATED_RUNNER_REPO = "OmniNode-ai/some-unrelated-repo"
+
+
+def _resolve_via_check_command(check_value: str, tmp_path: Path) -> str:
+    """Run check_value through the real substitution/exec path and return the
+    resolved shell string actually handed to ``sh -c`` (subprocess mocked)."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        captured.append(cmd)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        _check_command(
+            check_value,
+            tmp_path,
+            pr_number=_UNRELATED_RUNNER_PR,
+            repo=_UNRELATED_RUNNER_REPO,
+        )
+    assert captured, "No subprocess call captured -- _run was never invoked"
+    return captured[-1][2]
+
+
+@pytest.mark.parametrize(
+    ("evidence_item_id", "pinned_pr", "pinned_repo"),
+    [
+        ("dod-OmniNode-ai-omnimarket-pr-1721", 1721, "OmniNode-ai/omnimarket"),
+        ("occ-self-bind-pr-3971", 3971, "OmniNode-ai/onex_change_control"),
+        ("occ-self-bind-pr-3981", 3981, "OmniNode-ai/onex_change_control"),
+    ],
+)
+def test_omn_14400_dod_check_values_pin_correct_pr_not_runner_pr(
+    tmp_path: Path,
+    evidence_item_id: str,
+    pinned_pr: int,
+    pinned_repo: str,
+) -> None:
+    check_value = _load_omn_14400_dod_check_value(evidence_item_id)
+    shell_str = _resolve_via_check_command(check_value, tmp_path)
+
+    assert str(pinned_pr) in shell_str, (
+        f"{evidence_item_id}: pinned PR #{pinned_pr} missing from resolved "
+        f"command: {shell_str!r}"
+    )
+    assert pinned_repo in shell_str, (
+        f"{evidence_item_id}: pinned repo {pinned_repo!r} missing from "
+        f"resolved command: {shell_str!r}"
+    )
+    assert str(_UNRELATED_RUNNER_PR) not in shell_str, (
+        f"{evidence_item_id}: check_value silently substituted the "
+        f"compliance runner's OWN pr_number ({_UNRELATED_RUNNER_PR}) instead "
+        f"of the pinned PR #{pinned_pr} -- OMN-14431 inert-token-prefix "
+        f"defect (OMN-14875): {shell_str!r}"
+    )
+    assert _UNRELATED_RUNNER_REPO not in shell_str, (
+        f"{evidence_item_id}: check_value silently substituted the "
+        f"compliance runner's OWN repo ({_UNRELATED_RUNNER_REPO}) instead of "
+        f"the pinned repo {pinned_repo!r} -- OMN-14431 inert-token-prefix "
+        f"defect (OMN-14875): {shell_str!r}"
+    )
+
+
+def test_omn_14400_evidence_requirements_command_pins_correct_pr_not_runner_pr(
+    tmp_path: Path,
+) -> None:
+    """Same defect class in evidence_requirements[0].command (OMN-14875): not
+    scanned by lint-contract-check-values (evidence_requirements is not a
+    dod_evidence field) but functionally identical to the dod_evidence items
+    above -- it must also genuinely pin PR #1721, not the runner's own PR.
+    """
+    command = _load_omn_14400_evidence_requirement_command(0)
+    shell_str = _resolve_via_check_command(command, tmp_path)
+
+    assert "1721" in shell_str
+    assert "OmniNode-ai/omnimarket" in shell_str
+    assert str(_UNRELATED_RUNNER_PR) not in shell_str, (
+        "evidence_requirements[0].command silently substituted the "
+        f"compliance runner's OWN pr_number ({_UNRELATED_RUNNER_PR}) instead "
+        f"of the pinned PR #1721 -- OMN-14431 inert-token-prefix defect "
+        f"(OMN-14875): {shell_str!r}"
+    )
+    assert _UNRELATED_RUNNER_REPO not in shell_str
