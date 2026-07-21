@@ -50,9 +50,11 @@ class EnumComplianceViolation(str, Enum):
     HARDCODED_CONFIG = "hardcoded_config"
     """Configuration hardcoded as an in-source literal.
 
-    Freestanding code passes runtime configuration as literals
-    (e.g. ``max_tokens=2048``, ``temperature=0.7``, ``192.168.86.201``)
-    instead of resolving it from a contract or model registry.
+    Freestanding code passes runtime configuration as literals instead of
+    resolving it from a contract or model registry.
+
+    Illustrative-only examples, not real endpoints: ``max_tokens=2048``,
+    ``temperature=0.7``, ``192.168.86.201``  # onex-allow-internal-ip
     """
 
     RAW_HTTP_INFERENCE = "raw_http_inference"
