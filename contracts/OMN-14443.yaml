@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14443"
+title: "Ratchet deploy-gate falsifiability and narrow gh API probe acceptance"
+summary: >
+  omniclaude PRs #1920 and #1926 close the deploy-gate false-green by holding new tickets to real falsifiable
+  deploy evidence and by allowing only content-pinned gh api probes, not bare gh PR metadata checks.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omniclaude PR #1920 has the prospective falsifiability ratchet at the recorded head."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14443/dod-omniclaude-pr-1920-ratchet/command.yaml"
+  - kind: "manual"
+    description: "omniclaude PR #1926 has the narrowed gh-api classifier at the recorded head."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14443/dod-omniclaude-pr-1926-gh-api/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1920-ratchet"
+    description: >
+      Binds omniclaude PR #1920 at head 1b6e3241e1d3b2190ded36e698bcb714d0c5509e. The PR adds the deploy_gate_legacy_grandfather.yaml
+      snapshot, passes ticket_id through validate_pr_deploy_gate(), and adds regression coverage proving
+      a new ungrandfathered ticket with vacuous evidence is rejected.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          VALIDATOR="$(gh api "repos/OmniNode-ai/omniclaude/contents/.github/actions/deploy-gate/validate_pr_deploy_required.py?ref=1b6e3241e1d3b2190ded36e698bcb714d0c5509e"
+          --jq .content | base64 -d)" && TESTS="$(gh api "repos/OmniNode-ai/omniclaude/contents/tests/scripts/test_deploy_gate_ratchet.py?ref=1b6e3241e1d3b2190ded36e698bcb714d0c5509e"
+          --jq .content | base64 -d)" && echo "$VALIDATOR" | grep -q "GRANDFATHER_FILE" && echo "$VALIDATOR"
+          | grep -q "has_deploy_evidence(contract_path, ticket_id=ticket_id)" && echo "$TESTS" | grep
+          -q "test_ungrandfathered_ticket_with_vacuous_evidence_is_rejected"
+  - id: "dod-omniclaude-pr-1926-gh-api"
+    description: >
+      Binds omniclaude PR #1926 at head 957f8f509599fd00034073d3158523f9317cf5a6. The PR narrows gh acceptance
+      to the compound gh-api command token, rejects bare gh PR metadata checks, and adds regression coverage
+      for the gh-api-only behavior.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          VALIDATOR="$(gh api "repos/OmniNode-ai/omniclaude/contents/.github/actions/deploy-gate/validate_pr_deploy_required.py?ref=957f8f509599fd00034073d3158523f9317cf5a6"
+          --jq .content | base64 -d)" && TESTS="$(gh api "repos/OmniNode-ai/omniclaude/contents/tests/scripts/test_deploy_gate_falsifiability.py?ref=957f8f509599fd00034073d3158523f9317cf5a6"
+          --jq .content | base64 -d)" && echo "$VALIDATOR" | grep -q '"gh-api"' && echo "$VALIDATOR" |
+          grep -q 'rest and rest\[0\] == "api"' && echo "$VALIDATOR" | grep -q 'NOT bare "gh"' && echo
+          "$TESTS" | grep -q "test_bare_gh_pr_view_self_bind_is_rejected"
+  - id: "occ-self-bind-pr-4557"
+    description: >
+      Self-binding OCC eligibility receipt for onex_change_control PR #4557, which carries independent
+      OMN-14443 central evidence for omniclaude PRs #1920 and #1926.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 4557 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
