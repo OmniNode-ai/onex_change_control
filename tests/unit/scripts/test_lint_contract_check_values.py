@@ -297,6 +297,52 @@ def test_hardcoded_pr_without_repo_is_flagged(tmp_path: Path) -> None:
     assert any("legacy-gh-pr" in label for _, label, _ in findings)
 
 
+@pytest.mark.unit
+def test_superseded_inert_prefix_item_is_not_scanned(tmp_path: Path) -> None:
+    """Append-only replacement items can supersede immutable historical items.
+
+    The compliance runner skips superseded ids; the linter must mirror that
+    behavior so old immutable entries do not block a contract once a later
+    executable-as-written replacement exists.
+    """
+    data = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-SUPERSEDED",
+        "dod_evidence": [
+            {
+                "id": "old-dod",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": (
+                            "PR_NUMBER=1721 REPO=OmniNode-ai/omnimarket "
+                            "gh pr view ${PR_NUMBER} --repo ${REPO}"
+                        ),
+                    }
+                ],
+            },
+            {
+                "id": "new-dod",
+                "evidence_artifact": "supersedes_dod_evidence:old-dod",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": (
+                            "gh pr view 1721 --repo OmniNode-ai/omnimarket"
+                        ),
+                    }
+                ],
+            },
+        ],
+    }
+    path = tmp_path / "OMN-SUPERSEDED.yaml"
+    path.write_text(yaml.dump(data), encoding="utf-8")
+
+    findings = linter.lint_contract(path)
+
+    assert not findings
+
+
 # ---------------------------------------------------------------------------
 # Edge-case and structural tests
 # ---------------------------------------------------------------------------

@@ -136,27 +136,64 @@ def lint_contract(path: Path) -> list[tuple[str, str, str]]:
     if not isinstance(data, dict):
         return findings
 
-    for item in data.get("dod_evidence", []) or []:
+    dod_evidence = data.get("dod_evidence", []) or []
+    superseded = _superseded_dod_ids(dod_evidence)
+
+    for item in dod_evidence:
         if not isinstance(item, dict):
             continue
 
-        dod_id = item.get("id", "<unknown>")
-
-        # dod_evidence items nest checks under a `checks` list
-        for check in item.get("checks", []) or []:
-            if not isinstance(check, dict):
-                continue
-            value = check.get("check_value", "")
-            if not isinstance(value, str) or not value.strip():
-                continue
-            _scan_value(str(path), dod_id, value, findings)
-
-        # Also handle flat check_value at the item level (legacy schema form)
-        flat_value = item.get("check_value", "")
-        if isinstance(flat_value, str) and flat_value.strip():
-            _scan_value(str(path), dod_id, flat_value, findings)
+        raw_dod_id = item.get("id", "<unknown>")
+        dod_id = raw_dod_id if isinstance(raw_dod_id, str) else "<unknown>"
+        if dod_id in superseded:
+            continue
+        _scan_dod_item(str(path), item, dod_id, findings)
 
     return findings
+
+
+def _scan_dod_item(
+    path_label: str,
+    item: dict[object, object],
+    dod_id: str,
+    findings: list[tuple[str, str, str]],
+) -> None:
+    # dod_evidence items nest checks under a `checks` list.
+    checks = item.get("checks", [])
+    if not isinstance(checks, list):
+        checks = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        value = check.get("check_value", "")
+        if not isinstance(value, str) or not value.strip():
+            continue
+        _scan_value(path_label, dod_id, value, findings)
+
+    # Also handle flat check_value at the item level (legacy schema form).
+    flat_value = item.get("check_value", "")
+    if isinstance(flat_value, str) and flat_value.strip():
+        _scan_value(path_label, dod_id, flat_value, findings)
+
+
+def _superseded_dod_ids(dod_evidence: list[object]) -> set[str]:
+    """Return ids superseded by later append-only replacement items."""
+    seen: set[str] = set()
+    superseded: set[str] = set()
+    for item in dod_evidence:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id")
+        artifact = item.get("evidence_artifact")
+        if isinstance(artifact, str):
+            prefix = "supersedes_dod_evidence:"
+            if artifact.startswith(prefix):
+                target = artifact[len(prefix) :].strip()
+                if target in seen:
+                    superseded.add(target)
+        if isinstance(item_id, str):
+            seen.add(item_id)
+    return superseded
 
 
 def _check_legacy_gh_pr(value: str) -> str | None:
