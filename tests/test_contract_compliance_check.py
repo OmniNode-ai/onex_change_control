@@ -891,6 +891,10 @@ _OMN_14400_CONTRACT = (
 
 def _load_omn_14400_dod_check_value(evidence_item_id: str) -> str:
     data = yaml.safe_load(_OMN_14400_CONTRACT.read_text())
+    superseding_artifact = f"supersedes_dod_evidence:{evidence_item_id}"
+    for item in data.get("dod_evidence", []):
+        if item.get("evidence_artifact") == superseding_artifact:
+            return str(item["checks"][0]["check_value"])
     for item in data.get("dod_evidence", []):
         if item.get("id") == evidence_item_id:
             return str(item["checks"][0]["check_value"])
