@@ -96,3 +96,35 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           grep -q '^status: PASS$' drift/dod_receipts/OMN-14208/dod-occ-deploy-refresh-self/command.yaml
+  - id: "dod-deploy-assessment-runtime-seam-live"
+    description: >-
+      OMN-14443 falsifiability backfill. dod-deploy-assessment's original check_value only greps this
+      ticket's own receipt file for the literal word "deploy" -- self-referential, satisfies the legacy
+      deploy-gate substring rule, and is REJECTED by classify_check_value() under the OMN-14505/OMN-14443
+      falsifiability enforcement (fails the SELF_REFERENTIAL_PATTERNS deny on drift/dod_receipts/). This
+      is the ticket the 2026-07-21 org-wide shadow-measure identified as the ONLY currently-open-PR regression
+      under enforce: omnibase_infra#2375 (OMN-14222) cites both OMN-14222 (no contract) and OMN-14208
+      (self-referential-only) in its body, so it PASSes today only via the legacy substring match and
+      would FAIL under enforce with no other falsifiable evidence on either cited ticket. This item supersedes
+      dod-deploy-assessment with a genuine live-runtime probe: the delegation_workflow_state table created
+      by omnibase_infra#2247's forward migration (docker/migrations/forward/090_create_delegation_workflow_state.sql)
+      is asserted to exist on the deployed dev-lane Postgres (container omnibase-infra-postgres, reached
+      via the Tailscale MagicDNS host omninode-pc.tail75df5e.ts.net -- never the raw LAN IP, which is
+      unreachable from off-LAN sessions). RED proven: the identical probe run against a nonexistent table
+      name ("nonexistent_undeployed_table_omn14208") exits 1 with "Did not find any relation named ...".
+      GREEN proven: the same probe against the real table name exits 0. The probe's exit status therefore
+      depends on the live deployed database state, not on any text this PR's author wrote -- it is NOT
+      self-referential (no drift/dod_receipts/ or contracts/OMN-\d+ reference in the check_value) and
+      classify_check_value() classifies it falsifiable via the `ssh` live-probe command in command position.
+      Prior item's "No live deploy...was performed" language is now superseded -- the OMN-14208 slice-1
+      runtime seam is demonstrably deployed on the dev lane.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14208/dod-deploy-assessment-runtime-seam-live/command.yaml && grep -q '^exit_code: 0$' drift/dod_receipts/OMN-14208/dod-deploy-assessment-runtime-seam-live/command.yaml
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2247 --jq '.base.ref + " " + .head.sha + " " + (.merged|tostring)' | grep -q 'dev 6456d7597fa7ba4687b5c173efdeb33667e732b2 true' && gh api repos/OmniNode-ai/omnimarket/pulls/1667 --jq '.base.ref + " " + .head.sha + " " + (.merged|tostring)' | grep -q 'dev 5a5c013759e72fb45e1fa303170c12d6a21da1ad true'

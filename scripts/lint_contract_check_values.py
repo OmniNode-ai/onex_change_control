@@ -18,10 +18,24 @@ branch":
 
   - ``gh pr checks``          (bare — no PR number)
   - ``gh pr checks --watch``  (bare — no PR number)
-  - ``gh pr checks 1430 ...`` (hardcoded integer PR number)
+  - ``gh pr checks 1430 ...`` (hardcoded integer PR number, mixed with ``${PR_NUMBER}``)
   - ``gh pr view {pr} ...``   (wrong-format ``{x}`` placeholder)
 
-Correct form: ``gh pr checks ${PR_NUMBER} --repo ${REPO}``
+Correct form for checking THIS ticket's own PR:
+``gh pr checks ${PR_NUMBER} --repo ${REPO}``
+
+Correct form for a genuine, deliberate reference to a DIFFERENT (sibling/dependency)
+PR: a standalone hardcoded PR number with a literal ``--repo``, e.g.
+``gh pr checks 1721 --repo OmniNode-ai/omnimarket`` — with NO ``${PR_NUMBER}``
+anywhere in the same value (see OMN-14431: ``run_contract_compliance_check.py``'s
+``_substitute_tokens`` pre-replaces every ``${PR_NUMBER}``/``${REPO}``/``${TICKET_ID}``
+occurrence in the WHOLE check_value string with the runner's OWN values before
+``sh -c`` ever runs — before any ``VAR=literal`` prefix assignment in the same
+string could take effect. So a value like
+``PR_NUMBER=1721 REPO=org/repo gh pr checks ${PR_NUMBER} --repo ${REPO}`` looks
+like it pins PR 1721, but the ``${PR_NUMBER}`` token is already gone by the time
+the shell would apply the assignment: the assignment is inert, and the check
+silently runs against whatever PR the runner is evaluating instead of 1721).
 
 Usage:
     python3 scripts/lint_contract_check_values.py contracts/OMN-1234.yaml [...]
@@ -76,15 +90,24 @@ ANTI_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 # inspecting the command prefix before applying the regex — a plain regex
 # over the full value produces too many false positives on non-gh-pr lines.
 #
-# Canonical correct form: ``gh pr checks ${PR_NUMBER} --repo ${REPO}``
+# Canonical correct form (own PR): ``gh pr checks ${PR_NUMBER} --repo ${REPO}``
+# Canonical correct form (genuine cross-PR pin): a standalone hardcoded PR
+# number + literal --repo, with NO ${PR_NUMBER} anywhere in the value.
 _GH_PR_PREFIX = ("gh pr checks", "gh pr view", "gh pr diff")
 
 # Hardcoded integer PR number: "gh pr checks 1430 --repo ..."
-_HARDCODED_PR_NUMBER_RE = re.compile(r"gh pr (?:checks|view|diff)\s+\d+\s")
+_HARDCODED_PR_NUMBER_RE = re.compile(r"gh pr (?:checks|view|diff)\s+(\d+)\b")
 
 # Wrong-format {pr} / {repo} placeholders
 _BRACE_PR_RE = re.compile(r"\{pr\}")
 _BRACE_REPO_RE = re.compile(r"\{repo\}")
+
+# OMN-14431: runner-injected tokens that `_substitute_tokens()` pre-replaces
+# in the WHOLE check_value string before `sh -c` ever runs. A `VAR=literal`
+# prefix assignment sharing the same name as one of these tokens is
+# unconditionally inert — the token is gone before the assignment could take
+# effect — regardless of whether the command is a `gh pr` invocation.
+_RUNNER_INJECTED_VARS = ("PR_NUMBER", "REPO", "TICKET_ID")
 
 
 # ---------------------------------------------------------------------------
@@ -113,27 +136,64 @@ def lint_contract(path: Path) -> list[tuple[str, str, str]]:
     if not isinstance(data, dict):
         return findings
 
-    for item in data.get("dod_evidence", []) or []:
+    dod_evidence = data.get("dod_evidence", []) or []
+    superseded = _superseded_dod_ids(dod_evidence)
+
+    for item in dod_evidence:
         if not isinstance(item, dict):
             continue
 
-        dod_id = item.get("id", "<unknown>")
-
-        # dod_evidence items nest checks under a `checks` list
-        for check in item.get("checks", []) or []:
-            if not isinstance(check, dict):
-                continue
-            value = check.get("check_value", "")
-            if not isinstance(value, str) or not value.strip():
-                continue
-            _scan_value(str(path), dod_id, value, findings)
-
-        # Also handle flat check_value at the item level (legacy schema form)
-        flat_value = item.get("check_value", "")
-        if isinstance(flat_value, str) and flat_value.strip():
-            _scan_value(str(path), dod_id, flat_value, findings)
+        raw_dod_id = item.get("id", "<unknown>")
+        dod_id = raw_dod_id if isinstance(raw_dod_id, str) else "<unknown>"
+        if dod_id in superseded:
+            continue
+        _scan_dod_item(str(path), item, dod_id, findings)
 
     return findings
+
+
+def _scan_dod_item(
+    path_label: str,
+    item: dict[object, object],
+    dod_id: str,
+    findings: list[tuple[str, str, str]],
+) -> None:
+    # dod_evidence items nest checks under a `checks` list.
+    checks = item.get("checks", [])
+    if not isinstance(checks, list):
+        checks = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        value = check.get("check_value", "")
+        if not isinstance(value, str) or not value.strip():
+            continue
+        _scan_value(path_label, dod_id, value, findings)
+
+    # Also handle flat check_value at the item level (legacy schema form).
+    flat_value = item.get("check_value", "")
+    if isinstance(flat_value, str) and flat_value.strip():
+        _scan_value(path_label, dod_id, flat_value, findings)
+
+
+def _superseded_dod_ids(dod_evidence: list[object]) -> set[str]:
+    """Return ids superseded by later append-only replacement items."""
+    seen: set[str] = set()
+    superseded: set[str] = set()
+    for item in dod_evidence:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id")
+        artifact = item.get("evidence_artifact")
+        if isinstance(artifact, str):
+            prefix = "supersedes_dod_evidence:"
+            if artifact.startswith(prefix):
+                target = artifact[len(prefix) :].strip()
+                if target in seen:
+                    superseded.add(target)
+        if isinstance(item_id, str):
+            seen.add(item_id)
+    return superseded
 
 
 def _check_legacy_gh_pr(value: str) -> str | None:
@@ -143,24 +203,90 @@ def _check_legacy_gh_pr(value: str) -> str | None:
     command at all).
 
     Legacy forms:
-    * Hardcoded integer PR number (e.g. ``gh pr checks 1430 --repo ...``).
     * Wrong-format ``{pr}`` / ``{repo}`` placeholders.
-    * Missing ``${PR_NUMBER}`` placeholder.
-    * Missing both ``${REPO}`` and a literal ``--repo`` argument.
+    * A hardcoded integer PR number mixed with ``${PR_NUMBER}`` in the same
+      value (OMN-14431: ambiguous — the token wins at pre-substitution time,
+      silently discarding the literal).
+    * Missing both ``${PR_NUMBER}`` and a genuine standalone hardcoded PR
+      number.
+    * A genuine standalone hardcoded PR number (own-PR checks aside) that
+      omits a literal ``--repo`` argument — ``${REPO}`` is NOT accepted here
+      because it resolves to the RUNNER's own repo, which is not necessarily
+      the repo the pinned PR lives in.
+    * Missing both ``${REPO}`` and a literal ``--repo`` argument (own-PR form).
+
+    A standalone hardcoded PR number with NO ``${PR_NUMBER}`` anywhere in the
+    value and a literal ``--repo`` argument is the sanctioned, genuinely
+    cross-PR form (OMN-14431) — it is executable exactly as written, with no
+    runner-side substitution required, so it is accepted.
     """
     stripped = value.strip()
     if not stripped.startswith(_GH_PR_PREFIX):
         return None
-    if _HARDCODED_PR_NUMBER_RE.search(stripped):
-        return "legacy-gh-pr: hardcoded integer PR number (use ${PR_NUMBER})"
+
     if _BRACE_PR_RE.search(stripped):
         return "legacy-gh-pr: wrong-format {pr} placeholder (use ${PR_NUMBER})"
     if _BRACE_REPO_RE.search(stripped):
         return "legacy-gh-pr: wrong-format {repo} placeholder (use ${REPO})"
-    if "${PR_NUMBER}" not in stripped:
-        return "legacy-gh-pr: missing ${PR_NUMBER} placeholder"
+
+    has_hardcoded_pr = bool(_HARDCODED_PR_NUMBER_RE.search(stripped))
+    has_pr_token = "${PR_NUMBER}" in stripped
+
+    if has_hardcoded_pr and has_pr_token:
+        return (
+            "legacy-gh-pr: hardcoded PR number mixed with ${PR_NUMBER} in the "
+            "same command is ambiguous — ${PR_NUMBER} is pre-substituted with "
+            "the runner's own PR before the literal could ever apply; use "
+            "EITHER a standalone hardcoded cross-PR reference (no ${PR_NUMBER} "
+            "anywhere in the value) OR ${PR_NUMBER} alone, never both"
+        )
+
+    if has_hardcoded_pr:
+        # Genuine, standalone cross-PR reference — must be executable exactly
+        # as written, so --repo must be a literal (not ${REPO}, which would
+        # resolve to the runner's own repo, not necessarily the pinned PR's).
+        if "--repo" not in stripped or "${REPO}" in stripped:
+            return (
+                "legacy-gh-pr: hardcoded cross-PR reference requires a "
+                "literal --repo argument (${REPO} resolves to the runner's "
+                "own repo, not necessarily the pinned PR's repo)"
+            )
+        return None
+
+    if not has_pr_token:
+        return (
+            "legacy-gh-pr: missing ${PR_NUMBER} placeholder or a genuine "
+            "standalone hardcoded PR number"
+        )
     if "${REPO}" not in stripped and "--repo" not in stripped:
         return "legacy-gh-pr: missing --repo argument"
+    return None
+
+
+def _check_inert_token_prefix(value: str) -> str | None:
+    """Return a label if *value* contains an inert ``VAR=literal`` prefix.
+
+    OMN-14431: ``_substitute_tokens()`` in ``run_contract_compliance_check.py``
+    replaces every ``${PR_NUMBER}`` / ``${REPO}`` / ``${TICKET_ID}`` occurrence
+    in the WHOLE check_value string with the runner's own values BEFORE
+    ``sh -c`` is ever invoked — i.e. before any ``VAR=literal`` prefix
+    assignment in the same string could take effect. A fragment like
+    ``PR_NUMBER=1721 ... ${PR_NUMBER}`` therefore looks like it pins PR 1721,
+    but the ``${PR_NUMBER}`` token is already gone by the time the shell would
+    apply the assignment: the assignment is dead decoration and the check
+    silently runs against whatever PR the runner is evaluating instead of the
+    literal 1721. This is NOT limited to ``gh pr`` commands — it applies to
+    any command referencing these three runner-injected token names.
+    """
+    for var in _RUNNER_INJECTED_VARS:
+        if re.search(rf"\b{var}=\S", value) and f"${{{var}}}" in value:
+            return (
+                f"inert-token-prefix: {var}=<literal> prefix is silently "
+                f"discarded because ${{{var}}} is pre-substituted with the "
+                "runner's own value before the shell ever sees the "
+                "assignment take effect — the check runs against the "
+                "runner's value, not the literal"
+            )
     return None
 
 
@@ -184,6 +310,11 @@ def _scan_value(
     if legacy_label is not None:
         fragment = value.strip()[:80]
         findings.append((path_str, f"{dod_id}: {legacy_label}", fragment))
+
+    inert_label = _check_inert_token_prefix(value)
+    if inert_label is not None:
+        fragment = value.strip()[:80]
+        findings.append((path_str, f"{dod_id}: {inert_label}", fragment))
 
 
 # ---------------------------------------------------------------------------
@@ -216,10 +347,16 @@ def main(argv: list[str]) -> int:
             '  BAD:  [ -z "$result" ] || [ "$result" = "SUCCESS" ]\n'
             '  GOOD: [ "$result" = "SUCCESS" ]\n'
             "\nFix legacy gh pr commands with canonical placeholder form, e.g.:\n"
-            "  BAD:  gh pr checks 1430 --repo OmniNode-ai/omnibase_infra\n"
             "  BAD:  gh pr checks {pr} --repo {repo}\n"
             "  BAD:  gh pr checks --watch\n"
-            "  GOOD: gh pr checks ${PR_NUMBER} --repo ${REPO}\n"
+            "  GOOD (own PR):       gh pr checks ${PR_NUMBER} --repo ${REPO}\n"
+            "  GOOD (cross-PR pin): gh pr checks 1721 --repo OmniNode-ai/omnimarket"
+            "  (standalone hardcoded PR + literal --repo, NO ${PR_NUMBER}"
+            " anywhere in the value)\n"
+            "  BAD (OMN-14431):     PR_NUMBER=1721 REPO=org/repo gh pr checks"
+            " ${PR_NUMBER} --repo ${REPO}  (the ${PR_NUMBER} token is"
+            " pre-substituted with the runner's OWN PR before the assignment"
+            " could ever apply -- the 1721 literal is silently discarded)\n"
             "\nRun: uv run python scripts/migrate_dod_contracts.py"
             " --apply --tickets <ID>",
             file=sys.stderr,

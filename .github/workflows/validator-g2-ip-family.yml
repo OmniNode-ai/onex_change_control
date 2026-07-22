@@ -1,0 +1,137 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+# OMN-14068: onboard onex_change_control into the G2 hardcoded-IP-family
+# validators (private-ip, localhost-url, topic-string, todo-fixme-marker;
+# OMN-13294 / OMN-13480). These are the same COMPUTE handlers wired into the
+# .pre-commit-config.yaml hooks added in this PR (check-private-ip-compute,
+# check-localhost-url-compute, check-topic-string-compute,
+# check-todo-marker-compute) — same handler code, in-memory bus locally and
+# here in CI, so local and CI verdicts cannot drift.
+#
+# STANDALONE workflow with NO `needs:` (OMN-14666 / OMN-14668 lesson): a
+# cross-job dependency can SKIP the gate on an unrelated failure, opening a
+# skip-then-vacuous-green window. Each job below fires on its own evidence.
+#
+# Required status check contexts (per architecture-handshakes/validator-
+# requirements.yaml): "G2 IP-Family Validators / validate-private-ip",
+# "... / validate-localhost-url", "... / validate-topic-string",
+# "... / validate-todo-marker".
+
+name: G2 IP-Family Validators
+
+on:
+  push:
+    branches: [main, dev, "hotfix/**"]
+  pull_request:
+    branches: [main, dev]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_HTTP_TIMEOUT: "600"
+
+concurrency:
+  group: validator-g2-ip-family-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-private-ip:
+    name: validate-private-ip
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --all-extras
+      # Same private-IP COMPUTE handler as the check-private-ip-compute
+      # pre-commit hook (OMN-13294). Blocking self-scan of src/ — tests/ and
+      # docs/ legitimately carry example private IPs as fixtures/evidence
+      # (excludes.allowed in the spec) and are not scanned here.
+      - name: Scan src/ for hardcoded private-IP literals
+        run: env -u PYTHONPATH uv run python -m omnibase_core.validation.private_ip.runtime_private_ip src
+
+  validate-localhost-url:
+    name: validate-localhost-url
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --all-extras
+      # Same localhost-URL COMPUTE handler as check-localhost-url-compute
+      # (OMN-13294). Blocking self-scan of src/.
+      - name: Scan src/ for hardcoded localhost/loopback URL literals
+        run: env -u PYTHONPATH uv run python -m omnibase_core.validation.localhost_url.runtime_localhost_url src
+
+  validate-topic-string:
+    name: validate-topic-string
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --all-extras
+      # Same hardcoded-topic COMPUTE handler as check-hardcoded-topic-compute
+      # (OMN-13294). Blocking self-scan of src/ (contracts/ and enum modules
+      # legitimately carry topic names per the spec's excludes.allowed).
+      - name: Scan src/ for hardcoded onex.* topic literals
+        run: env -u PYTHONPATH uv run python -m omnibase_core.validation.hardcoded_topic.runtime_hardcoded_topic src
+
+  validate-todo-marker:
+    name: validate-todo-marker
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Install dependencies
+        run: uv sync --all-extras
+      # Same TODO/FIXME/HACK-marker COMPUTE handler as check-todo-marker-compute
+      # (OMN-13294 / OMN-13480). Distinct from the pre-existing no-untracked-
+      # todos hook (check-todo-format), which enforces the ticket-reference
+      # FORMAT; this gate blocks the marker tokens themselves in shipped
+      # source. Blocking self-scan of src/.
+      - name: Scan src/ for agent-left TODO/FIXME/HACK markers
+        run: env -u PYTHONPATH uv run python -m omnibase_core.validation.todo_marker.runtime_todo_marker src

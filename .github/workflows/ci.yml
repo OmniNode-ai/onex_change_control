@@ -484,7 +484,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Compute changed Python/Markdown files vs PR base
@@ -522,7 +522,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install PyYAML
@@ -737,7 +737,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install test dependencies
@@ -1121,7 +1121,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install uv
@@ -1265,7 +1265,24 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      - name: Scope dependency-bot tripwire run
+        id: dependency-bot-tripwire-scope
+        if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          changed_files="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path')"
+          printf '%s\n' "$changed_files"
+          if grep -qx 'grants/prod_promotion_grants.yaml' <<<"$changed_files"; then
+            echo "skip_live_tripwire=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_live_tripwire=true" >> "$GITHUB_OUTPUT"
+            echo "Dependency-bot PR does not change prod-promotion grants; skipping live org-private tripwire because repository secrets are withheld for this actor."
+          fi
       - name: Check platform-leads-review tripwire (OMN-14445)
+        if: ${{ steps.dependency-bot-tripwire-scope.outputs.skip_live_tripwire != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
           # OMN-14445 review: names which token backed this run so an
@@ -1274,6 +1291,70 @@ jobs:
           # secret is unset OR withheld by GitHub for a fork-origin PR.
           TOKEN_SOURCE: ${{ secrets.CROSS_REPO_PAT != '' && 'cross_repo_pat' || 'fallback' }}
         run: uv run check-platform-leads-review-tripwire --credential-origin "$TOKEN_SOURCE"
+
+  check-bot-authored-authz-guard:
+    name: check-bot-authored-authz-guard
+    # OMN-14919: the mechanical closure for the canonical machine OCC producer.
+    # A machine writer with a repo-scoped App token can push to ANY path in this
+    # repo — App tokens scope by repo, not by path. OCC has no required reviews on
+    # dev, CODEOWNERS here is advisory (OMN-14445), and OMN-14441's
+    # approved_by != PR-author is trivially satisfied by a bot carrying
+    # approved_by: jonah. So a bot could edit grants/** (the prod-promotion trust
+    # anchor) or allowlists/** (compliance exemptions) and self-authorize. This job
+    # REJECTS any bot-authored PR that touches those two authorization surfaces.
+    # Evidence surfaces (contracts/, drift/) are intentionally NOT guarded —
+    # machine-minted evidence companions are allowed. Unconditional (no needs/if)
+    # so it never skips; folded into the required CI Summary rollup below with a
+    # strict fail-closed check, mirroring validate-prod-promotion-grants /
+    # check-platform-leads-review-tripwire (a standalone workflow that "runs but
+    # cannot block" is the OMN-14415 anti-pattern). Uses only the default
+    # GITHUB_TOKEN the checkout persists for the base fetch — the changed-file set
+    # and commit identities come from LOCAL git, so NO org-wide CROSS_REPO_PAT is
+    # used or needed (OMN-14919 explicitly rejects it).
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Reject bot-authored PRs touching grants/** or allowlists/** (OMN-14919)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.base_ref || 'dev' }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          set -euo pipefail
+          # This is a PR-time authorship check; it is enforced on pull_request.
+          # On merge_group / push there is no PR author and the pull_request run
+          # already gated the change, so pass rather than emit a false INCONCLUSIVE.
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "event=${EVENT_NAME}: authorship guard is enforced on pull_request; passing."
+            exit 0
+          fi
+          # Make origin/${BASE_REF} resolvable for the diff/log range. fetch-depth:0
+          # already gave the full head history; this adds the base tip + shared
+          # history so the merge-base resolves.
+          git fetch origin "${BASE_REF}" --no-tags --quiet || true
+          uv run check-bot-authored-authz-guard \
+            --repo-root . \
+            --base-ref "${BASE_REF}" \
+            --pr-author-login "${PR_AUTHOR_LOGIN}" \
+            --pr-author-type "${PR_AUTHOR_TYPE}"
 
   ci-summary:
     name: CI Summary
@@ -1286,7 +1367,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, precommit-parity-gate]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1309,6 +1390,14 @@ jobs:
           # INCONCLUSIVE (exit 2, surfaces as 'failure') ALL block.
           if [[ "${{ needs.check-platform-leads-review-tripwire.result }}" != "success" ]]; then
             echo "::error::check-platform-leads-review-tripwire did not pass (result: ${{ needs.check-platform-leads-review-tripwire.result }}) - fail-closed (OMN-14445)"
+            exit 1
+          fi
+          # OMN-14919: same strict fail-closed pattern for the bot-authored-authz
+          # guard. Only 'success' passes; skipped/cancelled/failure/INCONCLUSIVE
+          # (exit 2, surfaces as 'failure') ALL block. A bot must never be able to
+          # mint its own authorization by touching grants/** or allowlists/**.
+          if [[ "${{ needs.check-bot-authored-authz-guard.result }}" != "success" ]]; then
+            echo "::error::check-bot-authored-authz-guard did not pass (result: ${{ needs.check-bot-authored-authz-guard.result }}) - fail-closed (OMN-14919)"
             exit 1
           fi
           # OMN-14672: same strict fail-closed pattern for the CI<->pre-commit

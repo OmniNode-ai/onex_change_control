@@ -204,6 +204,146 @@ def test_file_existence_check_is_clean(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# OMN-14431 — inert VAR=literal prefix mixed with runner-substituted ${VAR}
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_inert_pr_number_prefix_is_flagged(tmp_path: Path) -> None:
+    """The 'endorsed' workaround (PR_NUMBER=<n> ... ${PR_NUMBER}) must be
+    rejected: _substitute_tokens() pre-replaces ${PR_NUMBER} with the
+    RUNNER's own PR before the shell ever sees the assignment, so the
+    literal is silently discarded and the check targets the wrong PR.
+    """
+    bad = (
+        "PR_NUMBER=1721 REPO=OmniNode-ai/omnimarket "
+        "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+    )
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected findings for inert-prefix pattern: {bad}"
+    assert any("inert-token-prefix" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_inert_repo_prefix_is_flagged(tmp_path: Path) -> None:
+    """Same defect via the REPO= token in isolation."""
+    bad = "REPO=OmniNode-ai/omnimarket gh pr view ${PR_NUMBER} --repo ${REPO}"
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected findings for inert REPO= prefix: {bad}"
+    assert any("inert-token-prefix" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_genuine_standalone_cross_pr_reference_is_clean(tmp_path: Path) -> None:
+    """A hardcoded PR number with NO ${PR_NUMBER} anywhere in the value and a
+    literal --repo is the sanctioned, executable-as-written cross-PR pin —
+    it must NOT be rejected as a legacy hardcoded PR number.
+    """
+    good = "gh pr checks 1721 --repo OmniNode-ai/omnimarket"
+    path = write_contract(tmp_path, good)
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected findings for genuine cross-PR pin: {findings}"
+
+
+@pytest.mark.unit
+def test_own_pr_canonical_form_stays_clean(tmp_path: Path) -> None:
+    """The plain runner-substituted own-PR form must keep passing."""
+    good = "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+    path = write_contract(tmp_path, good)
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected findings for own-PR form: {findings}"
+
+
+@pytest.mark.unit
+def test_hardcoded_pr_mixed_with_token_no_prefix_is_flagged(tmp_path: Path) -> None:
+    """Mixing a hardcoded PR number with ${PR_NUMBER} in the same command is
+    ambiguous even without a preceding VAR= assignment — reject it via the
+    legacy-gh-pr path.
+    """
+    bad = "gh pr checks 1721 --repo OmniNode-ai/omnimarket ${PR_NUMBER}"
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected findings for mixed hardcoded+token: {bad}"
+    assert any(
+        "mixed with ${PR_NUMBER}" in label or "inert-token-prefix" in label
+        for _, label, _ in findings
+    )
+
+
+@pytest.mark.unit
+def test_hardcoded_cross_pr_reference_with_repo_token_is_flagged(
+    tmp_path: Path,
+) -> None:
+    """A hardcoded PR number combined with ${REPO} is rejected: ${REPO}
+    resolves to the RUNNER's own repo, not necessarily the repo the pinned
+    PR lives in.
+    """
+    bad = "gh pr checks 1721 --repo ${REPO}"
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected findings for hardcoded PR + \\${{REPO}}: {bad}"
+    assert any("legacy-gh-pr" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_hardcoded_pr_without_repo_is_flagged(tmp_path: Path) -> None:
+    """A hardcoded PR number with no --repo at all is still rejected."""
+    bad = "gh pr checks 1721"
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected findings for hardcoded PR w/o --repo: {bad}"
+    assert any("legacy-gh-pr" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_superseded_inert_prefix_item_is_not_scanned(tmp_path: Path) -> None:
+    """Append-only replacement items can supersede immutable historical items.
+
+    The compliance runner skips superseded ids; the linter must mirror that
+    behavior so old immutable entries do not block a contract once a later
+    executable-as-written replacement exists.
+    """
+    data = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-SUPERSEDED",
+        "dod_evidence": [
+            {
+                "id": "old-dod",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": (
+                            "PR_NUMBER=1721 REPO=OmniNode-ai/omnimarket "
+                            "gh pr view ${PR_NUMBER} --repo ${REPO}"
+                        ),
+                    }
+                ],
+            },
+            {
+                "id": "new-dod",
+                "evidence_artifact": "supersedes_dod_evidence:old-dod",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": (
+                            "gh pr view 1721 --repo OmniNode-ai/omnimarket"
+                        ),
+                    }
+                ],
+            },
+        ],
+    }
+    path = tmp_path / "OMN-SUPERSEDED.yaml"
+    path.write_text(yaml.dump(data), encoding="utf-8")
+
+    findings = linter.lint_contract(path)
+
+    assert not findings
+
+
+# ---------------------------------------------------------------------------
 # Edge-case and structural tests
 # ---------------------------------------------------------------------------
 
