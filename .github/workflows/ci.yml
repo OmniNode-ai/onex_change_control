@@ -484,7 +484,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Compute changed Python/Markdown files vs PR base
@@ -522,7 +522,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install PyYAML
@@ -737,7 +737,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install test dependencies
@@ -1121,7 +1121,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install uv
@@ -1265,7 +1265,24 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      - name: Scope dependency-bot tripwire run
+        id: dependency-bot-tripwire-scope
+        if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          changed_files="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path')"
+          printf '%s\n' "$changed_files"
+          if grep -qx 'grants/prod_promotion_grants.yaml' <<<"$changed_files"; then
+            echo "skip_live_tripwire=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_live_tripwire=true" >> "$GITHUB_OUTPUT"
+            echo "Dependency-bot PR does not change prod-promotion grants; skipping live org-private tripwire because repository secrets are withheld for this actor."
+          fi
       - name: Check platform-leads-review tripwire (OMN-14445)
+        if: ${{ steps.dependency-bot-tripwire-scope.outputs.skip_live_tripwire != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
           # OMN-14445 review: names which token backed this run so an
