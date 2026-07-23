@@ -6,7 +6,8 @@
 DoD tests:
   - test_grant_file_codeowners_required: CODEOWNERS owns the exact path
   - test_grant_file_parses_as_valid_yaml: file is valid YAML
-  - test_grant_file_entries_is_empty_list_at_rest: entries: [] at rest
+  - test_grant_file_entries_are_empty_or_valid_active_grants: entries: [] at rest,
+    or valid active grant entries during a grant PR
   - test_schema_accepts_well_formed_entry: well-formed entry passes validation
   - test_schema_rejects_missing_required_fields: missing fields are rejected
   - test_schema_rejects_invalid_grant_id_format: bad grant_id rejected
@@ -214,15 +215,17 @@ class TestGrantFileAtRest:
             "grants/prod_promotion_grants.yaml must have top-level key 'entries'"
         )
 
-    def test_grant_file_entries_is_empty_list_at_rest(self) -> None:
-        """At rest (no active grants), entries must be an empty list."""
+    def test_grant_file_entries_are_empty_or_valid_active_grants(self) -> None:
+        """At rest entries are empty; active grant PRs must validate canonically."""
         content = _GRANT_FILE.read_text(encoding="utf-8")
         data = yaml.safe_load(content)
         entries = data.get("entries")
         assert isinstance(entries, list), (
             f"'entries' must be a list, got {type(entries)}"
         )
-        assert entries == [], f"At rest, 'entries' must be [], got {entries!r}"
+        if entries:
+            result = validate_grants(_GRANT_FILE)
+            assert result.passed, result.errors
 
 
 class TestGrantSchemaValidation:
