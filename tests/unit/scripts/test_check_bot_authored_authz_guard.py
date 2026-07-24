@@ -15,13 +15,10 @@ when git history is unreadable.
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest import mock
 
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from onex_change_control.scripts.check_bot_authored_authz_guard import (
     _EXIT_INCONCLUSIVE,
@@ -351,3 +348,110 @@ def test_explicit_args_seeded_bot_rejects() -> None:
         ]
     )
     assert rc == _EXIT_REJECT
+
+
+# ---------------------------------------------------------------------------
+# --staged mode (OMN-15008): pre-commit mirror of the CI gate. Same evaluate()
+# decision core; only the fact-gathering (staged diff + committer ident
+# in-progress, rather than a merged PR's changed files + commit history) differs.
+# ---------------------------------------------------------------------------
+
+
+def _stage(repo: Path, rel: str) -> None:
+    """Stage (but do not commit) a new file at ``rel`` under ``repo``."""
+    target = repo / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x\n", encoding="utf-8")
+    _git(repo, "add", rel)
+
+
+def test_seeded_bot_staged_touching_grants_is_rejected(
+    seeded_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Headline proof: a BOT-identity staged change touching grants/** -> REJECT."""
+    _stage(seeded_repo, "grants/prod_promotion_grants.yaml")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "omnimarket-bot")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "bot@omninode.ai")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "omnimarket-bot")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "bot@omninode.ai")
+    rc = main(["--staged", "--repo-root", str(seeded_repo)])
+    assert rc == _EXIT_REJECT
+
+
+def test_seeded_human_staged_touching_grants_passes(
+    seeded_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stage(seeded_repo, "grants/prod_promotion_grants.yaml")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Jonah Gray")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "jonah.gabriel@gmail.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Jonah Gray")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "jonah.gabriel@gmail.com")
+    rc = main(["--staged", "--repo-root", str(seeded_repo)])
+    assert rc == _EXIT_PASS
+
+
+def test_seeded_bot_staged_touching_only_evidence_passes(
+    seeded_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guard not applicable: bot staged change touches only contracts/ (evidence)."""
+    _stage(seeded_repo, "contracts/OMN-1.yaml")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "omnimarket-bot")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "bot@omninode.ai")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "omnimarket-bot")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "bot@omninode.ai")
+    rc = main(["--staged", "--repo-root", str(seeded_repo)])
+    assert rc == _EXIT_PASS
+
+
+def test_staged_identity_unresolvable_is_inconclusive(tmp_path: Path) -> None:
+    """Fail-closed: --staged against a non-git directory -> INCONCLUSIVE."""
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    rc = main(["--staged", "--repo-root", str(not_a_repo)])
+    assert rc == _EXIT_INCONCLUSIVE
+
+
+class TestPrecommitConfigDeclaresStagedHook:
+    """Config test (RED on current tree, OMN-15008): the pre-commit mirror of
+    the CI gate must exist in BOTH .pre-commit-hooks.yaml (the shippable hook
+    definition) and .pre-commit-config.yaml (this repo's own local wiring of
+    it), scoped to grants/**+allowlists/** and invoking --staged.
+    """
+
+    _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+    def _find_hook(self, config_path: Path) -> dict[str, object]:
+        import yaml
+
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        hooks: list[dict[str, object]]
+        if isinstance(data, list):
+            hooks = data  # .pre-commit-hooks.yaml: bare top-level list
+        else:
+            hooks = [
+                hook
+                for repo in data["repos"]
+                if repo.get("repo") == "local"
+                for hook in repo["hooks"]
+            ]
+        matches = [h for h in hooks if h.get("id") == "check-bot-authored-authz-guard"]
+        assert matches, (
+            f"no 'check-bot-authored-authz-guard' hook declared in {config_path}"
+        )
+        return matches[0]
+
+    def test_pre_commit_hooks_yaml_declares_hook(self) -> None:
+        hook = self._find_hook(self._REPO_ROOT / ".pre-commit-hooks.yaml")
+        entry = hook["entry"]
+        assert isinstance(entry, str)
+        assert "--staged" in entry
+        assert hook.get("files") == r"^(grants/|allowlists/)"
+        assert hook.get("pass_filenames") is False
+
+    def test_pre_commit_config_yaml_wires_hook(self) -> None:
+        hook = self._find_hook(self._REPO_ROOT / ".pre-commit-config.yaml")
+        entry = hook["entry"]
+        assert isinstance(entry, str)
+        assert "--staged" in entry
+        assert hook.get("files") == r"^(grants/|allowlists/)"
+        assert hook.get("pass_filenames") is False
