@@ -15,8 +15,11 @@ from onex_change_control.promotion.staleness import (
     EnumPromotionFailureState,
     ModelPromotionStalenessRepo,
     build_staleness_report,
+    generate_staleness_report,
     measure_repo_staleness,
+    report_outputs,
 )
+from onex_change_control.promotion.workflow import write_json
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -117,3 +120,103 @@ def test_measure_repo_staleness_uses_oldest_unpromoted_commit(
     assert result.unpromoted_commit_count == 2
     assert result.oldest_unpromoted_commit_sha == oldest
     assert result.staleness_days == 5.0
+
+
+def _init_clean_repo(repo: Path, *, dev_ahead_days: int = 0) -> None:
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "checkout", "-b", "main")
+    _commit(repo, "main", commit_date="2026-05-17T12:00:00+00:00")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    _git(repo, "checkout", "-b", "dev")
+    if dev_ahead_days:
+        _commit(
+            repo,
+            "dev ahead",
+            commit_date=f"2026-05-{17 + dev_ahead_days:02d}T12:00:00+00:00",
+        )
+    _git(repo, "update-ref", "refs/remotes/origin/dev", "dev")
+
+
+def test_generate_staleness_report_skips_unreadable_repo_without_crashing(
+    tmp_path: Path,
+) -> None:
+    """OMN-15052: one missing/broken checkout must not blind the whole run."""
+    _init_clean_repo(tmp_path / "readable_repo")
+    # "missing_repo" is never created on disk -- simulates a repo the
+    # monitor could not clone this run (private-repo token gap, network
+    # flake, etc.).
+
+    report = generate_staleness_report(
+        workspace=tmp_path,
+        repos=("readable_repo", "missing_repo"),
+        source_branch="dev",
+        target_branch="main",
+        failure_class=EnumPromotionFailureState.INTEGRATION,
+        evaluated_at=datetime(2026, 5, 23, tzinfo=UTC),
+    )
+
+    assert [repo.repo for repo in report.repos] == ["readable_repo"]
+    assert report.unreadable_repos == ("missing_repo",)
+
+
+def test_unreadable_repo_forces_slack_alert_even_when_readable_repos_are_clean() -> (
+    None
+):
+    """A blind spot is itself alert-worthy -- it must not read as 'clean'."""
+    repo = ModelPromotionStalenessRepo(
+        repo="clean_repo",
+        source_branch="dev",
+        target_branch="main",
+        source_sha="a" * 40,
+        target_sha="b" * 40,
+        unpromoted_commit_count=0,
+        staleness_seconds=0,
+        staleness_days=0.0,
+    )
+
+    report = build_staleness_report(
+        repos=(repo,),
+        evaluated_at=datetime(2026, 5, 23, tzinfo=UTC),
+        source_branch="dev",
+        target_branch="main",
+        failure_class=EnumPromotionFailureState.INTEGRATION,
+        unreadable_repos=("blind_spot_repo",),
+    )
+
+    assert report.requires_slack_alert is True
+    assert report.unreadable_repos == ("blind_spot_repo",)
+    assert report.slack_message is not None
+    assert "blind_spot_repo" in report.slack_message
+
+
+def test_report_outputs_surfaces_unreadable_repo_count(tmp_path: Path) -> None:
+    repo = ModelPromotionStalenessRepo(
+        repo="stale_repo",
+        source_branch="dev",
+        target_branch="main",
+        source_sha="a" * 40,
+        target_sha="b" * 40,
+        unpromoted_commit_count=5,
+        staleness_seconds=16 * 86_400,
+        staleness_days=16.0,
+    )
+    report = build_staleness_report(
+        repos=(repo,),
+        evaluated_at=datetime(2026, 7, 24, tzinfo=UTC),
+        source_branch="dev",
+        target_branch="main",
+        failure_class=EnumPromotionFailureState.INTEGRATION,
+        unreadable_repos=("omniweb",),
+    )
+    output_path = tmp_path / "staleness_report.json"
+    write_json(output_path, report)
+
+    outputs = report_outputs(output_path)
+
+    assert outputs["requires_linear_ticket"] == "true"
+    assert outputs["requires_slack_alert"] == "true"
+    assert outputs["unreadable_repo_count"] == "1"
+    assert outputs["unreadable_repos"] == "omniweb"
