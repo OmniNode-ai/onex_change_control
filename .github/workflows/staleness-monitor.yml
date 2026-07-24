@@ -34,6 +34,11 @@ on:
 
 permissions:
   contents: read
+  # issues:write is required only by the "Alert on monitor failure" heartbeat
+  # step (OMN-15052) — it opens/updates a GitHub issue with the default
+  # token so the monitor's own death is never silent again, without
+  # depending on any additional secret.
+  issues: write
 
 concurrency:
   group: promotion-staleness-monitor
@@ -58,6 +63,13 @@ jobs:
       OMNI_REPOS_ROOT: ${{ github.workspace }}/../omni-repos
       EVIDENCE_DIR: ${{ github.workspace }}/staleness-evidence
       SOURCE_TICKET: OMN-11738
+      # OMN-15052: github.token is scoped to onex_change_control only and
+      # cannot resolve private sibling repos (e.g. omniweb) via the GraphQL
+      # clone path — every scheduled run failed here for ~2 months.
+      # CROSS_REPO_PAT is the org-wide read token already used for this
+      # exact purpose by nightly-promote.yml (verified live: 15/15 recent
+      # scheduled runs green cloning the same private repo).
+      GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
 
     steps:
       - name: Checkout OCC
@@ -73,6 +85,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Self-hosted runner: OMNI_REPOS_ROOT lives outside github.workspace
+          # so it is NOT reset between runs by the standard checkout cleanup.
+          # A prior run that died mid-clone leaves partial checkouts behind,
+          # which then fail subsequent runs with "destination path already
+          # exists" — a secondary symptom of the same root failure
+          # (OMN-15052). Start every run from a clean slate.
+          rm -rf "$OMNI_REPOS_ROOT"
           mkdir -p "$OMNI_REPOS_ROOT" "$EVIDENCE_DIR"
           python - <<'PY' > /tmp/repos.txt
           import os
@@ -94,18 +113,45 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout scanned repos
+        id: checkout
         shell: bash
         run: |
           set -euo pipefail
+          # OMN-15052: one unreadable/flaky repo must not blind the whole
+          # run. Each clone+fetch is attempted independently; failures are
+          # recorded and the loop continues rather than aborting under
+          # set -e (the `if cmd1 && cmd2; then` form below does not trip
+          # errexit — only an un-guarded top-level failure would).
+          : > /tmp/readable_repos.txt
+          : > /tmp/unreadable_repos.txt
           while IFS= read -r repo; do
             [ -n "$repo" ] || continue
-            gh repo clone "OmniNode-ai/${repo}" "${OMNI_REPOS_ROOT}/${repo}" -- --no-tags
-            git -C "${OMNI_REPOS_ROOT}/${repo}" fetch origin "$TARGET_BRANCH" "$SOURCE_BRANCH" --no-tags
+            if gh repo clone "OmniNode-ai/${repo}" "${OMNI_REPOS_ROOT}/${repo}" -- --no-tags \
+               && git -C "${OMNI_REPOS_ROOT}/${repo}" fetch origin "$TARGET_BRANCH" "$SOURCE_BRANCH" --no-tags; then
+              echo "$repo" >> /tmp/readable_repos.txt
+            else
+              echo "::warning::could not clone/fetch ${repo} this run — excluding it and recording it as an unreadable/blind-spot repo (OMN-15052) instead of failing the whole monitor"
+              echo "$repo" >> /tmp/unreadable_repos.txt
+              rm -rf "${OMNI_REPOS_ROOT:?}/${repo}"
+            fi
           done <<< "${{ steps.repos.outputs.repos }}"
-        env:
-          GH_TOKEN: ${{ github.token }}
+          {
+            echo "readable_repos<<EOF"
+            cat /tmp/readable_repos.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "unreadable_repos<<EOF"
+            cat /tmp/unreadable_repos.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          if [ ! -s /tmp/readable_repos.txt ]; then
+            echo "::error::every configured repo failed to clone/fetch — the monitor is fully blind this run, which is a real failure, not a partial degradation"
+            exit 1
+          fi
 
       - name: Generate staleness report
+        id: generate-report
         shell: bash
         run: |
           set -euo pipefail
@@ -113,7 +159,11 @@ jobs:
           while IFS= read -r repo; do
             [ -n "$repo" ] || continue
             args+=(--repo "$repo")
-          done <<< "${{ steps.repos.outputs.repos }}"
+          done <<< "${{ steps.checkout.outputs.readable_repos }}"
+          while IFS= read -r repo; do
+            [ -n "$repo" ] || continue
+            args+=(--unreadable-repo "$repo")
+          done <<< "${{ steps.checkout.outputs.unreadable_repos }}"
           uv run promotion-staleness-monitor report \
             --workspace "$OMNI_REPOS_ROOT" \
             --source-branch "$SOURCE_BRANCH" \
@@ -139,7 +189,13 @@ jobs:
           PY
 
       - name: Create Linear staleness ticket
+        id: linear-ticket
         if: steps.report.outputs.requires_linear_ticket == 'true'
+        # A real Linear API failure must still be visible (caught by the
+        # "Evaluate monitor outcome" gate below via `notified` != 'true'),
+        # but it must not swallow the evidence upload or the failure
+        # heartbeat — OMN-15052.
+        continue-on-error: true
         shell: bash
         env:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
@@ -147,8 +203,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${LINEAR_API_KEY:-}" ]; then
-            echo "::error::LINEAR_API_KEY is required to create the P1 staleness ticket"
-            exit 1
+            echo "::error::LINEAR_API_KEY is not configured for this repo/org — cannot auto-file the P1 staleness ticket. File it manually until the secret is wired."
+            echo "notified=false" >> "$GITHUB_OUTPUT"
+            echo "reason=missing_secret:LINEAR_API_KEY" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           TITLE="$(python - "$REPORT_PATH" <<'PY'
@@ -190,6 +248,7 @@ jobs:
             printf '{"status":"existing","url":%s}\n' "$(python -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$EXISTING_URL")" \
               > "$EVIDENCE_DIR/linear_staleness_ticket.json"
             echo "Staleness ticket already exists: $EXISTING_URL"
+            echo "notified=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -250,9 +309,14 @@ jobs:
               raise SystemExit(f"Linear issueCreate failed: {response}")
           print(json.dumps({"status": "created", **issue}, indent=2, sort_keys=True))
           PY
+          echo "notified=true" >> "$GITHUB_OUTPUT"
 
       - name: Send Slack staleness alert
+        id: slack-alert
         if: steps.report.outputs.requires_slack_alert == 'true'
+        # See the Linear ticket step above for why continue-on-error is
+        # deliberate here (OMN-15052).
+        continue-on-error: true
         shell: bash
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -260,8 +324,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-            echo "::error::SLACK_WEBHOOK_URL is required for >7 day promotion staleness"
-            exit 1
+            echo "::error::SLACK_WEBHOOK_URL is not configured for this repo/org — cannot send the staleness alert. Notify manually until the secret is wired."
+            echo "notified=false" >> "$GITHUB_OUTPUT"
+            echo "reason=missing_secret:SLACK_WEBHOOK_URL" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           python - "$REPORT_PATH" > "$EVIDENCE_DIR/slack_payload.json" <<'PY'
           import json
@@ -285,10 +351,77 @@ jobs:
             -H "Content-Type: application/json" \
             --data @"$EVIDENCE_DIR/slack_payload.json" \
             "$SLACK_WEBHOOK_URL"
+          echo "notified=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload staleness evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: promotion-staleness-${{ github.run_id }}
           path: ${{ env.EVIDENCE_DIR }}
           retention-days: 365
+          if-no-files-found: warn
+
+      - name: Evaluate monitor outcome
+        id: evaluate
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          FAIL=0
+          REASONS=""
+
+          if [ "${{ steps.generate-report.outcome }}" != "success" ]; then
+            FAIL=1
+            REASONS="${REASONS}staleness report generation did not succeed (outcome=${{ steps.generate-report.outcome }}); "
+          fi
+
+          UNREADABLE_COUNT="${{ steps.report.outputs.unreadable_repo_count }}"
+          UNREADABLE_LIST="${{ steps.report.outputs.unreadable_repos }}"
+          if [ -n "$UNREADABLE_COUNT" ] && [ "$UNREADABLE_COUNT" != "0" ]; then
+            echo "::warning::monitor could not read ${UNREADABLE_COUNT} repo(s) this run: ${UNREADABLE_LIST}"
+          fi
+
+          if [ "${{ steps.report.outputs.requires_linear_ticket }}" = "true" ] \
+             && [ "${{ steps.linear-ticket.outputs.notified }}" != "true" ]; then
+            FAIL=1
+            REASONS="${REASONS}P1 staleness ticket was required but not confirmed created (linear-ticket outcome=${{ steps.linear-ticket.outcome }}); "
+          fi
+
+          if [ "${{ steps.report.outputs.requires_slack_alert }}" = "true" ] \
+             && [ "${{ steps.slack-alert.outputs.notified }}" != "true" ]; then
+            FAIL=1
+            REASONS="${REASONS}Slack staleness alert was required but not confirmed sent (slack-alert outcome=${{ steps.slack-alert.outcome }}); "
+          fi
+
+          {
+            echo "## Promotion Staleness Monitor"
+            echo ""
+            echo "- max_staleness_days: ${{ steps.report.outputs.max_staleness_days }}"
+            echo "- requires_linear_ticket: ${{ steps.report.outputs.requires_linear_ticket }} (notified: ${{ steps.linear-ticket.outputs.notified }})"
+            echo "- requires_slack_alert: ${{ steps.report.outputs.requires_slack_alert }} (notified: ${{ steps.slack-alert.outputs.notified }})"
+            echo "- unreadable_repos (${UNREADABLE_COUNT:-0}): ${UNREADABLE_LIST:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FAIL" = "1" ]; then
+            echo "::error::promotion staleness monitor did not complete its job this run: ${REASONS}"
+            exit 1
+          fi
+          echo "Monitor completed; every required notification fired (or none were required this run)."
+
+      - name: Alert on monitor failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TITLE="Promotion Staleness Monitor is failing"
+          BODY="$(printf 'Run %s failed on %s.\n\nThis is the OMN-11738 promotion staleness monitor (dev/main drift detection plus Linear/Slack alerting). A monitor that fails silently defeats its own purpose -- OMN-15052 found 60/60 scheduled runs silently red for ~2 months before anyone noticed. This issue exists so a red run of THIS workflow is never invisible again.\n\nSee the run logs and the uploaded promotion-staleness-* evidence artifact for the failing step and reason.' "$RUN_URL" "$(date -u +%Y-%m-%dT%H:%MZ)")"
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --search "\"$TITLE\" in:title" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --body "$BODY" --label "bug"
+          fi
