@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from typing import TYPE_CHECKING
@@ -341,6 +342,58 @@ def resolve_commit_identities(repo_root: str, base_ref: str) -> list[tuple[str, 
     return identities
 
 
+_GIT_IDENT_RE = re.compile(r"^(?P<name>.*?)\s*<(?P<email>[^>]*)>")
+
+
+def resolve_staged_changed_files(repo_root: str) -> list[str]:
+    """Return repo-relative paths currently staged for commit (pre-commit mode).
+
+    Raises :class:`_GitFactError` if git cannot produce the diff, so the
+    caller fails closed (OMN-15008 — the pre-commit mirror of
+    :func:`resolve_changed_files`, which is scoped to a merged PR's range).
+
+    Uses ``-z`` (NUL-delimited) output rather than plain ``--name-only``:
+    without it, git quotes special-character filenames (tabs, newlines,
+    non-ASCII) as a C-style string (e.g. ``"grants/x\ty.yaml"``), which would
+    corrupt the leading ``grants/``/``allowlists/`` prefix that
+    :func:`is_sensitive_path` matches against.
+    """
+    result = _run_git(
+        ["diff", "--cached", "--no-renames", "--name-only", "-z"], repo_root
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "unknown git error"
+        msg = f"could not resolve staged changed files: {detail}"
+        raise _GitFactError(msg)
+    return [path for path in result.stdout.split("\x00") if path]
+
+
+def resolve_staged_commit_identities(repo_root: str) -> list[tuple[str, str]]:
+    """Return the (name, email) pair git would stamp as author AND committer
+    on the in-progress commit (pre-commit mode).
+
+    Uses ``git var GIT_AUTHOR_IDENT`` / ``GIT_COMMITTER_IDENT``, which resolve
+    the same identity git itself would use for the commit -- respecting
+    ``GIT_AUTHOR_NAME``/``GIT_AUTHOR_EMAIL``/``GIT_COMMITTER_NAME``/
+    ``GIT_COMMITTER_EMAIL`` env overrides, falling back to ``user.name``/
+    ``user.email`` config. Raises :class:`_GitFactError` if either identity is
+    unreadable or unparseable, so the caller fails closed.
+    """
+    identities: list[tuple[str, str]] = []
+    for var in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+        result = _run_git(["var", var], repo_root)
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "unknown git error"
+            msg = f"could not read {var}: {detail}"
+            raise _GitFactError(msg)
+        match = _GIT_IDENT_RE.match(result.stdout.strip())
+        if match is None:
+            msg = f"could not parse {var} output: {result.stdout!r}"
+            raise _GitFactError(msg)
+        identities.append((match.group("name").strip(), match.group("email").strip()))
+    return identities
+
+
 def _parse_identity_arg(raw: str) -> tuple[str, str]:
     """Parse a ``--commit-identity`` argument of the form ``name<TAB>email``."""
     if "\t" in raw:
@@ -356,6 +409,8 @@ def _gather_changed_files(args: argparse.Namespace) -> list[str] | None:
     if args.changed_files is not None:
         return list(args.changed_files)
     try:
+        if args.staged:
+            return resolve_staged_changed_files(args.repo_root)
         return resolve_changed_files(args.repo_root, args.base_ref)
     except (_GitFactError, OSError, subprocess.SubprocessError) as exc:
         print(f"git: {exc}", file=sys.stderr)
@@ -366,6 +421,8 @@ def _gather_commit_identities(args: argparse.Namespace) -> list[tuple[str, str]]
     if args.commit_identities is not None:
         return [_parse_identity_arg(raw) for raw in args.commit_identities]
     try:
+        if args.staged:
+            return resolve_staged_commit_identities(args.repo_root)
         return resolve_commit_identities(args.repo_root, args.base_ref)
     except (_GitFactError, OSError, subprocess.SubprocessError) as exc:
         print(f"git: {exc}", file=sys.stderr)
@@ -383,6 +440,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--base-ref",
         default=os.environ.get("BASE_REF", "dev"),
         help="Base branch the PR targets (default: $BASE_REF or 'dev').",
+    )
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        default=False,
+        help="Pre-commit mode (OMN-15008): derive changed files from "
+        "`git diff --cached` and the identity from `git var "
+        "GIT_AUTHOR_IDENT`/`GIT_COMMITTER_IDENT` (the in-progress commit's "
+        "identity) instead of a merged PR's --base-ref range. Mutually "
+        "exclusive in effect with --base-ref; no pr-author-login/type facts "
+        "exist locally, so this mode relies solely on the commit-identity "
+        "signal (weaker but real defense-in-depth vs the CI gate).",
     )
     parser.add_argument(
         "--changed-file",
