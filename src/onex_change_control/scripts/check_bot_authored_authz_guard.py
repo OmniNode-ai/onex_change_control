@@ -351,13 +351,21 @@ def resolve_staged_changed_files(repo_root: str) -> list[str]:
     Raises :class:`_GitFactError` if git cannot produce the diff, so the
     caller fails closed (OMN-15008 — the pre-commit mirror of
     :func:`resolve_changed_files`, which is scoped to a merged PR's range).
+
+    Uses ``-z`` (NUL-delimited) output rather than plain ``--name-only``:
+    without it, git quotes special-character filenames (tabs, newlines,
+    non-ASCII) as a C-style string (e.g. ``"grants/x\ty.yaml"``), which would
+    corrupt the leading ``grants/``/``allowlists/`` prefix that
+    :func:`is_sensitive_path` matches against.
     """
-    result = _run_git(["diff", "--cached", "--no-renames", "--name-only"], repo_root)
+    result = _run_git(
+        ["diff", "--cached", "--no-renames", "--name-only", "-z"], repo_root
+    )
     if result.returncode != 0:
         detail = result.stderr.strip() or "unknown git error"
         msg = f"could not resolve staged changed files: {detail}"
         raise _GitFactError(msg)
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return [path for path in result.stdout.split("\x00") if path]
 
 
 def resolve_staged_commit_identities(repo_root: str) -> list[tuple[str, str]]:

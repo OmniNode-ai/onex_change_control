@@ -33,6 +33,7 @@ from onex_change_control.scripts.check_bot_authored_authz_guard import (
     main,
     resolve_changed_files,
     resolve_commit_identities,
+    resolve_staged_changed_files,
 )
 
 pytestmark = pytest.mark.unit
@@ -401,6 +402,36 @@ def test_seeded_bot_staged_touching_only_evidence_passes(
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "bot@omninode.ai")
     rc = main(["--staged", "--repo-root", str(seeded_repo)])
     assert rc == _EXIT_PASS
+
+
+def test_resolve_staged_changed_files_preserves_tab_in_filename(
+    seeded_repo: Path,
+) -> None:
+    """CodeRabbit finding (PR #4692): plain `--name-only` C-quotes special-char
+    filenames (tabs, newlines, non-ASCII), corrupting the leading grants/
+    prefix `is_sensitive_path` matches on. `-z` (NUL-delimited) output must
+    preserve it verbatim.
+    """
+    rel = "grants/policy\toverride.yaml"
+    _stage(seeded_repo, rel)
+    files = resolve_staged_changed_files(str(seeded_repo))
+    assert rel in files
+
+
+def test_seeded_bot_staged_path_with_tab_in_filename_is_rejected(
+    seeded_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end proof the tab-in-filename fix actually changes the verdict:
+    a bot-authored staged change under grants/ with a tab in the filename
+    must still REJECT (it would silently PASS if the prefix got corrupted).
+    """
+    _stage(seeded_repo, "grants/policy\toverride.yaml")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "omnimarket-bot")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "bot@omninode.ai")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "omnimarket-bot")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "bot@omninode.ai")
+    rc = main(["--staged", "--repo-root", str(seeded_repo)])
+    assert rc == _EXIT_REJECT
 
 
 def test_staged_identity_unresolvable_is_inconclusive(tmp_path: Path) -> None:
