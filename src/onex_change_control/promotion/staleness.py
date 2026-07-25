@@ -94,6 +94,7 @@ class ModelPromotionStalenessReport(BaseModel):
     linear_ticket_description: str | None = None
     slack_message: str | None = None
     repos: tuple[ModelPromotionStalenessRepo, ...]
+    unreadable_repos: tuple[str, ...] = ()
 
 
 FAILURE_ROUTES: dict[EnumPromotionFailureState, ModelPromotionFailureRoute] = {
@@ -227,20 +228,39 @@ def build_staleness_report(  # noqa: PLR0913
     failure_class: EnumPromotionFailureState,
     linear_ticket_threshold_days: int = LINEAR_TICKET_THRESHOLD_DAYS,
     slack_alert_threshold_days: int = SLACK_ALERT_THRESHOLD_DAYS,
+    unreadable_repos: tuple[str, ...] = (),
 ) -> ModelPromotionStalenessReport:
-    """Build a deterministic staleness report and notification plan."""
+    """Build a deterministic staleness report and notification plan.
+
+    ``unreadable_repos`` names repositories the monitor could not clone or
+    fetch (e.g. a permissions gap or transient network failure) — OMN-15052.
+    A repo the monitor cannot read is itself a staleness-monitoring blind
+    spot, so its presence forces a Slack alert even when every *readable*
+    repo is within threshold. The monitor must report what it could not
+    read rather than silently dropping it.
+    """
     max_staleness_days = max((repo.staleness_days for repo in repos), default=0.0)
     stale_repos = tuple(
         repo for repo in repos if repo.staleness_days > linear_ticket_threshold_days
     )
     requires_linear_ticket = bool(stale_repos)
-    requires_slack_alert = any(
+    requires_slack_alert = bool(unreadable_repos) or any(
         repo.staleness_days > slack_alert_threshold_days for repo in repos
     )
     route = FAILURE_ROUTES[failure_class]
     title = None
     description = None
     slack_message = None
+
+    unreadable_note = ""
+    if unreadable_repos:
+        unreadable_note = (
+            "\n\n## Unreadable repositories (monitor blind spot)\n\n"
+            + "\n".join(f"- {repo}" for repo in sorted(unreadable_repos))
+            + "\n\nThese repositories could not be cloned/fetched this run "
+            "(permissions gap or transient failure) and were excluded from "
+            "the staleness measurement above — they are NOT proven fresh."
+        )
 
     if requires_linear_ticket:
         title = (
@@ -263,14 +283,25 @@ def build_staleness_report(  # noqa: PLR0913
             f"Action: {route.action}\n\n"
             "## Stale repositories\n\n"
             f"{rows}\n"
+            f"{unreadable_note}"
         )
 
     if requires_slack_alert:
-        slack_message = (
-            f"Promotion staleness is {max_staleness_days}d "
-            f"({failure_class.value}, {route.severity.value}). "
-            f"Route: {route.slack_channel_hint}."
-        )
+        if any(repo.staleness_days > slack_alert_threshold_days for repo in repos):
+            slack_message = (
+                f"Promotion staleness is {max_staleness_days}d "
+                f"({failure_class.value}, {route.severity.value}). "
+                f"Route: {route.slack_channel_hint}."
+            )
+        else:
+            slack_message = (
+                "Promotion staleness monitor could not read "
+                f"{len(unreadable_repos)} repo(s): "
+                f"{', '.join(sorted(unreadable_repos))}. Staleness for these "
+                "repos is UNKNOWN, not clean."
+            )
+        if unreadable_repos and "could not read" not in slack_message:
+            slack_message += f" Also unreadable: {', '.join(sorted(unreadable_repos))}."
 
     return ModelPromotionStalenessReport(
         evaluated_at=evaluated_at.astimezone(UTC),
@@ -288,6 +319,7 @@ def build_staleness_report(  # noqa: PLR0913
         linear_ticket_description=description,
         slack_message=slack_message,
         repos=repos,
+        unreadable_repos=tuple(sorted(unreadable_repos)),
     )
 
 
@@ -299,25 +331,38 @@ def generate_staleness_report(  # noqa: PLR0913
     target_branch: str,
     failure_class: EnumPromotionFailureState,
     evaluated_at: datetime | None = None,
+    unreadable_repos: tuple[str, ...] = (),
 ) -> ModelPromotionStalenessReport:
-    """Generate a dev/main staleness report from local repo checkouts."""
+    """Generate a dev/main staleness report from local repo checkouts.
+
+    One repo's git history being unreadable must not blind the whole run
+    (OMN-15052) — each repo is measured independently and a failure is
+    recorded rather than raised, so the report still fires for every repo
+    that *did* resolve.
+    """
     now = evaluated_at or datetime.now(UTC)
-    measurements = tuple(
-        measure_repo_staleness(
-            repo_path=workspace / repo,
-            repo=repo,
-            source_branch=source_branch,
-            target_branch=target_branch,
-            now=now,
-        )
-        for repo in repos
-    )
+    measurements: list[ModelPromotionStalenessRepo] = []
+    unreadable: list[str] = list(unreadable_repos)
+    for repo in repos:
+        try:
+            measurements.append(
+                measure_repo_staleness(
+                    repo_path=workspace / repo,
+                    repo=repo,
+                    source_branch=source_branch,
+                    target_branch=target_branch,
+                    now=now,
+                )
+            )
+        except (RuntimeError, subprocess.CalledProcessError, OSError):
+            unreadable.append(repo)
     return build_staleness_report(
-        repos=measurements,
+        repos=tuple(measurements),
         evaluated_at=now,
         source_branch=source_branch,
         target_branch=target_branch,
         failure_class=failure_class,
+        unreadable_repos=tuple(dict.fromkeys(unreadable)),
     )
 
 
@@ -339,6 +384,16 @@ def _parse_args() -> argparse.Namespace:
     report = subparsers.add_parser("report")
     report.add_argument("--workspace", type=Path, required=True)
     report.add_argument("--repo", action="append", default=[])
+    report.add_argument(
+        "--unreadable-repo",
+        action="append",
+        default=[],
+        help=(
+            "Repo that failed to clone/fetch before this command ran; "
+            "recorded in the report as a monitor blind spot instead of "
+            "silently dropped (OMN-15052)."
+        ),
+    )
     report.add_argument("--source-branch", default="dev")
     report.add_argument("--target-branch", default="main")
     report.add_argument(
@@ -369,6 +424,7 @@ def main() -> int:
             target_branch=args.target_branch,
             failure_class=EnumPromotionFailureState(args.failure_class),
             evaluated_at=_parse_optional_datetime(args.evaluated_at),
+            unreadable_repos=tuple(dict.fromkeys(args.unreadable_repo)),
         )
         write_json(args.output, payload)
         return 0
@@ -380,9 +436,12 @@ def main() -> int:
 def report_outputs(report_path: Path) -> dict[str, Any]:
     """Return workflow-output scalar values for a report JSON file."""
     data = json.loads(report_path.read_text())
+    unreadable_repos = data.get("unreadable_repos") or []
     return {
         "requires_linear_ticket": str(data["requires_linear_ticket"]).lower(),
         "requires_slack_alert": str(data["requires_slack_alert"]).lower(),
         "linear_ticket_title": data.get("linear_ticket_title") or "",
         "max_staleness_days": str(data["max_staleness_days"]),
+        "unreadable_repo_count": str(len(unreadable_repos)),
+        "unreadable_repos": ",".join(unreadable_repos),
     }
