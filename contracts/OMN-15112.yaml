@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15112"
+title: "omnibase_core needs:occ-preflight skip-vector fix (deploy-gate/verify) + occ-preflight/eligibility
+  required-context restore"
+summary: >-
+  Fan-out from OMN-15057 (explicitly out of scope there for omnibase_core). Fixes the needs:occ-preflight
+  skip-vector (vector-5) on omnibase_core's two highest-blast-radius required contexts (deploy-gate /
+  deploy-gate, verify / verify) via if: always(), and restores occ-preflight / eligibility as an independently
+  REQUIRED status check on omnibase_core dev+main branch protection (regressed since the 2026-06-25 OMN-13332
+  wiring — live readback showed it absent before this ticket's fix). This is a CI-config-only change:
+  no runtime contract, node, topic, or migration; no live deploy.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      omnibase_core PR #1499 adds if: always() to deploy-gate.yml's deploy-gate job and call-receipt-gate.yml's
+      verify job, and adds the occ-preflight / eligibility row to required-checks.yaml.
+    command: "gh pr view 1499 --repo OmniNode-ai/omnibase_core --json number,state,files"
+  - kind: "ci"
+    description: >-
+      occ-preflight / eligibility is present in required_status_checks on omnibase_core dev and main,
+      proven by reading live branch protection back via gh api.
+    command: >-
+      gh api repos/OmniNode-ai/omnibase_core/branches/dev/protection/required_status_checks --jq '.contexts'
+  - kind: "ci"
+    description: >-
+      The canonical vector-5 required-check skip-vector guard (omniclaude), run against omnibase_core's
+      real required-checks.yaml + workflows, shows the fixed contexts no longer appear in the finding
+      set (18 -> 16).
+    command: >-
+      python3 validate_no_required_check_skip_vectors.py --manifest .github/required-checks.yaml --workflows-dir
+      .github/workflows
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1499"
+    description: >-
+      omnibase_core PR #1499 opened, non-draft, targeting dev, carrying the deploy-gate.yml + call-receipt-gate.yml
+      + required-checks.yaml diff. Receipt records the PR head SHA.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-15112/dod-omnibase-core-pr-1499/command.yaml"
+  - id: "dod-required-context-restored-dev"
+    description: >-
+      occ-preflight / eligibility is present in required_status_checks.contexts on omnibase_core dev (restored
+      via gh api PATCH, verified by live readback).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-15112/dod-required-context-restored-dev/command.yaml"
+  - id: "dod-required-context-restored-main"
+    description: >-
+      occ-preflight / eligibility is present in required_status_checks.contexts on omnibase_core main
+      (restored via gh api PATCH, verified by live readback).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-15112/dod-required-context-restored-main/command.yaml"
+  - id: "dod-vector5-red-then-green"
+    description: >-
+      The canonical vector-5 required-check skip-vector guard run against omnibase_core's real files shows
+      18 findings before the fix commit and 16 after (exactly deploy-gate / deploy-gate and verify / verify
+      removed from the finding set).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-15112/dod-vector5-red-then-green/command.yaml"
