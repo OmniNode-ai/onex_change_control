@@ -178,6 +178,75 @@ printf '{"state":"CLOSED","mergedAt":null,"url":"https://example.test/pr/1033","
     assert finding.message == "OmniNode-ai/omnimarket#1033 is closed unmerged"
 
 
+def test_uncited_work_item_row_warns_by_default(tmp_path: Path) -> None:
+    plan = _write_text(
+        tmp_path,
+        "plan.md",
+        "| A5 | **N=10 is unreachable today** -- nothing computes it. | proof |\n",
+    )
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[plan],
+        workspace_root=tmp_path,
+        current_repo_root=tmp_path,
+        base_ref=None,
+        default_pr_repo=None,
+        ticket_states={},
+        require_linear=False,
+    )
+
+    # Default (two-phase rollout, OMN-15105): a warning, not a required failure --
+    # the existing row backlog must not instantly wedge the gate.
+    assert report["status"] == "pass"
+    assert report["warning_count"] == 1
+    assert report["warnings"][0]["raw_text"].startswith("A5:")
+
+
+def test_uncited_work_item_row_fails_when_flag_set(tmp_path: Path) -> None:
+    plan = _write_text(
+        tmp_path,
+        "plan.md",
+        "| A7 | Composition is currently **unrepresentable**. | proof |\n",
+    )
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[plan],
+        workspace_root=tmp_path,
+        current_repo_root=tmp_path,
+        base_ref=None,
+        default_pr_repo=None,
+        ticket_states={},
+        require_linear=False,
+        fail_on_uncited=True,
+    )
+
+    assert report["status"] == "fail"
+    assert report["failures"][0]["raw_text"].startswith("A7:")
+
+
+def test_cited_work_item_row_is_not_flagged_negative_control(tmp_path: Path) -> None:
+    plan = _write_text(
+        tmp_path,
+        "plan.md",
+        "| A2 | Root-cause DONE. OMN-14893 Done 2026-07-24 (`omnimarket#1869` "
+        "MERGED). | proof |\n",
+    )
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[plan],
+        workspace_root=tmp_path,
+        current_repo_root=tmp_path,
+        base_ref=None,
+        default_pr_repo=None,
+        ticket_states={"OMN-14893": "Done"},
+        require_linear=False,
+        fail_on_uncited=True,
+    )
+
+    assert report["status"] == "pass"
+    assert report["warning_count"] == 0
+
+
 def test_cli_emits_json_report(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

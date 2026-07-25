@@ -259,6 +259,30 @@ def _parse_ticket_claim(raw: str) -> tuple[str, str]:
     return ticket.upper(), expected
 
 
+def verify_uncited_work_item(
+    ref: ModelDocReference, *, fail_on_uncited: bool
+) -> Finding:
+    """Report a work-item row with no OMN-ticket or PR citation.
+
+    Structural, not semantic: no live lookup is possible or attempted. Two
+    -phase rollout (OMN-15105): ``warn`` by default so existing uncited rows
+    do not instantly wedge the required gate before they are cited; pass
+    ``fail_on_uncited=True`` once the current row backlog is cleared to make
+    this a hard, required failure like the other reference classes.
+    """
+    return Finding(
+        path=ref.doc_path,
+        line=ref.line_number,
+        reference_type=ref.reference_type.value,
+        raw_text=ref.raw_text,
+        status="fail" if fail_on_uncited else "warn",
+        message=(
+            "work-item row cites no OMN-ticket or PR -- not verifiable "
+            "against live state by any checker"
+        ),
+    )
+
+
 def verify_ticket_state_reference(
     ref: ModelDocReference,
     *,
@@ -310,6 +334,7 @@ def evaluate_plan_vs_live(  # noqa: PLR0913  Why: CLI options map directly to ch
     default_pr_repo: str | None,
     ticket_states: Mapping[str, str],
     require_linear: bool,
+    fail_on_uncited: bool = False,
 ) -> dict[str, Any]:
     """Evaluate plan files and return a JSON-serializable report."""
     findings: list[Finding] = []
@@ -334,16 +359,23 @@ def evaluate_plan_vs_live(  # noqa: PLR0913  Why: CLI options map directly to ch
                         require_linear=require_linear,
                     )
                 )
+            elif ref.reference_type == EnumDocReferenceType.UNCITED_WORK_ITEM:
+                findings.append(
+                    verify_uncited_work_item(ref, fail_on_uncited=fail_on_uncited)
+                )
 
     failures = [finding for finding in findings if finding.status == "fail"]
     skipped = [finding for finding in findings if finding.status == "skip"]
+    warnings = [finding for finding in findings if finding.status == "warn"]
     return {
         "status": "fail" if failures else "pass",
         "total_references": len(findings),
         "failed_count": len(failures),
         "skipped_count": len(skipped),
+        "warning_count": len(warnings),
         "failures": [finding.as_dict() for finding in failures],
         "skipped": [finding.as_dict() for finding in skipped],
+        "warnings": [finding.as_dict() for finding in warnings],
         "findings": [finding.as_dict() for finding in findings],
     }
 
@@ -392,6 +424,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail explicit ticket-state claims when Linear state cannot be verified.",
     )
+    parser.add_argument(
+        "--fail-on-uncited-work-items",
+        action="store_true",
+        help=(
+            "Treat work-item table rows with no OMN-ticket or PR citation as a "
+            "hard failure instead of a warning (OMN-15105 two-phase rollout: "
+            "flip once the current row backlog is cited)."
+        ),
+    )
     return parser
 
 
@@ -409,6 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default_pr_repo=args.default_pr_repo,
         ticket_states=ticket_states,
         require_linear=args.require_linear,
+        fail_on_uncited=args.fail_on_uncited_work_items,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 1 if report["status"] == "fail" else 0

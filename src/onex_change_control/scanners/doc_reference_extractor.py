@@ -96,6 +96,17 @@ _TICKET_STATE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Work-item table rows in planning docs (e.g. ROLLING_SEVEN_DAY_PLAN.md) use a
+# short lettered label as the first cell: ``| A5 |``, ``| B2 |``, ``| X4 |``,
+# ``| C4-wip |``. This intentionally does NOT match ticket-id-as-label tables
+# (``| OMN-14976 |``, since ``M`` is not a digit) or header/separator rows
+# (``| # |``, ``|---|``, since ``#``/``-`` are not ``[A-Z][0-9]``).
+_WORK_ITEM_ROW_PATTERN = re.compile(
+    r"^\|\s*(?P<label>[A-Z][0-9]{1,3}(?:-[a-z]+)?)\s*\|"
+)
+
+_OMN_TICKET_TOKEN_PATTERN = re.compile(r"\bOMN-[0-9]{3,6}\b", re.IGNORECASE)
+
 _TICKET_STATE_WORDS = {
     "backlog": "Backlog",
     "todo": "Backlog",
@@ -324,6 +335,52 @@ def extract_ticket_state_claims(
     return results
 
 
+def extract_uncited_work_item_rows(
+    doc_path: str, lines: list[str]
+) -> list[ModelDocReference]:
+    """Flag work-item table rows with no OMN-ticket or PR citation.
+
+    Planning docs such as ``ROLLING_SEVEN_DAY_PLAN.md`` track work in
+    ``| LABEL | Work | Proof |`` tables (``| A5 |``, ``| B2 |``, ``| X4 |``,
+    ``| C4-wip |``, ...). A row with neither an ``OMN-XXXX`` ticket nor a
+    ``repo#NNN``/``#NNN`` PR citation anywhere in its own text has no live
+    surface any checker (or session) can resolve it against.
+
+    This is deliberately a pure presence/absence structural fact -- it does
+    NOT try to classify the row's prose as "open" or "closed" (that requires
+    semantic negation judgment a regex cannot make reliably; a prototype of
+    that approach false-positived on a row that legitimately remains open
+    behind a partial landing -- see OMN-15105). A citation-free row is simply
+    unverifiable either way, which is itself the actionable finding: it is
+    exactly the shape of row most likely to silently drift stale, because
+    nothing anywhere can cross-check it.
+    """
+    results: list[ModelDocReference] = []
+    for idx, line in enumerate(lines):
+        if _is_inside_no_freshness_block(lines, idx):
+            continue
+        match = _WORK_ITEM_ROW_PATTERN.match(line)
+        if match is None:
+            continue
+        label = match.group("label")
+        has_ticket = _OMN_TICKET_TOKEN_PATTERN.search(line) is not None
+        has_pr = _PR_NUMBER_PATTERN.search(line) is not None
+        if has_ticket or has_pr:
+            continue
+        snippet = line.strip()
+        if len(snippet) > 160:
+            snippet = snippet[:157] + "..."
+        results.append(
+            ModelDocReference(
+                doc_path=doc_path,
+                line_number=idx + 1,
+                reference_type=EnumDocReferenceType.UNCITED_WORK_ITEM,
+                raw_text=f"{label}: {snippet}",
+            )
+        )
+    return results
+
+
 def extract_all_references(doc_path: str | Path) -> list[ModelDocReference]:
     """Extract all references from a documentation file.
 
@@ -349,5 +406,6 @@ def extract_all_references(doc_path: str | Path) -> list[ModelDocReference]:
     references.extend(extract_env_vars(doc_path_str, lines))
     references.extend(extract_pr_numbers(doc_path_str, lines))
     references.extend(extract_ticket_state_claims(doc_path_str, lines))
+    references.extend(extract_uncited_work_item_rows(doc_path_str, lines))
 
     return references
