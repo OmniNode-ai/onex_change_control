@@ -58,7 +58,10 @@ class TestEnumDocReferenceType:
         assert EnumDocReferenceType.LIVE_PATH_AUTHORITY == "LIVE_PATH_AUTHORITY"
 
     def test_enum_count(self) -> None:
-        assert len(EnumDocReferenceType) == 9
+        # OMN-15105 added UNCITED_WORK_ITEM (10th member): a work-item table
+        # row with no OMN-ticket or PR citation, so no live checker has
+        # anything to resolve it against.
+        assert len(EnumDocReferenceType) == 10
 
 
 @pytest.mark.unit
