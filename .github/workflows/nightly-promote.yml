@@ -55,8 +55,32 @@ jobs:
       }}
     timeout-minutes: 45
     env:
-      DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
-      REPOS_INPUT: ${{ github.event.inputs.repos || 'omniweb' }}
+      # OMN-15127: github.event.inputs is EMPTY on schedule triggers, so the old
+      # `github.event.inputs.dry_run || 'true'` unconditionally resolved to 'true'
+      # on every scheduled run — dry_run is now reachable ONLY via an explicit
+      # workflow_dispatch input. Scheduled runs default to the REAL path (fail
+      # loud if blocked, see "Plan or create promotion PRs" below); an operator
+      # can still force scheduled runs back to dry-run via the repo variable
+      # NIGHTLY_PROMOTE_FORCE_DRY_RUN without touching this file.
+      DRY_RUN: >-
+        ${{
+          github.event_name == 'workflow_dispatch'
+          && (github.event.inputs.dry_run || 'true')
+          || (vars.NIGHTLY_PROMOTE_FORCE_DRY_RUN || 'false')
+        }}
+      # OMN-15127: default repo list previously covered omniweb only. Default now
+      # covers the Tier-2 fleet (OMN-15067 census). Tier-1 repos (omnibase_core,
+      # omniclaude, onex_change_control) are excluded from the automated default
+      # per OMN-15067 scope item 2/4: the cross-repo verification step below is
+      # still a `not_run_in_mvp` stub, not a real check, so Tier-1 promotion stays
+      # manual until that lands. Override via workflow_dispatch `repos` input or
+      # the NIGHTLY_PROMOTE_REPOS repo variable.
+      REPOS_INPUT: >-
+        ${{
+          github.event.inputs.repos
+          || vars.NIGHTLY_PROMOTE_REPOS
+          || 'omnimarket,omnibase_infra,omnidash,omninode_infra,omniintelligence,omnimemory,omniweb,omnibase_spi,omnibase_compat'
+        }}
       RUNTIME_LANE: ${{ github.event.inputs.runtime_lane || 'stability-test' }}
       RUNTIME_PROFILE: ${{ github.event.inputs.runtime_profile || 'stability-test' }}
       VERIFIER_IDENTITY: ${{ github.event.inputs.verifier_identity || 'nightly-promotion-bot@occ' }}
@@ -207,8 +231,13 @@ jobs:
           PY
           )"
           if [ "$promotable" != "true" ]; then
-            echo "Promotion gates are blocked; no promotion PRs will be created."
-            exit 0
+            # OMN-15127: this is the real (non-dry-run) path — a blocked gate here
+            # must fail the run, not report green while silently promoting nothing.
+            # A green "success" with zero PRs created is exactly the no-op failure
+            # mode this ticket exists to close off.
+            echo "::error::Promotion gates are blocked on the real (non-dry-run) path; no promotion PRs were created. Failing the run so this is not a silent no-op. See $EVIDENCE_DIR/promotion_gate_status.json for the blocking reason(s)."
+            cat "$EVIDENCE_DIR/promotion_gate_status.json"
+            exit 1
           fi
 
           python - "$EVIDENCE_DIR/intended_promotion_manifest.json" > /tmp/prs.tsv <<'PY'
