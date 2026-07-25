@@ -224,7 +224,25 @@ def test_uncited_work_item_row_fails_when_flag_set(tmp_path: Path) -> None:
     assert report["failures"][0]["raw_text"].startswith("A7:")
 
 
-def test_cited_work_item_row_is_not_flagged_negative_control(tmp_path: Path) -> None:
+def test_cited_work_item_row_is_not_flagged_negative_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hermetic per the sibling test_closed_unmerged_pr_fails_with_fake_gh: the
+    # row cites `omnimarket#1869`, which routes through verify_pr_reference ->
+    # a real `gh pr view` subprocess. Stub gh on PATH so the assertion does not
+    # depend on ambient `gh` auth/network (was CI-red with no GH_TOKEN in the
+    # product-readiness-shadow job while passing locally with authenticated gh).
+    gh = _write_text(
+        tmp_path,
+        "gh",
+        """#!/usr/bin/env bash
+printf '{"state":"MERGED","mergedAt":"2026-07-24T00:00:00Z",'
+printf '"url":"https://example.test/pr/1869","headRefOid":"abc"}'
+""",
+    )
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+
     plan = _write_text(
         tmp_path,
         "plan.md",
