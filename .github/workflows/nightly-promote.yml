@@ -216,8 +216,10 @@ jobs:
         run: |
           set -euo pipefail
           created_urls="$EVIDENCE_DIR/created_promotion_pr_urls.json"
+          skipped_repos="$EVIDENCE_DIR/skipped_promotion_repos.json"
           promotion_batch_id="${{ steps.batch.outputs.batch_id }}"
           printf '{}\n' > "$created_urls"
+          printf '[]\n' > "$skipped_repos"
           if [ "$DRY_RUN" = "true" ]; then
             echo "Dry run enabled; promotion PRs will be planned only."
             exit 0
@@ -261,8 +263,24 @@ jobs:
 
           printf '{\n' > "$created_urls"
           first=true
+          skipped=()
           while IFS=$'\t' read -r repo base head dev_sha main_sha; do
             [ -n "$repo" ] || continue
+
+            # OMN-15127 follow-up (Linear comment 2d097c45): generate-promotion-manifest
+            # populates dev_head_sha/main_base_sha with no equality check, and this loop
+            # previously called `gh pr create` unconditionally under `set -euo pipefail`.
+            # GitHub rejects a PR create with zero commits between branches, so a single
+            # Tier-2 repo already at dev==main parity would abort the ENTIRE job — a
+            # spurious hard FAILURE indistinguishable in the run log from a real
+            # blocked-gate failure, for an entirely benign "nothing to promote" state.
+            # Parity is a graceful, loudly-logged per-repo success, not a job-level error.
+            if [ "$dev_sha" = "$main_sha" ]; then
+              echo "::notice title=nothing-to-promote::${repo} is already at dev==main parity (${dev_sha}); skipping PR create for this repo, no-op success."
+              skipped+=("$repo")
+              continue
+            fi
+
             if gh pr list --repo "OmniNode-ai/${repo}" --base "$base" --head "$head" --state open --json url --jq '.[0].url // empty' | grep -q .; then
               url="$(gh pr list --repo "OmniNode-ai/${repo}" --base "$base" --head "$head" --state open --json url --jq '.[0].url')"
             else
@@ -277,7 +295,25 @@ jobs:
                 printf '%s\n' "Evidence artifacts are attached to workflow run \`${GITHUB_RUN_ID}\`."
                 printf '\nEvidence-Ticket: OMN-11732\n'
               } > "$body"
-              url="$(gh pr create --repo "OmniNode-ai/${repo}" --base "$base" --head "$head" --title "$title" --body-file "$body")"
+              create_stderr="$(mktemp)"
+              if url="$(gh pr create --repo "OmniNode-ai/${repo}" --base "$base" --head "$head" --title "$title" --body-file "$body" 2>"$create_stderr")"; then
+                :
+              else
+                create_status=$?
+                create_stderr_text="$(cat "$create_stderr")"
+                echo "$create_stderr_text" >&2
+                if printf '%s' "$create_stderr_text" | grep -qi "No commits between"; then
+                  # Defensive fallback: dev/main advanced between manifest generation
+                  # and PR-create time so the sha comparison above missed the race, but
+                  # GitHub itself confirms there is nothing to promote. Same graceful
+                  # skip classification as the parity check above — not a real failure.
+                  echo "::notice title=nothing-to-promote::${repo} reports no commits between ${base} and ${head} at PR-create time; skipping, no-op success."
+                  skipped+=("$repo")
+                  continue
+                fi
+                echo "::error::gh pr create failed for ${repo} (exit ${create_status}); this is a real promotion failure, not a parity no-op. See stderr above."
+                exit "$create_status"
+              fi
             fi
             if [ "$first" = true ]; then first=false; else printf ',\n' >> "$created_urls"; fi
             python - "$repo" "$url" >> "$created_urls" <<'PY'
@@ -287,6 +323,16 @@ jobs:
           PY
           done < /tmp/prs.tsv
           printf '\n}\n' >> "$created_urls"
+
+          python - "${skipped[@]:-}" > "$skipped_repos" <<'PY'
+          import json
+          import sys
+          print(json.dumps([r for r in sys.argv[1:] if r]))
+          PY
+
+          if [ "${#skipped[@]}" -gt 0 ]; then
+            echo "::notice title=nothing-to-promote-summary::${#skipped[@]} repo(s) skipped this batch (already at dev==main parity, graceful no-op): ${skipped[*]}"
+          fi
 
       - name: Write per-repo promotion results
         shell: bash
