@@ -6,7 +6,9 @@
 DoD tests:
   - test_grant_file_codeowners_required: CODEOWNERS owns the exact path
   - test_grant_file_parses_as_valid_yaml: file is valid YAML
-  - test_grant_file_entries_is_empty_list_at_rest: entries: [] at rest
+  - test_grant_file_entries_are_empty_or_well_formed_and_unexpired: entries
+    is [] OR every present entry is well-formed and unexpired (OMN-13424
+    single-use grant lifecycle; matches validate-prod-promotion-grants.yml)
   - test_schema_accepts_well_formed_entry: well-formed entry passes validation
   - test_schema_rejects_missing_required_fields: missing fields are rejected
   - test_schema_rejects_invalid_grant_id_format: bad grant_id rejected
@@ -19,7 +21,7 @@ DoD tests:
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -212,15 +214,51 @@ class TestGrantFileAtRest:
             "grants/prod_promotion_grants.yaml must have top-level key 'entries'"
         )
 
-    def test_grant_file_entries_is_empty_list_at_rest(self) -> None:
-        """At rest (no active grants), entries must be an empty list."""
+    def test_grant_file_entries_are_empty_or_well_formed_and_unexpired(self) -> None:
+        """At rest, entries is [] OR every present entry is well-formed and unexpired.
+
+        OMN-13418/OMN-13424 introduced a single-use, time-bound grant
+        lifecycle: a live, well-formed, unexpired grant legitimately sits in
+        this file between being landed on a branch and being consumed by the
+        gated redeploy path. The authoritative live gate for this file
+        (.github/workflows/validate-prod-promotion-grants.yml) already
+        encodes exactly that rule — it accepts a well-formed, unexpired
+        entry and only FAILs on malformed entries or ones past their
+        absolute `expires_at` (which must be pruned, per its own OMN-13424
+        comment: "prune it ... at rest entries: []").
+
+        This test originally asserted the stronger, unconditional
+        `entries == []` (authored in PR #3444, 2026-06-21, when the file had
+        never yet carried a grant and this was scaffolding-only). That
+        assertion was never revisited after the single-use grant lifecycle
+        landed, so it silently contradicted the file's own live validator:
+        any PR landing a real (unexpired) grant — the entire point of the
+        registry — would fail this test while passing the actual
+        `validate-prod-promotion-grants` gate. Tightened here to check the
+        real invariant instead of a stale snapshot of "the file happens to
+        be empty right now."
+        """
         content = _GRANT_FILE.read_text(encoding="utf-8")
         data = yaml.safe_load(content)
         entries = data.get("entries")
         assert isinstance(entries, list), (
             f"'entries' must be a list, got {type(entries)}"
         )
-        assert entries == [], f"At rest, 'entries' must be [], got {entries!r}"
+        if not entries:
+            return
+        errors = _validate_entries(entries)
+        assert not errors, f"At rest, every present entry must be well-formed: {errors}"
+        now = datetime.now(UTC)
+        for idx, entry in enumerate(entries):
+            expires = _parse_iso8601(entry["expires_at"])
+            assert expires is not None, (
+                f"Entry[{idx}]: expires_at failed to parse: {entry.get('expires_at')!r}"
+            )
+            assert expires > now, (
+                f"Entry[{idx}]: at rest, a present entry must not be expired "
+                f"(expires_at={entry.get('expires_at')!r}) — an expired grant "
+                "must be pruned (OMN-13424)"
+            )
 
 
 class TestGrantSchemaValidation:
