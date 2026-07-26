@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14974"
+title: "Cut staging workflows over to the runtime-owned MSK edge"
+summary: >
+  Route OmniDash workflow commands through the generic runtime HTTP edge, declare truthful renderer projection
+  completion, and add the staging Service and transport guardrails needed to retire direct Redpanda ownership
+  after live validation.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - events
+  - topics
+  - protocols
+  - public_api
+evidence_requirements:
+  - kind: "tests"
+    description: "OmniDash runtime-edge typecheck and route tests pass."
+    command: "npm run check && npm run test:run"
+  - kind: "tests"
+    description: "Staging manifests, verification scripts, and repository tests pass."
+    command: "uv run pytest tests/ -q"
+  - kind: "manual"
+    description: >
+      After merge, deploy exact image digests to staging, prove runtime /skill workflows over MSK, and
+      only then scale Redpanda workloads to zero while preserving rollback state.
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market1909-terminal-contract-dea20a4c"
+    description: >
+      omnimarket PR #1909 declares the renderer snapshot as the projection's terminal event at its exact
+      reviewed head, so the runtime edge cannot acknowledge completion before durable materialization.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1909 --repo OmniNode-ai/omnimarket --json headRefOid,files --jq .headRefOid)"
+          = "dea20a4ced608c9473f008594e60a18c0ea2222c" && gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_renderer_capability_projection/contract.yaml?ref=dea20a4ced608c9473f008594e60a18c0ea2222c'
+          --jq .content | base64 -d | grep -Fq 'terminal_event: onex.evt.omnimarket.renderer-capability-projection-snapshot.v1'
+  - id: "dod-dash271-runtime-edge-cb7eecdb"
+    description: >
+      OmniDash PR #271 uses the generic runtime HTTP edge and removes the in-process Kafka producer at
+      its exact reviewed head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 271 --repo OmniNode-ai/omnidash --json headRefOid,files --jq .headRefOid)"
+          = "cb7eecdb5db1f9db4a5a9277cb200d82ed3c2801" && gh api 'repos/OmniNode-ai/omnidash/contents/server/runtime-skill-client.ts?ref=cb7eecdb5db1f9db4a5a9277cb200d82ed3c2801'
+          --jq .content | base64 -d | grep -Fq '/skill' && ! gh api 'repos/OmniNode-ai/omnidash/contents/server/kafka-producer.ts?ref=cb7eecdb5db1f9db4a5a9277cb200d82ed3c2801'
+  - id: "dod-infra680-runtime-service-3a586fd0"
+    description: >
+      omninode_infra PR #680 exposes the staging runtime Service and configures OmniDash for the runtime
+      edge without direct broker variables at its exact reviewed head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 680 --repo OmniNode-ai/omninode_infra --json headRefOid,files --jq .headRefOid)"
+          = "3a586fd71c2ba20edaad603fc76143f2efc1d777" && gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/service-omninode-runtime.yaml?ref=3a586fd71c2ba20edaad603fc76143f2efc1d777'
+          --jq .content | base64 -d | grep -Fq 'name: omninode-runtime' && dash_manifest="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/omnidash/deployment.yaml?ref=3a586fd71c2ba20edaad603fc76143f2efc1d777'
+          --jq .content | base64 -d)" && printf '%s\n' "$dash_manifest" | grep -Fq -- '- name: OMNIDASH_RUNTIME_EDGE_URL'
+          && ! printf '%s\n' "$dash_manifest" | grep -Eq -- '- name: (KAFKA_BROKERS|REDPANDA_ADMIN_URL|OMNIDASH_EVENT_BUS_BOOTSTRAP_SERVERS)$'
