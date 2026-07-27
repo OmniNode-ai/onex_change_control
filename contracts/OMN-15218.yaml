@@ -1,0 +1,106 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15218"
+title: "Lane-deploy attribution + live prod-grant interlock in the sanctioned deploy path"
+summary: >
+  OCC companion evidence for OMN-15218. Twice in two days the .201 stability-test lane was rebuilt/restarted
+  with no attributable trigger while live, unconsumed prod-promotion grants were pinned to the digests
+  that rebuild replaced (2026-07-26T21:45:15Z, grant-6dbeae94; 2026-07-27T10:05:43-10:09:07Z, batch b551aa00).
+  Neither event named an actor, a reason, or a ticket, and neither was blocked. Two occurrences make it
+  a mechanism gap, not an incident: the OMN-13418 prod-promotion gate resolves "stability-proven" from
+  the LIVE stability container at grant-issuance time, so an unattributed stability rebuild between issuance
+  and consumption erodes the premise every live grant rests on. The product change (omnibase_infra, commit
+  a9fe9b6f9ff8fe29a929d103b6788a1c023ca403) adds the mechanism in the sanctioned deploy path only — no
+  lane was touched by this work; stability stayed frozen and prod read-only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >
+      Product diff scope and green gates for the omnibase_infra change that carries the mechanism.
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files,state"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15218-interlock-mechanism-present"
+    description: >
+      Falsifiable product probe at commit a9fe9b6f9ff8fe29a929d103b6788a1c023ca403: the preflight exists
+      and carries BOTH halves of the mechanism — the stability-scoped grant interlock (GRANT_INTERLOCK_LANES)
+      and the fail-closed unreadable-state path (UNREADABLE_ACK_TOKEN). A version with attribution but
+      no interlock, or an interlock that treats unreadable grant state as "no grants", fails this probe.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/preflight_lane_deploy_attribution.py?ref=a9fe9b6f9ff8fe29a929d103b6788a1c023ca403'
+          --jq .content | base64 -d | grep -q 'GRANT_INTERLOCK_LANES' && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/preflight_lane_deploy_attribution.py?ref=a9fe9b6f9ff8fe29a929d103b6788a1c023ca403'
+          --jq .content | base64 -d | grep -q 'UNREADABLE_ACK_TOKEN'
+  - id: "dod-omn15218-deploy-path-wired"
+    description: >
+      The mechanism is WIRED, not merely present: deploy-runtime.sh defines and calls guard_lane_deploy_attribution(),
+      and refresh_stability_lane.sh runs the same preflight before its own first mutation (the preflight
+      docker tag / ambient-clone checkout). A detection script nobody invokes is the failure mode this
+      probe rules out.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          [ "$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/deploy-runtime.sh?ref=a9fe9b6f9ff8fe29a929d103b6788a1c023ca403'
+          --jq .content | base64 -d | grep -c 'guard_lane_deploy_attribution')" -ge 2 ] && gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/refresh_stability_lane.sh?ref=a9fe9b6f9ff8fe29a929d103b6788a1c023ca403'
+          --jq .content | base64 -d | grep -q 'preflight_lane_deploy_attribution.py'
+  - id: "dod-omn15218-hermetic-suite-green-on-200"
+    description: >
+      47 hermetic tests green on .200 (stickybeatz-studio, the canonical push/gate host): `uv run pytest
+      tests/scripts/test_preflight_lane_deploy_attribution.py tests/scripts/test_deploy_runtime_lane_attribution.py
+      -q` -> "47 passed". No lane contact, no network, no real onex_change_control@main dependency: grant
+      registries are real files, evaluation time is pinned, records land in tmp_path, the @main resolution
+      runs against a real local git remote, and the bash seam is EXECUTED (the guard function is extracted
+      from deploy-runtime.sh and run against a stub preflight) rather than grepped. Broader gates on the
+      same host: tests/scripts 433 passed / 4 skipped; governed-selector scope tests/unit 22053 passed
+      / 40 skipped; ruff format+check, mypy, and pre-commit (changed files) clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/test_preflight_lane_deploy_attribution.py?ref=a9fe9b6f9ff8fe29a929d103b6788a1c023ca403'
+          --jq .content | base64 -d | grep -q 'test_live_grant_refuses_stability_deploy'
+  - id: "dod-omn15218-red-green-both-directions"
+    description: >
+      RED proven against exists-but-wrong, not against absence alone. (1) Reverting the deploy-path wiring
+      to dev HEAD fails 10/10 wiring tests, including the executed bash-seam tests. (2) Simulating the
+      pre-OMN-15218 semantics inside the preflight (attribution_required forced False, grant state never
+      consulted — i.e. "deploy proceeds silently with live grants and no attribution") fails 25 of 47
+      behavior tests. Both go green with the mechanism in place.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/test_deploy_runtime_lane_attribution.py?ref=a9fe9b6f9ff8fe29a929d103b6788a1c023ca403'
+          --jq .content | base64 -d | grep -q 'test_guard_aborts_the_deploy_when_the_preflight_refuses'
+  - id: "dod-omn15218-live-interlock-readback"
+    description: >
+      Live readback against REAL grant state, obtained read-only with zero lane contact: the preflight
+      run with --check-only against onex_change_control@main (grants file at commit 7684288344d80421479440e97aa4de23128dba76,
+      sha256 0e0ead9c24e3fe4c5667c9a29af7d6c879aac4197d6cff0a2fc1f4e93c872b36) resolved the three live
+      batch-b551aa00-7268-42b7-a193-b9156e6d39dc grants — grant-68c191b0-98a8-4f10-aef9-8a5479fbf230 (digest
+      sha256:bb3bab3742518b22d985e314b7bbcab1cf7b07e796b253047a78d4fa3bf2ce29), grant-6cea9b85-db18-409b-a994-c11f80744fc6
+      (sha256:b94b0386b74225cc50baebc59eb70c944400a149806be7a7efe3a31e3f583b9e), grant-80624116-63eb-4cff-b52b-6fea7d6f5d60
+      (sha256:17b1f7c55c985fa3f0f602e9c041e15cbd5ac4e68ed6fca2cc2d29877bfb3565), all expiring 2026-07-28T23:59:00Z
+      — and REFUSED with exit 1, naming each grant and the exact ONEX_DEPLOY_GRANT_ACK value required
+      to override on the record. Those are precisely the grants that were live when the 2026-07-27T10:05Z
+      unattributed restart happened: had this mechanism existed, that restart would have been refused
+      instead of silent. Re-runnable read-only (writes nothing, contacts no lane).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/onex_change_control/contents/grants/prod_promotion_grants.yaml?ref=main'
+          --jq .content | base64 -d | grep -q 'batch-b551aa00-7268-42b7-a193-b9156e6d39dc'
