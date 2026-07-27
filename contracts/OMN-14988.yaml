@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14988"
+title: "check_no_infra_inmemory_import.sh slash-normalization bug false-positives on macOS"
+summary: >-
+  OCC companion for the OMN-14988 fix in omnibase_infra. The no-infra-inmemory-import gate (OMN-7077/OMN-13419)
+  reported 8 violations on a clean dev tree on macOS, all 8 of them entries in the script's own ALLOWLIST
+  — zero true positives. BSD grep reports the search root "src/" as "src//" in every hit, and the doubled-slash
+  normalization used a bash-version-dependent substitution that retains a literal backslash under bash
+  3.2 (stock macOS /usr/bin/env bash), so no normalized path could ever match the single-slash ALLOWLIST.
+  Fix holds the pattern and replacement in variables and loops until no doubled slash remains; regression
+  coverage asserts normalization per bash interpreter, drives the real script end to end against pinned
+  BSD-style src// hits (allowlisted set must exit 0, non-allowlisted violation must still exit 1), and
+  adds a static ratchet against reintroducing the fragile form.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "Product PR diff scope is the gate script plus its regression test"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "tests"
+    description: "Gate regression suite green under every bash present on the host"
+    command: "uv run pytest tests/unit/scripts/validation/test_check_no_infra_inmemory_import.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-14988-gate-clean-tree-exit-zero"
+    description: >-
+      The reported symptom is gone: the gate exits 0 on a clean tree under bash 3.2, the interpreter `#!/usr/bin/env
+      bash` resolves to on stock macOS and the one that produced 8/8 false positives. Verified on .200
+      (stickybeatz-studio) and on the local macOS host at product commit c9ca7eb1.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          /bin/bash scripts/validation/check_no_infra_inmemory_import.sh
+  - id: "dod-omn-14988-normalization-regression-red-green"
+    description: >-
+      Regression suite is RED against the pre-fix script and GREEN after: 13 failed / 6 passed on the
+      pre-fix script, 19 passed on the fixed script, same test file both runs. The bash-3.2-conditional
+      cases (test_gate_exits_zero_on_bsd_grep_doubled_slash_hits, test_gate_still_flags_non_allowlisted_doubled_slash_hit)
+      fail on /bin/bash and pass on bash 5.3, which is the defect signature itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/unit/scripts/validation/test_check_no_infra_inmemory_import.py -q -p no:randomly
+  - id: "dod-omn-14988-gate-not-neutered"
+    description: >-
+      The fix does not weaken the gate it repairs: a non-allowlisted import arriving with the same doubled-slash
+      prefix is still reported and the script still exits 1.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/unit/scripts/validation/test_check_no_infra_inmemory_import.py -q -k test_gate_still_flags_non_allowlisted_doubled_slash_hit
+  - id: "dod-omn-14988-governed-selection-green"
+    description: >-
+      Governed selector (scripts/ci/detect_test_paths.py) resolved the change to tests/unit/scripts/;
+      that selection is green on .200 — 840 passed, 0 failed. Clean-dev baseline for the same selection
+      was 8 failed, one of which was this defect failing the pre-existing gate test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/ -q -n auto"
+  - id: "dod-omn-14988-hook-satisfiable-without-bypass"
+    description: >-
+      The blocker this ticket escalated on is retired: the product commit was created with the full pre-commit
+      suite running, and "Block infra-path EventBusInmemory imports (OMN-7077)" passed. No --no-verify
+      and no skip token were used, where the pre-fix gate could not be cleared even by a zero-diff commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pre-commit run no-infra-inmemory-import --all-files
+  - id: "dod-omn-14988-shellcheck-clean"
+    description: "Modified shell script passes shellcheck (OMN-14761 shell-hygiene gate) on .200."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "shellcheck -x scripts/validation/check_no_infra_inmemory_import.sh"
