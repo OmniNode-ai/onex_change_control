@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15235"
+title: "omnimemory: remove the non-dispatchable index -> HandlerQdrant route from node_memory_retrieval_effect
+  and port the boot-resolvability gate"
+summary: >-
+  OCC evidence companion for OMN-15235. node_memory_retrieval_effect declared an `index` operation routed
+  to HandlerQdrant, a target that fails both boot-gate predicates (no handle/handle_async entrypoint;
+  a required default-less `config` ctor param outside the injectable set). The ticket offered three dispositions;
+  the code rules out the OMN-15227 repoint precedent, because HandlerMemoryRetrieval.execute() has no
+  `index` branch and closes with assert_never(request.operation), and because ModelMemoryRetrievalRequest.operation
+  -- the node's declared input_model -- is Literal['search', 'search_text', 'search_graph'], so an `index`
+  request is not constructible at all. Disposition taken is option 3: remove the route and the `index`
+  literal from validation_rules.constraint_definitions.operation. HandlerQdrant itself is retained (it
+  was never wired in production and is exercised directly by its own unit and golden-chain tests); only
+  the false ROUTE is removed. The omnimarket boot-resolvability gate (OMN-13551 / OMN-13603) is ported
+  into omnimemory, whose contracts the omnimarket scan root never covered -- the reason this defect was
+  latent rather than red. _UNWIRED_DEPENDENCY_ALLOWLIST stays empty; padding it was the explicitly rejected
+  fix.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "Product PR diff scope present on OmniNode-ai/omnimemory"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-15235-red-to-green"
+    description: >-
+      RED-to-GREEN against the real gate predicate on the real tree. The ported boot-resolvability gate
+      fails on unmodified omnimemory dev 887dc679 with exactly one quarantine -- node_memory_retrieval_effect::index
+      -> HandlerQdrant, required-unresolvable=['config'] -- and passes after the route is removed. The
+      RED is produced by the OMN-13551/OMN-13603 predicate itself (_required_non_injectable_params over
+      the contract-declared target), not by a surrogate assertion.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnimemory/contents/tests/test_handler_routing_boot_resolvable.py?ref=028a01b1750ed4082dd09626384dd3ea23d5424b'
+          --jq .content | base64 -d | grep -q '_required_non_injectable_params'"
+  - id: "dod-omn-15235-route-and-literal-removed"
+    description: >-
+      Seam readback on the merged-branch ref: node_memory_retrieval_effect/contract.yaml declares no `index`
+      routing entry AND no 'index' token in validation_rules.constraint_definitions.operation, so the
+      contract's operation set now matches ModelMemoryRetrievalRequest.operation field-by-field. Both
+      places, not one -- removing only the route would leave the literal advertising an operation the
+      DTO rejects.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnimemory/contents/src/omnimemory/nodes/node_memory_retrieval_effect/contract.yaml?ref=028a01b1750ed4082dd09626384dd3ea23d5424b'
+          --jq .content | base64 -d | python3 -c \"import sys,yaml; d=yaml.safe_load(sys.stdin); ops={e.get('operation')
+          for e in d['handler_routing']['handlers']}; lit=str(d['validation_rules']['constraint_definitions']['operation']);
+          sys.exit(0 if 'index' not in ops and 'index' not in lit else 1)\""
+  - id: "dod-omn-15235-handler-qdrant-retained"
+    description: >-
+      No capability regression: HandlerQdrant and its `index` implementation are retained in the tree
+      and still exercised directly by tests/unit/nodes/test_handler_qdrant.py and tests/integration/test_golden_chain_qdrant_ingestion.py.
+      The route was never a live path -- HandlerMemoryRetrieval.initialize() still raises NotImplementedError
+      on the non-stub branch, so HandlerQdrant had no production wiring with or without the routing entry.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnimemory/contents/src/omnimemory/nodes/node_memory_retrieval_effect/handlers/handler_qdrant.py?ref=028a01b1750ed4082dd09626384dd3ea23d5424b'
+          --jq .content | base64 -d | grep -q '_OP_INDEX'"
+  - id: "dod-omn-15235-full-gates-200"
+    description: >-
+      Full local gates on .200 per rule 11a (patch-transfer with sha256 readback on every changed file,
+      so the gates ran on the edited copy and not an unmodified one): full pytest suite 2541 passed /
+      198 skipped, ruff format --check and ruff check clean over tests/ and src/, mypy --strict clean
+      on 310 source files, pre-commit clean on the changed files.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnimemory/commits/028a01b1750ed4082dd09626384dd3ea23d5424b'
+          --jq .sha"
