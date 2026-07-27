@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15228"
+title: "B1 (omnimarket): container-driven DI for HandlerCodeEmbeddingEffect"
+summary: >
+  OCC companion evidence for omnimarket branch jonah/omn-15228-container-di at commit 1e174b126fc2fb1bb981805981ecb69e6bc4e37a.
+  Slice B1 of OMN-15027: HandlerCodeEmbeddingEffect took a required, default-less repository ctor param
+  outside the boot resolver KNOWN_INJECTABLE set (event_bus, container, ownership_query), so it would
+  quarantine at boot and trip the OMN-13551 guard the moment the node contract moves to the nested handler
+  schema. The ctor now takes only the injectable container; ProtocolCodeEntityRepository is resolved at
+  the effect boundary inside handle() and fails loud when no provider is registered. The def-B handle
+  signature is unchanged. Ctor-shape only — the contract.yaml nested conversion is the sequential B3 slice,
+  and provisioning a production ProtocolCodeEntityRepository (zero implementations exist repo-wide) is
+  tracked in OMN-15230; this companion claims no runtime functionality. Seam deliverable (changed): __init__(self,
+  container: ModelONEXContainer, qdrant_client: Any | None = None). Seam deliverable (unchanged, definition-B):
+  handle(payload: ModelCodeEmbeddingRequest) -> ModelCodeEmbeddingResult.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "Product PR CI green on omnimarket branch jonah/omn-15228-container-di."
+    command: "gh pr checks ${PR_NUMBER} --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15228-container-ctor-1e174b12"
+    description: >
+      Falsifiable seam probe at product commit 1e174b126fc2fb1bb981805981ecb69e6bc4e37a: the HandlerCodeEmbeddingEffect
+      constructor takes the injectable container (container: ModelONEXContainer) and no longer takes the
+      non-injectable repository: ProtocolCodeEntityRepository param that caused the boot quarantine. Deterministic
+      commit-sha bind, not a branch head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_code_embedding_effect/handlers/handler_code_embedding_effect.py?ref=1e174b126fc2fb1bb981805981ecb69e6bc4e37a'
+          --jq .content | base64 -d | grep -q 'container: ModelONEXContainer'
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_code_embedding_effect/handlers/handler_code_embedding_effect.py?ref=1e174b126fc2fb1bb981805981ecb69e6bc4e37a'
+          --jq .content | base64 -d | grep -q 'repository: ProtocolCodeEntityRepository,'
+  - id: "dod-omn15228-boot-proof-test-1e174b12"
+    description: >
+      Durable proof test exists in the CI-collected tree at the same product commit: tests/nodes/node_code_embedding_effect/test_boot_resolvable_container_di.py
+      imports the real OMN-13551 gate predicate _required_non_injectable_params from tests/test_handler_routing_boot_resolvable.py
+      and asserts it returns [] for the real handler class. It is placed under tests/ (not the node-local
+      src/.../tests/) because CI runs pytest tests/ and the governed selector maps only tests/ paths.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/tests/nodes/node_code_embedding_effect/test_boot_resolvable_container_di.py?ref=1e174b126fc2fb1bb981805981ecb69e6bc4e37a'
+          --jq .content | base64 -d | grep -q '_required_non_injectable_params(HandlerCodeEmbeddingEffect)
+          == \[\]'
+  - id: "dod-occ-self"
+    description: >
+      OCC companion self-bind for OMN-15228 (deterministic commit-sha bind, no PR-number prediction).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-15228/dod-occ-self/command.yaml"
