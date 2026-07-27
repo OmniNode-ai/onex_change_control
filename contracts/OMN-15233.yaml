@@ -1,0 +1,39 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15233"
+title: "fix(runners): recalibrate #2194 container healthcheck + detect PPID-1 orphans, rate-based crash
+  loops, reap before respawn"
+summary: >-
+  The OMN-13915 runner container healthcheck landed by omnibase_infra PR #2194 was miscalibrated on the
+  healthy path and inverted on the failure mode it exists to catch. (a) RUNNER_HEALTH_MAX_DIAG_AGE_SECONDS=900
+  sat far below the ~50-minute IDLE _diag write cadence (only the OAuth/AAD token refresh writes _diag
+  when a runner has no job), so an idle runner read unhealthy for ~35 of every 50 minutes by threshold
+  arithmetic — the 2026-07-27 "13 -> 37 -> 59 unhealthy growth" while the GitHub registry reported 64/64
+  online throughout. (b) An orphaned Runner.Listener reparented to PPID 1 keeps the GitHub broker session;
+  the watchdog's replacement crash-loops every ~5 min on TaskAgentSessionConflictException and each crash
+  mints a fresh Runner_*.log, keeping the _diag mtime fresh — so the real zombie scored HEALTHY forever
+  (runners 1/43/55/57, 88-234 log files vs 3-7 normal, found only by process scan). This ticket raises
+  the threshold to 4500s with an inline justification, fails the healthcheck on duplicate listeners or
+  any listener with PPID 1, adds a RATE-based (explicitly not cumulative) crash-loop layer over Runner_*.log
+  files created per hour, makes the entrypoint watchdog reap a surviving listener before spawning a replacement,
+  and records the interim operating rule (cross-check the GitHub runner registry before any restart sweep)
+  in the runbook. Code + PR only — NO live-fleet mutation, no lane mutation, no container recreate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "occ-self-bind-omn-15233"
+    description: >-
+      Self-binding OCC receipt: the onex_change_control PR carrying this OMN-15233 contract. Verified
+      independently of the authoring agent by the OCC contract validator (uv run validate-yaml), not by
+      the author asserting its own correctness. The consuming-PR evidence item is added to this same PR
+      in a follow-up commit once omnibase_infra PR #2492's CI has run — CI is the independent verifier
+      for that item and cannot run before the PR exists.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-15233/occ-self-bind-omn-15233/command.yaml"
