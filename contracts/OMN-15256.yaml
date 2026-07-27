@@ -1,87 +1,98 @@
 ---
-schema_version: "1.0.0"
-ticket_id: "OMN-15256"
-title: "Post-deploy business proof gate for onex-dev staging (terminal, fail-closed)"
-summary: >-
-  OCC companion for omninode_infra's OMN-15256 change: a TERMINAL post-deploy business-proof stage in
-  deploy-onex-dev.yml plus its decision engine (scripts/evaluate_business_proof.py), I/O driver (scripts/post-deploy-business-proof.sh),
-  and hermetic tests. Friction report 2026-07-27 §Recommended-2. Evidence below is STATIC readback of
-  the product commit plus hermetic test results — no live proof run has executed the gate against staging
-  yet; that is OMN-15101 and is deliberately NOT claimed here.
+schema_version: 1.0.0
+ticket_id: OMN-15256
+title: Post-deploy business proof gate for onex-dev staging (terminal, fail-closed)
+summary: 'OCC companion for omninode_infra''s OMN-15256 change: a TERMINAL post-deploy business-proof
+  stage in deploy-onex-dev.yml plus its decision engine (scripts/evaluate_business_proof.py), I/O driver
+  (scripts/post-deploy-business-proof.sh), and hermetic tests. Friction report 2026-07-27 §Recommended-2.
+  Evidence below is STATIC readback of the product commit plus hermetic test results — no live proof run
+  has executed the gate against staging yet; that is OMN-15101 and is deliberately NOT claimed here. Every
+  check_value counts with awk and compares with test: grep -q closes the pipe early and trips SIGPIPE
+  (141) under set -o pipefail, and a bare `grep; test $?` dies on set -e before the test runs — both were
+  observed failing this contract''s own Contract Compliance Check. All six now pass identically under
+  a plain shell and under set -euo pipefail.'
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
-  - kind: "ci"
-    description: "Product PR CI green on omninode_infra (full tests/ suite, pre-commit, ruff)"
-    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: ci
+    description: Product PR CI green on omninode_infra (full tests/ suite, pre-commit, ruff)
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
 emergency_bypass:
   enabled: false
-  justification: ""
-  follow_up_ticket_id: ""
+  justification: ''
+  follow_up_ticket_id: ''
 dod_evidence:
-  - id: "dod-omn15256-gate-step-present-d79c6d74"
-    description: >-
-      The terminal business-proof stage exists in deploy-onex-dev.yml at product commit d79c6d74 — the
-      deploy job no longer ends at pod/health probes.
-    source: "manual"
+  - id: dod-omn15256-engine-behaviour-d79c6d74
+    description: 'BEHAVIOURAL, not an existence probe: fetches the decision engine AND its test suite
+      from product commit d79c6d74 into a clean temp dir and EXECUTES them. 69 assertions run, one RED
+      per check — a zero-token result fails while terminal status still passes, another workflow''s passing
+      projection row does not satisfy the quality gate, an absent projection row is FAIL not skip, a server-minted
+      correlation_id is FAIL, identical projection/terminal hashes are FAIL. This check goes red if the
+      engine''s logic is broken, not merely if the file is missing: run verbatim against the pre-change
+      dev SHA it exits 1.'
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
-          --jq .content | base64 -d | grep -q 'Post-deploy BUSINESS PROOF gate (OMN-15256) \[TERMINAL\]'
-
-  - id: "dod-omn15256-gate-not-advisory-d79c6d74"
-    description: >-
-      The proof stage carries no continue-on-error in its executable body (comment lines stripped, so
-      the step's own documentation of the rule cannot satisfy the check for it). An advisory gate is the
-      failure mode this ticket exists to prevent.
-    source: "manual"
+      - check_type: command
+        check_value: d=$(mktemp -d) && mkdir -p "$d/scripts" "$d/tests/scripts" && touch "$d/scripts/__init__.py"
+          "$d/tests/__init__.py" "$d/tests/scripts/__init__.py" && gh api 'repos/OmniNode-ai/omninode_infra/contents/scripts/evaluate_business_proof.py?ref=d79c6d74'
+          --jq .content | base64 -d > "$d/scripts/evaluate_business_proof.py" && gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_evaluate_business_proof.py?ref=d79c6d74'
+          --jq .content | base64 -d > "$d/tests/scripts/test_evaluate_business_proof.py" && cd "$d" &&
+          uv run --no-project --with pytest python -m pytest tests/scripts/test_evaluate_business_proof.py
+          -q -p no:cacheprovider
+  - id: dod-omn15256-gate-step-present-d79c6d74
+    description: The terminal business-proof stage exists in deploy-onex-dev.yml at product commit d79c6d74
+      — the deploy job no longer ends at pod/health probes.
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
-          --jq .content | base64 -d | awk '/Post-deploy BUSINESS PROOF gate/,/Upload business proof evidence/'
-          | grep -v '^[[:space:]]*#' | grep -q 'continue-on-error'; test $? -ne 0 #magic___^_^___line
-  - id: "dod-omn15256-skip-defaults-false-d79c6d74"
-    description: >-
-      The only skip path — the skip-business-proof workflow_dispatch input — defaults to false, so every
-      push- and workflow_run-triggered deploy runs the proof.
-    source: "manual"
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
+          --jq .content | base64 -d | awk '/Post-deploy BUSINESS PROOF gate \(OMN-15256\) \[TERMINAL\]/{n++}
+          END{print n+0}' | xargs test 1 -eq
+  - id: dod-omn15256-gate-not-advisory-d79c6d74
+    description: The proof stage carries no continue-on-error in its executable body (comment lines stripped,
+      so the step's own documentation of the rule cannot satisfy the check for it). An advisory gate is
+      the failure mode this ticket exists to prevent.
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
-          --jq .content | base64 -d | grep -A 4 'skip-business-proof:' | grep -q "default: 'false'" #magic___^_^___line
-  - id: "dod-omn15256-no-second-skip-path-d79c6d74"
-    description: >-
-      The driver script has no env-var or credential-absence skip branch — a second, invisible skip path
-      would defeat the workflow-level input.
-    source: "manual"
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
+          --jq .content | base64 -d | awk '/Post-deploy BUSINESS PROOF gate/,/Upload business proof evidence/{
+          if ($0 !~ /^[[:space:]]*#/ && $0 ~ /continue-on-error/) n++ } END{print n+0}' | xargs test 0
+          -eq
+  - id: dod-omn15256-skip-defaults-false-d79c6d74
+    description: The only skip path — the skip-business-proof workflow_dispatch input — defaults to false,
+      so every push- and workflow_run-triggered deploy runs the proof.
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/scripts/post-deploy-business-proof.sh?ref=d79c6d74'
-          --jq .content | base64 -d | grep -q 'SKIP_BUSINESS_PROOF'; test $? -ne 0 #magic___^_^___line
-  - id: "dod-omn15256-hermetic-tests-d79c6d74"
-    description: >-
-      68 hermetic tests land with the change (50 on the decision engine, 18 on the workflow YAML), covering
-      one RED per check rather than a single lumped happy path.
-    source: "manual"
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
+          --jq .content | base64 -d | awk '/skip-business-proof:/{w=4; next} w>0{ w--; if ($0 ~ /default:[[:space:]]*.false./)
+          n++ } END{print n+0}' | xargs test 1 -eq
+  - id: dod-omn15256-no-second-skip-path-d79c6d74
+    description: The driver script has no env-var or credential-absence skip branch — a second, invisible
+      skip path would defeat the workflow-level input.
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_evaluate_business_proof.py?ref=d79c6d74'
-          --jq .content | base64 -d | grep -c 'def test_' | grep -q '^50$' #magic___^_^___line
-  - id: "dod-omn15256-deploy-scope-static-d79c6d74"
-    description: >-
-      DEPLOY-SCOPE, stated honestly: this change edits the staging deploy workflow, so deploy-gate classifies
-      it deploy-required. No live staging deploy has run this gate. The verifiable deploy-scope fact at
-      this commit is that the gate is wired to the real script and receives the config that script fail-closes
-      on; the live execution is OMN-15101, post-merge.
-    source: "manual"
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/contents/scripts/post-deploy-business-proof.sh?ref=d79c6d74'
+          --jq .content | base64 -d | awk '/SKIP_BUSINESS_PROOF/{n++} END{print n+0}' | xargs test 0 -eq
+  - id: dod-omn15256-hermetic-tests-d79c6d74
+    description: 68 hermetic tests land with the change (50 on the decision engine, 18 on the workflow
+      YAML), covering one RED per check rather than a single lumped happy path.
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
-          --jq .content | base64 -d | grep -q 'scripts/post-deploy-business-proof.sh'
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_evaluate_business_proof.py?ref=d79c6d74'
+          --jq .content | base64 -d | awk '/def test_/{n++} END{print n+0}' | xargs test 50 -eq
+  - id: dod-omn15256-deploy-scope-static-d79c6d74
+    description: 'DEPLOY-SCOPE, stated honestly: this change edits the staging deploy workflow, so deploy-gate
+      classifies it deploy-required. No live staging deploy has run this gate. The verifiable deploy-scope
+      fact at this commit is that the gate is wired to the real script and receives the config that script
+      fail-closes on; the live execution is OMN-15101, post-merge.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-dev.yml?ref=d79c6d74'
+          --jq .content | base64 -d | awk '/scripts\/post-deploy-business-proof.sh/{n++} END{print n+0}'
+          | xargs test 3 -eq
