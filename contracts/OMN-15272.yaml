@@ -1,0 +1,44 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15272
+title: Unmask the psql rejection reason in the migration readiness probe
+summary: OCC companion for the OMN-15272 fix in OmniNode-ai/omninode_infra. The pre-lock readiness loop
+  in all six k8s/migrations/*-migrate.yaml runners redirected psql stdout to /dev/null and then stderr
+  to stdout, destroying the server's own rejection text. A deploy-blocking omninode-cloud-migrate failure
+  on 2026-07-27 therefore reported only 'PostgreSQL not ready after 30 attempts'. The fix replaces the
+  loop with one canonical block, byte-identical across all six runners, that prints the server's text
+  on every failed attempt and repeats the last one on the FATAL path, with the password scrubbed and the
+  text bounded.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: omninode_infra PR CI green, including repo_scripts_tests (tests/scripts/test_migration_runner_readiness_probe.py)
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omninode-infra-omn-15272-readiness-unmasked
+    description: "Binds OMN-15272 to OmniNode-ai/omninode_infra PR #709 at 9d71462c3470. The PRODUCT-OBSERVING
+      probe lives in the receipt: it reads k8s/migrations/omninode-cloud-migrate.yaml at that commit and
+      counts the canonical OMN-15272 readiness-probe marker, with the parent commit b8faa59 recorded as
+      the RED control and a ref-resolution control proving that RED is absence rather than a 404. The
+      check_value here is the receipt-status read because the onex_change_control workflow GITHUB_TOKEN
+      is repo-scoped and cannot reach the private OmniNode-ai/omninode_infra contents API — it returned
+      HTTP 404 on OCC PR #5198, run 30313577857, which BLOCKED Contract Compliance Check on a token limitation
+      rather than on the product."
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15272/dod-omninode-infra-omn-15272-readiness-unmasked/command.yaml'
+  - id: occ-self-bind-pr-5198
+    description: Binds this companion-first OCC PR to OMN-15272 so OCC merge eligibility can see a PASS
+      receipt for the evidence PR itself, while the product receipt remains bound to omninode_infra#709.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: gh pr view 5198 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number == 5198 and .state == "OPEN" and .headRefName == "jonah/omn-15272-occ-companion"'
