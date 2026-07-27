@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15232"
+title: "Fail-close the deserialization-path DLQ publish in event_bus_kafka"
+summary: >-
+  OCC companion for omnibase_infra branch jonah/omn-15232-deser-dlq-fail-closed (commit ceb33d341). EventBusKafka._consume_loop
+  awaited _publish_raw_to_dlq() on the deserialization failure path and DISCARDED the returned bool, then
+  continued; consumers built by that class run with enable_auto_commit defaulting to True, so the client
+  committed the fetch position whether or not the DLQ write landed. A failed DLQ publish on a poison message
+  was therefore a silent, committed, unrecoverable drop -- the OMN-14936 failure mode at a call site the
+  OMN-14936 fix (5x "if not dlq_persisted: return" in runtime/event_bus_subcontract_wiring.py) did not
+  cover. The required module audit found a second ungated site: _dispatch_to_subscriber discarded the
+  DLQ result on the retries-exhausted branch, and MixinKafkaDlq._publish_to_dlq returned None unconditionally,
+  so no caller could have gated on it. The fix returns the persistence bool from _publish_to_dlq, gates
+  both call sites, and -- because this loop never commits (the client does), making "withhold the commit"
+  a no-op here -- rewinds the fetch position with consumer.seek(tp, msg.offset), the same non-advancing
+  idiom KafkaTransport.nack already uses.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      RED-first proof: the new regression file fails against dev (unfixed) and passes at the fix commit.
+      Recorded in the product PR body with both run outputs.
+    command: "uv run pytest tests/unit/event_bus/test_deser_dlq_fail_closed_omn15232.py -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15232-deser-path-dlq-gated"
+    description: >-
+      Falsifiable content probe on the fix commit: the deserialization path in event_bus_kafka.py binds
+      the _publish_raw_to_dlq return value instead of discarding it, and rewinds when persistence is unconfirmed.
+      Before this commit the call was a bare "await self._publish_raw_to_dlq(", so the check is falsifiable
+      by construction against dev.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/event_bus_kafka.py?ref=ceb33d341 --jq .content | base64 -d | grep -q 'dlq_result = await self._publish_raw_to_dlq('
+  - id: "dod-omn15232-publish-to-dlq-returns-bool"
+    description: >-
+      Second ungated site closed: MixinKafkaDlq._publish_to_dlq now declares a bool return so callers
+      can gate offset advancement on real persistence. Against dev the signature is "-> None", so this
+      probe is falsifiable.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/mixin_kafka_dlq.py?ref=ceb33d341 --jq .content | base64 -d | grep -q 'OMN-15232: surface the real persistence outcome'
+  - id: "dod-omn15232-regression-test-present"
+    description: >-
+      The RED-first regression file exists at the fix commit and carries the static ratchet asserting
+      no DLQ-publish call site in event_bus_kafka.py discards its persistence result. Net-new path, so
+      falsifiable by construction.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/event_bus/test_deser_dlq_fail_closed_omn15232.py?ref=ceb33d341 --jq .content | base64 -d | grep -q 'def test_no_dlq_publish_call_site_discards_its_persistence_result'
