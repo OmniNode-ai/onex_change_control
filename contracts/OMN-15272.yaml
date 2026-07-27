@@ -1,0 +1,33 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15272
+title: Unmask the psql rejection reason in the migration readiness probe
+summary: OCC companion for the OMN-15272 fix in OmniNode-ai/omninode_infra. The pre-lock readiness loop
+  in all six k8s/migrations/*-migrate.yaml runners redirected psql stdout to /dev/null and then stderr
+  to stdout, destroying the server's own rejection text. A deploy-blocking omninode-cloud-migrate failure
+  on 2026-07-27 therefore reported only 'PostgreSQL not ready after 30 attempts'. The fix replaces the
+  loop with one canonical block, byte-identical across all six runners, that prints the server's text
+  on every failed attempt and repeats the last one on the FATAL path, with the password scrubbed and the
+  text bounded.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: omninode_infra PR CI green, including repo_scripts_tests (tests/scripts/test_migration_runner_readiness_probe.py)
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omninode-infra-omn-15272-readiness-unmasked
+    description: 'Reads the shipped omninode-cloud migration runner at 9d71462c3470 on OmniNode-ai/omninode_infra
+      and requires the canonical OMN-15272 readiness-probe block to be present. This observes the product
+      artifact, not this receipt: it returns 0 matches (exit 1) against any tree that still carries the
+      stderr-discarding loop.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/k8s/migrations/omninode-cloud-migrate.yaml?ref=9d71462c3470b496e4ed805946886c292bfb2755
+          --jq '.content' | base64 -d | grep -c 'BEGIN canonical postgres readiness probe (OMN-15272)'
