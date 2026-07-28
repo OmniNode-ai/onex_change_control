@@ -1,0 +1,89 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15271
+title: 'omnimemory: make root-level and non-unit test families selectable in the governed test selector'
+summary: 'OCC evidence companion for OMN-15271. omnimemory''s governed selector (scripts/ci/detect_test_paths.py)
+  resolved exactly two prefixes -- src/omnimemory/ and tests/unit/ -- and contributed nothing for anything
+  else, so the ~25 structural test modules at tests/ root and the tests/<area>/ packages had no path into
+  a PR-into-dev selection: a PR that added or edited one of them went green without ever collecting it,
+  and a src/omnimemory/nodes/** change never pulled in the root-level gates that read those nodes (recorded
+  live on omnimemory#417 / CI run 30310898812, selection ["tests/unit/nodes/"], Tests (1/1) success).
+  tests/conftest.py documents the root layout as deliberate, so the disposition is to teach the selector
+  the layout rather than relocate ~25 files against the repo''s own stated convention. A new required
+  test_families map declares every test location the src-module mapping cannot reach together with the
+  source prefixes that select it; a changed tests/**/*.py always contributes itself (never zero); and
+  a test location present on disk but undeclared escalates the whole PR to the full suite (undeclared_test_family),
+  so a new root test cannot be silently unselectable.'
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: Product PR diff scope present on OmniNode-ai/omnimemory
+    command: gh pr view ${PR_NUMBER} --repo ${REPO} --json files
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn-15271-red-to-green
+    description: 'RED-to-GREEN against the exists-but-wrong selector on the real tree, not a surrogate.
+      The new assertions were executed first against unmodified dev 25c829ed -- 13 failed / 33 passed,
+      with compute_selection() on the recorded omnimemory#417 file set returning ["tests/unit/nodes/"]
+      (the root gates missing) and a changed tests/test_contract_validation.py returning ["tests/unit/"],
+      which does not collect it -- reproducing CI run 30310898812 exactly rather than restating it. After
+      the fix all 49 pass. The replay case lives in tests/unit/test_detect_test_paths.py::TestOMN15235Replay
+      and drives the real compute_selection() against the repo''s real adjacency file.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/tests/unit/test_detect_test_paths.py?ref=3652e3411b9a0e26324db77997c68e9678300fa3'
+          --jq .content | base64 -d | grep -q 'class TestOMN15235Replay'
+  - id: dod-omn-15271-root-gates-now-selected
+    description: 'Seam readback on the branch ref: the src/omnimemory/nodes/ trigger reaches every root-level
+      structural gate that reads those nodes. test_families declares tests/test_contract_validation.py,
+      tests/test_contract_version.py, tests/test_node_enforcement.py, tests/test_node_imports.py, tests/unit/test_no_duplicate_node_uuids.py
+      and tests/nodes/ against src/omnimemory/nodes/, which is what turns the recorded ["tests/unit/nodes/"]
+      selection into a 7-path selection covering the gates. The check parses the committed YAML rather
+      than grepping prose.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/scripts/ci/test_selection_adjacency.yaml?ref=3652e3411b9a0e26324db77997c68e9678300fa3'
+          --jq .content | base64 -d | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin); fam=d['test_families'];
+          need={'tests/test_contract_validation.py','tests/test_contract_version.py','tests/test_node_enforcement.py','tests/test_node_imports.py','tests/unit/test_no_duplicate_node_uuids.py','tests/nodes/'};
+          sys.exit(0 if all('src/omnimemory/nodes/' in fam.get(k,{}).get('triggers',[]) for k in need)
+          else 1)"
+  - id: dod-omn-15271-fail-closed-undeclared-family
+    description: 'The mechanism, not just the rule: an undeclared test location does not merely warn --
+      compute_selection() escalates the whole PR to the full suite with reason undeclared_test_family
+      (EnumFullSuiteReason.UNDECLARED_TEST_FAMILY), proven by tmp_path-rooted unit tests for both a new
+      tests/*.py module and a new tests/<pkg>/ package. Without this, the map would rot the moment someone
+      adds a root test and the defect would return silently.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/contents/scripts/ci/detect_test_paths.py?ref=3652e3411b9a0e26324db77997c68e9678300fa3'
+          --jq .content | base64 -d | grep -q 'EnumFullSuiteReason.UNDECLARED_TEST_FAMILY'
+  - id: dod-omn-15271-full-gates-200
+    description: 'Full local gates on .200 per rule 11a, patch-transfer with sha256 readback on every
+      changed file both sides, so the gates ran on the edited copy and not an unmodified one: full pytest
+      suite 2559 passed / 199 skipped; the selector''s own governed selection for this diff (tests/scripts/
+      tests/unit/nodes/ tests/unit/scripts/ tests/unit/test_detect_test_paths.py) 370 passed; ruff format
+      --check and ruff check clean over src/ and tests/ and over scripts/ci/; mypy --strict clean on scripts/ci/;
+      pre-commit clean on the changed files. Consumer-side proof too: pytest over the new 7-path selection
+      with --splits 3 --group 1 --collect-only collected 284/850 and exited 0, so the file-grained paths
+      do not abort collection.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omnimemory/commits/3652e3411b9a0e26324db77997c68e9678300fa3'
+          --jq .sha
+  - id: dod-OmniNode-ai-omnimemory-pr-418
+    description: 'Product PR #418 on OmniNode-ai/omnimemory -- OMN-15271 governed-selector alignment (declare
+      the non-unit test families, self-select changed tests, fail closed on undeclared ones).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state
