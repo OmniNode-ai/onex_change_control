@@ -1,0 +1,133 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15274"
+title: "Truthful plugin-deploy readback — resolve the load path, not installed_plugins.json"
+summary: >
+  OCC companion evidence for omniclaude PR #1955, branch jonah/omn-15274-truthful-plugin-deploy-readback
+  at commit e09a8327bc94e49ec674e2fba50b45a37c284ba2. installed_plugins.json records onex@omninode-tools
+  at ~/.claude/plugins/cache/omninode-tools/onex/2.3.1, which is not the hook load path: for a directory-source
+  marketplace ${CLAUDE_PLUGIN_ROOT} resolves to the marketplace installLocation joined with the plugin
+  entry source, i.e. the canonical clone. The recorded cache tree was 24 days unread and carried hooks.json
+  v1.3.0 while the executing tree carried v1.5.0, so the registry is not merely stale but actively misleading
+  — it is the obvious surface to read, it returns a plausible answer, and the answer is wrong. Every prior
+  "is this hook deployed?" verdict built on it reasoned from a dead tree, including the one that reverted
+  OMN-15213 from a false Done (right conclusion, wrong evidence). Adds plugins/onex/hooks/lib/plugin_deploy_readback.py,
+  a stdlib-only read-only readback that resolves the load path through the same chain Claude Code uses
+  and reports, per agent class (main session / Task() subagent / Workflow agent() subagent), the resolved
+  root, the loaded hooks.json version, every registration with an EXEC-OK check, and the behind/ahead/dirty
+  state of the load-path tree vs upstream — the merged-not-deployed signal OMN-15244 proved. Eight named
+  tripwires, two of them alarm-level on the resolution rule itself, so the tool does not assume its own
+  inference is permanent. Also performs the correction half: every surface in omniclaude that instructed
+  reading the plugin cache to determine hook state is updated, because detection without correction leaves
+  the trap armed. Source-only lane, no runtime mutation, no plugin redeploy (activation stays operator-gated);
+  proof_class is live-readback for the on-box RED/GREEN pair and receipt-bound for the CI gates.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "Product PR #1955 CI green on OmniNode-ai/omniclaude."
+    command: "gh pr checks ${PR_NUMBER} --repo OmniNode-ai/omniclaude"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15274-resolves-marketplace-chain-e09a8327"
+    description: >
+      Falsifiable probe at product commit e09a8327bc94e49ec674e2fba50b45a37c284ba2: the readback module
+      exists and resolves the load path from known_marketplaces.json -> installLocation -> marketplace.json
+      plugin source. The negative half is the load-bearing one — the module must NOT resolve from installed_plugins.json;
+      that read survives only as naive_registry_load_path, explicitly documented as the thing the module
+      contradicts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/hooks/lib/plugin_deploy_readback.py?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q "known_marketplaces.json"
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/hooks/lib/plugin_deploy_readback.py?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q "Never call this to determine hook state. Call :func:\`resolve_load_path\`."
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/hooks/lib/plugin_deploy_readback.py?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -qE "MERGED_NOT_DEPLOYED|RESOLUTION_RULE_CHANGED"
+  - id: "dod-omn15274-red-anchor-exists-but-wrong-e09a8327"
+    description: >
+      The RED anchor is against exists-but-wrong, not against absence: the fixture registry carries the
+      real installed_plugins.json shape pointing at a dead cache whose hooks.json registers a SubagentStop
+      guard the resolved load path does not carry, and the RED test asserts the pre-existing registry
+      read reports that guard as deployed and EXEC-OK. If the fixture or the RED test were deleted, these
+      checks fail — the defect stops being executable.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/tests/hooks/test_plugin_deploy_readback.py?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q "def test_red_old_read_reports_the_guard_deployed_from_a_dead_tree"
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/tests/hooks/test_plugin_deploy_readback.py?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q "def test_truthful_readback_reports_the_guard_absent_for_every_agent_class"
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/tests/hooks/fixtures/plugin_registry_dead_cache/installed_plugins.json?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q '"installPath"'
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/tests/hooks/fixtures/plugin_registry_dead_cache/cache_hooks.json?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q 'scripts/subagent_stop_report_contract_guard.sh"'
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omniclaude/contents/tests/hooks/fixtures/plugin_registry_dead_cache/live_hooks.json?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q 'scripts/subagent_stop_report_contract_guard.sh"'
+  - id: "dod-omn15274-trap-disarmed-e09a8327"
+    description: >
+      The correction half. The verify_plugin skill no longer resolves PLUGIN_ROOT from the plugin cache
+      — neither the SKILL.md instruction nor the verify-deploy.sh default — and binds instead to the readback's
+      resolved_load_path. These are negative checks on purpose: a passing readback that leaves the old
+      cache-read instruction in place would leave the trap armed for the next reader.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/skills/verify_plugin/SKILL.md?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q "plugins/cache/omninode-tools/onex/current').resolve()"
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/skills/verify_plugin/verify-deploy.sh?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q 'SYMLINK="$HOME/.claude/plugins/cache/omninode-tools/onex/current"'
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/plugins/onex/skills/verify_plugin/verify-deploy.sh?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q "plugin_deploy_readback.py"
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/contents/CLAUDE.md?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2'
+          --jq .content | base64 -d | grep -q "plugin_deploy_readback.py"
+  - id: "dod-omn15274-pr-identity-bind-1955"
+    description: >
+      PR-identity bind: OMN-15274 is carried by OmniNode-ai/omniclaude#1955, and the commit the three
+      probes above are pinned to (e09a8327bc94e49ec674e2fba50b45a37c284ba2) is an ancestor of that PR's
+      head — so those probes describe this PR's tree and not some unrelated commit. CI-green is asserted
+      separately via evidence_requirements.kind=ci, which is evaluated pre-merge rather than at receipt
+      time; binding it here would deadlock (the receipt gate is itself one of the checks).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omniclaude/compare/e09a8327bc94e49ec674e2fba50b45a37c284ba2...jonah/omn-15274-truthful-plugin-deploy-readback'
+          --jq '.status' | grep -qE '^(identical|ahead)$'
+  - id: "occ-self-bind-pr-5205"
+    description: "Binds OMN-15274 to OCC companion PR #5205 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
