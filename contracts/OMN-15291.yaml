@@ -113,3 +113,43 @@ dod_evidence:
         check_value: >-
           gh api repos/OmniNode-ai/omnibase_infra/pulls/2511 --jq .body | grep -q 'not yet wired into
           a CI job'
+  - id: "dod-omn15291-unlock-absent-at-ee9527c4"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15291-no-cross-session-unlock"
+    description: >-
+      Re-points the pg_advisory_unlock-absence probe from the deleted PR branch to the durable squash
+      commit ee9527c47b1fb9bee5f6f8d787c4e5a4c71592e9 on omnibase_infra dev (merge of #2511). The superseded
+      entry pinned ref=jonah/omn-15291-forward-migration-advisory-lock; omnibase_infra#2511 merged and
+      deleted that branch, so the ref now 404s permanently. Critically, the superseded entry did not go
+      RED when that happened -- it went VACUOUSLY GREEN. Its shape was `test -z "$(gh api ... | grep ...)"`,
+      and a 404 writes nothing to stdout, so the command substitution is empty and `test -z` exits 0.
+      Executed 2026-07-28: the superseded check_value returns exit 0 against the deleted branch AND exit
+      0 against the never-existent ref `totally-bogus-ref-xyz`. It asserted nothing about any tree. This
+      replacement closes that hole with a fetch-succeeded sentinel (the runner must actually contain the
+      canonical lock block's END marker) before the absence assertion runs, so a failed or empty fetch
+      is RED rather than green. The assertion itself is preserved exactly: strip comment lines, then require
+      zero `pg_advisory_unlock` occurrences. That distinction is load-bearing at this SHA -- the shipped
+      runner mentions pg_advisory_unlock in an explanatory comment (line 135) and nowhere in executable
+      position.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          RUNNER="$(gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh -H 'Accept: application/vnd.github.raw' --method GET -f ref=ee9527c47b1fb9bee5f6f8d787c4e5a4c71592e9)" && printf '%s\n' "$RUNNER" | grep -q 'END canonical forward-migration advisory lock (OMN-15291)' && test -z "$(printf '%s\n' "$RUNNER" | grep -v '^[[:space:]]*#' | grep 'pg_advisory_unlock')"
+  - id: "dod-omn15291-red-control-at-ee9527c4"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15291-red-control-is-committed"
+    description: >-
+      Re-points the committed-RED-control probe from the deleted PR branch to the durable squash commit
+      ee9527c47b1fb9bee5f6f8d787c4e5a4c71592e9 on omnibase_infra dev. The superseded entry pinned ref=jonah/omn-15291-forward-migration-advisory-lock
+      and has been genuinely RED since that branch was deleted at merge (executed 2026-07-28: exit 1,
+      "No commit found for the ref"). The assertion is preserved exactly -- tests/scripts/test_forward_migration_advisory_lock.py
+      must define test_lock_free_runner_does_not_serialize, the control that mechanically strips the lock
+      block out of the SHIPPED runner and asserts the lock-free form does NOT produce the safe outcome.
+      The fetch is bound to a variable so a failed fetch short-circuits before the grep, rather than being
+      indistinguishable from a file that merely lacks the marker.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          TESTS="$(gh api repos/OmniNode-ai/omnibase_infra/contents/tests/scripts/test_forward_migration_advisory_lock.py -H 'Accept: application/vnd.github.raw' --method GET -f ref=ee9527c47b1fb9bee5f6f8d787c4e5a4c71592e9)" && printf '%s\n' "$TESTS" | grep -q 'def test_lock_free_runner_does_not_serialize'
