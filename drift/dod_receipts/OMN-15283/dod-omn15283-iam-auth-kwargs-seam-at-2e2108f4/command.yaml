@@ -1,0 +1,48 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15283
+evidence_item_id: dod-omn15283-iam-auth-kwargs-seam-at-2e2108f4
+check_type: command
+check_value: C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+  --jq .content | base64 -d) && A=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/kafka_auth.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+  --jq .content | base64 -d) && printf '%s' "$C" | python3 -c 'import ast,sys; t=ast.parse(sys.stdin.read());
+  fns=[f for f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef)) and f.name=="open_admin_client"];
+  assert len(fns)==1, "open_admin_client missing from the checker"; f=fns[0]; assert any(isinstance(c,ast.Call)
+  and isinstance(c.func,ast.Name) and c.func.id=="build_aiokafka_auth_kwargs_from_env" for c in ast.walk(f)),
+  "checker does not call the shared build_aiokafka_auth_kwargs_from_env"; adm=[c for c in ast.walk(f)
+  if isinstance(c,ast.Call) and isinstance(c.func,ast.Name) and c.func.id=="AIOKafkaAdminClient"]; assert
+  len(adm)==1, "AIOKafkaAdminClient not constructed exactly once"; assert any(k.arg is None for k in adm[0].keywords),
+  "auth kwargs are not splatted into AIOKafkaAdminClient"' && printf '%s' "$A" | python3 -c 'import ast,sys;
+  t=ast.parse(sys.stdin.read()); fns={f.name for f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef))};
+  assert "build_aiokafka_auth_kwargs_from_env" in fns, "producer side of the kafka auth kwargs seam is
+  missing"; f=[x for x in ast.walk(t) if isinstance(x,(ast.FunctionDef,ast.AsyncFunctionDef)) and x.name=="build_aiokafka_auth_kwargs"][0];
+  br=[i for i in ast.walk(f) if isinstance(i,ast.If) and "AWS_MSK_IAM" in ast.dump(i.test)]; assert br,
+  "no AWS_MSK_IAM branch in the kwargs builder"; d=ast.dump(br[0]); assert "OAUTHBEARER" in d, "AWS_MSK_IAM
+  branch does not set sasl_mechanism=OAUTHBEARER"; assert "sasl_oauth_token_provider" in d, "AWS_MSK_IAM
+  branch sets no sasl_oauth_token_provider"; assert "MSKTokenProvider" in d, "AWS_MSK_IAM branch does
+  not use MSKTokenProvider"; assert "SASL_SSL" in d, "AWS_MSK_IAM branch does not fail closed on security_protocol"'
+contract_entry_sha256: sha256:ab295e00bec06c9e392ef50a91541d9e67f534c4a408251d02c6b3ac1fc0ff69
+status: PASS
+run_timestamp: '2026-07-28T10:01:21Z'
+commit_sha: 7a02d6b8bb61d52352aae534db32cd4d6c9fea91
+branch: jonah/omn-15283-occ-content-bound
+runner: fable-overnight-0728-omn15283-occ-content-bound
+verifier: fable-overnight-0728-omn15283-occ-content-bound-readback
+probe_command: |
+  GREEN: the check_value above, executed verbatim as read from the committed contract.
+  RED:   the same check_value with the merged squash SHA replaced by the PR merge-base
+         d85226172b90197f501f5d71bededf4f249cd607, executed identically.
+probe_stdout: |
+  GREEN @ merged squash SHA -> exit=0
+  RED   @ merge-base d8522617 ->
+  gh: Not Found (HTTP 404)
+  base64: stdin: (null): error decoding base64 input stream
+  exit=1
+actual_output: |
+  PASS -- consumer side: open_admin_client calls build_aiokafka_auth_kwargs_from_env, constructs
+  AIOKafkaAdminClient exactly once, and passes a keyword with arg=None (a **splat), so it cannot
+  silently drop an auth field the producer adds. Producer side at the same SHA: in kafka_auth
+  build_aiokafka_auth_kwargs, the AWS_MSK_IAM branch sets sasl_mechanism='OAUTHBEARER', sets
+  sasl_oauth_token_provider=MSKTokenProvider(region=...), and raises unless security_protocol is
+  'SASL_SSL'. Both sides of the kafka_python_kwargs seam are bound at one SHA. exit 0.
+exit_code: 0
