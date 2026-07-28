@@ -122,3 +122,54 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_occ_companion_compute/test_occ_emitter_golden_fixtures_omn_14710.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d | grep -q 'def test_yamlfmt_does_not_corrupt_supersession_multiline_scalars'
+  - id: "dod-14714-failclosed-stale-width-removed"
+    evidence_artifact: "supersedes_dod_evidence:dod-14714-merged-0747500e-stale-width-removed"
+    description: >-
+      FAIL-CLOSED replacement for dod-14714-merged-0747500e-stale-width-removed, which FAILED OPEN. The
+      superseded form was `! <gh api ...> | base64 -d | grep -qE ...`; `!` negates the PIPELINE exit status,
+      i.e. grep's. When `gh api` produces no output — deleted/GC'd ref, API outage, rate limit, auth failure
+      — grep exits 1 and `!` inverts it to exit 0, so the probe reports PASS while observing nothing.
+      Demonstrated by execution 2026-07-28 against ref deadbeefdeadbeefdeadbeefdeadbeefdeadbeef: the superseded
+      form exits 0 (vacuous PASS); this form exits 1. Nothing upstream catches it — validate_pr_deploy_required._command_of
+      skips a leading `!` when finding command position, so the fail-open form still classifies falsifiable.
+      The repair captures content to a variable and asserts it non-empty BEFORE negating the grep, so
+      an unreadable ref goes RED instead of GREEN. Same assertion as before otherwise: the corrupting
+      `width=1_000_000,` argument is absent from the dump site at the durable squash commit 0747500e682c903301bc1bd9eb56578c6dad72af,
+      anchored to the code form because the new explanatory comment quotes the old value verbatim. Verified
+      by execution 2026-07-28: exit 0 at 0747500e, exit 1 at parent 848d3333553b5838d9ad1635be89e9d89f0f850b,
+      exit 1 at a nonexistent ref.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          out=$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d) && test -n "$out" && ! printf '%s' "$out" | grep -qE '^[[:space:]]+width=1_000_000,$'
+  - id: "dod-14714-failclosed-xfail-flipped"
+    evidence_artifact: "supersedes_dod_evidence:dod-14714-merged-0747500e-xfail-flipped"
+    description: >-
+      FAIL-CLOSED, scope-narrowed replacement for dod-14714-merged-0747500e-xfail-flipped, which had two
+      defects. (1) FAIL-OPEN: same `!`-negated-pipeline shape as above — verified 2026-07-28 to exit 0
+      against a nonexistent ref; this form exits 1. (2) BRITTLE: it asserted zero `pytest.mark.xfail`
+      occurrences anywhere in the module, so any future unrelated xfail added to that file would flip
+      OMN-14714's evidence RED for reasons unrelated to OMN-14714. Simulated by execution on a copy of
+      the merged file with one unrelated xfail inserted 40 lines above the target test: superseded form
+      exits 1 (false RED), this form exits 0. The repair windows the absence assertion to the six lines
+      directly above `def test_merged_path_supersession_is_yamlfmt_clean` — where the strict xfail actually
+      sat at parent 848d3333 (lines 454-459) — and first asserts that the test function itself is still
+      present, so a rename cannot make the window vacuous. CORRECTION to the superseded entry's description,
+      which is append-only and cannot be edited: it claimed "the obvious candidate (`gh api .../pulls/5272/files
+      --jq .patch | grep ...`) classifies INERT". That is FALSE and was not verified by execution. Re-run
+      2026-07-28 against both real evaluators: contract_compliance_check._is_inert_check returns False
+      (ACTIVE) and validate_pr_deploy_required.classify_check_value returns falsifiable=True for that
+      shape; no SELF_REFERENTIAL_PATTERNS entry matches, because the string contains neither `contracts/OMN-`
+      nor `dod_receipts`. The two mechanisms also differ: OCC's `_INERT_CHECK_PATTERNS` uses a negative
+      lookbehind `(?<![\w/])contracts/OMN-`, so even a genuine own-contract read via a contents API path
+      is NOT inert to OCC — only the deploy-gate's lookbehind-free pattern catches it. Omitting a self-bind
+      entry remains the decision; the stated justification for it was wrong. Verified by execution 2026-07-28:
+      exit 0 at 0747500e, exit 1 at parent 848d3333, exit 1 at a nonexistent ref.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          out=$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_occ_companion_compute/test_occ_emitter_golden_fixtures_omn_14710.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d) && test -n "$out" && printf '%s' "$out" | grep -q 'def test_merged_path_supersession_is_yamlfmt_clean' && ! printf '%s' "$out" | grep -B6 'def test_merged_path_supersession_is_yamlfmt_clean' | grep -q 'pytest.mark.xfail'
