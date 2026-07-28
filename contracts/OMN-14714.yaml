@@ -41,3 +41,78 @@ dod_evidence:
       - check_type: "command"
         check_value: "gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py?ref=ad56a5adef22494e8aedd06921674500982e522b
           --jq .content | base64 -d | grep '_OCC_YAMLFMT_MAX_LINE_LENGTH = 100'"
+  - id: "dod-14714-merged-0747500e-block-scalar-dumper"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1927"
+    description: >-
+      Binds the load-bearing half of OMN-14714 — the `_BlockScalarDumper` that renders multi-line strings
+      as literal `|` blocks so yamlfmt cannot delete the lone closing quote of a trailing-newline single-quoted
+      scalar. Reads omnimarket content at the DURABLE squash commit 0747500e682c903301bc1bd9eb56578c6dad72af
+      on `dev` (PR #1927, merged 2026-07-28T06:19:19Z), not a branch name and not the unmerged head SHA.
+      Verified by execution 2026-07-28: exit 0 at 0747500e, exit 1 at its parent 848d3333553b5838d9ad1635be89e9d89f0f850b.
+      Supersedes dod-OmniNode-ai-omnimarket-pr-1927, whose only check was `gh pr view --json number,state`
+      — true of any PR that exists in any state with any diff, and classified non-falsifiable by validate_pr_deploy_required.classify_check_value.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d | grep -q 'class _BlockScalarDumper(yaml.SafeDumper):'
+  - id: "dod-14714-merged-0747500e-width-matches-formatter"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1927-deploy"
+    description: >-
+      Binds the second coupled cause — PyYAML's dump `width` now resolves to the `_OCC_YAMLFMT_MAX_LINE_LENGTH`
+      constant that mirrors onex_change_control/.yamlfmt `formatter.max_line_length`. Verified by execution
+      2026-07-28: exit 0 at 0747500e, exit 1 at parent 848d3333. Supersedes dod-OmniNode-ai-omnimarket-pr-1927-deploy,
+      which was falsifiable in form but pinned `ref=ad56a5adef22494e8aedd06921674500982e522b` — the unmerged
+      feature-branch head of PR #1927. A branch head is not a durable ref: it is reachable only until
+      the branch is deleted or force-pushed, after which the probe errors rather than going honestly RED.
+      The superseded entry is preserved for audit and not re-executed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d | grep -q 'width=_OCC_YAMLFMT_MAX_LINE_LENGTH'
+  - id: "dod-14714-merged-0747500e-stale-width-removed"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1927-ci"
+    description: >-
+      Negative probe: the corrupting `width=1_000_000,` argument is gone from the dump site. Anchored
+      to the code form (leading indentation, trailing comma) on purpose — an unanchored `width=1_000_000`
+      still matches at 0747500e because the new comment block quotes the old value while explaining why
+      it was wrong, so the naive absence check can never go GREEN. Caught by execution, not review. Verified
+      2026-07-28: exit 0 at 0747500e, exit 1 at parent 848d3333. Supersedes dod-OmniNode-ai-omnimarket-pr-1927-ci
+      (`gh pr view --json files`), which asserts a diff exists but nothing about its content.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          ! gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_compute/handlers/handler_occ_companion_compute.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d | grep -qE '^[[:space:]]+width=1_000_000,$'
+  - id: "dod-14714-merged-0747500e-xfail-flipped"
+    description: >-
+      Binds the acceptance half. The pre-existing guard `test_merged_path_supersession_is_yamlfmt_clean`
+      carried `@pytest.mark.xfail(strict=True)` naming OMN-14714, so landing the fix mechanically forced
+      the marker's removal. This probe asserts zero `pytest.mark.xfail` occurrences remain in that test
+      module — an absence check is the only honest form for a removal. Verified by execution 2026-07-28:
+      exit 0 at 0747500e (0 occurrences), exit 1 at parent 848d3333 (marker present at line 454, reason
+      text at 456).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          ! gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_occ_companion_compute/test_occ_emitter_golden_fixtures_omn_14710.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d | grep -q 'pytest.mark.xfail'
+  - id: "dod-14714-merged-0747500e-corruption-pinning-test"
+    description: >-
+      Binds the net-new regression test that pins the corruption mechanism specifically — yamlfmt's output
+      over a merged-path supersession file must still parse AND be semantically identical, and the fixture
+      must actually carry a multi-line scalar so the test cannot pass vacuously. Verified by execution
+      2026-07-28: exit 0 at 0747500e, exit 1 at parent 848d3333. Honest scope limit: this proves the test
+      exists in the merged tree at a durable ref; that it PASSES is proven by the omnimarket CI run on
+      #1927, not by this check.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_occ_companion_compute/test_occ_emitter_golden_fixtures_omn_14710.py?ref=0747500e682c903301bc1bd9eb56578c6dad72af" --jq .content | base64 -d | grep -q 'def test_yamlfmt_does_not_corrupt_supersession_multiline_scalars'
