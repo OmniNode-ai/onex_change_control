@@ -1,0 +1,50 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15283
+evidence_item_id: dod-omn15283-dead-script-removed-at-8078c25b
+check_type: command
+check_value: 'if gh api repos/OmniNode-ai/omninode_infra --jq .full_name >/dev/null 2>&1; then gh api
+  "repos/OmniNode-ai/omninode_infra/contents/scripts/verify-kafka-topics.sh?ref=25f160ccb2fca02db99f6cb8b5cee136c02be4fb"
+  --jq .sha >/dev/null && if gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/verify-kafka-topics.sh?ref=8078c25b10bfa6b1887139859b6abc3552e16108"
+  --jq .sha >/dev/null 2>&1; then echo ''retired script still present at the merge SHA'' >&2; exit 1;
+  fi && S=$(gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/smoke-test-post-deploy.sh?ref=8078c25b10bfa6b1887139859b6abc3552e16108"
+  --jq .content | base64 -d) && printf ''%s'' "$S" | python3 -c ''import sys; bad=[l for l in sys.stdin.read().splitlines()
+  if "verify-kafka-topics" in l and not l.lstrip().startswith("#")]; assert not bad, "smoke-test-post-deploy.sh
+  still invokes the retired script: %r" % (bad,)''; else grep -q ''^status: PASS$'' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15283/dod-omn15283-dead-script-removed-at-8078c25b/command.yaml";
+  fi'
+contract_entry_sha256: sha256:27df7e1369ad5576de4ad425fece71ebc13545e6c0e9a5bf0c94830030efd1ad
+status: PASS
+run_timestamp: '2026-07-28T10:01:21Z'
+commit_sha: 7a02d6b8bb61d52352aae534db32cd4d6c9fea91
+branch: jonah/omn-15283-occ-content-bound
+runner: fable-overnight-0728-omn15283-occ-content-bound
+verifier: fable-overnight-0728-omn15283-occ-content-bound-readback
+probe_command: |
+  gh api repos/OmniNode-ai/omninode_infra/commits/8078c25b --jq .parents[0].sha
+    -> 25f160ccb2fca02db99f6cb8b5cee136c02be4fb
+  gh api ".../contents/scripts/verify-kafka-topics.sh?ref=25f160cc" --jq .sha
+    -> 0d513c64c29bd1a3eee74ca5f900c4138519507b   (exit 0, PRESENT at merge-base)
+  gh api ".../contents/scripts/verify-kafka-topics.sh?ref=8078c25b" --jq .sha
+    -> HTTP 404                                   (exit 1, ABSENT at merge SHA)
+  GREEN: the check_value above, executed verbatim as read from the committed contract.
+  RED:   the same check_value with the merged squash SHA replaced by the PR merge-base
+         25f160ccb2fca02db99f6cb8b5cee136c02be4fb, executed identically.
+probe_stdout: |
+  GREEN @ merged squash SHA -> exit=0
+  RED   @ merge-base 25f160cc ->
+  retired script still present at the merge SHA
+  exit=1
+actual_output: |
+  PASS -- positive control first: scripts/verify-kafka-topics.sh RESOLVES at the merge-base
+  25f160cc (blob 0d513c64c29bd1a3eee74ca5f900c4138519507b), proving the probing identity can read
+  the repo. It then 404s at the merge SHA 8078c25b, so the 404 is a real deletion and not a
+  permissions artifact. scripts/smoke-test-post-deploy.sh at 8078c25b contains no non-comment line
+  mentioning verify-kafka-topics; the two surviving mentions (that file line 114, and
+  docs/POST_DEPLOY_VERIFICATION.md line 83) are comment/tombstone prose, not invocations. exit 0.
+
+  TIER, STATED HONESTLY: omninode_infra is PRIVATE. The OCC contract-compliance runner is given
+  only the repo-scoped GITHUB_TOKEN (ci.yml sets GH_TOKEN to github.token), which cannot read it,
+  so in OCC CI this check takes its receipt-grep fallback branch and is correctly reported INERT
+  by contract_compliance_check._is_inert_check. The probe above was executed out of band by this
+  lane against the live GitHub contents API, not by a CI runner.
+exit_code: 0

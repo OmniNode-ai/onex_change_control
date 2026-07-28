@@ -51,3 +51,160 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: dod-omn15283-catalog-parity-at-2e2108f4
+    evidence_artifact: supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2508
+    description: 'LEG 1 -- CATALOG PARITY, content-bound at the merged squash SHA. Proves the checker''s
+      mstg1 catalog IS the topic-contract YAML rather than a re-implementation: at omnibase_infra 2e2108f4
+      (merge of #2508 into dev) managed_staging_topic_checker.py references build_canary_catalog_from_candidate
+      AND load_canary_namespace, and contains ZERO non-docstring string literal starting with ''onex.''
+      -- i.e. it names no topic and no prefix of its own. The same check then reads managed_staging_canary_catalog_namespace.yaml
+      at the SAME SHA and asserts the three declared namespace fields the checker inherits: epoch mstg1,
+      topic_prefix ''onex.mstg1.'', group_prefix ''onex.mstg1.''. RED-derivable: at the PR''s merge-base
+      d8522617 the checker file does not exist, the fetch returns HTTP 404, and the check exits 1. Supersedes
+      the vacuous PR-existence probe dod-OmniNode-ai-omnibase_infra-pr-2508, which exits 0 for any PR
+      that exists in any state carrying any diff.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+          --jq .content | base64 -d) && Y=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_canary_catalog_namespace.yaml?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+          --jq .content | base64 -d) && printf ''%s'' "$C" | python3 -c ''import ast,sys; t=ast.parse(sys.stdin.read());
+          names={n.id for n in ast.walk(t) if isinstance(n,ast.Name)}; assert "build_canary_catalog_from_candidate"
+          in names, "checker does not build the catalog via build_canary_catalog_from_candidate"; assert
+          "load_canary_namespace" in names, "checker does not load the namespace YAML via load_canary_namespace";
+          doc={id(n.value) for n in ast.walk(t) if isinstance(n,ast.Expr) and isinstance(n.value,ast.Constant)};
+          bad=[n.value for n in ast.walk(t) if isinstance(n,ast.Constant) and isinstance(n.value,str)
+          and id(n) not in doc and n.value.startswith("onex.")]; assert not bad, "checker hardcodes catalog/topic
+          literals instead of deriving them: %r" % (bad,)'' && printf ''%s\n'' "$Y" | grep -q ''^epoch:
+          "mstg1"$'' && printf ''%s\n'' "$Y" | grep -q ''^topic_prefix: "onex.mstg1."$'' && printf ''%s\n''
+          "$Y" | grep -q ''^group_prefix: "onex.mstg1."$'''
+  - id: dod-omn15283-check-only-zero-mutation-at-2e2108f4
+    evidence_artifact: supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2508-ci
+    description: 'LEG 2 -- CHECK-ONLY ZERO-MUTATION DEFAULT, content-bound at the merged squash SHA. AST
+      assertions over managed_staging_topic_checker.py at omnibase_infra 2e2108f4: (a) every broker-mutating
+      admin call (create_topics / delete_topics / alter_configs) lives in exactly one function, create_missing_catalog_topics
+      -- so no other code path can mutate a broker; (b) that helper has exactly one call site; (c) that
+      call site sits inside an `if` whose test references create_missing; (d) --create-missing is declared
+      exactly once with action=''store_true'' AND default=False, so the unflagged default is check-only.
+      RED-derivable: at merge-base d8522617 the file is absent (HTTP 404) and assertion (a) fails with
+      ''broker mutation outside the opt-in helper: []''. Supersedes the vacuous diff-scope probe dod-OmniNode-ai-omnibase_infra-pr-2508-ci
+      (''gh pr view ... --json files''), which reads a file list and asserts nothing about its content.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+          --jq .content | base64 -d) && printf ''%s'' "$C" | python3 -c ''import ast,sys; t=ast.parse(sys.stdin.read());
+          mut=sorted({f.name for f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef))
+          and any(isinstance(n,ast.Attribute) and n.attr in ("create_topics","delete_topics","alter_configs")
+          for n in ast.walk(f))}); assert mut==["create_missing_catalog_topics"], "broker mutation outside
+          the opt-in helper: %r" % (mut,); calls=[c for c in ast.walk(t) if isinstance(c,ast.Call) and
+          isinstance(c.func,ast.Name) and c.func.id=="create_missing_catalog_topics"]; assert len(calls)==1,
+          "expected exactly one create_missing_catalog_topics call site, got %d" % len(calls); guard=[i
+          for i in ast.walk(t) if isinstance(i,ast.If) and "create_missing" in ast.dump(i.test) and any(c.id=="create_missing_catalog_topics"
+          for c in ast.walk(i) if isinstance(c,ast.Name))]; assert guard, "create_missing_catalog_topics
+          call site is not guarded by args.create_missing"; flags=[c for c in ast.walk(t) if isinstance(c,ast.Call)
+          and isinstance(c.func,ast.Attribute) and c.func.attr=="add_argument" and any(isinstance(a,ast.Constant)
+          and a.value=="--create-missing" for a in c.args)]; assert len(flags)==1, "--create-missing is
+          not declared exactly once"; kw={k.arg:k.value for k in flags[0].keywords}; assert isinstance(kw.get("default"),ast.Constant)
+          and kw["default"].value is False, "--create-missing default is not False (check-only is not
+          the default)"; assert isinstance(kw.get("action"),ast.Constant) and kw["action"].value=="store_true",
+          "--create-missing is not an opt-in store_true flag"'''
+  - id: dod-omn15283-iam-auth-kwargs-seam-at-2e2108f4
+    evidence_artifact: supersedes_dod_evidence:occ-self-bind-pr-5224
+    description: 'LEG 3 -- IAM AUTH KWARGS SEAM, both sides bound at one SHA. The seam is the kafka_python_kwargs
+      dict handed to the aiokafka admin client. CONSUMER side (managed_staging_topic_checker.open_admin_client
+      at omnibase_infra 2e2108f4): calls the shared build_aiokafka_auth_kwargs_from_env, constructs AIOKafkaAdminClient
+      exactly once, and splats the kwargs in (a keyword with arg=None) rather than cherry-picking fields
+      -- so it cannot silently drop an auth field the producer adds. PRODUCER side (event_bus/kafka_auth.py
+      at the SAME SHA): the AWS_MSK_IAM branch of build_aiokafka_auth_kwargs sets sasl_mechanism=OAUTHBEARER,
+      sets sasl_oauth_token_provider to an MSKTokenProvider, and fails closed unless security_protocol
+      is SASL_SSL. RED-derivable: at merge-base d8522617 the consumer side does not exist (HTTP 404) and
+      the check exits 1 with ''open_admin_client missing from the checker''. Supersedes the vacuous occ-self-bind-pr-5224
+      existence probe.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+          --jq .content | base64 -d) && A=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/kafka_auth.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+          --jq .content | base64 -d) && printf '%s' "$C" | python3 -c 'import ast,sys; t=ast.parse(sys.stdin.read());
+          fns=[f for f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef)) and f.name=="open_admin_client"];
+          assert len(fns)==1, "open_admin_client missing from the checker"; f=fns[0]; assert any(isinstance(c,ast.Call)
+          and isinstance(c.func,ast.Name) and c.func.id=="build_aiokafka_auth_kwargs_from_env" for c in
+          ast.walk(f)), "checker does not call the shared build_aiokafka_auth_kwargs_from_env"; adm=[c
+          for c in ast.walk(f) if isinstance(c,ast.Call) and isinstance(c.func,ast.Name) and c.func.id=="AIOKafkaAdminClient"];
+          assert len(adm)==1, "AIOKafkaAdminClient not constructed exactly once"; assert any(k.arg is
+          None for k in adm[0].keywords), "auth kwargs are not splatted into AIOKafkaAdminClient"' &&
+          printf '%s' "$A" | python3 -c 'import ast,sys; t=ast.parse(sys.stdin.read()); fns={f.name for
+          f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef))}; assert "build_aiokafka_auth_kwargs_from_env"
+          in fns, "producer side of the kafka auth kwargs seam is missing"; f=[x for x in ast.walk(t)
+          if isinstance(x,(ast.FunctionDef,ast.AsyncFunctionDef)) and x.name=="build_aiokafka_auth_kwargs"][0];
+          br=[i for i in ast.walk(f) if isinstance(i,ast.If) and "AWS_MSK_IAM" in ast.dump(i.test)]; assert
+          br, "no AWS_MSK_IAM branch in the kwargs builder"; d=ast.dump(br[0]); assert "OAUTHBEARER" in
+          d, "AWS_MSK_IAM branch does not set sasl_mechanism=OAUTHBEARER"; assert "sasl_oauth_token_provider"
+          in d, "AWS_MSK_IAM branch sets no sasl_oauth_token_provider"; assert "MSKTokenProvider" in d,
+          "AWS_MSK_IAM branch does not use MSKTokenProvider"; assert "SASL_SSL" in d, "AWS_MSK_IAM branch
+          does not fail closed on security_protocol"'
+  - id: dod-omn15283-dead-script-removed-at-8078c25b
+    evidence_artifact: supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-714
+    description: 'LEG 4 -- DEAD-SCRIPT REMOVAL, content-bound with its own positive control. At omninode_infra
+      8078c25b (merge of #714 into dev) scripts/verify-kafka-topics.sh MUST be absent, AND at the merge-base
+      25f160cc it MUST be present (blob 0d513c64). The positive control is the point: an absence assertion
+      alone is indistinguishable from a token that cannot see the repo, so the check demands the parent
+      read succeed before it accepts the child 404. It additionally asserts that scripts/smoke-test-post-deploy.sh
+      at the merge SHA contains no NON-COMMENT line mentioning verify-kafka-topics -- the two surviving
+      mentions in that file and in docs/POST_DEPLOY_VERIFICATION.md are deliberate tombstone prose, not
+      invocations. PRIVATE-REPO WALL, stated honestly: omninode_infra is PRIVATE and the OCC contract-compliance
+      runner is given only the repo-scoped GITHUB_TOKEN, which cannot read it. The product arm therefore
+      runs only where the executing identity has access; where it does not, the check falls back to this
+      entry''s committed receipt, which carries the full out-of-band transcript of both refs. In OCC CI
+      this check is consequently receipt-bound (INERT-tier) and will be reported as such; out of band
+      it is product-bound. Supersedes the receipt-grep probe dod-OmniNode-ai-omninode_infra-pr-714.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'if gh api repos/OmniNode-ai/omninode_infra --jq .full_name >/dev/null 2>&1; then
+          gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/verify-kafka-topics.sh?ref=25f160ccb2fca02db99f6cb8b5cee136c02be4fb"
+          --jq .sha >/dev/null && if gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/verify-kafka-topics.sh?ref=8078c25b10bfa6b1887139859b6abc3552e16108"
+          --jq .sha >/dev/null 2>&1; then echo ''retired script still present at the merge SHA'' >&2;
+          exit 1; fi && S=$(gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/smoke-test-post-deploy.sh?ref=8078c25b10bfa6b1887139859b6abc3552e16108"
+          --jq .content | base64 -d) && printf ''%s'' "$S" | python3 -c ''import sys; bad=[l for l in
+          sys.stdin.read().splitlines() if "verify-kafka-topics" in l and not l.lstrip().startswith("#")];
+          assert not bad, "smoke-test-post-deploy.sh still invokes the retired script: %r" % (bad,)'';
+          else grep -q ''^status: PASS$'' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15283/dod-omn15283-dead-script-removed-at-8078c25b/command.yaml";
+          fi'
+  - id: dod-omn15283-live-msk-run-excluded-at-2e2108f4
+    evidence_artifact: supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-714-ci
+    description: 'LEG 5 -- EXCLUSION, LOAD-BEARING AND PERMANENT. Verbatim, so nobody ''completes'' it:
+      THE LIVE-MSK LEG IS EXCLUDED AND STAYS EXCLUDED -- the checker''s first live run is reserved as
+      Daniyal''s joint proof. No entry in this contract, and no receipt under this ticket, may be satisfied
+      by executing managed_staging_topic_checker against the real MSK cluster; any such run performed
+      to close this ticket is a violation of this contract, not evidence for it. This entry binds the
+      exclusion to the product itself: the module docstring at omnibase_infra 2e2108f4 declares live execution
+      against the actual MSK cluster to be the AWS lane''s step, out of CI scope. RED-derivable: at merge-base
+      d8522617 the module does not exist (HTTP 404) and the check exits 1. Supersedes the receipt-grep
+      probe dod-OmniNode-ai-omninode_infra-pr-714-ci.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+          --jq .content | base64 -d) && printf '%s' "$C" | python3 -c 'import ast,sys,re; t=ast.parse(sys.stdin.read());
+          d=ast.get_docstring(t) or ""; n=re.sub(r"\s+"," ",d); assert "Live execution against the actual
+          MSK cluster is the AWS lane" in n and "out of CI scope here." in n, "module docstring does not
+          carry the live-MSK-run exclusion"'
+  - id: occ-self-bind-pr-5274
+    evidence_artifact: supersedes_dod_evidence:occ-self-bind-pr-5225
+    description: 'OCC self-bind for PR #5274 -- the companion that replaces this ticket''s six vacuous
+      autobind entries with content-bound, RED-derivable ones. Supersedes occ-self-bind-pr-5225, the last
+      of the six existence probes, so that after this lands NO entry on OMN-15283 is satisfied by the
+      mere existence of a PR. This entry is itself an existence probe and makes no claim otherwise: its
+      only job is the occ-preflight pr_ticket_mismatch bind (OMN-14650 house pattern). The ticket''s actual
+      proof lives in the five content-bound entries above it.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 5274 --repo OmniNode-ai/onex_change_control --json number,state
