@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# call-occ-autobind.yml
+#
+# Per-repo OCC-autobind trigger for onex_change_control (OMN-15261, closing the
+# fan-out gap left when OMN-15012/15013/15017/15018 wired every OTHER
+# occ-preflight-enforcing repo but never reached OCC itself). Thin caller — all
+# publish logic lives in the omniclaude reusable, which in turn runs
+# omnimarket's canonical publisher; this file only wires the trigger and picks
+# the lane. Mirrors omnibase_compat's / omnidash's caller byte-for-byte except
+# for the ticket/repo references in this header.
+#
+# WHY THIS WAS MISSING (OMN-15261): onex_change_control enforces
+# `occ-preflight / eligibility` on its own PRs (call-occ-preflight.yml) but,
+# before this change, had no born-path producer to satisfy it — every OCC
+# product PR had to be hand-authored, which the implementer is forbidden from
+# doing (feedback_no_self_authored_evidence). Live-verified 2026-07-28: `gh api
+# repos/OmniNode-ai/onex_change_control/contents/.github/workflows?ref=dev`
+# returned exactly one occ caller (call-occ-preflight.yml) before this PR.
+#
+# On a ticketed product PR (opened/synchronize/reopened/ready_for_review) the
+# reusable publishes `onex.cmd.omnimarket.occ-autobind.v1`; the .201 effects
+# runtime (node_pr_lifecycle_fix_effect -> OccCompanionEmitter) mints the OCC
+# evidence companion and PATCHes `Evidence-Source: OCC#<n>` onto this PR, so
+# occ-preflight resolves without a hand-authored companion. This is
+# self-referential for onex_change_control (the companion PR the emitter opens
+# targets the SAME repo this workflow runs in) — the emitter already supports
+# that shape; every other repo's autobind companion also lands here.
+#
+# TRIGGER COVERAGE (OMN-14987): opened/synchronize alone miss two born-path
+# holes. (1) draft->ready_for_review WITHOUT an intervening push never re-fires
+# either event -- GitHub emits a distinct ready_for_review event that this
+# workflow did not listen for, so a PR opened as draft and later marked ready
+# was permanently stranded unbound (live case: infra#2407). (2)
+# closed-then-reopened has the same hole via the reopened event. Both are now
+# listed.
+#
+# BRANCH FILTER: no trigger-level branch filter, matching every other repo's
+# caller (the #2377 stacked-PR vector) and call-occ-companion-effect.yml in
+# this same repo. Any future base-branch filtering must be IN-JOB with a
+# logged skip, never at the trigger.
+#
+# ADDITIVE / REJECTS NOTHING: this workflow is NOT a required status check. It
+# publishes a command; it never fails a PR's merge. A fail-loud exit 1 on the
+# trusted runner (missing/mismatched dev broker) is a non-blocking red signal,
+# not a merge gate.
+#
+# LANE / SECRET (OMN-14801 / OMN-14800): lane=dev is resolved against
+# omnimarket's config/ci_bus_lanes.yaml@main overlay (contract-owned,
+# authoritative). As of 2026-07-28, `gh api
+# repos/OmniNode-ai/onex_change_control/actions/secrets` returns zero
+# KAFKA_BOOTSTRAP_SERVERS-shaped repo secrets (only CLAUDE_CODE_OAUTH_TOKEN) --
+# the same state omnidash and omnibase_compat shipped in before their own
+# fan-out PRs, and the publisher falls back to the overlay-declared plaintext
+# dev broker when the secret is unset (verified live on omnidash's own
+# `OCC Autobind Publisher` run: "KAFKA_BOOTSTRAP_SERVERS is not injected;
+# publishing to the overlay-declared broker for lane='dev':
+# omninode-pc.tail75df5e.ts.net:19092"), so this is not a blocker.
+#
+# NO MANUAL-REPLAY ENTRYPOINT HERE (deliberate scope cut, OMN-15261): every
+# sibling caller (compat, omnidash, spi, infra) also ships an OMN-14993
+# `workflow_dispatch` manual-replay job that duplicates
+# `scripts/ci/occ_manual_replay_precheck.py` locally. onex_change_control runs
+# the scripts/** canonical-form guard (OMN-14475, DEFAULT-DENY new scripts,
+# `check-scripts-canonical-form`) which fetches its exception registry
+# (`allowlists/scripts_exceptions.yaml`) from `onex_change_control@main` in
+# CI, not the PR branch — so a same-PR registry entry cannot self-authorize
+# (anti-self-approval, same design as `skip_token_approvals.yaml`). Carrying
+# a copy of the precheck script here would be BLOCKED by that gate
+# pre-commit-locally-verified 2026-07-28) until a separate, CODEOWNERS-merged
+# PR lands the exception first. Rather than block this fix on that unrelated
+# governance PR, this caller ships the `pull_request`-triggered born path
+# only (which is the actual "no caller at all" gap OMN-15261 closes); the
+# manual-replay entrypoint is a tracked, ticketed follow-up once the registry
+# entry (or a node-backed replacement) lands.
+#
+# Ticket: OMN-15261, OMN-15012, OMN-15013, OMN-15017, OMN-14160
+
+name: OCC Autobind Publisher
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  occ-autobind:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.actor != 'dependabot[bot]' &&
+      github.actor != 'renovate[bot]' &&
+      (contains(github.event.pull_request.title, 'OMN-') ||
+       contains(github.event.pull_request.head.ref, 'OMN-'))
+    # Pinned `@dev` -- call-occ-autobind-reusable.yml exists only on
+    # omniclaude dev today, matching every other repo's caller (compat,
+    # omnidash, spi, infra). Re-pin to `@main` or a main SHA once the reusable
+    # promotes to omniclaude main (OMN-14812).
+    uses: OmniNode-ai/omniclaude/.github/workflows/call-occ-autobind-reusable.yml@dev
+    secrets: inherit
+    with:
+      lane: dev
