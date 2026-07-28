@@ -43,6 +43,20 @@
 # never at the trigger. call-occ-autobind.yml in this repo carries the same
 # no-filter design so both callers stay symmetric on this point.
 #
+# SELF-COMPANION EXCLUSION (OMN-15334) — the load-bearing guard:
+# This caller lives IN onex_change_control, so the companion PR the effect
+# opens is itself an OCC PR and, before this guard, re-fired this same caller.
+# One product PR (omninode_infra#735, OMN-15332) minted a 43-link cascade
+# OCC#5312 -> #5354 on 2026-07-28; a second (OMN-15338) was still growing at
+# #5362 when this landed. The `self-companion-guard` job below runs the
+# canonical predicate (src/onex_change_control/scripts/check_occ_autobind_trigger.py)
+# and the publish job is gated on its output — IN-JOB with a LOGGED skip, as
+# the branch-filter note above requires, never a silent green no-op
+# (OMN-15022). A depth cap is deliberately NOT used: it still burns N runs and
+# still orphans the last link. Both OCC callers share the one predicate so they
+# cannot diverge; symmetry here is enforced by
+# tests/unit/test_occ_autobind_self_exclusion_omn15334.py.
+#
 # ADDITIVE / REJECTS NOTHING: this workflow is NOT a required status check. It
 # publishes a command; it never fails a PR's merge. A fail-loud exit 1 on the
 # trusted runner (unreachable dev broker) is a non-blocking red signal, not a
@@ -86,16 +100,54 @@ permissions:
   contents: read
 
 jobs:
+  # OMN-15334: byte-identical to call-occ-autobind.yml's guard job by design —
+  # both callers consult the one canonical predicate, so neither can drift.
+  # ubuntu-latest, not the self-hosted trusted runner: pure metadata arithmetic,
+  # no broker or LAN reachability needed, so the born path does not inherit the
+  # .201 runner's availability risk. Checked out from the PR head rather than
+  # `dev` so the PR that introduces the predicate is not deadlocked by its own
+  # absence at `dev`.
+  self-companion-guard:
+    name: Self-companion guard (OMN-15334)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_publish: ${{ steps.decide.outputs.should_publish }}
+      verdict: ${{ steps.decide.outputs.verdict }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Check out the trigger predicate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: src/onex_change_control/scripts/check_occ_autobind_trigger.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # No `pip install`: the predicate is stdlib-only and imports nothing from
+      # its own package. Every attacker-controllable value (PR title, head ref,
+      # labels) is passed through env, never interpolated into the shell command.
+      - name: Decide whether to publish the companion-effect command
+        id: decide
+        env:
+          OCC_TRIGGER_EVENT_NAME: ${{ github.event_name }}
+          OCC_TRIGGER_ACTOR: ${{ github.actor }}
+          OCC_TRIGGER_PR_TITLE: ${{ github.event.pull_request.title }}
+          OCC_TRIGGER_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          OCC_TRIGGER_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python src/onex_change_control/scripts/check_occ_autobind_trigger.py
+
   occ-companion-effect:
-    # Skip dependency bots and PRs with no OMN ticket token (same gate the
-    # reusable enforces defensively). Gating here means the reusable is not
-    # even invoked for non-OMN / bot PRs.
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.actor != 'dependabot[bot]' &&
-      github.actor != 'renovate[bot]' &&
-      (contains(github.event.pull_request.title, 'OMN-') ||
-       contains(github.event.pull_request.head.ref, 'OMN-'))
+    needs: self-companion-guard
+    # Dependency-bot exemption, ticket-token gate and the three self-companion
+    # signals all live in the guard module, so they have exactly one definition
+    # and cannot drift against a hand-maintained copy of the same conditions in
+    # this expression. The reusable keeps its own defensive bot/OMN gate.
+    if: needs.self-companion-guard.outputs.should_publish == 'true'
     uses: OmniNode-ai/omniclaude/.github/workflows/call-occ-companion-effect-reusable.yml@dev
     with:
       lane: dev
