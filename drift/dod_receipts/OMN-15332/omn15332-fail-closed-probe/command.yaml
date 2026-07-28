@@ -1,0 +1,38 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15332"
+evidence_item_id: "omn15332-fail-closed-probe"
+check_type: "command"
+check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15332/omn15332-fail-closed-probe/command.yaml"
+contract_sha256: "sha256:8da32447dc941a553efc0bc6892ac9dbf4b14eea39ff0a0ce1d4971fd5294fa9"
+contract_entry_sha256: "sha256:129fc0f36ac850470b63b41641a2f09bda6827fd6bc824c5ca5c6f7f41bc46ee"
+status: PASS
+run_timestamp: "2026-07-28T19:05:00Z"
+commit_sha: "e503db5f12dc98f00b64b896a587f715178e9752"
+runner: "omninode_infra-repo-scripts-pytest"
+verifier: "omn15332-red-green-execution"
+probe_command: "REQUIRE_MIGRATION_LOCK_DB=1 uv run pytest tests/scripts/test_node_migration_ledger_collision.py::test_unreadable_node_ledger_fails_the_job_instead_of_applying
+  -v"
+probe_stdout: |
+  # node_schema_migrations pre-created WITHOUT a version column, so
+  # CREATE TABLE IF NOT EXISTS no-ops and the already-applied probe errors.
+  # The job must exit non-zero AND create no marker table.
+  tests/scripts/test_node_migration_ledger_collision.py::test_unreadable_node_ledger_fails_the_job_instead_of_applying PASSED
+  1 passed
+
+  # Same test against origin/dev's shipped manifest (the pre-fix swallow shape)
+  # fails with the exact defect it exists to catch:
+  FAILED ...::test_unreadable_node_ledger_fails_the_job_instead_of_applying
+    AssertionError: the job applied node SQL despite being unable to read its own tracking table -- this is the OMN-15332 fail-open defect
+
+  # Two repo-wide static assertions back it:
+  #   test_no_migration_runner_swallows_the_already_applied_probe_error
+  #     -- no *-migrate.yaml runner retains the '|| echo 0' fallback
+  #   test_already_applied_probes_run_with_on_error_stop
+  #     -- every already_applied probe sets ON_ERROR_STOP=1, so psql exits
+  #        non-zero and 'set -euo pipefail' turns it into a job failure
+actual_output: "PASS: OMN-15332 acceptance criterion 4 proven by execution -- an unreadable tracking table
+  fails the job and applies nothing; the same assertion is RED against the shipped origin/dev manifest."
+exit_code: 0
+pr_number: 735
+branch: "jonah/omn-15332-node-migration-ledger"

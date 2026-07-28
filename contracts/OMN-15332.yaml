@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15332"
+title: "k8s node-migration ledger collision + wrong Postgres target"
+summary: >-
+  Hand-authored OCC companion for OmniNode-ai/omninode_infra#735. The node-owned migration loop tracked
+  in schema_migrations inside omnidash_analytics, where omnidash's own (filename, applied_at) ledger already
+  owns that name, so the DDL no-opped, the probe error was swallowed by a `|| echo "0"` fallback and promoted
+  to APPLY, the SQL applied for real, and the tracking UPSERT then killed the job. The loop now tracks
+  in node_schema_migrations, the swallow is gone from every runner, and deploy-onex-dev.yml sets POSTGRES_TARGET=rds
+  so migrations land in the instance the runtime reads.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      The shipped node loop, extracted from the manifest and driven against a real Postgres seeded with
+      the legacy-shaped ledger, must complete; the mechanically-derived pre-fix shape must still fail.
+    command: "uv run pytest tests/scripts/test_node_migration_ledger_collision.py -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "omn15332-red-green-ledger-collision"
+    description: >-
+      RED against origin/dev's manifest, GREEN on the branch, same fixtures and same database — tests/scripts/test_node_migration_ledger_collision.py.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15332/omn15332-red-green-ledger-collision/command.yaml"
+  - id: "omn15332-fail-closed-probe"
+    description: >-
+      OMN-15332 acceptance 4 — an unreadable tracking table fails the job and applies nothing, proven
+      by execution rather than by inspection.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15332/omn15332-fail-closed-probe/command.yaml"
+  - id: "omn15332-fence-unchanged"
+    description: >-
+      The OMN-14974 operator fence on node_projection_delegation 0023-0026 is exactly those four ids after
+      the ledger move, statically and live.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15332/omn15332-fence-unchanged/command.yaml"
+  - id: "omn15332-full-suite-on-200"
+    description: >-
+      Full omninode_infra repo-root suite on .200 against the pushed SHA e503db5, plus the migration-runner
+      schema-consistency CI gate.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15332/omn15332-full-suite-on-200/command.yaml"

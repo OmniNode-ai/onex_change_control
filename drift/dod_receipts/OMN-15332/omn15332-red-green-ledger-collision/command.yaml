@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15332"
+evidence_item_id: "omn15332-red-green-ledger-collision"
+check_type: "command"
+check_value: "grep -q '^status: PASS$' $CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15332/omn15332-red-green-ledger-collision/command.yaml"
+contract_sha256: "sha256:8da32447dc941a553efc0bc6892ac9dbf4b14eea39ff0a0ce1d4971fd5294fa9"
+contract_entry_sha256: "sha256:a8bf375b9e6d86828facb3fdd3fa45f31a9724acb9f68726ee7409a9e136c705"
+status: PASS
+run_timestamp: "2026-07-28T19:05:00Z"
+commit_sha: "e503db5f12dc98f00b64b896a587f715178e9752"
+runner: "omninode_infra-repo-scripts-pytest"
+verifier: "omn15332-red-green-execution"
+probe_command: "git show origin/dev:k8s/migrations/omnibase-infra-migrate.yaml > k8s/migrations/omnibase-infra-migrate.yaml
+  && REQUIRE_MIGRATION_LOCK_DB=1 uv run pytest tests/scripts/test_node_migration_ledger_collision.py -k
+  'does_not_block_the_shipped_loop or unreadable_node_ledger'; git checkout k8s/migrations/omnibase-infra-migrate.yaml
+  && REQUIRE_MIGRATION_LOCK_DB=1 uv run pytest tests/scripts/test_node_migration_ledger_collision.py -v"
+probe_stdout: |
+  # RED — origin/dev manifest restored verbatim into the worktree:
+  FAILED tests/scripts/test_node_migration_ledger_collision.py::test_legacy_shaped_ledger_does_not_block_the_shipped_loop
+    node loop failed: NOTICE:  relation "schema_migrations" already exists, skipping
+    LINE 1: INSERT INTO schema_migrations (version, checksum) VALUES ('n...
+  FAILED tests/scripts/test_node_migration_ledger_collision.py::test_unreadable_node_ledger_fails_the_job_instead_of_applying
+    AssertionError: the job applied node SQL despite being unable to read its own tracking table -- this is the OMN-15332 fail-open defect
+  2 failed, 6 deselected in 1.96s
+
+  # GREEN — branch manifest, same fixtures, same throwaway Postgres cluster:
+  tests/scripts/test_node_migration_ledger_collision.py::test_node_loop_tracks_in_its_own_ledger_table PASSED
+  tests/scripts/test_node_migration_ledger_collision.py::test_no_migration_runner_swallows_the_already_applied_probe_error PASSED
+  tests/scripts/test_node_migration_ledger_collision.py::test_already_applied_probes_run_with_on_error_stop PASSED
+  tests/scripts/test_node_migration_ledger_collision.py::test_operator_fence_is_exactly_the_four_delegation_ids PASSED
+  tests/scripts/test_node_migration_ledger_collision.py::test_legacy_shaped_ledger_kills_the_pre_fix_loop_after_mutating_the_db PASSED
+  tests/scripts/test_node_migration_ledger_collision.py::test_legacy_shaped_ledger_does_not_block_the_shipped_loop PASSED
+  tests/scripts/test_node_migration_ledger_collision.py::test_shipped_loop_still_fences_the_delegation_rls_migrations PASSED
+  tests/scripts/test_node_migration_ledger_collision.py::test_unreadable_node_ledger_fails_the_job_instead_of_applying PASSED
+  8 passed in 4.08s
+actual_output: "PASS: the OMN-15332 ledger collision is RED on origin/dev's shipped manifest and GREEN
+  on omninode_infra#735, proven against a real Postgres carrying omnidash's legacy (filename, applied_at)
+  ledger."
+exit_code: 0
+pr_number: 735
+branch: "jonah/omn-15332-node-migration-ledger"
