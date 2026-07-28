@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15288"
+title: "Browser-driven Beta dashboard end-to-end proof harness (five named legs, fail-closed)"
+summary: >
+  Add the browser-side sibling of the OMN-15256 post-deploy business proof: a Playwright driver plus a
+  pure decision engine that assert credentialed login, tenant landing, workflow submission, status progression
+  and rendered final text as five independent legs, so a red run names the broken leg. No skip path exists
+  anywhere in the harness; a missing credential is exit 2, not a skip.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "The omninode_infra repo-root suite passes with the new decision-engine tests included."
+    command: "uv run pytest tests/ -q"
+  - kind: "tests"
+    description: "ruff lint, ruff format and mypy are clean on the three new files."
+    command: "uv run ruff check scripts/beta_dashboard_e2e_proof.py scripts/evaluate_beta_dashboard_proof.py
+      tests/scripts/test_evaluate_beta_dashboard_proof.py && uv run mypy scripts/beta_dashboard_e2e_proof.py
+      scripts/evaluate_beta_dashboard_proof.py"
+  - kind: "manual"
+    description: >
+      The harness was proven RED against the live staging dashboard before OMN-14938 landed: exit 1 with
+      auth_session named as the earliest broken leg. A GREEN run additionally requires OMN-14938 (Infisical
+      seeding), OMN-15294 (AUTH_URL/NEXTAUTH_URL repair) and a seeded staging account.
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15288-harness-lands-at-9417e83d"
+    description: >
+      omninode_infra carries the three-file harness at commit 9417e83d14666c929aefa15cc11ecf6a6ee2ea09
+      -- the Playwright driver, the pure decision engine, and the engine's test suite.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/scripts/evaluate_beta_dashboard_proof.py?ref=9417e83d14666c929aefa15cc11ecf6a6ee2ea09'
+          --jq .content | base64 -d | grep -Fq 'LEG_ORDER' && gh api 'repos/OmniNode-ai/omninode_infra/contents/scripts/beta_dashboard_e2e_proof.py?ref=9417e83d14666c929aefa15cc11ecf6a6ee2ea09'
+          --jq .content | base64 -d | grep -Fq 'BETA_PROOF_DASHBOARD_BASE_URL'
+  - id: "dod-omn15288-no-silent-skip-path"
+    description: >
+      The harness has no skip path: an absent credential exits 2 with a message naming the variable, and
+      the decision engine fails an absent leg as "not attempted" rather than ignoring it. Held by the
+      committed test suite, not by review.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_evaluate_beta_dashboard_proof.py?ref=9417e83d14666c929aefa15cc11ecf6a6ee2ea09'
+          --jq .content | base64 -d | grep -Fq 'test_driver_reports_missing_credentials_as_exit_2_not_a_skip'
+          && gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_evaluate_beta_dashboard_proof.py?ref=9417e83d14666c929aefa15cc11ecf6a6ee2ea09'
+          --jq .content | base64 -d | grep -Fq 'test_absent_leg_fails_as_not_attempted'
+  - id: "dod-omn15288-lazy-playwright-import"
+    description: >
+      The Playwright import is lazy, so the omninode_infra repo-root suite that CI runs unconditionally
+      (OMN-14399) can import the driver with no browser installed. The regression test blocking an eager
+      import is committed alongside it.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_evaluate_beta_dashboard_proof.py?ref=9417e83d14666c929aefa15cc11ecf6a6ee2ea09'
+          --jq .content | base64 -d | grep -Fq 'test_driver_imports_without_playwright_installed'
+  - id: "dod-omn15288-red-against-live-staging"
+    description: >
+      The harness was run against the live staging dashboard on 2026-07-28T04:06Z with the shipped file
+      contents and exited 1, naming auth_session as the earliest broken leg and diagnosing the live redirect_uri
+      as https://0.0.0.0:3000/api/auth/callback/keycloak. The same non-routable callback is independently
+      visible in the live Auth.js provider metadata, which is what this check reads back.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          curl -sf https://app.omninode.ai/api/auth/providers | grep -Fq '0.0.0.0:3000/api/auth/callback/keycloak'
