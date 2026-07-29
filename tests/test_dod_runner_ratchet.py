@@ -88,24 +88,45 @@ def test_no_duplicate_entries() -> None:
         "grep -q '^status: PASS$' drift/dod_receipts/OMN-1/dod-x/command.yaml",
         "test -f contracts/OMN-14391.yaml",
         "uv run validate-yaml contracts/OMN-10080.yaml",
+        # --- OMN-15309: newly INADMISSIBLE, and deliberately so ----------------
+        # These three were asserted NOT-inert by this very test until the
+        # 2026-07-29 operator ruling adopted the OMN-14505 predicate (EXECUTED,
+        # FALSIFIABLE, OUTSIDE ITS OWN DIFF) as the single admissibility rule.
+        # They are moved rather than deleted so the behaviour change is visible
+        # in the diff instead of silently disappearing.
+        #
+        # (1) A PR-merged probe proves the change exists, not that anything it
+        #     claims is true -- OMN-14505 names PR-existence probes as a class
+        #     that must go RED. See OMN-15357 for the same hole upstream.
+        'test "$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2264'
+        ' --jq .merged)" = "true"',
+        # (2) A bare existence probe on a path the PR itself adds cannot go RED
+        #     once the PR is applied.
+        "test -f src/omnibase_infra/runtime/message_dispatch_engine.py",
     ],
 )
 def test_inert_checks_are_detected(check_value: str) -> None:
-    """A check that only reads the OCC store cannot observe the product."""
+    """A check that is not EXECUTED, FALSIFIABLE, and OUTSIDE ITS OWN DIFF."""
     assert runner._is_inert_check(check_value) is True
 
 
 @pytest.mark.parametrize(
     "check_value",
     [
-        'test "$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2264'
-        ' --jq .merged)" = "true"',
-        "test -f src/omnibase_infra/runtime/message_dispatch_engine.py",
+        # Executes against the product checkout; RED when the behaviour breaks.
         "uv run pytest tests/integration/runtime/test_dispatch_seam.py",
+        # The canonical hermetic form for a merged-code fact: reads the product
+        # repo's CONTENT at a pinned ref, outside the OCC diff that authors the
+        # evidence, RED when the symbol is absent.
+        "gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/"
+        "runtime/message_dispatch_engine.py?ref=79c620f9 --jq .content "
+        "| base64 -d | grep -q 'class MessageDispatchEngine'",
+        # A genuine live-surface probe.
+        "docker exec omninode-runtime python -c 'import omnibase_infra'",
     ],
 )
 def test_honest_checks_are_not_inert(check_value: str) -> None:
-    """Checks that reach the product or GitHub are enforced, never demoted."""
+    """Admissible checks are enforced, never demoted."""
     assert runner._is_inert_check(check_value) is False
 
 
@@ -121,7 +142,16 @@ def test_one_product_check_is_enough_to_be_effective() -> None:
             "id": "d1",
             "checks": [
                 {"check_value": "grep x drift/dod_receipts/a"},
-                {"check_value": "test -f src/real_file.py"},
+                # OMN-15309: was `test -f src/real_file.py`, which the adopted
+                # predicate now refuses (an existence assertion cannot go RED
+                # once the change that adds the path is applied). Replaced with
+                # a probe that IS admissible so this test keeps testing what it
+                # was written to test: one good check is enough.
+                {
+                    "check_value": (
+                        "docker exec omninode-runtime python -c 'import omnibase_infra'"
+                    )
+                },
             ],
         }
     ]
