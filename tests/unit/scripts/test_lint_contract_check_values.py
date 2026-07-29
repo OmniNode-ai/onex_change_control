@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -152,7 +153,7 @@ def test_2_dev_null_mid_fragment_not_flagged(tmp_path: Path) -> None:
 
     Uses \\Z (absolute fragment end) instead of MULTILINE $ to avoid false positives.
     """
-    good = 'cmd 2>/dev/null\n[ "$result" = "SUCCESS" ]'
+    good = 'gh pr checks 1 --repo OmniNode-ai/x 2>/dev/null\n[ "$result" = "OK" ]'
     path = write_contract(tmp_path, good)
     findings = linter.lint_contract(path)
     assert not findings, (
@@ -430,3 +431,241 @@ def test_main_reports_all_files(tmp_path: Path) -> None:
         )
     rc = linter.main(["lint_contract_check_values.py", str(p1), str(p2)])
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# OMN-15382 Rule A -- executable-command-shape
+#
+# contracts/OMN-14968.yaml failed dod_verify 3/7: four dod_evidence
+# check_values opened with the human-readable prose "Recorded product
+# receipt: ..." handed verbatim to `sh -c` by contract_compliance_check.py's
+# `_check_command` -- the literal first word "Recorded" fails
+# "command not found" (exit 127) every time it is actually executed.
+# ---------------------------------------------------------------------------
+
+
+def write_contract_with_items(
+    tmp_path: Path, dod_evidence: list[dict[str, Any]]
+) -> Path:
+    """Write a minimal contract with an arbitrary dod_evidence list."""
+    data = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-TEST",
+        "dod_evidence": dod_evidence,
+    }
+    p = tmp_path / "OMN-TEST.yaml"
+    p.write_text(yaml.dump(data, default_flow_style=False), encoding="utf-8")
+    return p
+
+
+@pytest.mark.unit
+def test_rule_a_catches_prose_receipt_prefix(tmp_path: Path) -> None:
+    """The OMN-14968 defect: a human-readable "Recorded product receipt: ..."
+    description handed verbatim to `sh -c` fails "command not found" (exit
+    127) every time it actually runs -- it is not a command at all.
+    """
+    bad = (
+        "Recorded product receipt: uv run pytest "
+        "tests/integration/infra/test_dev_runtime_compose_render.py "
+        "-k renders_one_runtime_worker_replica"
+    )
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected Rule A findings for: {bad}"
+    assert any("executable-command-shape" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_rule_a_catches_prose_receipt_prefix_pipe_variant(tmp_path: Path) -> None:
+    """Same defect class, pipe variant: "Recorded product receipt:
+    docker compose ... | sha256sum" -- the literal word "Recorded" still
+    fails immediately as a command; stripping only the prose prefix and
+    leaving the bare pipe-to-sha256sum would ALSO be vacuously green (`sh`
+    has no `pipefail`, and `sha256sum` exits 0 on any input including
+    nothing), which is why Rule A's own message names the defect and the
+    repaired contracts/OMN-14968.yaml binds this evidence a different way
+    entirely (grep against an already-committed hash, not a live re-render).
+    """
+    bad = (
+        "Recorded product receipt: docker compose --env-file "
+        "docker/runtime-policy.env -f docker/docker-compose.infra.yml "
+        "[-f docker/docker-compose.<lane>.yml] --profile <lane> config "
+        "| sha256sum # pre-tree vs post-tree, per lane"
+    )
+    path = write_contract(tmp_path, bad)
+    findings = linter.lint_contract(path)
+    assert findings, f"Expected Rule A findings for: {bad}"
+    assert any("executable-command-shape" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "good",
+    [
+        "gh pr view 1721 --repo OmniNode-ai/omnimarket",
+        "pre-commit run --all-files",
+        "uv run pytest tests/test_x.py -k y",
+        "docker compose -f docker-compose.yml config",
+        "grep -q 'symbol' src/file.py",
+        '[ "$(gh api foo --jq .bar)" = "1" ]',
+        "! gh api foo --jq .bar | grep -q x",
+        "if test -f contracts/OMN-1.yaml; then grep -q x contracts/OMN-1.yaml; fi",
+        "for f in a b c; do test -f $f || exit 1; done",
+        'case "${REPO}" in foo) true ;; *) false ;; esac',
+        ": ${PR_NUMBER}; gh pr diff $PR_NUMBER --repo OmniNode-ai/omnimarket",
+        "PRODUCT_PR_NUMBER=1721 gh pr view $PRODUCT_PR_NUMBER --repo OmniNode-ai/x",
+        "state=$(gh pr view {pr} --repo {repo} --json state -q .state); "
+        '[ "$state" = "OPEN" ]',
+        'f="$(mktemp)" && gh api foo --jq .bar > "$f" && grep -q x "$f"',
+    ],
+)
+def test_rule_a_accepts_real_shell_forms(tmp_path: Path, good: str) -> None:
+    """Rule A must not flag genuine executable shell fragments, including
+    compound/control-flow openers and assignment-prefixed statements (both
+    the OMN-14431 literal-prefix idiom and a genuine VAR=$(...) capture).
+    """
+    path = write_contract(tmp_path, good)
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected Rule A findings for: {good}: {findings}"
+
+
+# ---------------------------------------------------------------------------
+# OMN-15382 Rule B -- per-item PR binding
+#
+# contracts/OMN-14968.yaml's dod-OmniNode-ai-omnibase_infra-pr-2536 used the
+# OMN-14431 bare ${PR_NUMBER}/${REPO} runner placeholder, so it never actually
+# pinned PR #2536 -- it silently re-checked whatever PR the compliance runner
+# happened to be evaluating (class-3 PR-number mis-binding).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rule_b_catches_bare_placeholder_in_pr_numbered_item(tmp_path: Path) -> None:
+    item = {
+        "id": "dod-OmniNode-ai-omnibase_infra-pr-2536",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": "gh pr view ${PR_NUMBER} --repo ${REPO} --json state",
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert findings, "Expected Rule B finding for bare ${PR_NUMBER} in a PR-numbered id"
+    assert any("pr-binding" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_rule_b_accepts_literal_pr_pin(tmp_path: Path) -> None:
+    item = {
+        "id": "dod-OmniNode-ai-omnibase_infra-pr-2536",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh pr view 2536 --repo OmniNode-ai/omnibase_infra "
+                    "--json number,state"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected Rule B findings for literal pin: {findings}"
+
+
+@pytest.mark.unit
+def test_rule_b_ignores_ids_without_embedded_pr_number(tmp_path: Path) -> None:
+    """An id with no `pr-<digits>` (own-PR self-bind form) is out of scope for
+    Rule B -- the canonical own-PR form uses the bare ${PR_NUMBER} runner
+    placeholder deliberately, and that is correct, not a mis-binding.
+    """
+    item = {
+        "id": "occ-self-bind-pending",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": "gh pr view ${PR_NUMBER} --repo ${REPO} --json state",
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected findings for non-PR-numbered id: {findings}"
+
+
+@pytest.mark.unit
+def test_rule_b_ignores_items_with_no_gh_pr_call(tmp_path: Path) -> None:
+    """A PR-numbered id whose checks never call gh pr view/checks/diff has
+    nothing for Rule B to bind (e.g. a pure content probe) -- not this rule's
+    concern.
+    """
+    item = {
+        "id": "dod-omnibase_infra-pr-2536-content",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh api repos/OmniNode-ai/omnibase_infra/contents/foo.py"
+                    "?ref=abc123 --jq .content | base64 -d | grep -q bar"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected Rule B findings for non-gh-pr item: {findings}"
+
+
+@pytest.mark.unit
+def test_rule_a_and_b_skip_superseded_items(tmp_path: Path) -> None:
+    """Both new rules must respect the append-only supersedes_dod_evidence
+    idiom exactly like the pre-existing anti-pattern scan does -- an
+    immutable historical item stays reported for audit but is not
+    re-evaluated once a later item supersedes it.
+    """
+    data = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-SUPERSEDED-15382",
+        "dod_evidence": [
+            {
+                "id": "dod-old-pr-2536",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": "Recorded product receipt: uv run pytest x",
+                    }
+                ],
+            },
+            {
+                "id": "dod-old-pr-2536-rebind",
+                "evidence_artifact": "supersedes_dod_evidence:dod-old-pr-2536",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": (
+                            "gh pr view 2536 --repo OmniNode-ai/omnibase_infra "
+                            "--json number,state"
+                        ),
+                    }
+                ],
+            },
+        ],
+    }
+    path = tmp_path / "OMN-SUPERSEDED-15382.yaml"
+    path.write_text(yaml.dump(data), encoding="utf-8")
+
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected findings on superseded item: {findings}"
+
+
+@pytest.mark.unit
+def test_rule_a_and_b_repaired_omn_14968_contract_is_clean() -> None:
+    """The actual repaired contract this ticket exists to fix must lint clean
+    end to end (both pre-existing anti-patterns and the two new OMN-15382
+    rules) -- proof the repair, not just a synthetic fixture, is correct.
+    """
+    contract_path = Path(__file__).resolve().parents[3] / "contracts" / "OMN-14968.yaml"
+    findings = linter.lint_contract(contract_path)
+    assert not findings, f"Unexpected findings on repaired OMN-14968.yaml: {findings}"
