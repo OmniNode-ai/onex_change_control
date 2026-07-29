@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 from onex_change_control.scripts.contract_compliance_check import (
     _RESULT_BLOCK,
+    _RESULT_NOT_EVALUATED,
     _RESULT_PASS,
     _RESULT_WARN,
     _check_command,
@@ -678,6 +679,139 @@ def test_contract_with_an_admissible_command_check_passes(tmp_path: Path) -> Non
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 0
+
+
+def test_local_done_gate_item_is_loudly_not_evaluated_in_hosted_compliance(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A private-repo probe is preserved but never executed or counted as PASS."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "private-probe-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Private evidence audience"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-hosted-proof
+            description: "Public proof keeps hosted compliance load-bearing"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-private-runtime-proof
+            description: "Private runtime proof executes only at the local Done gate"
+            execution_scope: local_done_gate
+            checks:
+              - check_type: command
+                check_value: "touch {marker} && false"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert not marker.exists(), "hosted compliance executed a local-only probe"
+    assert "NOT_EVALUATED" in out
+    assert "local_done_gate" in out
+    assert "1/2 PASS, 1 NOT_EVALUATED" in out
+    assert "2/2 PASS" not in out
+    assert f"{_RESULT_NOT_EVALUATED}" in out
+
+
+def test_local_done_gate_item_cannot_satisfy_hosted_effective_check_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """NOT_EVALUATED evidence cannot turn a proof-free hosted contract green."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Private-only evidence is not hosted proof"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-private-runtime-proof
+            description: "Local Done evidence"
+            execution_scope: local_done_gate
+            checks:
+              - check_type: command
+                check_value: "false"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NOT_EVALUATED" in out
+    assert "no hosted-and-local effective check" in out
+
+
+@pytest.mark.parametrize("execution_scope_yaml", ["local-ish", "[local_done_gate]"])
+def test_unknown_execution_scope_fails_closed_without_executing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    execution_scope_yaml: str,
+) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "unknown-scope-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Unknown scope"
+        dod_evidence:
+          - id: dod-unknown-scope
+            description: "A typo must not silently skip"
+            execution_scope: {execution_scope_yaml}
+            checks:
+              - check_type: command
+                check_value: "touch {marker}"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed an ambiguous scope"
+    assert "UNKNOWN_EXECUTION_SCOPE" in out
+    assert execution_scope_yaml.strip("[]") in out
 
 
 def test_contract_with_failing_check_returns_block(tmp_path: Path) -> None:

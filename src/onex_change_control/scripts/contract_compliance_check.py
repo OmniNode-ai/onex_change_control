@@ -72,6 +72,12 @@ _OMN_TICKET_PATTERN = re.compile(r"\b(OMN-\d+)\b", re.IGNORECASE)
 _RESULT_PASS = "PASS"  # noqa: S105
 _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
+_RESULT_NOT_EVALUATED = "NOT_EVALUATED"
+_EXECUTION_SCOPE_HOSTED_AND_LOCAL = "hosted_and_local"
+_EXECUTION_SCOPE_LOCAL_DONE_GATE = "local_done_gate"
+_EXECUTION_SCOPES = frozenset(
+    {_EXECUTION_SCOPE_HOSTED_AND_LOCAL, _EXECUTION_SCOPE_LOCAL_DONE_GATE}
+)
 _ALLOWLIST_FIELDS = 2  # each entry is 'OMN-1234 <sha256>'
 
 # OMN-15309 -- admissibility is decided by ONE predicate, shared with deploy-gate.
@@ -927,6 +933,30 @@ def _run_dod_checks(
             continue
         checks = dod_item.get("checks", [])
         print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
+        execution_scope = dod_item.get(
+            "execution_scope", _EXECUTION_SCOPE_HOSTED_AND_LOCAL
+        )
+        if execution_scope == _EXECUTION_SCOPE_LOCAL_DONE_GATE:
+            detail = (
+                "NOT-EVALUATED [local_done_gate] -- hosted contract compliance "
+                "is not an authorized consumer; the local Done gate must execute "
+                "this item and persist its result."
+            )
+            results.append((item_id, "execution_scope", _RESULT_NOT_EVALUATED, detail))
+            print(f"  [-] execution_scope: {detail}", flush=True)
+            continue
+        if (
+            not isinstance(execution_scope, str)
+            or execution_scope not in _EXECUTION_SCOPES
+        ):
+            detail = (
+                f"UNKNOWN_EXECUTION_SCOPE {execution_scope!r} -- allowed values: "
+                f"{', '.join(sorted(_EXECUTION_SCOPES))}; refusing to execute "
+                "with an ambiguous evidence audience."
+            )
+            results.append((item_id, "execution_scope", _RESULT_BLOCK, detail))
+            print(f"  [X] execution_scope: {detail}", flush=True)
+            continue
         for check in checks:
             check_type, result, detail = _run_single_check(check, workspace, context)
             result, detail, label = _demote(check, result, detail, context)
@@ -975,6 +1005,11 @@ def _has_effective_check(
     """
     for dod_item in dod_evidence:
         if not isinstance(dod_item, dict):
+            continue
+        if (
+            dod_item.get("execution_scope", _EXECUTION_SCOPE_HOSTED_AND_LOCAL)
+            != _EXECUTION_SCOPE_HOSTED_AND_LOCAL
+        ):
             continue
         for check in dod_item.get("checks", []) or []:
             if isinstance(check, dict) and not _is_inert_check(
@@ -1075,9 +1110,12 @@ def run_compliance_check(
     passes = sum(1 for _, _, r, _ in results if r == _RESULT_PASS)
     warns = sum(1 for _, _, r, _ in results if r == _RESULT_WARN)
     blocks = sum(1 for _, _, r, _ in results if r == _RESULT_BLOCK)
+    not_evaluated = sum(1 for _, _, r, _ in results if r == _RESULT_NOT_EVALUATED)
 
+    not_evaluated_summary = f", {not_evaluated} NOT_EVALUATED" if not_evaluated else ""
     print(
-        f"\n[SUMMARY] {ticket_id}: {passes}/{total} PASS, {warns} WARN, {blocks} BLOCK",
+        f"\n[SUMMARY] {ticket_id}: {passes}/{total} PASS"
+        f"{not_evaluated_summary}, {warns} WARN, {blocks} BLOCK",
         flush=True,
     )
 
@@ -1093,9 +1131,11 @@ def run_compliance_check(
             )
         else:
             print(
-                f"[BLOCK] {ticket_id}: every check is INADMISSIBLE -- not one of "
-                f"them is EXECUTED, FALSIFIABLE, and OUTSIDE ITS OWN DIFF, so this "
-                f"contract cannot certify the code it claims to about {repo}.\n"
+                f"[BLOCK] {ticket_id}: no hosted-and-local effective check exists "
+                f"-- every hosted check is INADMISSIBLE or every evidence item is "
+                f"reserved for another execution scope. Not one hosted check is "
+                f"EXECUTED, FALSIFIABLE, and OUTSIDE ITS OWN DIFF, so this contract "
+                f"cannot certify the code it claims to about {repo}.\n"
                 f"{admissible_evidence_guidance(repo)}",
                 flush=True,
             )

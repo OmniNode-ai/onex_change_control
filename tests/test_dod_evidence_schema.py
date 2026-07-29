@@ -84,6 +84,32 @@ class TestDodEvidenceItemValidation:
         assert item.status == "pending"
         assert item.linear_dod_text is None
         assert item.evidence_artifact is None
+        assert item.execution_scope == "hosted_and_local"
+
+    def test_local_done_gate_execution_scope_round_trips(self) -> None:
+        item = ModelDodEvidenceItem.model_validate(
+            {
+                "id": "dod-private-runtime-proof",
+                "description": "Private proof runs at the local Done gate",
+                "execution_scope": "local_done_gate",
+                "checks": [{"check_type": "command", "check_value": "false"}],
+            }
+        )
+
+        dumped = item.model_dump(mode="json")
+        assert dumped["execution_scope"] == "local_done_gate"
+        assert ModelDodEvidenceItem.model_validate(dumped) == item
+
+    def test_unknown_execution_scope_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ModelDodEvidenceItem.model_validate(
+                {
+                    "id": "dod-unknown-scope",
+                    "description": "Unknown consumers fail closed",
+                    "execution_scope": "local-ish",
+                    "checks": [{"check_type": "command", "check_value": "true"}],
+                }
+            )
 
 
 class TestDodCheckTypes:

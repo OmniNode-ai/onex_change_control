@@ -110,6 +110,13 @@ class ModelDodEvidenceItem(BaseModel):
         description="Executable checks that verify this DoD item",
         max_length=_MAX_LIST_ITEMS,
     )
+    execution_scope: Literal["hosted_and_local", "local_done_gate"] = Field(
+        default="hosted_and_local",
+        description=(
+            "Gate audience authorized to execute this evidence item. "
+            "local_done_gate items are not evaluated by hosted compliance."
+        ),
+    )
     status: Literal["pending", "verified", "failed", "skipped"] = Field(
         default="pending",
         description="Current verification status of this DoD item",
