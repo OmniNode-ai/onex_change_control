@@ -37,6 +37,7 @@ from onex_change_control.scripts.contract_compliance_check import (
     _contract_digest,
     _extract_ticket_id,
     _find_contracts_dir,
+    _load_legacy_allowlist,
     _non_hermetic_reason,
     run_compliance_check,
 )
@@ -740,7 +741,8 @@ def test_local_done_gate_item_cannot_satisfy_hosted_effective_check_floor(
     """NOT_EVALUATED evidence cannot turn a proof-free hosted contract green."""
     contracts = tmp_path / "contracts"
     contracts.mkdir()
-    contract_yaml = textwrap.dedent("""
+    marker = tmp_path / "local-floor-check-ran"
+    contract_yaml = textwrap.dedent(f"""
         schema_version: "1.0.0"
         ticket_id: "OMN-15392"
         summary: "Private-only evidence is not hosted proof"
@@ -758,7 +760,40 @@ def test_local_done_gate_item_cannot_satisfy_hosted_effective_check_floor(
             execution_scope: local_done_gate
             checks:
               - check_type: command
-                check_value: "false"
+                check_value: >-
+                  touch {marker} && grep -q 'PUBLIC_PROOF' public-proof.txt
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed a local-only floor check"
+    assert "NOT_EVALUATED" in out
+    assert "no hosted-and-local effective check" in out
+
+
+def test_historical_item_without_checks_is_compatible_but_not_hosted_proof(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Omitted checks keeps its legacy default but cannot satisfy the proof floor."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Historical no-check item"
+        dod_evidence:
+          - id: dod-historical-no-checks
+            description: "Legacy item omitted checks"
     """)
     (contracts / "OMN-15392.yaml").write_text(contract_yaml)
 
@@ -772,8 +807,382 @@ def test_local_done_gate_item_cannot_satisfy_hosted_effective_check_floor(
 
     out = capsys.readouterr().out
     assert rc == 1
-    assert "NOT_EVALUATED" in out
+    assert "INVALID_DOD_EVIDENCE_ITEM" not in out
+    assert "NO_EXECUTABLE_CHECKS" in out
     assert "no hosted-and-local effective check" in out
+
+
+@pytest.mark.parametrize("execution_scope", ["hosted_and_local", "local_done_gate"])
+def test_no_check_item_blocks_even_with_valid_hosted_sibling(
+    execution_scope: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An empty row cannot disappear behind a sibling PASS or audience skip."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Every evidence row needs an executable observation"
+        dod_evidence:
+          - id: dod-valid-hosted-sibling
+            description: "Executable compatibility control"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-empty-row
+            description: "This row must fail loudly"
+            execution_scope: {execution_scope}
+            checks: []
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NO_EXECUTABLE_CHECKS" in out
+    assert "1/2 PASS" in out
+    assert "1 BLOCK" in out
+
+
+def test_real_omn_13141_content_pin_warns_for_historical_no_check_item(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The exact OMN-13141 corpus bytes remain loud, content-pinned debt."""
+    repo_root = Path(__file__).resolve().parents[1]
+    contracts = repo_root / "contracts"
+    contract_path = contracts / "OMN-13141.yaml"
+    allowlist_path = repo_root / "scripts/ci/dod_runner_legacy_allowlist.txt"
+    legacy = _load_legacy_allowlist(allowlist_path)
+
+    assert legacy["OMN-13141"] == _contract_digest(contract_path)
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-13141",
+    ):
+        rc = run_compliance_check(
+            1,
+            "OmniNode-ai/onex_change_control",
+            contracts,
+            repo_root,
+            legacy_tickets=legacy,
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "NO_EXECUTABLE_CHECKS" in out
+    assert "GRANDFATHERED (OMN-14436 content-pinned ratchet)" in out
+
+
+def test_one_byte_change_revokes_legacy_no_check_exemption(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A touched digest cannot inherit OMN-13141's no-check compatibility."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-13141"
+        summary: "Historical deploy assessment omitted checks"
+        dod_evidence:
+          - id: dod-public-proof
+            description: "Executable compatibility control"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-deploy-assessment
+            description: >-
+              Deploy assessment: deploy_pending = false-by-design. No standalone
+              live deploy is required for this PR.
+            source: manual
+    """)
+    contract_path = contracts / "OMN-13141.yaml"
+    contract_path.write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+    legacy = {"OMN-13141": _contract_digest(contract_path)}
+    contract_path.write_text(contract_yaml + "\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-13141",
+    ):
+        rc = run_compliance_check(
+            1,
+            "OmniNode-ai/onex_change_control",
+            contracts,
+            tmp_path,
+            legacy_tickets=legacy,
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "MODIFIED since the cutoff -- exemption REVOKED" in out
+    assert "NO_EXECUTABLE_CHECKS" in out
+    assert "GRANDFATHERED (OMN-14436 content-pinned ratchet)" not in out
+    assert "1/2 PASS" in out
+    assert "1 BLOCK" in out
+
+
+def test_legacy_behavior_proven_item_is_warned_not_schema_blocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """OMN-10839's historical attestation vocabulary remains parse-compatible."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-10839"
+        summary: "Historical behavior_proven compatibility"
+        dod_evidence:
+          - id: dod-public-proof
+            description: "Executable compatibility control"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-syntax-check
+            description: >-
+              /bin/bash -n scripts/prune-worktrees.sh passes on macOS bash 3.2
+            source: manual
+            checks:
+              - check_type: behavior_proven
+                check_value: >-
+                  Verified: /bin/bash -n scripts/prune-worktrees.sh exits 0 on
+                  macOS bash 3.2.57
+    """)
+    (contracts / "OMN-10839.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-10839",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "INVALID_DOD_EVIDENCE_ITEM" not in out
+    assert "Unknown check_type 'behavior_proven'" in out
+
+
+def test_non_executable_behavior_proven_cannot_satisfy_hosted_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Command-shaped attestation text is not an executable hosted check."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Non-executable vocabulary cannot satisfy the proof floor"
+        dod_evidence:
+          - id: dod-attestation-only
+            description: "Hosted runner has no behavior_proven implementation"
+            checks:
+              - check_type: behavior_proven
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Unknown check_type 'behavior_proven'" in out
+    assert "no hosted-and-local effective check" in out
+
+
+def test_local_done_gate_superseding_hosted_item_cannot_reuse_retired_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A retired hosted check cannot make a local-only replacement look hosted."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "retired-hosted-check-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Cross-scope supersession must preserve the hosted floor"
+        dod_evidence:
+          - id: dod-old-hosted
+            description: "Retired hosted proof"
+            checks:
+              - check_type: command
+                check_value: >-
+                  touch {marker} && grep -q 'PUBLIC_PROOF' public-proof.txt
+          - id: dod-local-replacement
+            description: "Replacement only the local Done gate can execute"
+            execution_scope: local_done_gate
+            evidence_artifact: supersedes_dod_evidence:dod-old-hosted
+            checks:
+              - check_type: command
+                check_value: "false"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed a superseded check"
+    assert "SUPERSEDED" in out
+    assert "NOT-EVALUATED" in out
+    assert "no hosted-and-local effective check" in out
+
+
+def test_hosted_item_superseding_local_done_gate_can_satisfy_hosted_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The crossing-direction control still permits an active hosted successor."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "retired-local-check-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "An active hosted replacement remains executable"
+        dod_evidence:
+          - id: dod-old-local
+            description: "Retired local proof"
+            execution_scope: local_done_gate
+            checks:
+              - check_type: command
+                check_value: "touch {marker} && false"
+          - id: dod-hosted-replacement
+            description: "Hosted replacement proof"
+            evidence_artifact: supersedes_dod_evidence:dod-old-local
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert not marker.exists(), "hosted compliance executed a superseded local check"
+    assert "SUPERSEDED" in out
+    assert "1/2 PASS" in out
+
+
+def test_misspelled_execution_scope_blocks_without_executing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A local audience typo cannot silently default to hosted execution."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "misspelled-scope-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Audience typos fail before execution"
+        dod_evidence:
+          - id: dod-valid-hosted-floor
+            description: "Compatibility control for an omitted execution_scope"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-misspelled-local-scope
+            description: "Intended local proof with a misspelled key"
+            execution_scpoe: local_done_gate
+            checks:
+              - check_type: command
+                check_value: "touch {marker} && false"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed a misspelled local scope"
+    assert "INVALID_DOD_EVIDENCE_ITEM" in out
+    assert "execution_scpoe" in out
+    assert "1/2 PASS" in out
+
+
+def test_unknown_execution_scope_cannot_hide_behind_supersession(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every raw item is validated even when a later item supersedes it."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "invalid-superseded-scope-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Invalid historical audience remains fail-loud"
+        dod_evidence:
+          - id: dod-invalid-old-scope
+            description: "Invalid scope that a successor tries to retire"
+            execution_scope: hosted_maybe
+            checks:
+              - check_type: command
+                check_value: "touch {marker}"
+          - id: dod-valid-hosted-successor
+            description: "Valid hosted replacement"
+            evidence_artifact: supersedes_dod_evidence:dod-invalid-old-scope
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed an invalid old scope"
+    assert "UNKNOWN_EXECUTION_SCOPE" in out
+    assert "hosted_maybe" in out
+    assert "1/2 PASS" in out
 
 
 @pytest.mark.parametrize("execution_scope_yaml", ["local-ish", "[local_done_gate]"])

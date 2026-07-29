@@ -132,7 +132,18 @@ def test_honest_checks_are_not_inert(check_value: str) -> None:
 
 def test_inert_only_contract_blocks_a_new_ticket() -> None:
     """A new contract whose every check is inert certifies nothing -> BLOCK."""
-    dod = [{"id": "d1", "checks": [{"check_value": "grep x drift/dod_receipts/a"}]}]
+    dod = [
+        {
+            "id": "d1",
+            "description": "Inert receipt self-check",
+            "checks": [
+                {
+                    "check_type": "command",
+                    "check_value": "grep x drift/dod_receipts/a",
+                }
+            ],
+        }
+    ]
     assert runner._has_effective_check(dod) is False
 
 
@@ -140,17 +151,22 @@ def test_one_product_check_is_enough_to_be_effective() -> None:
     dod = [
         {
             "id": "d1",
+            "description": "One admissible product observation",
             "checks": [
-                {"check_value": "grep x drift/dod_receipts/a"},
+                {
+                    "check_type": "command",
+                    "check_value": "grep x drift/dod_receipts/a",
+                },
                 # OMN-15309: was `test -f src/real_file.py`, which the adopted
                 # predicate now refuses (an existence assertion cannot go RED
                 # once the change that adds the path is applied). Replaced with
                 # a probe that IS admissible so this test keeps testing what it
                 # was written to test: one good check is enough.
                 {
+                    "check_type": "command",
                     "check_value": (
                         "docker exec omninode-runtime python -c 'import omnibase_infra'"
-                    )
+                    ),
                 },
             ],
         }

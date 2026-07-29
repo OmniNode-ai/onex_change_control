@@ -272,28 +272,35 @@ def test_own_diff_grep_is_demoted_only_when_the_path_is_in_the_diff() -> None:
 
 def test_contract_with_only_inadmissible_checks_has_no_effective_check() -> None:
     """The BLOCK path for a NEW ticket whose every check is inadmissible."""
-    dod_evidence = [
+    dod_evidence: list[dict[str, Any]] = [
         {
+            "id": "dod-inadmissible-only",
+            "description": "Only inadmissible hosted checks",
             "checks": [
                 {
+                    "check_type": "command",
                     "check_value": (
                         "grep -q '^status: PASS$' "
                         "drift/dod_receipts/OMN-15309/dod-deploy/command.yaml"
-                    )
+                    ),
                 },
-                {"check_value": "echo 'deployed'"},
-                {"check_value": "test -f src/pkg/new_file.py"},
-            ]
+                {"check_type": "command", "check_value": "echo 'deployed'"},
+                {
+                    "check_type": "command",
+                    "check_value": "test -f src/pkg/new_file.py",
+                },
+            ],
         }
     ]
     assert _has_effective_check(dod_evidence) is False
 
     dod_evidence[0]["checks"].append(
         {
+            "check_type": "command",
             "check_value": (
                 "gh api repos/OmniNode-ai/omnibase_core/contents/README.md?ref=abc "
                 "--jq .content | base64 -d | grep -q 'ONEX'"
-            )
+            ),
         }
     )
     assert _has_effective_check(dod_evidence) is True
