@@ -159,3 +159,37 @@ dod_evidence:
       - check_type: command
         check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_post_deploy_verify_dashboard_auth_probe.py?ref=aa72b333d6df90bf2b576cd70e2f163c5eedf7f4''
           | grep -c ''def test_broken_shape_fails_closed'' | grep -qx 0'
+  - id: dod-15353-infra760-redgreen-rb2
+    description: 'Append-only replacement for dod-15353-infra760-redgreen-rb15391 (OMN-15391 round 2,
+      Rule D). The superseded item''s GREEN leg is correct and is carried forward here unchanged; its
+      ABSENCE leg was ''... | grep -c ''def test_broken_shape_fails_closed'' | grep -qx 0'', which FAILS
+      OPEN. check_values are handed to `sh -c` without pipefail, so a producer that 404s, is denied, or
+      hits a network error emits nothing, `grep -c` prints 0, and `grep -qx 0` exits 0 -- GREEN, having
+      read nothing. Executed proof of the defect at authoring time: the superseded shape returns rc=0
+      against OmniNode-ai/no_such_repo_xyz, a repository that does not exist. This file did not exist
+      AT ALL at the parent aa72b333d6df90bf2b576cd70e2f163c5eedf7f4, so the superseded leg passed on a
+      404 -- it never read anything, and would have passed identically had the repo been deleted. The
+      replacement pairs a REACHABILITY CONTROL with the absence assertion: it first proves the token can
+      resolve aa72b333d6df in this repo (`gh api .../commits/aa72b333d6df --jq .sha` must echo the sha
+      back), and only then requires the contents fetch for the path to FAIL. A 404 is therefore admissible
+      as evidence of absence only after the same token has demonstrably read the same ref -- an auth or
+      network failure fails the control leg first and the check goes RED. Claim bound, unchanged: the
+      fail-closed dashboard-auth-probe test exists at omninode_infra#760''s merge commit c5e61311276829c7cf4fe5bb057713f6a35545bc,
+      and the path did not exist at its first parent aa72b333d6df90bf2b576cd70e2f163c5eedf7f4. Executed
+      at authoring time: green leg rc=0, absence leg rc=0; and the absence leg goes RED under all three
+      mutations -- invalid token, nonexistent repo, and pointed at the merge commit where the path does
+      exist. Scope limit restated: OmniNode-ai/omninode_infra is a PRIVATE repository, so under the OCC
+      hosted runner''s repo-scoped github.token both legs return HTTP 404 and go RED. That RED now means
+      ''cannot evaluate here'', and -- unlike the superseded leg -- it is reached by a real failure rather
+      than by a vacuous pass. node_dod_verify, which runs with an operator token, evaluates both for real.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-15353-infra760-redgreen-rb15391
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_post_deploy_verify_dashboard_auth_probe.py?ref=c5e61311276829c7cf4fe5bb057713f6a35545bc''
+          | grep -q ''def test_broken_shape_fails_closed'''
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/commits/aa72b333d6df90bf2b576cd70e2f163c5eedf7f4'
+          --jq '.sha' | grep -qx 'aa72b333d6df90bf2b576cd70e2f163c5eedf7f4' && ! gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_post_deploy_verify_dashboard_auth_probe.py?ref=aa72b333d6df90bf2b576cd70e2f163c5eedf7f4'
+          --silent
