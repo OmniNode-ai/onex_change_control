@@ -576,6 +576,23 @@ def test_rule_b_accepts_literal_pr_pin(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_rule_b_accepts_generated_product_ci_placeholder(tmp_path: Path) -> None:
+    """Generated product diff-scope items intentionally use runner placeholders."""
+    item = {
+        "id": "dod-OmniNode-ai-omnimarket-pr-321-ci",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": ("gh pr view ${PR_NUMBER} --repo ${REPO} --json files"),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not findings, f"Unexpected Rule B findings for product CI item: {findings}"
+
+
+@pytest.mark.unit
 def test_rule_b_ignores_ids_without_embedded_pr_number(tmp_path: Path) -> None:
     """An id with no `pr-<digits>` (own-PR self-bind form) is out of scope for
     Rule B -- the canonical own-PR form uses the bare ${PR_NUMBER} runner

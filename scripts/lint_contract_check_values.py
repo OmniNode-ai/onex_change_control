@@ -272,10 +272,24 @@ _ITEM_ID_PR_RE = re.compile(r"pr-(\d+)")
 _GH_PR_CALL_RE = re.compile(r"gh pr (?:view|checks|diff)\b")
 
 
+def _is_generated_product_ci_item(dod_id: str) -> bool:
+    """Return true for the generated product diff-scope companion item.
+
+    The OCC companion producers intentionally keep the product ``-ci`` item in
+    runner-placeholder form so public and private product repos share one hosted
+    contract vocabulary. Rule B still applies to self-bind and non-CI
+    PR-numbered evidence items, where a placeholder would silently target the
+    OCC PR rather than the cited product PR.
+    """
+    return dod_id.startswith("dod-") and "-pr-" in dod_id and dod_id.endswith("-ci")
+
+
 def _pr_binding_violation(dod_id: str, values: list[str]) -> str | None:
     """Return a label if a PR-numbered item never literally pins that PR."""
     match = _ITEM_ID_PR_RE.search(dod_id)
     if not match:
+        return None
+    if _is_generated_product_ci_item(dod_id):
         return None
     pr_number = match.group(1)
 
