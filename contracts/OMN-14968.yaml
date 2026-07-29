@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14968"
+title: "OCC evidence for OMN-14968 — dev-lane runtime-worker replicas fail-closed"
+summary: >
+  OCC companion for OmniNode-ai/omnibase_infra PR #2536. The base compose resolved runtime-worker deploy.replicas
+  from a BARE ${WORKER_REPLICAS:-0} that no surface in the repo exports, so the dev lane (docker-compose.infra.yml
+  with no overlay) always rendered zero replicas: `docker compose up -d --no-deps runtime-worker` exited
+  0 creating nothing, while deploy-runtime.sh's RUNTIME_SERVICES feeds the RT-6 deploy-readback scope
+  and requires a running container — so every dev-lane deploy aborted at the fail-closed readback and
+  auto-restored. The line now resolves ${DEV_WORKER_REPLICAS:?...}, the lane-prefixed fail-closed form
+  already used by the sibling DEV_RUNTIME_WORKER_* vars in the same service block and by the stability-test/prod
+  overlays under OMN-12988 / OMN-12990. Evidence is executed compose renders on .201: dev replicas 0 ->
+  1, an unset policy value now FAILS the render (exit 1) instead of silently rendering 0, and the stability-test
+  / prod / judge renders are byte-identical pre vs post.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2536 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: >
+      Dev lane renders runtime-worker with one replica (GREEN); the same render against the pre-fix compose
+      yields replicas 0 (RED).
+    command: >
+      docker compose --env-file docker/runtime-policy.env -f docker/docker-compose.infra.yml --profile
+      runtime config
+  - kind: "tests"
+    description: >
+      Fail-closed: with DEV_WORKER_REPLICAS absent from the policy env the render exits non-zero naming
+      the variable, never falling back to a replica count.
+    command: >
+      docker compose --env-file <policy-env-without-DEV_WORKER_REPLICAS> -f docker/docker-compose.infra.yml
+      --profile runtime config
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2536"
+    description: "PR #2536 on OmniNode-ai/omnibase_infra — dev-lane worker replicas fail-closed."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "dod-omn-14968-dev-render-green"
+    description: >
+      Executed render on .201 — dev lane runtime-worker deploy.replicas resolves to 1 from the ledgered
+      DEV_WORKER_REPLICAS (was 0 under the bare ${WORKER_REPLICAS:-0}). Committed as an executed-render
+      ratchet in tests/integration/infra/test_dev_runtime_compose_render.py:: test_dev_lane_renders_one_runtime_worker_replica,
+      which FAILS against the pre-fix compose ("got 0") and passes with the fix.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/integration/infra/test_dev_runtime_compose_render.py -k renders_one_runtime_worker_replica"
+  - id: "dod-omn-14968-fail-closed"
+    description: >
+      Executed proof that a missing policy value fails CLOSED: the render exits 1 with "required variable
+      DEV_WORKER_REPLICAS is missing a value" and emits no config, where the pre-fix form exited 0 with
+      replicas 0. Committed as test_dev_worker_replicas_fails_closed_when_policy_value_unset.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/integration/infra/test_dev_runtime_compose_render.py -k fails_closed_when_policy_value_unset"
+  - id: "dod-omn-14968-lane-render-parity"
+    description: >
+      Blast-radius proof — docker-compose.infra.yml is shared by all four lanes. Every lane re-rendered
+      pre and post with identical env and diffed (path-normalized): stability-test, prod and judge renders
+      are BYTE-IDENTICAL (sha256 8a2eb6eb0f1eaee4daaa04da8f35492c / 1e3a2da8fd52e2104fd4e67477d119e3 /
+      4dbf30f7fabf181f2a13c114023e4751); the dev render differs by exactly one line, "replicas: 0" ->
+      "replicas: 1".
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json body"
+  - id: "dod-omn-14968-static-ratchet"
+    description: >
+      Docker-free twin in tests/ci/test_runtime_policy_contract.py asserts the base compose carries ${DEV_WORKER_REPLICAS:?,
+      carries no ':-' soft form, and that "replicas: ${WORKER_REPLICAS" never returns.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_runtime_policy_contract.py -k worker_replicas"
