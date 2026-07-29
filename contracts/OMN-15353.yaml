@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15353"
+title: "Assert the dashboard auth shape in post-deploy verify instead of anonymous HTTP 200"
+summary: >
+  OCC evidence companion for OmniNode-ai/omninode_infra PR #760. The post-deploy verification gate probed
+  https://dev.dash.omninode.ai with a headerless curl and asserted HTTP 200, but omnidash#277 ("document-only
+  Keycloak protect") is live on onex-dev and answers a non-document request with 401 by design, so the
+  gate reported FAIL on healthy state on every onex-dev deploy and skipped the terminal business-proof
+  step behind it. PR #760 replaces the single status assertion with a per-environment DASH_AUTH_MODE contract:
+  dev pins three legs (unauthenticated /api/runtime-config 200 with the expected JSON shape, a document-navigation
+  302 whose Location is this environment's Keycloak with client_id=omnidash, and a non-document 401),
+  prod keeps the public 200 + body-marker probe, and an unrecognised mode fails the gate closed. No status
+  class is blanket-accepted and no leg can be skipped.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #760 CI checks green on OmniNode-ai/omninode_infra"
+    command: "gh pr checks 760 --repo OmniNode-ai/omninode_infra"
+  - kind: "manual"
+    description: >
+      The dashboard probe passes against the live healthy dev shape and fails against every way that shape
+      can break, proven by execution rather than by inspection.
+    command: "uv run pytest tests/scripts/test_post_deploy_verify_dashboard_auth_probe.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-760"
+    description: >
+      omninode_infra PR #760 replaces the flat HTTP 200 dashboard probe in scripts/post-deploy-verify.sh
+      with the per-environment DASH_AUTH_MODE auth-shape contract, bound to head 37947da29cb20c33b334e4a568b768cd09f824b8.
+    source: "manual"
+    status: verified
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 760 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-omn-15353-dashboard-auth-shape-red-green"
+    description: >
+      The three-leg dashboard probe is proven by execution, not inspection. GREEN: the real post-deploy-verify.sh,
+      real curl, live dev surfaces, kubectl stubbed so the dashboard leg is the only variable, exits 0.
+      RED: the same script against the public legacy host that lacks the signature exits 1; against deliberately
+      wrong expected statuses exits 1; and with an unrecognised DASH_AUTH_MODE exits 1. RED-against-exists-but-wrong:
+      restoring the pre-fix script makes 6 of the 17 new tests fail, the discriminating one being protect-off-root-serves-200
+      — the old flat probe passes when the protect is switched off, which is the vacuous green this change
+      removes.
+    source: "manual"
+    status: verified
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/scripts/test_post_deploy_verify_dashboard_auth_probe.py -q"
