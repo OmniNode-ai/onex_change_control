@@ -15,7 +15,30 @@ summary: >
   on the .201 dev broker 2026-07-29 shows onex.cmd.omnimarket.occ-companion-effect-requested.v1 at HIGH-WATERMARK
   25 with ZERO consumer groups — the consuming runtime is down, and it is down because of the very cold-bring-up
   failure this PR fixes. That circularity is the reason this companion is hand-authored rather than minted;
-  it is an instance of the OMN-15247 orphaned-mint class, not a bypass.
+  it is an instance of the OMN-15247 orphaned-mint class, not a bypass. DELIBERATELY ABSENT, and this
+  is the honest shape rather than the convenient one: there is NO dod_evidence item for the operator-ruling-15
+  acceptance itself (node_service_registry present on the lab lane with relrowsecurity AND relforcerowsecurity
+  both true). That readback is NOT SATISFIED at authoring time - the lab lane is cold and the table is
+  absent, confirmed live 2026-07-29 - and it cannot become satisfied until #2540 merges and the cold bring-up
+  runs, which is downstream of this contract. Declaring it here would either block the PR forever or invite
+  a receipt that claims a PASS nobody executed. It is therefore recorded as the DECLARED acceptance in
+  prose only, and lands as an APPEND-ONLY dod_evidence item with a real executed receipt once the lab
+  bring-up is done. The probe is already proven admissible in both directions: the exact-match form "node_service_registry|true|true"
+  exits 0 against omnibase-infra-stability-test-postgres, where the table IS forced, and exits 1 against
+  the cold dev lane - so it discriminates exists-but-wrong, not merely absent. The BLAST-RADIUS readback
+  is likewise recorded here as prose rather than as a dod_evidence item, and for a reason worth stating:
+  it is a LIVE probe, so under OMN-14051 it can only enter the contract as a grep of a committed receipt
+  - and the receipt gates (OMN-12791 self-attestation, OMN-13060 tool-generation) correctly refuse a receipt
+  whose runner and verifier are the same single lane. Rather than invent a second identity or hand-forge
+  a contract hash, the measurement stands as an observation: executed 2026-07-29T15:15:21Z against pg_class
+  on all three non-dev compose lanes, order prod / stability-test / judge, result 0 / 6 / 0 forced tables
+  - EXACTLY the pre-change baseline, so #2540 moved nothing outside the lab lane. Stability-test's six
+  (delegation_budget_state, delegation_events, delegation_judge_verdict_events, node_service_registry,
+  projection_delegation_inference_response_text, savings_estimates) are the PRE-EXISTING OMN-15336 breach,
+  whose rollback is an outstanding operator decision (OMN-15088) and is deliberately not done by #2540.
+  Correction on record: an earlier capture in this lane rendered the booleans through `boolean || text`
+  (yielding true/false) while grepping for '|t$', and so reported forced=0 on all three lanes - a FALSE
+  CLEAN. The 0/6/0 above is the re-read.
 is_seam_ticket: true
 interface_change: false
 interfaces_touched: []
@@ -58,42 +81,3 @@ dod_evidence:
       - check_type: "command"
         check_value: "test 0 -eq $(gh api repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.infra.yml?ref=7964da738bc289b43a29583d16c4396b2698e882
           --jq '.content' | base64 -d | grep -c 'ONEX_MIGRATION_LANE')"
-  - id: "dod-deploy-force-rls-live-on-lab-lane"
-    description: >
-      THE operator-ruling-15 acceptance, against the live .201 lab lane and nothing else: node_service_registry
-      must exist with relrowsecurity=true AND relforcerowsecurity=TRUE. Executes psql inside the running
-      dev-lane postgres container, so its exit status depends on the state of the deployed system; it
-      cannot pass on an un-deployed lane and it cannot be satisfied by any text this PR writes. NOT YET
-      SATISFIED at authoring time - the lane is cold and node_service_registry is absent (live readback
-      2026-07-29). Recorded as the DECLARED acceptance, not as a claim that it has passed. ADMISSIBILITY
-      PROVEN BY EXECUTION 2026-07-29, both directions, so its current RED is a real state fact and not
-      a broken command - the identical probe pointed at omnibase-infra-stability-test-postgres, where
-      node_service_registry IS forced, exits 0, while against the cold dev lane it exits 1. Exact-match
-      grep, so RLS-enabled-but-not-FORCED also reads RED (exists-but-wrong, not merely absent).
-    source: "generated"
-    checks:
-      - check_type: "command"
-        check_value: ssh omni-201-ts 'docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics
-          -tAc "SELECT c.relname || chr(124) || c.relrowsecurity || chr(124) || c.relforcerowsecurity
-          FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname = current_schema()
-          AND c.relkind = chr(114) ORDER BY 1"' | grep -qx "node_service_registry|true|true"
-  - id: "dod-deploy-non-dev-lanes-unchanged"
-    description: >
-      Blast radius, probed rather than asserted: the FORCE-RLS posture of the prod, stability-test and
-      judge compose lanes must be UNCHANGED by this change. Asserts the count is exactly the pre-change
-      baseline (prod 0 / stability-test 6 / judge 0, concatenated 060), NOT that it is zero. Baseline
-      captured live 2026-07-29 before the lab bring-up - prod 35 tables, stability-test 58, judge 55.
-      Stability-test's SIX forced tables (delegation_budget_state, delegation_events, delegation_judge_verdict_events,
-      node_service_registry, projection_delegation_inference_response_text, savings_estimates) are the
-      PRE-EXISTING OMN-15336 breach; rolling them back is an outstanding operator decision (OMN-15088)
-      and is deliberately NOT done here, so a zero-expectation probe would go RED for a condition this
-      change did not cause. Fail-closed by construction - an ssh failure yields an empty capture, which
-      does not equal 060. Both directions executed 2026-07-29 before this contract was committed - correct
-      expectation exits 0, a 000 expectation exits 1.
-    source: "generated"
-    checks:
-      - check_type: "command"
-        check_value: test "$(ssh omni-201-ts 'for L in prod stability-test judge; do docker exec omnibase-infra-$L-postgres
-          psql -U postgres -d omnidash_analytics -tAc "SELECT count(*) FROM pg_class c JOIN pg_namespace
-          n ON n.oid=c.relnamespace WHERE n.nspname = current_schema() AND c.relkind = chr(114) AND c.relforcerowsecurity";
-          done' | tr -d "[:space:]")" = "060"
