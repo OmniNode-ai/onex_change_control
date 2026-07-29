@@ -686,3 +686,261 @@ def test_rule_a_and_b_repaired_omn_14968_contract_is_clean() -> None:
     contract_path = Path(__file__).resolve().parents[3] / "contracts" / "OMN-14968.yaml"
     findings = linter.lint_contract(contract_path)
     assert not findings, f"Unexpected findings on repaired OMN-14968.yaml: {findings}"
+
+
+# ---------------------------------------------------------------------------
+# OMN-15391 Rule C: tautological self-comparison
+#
+# OCC#5481 shipped eight items whose only check was
+# `gh pr view <N> ... --jq '.number == <N>' | grep -qx true` -- an `N == N`
+# assertion true by construction for every PR that exists. All eight were
+# executed at review time and all eight returned rc=0; none can go RED for any
+# product reason.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rule_c_catches_shipped_pr_number_tautology(tmp_path: Path) -> None:
+    item = {
+        "id": "occ-self-bind-5408-lit-rb15391",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh pr view 5408 --repo OmniNode-ai/onex_change_control "
+                    "--json number --jq '.number == 5408' | grep -qx true"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert any("tautological-self-comparison" in label for _, label, _ in findings), (
+        f"Expected Rule C finding for an `N == N` self-comparison: {findings}"
+    )
+
+
+@pytest.mark.unit
+def test_rule_c_catches_gh_api_pulls_endpoint_tautology(tmp_path: Path) -> None:
+    """The same tautology written against the REST endpoint instead of `gh pr`."""
+    item = {
+        "id": "occ-self-bind-api",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh api repos/OmniNode-ai/onex_change_control/pulls/5408 "
+                    "--jq '.number == 5408' | grep -qx true"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert any("tautological-self-comparison" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_rule_c_allows_comparison_against_a_different_number(tmp_path: Path) -> None:
+    """Comparing a selected PR's field to a DIFFERENT literal is falsifiable.
+
+    Negative control: this is exactly the shape a genuine cross-PR assertion
+    takes (e.g. asserting a PR's base/head PR number), and it can go RED.
+    """
+    item = {
+        "id": "dod-cross-pr-check",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh api repos/OmniNode-ai/omnimarket/pulls/1944 "
+                    "--jq '.number == 1945' | grep -qx true"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not any(
+        "tautological-self-comparison" in label for _, label, _ in findings
+    ), f"Rule C must not flag a comparison against a different literal: {findings}"
+
+
+@pytest.mark.unit
+def test_rule_c_allows_substantive_files_probe(tmp_path: Path) -> None:
+    """Negative control: reading a PR's file list is not a self-comparison."""
+    item = {
+        "id": "dod-14979-market1944-scope",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh api repos/OmniNode-ai/omnimarket/pulls/1944/files "
+                    "--paginate --jq '.[].filename' | grep -qx 'src/foo.py'"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not any("tautological-self-comparison" in label for _, label, _ in findings)
+
+
+# ---------------------------------------------------------------------------
+# OMN-15391 Rule D: fail-open zero-count pipe
+#
+# `check_value`s run under `sh -c` without pipefail. A producer that fails
+# emits nothing, `grep -c` prints 0, and `grep -qx 0` exits 0 -- so the leg
+# passes GREEN without ever reading what it claims to have read. Proven at
+# authoring time: the shipped shape returns rc=0 against a repository that does
+# not exist.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rule_d_catches_shipped_zero_count_absence_leg(tmp_path: Path) -> None:
+    item = {
+        "id": "dod-14979-infra746-bucket-rb15391",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh api -H 'Accept: application/vnd.github.raw' "
+                    "'repos/OmniNode-ai/omninode_infra/contents/aws/x.tf"
+                    "?ref=564e5dba61f396c1be2bbc26949be8e7aba85fb7' "
+                    "| grep -c 'push_validation_bundle_reader' | grep -qx 0"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert any("fail-open-zero-count" in label for _, label, _ in findings), (
+        f"Expected Rule D finding for a zero-count absence pipe: {findings}"
+    )
+
+
+@pytest.mark.unit
+def test_rule_d_catches_wc_l_and_anchored_zero_variants(tmp_path: Path) -> None:
+    """The same fail-open shape written with `wc -l` and an anchored regex."""
+    for value in (
+        "gh api repos/o/r/contents/f?ref=abc | wc -l | grep -qx 0",
+        "gh api repos/o/r/contents/f?ref=abc | grep -c 'MARK' | grep -q '^0$'",
+        "gh api repos/o/r/contents/f?ref=abc | grep -cF 'MARK' | grep -qx '0'",
+    ):
+        item = {
+            "id": "dod-variant",
+            "checks": [{"check_type": "command", "check_value": value}],
+        }
+        path = write_contract_with_items(tmp_path, [item])
+        findings = linter.lint_contract(path)
+        assert any("fail-open-zero-count" in label for _, label, _ in findings), (
+            f"Rule D missed fail-open variant: {value!r} -> {findings}"
+        )
+
+
+@pytest.mark.unit
+def test_rule_d_allows_fail_closed_read_anchor_absence_form(tmp_path: Path) -> None:
+    """Negative control: the sanctioned fail-closed absence idiom is accepted.
+
+    Reads once into a variable, proves the read landed with a positive anchor
+    that must be present, and only then asserts absence.
+    """
+    item = {
+        "id": "dod-14980-infra751-writer-rb2",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "body=$(gh api -H 'Accept: application/vnd.github.raw' "
+                    "'repos/OmniNode-ai/omninode_infra/contents/aws/x.tf"
+                    "?ref=9e2fee7c') "
+                    "&& printf '%s' \"$body\" | grep -qF 'PUSH-VALIDATION BUNDLE' "
+                    "&& ! printf '%s' \"$body\" | grep -qF 'bundle_writer'"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not findings, f"Fail-closed absence idiom must lint clean: {findings}"
+
+
+@pytest.mark.unit
+def test_rule_d_allows_reachability_plus_path_absence_form(tmp_path: Path) -> None:
+    """Negative control: the fail-closed form for a path absent at the parent ref."""
+    parent = "5703f123fe272a1214cca50d0fdd66e34180ed14"
+    item = {
+        "id": "dod-15362-stamp-rb2",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    f"gh api 'repos/OmniNode-ai/omniclaude/commits/{parent}' "
+                    f"--jq '.sha' | grep -qx '{parent}' "
+                    "&& ! gh api 'repos/OmniNode-ai/omniclaude/contents/"
+                    ".github/workflows/verifier-stamp-reusable.yml"
+                    f"?ref={parent}' --silent"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not findings, f"Reachability+absence idiom must lint clean: {findings}"
+
+
+@pytest.mark.unit
+def test_rule_d_allows_nonzero_count_assertions(tmp_path: Path) -> None:
+    """Negative control: asserting a count is NOT zero is not the fail-open shape.
+
+    A failed producer yields 0, which fails this assertion -- fail-closed.
+    """
+    item = {
+        "id": "dod-presence",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh api repos/o/r/contents/f?ref=abc | grep -c 'MARK' | grep -qx 3"
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not any("fail-open-zero-count" in label for _, label, _ in findings)
+
+
+@pytest.mark.unit
+def test_rule_c_allows_identity_conjoined_with_falsifiable_predicate(
+    tmp_path: Path,
+) -> None:
+    """Negative control drawn from live corpus text, not invented.
+
+    contracts/OMN-15383.yaml's `occ-self-bind-pr-5437-merged-supersession` ANDs
+    the identity comparison with `.state` and `.headRefName` assertions. A
+    first draft of Rule C flagged it, which was a FALSE POSITIVE: the extra
+    conjuncts are falsifiable (the PR could be OPEN, the branch could be
+    renamed), so the check as a whole can go RED. Rule C must fire only when
+    the identity comparison is the entire jq program.
+    """
+    item = {
+        "id": "occ-self-bind-pr-5437-merged-supersession",
+        "checks": [
+            {
+                "check_type": "command",
+                "check_value": (
+                    "gh pr view 5437 --repo OmniNode-ai/onex_change_control "
+                    "--json number,state,headRefName "
+                    '--jq \'.number == 5437 and .state == "MERGED" '
+                    'and .headRefName == "jonah/omn-15383-occ"\''
+                ),
+            }
+        ],
+    }
+    path = write_contract_with_items(tmp_path, [item])
+    findings = linter.lint_contract(path)
+    assert not any(
+        "tautological-self-comparison" in label for _, label, _ in findings
+    ), f"Rule C false-positived on a falsifiable conjunction: {findings}"

@@ -311,6 +311,150 @@ def _pr_binding_violation(dod_id: str, values: list[str]) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# OMN-15391 Rule C: tautological self-comparison
+#
+# A check_value whose truth value is fixed by its own text proves nothing.
+# The shipped instance (OCC#5481, 8 items) was:
+#
+#     gh pr view 5408 --repo OmniNode-ai/onex_change_control --json number \
+#       --jq '.number == 5408' | grep -qx true
+#
+# The number handed to `gh pr view` and the number it is compared against are
+# the SAME literal, so the assertion is `N == N` -- true by construction for
+# every PR that exists. It cannot go RED for any product reason; only deleting
+# the PR from GitHub would move it. Such an item is EXECUTED and looks
+# ADMISSIBLE to the OMN-15309 predicate (it is a real command with a real exit
+# code) while being unfalsifiable, which is precisely the false-green class
+# OMN-15391 exists to retire.
+#
+# The rule: if an identity field (`.number` / `.id` / `.databaseId`) is
+# compared for equality against a literal that ALSO appears as the PR/issue
+# selector of the same command, the comparison is a tautology.
+#
+# The fail-closed replacement binds a fact the selector does NOT determine --
+# e.g. that the PR's file list contains this ticket's own contract:
+#
+#     gh api repos/OWNER/REPO/pulls/5408/files --paginate --jq '.[].filename' \
+#       | grep -qx 'contracts/OMN-14979.yaml'
+#
+# which goes RED when pointed at any PR that does not carry that contract.
+# ---------------------------------------------------------------------------
+
+_PR_SELECTOR_RE = re.compile(
+    r"(?:gh\s+pr\s+(?:view|checks|diff)\s+|/(?:pulls|issues)/)(\d+)"
+)
+
+# The `--jq <program>` operand, single- or double-quoted.
+_JQ_PROGRAM_RE = re.compile(r"--jq\s+(?:'([^']*)'|\"([^\"]*)\")")
+
+# A jq program that is NOTHING BUT an identity comparison. The `\Z` anchors
+# are load-bearing: `.number == 5437 and .state == "MERGED"` must NOT match,
+# because the `.state` conjunct is falsifiable and makes the whole check able
+# to go RED. Only a bare `.number == N` is a pure tautology.
+_JQ_PURE_IDENTITY_EQ_RE = re.compile(
+    r"\A\s*\.(?:number|id|databaseId)\s*==\s*(\d+)\s*\Z"
+)
+
+
+def _tautological_selfcheck_violation(value: str) -> str | None:
+    """Return a label if *value*'s ONLY assertion is a selector-determined id.
+
+    Deliberately narrow. A jq program that ANDs the identity comparison with
+    any other predicate (``.state``, ``.headRefName``, ...) is NOT flagged: the
+    extra conjunct is falsifiable, so the check as a whole can go RED. Only a
+    jq program consisting solely of ``.number == <selector>`` is a tautology.
+    """
+    compared: set[str] = set()
+    for match in _JQ_PROGRAM_RE.finditer(value):
+        program = match.group(1) if match.group(1) is not None else match.group(2)
+        pure = _JQ_PURE_IDENTITY_EQ_RE.match(program or "")
+        if pure:
+            compared.add(pure.group(1))
+    if not compared:
+        return None
+    selectors = {m.group(1) for m in _PR_SELECTOR_RE.finditer(value)}
+    overlap = compared & selectors
+    if not overlap:
+        return None
+    number = sorted(overlap)[0]
+    return (
+        f"tautological-self-comparison: the value selects PR/issue #{number} "
+        f"and then asserts its identity field equals {number} -- an `N == N` "
+        "comparison that is true by construction for every PR that exists and "
+        "cannot go RED for any product reason. Bind a fact the selector does "
+        "not already determine (e.g. that the PR's file list contains this "
+        "ticket's contract) (OMN-15391 Rule C)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-15391 Rule D: fail-open zero-count pipe
+#
+# The shipped absence-control idiom (OCC#5481, 12 items) was:
+#
+#     gh api ... 'repos/O/R/contents/FILE?ref=PARENT' \
+#       | grep -c 'MARKER' | grep -qx 0
+#
+# `check_value`s are handed to `sh -c` WITHOUT `pipefail`, so a failed
+# producer (404, auth failure, deleted repo, network error) writes nothing to
+# stdout, `grep -c` dutifully prints `0`, and `grep -qx 0` exits 0 -- GREEN.
+# The leg therefore passes without ever reading the file it claims to have
+# read. Proven by execution at authoring time: the shape returns rc=0 against
+# `OmniNode-ai/no_such_repo_xyz`, a repository that does not exist.
+#
+# Adding `pipefail` does not rescue it either: `grep -c` exits 1 when the
+# count is 0, so under `pipefail` the pipeline reports failure on exactly the
+# case it is trying to assert. The shape is wrong in both shells.
+#
+# The two fail-closed replacement idioms are written out in the docstring of
+# ``_fail_open_zero_count_violation`` below.
+# ---------------------------------------------------------------------------
+
+_COUNT_STAGE = r"(?:grep\s+-[A-Za-z]*c[A-Za-z]*(?:\s+[^|]*)?|wc\s+-l\s*)"
+_ZERO_ASSERT = (
+    r"grep\s+-[A-Za-z]*q[A-Za-z]*\s+(?:'\^?0\$?'|\"\^?0\$?\"|\^?0\$?)(?:\s|$)"
+)
+_ZERO_COUNT_PIPE_RE = re.compile(r"\|\s*" + _COUNT_STAGE + r"\|\s*" + _ZERO_ASSERT)
+
+
+def _fail_open_zero_count_violation(value: str) -> str | None:
+    """Return a label if *value* asserts absence via a zero-count pipe.
+
+    The two sanctioned fail-closed replacements, depending on whether the file
+    exists at the parent ref.
+
+    1. File PRESENT at the parent ref. Read once, prove the read landed with a
+       positive anchor that must be present, and only then assert absence::
+
+           body=$(gh api ... 'repos/O/R/contents/FILE?ref=PARENT')
+             && printf '%s' "$body" | grep -qF 'ANCHOR'
+             && ! printf '%s' "$body" | grep -qF 'MARKER'
+
+       A failed fetch yields an empty body, the anchor leg fails, and the check
+       goes RED. Pick an anchor present at BOTH the parent and the merge ref so
+       it tracks the read rather than the fix.
+
+    2. File ABSENT at the parent ref (net-new). Pair a reachability control
+       with the path-absence assertion, so a 404 counts as evidence of absence
+       only after the same token has demonstrably read the same ref::
+
+           gh api 'repos/O/R/commits/PARENT' --jq '.sha' | grep -qx 'PARENT'
+             && ! gh api 'repos/O/R/contents/FILE?ref=PARENT' --silent
+    """
+    if not _ZERO_COUNT_PIPE_RE.search(value):
+        return None
+    return (
+        "fail-open-zero-count: absence is asserted by piping a producer into "
+        "`grep -c ... | grep -qx 0`. check_values run under `sh -c` without "
+        "pipefail, so a producer that fails (404 / auth / deleted repo / "
+        "network) emits nothing, the count prints 0, and the check passes "
+        "GREEN without ever reading what it claims to have read. Read once "
+        "into a variable, prove the read with a positive anchor, then assert "
+        "absence with `! ... grep -qF` (OMN-15391 Rule D)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core linting logic
 # ---------------------------------------------------------------------------
 
@@ -540,6 +684,18 @@ def _scan_value(
         fragment = value.strip()[:80]
         findings.append((path_str, f"{dod_id}: {inert_label}", fragment))
 
+    # OMN-15391 Rule C: `N == N` comparisons that cannot go RED.
+    tautology_label = _tautological_selfcheck_violation(value)
+    if tautology_label is not None:
+        fragment = value.strip()[:80]
+        findings.append((path_str, f"{dod_id}: {tautology_label}", fragment))
+
+    # OMN-15391 Rule D: absence asserted through a fail-open zero-count pipe.
+    zero_count_label = _fail_open_zero_count_violation(value)
+    if zero_count_label is not None:
+        fragment = value.strip()[:80]
+        findings.append((path_str, f"{dod_id}: {zero_count_label}", fragment))
+
 
 # ---------------------------------------------------------------------------
 # CLI entry-point
@@ -581,6 +737,20 @@ def main(argv: list[str]) -> int:
             " ${PR_NUMBER} --repo ${REPO}  (the ${PR_NUMBER} token is"
             " pre-substituted with the runner's OWN PR before the assignment"
             " could ever apply -- the 1721 literal is silently discarded)\n"
+            "\nFix tautological self-comparisons (OMN-15391 Rule C):\n"
+            "  BAD:  gh pr view 5408 --repo O/R --json number"
+            " --jq '.number == 5408' | grep -qx true   (asserts N == N)\n"
+            "  GOOD: gh api repos/O/R/pulls/5408/files --paginate"
+            " --jq '.[].filename' | grep -qx 'contracts/OMN-14979.yaml'\n"
+            "\nFix fail-open absence controls (OMN-15391 Rule D):\n"
+            "  BAD:  gh api '...?ref=PARENT' | grep -c 'MARKER' | grep -qx 0"
+            "   (a failed fetch prints 0 and passes)\n"
+            "  GOOD: body=$(gh api '...?ref=PARENT')"
+            " && printf '%s' \"$body\" | grep -qF 'ANCHOR'"
+            " && ! printf '%s' \"$body\" | grep -qF 'MARKER'\n"
+            "  GOOD (path absent at parent): gh api 'repos/O/R/commits/PARENT'"
+            " --jq '.sha' | grep -qx 'PARENT'"
+            " && ! gh api 'repos/O/R/contents/FILE?ref=PARENT' --silent\n"
             "\nRun: uv run python scripts/migrate_dod_contracts.py"
             " --apply --tickets <ID>",
             file=sys.stderr,
