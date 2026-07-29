@@ -1195,6 +1195,62 @@ jobs:
           uv run --no-project --with pyyaml \
             python3 src/onex_change_control/scripts/validate_precommit_pin_parity.py
 
+  predicate-parity:
+    name: Evidence Admissibility Predicate Parity
+    # OMN-15309 (operator ruling 2026-07-29): the OMN-14505 deploy-gate
+    # falsifiability predicate — EXECUTED, FALSIFIABLE, OUTSIDE ITS OWN DIFF —
+    # is THE admissibility rule for evidence, and this repo's adoption of it
+    # lives in src/onex_change_control/validation/evidence_admissibility.py.
+    #
+    # A comment saying "adopted from omniclaude" is not a mechanism. This job IS
+    # the mechanism: it checks out the cited source and EXECUTES the shared case
+    # corpus (tests/fixtures/evidence_admissibility_cases.yaml) against BOTH
+    # implementations, asserting (a) this repo is never LOOSER than deploy-gate,
+    # and (b) the two agree exactly on every case that does not declare a
+    # ticketed parity_divergence. Drift into a second definition of "admissible
+    # evidence" fails the merge instead of shipping silently.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as precommit-parity-gate above):
+    # no needs:, no if:, no paths filter, hosted-pinned runner. A skip here means
+    # something is wrong, not that the gate legitimately opted out — the strict
+    # success-only check in ci-summary below fails closed on any non-success.
+    #
+    # OMNICLAUDE_PIN: pinned to a MERGED commit on omniclaude@main (the ref the
+    # deploy-gate reusable workflow is itself consumed at), never a branch head.
+    # Bump it deliberately when the upstream predicate changes; a bump that
+    # breaks parity is exactly the signal this job exists to raise.
+    runs-on: >-
+      ${{
+        fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+      }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Check out omniclaude (the cited source of the OMN-14505 predicate)
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omniclaude
+          ref: 7b69d9ba546a1631ec68e96ea03653f94db9eac1
+          path: omniclaude_source
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Predicate + parity, proven by execution
+        env:
+          # Turns a "cannot resolve the upstream file" SKIP into a FAILURE. A
+          # skipped parity check in CI is a false green.
+          OMN15309_PARITY_REQUIRED: "1"
+          OMNICLAUDE_CHECKOUT: ${{ github.workspace }}/omniclaude_source
+        run: |
+          uv run pytest \
+            tests/test_evidence_admissibility.py \
+            tests/test_evidence_admissibility_parity.py \
+            -q -p no:randomly
+
   validate-prod-promotion-grants:
     name: validate-prod-promotion-grants
     # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
@@ -1376,7 +1432,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1415,6 +1471,15 @@ jobs:
           # means something is wrong, not that the gate legitimately opted out.
           if [[ "${{ needs.precommit-parity-gate.result }}" != "success" ]]; then
             echo "::error::precommit-parity-gate did not pass (result: ${{ needs.precommit-parity-gate.result }}) - fail-closed (OMN-14672)"
+            exit 1
+          fi
+          # OMN-15309: same strict fail-closed pattern for the evidence-admissibility
+          # predicate-parity gate. Only 'success' passes; skipped/cancelled/failure
+          # ALL block. Unconditional job (no needs/if), so a skip means the shared
+          # OMN-14505 predicate could not be proven identical across its two
+          # consumers -- which is precisely the drift this gate exists to stop.
+          if [[ "${{ needs.predicate-parity.result }}" != "success" ]]; then
+            echo "::error::predicate-parity did not pass (result: ${{ needs.predicate-parity.result }}) - fail-closed (OMN-15309)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then

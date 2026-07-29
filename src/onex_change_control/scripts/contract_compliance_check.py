@@ -50,8 +50,17 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any
+
+from onex_change_control.validation.evidence_admissibility import (
+    EXECUTED_HERMETIC_COMMANDS,
+    LIVE_PROBE_COMMANDS,
+    AdmissibilityVerdict,
+    admissible_evidence_guidance,
+    classify_evidence_item,
+)
 
 _REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -65,35 +74,77 @@ _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
 _ALLOWLIST_FIELDS = 2  # each entry is 'OMN-1234 <sha256>'
 
-# OMN-14436 -- checks that can only ever observe the OCC tree.
+# OMN-15309 -- admissibility is decided by ONE predicate, shared with deploy-gate.
 #
-# Until this ticket, every non-OCC invocation of this runner passed --workspace
-# pointing at the *onex_change_control clone* rather than the product checkout,
-# so a check_value's cwd was the receipt store. The only files an author could
-# reach were the receipt and the contract itself, and ~32% of the corpus greps
-# exactly those. That is a wiring defect, not an authoring one.
+# Operator ruling 2026-07-29: the OMN-14505 deploy-gate falsifiability predicate
+# (EXECUTED, FALSIFIABLE, OUTSIDE ITS OWN DIFF) is THE admissibility rule for
+# evidence everywhere. It lives in
+# ``onex_change_control.validation.evidence_admissibility`` and is adopted from
+# ``omniclaude/.github/actions/deploy-gate/validate_pr_deploy_required.py``
+# (``classify_check_value``), which remains the cited source; the two are held
+# in parity by execution against a shared corpus (tests/data/
+# evidence_admissibility_cases.yaml, run against BOTH implementations by the
+# ``predicate-parity`` step of the contract-compliance CI job).
 #
-# With --workspace now bound to the product, such a check can never pass: the
-# path does not exist in the product tree. It is INERT -- it proves nothing
-# about the code under test. An inert check is reported loudly and demoted to
-# WARN so it cannot gate; it is never allowed to produce a PASS that would
-# launder a red PR into green evidence (the OMN-14391 / omnibase_infra#2264
-# case). See _has_effective_check for why an inert-only contract still BLOCKs
-# on a non-grandfathered ticket.
-_INERT_CHECK_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"drift/dod_receipts/"),
-    re.compile(r"(?<![\w/])contracts/OMN-"),
+# History this replaces, and why the replacement is strictly larger:
+#   OMN-14436 introduced two regexes (``drift/dod_receipts/`` and
+#   ``contracts/OMN-``) to catch checks that could only observe the OCC store,
+#   after finding the runner's ``--workspace`` had been mis-pointed at the OCC
+#   clone so the receipt was the only file a check could reach (~32% of the
+#   corpus grepped exactly those paths). Those two regexes are the DENY half of
+#   the predicate and are preserved verbatim inside it. What they never caught,
+#   and the predicate does, is the rest of the same disease: a probe name
+#   appearing as *quoted text* beside a circular grep, an ``echo``/``true``
+#   whose exit status the author fixed by typing it, a ``test -f`` on a path the
+#   PR itself adds, and a grep whose every path operand is a file this same
+#   change writes. All of those "observe the product" under the old regexes and
+#   still prove nothing.
+#
+# The word INERT is retained for the verdict label and the demotion machinery
+# (see ``_demote`` / ``_has_effective_check``) so the ratchet's blast radius is
+# unchanged in SHAPE: an inadmissible check is reported loudly and demoted to
+# WARN so it can never gate, and it is never allowed to produce a PASS that
+# would launder a red PR into green evidence (the OMN-14391 /
+# omnibase_infra#2264 case). Legacy content-pinned contracts stay grandfathered;
+# a NEW or touched contract is held to the real bar from its first PR.
+#
+# This runner EXECUTES check_value, so its ALLOW vocabulary is the live-probe
+# set PLUS commands that genuinely run against the product checkout in CI. A
+# text-only consumer (deploy-gate, which never executes) passes the live set
+# alone. That single parameter is the ONLY difference between consumers -- the
+# DENY half and the command-position analysis are identical.
+_RUNNER_ADMISSIBLE_PROBES: frozenset[str] = (
+    LIVE_PROBE_COMMANDS | EXECUTED_HERMETIC_COMMANDS
 )
 
 
-def _is_inert_check(check_value: Any) -> bool:
-    """True if the check can only observe the OCC receipt/contract store.
+def _classify_check(
+    check_value: Any,
+    changed_paths: frozenset[str] | None = None,
+    check_type: str = "command",
+) -> AdmissibilityVerdict:
+    """Apply the single admissibility predicate to one dod_evidence check."""
+    return classify_evidence_item(
+        check_type,
+        check_value,
+        admissible_probes=_RUNNER_ADMISSIBLE_PROBES,
+        changed_paths=changed_paths,
+    )
 
-    Such a check is structurally incapable of saying anything about the product
-    repo the PR actually changes.
+
+def _is_inert_check(
+    check_value: Any,
+    changed_paths: frozenset[str] | None = None,
+    check_type: str = "command",
+) -> bool:
+    """True if the check is INADMISSIBLE under the OMN-15309 predicate.
+
+    Inadmissible means at least one of the three required properties is missing:
+    it does not execute, it cannot go RED, or everything it reads is authored by
+    this same change. Such a check is structurally incapable of saying anything
+    about the product repo the PR actually changes.
     """
-    text = str(check_value)
-    return any(p.search(text) for p in _INERT_CHECK_PATTERNS)
+    return not _classify_check(check_value, changed_paths, check_type).admissible
 
 
 # OMN-14051 -- non-hermetic check_value guard (reject at validation time).
@@ -108,12 +159,33 @@ def _is_inert_check(check_value: Any) -> bool:
 # inlined `ssh jonah@100.109.203.94 "docker ps ..."` and produced
 # "3/4 PASS, 1 BLOCK".
 #
-# The canonical, hermetic pattern is to run the live probe OUT OF BAND, record
-# it in a committed receipt, and have the contract grep that receipt:
+# OMN-15309 CORRECTION -- this block used to prescribe exactly the shape the
+# same file unconditionally refuses to credit:
 #
 #   check_value: >-
 #     grep -q '^status: PASS$'
 #     "$CONTRACT_REPO_DIR/drift/dod_receipts/<TICKET>/<evidence-id>/command.yaml"
+#
+# Following that instruction produced a permanent WARN and could never produce a
+# PASS: the OMN-14051 guard rejected the inline live probe, and the OMN-14436
+# INERT rule demoted the receipt grep the guard told the author to write
+# instead. Three surfaces rejected the same shape on 2026-07-28 (deploy-gate's
+# annotation on omnimarket#1927, this evaluator's demotion, and this comment
+# prescribing it), which is why the contradiction was filed rather than patched.
+#
+# The admissible hermetic form for a fact this runner cannot probe live is a
+# CONTENT READ AT A PINNED REF against the product repo -- executed on any CI
+# runner, falsifiable, and outside the diff the evidence author writes:
+#
+#   check_value: >-
+#     gh api repos/OWNER/REPO/contents/<changed_path>?ref=<merge_sha>
+#     --jq .content | base64 -d | grep -q '<symbol the fix introduces>'
+#
+# `gh` is deliberately absent from the deny lists below for exactly this reason.
+# See ``admissible_evidence_guidance()`` in
+# ``onex_change_control.validation.evidence_admissibility`` for the full set of
+# admissible shapes per evidence class -- that function is the single author-
+# facing text, and it is what this runner prints on refusal.
 #
 # This guard rejects the non-hermetic form up front with that actionable
 # message, so the failure surfaces at authoring/validation time instead of as a
@@ -354,6 +426,10 @@ class _CheckContext:
     ticket_id: str = ""
     contracts_dir: Path | None = None
     is_legacy: bool = False
+    #: Repo-relative paths this PR modifies, used by the OMN-15309 predicate's
+    #: OUTSIDE-ITS-OWN-DIFF rule. Empty means "not resolved" -- the rule is then
+    #: reported as NOT EVALUATED rather than silently passing.
+    changed_paths: frozenset[str] = dc_field(default_factory=frozenset)
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +459,31 @@ def _run(
         return 1, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
     except FileNotFoundError as exc:
         return 1, "", f"Command not found: {exc}"
+
+
+def _pr_changed_paths(pr_number: int, repo: str) -> frozenset[str]:
+    """Repo-relative paths this PR modifies, for the OUTSIDE-ITS-OWN-DIFF rule.
+
+    Returns an EMPTY set when the list cannot be resolved. Callers must treat
+    empty as "rule NOT EVALUATED" and say so out loud -- a silent skip that
+    prints nothing is a false green, which is the class of defect OMN-15309
+    exists to close.
+    """
+    rc, out, err = _run(
+        [
+            "gh",
+            "api",
+            f"repos/{repo}/pulls/{pr_number}/files",
+            "--paginate",
+            "--jq",
+            ".[].filename",
+        ],
+        timeout=60,
+    )
+    if rc != 0:
+        print(f"[WARN] Could not fetch PR file list: {err}", flush=True)
+        return frozenset()
+    return frozenset(line.strip() for line in out.splitlines() if line.strip())
 
 
 def _extract_ticket_id(pr_number: int, repo: str) -> str | None:
@@ -774,16 +875,23 @@ def _demote(
     """Apply the OMN-14436 demotion rules to one check result.
 
     Returns (result, detail, label). A BLOCK becomes a WARN when the check is
-    inert (it can only see the OCC store, so its failure says nothing about the
-    product) or when the ticket is grandfathered. Everything else stands.
+    INADMISSIBLE under the OMN-15309 predicate (it does not execute, cannot go
+    RED, or reads only what this same change authors -- so its verdict says
+    nothing about the product) or when the ticket is grandfathered. Everything
+    else stands.
     """
-    if _is_inert_check(check.get("check_value", "")):
-        # Inert checks are demoted whatever they returned: an inert PASS is
-        # exactly the laundering this ticket exists to stop.
+    verdict = _classify_check(
+        check.get("check_value", ""),
+        context.changed_paths,
+        str(check.get("check_type", "command") or "command"),
+    )
+    if not verdict.admissible:
+        # Inadmissible checks are demoted whatever they returned: an inadmissible
+        # PASS is exactly the laundering this rule exists to stop.
         return (
             _RESULT_WARN,
-            f"INERT -- reads the OCC receipt/contract store, not the product; "
-            f"proves nothing about {context.repo}. Original: {detail}",
+            f"INERT [{verdict.rule}] -- {verdict.reason}; proves nothing about "
+            f"{context.repo}. Original: {detail}",
             "INERT",
         )
     if result == _RESULT_BLOCK and context.is_legacy:
@@ -855,12 +963,14 @@ def _supersedes_marker(value: object) -> str | None:
     return superseded or None
 
 
-def _has_effective_check(dod_evidence: list[Any]) -> bool:
-    """True if any check can actually observe the product.
+def _has_effective_check(
+    dod_evidence: list[Any], changed_paths: frozenset[str] | None = None
+) -> bool:
+    """True if any check is ADMISSIBLE under the OMN-15309 predicate.
 
-    A contract whose every check is inert carries zero proof about the code it
-    claims to certify. Before OMN-14436 that was the norm, because the runner
-    only ever showed authors the receipt store -- so the legacy corpus is
+    A contract whose every check is inadmissible carries zero proof about the
+    code it claims to certify. Before OMN-14436 that was the norm, because the
+    runner only ever showed authors the receipt store -- so the legacy corpus is
     grandfathered. A NEW ticket gets no such pass.
     """
     for dod_item in dod_evidence:
@@ -868,10 +978,26 @@ def _has_effective_check(dod_evidence: list[Any]) -> bool:
             continue
         for check in dod_item.get("checks", []) or []:
             if isinstance(check, dict) and not _is_inert_check(
-                check.get("check_value", "")
+                check.get("check_value", ""),
+                changed_paths,
+                str(check.get("check_type", "command") or "command"),
             ):
                 return True
     return False
+
+
+def _outside_diff_state(changed_paths: frozenset[str]) -> str:
+    """One-line report of whether the OUTSIDE-ITS-OWN-DIFF rule could run.
+
+    An unresolved PR file list must be SAID OUT LOUD. A rule that silently does
+    not run is a false green -- the class OMN-15309 exists to close.
+    """
+    if changed_paths:
+        return f"ENFORCED ({len(changed_paths)} changed path(s))"
+    return (
+        "NOT EVALUATED -- PR file list unresolved; a check whose every path "
+        "operand is authored by this same PR will NOT be caught on this run"
+    )
 
 
 def run_compliance_check(
@@ -926,16 +1052,23 @@ def run_compliance_check(
             "contract must carry at least one product-observing check.",
             flush=True,
         )
+    changed_paths = _pr_changed_paths(pr_number, repo)
+    outside_diff_state = _outside_diff_state(changed_paths)
     print(
         f"[INFO] Workspace (product under test): {workspace}\n"
-        f"[INFO] Grandfathered (OMN-14436 ratchet): {is_legacy}",
+        f"[INFO] Grandfathered (OMN-14436 ratchet): {is_legacy}\n"
+        f"[INFO] Admissibility predicate (OMN-15309): EXECUTED + FALSIFIABLE + "
+        f"OUTSIDE-ITS-OWN-DIFF\n"
+        f"[INFO] OUTSIDE-ITS-OWN-DIFF rule: {outside_diff_state}",
         flush=True,
     )
 
     results = _run_dod_checks(
         dod_evidence,
         workspace,
-        _CheckContext(pr_number, repo, ticket_id, contracts_dir, is_legacy),
+        _CheckContext(
+            pr_number, repo, ticket_id, contracts_dir, is_legacy, changed_paths
+        ),
     )
 
     total = len(results)
@@ -951,21 +1084,19 @@ def run_compliance_check(
     # A contract with no check that can observe the product proves nothing about
     # it. The legacy corpus is grandfathered (it was authored against a runner
     # that only ever showed it the receipt store); a new ticket is not.
-    if not _has_effective_check(dod_evidence):
+    if not _has_effective_check(dod_evidence, changed_paths):
         if is_legacy:
             print(
-                "[WARN] Every check is INERT (OCC-store-only). Grandfathered "
-                "under the OMN-14436 ratchet -- reported, not enforced.",
+                "[WARN] Every check is INADMISSIBLE under the OMN-15309 predicate. "
+                "Grandfathered under the OMN-14436 ratchet -- reported, not enforced.",
                 flush=True,
             )
         else:
             print(
-                f"[BLOCK] {ticket_id}: every check is INERT -- each one reads the "
-                f"OCC receipt/contract store rather than {repo}. This contract "
-                "cannot certify the code it claims to. Add at least one check "
-                "that observes the product, e.g.\n"
-                "  check_value: 'test -f src/path/touched_by_this_pr.py'\n"
-                "  check_value: 'gh api repos/OWNER/REPO/pulls/<src_pr> --jq .merged'",
+                f"[BLOCK] {ticket_id}: every check is INADMISSIBLE -- not one of "
+                f"them is EXECUTED, FALSIFIABLE, and OUTSIDE ITS OWN DIFF, so this "
+                f"contract cannot certify the code it claims to about {repo}.\n"
+                f"{admissible_evidence_guidance(repo)}",
                 flush=True,
             )
             return 1

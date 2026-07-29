@@ -15,10 +15,14 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 import yaml
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from onex_change_control.scripts.contract_compliance_check import (
     _RESULT_BLOCK,
@@ -35,6 +39,24 @@ from onex_change_control.scripts.contract_compliance_check import (
     _non_hermetic_reason,
     run_compliance_check,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_live_pr_file_fetch() -> Iterator[None]:
+    """OMN-15309: keep these unit tests hermetic.
+
+    ``run_compliance_check`` resolves the PR's changed-file list (for the
+    OUTSIDE-ITS-OWN-DIFF rule) via ``gh api``. Left unpatched, every test in
+    this module would make a live GitHub call against a real PR number and
+    inherit its rate limits and flakiness. The rule itself is covered by
+    executed, discriminating tests in ``tests/test_evidence_admissibility.py``.
+    """
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._pr_changed_paths",
+        return_value=frozenset(),
+    ):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # _extract_ticket_id
@@ -572,7 +594,18 @@ def test_contract_with_no_dod_evidence_returns_pass(tmp_path: Path) -> None:
     assert rc == 0
 
 
-def test_contract_with_passing_file_exists_check(tmp_path: Path) -> None:
+def test_contract_with_only_a_file_exists_check_now_blocks(tmp_path: Path) -> None:
+    """OMN-15309: an existence assertion is no longer admissible evidence.
+
+    This test previously asserted rc == 0 for exactly this contract. The
+    2026-07-29 operator ruling adopted the OMN-14505 predicate (EXECUTED,
+    FALSIFIABLE, OUTSIDE ITS OWN DIFF), under which `file_exists` cannot go RED
+    once the change that adds the path is applied. The contract has one check,
+    that check is now INERT, and the ticket is not grandfathered -> BLOCK.
+
+    The assertion is INVERTED rather than deleted so the behaviour change is
+    legible in the diff.
+    """
     contracts = tmp_path / "contracts"
     contracts.mkdir()
     (tmp_path / "tests").mkdir()
@@ -595,6 +628,47 @@ def test_contract_with_passing_file_exists_check(tmp_path: Path) -> None:
             checks:
               - check_type: file_exists
                 check_value: "tests/test_omn1002.py"
+            status: pending
+    """)
+    (contracts / "OMN-1002.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1002",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    assert rc == 1
+
+
+def test_contract_with_an_admissible_command_check_passes(tmp_path: Path) -> None:
+    """Non-vacuity partner: the runner still passes real evidence.
+
+    Without this, inverting the assertion above would be satisfied by a
+    predicate that refuses everything.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_omn1002.py").write_text(
+        "def test_omn1002():\n    pass\n"
+    )
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1002"
+        summary: "Test ticket with dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-001
+            description: "Behaviour must hold"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'def test_omn1002' tests/test_omn1002.py"
             status: pending
     """)
     (contracts / "OMN-1002.yaml").write_text(contract_yaml)
@@ -642,7 +716,7 @@ def test_superseded_dod_item_is_warn_not_block(tmp_path: Path) -> None:
     contracts = tmp_path / "contracts"
     contracts.mkdir()
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "final_head.py").touch()
+    (tmp_path / "tests" / "final_head.py").write_text("FINAL_HEAD_MARKER = 1\n")
     contract_yaml = textwrap.dedent("""
         schema_version: "1.0.0"
         ticket_id: "OMN-1004"
@@ -666,8 +740,12 @@ def test_superseded_dod_item_is_warn_not_block(tmp_path: Path) -> None:
             evidence_artifact: supersedes_dod_evidence:dod-old-live-head
             description: "Final moving-head proof"
             checks:
-              - check_type: file_exists
-                check_value: "tests/final_head.py"
+              # OMN-15309: was check_type: file_exists, now inadmissible. This
+              # test is about SUPERSESSION, not admissibility, so the final
+              # item carries an admissible check and the assertion below is
+              # unchanged (rc == 0).
+              - check_type: command
+                check_value: "grep -q 'FINAL_HEAD_MARKER' tests/final_head.py"
             status: verified
     """)
     (contracts / "OMN-1004.yaml").write_text(contract_yaml)
