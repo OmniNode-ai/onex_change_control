@@ -59,3 +59,24 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5498 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-steel220-omn15170-sigpipe-safe"
+    description: >-
+      Append-only replacement for dod-steel220-omn15170-live-driver-content (OMN-15411). The historical
+      entry piped `gh api ... | base64 -d | grep -q '<marker>'` -- `grep -q` closes stdin at the first
+      match, so the upstream `base64 -d` (and, transitively, `gh api`'s curl) is killed by SIGPIPE once
+      the pipe drains; under `pipefail` (the dod_verify runner's shell mode) that SIGPIPE exit (128+13=141)
+      propagates as the pipeline's exit code even though the substantive grep matched, producing a reproducible
+      false RED inside the runner while the same command exits 0 when run directly (no pipefail, or an
+      interactive shell that doesn't propagate the killed writer's status). This entry binds the same
+      falsifiable content probe -- same gh api target, same marker -- but replaces the short-circuiting
+      `grep -q` pipeline with a fail-closed buffered read: the decoded file body is assigned first, proving
+      the producer completed, and `grep -qF` then checks the marker from that buffered body. Verified:
+      repeated runs under `bash -o pipefail -c` exit 0 against the real marker; the same form against
+      a mutated, absent marker string exits 1 (RED), proving the check stays falsifiable.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-steel220-omn15170-live-driver-content"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api repos/jonahgabriel/steel_onslaught/contents/tests/live/test_omn15170_live_driver.py?ref=24f3f5174ee47d26e0c9abe564c6da58e23497f2 --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'def test_live_match_produces_real_kafka_terminal_event_via_delegation_pin'
