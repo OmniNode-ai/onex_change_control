@@ -111,6 +111,192 @@ _RUNNER_INJECTED_VARS = ("PR_NUMBER", "REPO", "TICKET_ID")
 
 
 # ---------------------------------------------------------------------------
+# OMN-15382 Rule A: executable-command-shape
+#
+# `check_type: command` values are handed verbatim to `sh -c` by
+# `contract_compliance_check._check_command`. A value that OPENS with English
+# prose describing what was run ("Recorded product receipt: uv run pytest ...")
+# is not a command at all -- `sh` fails on the first word with "command not
+# found" (exit 127), so the check always BLOCKs when actually executed. This
+# was the root defect behind OMN-15382 (3/7 dod_verify failures on
+# contracts/OMN-14968.yaml): four items were authored as human-readable
+# descriptions of a command that had already been run by hand, never as an
+# executable command a hosted runner can re-run.
+#
+# The rule: strip any leading simple `VAR=literal` (no internal whitespace,
+# no `$()`/quoting) env-assignment tokens, then require the first remaining
+# token to be either a recognized command head or a POSIX shell
+# control-flow/builtin keyword that can legitimately open a compound
+# fragment (`if`, `case`, `for`, `!`, `[`, `:`, ...). A value that opens with
+# `IDENTIFIER=` but whose value is NOT a bare literal (a command-substitution
+# or quoted assignment, e.g. ``state=$(gh pr view ...)`` or
+# ``f="$(mktemp)" && ...``) is a legitimate multi-statement shell fragment
+# and is exempted rather than mis-tokenized by a non-shell-aware parser.
+#
+# Extending the allowlist requires touching this file -- a deliberate
+# ratchet (mirrors the OMN-9350 anti-pattern registry above).
+# ---------------------------------------------------------------------------
+
+_COMMAND_HEAD_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "gh",
+        "git",
+        "uv",
+        "npm",
+        "npx",
+        "python",
+        "python3",
+        "bash",
+        "sh",
+        "pytest",
+        "docker",
+        "pre-commit",
+        "rg",
+        "grep",
+        "find",
+        "echo",
+        "printf",
+        "jq",
+        "base64",
+        "sha256sum",
+        "cat",
+        "ls",
+        "cd",
+        "env",
+        "curl",
+        "mktemp",
+        "diff",
+        "cmp",
+        "sort",
+        "cut",
+        "sed",
+        "awk",
+        "tr",
+        "wc",
+        "head",
+        "tail",
+        "xargs",
+        "mkdir",
+        "rm",
+        "touch",
+        "true",
+        "false",
+        "ssh",
+        "shellcheck",
+    }
+)
+
+# POSIX shell control-flow / builtin tokens that can legitimately be the
+# FIRST word of a `sh -c` fragment (compound commands, negation, grouping,
+# the `test`/`:` builtins). These are not "commands" in the allowlist sense
+# above but are unambiguously executable shell syntax, not prose.
+_CONTROL_KEYWORD_HEADS: frozenset[str] = frozenset(
+    {"if", "for", "while", "until", "case", "test", "!", "[", "{", "(", ":"}
+)
+
+# A leading `IDENTIFIER=` at the very start of the (stripped) value -- used
+# to detect an assignment-prefixed fragment. Matched BEFORE and AFTER the
+# literal-prefix strip: if it still matches after stripping, the assignment
+# value was non-literal (command substitution / quoted) and the whole value
+# is exempted rather than mis-tokenized.
+_ENV_ASSIGN_HEAD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# Repeated simple `VAR=literal` prefixes: value has no internal whitespace,
+# no `$`, and no quote characters (a bare literal, e.g. `PR_NUMBER=1721`).
+_LITERAL_ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;\"'$]*[\s;]+)+")
+
+
+def _command_head_violation(value: str) -> str | None:
+    """Return a label if *value* does not open with an executable command.
+
+    Returns ``None`` when the value is clean (or not evaluable by this
+    simple, non-shell-aware heuristic -- see module docstring above).
+    """
+    stripped = value.strip()
+    if not stripped:
+        return None
+
+    m = _LITERAL_ENV_PREFIX_RE.match(stripped)
+    rest = stripped[m.end() :] if m else stripped
+
+    if _ENV_ASSIGN_HEAD_RE.match(rest):
+        # Non-literal assignment prefix (command substitution / quoted) --
+        # a legitimate multi-statement shell fragment. Exempt: prose never
+        # opens with `IDENTIFIER=`.
+        return None
+
+    parts = rest.split()
+    if not parts:
+        return None
+    first = parts[0]
+
+    if first in _CONTROL_KEYWORD_HEADS or first in _COMMAND_HEAD_ALLOWLIST:
+        return None
+
+    # Subshell grouping / negation directly concatenated with the next word,
+    # e.g. ``(gh pr view ...)`` with no space after the paren.
+    if first[:1] in {"(", "!"} and (
+        first[1:] in _COMMAND_HEAD_ALLOWLIST or len(first) == 1
+    ):
+        return None
+
+    if first.endswith(":"):
+        return (
+            f"executable-command-shape: check_value opens with a prose label "
+            f"({first!r}), not an executable command -- check_values are handed "
+            "verbatim to `sh -c` and a prose opener always fails with "
+            "'command not found' when actually run (OMN-15382)"
+        )
+    return (
+        f"executable-command-shape: first token {first!r} is not a recognized "
+        "command head or shell control keyword -- check_values must be "
+        "literal, executable shell commands, not a description of a command "
+        "already run by hand (OMN-15382)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-15382 Rule B: per-item PR binding
+#
+# A dod_evidence `id` that embeds a PR number (``pr-(\d+)``) declares intent
+# to pin evidence to THAT specific PR. If every `gh pr view/checks/diff` call
+# in its check_values uses only the bare ``${PR_NUMBER}`` runner placeholder
+# -- never the literal number from the id -- the check silently re-targets
+# whatever PR the compliance runner happens to be evaluating (the OMN-15382
+# class-3 PR-number mis-binding defect: contracts/OMN-14968.yaml's
+# `dod-OmniNode-ai-omnibase_infra-pr-2536` item used exactly this bare-token
+# form and never actually pinned PR #2536).
+# ---------------------------------------------------------------------------
+
+_ITEM_ID_PR_RE = re.compile(r"pr-(\d+)")
+_GH_PR_CALL_RE = re.compile(r"gh pr (?:view|checks|diff)\b")
+
+
+def _pr_binding_violation(dod_id: str, values: list[str]) -> str | None:
+    """Return a label if a PR-numbered item never literally pins that PR."""
+    match = _ITEM_ID_PR_RE.search(dod_id)
+    if not match:
+        return None
+    pr_number = match.group(1)
+
+    gh_pr_values = [v for v in values if _GH_PR_CALL_RE.search(v)]
+    if not gh_pr_values:
+        return None
+
+    for value in gh_pr_values:
+        if pr_number in value:
+            return None
+
+    return (
+        f"pr-binding: id {dod_id!r} embeds PR #{pr_number} but no "
+        "`gh pr view/checks/diff` check_value in this item references that "
+        "literal number -- a bare ${PR_NUMBER} placeholder resolves to "
+        "whatever PR the compliance runner is evaluating, not the pinned PR "
+        "(OMN-15382 class-3 mis-binding)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Core linting logic
 # ---------------------------------------------------------------------------
 
@@ -162,6 +348,10 @@ def _scan_dod_item(
     checks = item.get("checks", [])
     if not isinstance(checks, list):
         checks = []
+
+    command_values: list[str] = []
+    all_values: list[str] = []
+
     for check in checks:
         if not isinstance(check, dict):
             continue
@@ -169,11 +359,31 @@ def _scan_dod_item(
         if not isinstance(value, str) or not value.strip():
             continue
         _scan_value(path_label, dod_id, value, findings)
+        all_values.append(value)
+        if check.get("check_type", "command") == "command":
+            command_values.append(value)
 
     # Also handle flat check_value at the item level (legacy schema form).
+    # The legacy flat form predates check_type and was always a shell command.
     flat_value = item.get("check_value", "")
     if isinstance(flat_value, str) and flat_value.strip():
         _scan_value(path_label, dod_id, flat_value, findings)
+        all_values.append(flat_value)
+        command_values.append(flat_value)
+
+    # OMN-15382 Rule A: every command-shaped check_value must open with an
+    # executable command, not prose describing one.
+    for value in command_values:
+        label = _command_head_violation(value)
+        if label is not None:
+            fragment = value.strip()[:80]
+            findings.append((path_label, f"{dod_id}: {label}", fragment))
+
+    # OMN-15382 Rule B: a dod_evidence id embedding a PR number must pin that
+    # literal number in every gh pr view/checks/diff call it makes.
+    binding_label = _pr_binding_violation(dod_id, all_values)
+    if binding_label is not None:
+        findings.append((path_label, binding_label, dod_id))
 
 
 def _superseded_dod_ids(dod_evidence: list[object]) -> set[str]:

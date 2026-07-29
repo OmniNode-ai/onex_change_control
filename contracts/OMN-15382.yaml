@@ -1,20 +1,46 @@
----
-schema_version: "1.0.0"
-ticket_id: "OMN-15382"
-title: "Autobind OCC evidence for OMN-15382"
-summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnimarket PR #1949.
+schema_version: 1.0.0
+ticket_id: OMN-15382
+title: Repair contracts/OMN-14968.yaml dod_verify 3/7 FAIL + ship the authoring-time lint mechanism
+summary: 'contracts/OMN-14968.yaml failed dod_verify 3/7: four dod_evidence check_values opened with the
+  human-readable prose "Recorded product receipt: ..." handed verbatim to `sh -c` (the literal word "Recorded"
+  fails "command not found", exit 127 when actually run), one of which additionally piped into a bare
+  `sha256sum` with no explicit hash assertion -- vacuously green on any input, including nothing, since
+  `sh -c` has no `pipefail` and `sha256sum` always exits 0 regardless of what its stdin contained. A sixth
+  item (dod-OmniNode-ai-omnibase_infra-pr-2536) used the OMN-14431 bare ${PR_NUMBER}/${REPO} runner placeholder,
+  so it never actually pinned PR #2536 -- it silently re-checked whatever PR the compliance runner happened
+  to be evaluating (the class-3 PR-number mis-binding defect). This PR repairs contracts/OMN-14968.yaml
+  with five append-only, hosted-runnable, falsifiable replacement entries (mirroring the OMN-14875/PR#4528
+  precedent''s supersedes_dod_evidence idiom) AND ships the authoring-time lint mechanism in the same
+  PR: two new rules in scripts/lint_contract_check_values.py -- (Rule A) executable-command-shape, rejecting
+  any check_value that does not open with a recognized command head or shell control keyword after stripping
+  simple literal env-assignment prefixes; and (Rule B) per-item PR binding, rejecting a dod_evidence id
+  that embeds a PR number (pr-(\d+)) when none of its gh pr view/checks/diff check_values literally references
+  that number. A corpus-wide survey found the class-3 mis-binding defect alone is NOT unique to OMN-14968
+  -- it recurs across roughly a thousand historical dod_evidence items corpus-wide; those pre-existing
+  violations are frozen into a shrink-only baseline (.onex_ratchets/omn_15382_rule_a_baseline.yaml, .onex_ratchets/omn_15382_rule_b_baseline.yaml)
+  asserted by set equality, so a NEW instance of either defect class hard-fails while historical debt
+  is visible and cannot silently regrow.
+
+
+  Append-only reconciliation note: dev''s independent autobind contract for this ticket (node_occ_companion_compute
+  reacting to OmniNode-ai/omnimarket PR #1949) landed on dev after this branch diverged. Its dod_evidence
+  entries are preserved byte-intact, in dev''s original order, ahead of this branch''s items. The one
+  id collision (dod-OmniNode-ai-omnimarket-pr-1949) was resolved by keeping dev''s entry untouched and
+  renaming this branch''s strictly-stronger duplicate (which additionally asserts the PR''s file list
+  contains node_dod_verify) to dod-OmniNode-ai-omnimarket-pr-1949-strict.
+
+  '
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
-  - kind: "ci"
-    description: "PR #1949 CI checks green"
-    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+- kind: ci
+  description: 'PR #1949 CI checks green'
+  command: gh pr checks ${PR_NUMBER} --repo ${REPO}
 emergency_bypass:
   enabled: false
-  justification: ""
-  follow_up_ticket_id: ""
+  justification: ''
+  follow_up_ticket_id: ''
 dod_evidence:
   - id: "dod-OmniNode-ai-omnimarket-pr-1949"
     description: "PR #1949 on OmniNode-ai/omnimarket — Evidence-Source autobind."
@@ -70,3 +96,42 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: dod-omn-15382-repaired-contract-lint-clean
+    description: 'The repaired contracts/OMN-14968.yaml is clean under the very lint this PR ships -- the
+      linter that used to pass the four "Recorded product receipt: ..." prose check_values (they were never
+      anti-pattern matches, only genuinely broken at execution time) now also enforces executable-command-shape
+      and per-item PR binding, and the repaired file has zero findings under both new rules.'
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run python scripts/lint_contract_check_values.py contracts/OMN-14968.yaml
+  - id: dod-omn-15382-lint-mechanism-tests
+    description: 'The Rule A / Rule B unit tests (RED against the pre-fix "Recorded product receipt: ..."
+      prose and the pipe-to-sha256sum variant, RED against a bare ${PR_NUMBER} placeholder in a PR-numbered
+      item, GREEN against the repaired corpus) and the corpus-wide shrink-only baseline set-equality tests
+      all pass.'
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/unit/scripts/test_lint_contract_check_values.py tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py
+          -q
+  - id: occ-self-bind-pr-5458
+    description: 'OCC/product PR #5458 -- self-bind for OMN-15382.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: gh pr view 5458 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: dod-OmniNode-ai-omnimarket-pr-1949-strict
+    description: 'omnimarket PR #1949 -- runner hardening for OMN-15382 (node_dod_verify fail-closed command-check
+      execution + exact-match PR lookup). Binds the PR by number and proves it touches node_dod_verify.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: gh pr view 1949 --repo OmniNode-ai/omnimarket --json state
+      - check_type: command
+        check_value: test "$(gh pr view 1949 --repo OmniNode-ai/omnimarket --json files --jq '[.files[].path]
+          | any(contains("node_dod_verify"))')" = "true"
