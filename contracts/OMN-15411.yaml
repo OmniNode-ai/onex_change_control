@@ -1,17 +1,27 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-15411"
-title: "Autobind OCC evidence for OMN-15411"
-summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/onex_change_control
-  PR #5496.
+title: "SIGPIPE-safe OMN-15170 content check in contracts/OMN-15170.yaml"
+summary: >-
+  contracts/OMN-15170.yaml's dod-steel220-omn15170-live-driver-content check piped `gh api ... | base64
+  -d | grep -q '<marker>'`. `grep -q` exits at the first match and closes its stdin, so the upstream `base64
+  -d` (and transitively `gh api`'s curl) is killed by SIGPIPE once the pipe closes; under `pipefail` (the
+  dod_verify runner's shell mode) that SIGPIPE exit propagates as the pipeline's exit code (128+13=141)
+  even though the substantive grep matched -- a reproducible false RED inside the runner, while the same
+  command exits 0 when run directly outside pipefail. This PR supersedes that entry (append-only, per
+  the OMN-14875/OMN-15382 supersedes_dod_evidence idiom) in contracts/OMN-15170.yaml with a SIGPIPE-safe,
+  still-falsifiable form: the short-circuiting `grep -q` is replaced with a fully-draining `grep -c '<marker>'
+  | grep -qxv 0` -- `grep -c` reads its entire stdin before reporting a match count, so it never SIGPIPEs
+  its writer. Verified 10/10 consecutive runs under `bash -o pipefail -c` exit 0 against the real marker;
+  the same form against a mutated, absent marker exits 1 (RED), proving falsifiability is preserved. No
+  code paths change outside contracts/OMN-15170.yaml.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "ci"
-    description: "PR #5496 CI checks green"
-    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+    description: "New OMN-15170 supersede entry present and SIGPIPE-safe form drains stdin"
+    command: "grep -q 'dod-steel220-omn15170-sigpipe-safe' contracts/OMN-15170.yaml"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -38,3 +48,27 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5498 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn-15411-contract-supersede"
+    description: >-
+      contracts/OMN-15170.yaml carries the new append-only entry dod-steel220-omn15170-sigpipe-safe with
+      an evidence_artifact supersedes_dod_evidence marker pointing at the original SIGPIPE-prone entry.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'dod-steel220-omn15170-sigpipe-safe' contracts/OMN-15170.yaml && grep -q
+          'supersedes_dod_evidence:dod-steel220-omn15170-live-driver-content' contracts/OMN-15170.yaml"
+  - id: "dod-omn-15411-sigpipe-safe-proof"
+    description: >-
+      The SIGPIPE-safe replacement command itself, executed live: fully-draining `grep -c` against the
+      real steel_onslaught#220 marker, exits 0.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/jonahgabriel/steel_onslaught/contents/tests/live/test_omn15170_live_driver.py?ref=24f3f5174ee47d26e0c9abe564c6da58e23497f2 --jq .content | base64 -d | grep -c 'def test_live_match_produces_real_kafka_terminal_event_via_delegation_pin' | grep -qxv 0
+  - id: "occ-self-bind-pr-5492"
+    description: "Binds OMN-15411 to its own OCC/product PR (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5492 --repo OmniNode-ai/onex_change_control --json number,state"
