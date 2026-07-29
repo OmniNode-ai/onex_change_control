@@ -1,0 +1,105 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-15383
+title: "Fail closed on omniweb schema-CREATE and scope the managed-Postgres ownership repair"
+summary: >
+  omninode_infra PR #758 replaces the fail-open CREATE-on-public probe in the omniweb migration runner
+  with a pre-mutation precondition gate, adds --only scoping plus a peer-owner guard to repair-managed-postgres-ownership.sh
+  so a guest role cannot be repaired into stealing the host role's corpus, and makes the migration-order-1
+  self-heal GRANT read back its own effect instead of trusting an exit code that PostgreSQL returns as
+  0 even when nothing was granted.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: manual
+    description: "omninode_infra#758 is bound to its exact reviewed PR head"
+    command: "gh pr view 758 --repo OmniNode-ai/omninode_infra --json headRefOid,files"
+  - kind: manual
+    description: "The RED/GREEN privilege proof executes against a real PostgreSQL in CI"
+    command: "uv run pytest tests/scripts/test_omniweb_migration_schema_privilege.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-OmniNode-ai-omninode_infra-pr-758
+    description: >
+      omninode_infra PR #758 closes the OMN-15383 fail-open probe and scopes the ownership repair, bound
+      to reviewed head 60e34de558f382852ef2b30c85f2d6eba3123fe0.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          test "$(gh pr view 758 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN 60e34de558f382852ef2b30c85f2d6eba3123fe0"
+  - id: dod-OmniNode-ai-omninode_infra-pr-758-scope
+    description: >
+      omninode_infra PR #758 touches only the two migration runners, the ownership repair script, its
+      RED/GREEN proof module, and the RDS cutover runbook. No migration SQL, manifest topology, or credential
+      wiring is changed.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 758 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          ["docs/rds-postgres-cutover.md","k8s/migrations/omnibase-infra-migrate.yaml","k8s/migrations/omniweb-migrate.yaml","scripts/repair-managed-postgres-ownership.sh","tests/scripts/test_omniweb_migration_schema_privilege.py"]'
+          | grep -qx true
+  - id: dod-omn-15383-red-green-privilege-proof
+    description: >
+      The OMN-15383 proof drives the SHIPPED artifacts (runner extracted from the manifest, the real ConfigMap
+      corpus, the repair script) against a real PostgreSQL. RED baselines are derived mechanically by
+      excising the gate block, so GREEN cannot be vacuous. CI runs it fail-closed under REQUIRE_MIGRATION_LOCK_DB=1,
+      so an unreachable database fails the job rather than skipping.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/scripts/test_omniweb_migration_schema_privilege.py -q"
+  - id: occ-self-bind-pr-5437
+    description: "OCC companion self-bind receipt for OMN-15383."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5437 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5437 and .state == "OPEN" and .headRefName == "jonah/omn-15383-occ-companion"' |
+          grep -qx true
+  - id: dod-infra758-head-hosted-token-supersession
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #758 exact-head probe. The authoritative
+      live product-head result remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring cross-repository token
+      access.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-758"
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: dod-infra758-scope-hosted-token-supersession
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #758 file-scope probe. The authoritative
+      live product-scope result remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring cross-repository token
+      access.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-758-scope"
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: dod-omn-15383-red-green-hosted-token-supersession
+    description: >
+      Append-only hosted replacement for the private omninode_infra RED/GREEN proof command. The authoritative
+      live proof result remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring the product repository
+      checkout.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:dod-omn-15383-red-green-privilege-proof"
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
