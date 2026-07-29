@@ -11,6 +11,54 @@ evidence_requirements:
   - kind: "ci"
     description: "PR #2537 CI checks green"
     command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "manual"
+    description: >-
+      AC1 IS NOT MET AND IS NOT CLAIMED BY ANY CHECK IN THIS CONTRACT. AC1 requires reproducing the failure
+      against a scratch Postgres seeded with the LIVE RDS SHAPE of llm_cost_aggregates, read back ("read
+      it back; do not assume what it looks like"). No RDS shape census was ever performed: the drifted
+      shape exercised by the omnibase_infra#2537 tests was RECONSTRUCTED from the live error signature
+      of run 30418878385, which is inference, not a readback — the ticket's own R19b comment records exactly
+      this. Compounding it, the readback AC1 asks for is no longer performable in its original form: the
+      reconciling ALTER has since executed against that table, so the pre-fix drifted shape no longer
+      exists in RDS to be read. Two honest resolutions, both needing an operator ruling and neither taken
+      unilaterally here: (a) read back the CURRENT live shape and subtract the migration's declared columns
+      — the residue is the surviving fingerprint of the pre-existing shape, which confirms or refutes
+      the reconstruction; or (b) amend AC1 on the record to accept error-signature reconstruction. Until
+      one lands, OMN-15376 stays In Review. Recorded 2026-07-29 by session fable-relay-0729, lane R30b.
+  - kind: "manual"
+    description: >-
+      AC3 — EXECUTED AND PASSING, BUT NOT BINDABLE AS A dod_evidence CHECK. The node loop runs to completion:
+      deploy-onex-dev run 30454432188, job 90587035530 (deploy-dev, conclusion success), prints '== Migration
+      complete: applied=0 skipped=79 node_applied=0 node_skipped=83 ==' followed by '== All migrations
+      complete (6/6 succeeded) =='. Probe executed 2026-07-29, rc=0 both greps: `gh api repos/OmniNode-ai/omninode_infra/actions/jobs/90587035530/logs
+      | grep -q '<terminal line>'`. Why it is recorded here instead of in dod_evidence: OmniNode-ai/omninode_infra
+      is a PRIVATE repository, and hosted contract compliance runs with a repo-scoped GITHUB_TOKEN that
+      404s on it (proven live — OCC PR #5470 run 30465894334 job 90623400313: 'gh: Not Found (HTTP 404)'
+      on exactly these probes, while every omnibase_infra/omnimarket probe in the same run succeeded).
+      A check that 404s in CI is a hard merge block with no hosted-skip mechanism in contract_compliance_check.py,
+      so binding AC3 as an executable check would make this repair unlandable. The gap is structural and
+      affects every deploy-chain ticket whose evidence lives in omninode_infra; filed separately.
+  - kind: "manual"
+    description: >-
+      AC4 — EXECUTED AND PASSING, BUT NOT BINDABLE AS A dod_evidence CHECK, same private-repo reason as
+      the AC3 entry above. Live readback on onex-dev: run 30454432188 @c5e61311276829c7cf4fe5bb057713f6a35545bc,
+      workflow 'Deploy onex-dev (SSM port-forward)', conclusion=success, created 2026-07-29T13:05:26Z.
+      Probe executed 2026-07-29, rc=0: `gh api repos/OmniNode-ai/omninode_infra/actions/runs/30454432188
+      --jq '.conclusion' | grep -qx success`. Separate honest limit that survives regardless of the token:
+      nothing anywhere binds the migrate IMAGE used by that run back to 78b8731103a019ea90eee3164b53e882a064fe34,
+      because the workflow log does not name the image tag. AC4 is proven as 'a green onex-dev run exists',
+      not as 'a green onex-dev run of this fix'.
+  - kind: "manual"
+    description: >-
+      LIVE-RDS EXECUTION EVIDENCE — executed, passing, not bindable, same private-repo reason. The reconciliation
+      ran against the live RDS drifted table, not only against a seeded local scratch database: run 30452468047
+      (job 90581443570, 12:38Z) prints '== Migration complete: applied=0 skipped=79 node_applied=2 node_skipped=81
+      ==' — two node migrations newly applied — and the next run 30454432188 prints node_applied=0 node_skipped=83
+      against the same total of 83, i.e. the node ledger advanced from 81 to 83 and then held. Probe executed
+      2026-07-29, rc=0: `gh api repos/OmniNode-ai/omninode_infra/actions/jobs/90581443570/logs | grep
+      -q '<terminal line>'`. Honest limit: the workflow log truncates the Job output to its last 5 lines,
+      so the per-file APPLY list is NOT in this surface — this does not prove WHICH two files applied,
+      only that the ledger advanced by exactly two in the window in which the shape wall cleared.
 emergency_bypass:
   enabled: false
   justification: ""
@@ -88,3 +136,170 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  # ---------------------------------------------------------------------------
+  # OMN-15376 R30b remediation — append-only (session fable-relay-0729, lane R30b).
+  #
+  # Why these exist: an adversarial verifier REFUTED the 2026-07-29T14:46Z Done
+  # flip. None of the 11 checks above binds ANY of the ticket's four acceptance
+  # criteria — 7 are `gh pr view ${PR_NUMBER}` PR-existence probes (the shape the
+  # OMN-15309 predicate refuses as INSIDE_OWN_DIFF/metadata-only), and the other 4
+  # all carry the byte-identical command `uv run pytest tests/test_evidence_admissibility.py -q`,
+  # which node_dod_verify resolves into the OCC clone (76 OCC predicate tests,
+  # ~0.13s, no database) and which passes with the entire OMN-15376 fix reverted.
+  # The ticket was moved Done -> In Review at 2026-07-29T15:11Z before these were
+  # authored. Every check below was EXECUTED with a real exit code (all rc=0,
+  # 2026-07-29) and classified ADMISSIBLE by
+  # onex_change_control.validation.evidence_admissibility.classify_evidence_item
+  # under BOTH the LIVE_PROBE and LIVE_PROBE|EXECUTED_HERMETIC vocabularies before
+  # being written here.
+  #
+  # AC1, AC3, AC4 and the live-RDS execution proof are recorded under
+  # evidence_requirements, NOT here. AC1 is genuinely unmet. AC3/AC4 are executed
+  # and passing but CANNOT be bound as dod_evidence checks: their evidence lives in
+  # OmniNode-ai/omninode_infra, a PRIVATE repo that hosted contract compliance 404s
+  # on (proven live, OCC#5470 run 30465894334). Binding them would make this repair
+  # unlandable. That structural gap is filed, not papered over.
+  # ---------------------------------------------------------------------------
+  - id: "dod-omn-15376-ac2-reconciling-alter"
+    description: >-
+      AC2 — which shape is authoritative, and the fix that encodes the answer. The MIGRATION shape wins,
+      materialised as an explicit reconciling ALTER rather than by dropping the guard. Read back from
+      the squash-merge commit of omnibase_infra#2537 (78b8731103a019ea90eee3164b53e882a064fe34; merged=true,
+      base=dev) through the GitHub contents API at a pinned ref — a repository this OCC companion does
+      not touch, so the verdict cannot be decided by text this PR authors. FIX-DISCRIMINATING: the second
+      check is the negative control, running the identical probe against that commit's first parent 11b460db23d40dd2ca7704d0c3e9fd89851af60c,
+      where the match count is 0. Strip the reconciliation and check 1 goes RED; leave it in place and
+      check 2 goes RED. This is the check the pre-remediation contract did not have.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_cost_summary/0001_create_llm_cost_aggregates.sql?ref=78b8731103a019ea90eee3164b53e882a064fe34'
+          | grep -q 'ALTER TABLE llm_cost_aggregates ADD COLUMN IF NOT EXISTS aggregation_key'"
+      - check_type: "command"
+        check_value: "gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_cost_summary/0001_create_llm_cost_aggregates.sql?ref=11b460db23d40dd2ca7704d0c3e9fd89851af60c'
+          | grep -c 'ADD COLUMN IF NOT EXISTS aggregation_key' | grep -qx 0"
+  - id: "dod-omn-15376-ac2-fix-live-on-mainline"
+    description: >-
+      The reconciliation is live on omnibase_infra dev now, not merely present in a historical commit
+      — the same probe at ref=dev, which goes RED the moment anyone reverts it on the mainline, plus a
+      lineage assertion that 78b8731103a019ea90eee3164b53e882a064fe34 is an ancestor of dev (ahead_by=0
+      on the compare endpoint). Honest limit: the lineage check alone is NOT fix-discriminating (the pre-fix
+      parent is also an ancestor of dev); its job is to refuse a fix that only ever existed on a dangling
+      branch. The discriminating pair is the item above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_cost_summary/0001_create_llm_cost_aggregates.sql?ref=dev'
+          | grep -q 'ALTER TABLE llm_cost_aggregates ADD COLUMN IF NOT EXISTS aggregation_key'"
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/compare/dev...78b8731103a019ea90eee3164b53e882a064fe34
+          --jq '.ahead_by' | grep -qx 0"
+  - id: "dod-omn-15376-execution-proof-landed"
+    description: >-
+      Append-only replacement for dod-omn-15376-execution-proof. The superseded entry's PROSE claims an
+      ephemeral-Postgres-16 experiment (7 tests, RED on both live signatures) that its COMMAND — 'uv run
+      pytest tests/test_evidence_admissibility.py -q', which node_dod_verify runs in the OCC clone — cannot
+      produce; that command runs OCC's 76 admissibility-predicate tests in ~0.13s with no database, and
+      passes with the whole OMN-15376 fix reverted. This entry binds what is actually provable from OCC:
+      the integration module named by that prose LANDED in the merged product commit. It does NOT execute
+      it — no check in this contract can, because dod_verify resolves cwd to the OCC checkout and the
+      module lives in omnibase_infra. The description/command mismatch class is filed separately.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn-15376-execution-proof"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/commits/78b8731103a019ea90eee3164b53e882a064fe34
+          --jq '.files[].filename' | grep -qx 'tests/integration/migrations/test_node_migration_shape_drift_omn15376.py'"
+  - id: "dod-omn-15376-static-gate-landed"
+    description: >-
+      Append-only replacement for dod-omn-15376-static-gate, same defect as the item above (prose asserts
+      a 122-case always-on static gate; command runs OCC's admissibility suite). Binds the always-on gate
+      module's presence in the merged product commit. Execution of that gate is proven by omnibase_infra
+      CI on #2537, not by this contract.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn-15376-static-gate"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/commits/78b8731103a019ea90eee3164b53e882a064fe34
+          --jq '.files[].filename' | grep -qx 'tests/ci/test_node_migration_shape_reconciliation.py'"
+  - id: "dod-omn-15376-vendor-parity-digest"
+    description: >-
+      Append-only replacement for dod-omn-15376-vendor-parity. The superseded entry claims byte-identity
+      between the vendored omnibase_infra tree and the paired omnimarket source; its command ran OCC's
+      admissibility suite instead. This entry proves the identity directly and narrowly, for the file
+      this ticket is about: both the omnimarket source at merge commit 708dadaa966bbbb584e806872f1c088027285743
+      (omnimarket#1946) and the omnibase_infra vendored copy at 78b8731… hash to sha256 60cad6737c615c1cd6275d5818f0b45e9d8e57bbf1d2f265b1ebba3f6dc2ea4d,
+      executed 2026-07-29. Scope stated honestly: ONE file, not the whole vendored tree — the superseded
+      entry's whole-tree claim remains unproven and is not re-asserted here.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn-15376-vendor-parity"
+    checks:
+      - check_type: "command"
+        check_value: "gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_cost_summary/migrations/0001_create_llm_cost_aggregates.sql?ref=708dadaa966bbbb584e806872f1c088027285743'
+          | shasum -a 256 | grep -q 60cad6737c615c1cd6275d5818f0b45e9d8e57bbf1d2f265b1ebba3f6dc2ea4d"
+      - check_type: "command"
+        check_value: "gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_cost_summary/0001_create_llm_cost_aggregates.sql?ref=78b8731103a019ea90eee3164b53e882a064fe34'
+          | shasum -a 256 | grep -q 60cad6737c615c1cd6275d5818f0b45e9d8e57bbf1d2f265b1ebba3f6dc2ea4d"
+  - id: "dod-omn-15376-pr-2537-merged-commit"
+    description: >-
+      Append-only replacement for dod-OmniNode-ai-omnibase_infra-pr-2537, which used the machine-generated
+      'gh pr view ${PR_NUMBER}' shape. That shape is a PR-existence probe: the OMN-15309 predicate refuses
+      it as metadata-only (it proves the change exists, not that anything it claims is true), and it passes
+      here only because the placeholder happens to resolve. Binds the same fact through the merge COMMIT
+      instead.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2537"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/commits/78b8731103a019ea90eee3164b53e882a064fe34
+          --jq '.commit.message' | grep -q '(#2537)'"
+  - id: "dod-omn-15376-pr-1946-merged-commit"
+    description: >-
+      Append-only replacement for dod-OmniNode-ai-omnimarket-pr-1946 (same PR-existence defect). Binds
+      omnimarket#1946 through its merge commit 708dadaa966bbbb584e806872f1c088027285743.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-1946"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/commits/708dadaa966bbbb584e806872f1c088027285743
+          --jq '.commit.message' | grep -q '(#1946)'"
+  - id: "dod-omn-15376-occ-5421-merged-commit"
+    description: >-
+      Append-only replacement for occ-self-bind-pr-5421 (same PR-existence defect). Binds the OCC companion
+      through its merge commit 2284761dedc18b26f91d8d1d09e2ae41255226bb.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5421"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/commits/2284761dedc18b26f91d8d1d09e2ae41255226bb
+          --jq '.commit.message' | grep -q '(#5421)'"
+  - id: "dod-omn-15376-occ-5424-merged-commit"
+    description: >-
+      Append-only replacement for occ-self-bind-pr-5424 (same PR-existence defect). Binds the OCC companion
+      through its merge commit 9fca83aeb9c17055a3504207cbc24d6075872af8.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5424"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/commits/9fca83aeb9c17055a3504207cbc24d6075872af8
+          --jq '.commit.message' | grep -q '(#5424)'"
+  - id: "dod-omn-15376-occ-5425-merged-commit"
+    description: >-
+      Append-only replacement for occ-self-bind-pr-5425 (same PR-existence defect). Binds the OCC companion
+      through its merge commit 7d04f3424cc789b42269ef59f31a0d5aed34d8ee.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5425"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/commits/7d04f3424cc789b42269ef59f31a0d5aed34d8ee
+          --jq '.commit.message' | grep -q '(#5425)'"
