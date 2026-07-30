@@ -1251,6 +1251,69 @@ jobs:
             tests/test_evidence_admissibility_parity.py \
             -q -p no:randomly
 
+  contract-corpus-ratchets:
+    name: Contract Corpus Ratchets (OMN-15411)
+    # OMN-15411 round 2. The Rule A/B/C/D/E corpus ratchets in
+    # tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py are
+    # the ONLY surface that sees every contracts/*.yaml: the
+    # lint-contract-check-values pre-commit hook is changed-files-scoped (and on
+    # a dev PR the CI `Pre-commit` job runs `pre-commit run --files <changed>`,
+    # not --all-files), so a rule wired there alone cannot see a violation in a
+    # contract the PR does not touch. That module's own docstring claimed these
+    # tests "run under pytest over EVERY contract, on every PR" -- they did NOT:
+    #
+    #   * ci.yml's `test` job carries
+    #     `if: ... (github.event_name != 'pull_request' || github.base_ref != 'dev')`
+    #     so it is SKIPPED on every PR targeting dev -- the everyday merge path --
+    #     and ci-summary's generic rollup passes on a skipped need.
+    #   * The only other runner was `tests+coverage (shadow)` in
+    #     product-readiness-shadow.yml, which that file's own comment states is
+    #     "deliberately kept OUT of required_status_checks, so a red shadow ...
+    #     CANNOT block merges".
+    #   * OCC dev's required contexts are exactly
+    #     ["CI Summary", "required-check-skip-guard / check-skip-vectors"].
+    #   * Rule E is warning tier by design (it never changes the linter's exit
+    #     code), so the required Pre-commit job is not a backstop for it either.
+    #
+    # Net effect before this job existed: a NEW Rule A/B/C/D/E violation could
+    # land on dev with every required context green. The ratchet was a rule, not
+    # a mechanism (feedback_a_rule_is_not_a_mechanism).
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as precommit-parity-gate and
+    # predicate-parity above): no needs:, no if:, no paths filter,
+    # hosted-pinned runner. A skip here means something is wrong, not that the
+    # gate legitimately opted out -- the strict success-only check in ci-summary
+    # below fails closed on any non-success result.
+    #
+    # ANTI-REMOVAL ANCHOR: deleting this job while also deleting its ci-summary
+    # wiring would restore the gap silently. scripts/validation/check_corpus_ratchet_wiring.py
+    # is a pre-commit hook scoped to .github/workflows/ci.yml, so ANY edit to
+    # this file re-asserts (a) the job exists, (b) it is unconditional, (c) it
+    # runs the corpus module, (d) ci-summary needs it, and (e) ci-summary has a
+    # strict success-only check for it. That hook runs in the required
+    # `Pre-commit` context on the dev changed-files path, so the check is not
+    # self-referential.
+    runs-on: >-
+      ${{
+        fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+      }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Rule A/B/C/D/E shrink-only corpus ratchets over every contract
+        run: |
+          uv run pytest \
+            tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py \
+            -q -p no:randomly
+      - name: Corpus-ratchet CI wiring is intact (anti-removal anchor)
+        run: uv run python scripts/validation/check_corpus_ratchet_wiring.py
+
   validate-prod-promotion-grants:
     name: validate-prod-promotion-grants
     # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
@@ -1432,7 +1495,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1480,6 +1543,18 @@ jobs:
           # consumers -- which is precisely the drift this gate exists to stop.
           if [[ "${{ needs.predicate-parity.result }}" != "success" ]]; then
             echo "::error::predicate-parity did not pass (result: ${{ needs.predicate-parity.result }}) - fail-closed (OMN-15309)"
+            exit 1
+          fi
+          # OMN-15411: same strict fail-closed pattern for the Rule A/B/C/D/E
+          # contract corpus ratchets. Only 'success' passes; skipped/cancelled/
+          # failure ALL block. This is the ONLY required-path surface that scans
+          # every contracts/*.yaml -- the pre-commit linter is changed-files
+          # scoped, ci.yml's `test` job is skipped on dev PRs, and the shadow
+          # workflow that previously carried these tests is deliberately
+          # non-required. Without this check a new Rule A/B/C/D/E violation
+          # merges to dev with every required context green.
+          if [[ "${{ needs.contract-corpus-ratchets.result }}" != "success" ]]; then
+            echo "::error::contract-corpus-ratchets did not pass (result: ${{ needs.contract-corpus-ratchets.result }}) - fail-closed (OMN-15411)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then

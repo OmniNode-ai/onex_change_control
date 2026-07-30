@@ -107,34 +107,99 @@ def _scan_corpus() -> tuple[
     return frozenset(rule_a), frozenset(rule_b), frozenset(rule_c), frozenset(rule_d)
 
 
+_PRODUCER_LABEL_RE = re.compile(r"unbounded producer \(([^)]+)\)")
+
+# Shape: tier1_ratcheted ids, tier1_generated ids, tier2 ids, then the
+# per-producer-bucket census for each of the first two, as {bucket: (items, checks)}.
+_RuleEScan = tuple[
+    frozenset[str],
+    frozenset[str],
+    frozenset[str],
+    dict[str, tuple[int, int]],
+    dict[str, tuple[int, int]],
+]
+
+
 @lru_cache(maxsize=1)
-def _scan_corpus_rule_e() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    """Return (tier1_ratcheted, tier1_generated, tier2_advisory) Rule E ids.
+def _scan_corpus_rule_e_full() -> _RuleEScan:
+    """One pass over every contract producing BOTH the id sets and the buckets.
 
     Rule E findings come from ``lint_contract_warnings`` rather than
     ``lint_contract``: they are warning tier and must never contribute to the
     linter's exit code (see the Rule E block in the linter). The corpus ratchet
     below is where the class is actually stopped from growing.
+
+    SINGLE PASS, deliberately. A first draft added the bucket census as a
+    SECOND ``@lru_cache``'d full-corpus scan, which roughly doubled the Rule E
+    path over ~7.5k contracts and pushed the contract's own
+    ``dod-omn15411-rule-e-corpus-ratchet`` check past the DoD compliance
+    runner's **60-second per-check timeout** ("Command timed out after 60s"),
+    turning a passing gate red. Both consumers below derive from this one scan;
+    do not reintroduce a second walk of ``contracts/``.
     """
     contracts_dir = _REPO_ROOT / "contracts"
     tier1_ratcheted: set[str] = set()
     tier1_generated: set[str] = set()
     tier2: set[str] = set()
+    ratcheted_items: dict[str, set[str]] = {}
+    ratcheted_checks: dict[str, int] = {}
+    generated_items: dict[str, set[str]] = {}
+    generated_checks: dict[str, int] = {}
 
     for path in sorted(contracts_dir.glob("*.yaml")):
         rel = f"contracts/{path.name}"
         for _path_str, label, _fragment in linter.lint_contract_warnings(path):
             dod_id = label.split(":", 1)[0]
             entry = f"{rel}::{dod_id}"
+            is_generated = _is_generated_sigpipe_item(dod_id)
+
             if "sigpipe-fragile" in label:
-                if _is_generated_sigpipe_item(dod_id):
+                if is_generated:
                     tier1_generated.add(entry)
                 else:
                     tier1_ratcheted.add(entry)
+
+                match = _PRODUCER_LABEL_RE.search(label)
+                if match is None:  # pragma: no cover - detector always labels
+                    continue
+                bucket = match.group(1)
+                items, checks = (
+                    (generated_items, generated_checks)
+                    if is_generated
+                    else (ratcheted_items, ratcheted_checks)
+                )
+                items.setdefault(bucket, set()).add(entry)
+                checks[bucket] = checks.get(bucket, 0) + 1
             elif "sigpipe-possible" in label:
                 tier2.add(entry)
 
-    return frozenset(tier1_ratcheted), frozenset(tier1_generated), frozenset(tier2)
+    return (
+        frozenset(tier1_ratcheted),
+        frozenset(tier1_generated),
+        frozenset(tier2),
+        {b: (len(v), ratcheted_checks[b]) for b, v in ratcheted_items.items()},
+        {b: (len(v), generated_checks[b]) for b, v in generated_items.items()},
+    )
+
+
+def _scan_corpus_rule_e() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Return (tier1_ratcheted, tier1_generated, tier2_advisory) Rule E ids."""
+    tier1, generated, tier2, _rb, _gb = _scan_corpus_rule_e_full()
+    return tier1, generated, tier2
+
+
+def _scan_corpus_rule_e_buckets() -> tuple[
+    dict[str, tuple[int, int]], dict[str, tuple[int, int]]
+]:
+    """Return ({bucket: (items, check_values)}, same-for-generated).
+
+    The per-bucket split is what a repair lane batches on, so the numbers get
+    quoted in ticket comments and PR bodies -- and get quoted wrong. Derived
+    from the shipped detector so the assertion below is a measurement, not a
+    restatement.
+    """
+    _t1, _gen, _t2, ratcheted, generated = _scan_corpus_rule_e_full()
+    return ratcheted, generated
 
 
 @pytest.mark.unit
@@ -224,8 +289,29 @@ def test_omn_14968_and_omn_15382_contribute_nothing_to_either_baseline() -> None
 #
 # The corpus scan is the enforcement surface that matters: the pre-commit hook
 # only sees CHANGED files, so a rule wired there alone would never have caught
-# the 23 checks OCC#5481 appended to contracts CI never resolved. These tests
-# run under pytest over EVERY contract, on every PR.
+# the 23 checks OCC#5481 appended to contracts CI never resolved.
+#
+# CORRECTION (OMN-15411 round 2). A previous revision of this comment claimed
+# these tests "run under pytest over EVERY contract, on every PR". That was
+# FALSE on the dev merge path, and it is the reason this module's ratchets had
+# no merge-blocking force for months:
+#
+#   * ci.yml's `test` job carries
+#     `if: ... (github.event_name != 'pull_request' || github.base_ref != 'dev')`
+#     -- it is SKIPPED on every PR targeting `dev`, and ci-summary's generic
+#     `contains(needs.*.result, 'failure')` rollup passes on a skipped need.
+#   * The only other runner was `tests+coverage (shadow)` in
+#     product-readiness-shadow.yml, which that file's own comment describes as
+#     "deliberately kept OUT of `required_status_checks`".
+#   * OCC dev's required contexts are exactly
+#     ["CI Summary", "required-check-skip-guard / check-skip-vectors"].
+#
+# They DO now, via the unconditional `contract-corpus-ratchets` job in ci.yml,
+# which is in ci-summary's `needs:` AND has a strict success-only check there
+# (a plain `needs:` entry is not enough -- the generic rollup tolerates
+# `skipped`). scripts/validation/check_corpus_ratchet_wiring.py is the
+# anti-removal anchor, wired as a pre-commit hook on ci.yml and re-run inside
+# the job itself.
 # ---------------------------------------------------------------------------
 
 
@@ -376,3 +462,161 @@ def test_omn_15391_round2_repairs_contribute_nothing_to_rule_c_or_d() -> None:
             f"An OMN-15391 round-2 item is in a violation baseline: {entry}. "
             "Round-2 items must be clean, not baselined."
         )
+
+
+# OMN-15411 round-2 numeric pin.
+#
+# PR #5541's body stated "the `gh pr diff ${PR_NUMBER}` bucket (283 checks)".
+# That number is wrong, and it is the number a repair lane would batch on. An
+# independent scan with the shipped detector measures 143 items / 143
+# check_values in that bucket. The builder's own OMN-15411 comment said 143, so
+# the PR body contradicted its own evidence.
+#
+# The remaining-work census is now derived from the detector by this test rather
+# than restated in prose, so a future correction lands as a test diff with the
+# real numbers attached.
+_RULE_E_RATCHETED_CENSUS: dict[str, tuple[int, int]] = {
+    "base64-decoded file body": (160, 177),
+    "gh pr diff": (143, 143),
+    "paginated REST list": (5, 5),
+    "git history walk": (4, 4),
+}
+# The GENERATED side is deliberately NOT count-pinned.
+#
+# A first draft of this test pinned it exactly, at 58 distinct items. CI caught
+# that within 40 minutes: OCC#5545 (the OMN-15441 companion for omnimarket#1963)
+# landed on dev mid-review and the producer minted one more
+# `dod-deploy-assessment`, taking `gh pr diff` from 47 to 48 and the total from
+# 58 to 59. An exact pin on a machine-authored, monotonically-growing set would
+# hard-fail EVERY future autobind PR -- the precise failure mode the carve-out
+# exists to avoid, reintroduced one layer up.
+#
+# What IS asserted is the bucket SHAPE: the producer may mint more instances of
+# the shapes it already mints, but if it starts emitting a NEW fragile producer
+# kind that is a change in the producer, not routine growth, and it should fail.
+# The count is recorded here as an observation with its as-of date, not enforced.
+_RULE_E_GENERATED_BUCKETS: frozenset[str] = frozenset(
+    {
+        "gh pr diff",
+        "paginated REST list",
+        "iterating jq projection",
+        "base64-decoded file body",
+    }
+)
+# Observed 2026-07-30T03:30Z: 59 distinct items / 60 check_values. Growth is
+# expected and tracked at the producer (OMN-15407), not here.
+
+
+@pytest.mark.unit
+def test_rule_e_per_bucket_census_is_pinned() -> None:
+    """The human-authored per-bucket census matches a live detector scan.
+
+    Shrink-only in spirit like the baselines: repairing a bucket must update
+    this dict in the same PR, which is exactly the moment the remaining count
+    posted on the ticket should change too.
+    """
+    ratcheted, _generated = _scan_corpus_rule_e_buckets()
+    assert ratcheted == _RULE_E_RATCHETED_CENSUS, (
+        "Rule E ratcheted per-bucket census drifted from the live scan. "
+        f"live={ratcheted} pinned={_RULE_E_RATCHETED_CENSUS}. Update the pin in "
+        "the SAME PR that repairs (or adds) instances, and update the "
+        "remaining-count comment on OMN-15411 to match."
+    )
+
+
+@pytest.mark.unit
+def test_rule_e_generated_producer_emits_no_new_fragile_shape() -> None:
+    """The producer may mint MORE of what it mints; it may not mint a NEW shape.
+
+    Counts on the generated side grow by one on most autobind PRs, so pinning
+    them wedges the fleet. A new *bucket*, by contrast, means the producer's
+    emitted command shape changed and a fresh class of false RED is being
+    manufactured -- that is worth failing on.
+    """
+    _ratcheted, generated = _scan_corpus_rule_e_buckets()
+    unexpected = set(generated) - _RULE_E_GENERATED_BUCKETS
+    assert not unexpected, (
+        f"The OCC companion producer began emitting NEW SIGPIPE-fragile producer "
+        f"shape(s) {sorted(unexpected)} (live buckets {sorted(generated)}). This "
+        "is not routine growth of the carved-out set -- it is a change in what "
+        "omnimarket node_occ_companion_compute generates. Fix it at the producer "
+        "(OMN-15407) rather than widening this set."
+    )
+
+
+@pytest.mark.unit
+def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
+    """Cross-foot the per-bucket census against the two set-based scans.
+
+    Guards the arithmetic error class directly: an item can hit more than one
+    producer bucket, so per-bucket item counts do NOT sum to the distinct-item
+    total, and check_value counts are >= item counts. Asserting the relation
+    rather than a hand-added total is what makes the pinned numbers safe to
+    quote.
+    """
+    ratcheted, generated = _scan_corpus_rule_e_buckets()
+    live_t1, live_gen, _tier2 = _scan_corpus_rule_e()
+    baseline = _load_baseline(_RULE_E_BASELINE_PATH)
+
+    # Only the RATCHETED side gets an exact count -- it is the shrink-only
+    # baseline. `live_gen` grows on most autobind PRs (see
+    # _RULE_E_GENERATED_BUCKETS above), so it is asserted non-empty rather than
+    # equal; a zero would mean the detector stopped seeing the producer's output
+    # entirely, which is a detector regression, not a repair.
+    assert len(live_t1) == len(baseline) == 312
+    assert len(live_gen) >= 58
+
+    for label, census, distinct in (
+        ("ratcheted", ratcheted, len(live_t1)),
+        ("generated", generated, len(live_gen)),
+    ):
+        summed_items = sum(items for items, _checks in census.values())
+        assert summed_items >= distinct, (
+            f"{label}: per-bucket item counts ({summed_items}) cannot be below "
+            f"the distinct-item total ({distinct})."
+        )
+        for bucket, (items, checks) in census.items():
+            assert checks >= items, (
+                f"{label}/{bucket}: {checks} check_values < {items} items -- "
+                "impossible, each item contributes at least one check_value."
+            )
+
+
+@pytest.mark.unit
+def test_rule_e_corpus_is_walked_exactly_once_across_all_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression pin for the 60s DoD-compliance-runner timeout.
+
+    The contract's own ``dod-omn15411-rule-e-corpus-ratchet`` check shells out to
+    ``uv run pytest <this module> -q -k rule_e``, and the runner kills any check
+    at 60 seconds ("Command timed out after 60s"). Adding a SECOND
+    ``@lru_cache``'d walk of ``contracts/`` for the bucket census doubled that
+    path over ~7.5k contracts and turned the check red twice on CI before it was
+    caught.
+
+    Walking the corpus once is therefore load-bearing, not a micro-optimisation.
+    This asserts it structurally: with the shared cache primed, neither public
+    accessor may re-enter the detector.
+    """
+    _scan_corpus_rule_e_full()  # prime the shared cache
+
+    calls = 0
+    real = linter.lint_contract_warnings
+
+    def counting(path: Path) -> list[tuple[str, str, str]]:
+        nonlocal calls
+        calls += 1
+        result: list[tuple[str, str, str]] = real(path)
+        return result
+
+    monkeypatch.setattr(linter, "lint_contract_warnings", counting)
+    _scan_corpus_rule_e()
+    _scan_corpus_rule_e_buckets()
+
+    assert calls == 0, (
+        f"The Rule E consumers re-walked contracts/ {calls} time(s) after the "
+        "shared scan was cached. Both accessors must derive from "
+        "_scan_corpus_rule_e_full(); a second full-corpus walk pushes the "
+        "contract's own ratchet check past the compliance runner's 60s timeout."
+    )

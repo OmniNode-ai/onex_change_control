@@ -150,3 +150,86 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5541 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn15411-r2-corpus-ratchet-is-required-context"
+    description: >-
+      ROUND-2 ENFORCEMENT REPAIR. The Rule A/B/C/D/E corpus ratchets shipped in OCC#5458 and OCC#5541
+      had NO merge-blocking force on the dev path -- the central claim of #5541 did not hold. Three facts,
+      all read live: (1) ci.yml's `test` job carries `if: ... (github.event_name != 'pull_request' ||
+      github.base_ref != 'dev')`, so it is SKIPPED on every PR targeting dev, and ci-summary's generic
+      `contains(needs.*.result, 'failure')` rollup passes on a SKIPPED need; (2) the only other runner
+      was `tests+coverage (shadow)` in product-readiness-shadow.yml, which that file's own comment describes
+      as "deliberately kept OUT of required_status_checks"; (3) OCC dev's required contexts are exactly
+      ["CI Summary", "required-check-skip-guard / check-skip-vectors"]. Rule E is warning tier by design,
+      so the required Pre-commit job was not a backstop either. This item proves the repair: an unconditional
+      `contract-corpus-ratchets` job in ci.yml that runs the corpus module, listed in ci-summary's needs
+      AND covered by a strict success-only check there (a plain needs entry is not enough -- the generic
+      rollup tolerates `skipped`). scripts/validation/check_corpus_ratchet_wiring.py asserts all five
+      properties and is mutation-proven RED on each removal vector.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run python scripts/validation/check_corpus_ratchet_wiring.py .github/workflows/ci.yml"
+  - id: "dod-omn15411-r2-wiring-anchor-mutation-proven"
+    description: >-
+      The anti-removal anchor is proven by mutation, not asserted. tests/unit/scripts/test_check_corpus_ratchet_wiring.py
+      drives seven independent removal vectors against a copy of the live ci.yml and requires each to
+      be caught -- job deleted, job dropped from ci-summary's needs, strict success-only check removed,
+      job given an `if:` (the exact shape that makes `test` skip on dev PRs), job given a `needs:` chain,
+      job no longer running the corpus module, job no longer re-running its own wiring check -- plus a
+      GREEN control on the unmodified file, a missing-file case, and an unparseable-file case that must
+      both exit non-zero. The missing-file test found a real defect in the first draft: main() filtered
+      argv on `endswith("ci.yml")` and fell back to the canonical path when nothing matched, so a missing
+      or renamed target printed PASSED and exited 0 -- the exit-0-on-missing shape the fail-loud pre-commit
+      meta-gate forbids (OMN-14666/14668). Fixed to check every supplied path as given.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_check_corpus_ratchet_wiring.py -q -p no:randomly"
+  - id: "dod-omn15411-r2-per-bucket-census-corrected"
+    description: >-
+      NUMERIC CORRECTION. PR #5541's body stated "the `gh pr diff ${PR_NUMBER}` bucket (283 checks)".
+      That is wrong and it contradicted the builder's own OMN-15411 comment, which said 143. An independent
+      scan with the shipped detector measures the `gh pr diff` bucket at 143 items / 143 check_values.
+      Full live census, ratcheted (non-generated) tier 1: base64-decoded file body 160 items/177 checks,
+      gh pr diff 143/143, paginated REST list 5/5, git history walk 4/4 -- 312 distinct items (matching
+      the frozen baseline exactly), 329 check_values. Generated/carved-out tier 1: gh pr diff 47/47, paginated
+      REST list 5/5, iterating jq projection 4/4, base64-decoded body 2/3 -- 58 distinct items (NOT 59
+      as previously reported; 59 was the check_value count), 59 check_values. Tier-2 advisory: 87 items.
+      The census is now DERIVED from the detector by a pinned test rather than restated in prose, and
+      a cross-foot assertion pins the relations (per-bucket item counts sum >= distinct total because
+      an item can hit two buckets; check_values >= items per bucket) so the arithmetic error class cannot
+      recur silently.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py
+          -q -p no:randomly -k census"
+  - id: "dod-omn15411-r2-wiring-hook-registered-and-scoped"
+    description: >-
+      A validator nobody invokes is not a mechanism. The check-corpus-ratchet-wiring pre-commit hook is
+      registered exactly once in .pre-commit-config.yaml, at stages [pre-commit], with a `files:` regex
+      that matches .github/workflows/ci.yml and does NOT match product-readiness-shadow.yml. Scoping to
+      ci.yml is what makes the anchor non-self-referential: on a dev PR the required CI `Pre-commit` job
+      runs `pre-commit run --files <changed>`, so any PR that edits ci.yml re-asserts the wiring in a
+      required context even if the ratchet job itself was deleted in that same PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_check_corpus_ratchet_wiring.py -q -p no:randomly
+          -k hook_is_registered"
+  - id: "occ-self-bind-pr-5557"
+    description: >-
+      Binds OMN-15411 to OCC PR #5557 (self-bind). #5557 is the round-2 enforcement repair: it wires the
+      Rule A/B/C/D/E corpus ratchets into the REQUIRED CI Summary context, which #5541 claimed but did
+      not achieve (ci.yml's `test` job is skipped on every PR targeting dev, and the only other runner
+      is the deliberately-non-required shadow workflow). OCC PRs validate their own in-tree contract and
+      receipts (invariant I3), so the occ-preflight eligibility gate needs a PASS receipt binding OMN-15411
+      to this PR.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5557 --repo OmniNode-ai/onex_change_control --json number,state"
