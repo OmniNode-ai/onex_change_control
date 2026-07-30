@@ -107,78 +107,99 @@ def _scan_corpus() -> tuple[
     return frozenset(rule_a), frozenset(rule_b), frozenset(rule_c), frozenset(rule_d)
 
 
+_PRODUCER_LABEL_RE = re.compile(r"unbounded producer \(([^)]+)\)")
+
+# Shape: tier1_ratcheted ids, tier1_generated ids, tier2 ids, then the
+# per-producer-bucket census for each of the first two, as {bucket: (items, checks)}.
+_RuleEScan = tuple[
+    frozenset[str],
+    frozenset[str],
+    frozenset[str],
+    dict[str, tuple[int, int]],
+    dict[str, tuple[int, int]],
+]
+
+
 @lru_cache(maxsize=1)
-def _scan_corpus_rule_e() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    """Return (tier1_ratcheted, tier1_generated, tier2_advisory) Rule E ids.
+def _scan_corpus_rule_e_full() -> _RuleEScan:
+    """One pass over every contract producing BOTH the id sets and the buckets.
 
     Rule E findings come from ``lint_contract_warnings`` rather than
     ``lint_contract``: they are warning tier and must never contribute to the
     linter's exit code (see the Rule E block in the linter). The corpus ratchet
     below is where the class is actually stopped from growing.
+
+    SINGLE PASS, deliberately. A first draft added the bucket census as a
+    SECOND ``@lru_cache``'d full-corpus scan, which roughly doubled the Rule E
+    path over ~7.5k contracts and pushed the contract's own
+    ``dod-omn15411-rule-e-corpus-ratchet`` check past the DoD compliance
+    runner's **60-second per-check timeout** ("Command timed out after 60s"),
+    turning a passing gate red. Both consumers below derive from this one scan;
+    do not reintroduce a second walk of ``contracts/``.
     """
     contracts_dir = _REPO_ROOT / "contracts"
     tier1_ratcheted: set[str] = set()
     tier1_generated: set[str] = set()
     tier2: set[str] = set()
+    ratcheted_items: dict[str, set[str]] = {}
+    ratcheted_checks: dict[str, int] = {}
+    generated_items: dict[str, set[str]] = {}
+    generated_checks: dict[str, int] = {}
 
     for path in sorted(contracts_dir.glob("*.yaml")):
         rel = f"contracts/{path.name}"
         for _path_str, label, _fragment in linter.lint_contract_warnings(path):
             dod_id = label.split(":", 1)[0]
             entry = f"{rel}::{dod_id}"
+            is_generated = _is_generated_sigpipe_item(dod_id)
+
             if "sigpipe-fragile" in label:
-                if _is_generated_sigpipe_item(dod_id):
+                if is_generated:
                     tier1_generated.add(entry)
                 else:
                     tier1_ratcheted.add(entry)
+
+                match = _PRODUCER_LABEL_RE.search(label)
+                if match is None:  # pragma: no cover - detector always labels
+                    continue
+                bucket = match.group(1)
+                items, checks = (
+                    (generated_items, generated_checks)
+                    if is_generated
+                    else (ratcheted_items, ratcheted_checks)
+                )
+                items.setdefault(bucket, set()).add(entry)
+                checks[bucket] = checks.get(bucket, 0) + 1
             elif "sigpipe-possible" in label:
                 tier2.add(entry)
 
-    return frozenset(tier1_ratcheted), frozenset(tier1_generated), frozenset(tier2)
+    return (
+        frozenset(tier1_ratcheted),
+        frozenset(tier1_generated),
+        frozenset(tier2),
+        {b: (len(v), ratcheted_checks[b]) for b, v in ratcheted_items.items()},
+        {b: (len(v), generated_checks[b]) for b, v in generated_items.items()},
+    )
 
 
-_PRODUCER_LABEL_RE = re.compile(r"unbounded producer \(([^)]+)\)")
+def _scan_corpus_rule_e() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Return (tier1_ratcheted, tier1_generated, tier2_advisory) Rule E ids."""
+    tier1, generated, tier2, _rb, _gb = _scan_corpus_rule_e_full()
+    return tier1, generated, tier2
 
 
-@lru_cache(maxsize=1)
 def _scan_corpus_rule_e_buckets() -> tuple[
     dict[str, tuple[int, int]], dict[str, tuple[int, int]]
 ]:
     """Return ({bucket: (items, check_values)}, same-for-generated).
 
     The per-bucket split is what a repair lane batches on, so the numbers get
-    quoted in ticket comments and PR bodies -- and get quoted wrong. This
-    derives them from the shipped detector so the assertion below is a
-    measurement, not a restatement.
+    quoted in ticket comments and PR bodies -- and get quoted wrong. Derived
+    from the shipped detector so the assertion below is a measurement, not a
+    restatement.
     """
-    contracts_dir = _REPO_ROOT / "contracts"
-    ratcheted: dict[str, set[str]] = {}
-    ratcheted_checks: dict[str, int] = {}
-    generated: dict[str, set[str]] = {}
-    generated_checks: dict[str, int] = {}
-
-    for path in sorted(contracts_dir.glob("*.yaml")):
-        rel = f"contracts/{path.name}"
-        for _path_str, label, _fragment in linter.lint_contract_warnings(path):
-            if "sigpipe-fragile" not in label:
-                continue
-            match = _PRODUCER_LABEL_RE.search(label)
-            if match is None:  # pragma: no cover - detector always labels
-                continue
-            bucket = match.group(1)
-            dod_id = label.split(":", 1)[0]
-            entry = f"{rel}::{dod_id}"
-            if _is_generated_sigpipe_item(dod_id):
-                generated.setdefault(bucket, set()).add(entry)
-                generated_checks[bucket] = generated_checks.get(bucket, 0) + 1
-            else:
-                ratcheted.setdefault(bucket, set()).add(entry)
-                ratcheted_checks[bucket] = ratcheted_checks.get(bucket, 0) + 1
-
-    return (
-        {b: (len(v), ratcheted_checks[b]) for b, v in ratcheted.items()},
-        {b: (len(v), generated_checks[b]) for b, v in generated.items()},
-    )
+    _t1, _gen, _t2, ratcheted, generated = _scan_corpus_rule_e_full()
+    return ratcheted, generated
 
 
 @pytest.mark.unit
@@ -559,3 +580,43 @@ def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
                 f"{label}/{bucket}: {checks} check_values < {items} items -- "
                 "impossible, each item contributes at least one check_value."
             )
+
+
+@pytest.mark.unit
+def test_rule_e_corpus_is_walked_exactly_once_across_all_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression pin for the 60s DoD-compliance-runner timeout.
+
+    The contract's own ``dod-omn15411-rule-e-corpus-ratchet`` check shells out to
+    ``uv run pytest <this module> -q -k rule_e``, and the runner kills any check
+    at 60 seconds ("Command timed out after 60s"). Adding a SECOND
+    ``@lru_cache``'d walk of ``contracts/`` for the bucket census doubled that
+    path over ~7.5k contracts and turned the check red twice on CI before it was
+    caught.
+
+    Walking the corpus once is therefore load-bearing, not a micro-optimisation.
+    This asserts it structurally: with the shared cache primed, neither public
+    accessor may re-enter the detector.
+    """
+    _scan_corpus_rule_e_full()  # prime the shared cache
+
+    calls = 0
+    real = linter.lint_contract_warnings
+
+    def counting(path: Path) -> list[tuple[str, str, str]]:
+        nonlocal calls
+        calls += 1
+        result: list[tuple[str, str, str]] = real(path)
+        return result
+
+    monkeypatch.setattr(linter, "lint_contract_warnings", counting)
+    _scan_corpus_rule_e()
+    _scan_corpus_rule_e_buckets()
+
+    assert calls == 0, (
+        f"The Rule E consumers re-walked contracts/ {calls} time(s) after the "
+        "shared scan was cached. Both accessors must derive from "
+        "_scan_corpus_rule_e_full(); a second full-corpus walk pushes the "
+        "contract's own ratchet check past the compliance runner's 60s timeout."
+    )
