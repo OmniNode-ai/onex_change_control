@@ -154,6 +154,100 @@ evidence_requirements:
       k \" \"; hit=0; for (i=1;i<=n[k];i++) for (j=i+1;j<=n[k];j++) if (st[k,i] < en[k,j] && st[k,j] <
       en[k,i]) hit=1; races+=hit; if (hit) rl = rl k \" \" } print \"tot=\" tot+0 \" dups=\" dups+0 \"
       races=\" races+0 \" duplist=[\" dl \"] racelist=[\" rl \"]\" }'"
+  # ==========================================================================
+  # R32 BULLET-3 FORWARD RED MEASUREMENTS (fable-resume-0730, 2026-07-30,
+  # remediation round on OCC#5586) — APPEND-ONLY, and deliberately RED.
+  #
+  # WHY THESE EXIST. Acceptance bullet 3 reads, verbatim from OMN-15192:
+  # "No dual-producer race observed (no two companions on the same PR, no
+  # competing force-push to `auto/*` branch)." That is ONE headline with TWO
+  # operative clauses. The R31 forward guard
+  # (dod-omn-15192-b3-forward-zero-companion-race) asserts the RACE half and
+  # only the race half: an interval-overlap test measures "two companions OPEN
+  # AT THE SAME TIME". It does NOT measure the cumulative "no two companions on
+  # the same PR" clause, and it does NOT measure the force-push clause at all.
+  # BOTH unmeasured clauses are RED over the SAME forward window the guard
+  # reports races=0 across. Leaving them as prose inside a passing item's
+  # description would be the same laundering OCC#5584 was CLOSED for, so each
+  # is recorded here as its own red measurement, parallel in shape to the two
+  # BULLET 3 UNMET entries at the top of this list: kind manual, executed
+  # command, real output, no assertion.
+  #
+  # ADJUDICATION RULE, stated so growth cannot go silent. Every product PR in
+  # the cumulative list below is an accepted deviation ONLY if it has been
+  # adjudicated as one on its own facts, with its own named root-cause class.
+  # The list is EXPECTED TO GROW — head-refresh re-mints are routine producer
+  # behaviour (OMN-14941) — and each new entry requires its own
+  # accepted-deviation adjudication recorded here before it can be treated as
+  # accepted. A list that grew without adjudication is an UNMET bullet 3, not
+  # a green one. Growth is visible red by construction: re-running the command
+  # prints every member by name.
+  # ==========================================================================
+  - kind: "manual"
+    description: |-
+      BULLET 3 UNMET (forward, cumulative — the "no two companions on the same PR" clause). Over the SAME
+      open-ended forward window the R31 guard reports races=0 across (created > 2026-07-29T05:00:00Z),
+      three product PRs carry TWO companions each. Executed twice under `bash -o pipefail -c` on
+      2026-07-30 at 09:12:21Z and 09:13:06Z — the exact bytes parsed back out of this committed contract,
+      not a paraphrase of them — byte-identical output both runs, exit 0 both runs. It PRINTS, it does
+      not assert. Live re-derived for this entry, not inherited from the earlier round:
+
+        OmniNode-ai/omnibase_infra#2551 companions=2 OCC#5530[2026-07-30T00:47:16Z,2026-07-30T01:02:18Z] OCC#5529[2026-07-30T00:26:12Z,2026-07-30T00:39:31Z] class=SEQUENTIAL
+        OmniNode-ai/omnibase_infra#2562 companions=2 OCC#5575[2026-07-30T05:59:01Z,2026-07-30T06:13:21Z] OCC#5574[2026-07-30T05:46:19Z,2026-07-30T05:55:11Z] class=SEQUENTIAL
+        OmniNode-ai/omnimarket#1949 companions=2 OCC#5466[2026-07-29T14:45:21Z,2026-07-29T15:27:34Z] OCC#5459[2026-07-29T14:05:33Z,2026-07-29T14:35:13Z] class=SEQUENTIAL
+        tot=57 dups=3 races=0
+
+      Expected for a met cumulative clause: dups=0. Actual: dups=3. Each is class=SEQUENTIAL — the second
+      companion was created AFTER the first had already closed, which is a MEASURED fact (the printed
+      intervals do not overlap), not an exemption — but SEQUENTIAL is a root-cause class, not a pass. The
+      literal clause says "no two companions on the same PR" and these PRs have two.
+      WHY THIS IS RECORDED RATHER THAN ASSERTED: a cumulative `== 1` assertion is a proven false-RED
+      generator on this corpus — it already went RED in contract-compliance run 30462434211 on a legitimate
+      head-refresh re-mint, and two more legitimate re-mints (#2551, #2562) landed within 6 hours of this
+      entry being written. Asserting it green is impossible and asserting it red would wedge CI, so it is
+      recorded with its real output exactly like the #2536/#2537 entries above.
+      ADJUDICATION: each of the three above is adjudicated an ACCEPTED DEVIATION of the head-refresh
+      re-mint class (OMN-14941 producer behaviour: the product PR head moved after the first companion
+      merged, so the producer re-minted against the new head; both companions are `app/onexbot-occ-writer`
+      on the same `auto/*` branch name, never simultaneously open). Every FUTURE member of this list
+      requires its own adjudication on its own facts — an unadjudicated new member means bullet 3 is
+      unmet, and re-running the command below prints the full membership so growth cannot hide.
+    command: |-
+      gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A%3E2026-07-29T05%3A00%3A00Z&per_page=100' --jq '.items[]|[.title,.number,.created_at,(.closed_at // "9999-99-99")]|@tsv' | awk -F'\t' '$1 ~ /OCC companion for OmniNode-ai\/[a-z_]+#[0-9]+$/ { t=$1; sub(/.* /,x,t); n[t]++; st[t,n[t]]=$3; en[t,n[t]]=$4; occ[t]=occ[t] "OCC#" $2 "[" $3 "," $4 "] "; tot++ } END { for (k in n) { if (n[k]<2) continue; dups++; hit=0; for (i=1;i<=n[k];i++) for (j=i+1;j<=n[k];j++) if (st[k,i] < en[k,j] && st[k,j] < en[k,i]) hit=1; races+=hit; cls="SEQUENTIAL"; if (hit) cls="RACE"; printf "%s companions=%d %sclass=%s\n", k, n[k], occ[k], cls } print "tot=" tot+0 " dups=" dups+0 " races=" races+0 }'
+  - kind: "manual"
+    description: |-
+      BULLET 3 UNMET (forward, force-push half — the "no competing force-push to `auto/*` branch" clause).
+      This clause was previously measured ONLY over the historical window, inside the description of
+      dod-omn-15192-b3-one-open-machine-mint: "The four force-pushes onto auto/* branches (OCC#5419 x2,
+      #5420 x1, #5425 x1) were all performed by actor `jonahgabriel` (Codex hand-repair) -- zero by any
+      second producer identity." Nothing measured it over the FORWARD window, so half of bullet 3 sat
+      unasserted while a forward guard reported green. It is measured here, and it is RED — far redder
+      than the race half. Executed twice under `bash -o pipefail -c` on 2026-07-30 at 09:12:21Z and
+      09:13:06Z — the exact bytes parsed back out of this committed contract — byte-identical output both
+      runs, exit 0 both runs; two earlier runs of byte-identical text at 09:02:34Z and 09:03:36Z, before
+      the text was committed, produced the same numbers:
+
+        force_push_events=50 competing_events=48 competing_prs=34 actors=[jonahgabriel:48 onexbot-occ-writer[bot]:2 ]
+
+      Reading: across the 54 machine-minted (`auto/*`) companions created after 2026-07-29T05:00:00Z there
+      are 50 head_ref_force_pushed timeline events; 48 of them, spread over 34 distinct companion PRs,
+      were pushed by `jonahgabriel` — a hand/Codex identity that is NOT the machine producer — and only 2
+      by the producer App `onexbot-occ-writer[bot]` force-pushing its own branch. By the literal clause,
+      each of those 48 is a competing force-push onto an `auto/*` branch. Expected for a met clause:
+      competing_events=0. Actual: 48.
+      WHY THIS IS RECORDED, NOT GATED, stated so the choice is auditable. (a) The live reading is 48, so
+      any assertion built on it is RED today; encoding a knowingly-red assertion as a dod_evidence check
+      would wedge CI, which is the same reasoning the two #2536/#2537 entries above already carry. (b) The
+      only green-able variant — asserting merely that no actor OUTSIDE {jonahgabriel, onexbot-occ-writer}
+      force-pushed — would narrow the criterion until the known violations stop counting, which is
+      precisely the OCC#5584 laundering that was CLOSED on adversarial rejection. (c) Independently, the
+      probe costs one timeline fetch per companion in an OPEN-ENDED window (54 calls / ~40s today, growing
+      without bound), so as a CI gate it would eventually go red on rate limits rather than on facts — a
+      second false-RED generator. The honest form is a recorded measurement that anyone can re-run.
+      This entry is the forward counterpart of the historical four-force-push measurement cited above;
+      between them, neither half of bullet 3's force-push clause is silently unasserted any more.
+    command: |-
+      gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+label%3A%22occ%3Amachine-minted%22+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A%3E2026-07-29T05%3A00%3A00Z&per_page=100' --jq '.items[].number' | while read -r n; do gh api "repos/OmniNode-ai/onex_change_control/issues/$n/timeline" --paginate --jq '.[]|select(.event=="head_ref_force_pushed")|.actor.login' | sed "s/^/$n /"; done | awk '{ ev++; by[$2]++; if ($2 != "onexbot-occ-writer[bot]") { comp++; pr[$1]=1 } } END { np=0; for (p in pr) np++; printf "force_push_events=%d competing_events=%d competing_prs=%d actors=[", ev+0, comp+0, np; for (a in by) printf "%s:%d ", a, by[a]; print "]" }'
 emergency_bypass:
   enabled: false
   justification: ""
@@ -517,6 +611,68 @@ dod_evidence:
       this value carried the same INERT-in-CI defect and was reworked with it.
     source: "manual"
     status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          STATS="$(gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A%3E2026-07-29T05%3A00%3A00Z&per_page=100' --jq '.items[]|[.title,.created_at,(.closed_at // "9999-99-99")]|@tsv' | awk -F'\t' '$1 ~ /OCC companion for OmniNode-ai\/[a-z_]+#[0-9]+$/ { t=$1; sub(/.* /,x,t); n[t]++; st[t,n[t]]=$2; en[t,n[t]]=$3; tot++ } END { for (k in n) { if (n[k]<2) continue; dups++; hit=0; for (i=1;i<=n[k];i++) for (j=i+1;j<=n[k];j++) if (st[k,i] < en[k,j] && st[k,j] < en[k,i]) hit=1; races+=hit } print tot+0, dups+0, races+0 }')" && TOT="${STATS%% *}" && REST="${STATS#* }" && DUPS="${REST%% *}" && RACES="${REST##* }" && [ "$TOT" -ge 40 ] && [ "$DUPS" -ge 1 ] && [ "$RACES" -eq 0 ]
+      - check_type: "command"
+        check_value: |-
+          REPOS="$(gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A%3E2026-07-29T05%3A00%3A00Z&per_page=100' --jq '.items[].title' | awk -F'OmniNode-ai/' 'NF>1 { split($2,a,/#/); print a[1] }' | sort -u | wc -l | tr -d ' ')" && [ "$REPOS" -ge 5 ]
+  # ==========================================================================
+  # R32 FORWARD-GUARD SCOPE CORRECTION (fable-resume-0730, 2026-07-30) —
+  # APPEND-ONLY REPLACEMENT, not an edit.
+  #
+  # OCC#5586 merged at 2026-07-30T09:17:08Z (merge commit 14c5ecde) WHILE this
+  # remediation round was in flight, so dod-omn-15192-b3-forward-zero-companion-race
+  # and its receipt are now MERGED evidence on dev. Correcting its description
+  # in place would (a) delete merged bytes, failing the append-only test this
+  # lane is held to, and (b) move its contract_entry_sha256 and invalidate the
+  # merged receipt bound to it. The idiom for a correction that a merge left
+  # unamendable is an appended replacement carrying
+  # evidence_artifact: supersedes_dod_evidence:<id> — the same idiom already
+  # used above for occ-self-bind-pr-5387. The replacement below carries the
+  # SAME two check values BYTE-FOR-BYTE, so no assertion is weakened, dropped
+  # or narrowed; only the description is corrected.
+  # ==========================================================================
+  - id: "dod-omn-15192-b3-forward-race-half-scope-corrected"
+    description: >-
+      FORWARD-LOOKING GUARD for the RACE HALF ONLY of acceptance bullet 3. Append-only replacement for
+      dod-omn-15192-b3-forward-zero-companion-race, whose description quoted bullet 3 as merely "no dual-producer
+      race observed" and so read as a guard over the whole bullet. IDENTICAL CHECK VALUES, byte-for-byte
+      -- this replacement asserts everything the superseded item asserted and nothing less; only the scope
+      statement changed. BULLET 3 IN FULL, verbatim from OMN-15192 and in the same form this contract
+      uses at the HONEST SCOPE LIMIT block comment and in dod-omn-15192-b3-one-open-machine-mint: "No
+      dual-producer race observed (no two companions on the same PR, no competing force-push to `auto/*`
+      branch)". THIS ITEM ASSERTS THE RACE HALF AND NOTHING ELSE: an interval-overlap test measures exactly
+      "two companions OPEN AT THE SAME TIME". It does NOT assert the cumulative "no two companions on
+      the same PR" clause, and it does NOT assert the force-push clause at all. BOTH UNASSERTED CLAUSES
+      ARE RED over this very window, and both are recorded with executed commands and real output as R32
+      entries in evidence_requirements: "BULLET 3 UNMET (forward, cumulative)" reads dups=3 (omnibase_infra#2551,
+      omnibase_infra#2562, omnimarket#1949 -- two companions each, every one adjudicated an accepted head-refresh
+      re-mint, under the standing rule that each future member needs its own adjudication or bullet 3
+      is unmet), and "BULLET 3 UNMET (forward, force-push half)" reads 48 competing force-pushes by actor
+      `jonahgabriel` across 34 companion PRs versus 2 by the producer App `onexbot-occ-writer[bot]` itself.
+      THE FORCE-PUSH CLAUSE'S HISTORICAL HALF is the four force-pushes onto auto/* branches (OCC#5419
+      x2, #5420 x1, #5425 x1, all actor `jonahgabriel`) already recorded in the description of dod-omn-15192-b3-one-open-machine-mint;
+      between that entry and the R32 forward entry, neither the historical nor the forward half of the
+      force-push clause is silently unasserted any more. A GREEN RUN ON THIS ITEM IS NOT A GREEN BULLET
+      3 -- it is one clause of one half, and the remainder of bullet 3 is red on the durable record. EVERYTHING
+      ELSE ABOUT THIS GUARD IS UNCHANGED and is stated in full on the superseded entry above: the open-ended
+      window created > 2026-07-29T05:00:00Z (the first round hour after the LAST accepted historical race,
+      OCC#5424 at 04:42:33Z, excluding the two accepted deviations and nothing else); the live corpus
+      of 57 companions across 6 product repos with races 0; the three anti-vacuity controls (`-ge 40`
+      total = reachability/fail-closed, `-ge 5` distinct product repos = org-wide span, `-ge 1` duplicate
+      groups = the sensitivity control proving the grouping fires on live data while races reads 0); why
+      races rather than a cumulative equality (a cumulative `== 1` is a proven false-RED generator that
+      already went RED in contract-compliance run 30462434211 on a legitimate head-refresh re-mint); and
+      the executed falsifiability set (widened window -> races 2, exit 1; non-existent repo -> fail-closed
+      exit 1; 4-row synthetic fixture -> tot=4 dups=2 races=1 racelist=[OmniNode-ai/foo#1], firing on
+      the simultaneously-open pair and not the sequential one). Both check values were re-executed twice
+      under `bash -o pipefail -c` on 2026-07-30 exactly as parsed from this committed contract, exit 0
+      on every run.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn-15192-b3-forward-zero-companion-race"
     checks:
       - check_type: "command"
         check_value: |-
