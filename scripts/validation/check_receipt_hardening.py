@@ -38,6 +38,73 @@ tickets — this gate is a ratchet on NEW receipts, not a retro-block.
 ``pre-commit run --all-files`` (which OCC CI runs) must stay green on the
 legacy corpus.
 
+SUPERSESSION BINDING (OMN-15459), the fourth invariant
+------------------------------------------------------
+Supersession is the *repair* primitive of an append-only receipt store: a
+net-new ``<check_type>.supersede.<NNNN>.yaml`` carries the authoritative
+``replacement`` for a frozen base receipt. Until OMN-15459 this gate
+validated the replacement's schema, hashes and identity and **never asked
+whether the replacement executes the check the superseded item declares**
+— the string ``check_value`` did not appear anywhere in this file. That
+made the repair path a laundering channel: any item, however specific its
+declared bar, could be silently rebound to any check that exits 0.
+
+The live instance: ``onex_change_control#5534`` (merged 2026-07-30,
+``34c8dacc``) added **8** ``command.supersede.2552.yaml`` files against 8
+DISTINCT ``dod_evidence`` items, every one carrying a **byte-identical**
+``replacement.check_value`` — one ``grep -c 'def _build_specs'`` of
+``scripts/create_kafka_topics.py``. So
+``dod-occ-evidence-admissibility-validator`` (declared check: ``uv run
+pytest tests/test_evidence_admissibility.py -q``) now authoritatively
+attests that a Kafka-topic script defines a function, while the
+admissibility suite it names goes unrun. ``OCC#5528`` did the same with 6
+files one PR earlier. Machine-producer behaviour, not a hand-authoring
+slip — it scales.
+
+Two rules, both required, evaluated only on ``*.supersede.*.yaml`` files:
+
+``S1`` — **distinctness.** Two supersessions in the same cohort (same
+ticket directory, same ``.supersede.<TOKEN>.`` suffix — i.e. minted
+together for one consuming PR) may not carry a byte-identical normalized
+``replacement.check_value`` while naming DIFFERENT ``evidence_item_id``s.
+One probe cannot be the authoritative proof of N distinct bars.
+
+``S2`` — **family binding.** A replacement must reference the artifact
+family of the item it replaces: at least one anchor derived from the
+superseded item's OWN declared ``checks[*].check_value`` in
+``contracts/<ticket>.yaml`` (file paths, grep symbols, test targets, PR
+numbers), from a ``pr-<N>`` fragment in the item id, or the item id
+itself. An arbitrary file is not that item's bar.
+
+Neither rule is satisfied by falsifiability auditing: the OCC#5534 grep is
+*genuinely* RED-derivable (1 at the fix ref, 0 at the parent). It is a
+well-formed probe. It just falsifies a different item — which is why the
+OMN-14505 predicate, ``lint_contract_check_values`` and
+``contract_compliance_check`` all pass it. They reason about a check in
+isolation; these two rules reason about the item↔replacement *pairing*.
+
+REPAIR IS APPEND-ONLY, and the gate recognises it. A merged mis-paired
+supersession is immutable — it is never rewritten. A net-new sibling
+supersession marks it REPAIRED, and drops it from the violation set, when
+all three hold: (a) the sibling's ``supersedes:`` names the mis-paired
+*record* (``ModelReceiptSupersession`` sanctions superseding "the receipt
+**or record** this one replaces"; the model is ``extra="forbid"``, so a
+bespoke ``corrects:`` key would invalidate the record itself); (b) the
+sibling's ``.supersede.<NNNN>.`` token is HIGHER, since
+``validator_receipt_supersession`` resolves the active receipt as the
+highest token — a lower-numbered "repair" would leave the wrong-item
+record authoritative and be purely cosmetic; and (c) the sibling is
+itself clean under S1+S2. The cure is strictly stronger than the disease:
+it must carry a discriminating per-item check of its own, so "repair"
+cannot be another rebind.
+
+Pre-existing violations are carried in the frozen, shrink-only baseline
+``.onex_ratchets/omn_15459_supersession_binding_baseline.yaml`` and are
+skipped. Corpus mode (``--supersession-corpus``) asserts set equality
+against that baseline in BOTH directions — a new violation fails, and a
+repaired entry that was not removed from the baseline also fails. The
+baseline may only shrink; never pad it to make a new supersession pass.
+
 Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 """
 
@@ -47,6 +114,7 @@ import argparse
 import re
 import sys
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -335,10 +403,597 @@ def _validate_receipt_model(
         return receipt, None
 
 
-def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
+# ---------------------------------------------------------------------------
+# OMN-15459 — supersession binding (wrong-item rebind)
+# ---------------------------------------------------------------------------
+
+SUPERSESSION_TICKET = "OMN-15459"
+SUPERSESSION_BASELINE_PATH = Path(
+    ".onex_ratchets/omn_15459_supersession_binding_baseline.yaml"
+)
+RECEIPTS_ROOT = Path("drift/dod_receipts")
+
+_SUPERSEDE_TOKEN_RE = re.compile(r"\.supersede\.([^.]+)\.ya?ml$")
+_PATH_TOKEN_RE = re.compile(
+    r"[A-Za-z0-9_][A-Za-z0-9_./-]*"
+    r"\.(?:py|ts|tsx|js|jsx|ya?ml|sh|sql|md|toml|json|cfg|ini|txt)\b"
+)
+_QUOTED_RE = re.compile(r"""['"]([^'"\n]{3,})['"]""")
+_PR_IN_ID_RE = re.compile(r"pr-(\d+)")
+_PR_IN_CMD_RE = re.compile(r"(?:gh pr (?:view|checks|diff|merge|list)\s+|/pulls/)(\d+)")
+_SYMBOLISH_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
+
+# Basenames that identify no item in particular: every receipt lives in a
+# command.yaml, every ticket has a contract.yaml. Admitting these as anchors
+# would let "greps some receipt file" satisfy family binding for any item.
+_GENERIC_BASENAMES = frozenset(
+    {
+        "command.yaml",
+        "command.yml",
+        "contract.yaml",
+        "contract.yml",
+        "__init__.py",
+        "ci.yml",
+        "ci.yaml",
+        "pyproject.toml",
+        "readme.md",
+    }
+)
+
+# Quoted operands that are jq/format plumbing rather than an item's subject.
+_GENERIC_QUOTED = frozenset(
+    {
+        ".content",
+        ".state",
+        ".number",
+        "number,state",
+        ".[].filename",
+        ".files[].path",
+        "%s\\n",
+    }
+)
+
+
+class SupersessionRule:
+    """Rule identifiers used in violation strings and baseline entries."""
+
+    DISTINCTNESS = "S1"
+    FAMILY_BINDING = "S2"
+
+
+def _normalize_check(value: object) -> str:
+    """Collapse whitespace so YAML folding cannot mask an identical check."""
+    return " ".join(str(value).split())
+
+
+def _supersede_token(path: Path) -> str | None:
+    match = _SUPERSEDE_TOKEN_RE.search(path.name)
+    return match.group(1) if match else None
+
+
+@lru_cache(maxsize=None)
+def _load_mapping(path: Path) -> dict[str, object] | None:
+    """Parse a YAML mapping once per process.
+
+    Corpus mode touches every supersession's cohort siblings and every
+    contract; without memoisation the scan is quadratic in a 1,800-file
+    corpus and does not finish. Callers treat the result as read-only.
+    """
+    try:
+        raw = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _supersession_item_id(path: Path, data: dict[str, object]) -> str:
+    item = data.get("evidence_item_id")
+    if isinstance(item, str) and item:
+        return item
+    replacement = data.get("replacement")
+    if isinstance(replacement, dict):
+        nested = replacement.get("evidence_item_id")
+        if isinstance(nested, str) and nested:
+            return nested
+    return path.parent.name
+
+
+def _supersession_check_value(data: dict[str, object]) -> str | None:
+    replacement = data.get("replacement")
+    if not isinstance(replacement, dict):
+        return None
+    check_value = replacement.get("check_value")
+    if not isinstance(check_value, str) or not check_value.strip():
+        return None
+    return _normalize_check(check_value)
+
+
+@lru_cache(maxsize=None)
+def _contract_entry(
+    contracts_dir: Path, ticket_id: str, item_id: str
+) -> dict[str, object] | None:
+    contract = _load_mapping(contracts_dir / f"{ticket_id}.yaml")
+    if contract is None:
+        return None
+    entries = contract.get("dod_evidence")
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("id") == item_id:
+            return entry
+    return None
+
+
+@lru_cache(maxsize=None)
+def _item_anchors(
+    contracts_dir: Path, ticket_id: str, item_id: str
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Return (text anchors lowercased, PR-number anchors) for a superseded item.
+
+    Anchors are what makes a replacement *about this item*: the paths,
+    symbols and test targets the item's own declared checks name, the PR
+    number its id embeds, and the item id itself. Generic plumbing
+    (command.yaml, jq selectors) is excluded — admitting it would let any
+    receipt-shaped grep satisfy the rule for every item.
+    """
+    entry = _contract_entry(contracts_dir, ticket_id, item_id)
+    text_anchors: set[str] = {item_id.lower()}
+    pr_anchors: set[str] = set(_PR_IN_ID_RE.findall(item_id))
+
+    checks = (entry or {}).get("checks")
+    if not isinstance(checks, list):
+        checks = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        declared = check.get("check_value")
+        if not isinstance(declared, str):
+            continue
+        for match in _PATH_TOKEN_RE.finditer(declared):
+            token = match.group(0)
+            basename = token.rsplit("/", maxsplit=1)[-1]
+            if basename.lower() in _GENERIC_BASENAMES:
+                continue
+            text_anchors.add(token.lower())
+            text_anchors.add(basename.lower())
+        for quoted in _QUOTED_RE.findall(declared):
+            operand = quoted.strip()
+            if operand in _GENERIC_QUOTED or operand.startswith("."):
+                continue
+            if not _SYMBOLISH_RE.search(operand):
+                continue
+            text_anchors.add(operand.lower())
+        pr_anchors.update(_PR_IN_CMD_RE.findall(declared))
+
+    return frozenset(text_anchors), frozenset(pr_anchors)
+
+
+def _check_references_item(
+    check_value: str, text_anchors: frozenset[str], pr_anchors: frozenset[str]
+) -> bool:
+    lowered = check_value.lower()
+    if any(anchor in lowered for anchor in text_anchors):
+        return True
+    return any(
+        re.search(rf"\b{re.escape(pr)}\b", check_value) is not None
+        for pr in pr_anchors
+    )
+
+
+@lru_cache(maxsize=None)
+def _cohort_members(path: Path) -> tuple[Path, ...]:
+    """Supersessions minted together with ``path`` for the same consuming PR.
+
+    A cohort is (ticket directory, ``.supersede.<TOKEN>.`` suffix). That is
+    the unit the producer emits in one shot, and the unit across which one
+    probe was reused for N items.
+    """
+    token = _supersede_token(path)
+    if token is None:
+        return (path,)
+    ticket_dir = path.parent.parent
+    if not ticket_dir.is_dir():
+        return (path,)
+    return tuple(sorted(ticket_dir.glob(f"*/*.supersede.{token}.yaml")))
+
+
+@lru_cache(maxsize=None)
+def _repaired_targets(item_dir: Path, contracts_dir: Path) -> frozenset[str]:
+    """Paths in ``item_dir`` cured by a net-new, itself-clean repair record.
+
+    Merged receipts are immutable, so a mis-paired supersession is repaired by
+    APPENDING a sibling whose ``supersedes:`` names *that supersession record*
+    rather than the base receipt — the shape ``ModelReceiptSupersession``
+    already sanctions ("path of the receipt **or record** this one replaces").
+    ``corrects:`` is not an option: the model is ``extra="forbid"``, so an
+    unknown key would make the record itself invalid.
+
+    Two conditions, both required:
+
+    * the repair is itself clean under S1+S2 — otherwise "repair" is a second
+      rebind wearing a different hat;
+    * the repair's ``.supersede.<NNNN>.`` token is HIGHER than its target's.
+      ``omnibase_core.validation.validator_receipt_supersession`` resolves the
+      active receipt as the highest ``NNNN`` in the chain, so a lower-numbered
+      repair would leave the wrong-item record authoritative — cosmetic, not a
+      cure.
+    """
+    repaired: set[str] = set()
+    if not item_dir.is_dir():
+        return frozenset(repaired)
+    for candidate in sorted(item_dir.glob("*.supersede.*.yaml")):
+        data = _load_mapping(candidate)
+        if data is None:
+            continue
+        superseded = data.get("supersedes")
+        if not isinstance(superseded, str) or ".supersede." not in superseded:
+            continue
+        declared = Path(superseded.strip())
+        # ``supersedes`` is OCC-root-relative while ``item_dir`` may be
+        # absolute or relative depending on how the gate was invoked. Match on
+        # the <ticket>/<item> tail and resolve the file inside item_dir, so the
+        # cure works identically from pre-commit (relative paths), CI corpus
+        # mode, and an absolute-path invocation.
+        if (
+            declared.parent.name != item_dir.name
+            or declared.parent.parent.name != item_dir.parent.name
+        ):
+            continue
+        target = item_dir / declared.name
+        if target == candidate or not target.is_file():
+            continue
+        repair_token = _supersede_token(candidate)
+        target_token = _supersede_token(target)
+        if repair_token is None or target_token is None:
+            continue
+        if not (repair_token.isdigit() and target_token.isdigit()):
+            continue
+        if int(repair_token) <= int(target_token):
+            continue
+        if _supersession_violations(
+            candidate, contracts_dir, baseline=frozenset(), follow_repairs=False
+        ):
+            continue
+        repaired.add(target.as_posix())
+    return frozenset(repaired)
+
+
+def _supersession_violations(
+    path: Path,
+    contracts_dir: Path,
+    baseline: frozenset[str],
+    *,
+    follow_repairs: bool = True,
+) -> list[tuple[str, str]]:
+    """Return [(rule, message)] for one supersession file (empty = clean)."""
+    posix = path.as_posix()
+    data = _load_mapping(path)
+    if data is None:
+        return []
+    check_value = _supersession_check_value(data)
+    if check_value is None:
+        # No replacement check to pair with anything. Malformed replacements
+        # are the base gate's job (_valid_supersession_replacement), not this
+        # rule's.
+        return []
+
+    if follow_repairs and posix in _repaired_targets(path.parent, contracts_dir):
+        return []
+
+    item_id = _supersession_item_id(path, data)
+    ticket_id = data.get("ticket_id")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        ticket_id = path.parent.parent.name
+
+    violations: list[tuple[str, str]] = []
+
+    # S1 — distinctness across the cohort.
+    collisions: set[str] = set()
+    for sibling in _cohort_members(path):
+        if sibling == path:
+            continue
+        sibling_data = _load_mapping(sibling)
+        if sibling_data is None:
+            continue
+        if _supersession_check_value(sibling_data) != check_value:
+            continue
+        sibling_item = _supersession_item_id(sibling, sibling_data)
+        if sibling_item == item_id:
+            continue
+        if follow_repairs and (
+            sibling.as_posix() in _repaired_targets(sibling.parent, contracts_dir)
+        ):
+            continue
+        collisions.add(sibling_item)
+    if collisions:
+        violations.append(
+            (
+                SupersessionRule.DISTINCTNESS,
+                f"replacement.check_value is byte-identical to the supersession "
+                f"for {len(collisions)} DIFFERENT evidence item(s) minted in the "
+                f"same cohort ({', '.join(sorted(collisions))}). One probe cannot "
+                f"be the authoritative proof of several distinct bars — that is "
+                f"the {SUPERSESSION_TICKET} wrong-item rebind. Give each "
+                "superseded item a check that discriminates it, or supersede "
+                "only the one item this probe actually proves.",
+            )
+        )
+
+    # S2 — family binding to the superseded item.
+    text_anchors, pr_anchors = _item_anchors(contracts_dir, ticket_id, item_id)
+    if not _check_references_item(check_value, text_anchors, pr_anchors):
+        sample = sorted(a for a in text_anchors if a != item_id.lower())[:4]
+        violations.append(
+            (
+                SupersessionRule.FAMILY_BINDING,
+                f"replacement.check_value references nothing the superseded item "
+                f"{item_id!r} declares. Expected at least one anchor from that "
+                f"item's own dod_evidence entry in "
+                f"contracts/{ticket_id}.yaml — paths/symbols "
+                f"{sample or '(none declared)'}, PR number(s) "
+                f"{sorted(pr_anchors) or '(none)'}, or the item id itself — but "
+                f"the replacement runs: {check_value[:160]!r}. A substantive "
+                "probe of the WRONG item is still a wrong-item rebind "
+                f"({SUPERSESSION_TICKET}).",
+            )
+        )
+
+    # Baseline suppression is per (path, RULE), not per path: a file carried as
+    # a known S1 violation that later also trips S2 must still be reported.
+    suppressed = _baseline_index(baseline).get(posix)
+    if suppressed is None:
+        return violations
+    if not suppressed:
+        return []
+    return [item for item in violations if item[0] not in suppressed]
+
+
+@lru_cache(maxsize=8)
+def _baseline_index(baseline: frozenset[str]) -> dict[str, frozenset[str]]:
+    """Map baselined path -> suppressed rule codes.
+
+    Entries are ``<path>::S1+S2``. A bare ``<path>`` (the shape a
+    hand-written entry tends to take) maps to the empty set, meaning
+    "suppress every rule for this file".
+    """
+    index: dict[str, set[str]] = {}
+    for entry in baseline:
+        path_part, _, rules_part = entry.partition("::")
+        rules = index.setdefault(path_part, set())
+        if rules_part:
+            rules.update(rules_part.split("+"))
+    return {path: frozenset(rules) for path, rules in index.items()}
+
+
+def load_supersession_baseline(baseline_path: Path) -> frozenset[str]:
+    """Load the frozen, shrink-only baseline of pre-existing violations."""
+    data = _load_mapping(baseline_path)
+    if data is None:
+        return frozenset()
+    entries = data.get("violations")
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(str(entry) for entry in entries if isinstance(entry, str))
+
+
+def check_supersession_file(
+    path: Path, contracts_dir: Path, baseline: frozenset[str]
+) -> list[str]:
+    """Return violation strings for one supersession file (empty = clean)."""
+    return [
+        f"{path}: [{rule}] {message}"
+        for rule, message in _supersession_violations(path, contracts_dir, baseline)
+    ]
+
+
+def scan_supersession_corpus(
+    receipts_root: Path, contracts_dir: Path
+) -> dict[str, list[str]]:
+    """Return {posix path: [rules]} for every violating supersession on disk."""
+    findings: dict[str, list[str]] = {}
+    for path in sorted(receipts_root.glob("*/*/*.supersede.*.yaml")):
+        violations = _supersession_violations(path, contracts_dir, baseline=frozenset())
+        if violations:
+            findings[path.as_posix()] = sorted({rule for rule, _ in violations})
+    return findings
+
+
+def _baseline_entries(findings: dict[str, list[str]]) -> list[str]:
+    return sorted(f"{path}::{'+'.join(rules)}" for path, rules in findings.items())
+
+
+def run_supersession_corpus(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Corpus ratchet: set-equality against the frozen baseline, both ways."""
+    findings = scan_supersession_corpus(receipts_root, contracts_dir)
+    observed = set(_baseline_entries(findings))
+    baseline = load_supersession_baseline(baseline_path)
+
+    new_violations = sorted(observed - baseline)
+    stale_baseline = sorted(baseline - observed)
+
+    print(
+        f"Supersession binding corpus ({SUPERSESSION_TICKET}): "
+        f"{len(observed)} violating file(s); baseline {len(baseline)}."
+    )
+    if not new_violations and not stale_baseline:
+        print("Corpus matches the frozen baseline exactly.")
+        return 0
+
+    if new_violations:
+        print(f"\nNEW violations absent from {baseline_path} ({len(new_violations)}):")
+        for entry in new_violations:
+            print(f"  + {entry}")
+        for entry in new_violations[:20]:
+            path = Path(entry.split("::", maxsplit=1)[0])
+            for line in check_supersession_file(path, contracts_dir, frozenset()):
+                print(f"      {line}")
+        print(
+            "\nDo NOT pad the baseline. Either give each superseded item a check "
+            "that discriminates it, or append a `corrects:` repair record."
+        )
+    if stale_baseline:
+        print(
+            f"\nBaseline entries that no longer violate ({len(stale_baseline)}) — "
+            "shrink the baseline in the same PR that repaired them:"
+        )
+        for entry in stale_baseline:
+            print(f"  - {entry}")
+    return 1
+
+
+def write_supersession_baseline(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Regenerate the frozen baseline (repair PRs only; never to pass a new file)."""
+    findings = scan_supersession_corpus(receipts_root, contracts_dir)
+    entries = _baseline_entries(findings)
+    header = (
+        "---\n"
+        "# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.\n"
+        "# SPDX-License-Identifier: MIT\n"
+        "#\n"
+        f"# Frozen, shrink-only baseline of pre-existing {SUPERSESSION_TICKET}\n"
+        "# supersession-binding violations across drift/dod_receipts/**, as of the\n"
+        f"# {SUPERSESSION_TICKET} landing commit.\n"
+        "#\n"
+        "# Each entry is `<supersession path>::<rules>` where the rules are:\n"
+        "#   S1  distinctness  — byte-identical replacement.check_value shared with\n"
+        "#                       another item's supersession minted in the same cohort\n"
+        "#   S2  family binding — replacement.check_value references nothing the\n"
+        "#                       superseded item's own contract entry declares\n"
+        "#\n"
+        "# RATCHET DISCIPLINE: this list may only SHRINK. Do NOT add entries — a new\n"
+        "# wrong-item rebind is a hard failure of\n"
+        "# scripts/validation/check_receipt_hardening.py, full stop. Remove an entry\n"
+        "# only when the merged supersession has been repaired by an APPENDED sibling\n"
+        "# carrying `corrects: <that path>` (merged receipts are never rewritten);\n"
+        "# the gate then stops counting it and corpus mode fails until this file is\n"
+        "# shrunk to match. Both directions are asserted, so partial removal and\n"
+        "# padding each hard-fail\n"
+        "# tests/unit/scripts/test_supersession_binding_gate.py.\n"
+        "#\n"
+        "# Regenerate (repair PRs only):\n"
+        "#   uv run python scripts/validation/check_receipt_hardening.py \\\n"
+        "#     --write-supersession-baseline\n"
+        "violations:\n"
+    )
+    body = "".join(f"  - {entry}\n" for entry in entries)
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(header + body)
+    print(f"Wrote {len(entries)} baseline entries to {baseline_path}.")
+    return 0
+
+
+def check_supersession_wiring(ci_yaml_path: Path) -> list[str]:
+    """Assert the corpus ratchet job exists, is unconditional, and gates CI Summary.
+
+    Detection that is not a merge gate gets ignored (root CLAUDE.md rule 5),
+    and a gate whose two halves can be deleted in one edit is not a gate.
+    This runs both as a pre-commit hook scoped to ci.yml and as a step inside
+    the job itself, so the wiring is re-asserted on every PR rather than only
+    on PRs that happen to touch the workflow.
+    """
+    job_id = "supersession-binding-ratchet"
+    summary_id = "ci-summary"
+    try:
+        loaded = yaml.safe_load(ci_yaml_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"unreadable {ci_yaml_path}: {exc}"]
+    jobs = (loaded or {}).get("jobs")
+    if not isinstance(jobs, dict):
+        return [f"{ci_yaml_path} declares no `jobs:` mapping"]
+
+    job = jobs.get(job_id)
+    if not isinstance(job, dict):
+        return [
+            f"job `{job_id}` is absent from {ci_yaml_path.name}. It is the only "
+            "required-path surface that scans every supersession in "
+            "drift/dod_receipts/**; removing it re-opens the wrong-item rebind "
+            f"channel ({SUPERSESSION_TICKET})."
+        ]
+
+    failures: list[str] = []
+    if "needs" in job:
+        failures.append(
+            f"job `{job_id}` declares `needs:` ({job['needs']!r}). It must be "
+            "unconditional — a needs-chain lets an upstream skip silently skip "
+            "the ratchet."
+        )
+    if "if" in job:
+        failures.append(
+            f"job `{job_id}` declares `if:` ({job['if']!r}). It must be "
+            "unconditional — a skip here means something is wrong, not that the "
+            "gate legitimately opted out."
+        )
+
+    steps = job.get("steps")
+    run_blob = "\n".join(
+        str(step.get("run", ""))
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict)
+    )
+    if "--supersession-corpus" not in run_blob:
+        failures.append(
+            f"job `{job_id}` does not run check_receipt_hardening.py "
+            "--supersession-corpus. The job name is not the gate; executing the "
+            "corpus ratchet is."
+        )
+    if "test_supersession_binding_gate.py" not in run_blob:
+        failures.append(
+            f"job `{job_id}` does not run "
+            "tests/unit/scripts/test_supersession_binding_gate.py, which holds "
+            "the RED/GREEN controls against the live OCC#5534 defect shape."
+        )
+    if "--check-supersession-wiring" not in run_blob:
+        failures.append(
+            f"job `{job_id}` does not re-run --check-supersession-wiring. The "
+            "job must re-assert its own wiring on every PR, not only on PRs that "
+            "edit ci.yml."
+        )
+
+    summary = jobs.get(summary_id)
+    if not isinstance(summary, dict):
+        failures.append(
+            f"job `{summary_id}` is absent — `CI Summary` is the required context "
+            "on OCC dev; without it nothing is enforced."
+        )
+        return failures
+    needs = summary.get("needs")
+    needs_list = needs if isinstance(needs, list) else [needs]
+    if job_id not in [str(item) for item in needs_list]:
+        failures.append(
+            f"job `{summary_id}` does not list `{job_id}` in `needs:`, so the "
+            "required context does not wait for the ratchet."
+        )
+    summary_steps = summary.get("steps")
+    summary_blob = "\n".join(
+        str(step.get("run", ""))
+        for step in (summary_steps if isinstance(summary_steps, list) else [])
+        if isinstance(step, dict)
+    )
+    if f"needs.{job_id}.result" not in summary_blob:
+        failures.append(
+            f"job `{summary_id}` has no strict success-only check on "
+            f"`needs.{job_id}.result`. `needs:` alone treats `skipped` as "
+            "non-blocking — the gate must fail closed on any non-success."
+        )
+    return failures
+
+
+def check_receipt_file(
+    receipt_path: Path,
+    contracts_dir: Path,
+    supersession_baseline: frozenset[str] | None = None,
+) -> list[str]:
     """Return violation strings for one receipt file (empty = clean)."""
     if ".supersede." in receipt_path.name:
-        return []
+        return check_supersession_file(
+            receipt_path,
+            contracts_dir,
+            supersession_baseline if supersession_baseline is not None else frozenset(),
+        )
 
     try:
         raw = yaml.safe_load(receipt_path.read_text())
@@ -346,9 +1001,6 @@ def check_receipt_file(receipt_path: Path, contracts_dir: Path) -> list[str]:
         return [f"{receipt_path}: unreadable receipt YAML: {exc}"]
     if not isinstance(raw, dict):
         return [f"{receipt_path}: receipt YAML is not a mapping"]
-
-    if ".supersede." in receipt_path.name:
-        return []
 
     # Legacy exemption decided on the raw timestamp BEFORE model validation,
     # so pre-cutoff receipts with historical schema quirks never block.
@@ -391,15 +1043,85 @@ def main(argv: list[str] | None = None) -> int:
         default="contracts",
         help="Directory containing OMN-XXXX.yaml ticket contracts.",
     )
+    parser.add_argument(
+        "--receipts-root",
+        default=str(RECEIPTS_ROOT),
+        help="Root of the DoD receipt corpus (supersession corpus mode).",
+    )
+    parser.add_argument(
+        "--supersession-baseline",
+        default=str(SUPERSESSION_BASELINE_PATH),
+        help=(
+            f"Frozen shrink-only baseline of pre-existing {SUPERSESSION_TICKET} "
+            "supersession-binding violations."
+        ),
+    )
+    parser.add_argument(
+        "--supersession-corpus",
+        action="store_true",
+        help=(
+            "Scan every supersession in the corpus and assert set equality "
+            "against the frozen baseline in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--write-supersession-baseline",
+        action="store_true",
+        help=(
+            "Regenerate the frozen baseline. Repair PRs only — never run this "
+            "to make a newly authored supersession pass."
+        ),
+    )
+    parser.add_argument(
+        "--check-supersession-wiring",
+        action="store_true",
+        help=(
+            "Anti-removal anchor: assert the corpus ratchet job exists, is "
+            "unconditional, and fails CI Summary closed."
+        ),
+    )
+    parser.add_argument(
+        "--ci-yaml",
+        default=".github/workflows/ci.yml",
+        help="Workflow file inspected by --check-supersession-wiring.",
+    )
     args = parser.parse_args(argv)
     contracts_dir = Path(args.contracts_dir)
+    baseline_path = Path(args.supersession_baseline)
 
+    if args.write_supersession_baseline:
+        return write_supersession_baseline(
+            Path(args.receipts_root), contracts_dir, baseline_path
+        )
+
+    if args.check_supersession_wiring:
+        ci_yaml = Path(args.ci_yaml)
+        failures = check_supersession_wiring(ci_yaml)
+        if failures:
+            print(
+                f"SUPERSESSION BINDING WIRING GATE FAILED ({ci_yaml}) "
+                f"[{SUPERSESSION_TICKET}]:"
+            )
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print(f"SUPERSESSION BINDING WIRING GATE PASSED ({ci_yaml})")
+        return 0
+
+    if args.supersession_corpus:
+        return run_supersession_corpus(
+            Path(args.receipts_root), contracts_dir, baseline_path
+        )
+
+    supersession_baseline = load_supersession_baseline(baseline_path)
     all_violations: list[str] = []
     for file_arg in args.files:
         path = Path(file_arg)
         if not path.is_file():
             continue  # deleted/renamed paths are not this gate's concern
-        all_violations.extend(check_receipt_file(path, contracts_dir))
+        all_violations.extend(
+            check_receipt_file(path, contracts_dir, supersession_baseline)
+        )
 
     if all_violations:
         print(f"Receipt hardening gate: {len(all_violations)} violation(s):\n")
