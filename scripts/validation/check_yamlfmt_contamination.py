@@ -19,18 +19,63 @@ parsed text of those fields produces evidence that says something the verifier
 never observed -- the false-attestation failure the receipt surface exists to
 prevent, arriving through the enforcement chain itself.
 
+Scope: exactly what yamlfmt formats, derived from yamlfmt's own config
+--------------------------------------------------------------------
+The blast radius is not the evidence tree, it is **everything the formatter
+touches**. The first cut of this gate hardcoded ``contracts/`` +
+``drift/dod_receipts/`` while the yamlfmt hook excludes only
+``^(\\.github/|templates/)``; 151 YAML files were formatter-exposed and ungated,
+and 8 of them were **already contaminated in parsed values** -- five live node
+``contract.yaml`` descriptions among them.
+
+So the scope is not restated here. :func:`load_yamlfmt_scope` reads the yamlfmt
+hook entry out of ``.pre-commit-config.yaml`` at run time and reuses *its*
+``files``/``exclude`` (plus any repo-level ``files``/``exclude``). Widen or
+narrow the formatter's reach and this gate follows in the same commit -- the two
+cannot drift apart because there is only one declaration. The clamps that keep
+that binding honest:
+
+* the yamlfmt repo/hook must be present exactly once -- absent, renamed, or
+  duplicated raises rather than silently scanning nothing;
+* a locally-overridden ``types``/``types_or`` that is not ``[yaml]`` raises,
+  because the ``.yaml``/``.yml`` suffix test below stands in for pre-commit's
+  ``types: [yaml]`` filter (proven equal to ``identify`` over all 24k tracked
+  files by ``test_suffix_filter_equals_identify_yaml_tag``);
+* ``.github/`` and ``templates/`` are out of scope *because yamlfmt excludes
+  them*, not by assertion here -- which is also why ``ci.yml`` and this repo's
+  templates may name the sentinel literally: the formatter never rewrites them.
+
 The two rules
 -------------
 **Rule S (sentinel present).** The marker ``#magic___^_^___line`` appearing in a
-parsed YAML *value* under ``contracts/`` or ``drift/dod_receipts/`` is proof of
-this corruption, past or present. Detection is over parsed values rather than
-raw bytes deliberately: a comment that *discusses* the marker (this file, the
-baselines, the tests, a ticket contract describing the defect) is not evidence
-corruption, but a marker reaching a value always is. Measured at authoring time,
-the two detections agree exactly on the live corpus -- 510 files / 784
-occurrences either way, zero raw-only hits -- so nothing is lost by choosing the
-precise one. A file whose marker-bearing text will not parse is counted from raw
-bytes instead and still fails: unparseable never means clean.
+parsed YAML *value* anywhere in that scope is proof of this corruption, past or
+present. Detection is over parsed values rather than raw bytes deliberately: a
+comment that *discusses* the marker (this file, the baselines, the tests, a
+ticket contract describing the defect) is not evidence corruption, but a marker
+reaching a value always is.
+
+That distinction is only real if the parse actually happens. The first cut
+short-circuited on ``if SENTINEL not in text`` before parsing -- which made the
+whole rule raw-byte detection wearing a parsed-value docstring, and missed any
+encoding that assembles the marker at parse time. Two exist and are now RED
+controls: a double-quoted scalar carrying ``\\x23`` for the leading ``#``, and a
+double-quoted scalar split across lines with a ``\\`` line continuation. Neither
+occurs in the live corpus -- the parsed-only set is empty, so removing the
+short-circuit changed no baseline, only the adversarial floor. Measured cost of
+parsing every in-scope file: **0.40s -> 15.4s** over 23,706 files (whole gate
+~5s -> ~20s; the job's budget is a minute). A "sound" cheap pre-filter was
+considered and rejected: it would be a second clever short-circuit, which is
+the defect being repaired.
+
+The two detections are no longer interchangeable in the other direction either.
+Over the widened corpus, raw bytes find **521 files / 808 occurrences** and
+parsed values find **518 / 805**; the three raw-only files are this gate's own
+documentation naming the marker in ``#`` comments (both baselines and the
+pre-commit config). Flagging those would be the gate calling its own
+explanation a corruption.
+
+A file whose marker-bearing text will not parse is counted from raw bytes
+instead and still fails: unparseable never means clean.
 
 **Rule F (corruption precondition).** A folded (``>``/``>-``/``>+``) block
 scalar whose parsed value contains an internal newline is the input shape that
@@ -39,8 +84,14 @@ literal (``|``/``|-``) block style, is what stops the corpus growing. Literal
 scalars and single-paragraph folded scalars are both proven-safe controls: they
 survive yamlfmt byte-identical, including a line over ``max_line_length``.
 
+Rule F keeps its ``if ">" not in text`` short-circuit, and that one *is* sound
+rather than a shortcut: a folded block scalar is introduced by a literal ``>``
+indicator byte in the source, and YAML offers no escape or continuation that can
+synthesise an indicator character. The asymmetry with Rule S is the point --
+values can be assembled by the parser, indicators cannot.
+
 Both rules are **shrink-only set-equality ratchets**, not flat assertions. The
-live corpus already carries 510 contaminated files and 14 precondition files;
+live corpus already carries 518 contaminated files and 15 precondition files;
 a flat assertion would be permanently red and therefore unmergeable. The
 baselines pin ``path -> occurrence count``, so the ratchet fails on a NEW path,
 on a NEW occurrence inside an already-baselined path, and on a stale entry that
@@ -55,8 +106,10 @@ byte-indistinguishable from a failing one (the OMN-14666/14668 lesson).
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -66,9 +119,14 @@ import yaml
 # YAML value is never legitimate authored content.
 SENTINEL = "#magic___^_^___line"
 
-# The two trees that make up the evidence control plane.
-SCOPED_PREFIXES = ("contracts/", "drift/dod_receipts/")
+# Stands in for pre-commit's `types: [yaml]` filter on the yamlfmt hook. Proven
+# equal to identify's `yaml` tag over every tracked file by the test suite; a
+# locally-overridden `types` that is not [yaml] makes the scope loader raise.
 YAML_SUFFIXES = (".yaml", ".yml")
+
+PRE_COMMIT_CONFIG_REL = ".pre-commit-config.yaml"
+YAMLFMT_HOOK_ID = "yamlfmt"
+_YAMLFMT_REPO_SUFFIX = "/yamlfmt"
 
 _TICKET = "OMN-15479"
 _SELF_SCRIPT_NAME = "check_yamlfmt_contamination.py"
@@ -101,8 +159,163 @@ class CiWorkflowUnreadableError(Exception):
     """ci.yml is missing or does not parse into the expected shape."""
 
 
+class YamlfmtScopeError(Exception):
+    """The yamlfmt hook declaration could not be resolved into a scope.
+
+    Fail-closed by construction: every path out of :func:`load_yamlfmt_scope`
+    that cannot prove what the formatter touches raises this instead of
+    defaulting to a narrower (or wider) guess. A gate that silently scans
+    nothing is worse than an absent one -- it reports PASSED.
+    """
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+# ---------------------------------------------------------------------------
+# Scope -- derived from the yamlfmt hook's own declaration, never restated
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class YamlfmtScope:
+    """The set of files yamlfmt formats, as declared in the pre-commit config.
+
+    ``include``/``exclude`` are pre-commit's own semantics: a path is in scope
+    when ``re.search(include, path)`` matches (or no include is declared) and
+    ``re.search(exclude, path)`` does not. Repo-level ``files``/``exclude`` are
+    ANDed in, because pre-commit applies those to every hook.
+    """
+
+    include: re.Pattern[str] | None
+    exclude: re.Pattern[str] | None
+    top_include: re.Pattern[str] | None
+    top_exclude: re.Pattern[str] | None
+
+    def describe(self) -> str:
+        parts = [
+            f"{label}={pattern.pattern!r}"
+            for label, pattern in (
+                ("files", self.include),
+                ("exclude", self.exclude),
+                ("repo-files", self.top_include),
+                ("repo-exclude", self.top_exclude),
+            )
+            if pattern is not None
+        ]
+        return ", ".join(parts) if parts else "every YAML file (no filters declared)"
+
+    def matches(self, rel_path: str) -> bool:
+        if not rel_path.endswith(YAML_SUFFIXES):
+            return False
+        for pattern in (self.include, self.top_include):
+            if pattern is not None and not pattern.search(rel_path):
+                return False
+        for pattern in (self.exclude, self.top_exclude):
+            if pattern is not None and pattern.search(rel_path):
+                return False
+        return True
+
+
+def _compile(value: Any, label: str) -> re.Pattern[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        msg = (
+            f"{label} in {PRE_COMMIT_CONFIG_REL} is {value!r}, expected a regex string"
+        )
+        raise YamlfmtScopeError(msg)
+    try:
+        return re.compile(value)
+    except re.error as exc:
+        msg = (
+            f"{label} in {PRE_COMMIT_CONFIG_REL} is not a valid regex "
+            f"({value!r}): {exc}"
+        )
+        raise YamlfmtScopeError(msg) from exc
+
+
+def _load_pre_commit_config(repo_root: Path) -> dict[str, Any]:
+    config_path = repo_root / PRE_COMMIT_CONFIG_REL
+    if not config_path.is_file():
+        msg = f"{config_path} does not exist, so yamlfmt's scope cannot be resolved"
+        raise YamlfmtScopeError(msg)
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        msg = f"{config_path} does not parse: {exc}"
+        raise YamlfmtScopeError(msg) from exc
+    if not isinstance(config, dict) or not isinstance(config.get("repos"), list):
+        msg = f"{config_path} has no `repos:` list"
+        raise YamlfmtScopeError(msg)
+    return config
+
+
+def _find_yamlfmt_hook(config: dict[str, Any]) -> dict[str, Any]:
+    """The single yamlfmt hook declaration, or a hard failure.
+
+    Zero, several, or a same-id hook moved onto a different repo all raise. Any
+    of them would leave the gate guessing at the formatter's reach, and a
+    guessing gate reports PASSED.
+    """
+    hooks: list[dict[str, Any]] = [
+        hook
+        for repo in config["repos"]
+        if isinstance(repo, dict)
+        and str(repo.get("repo", "")).rstrip("/").endswith(_YAMLFMT_REPO_SUFFIX)
+        for hook in repo.get("hooks") or []
+        if isinstance(hook, dict) and hook.get("id") == YAMLFMT_HOOK_ID
+    ]
+    if not hooks:
+        msg = (
+            f"no `{YAMLFMT_HOOK_ID}` hook from a `*{_YAMLFMT_REPO_SUFFIX}` repo is "
+            f"declared in {PRE_COMMIT_CONFIG_REL}. This gate exists to ratchet that "
+            "formatter's damage and derives its scope from that hook; if the hook is "
+            "genuinely gone, delete this gate deliberately rather than letting it "
+            "scan an unknown set."
+        )
+        raise YamlfmtScopeError(msg)
+    if len(hooks) > 1:
+        msg = (
+            f"{len(hooks)} `{YAMLFMT_HOOK_ID}` hooks are declared in "
+            f"{PRE_COMMIT_CONFIG_REL}; the union of their scopes is ambiguous. "
+            "Collapse them to one."
+        )
+        raise YamlfmtScopeError(msg)
+
+    hook = hooks[0]
+    for key in ("types", "types_or"):
+        declared = hook.get(key)
+        if declared is not None and list(declared) != ["yaml"]:
+            msg = (
+                f"the {YAMLFMT_HOOK_ID} hook overrides `{key}: {declared!r}`. This "
+                "gate approximates pre-commit's `types: [yaml]` with a "
+                f"{'/'.join(YAML_SUFFIXES)} suffix test, which is only equivalent "
+                "for the plain yaml tag. Update the suffix test and its identify "
+                "equivalence proof before changing this."
+            )
+            raise YamlfmtScopeError(msg)
+    return hook
+
+
+def load_yamlfmt_scope(repo_root: Path) -> YamlfmtScope:
+    """Resolve what yamlfmt formats from ``.pre-commit-config.yaml``.
+
+    This is the anti-drift mechanism, not a convenience. The previous scope was
+    a hardcoded pair of prefixes that silently diverged from the formatter's
+    real reach. Reading the formatter's own declaration means a future edit to
+    that ``exclude`` moves this gate in the same commit, and a *narrowing* edit
+    is visible in the same diff as the coverage it removes.
+    """
+    config = _load_pre_commit_config(repo_root)
+    hook = _find_yamlfmt_hook(config)
+    return YamlfmtScope(
+        include=_compile(hook.get("files"), "the yamlfmt hook's `files`"),
+        exclude=_compile(hook.get("exclude"), "the yamlfmt hook's `exclude`"),
+        top_include=_compile(config.get("files"), "the repo-level `files`"),
+        top_exclude=_compile(config.get("exclude"), "the repo-level `exclude`"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -128,13 +341,19 @@ def _iter_scalar_values(node: Any) -> list[str]:
 def count_sentinel_in_values(text: str) -> int:
     """Count ``SENTINEL`` occurrences inside parsed YAML values.
 
+    **Every in-scope file is parsed.** There is deliberately no
+    ``if SENTINEL not in text`` fast path: a double-quoted scalar can assemble
+    the marker at parse time out of bytes that never spell it (``\\x23`` for the
+    leading ``#``; a ``\\`` line continuation splitting it across two source
+    lines), so a raw-byte pre-filter would make this function raw-byte detection
+    with a parsed-value docstring. Both encodings are RED controls in the test
+    suite. The cost of honesty is 0.40s -> 15.4s over the 23,706-file corpus,
+    and the corpus answer is unchanged (520 files either way).
+
     Falls back to a raw-byte count when the text carries the marker but will not
     parse -- fail-closed, because "I could not parse it" must never read as
-    "it is clean". Text without the marker short-circuits before parsing, which
-    keeps the corpus scan cheap (only ~510 of ~23,500 files are ever parsed).
+    "it is clean".
     """
-    if SENTINEL not in text:
-        return 0
     try:
         documents = list(yaml.safe_load_all(text))
     except yaml.YAMLError:
@@ -165,6 +384,11 @@ def find_folded_internal_newline_scalars(text: str) -> list[tuple[int, str]]:
     chomping indicators (``>``/``>-``/``>+``) do not by themselves count as
     internal structure -- a single-paragraph folded scalar is a proven-safe
     control and must not be flagged.
+
+    Unlike Rule S, the ``">" not in text`` short-circuit here is *sound*, not a
+    shortcut: a folded scalar is introduced by a literal ``>`` indicator byte in
+    the source, and YAML offers no escape or continuation that can synthesise an
+    indicator character. No ``>`` in the bytes means no folded scalar, always.
     """
     if ">" not in text:
         return []
@@ -194,8 +418,9 @@ def find_folded_internal_newline_scalars(text: str) -> list[tuple[int, str]]:
 # ---------------------------------------------------------------------------
 
 
-def is_in_scope(rel_path: str) -> bool:
-    return rel_path.startswith(SCOPED_PREFIXES) and rel_path.endswith(YAML_SUFFIXES)
+def is_in_scope(rel_path: str, scope: YamlfmtScope) -> bool:
+    """True when yamlfmt formats ``rel_path``, per its own declared filters."""
+    return scope.matches(rel_path)
 
 
 def scan_file(path: Path) -> tuple[int, list[tuple[int, str]]]:
@@ -204,13 +429,16 @@ def scan_file(path: Path) -> tuple[int, list[tuple[int, str]]]:
     return count_sentinel_in_values(text), find_folded_internal_newline_scalars(text)
 
 
-def _enumerate_corpus(repo_root: Path) -> list[str]:
+def _enumerate_corpus(repo_root: Path, scope: YamlfmtScope) -> list[str]:
     """Repo-relative paths of every in-scope YAML file, tracked or newly added.
 
-    ``--cached --others --exclude-standard`` deliberately includes untracked,
-    non-ignored files: a file that is about to be committed must be visible to
-    the ratchet before it lands, not after. Enumeration failure raises rather
-    than degrading to an empty list, which would report a vacuous PASS.
+    No pathspec is passed to ``git ls-files``: the whole worktree is enumerated
+    and then filtered by the *formatter's* scope, so the gate cannot be narrower
+    than the damage. ``--cached --others --exclude-standard`` deliberately
+    includes untracked, non-ignored files: a file that is about to be committed
+    must be visible to the ratchet before it lands, not after. Enumeration
+    failure raises rather than degrading to an empty list, which would report a
+    vacuous PASS.
     """
     try:
         completed = subprocess.run(  # noqa: S603
@@ -222,9 +450,6 @@ def _enumerate_corpus(repo_root: Path) -> list[str]:
                 "--cached",
                 "--others",
                 "--exclude-standard",
-                "--",
-                "contracts",
-                "drift/dod_receipts",
             ],
             capture_output=True,
             text=True,
@@ -233,17 +458,21 @@ def _enumerate_corpus(repo_root: Path) -> list[str]:
     except (OSError, subprocess.CalledProcessError) as exc:
         msg = f"could not enumerate the corpus under {repo_root}: {exc}"
         raise CorpusUnreadableError(msg) from exc
-    return sorted({p for p in completed.stdout.splitlines() if is_in_scope(p)})
+    return sorted({p for p in completed.stdout.splitlines() if is_in_scope(p, scope)})
 
 
-def scan_corpus(repo_root: Path) -> tuple[dict[str, int], dict[str, int]]:
+def scan_corpus(
+    repo_root: Path, scope: YamlfmtScope | None = None
+) -> tuple[dict[str, int], dict[str, int]]:
     """Return ``(sentinel_counts, folded_counts)`` keyed by repo-relative path.
 
     Only violating files appear; a clean file contributes no key.
     """
+    if scope is None:
+        scope = load_yamlfmt_scope(repo_root)
     sentinel_counts: dict[str, int] = {}
     folded_counts: dict[str, int] = {}
-    for rel in _enumerate_corpus(repo_root):
+    for rel in _enumerate_corpus(repo_root, scope):
         path = repo_root / rel
         if not path.is_file():
             continue
@@ -323,6 +552,7 @@ def diff_against_baseline(
 
 def check_paths(repo_root: Path, paths: list[Path]) -> list[str]:
     """Per-file mode (pre-commit). Return a list of failure messages."""
+    scope = load_yamlfmt_scope(repo_root)
     sentinel_baseline = load_baseline(repo_root / SENTINEL_BASELINE_REL)
     folded_baseline = load_baseline(repo_root / FOLDED_BASELINE_REL)
     failures: list[str] = []
@@ -332,10 +562,8 @@ def check_paths(repo_root: Path, paths: list[Path]) -> list[str]:
             rel = str(path.resolve().relative_to(repo_root))
         except ValueError:
             rel = str(path)
-        if not is_in_scope(rel):
-            print(
-                f"  NOTE: {rel} is outside contracts/ + drift/dod_receipts/ - skipped"
-            )
+        if not is_in_scope(rel, scope):
+            print(f"  NOTE: {rel} is not formatted by yamlfmt ({scope.describe()})")
             continue
         if not path.is_file():
             failures.append(f"{rel}: named on the command line but is not a file")
@@ -373,7 +601,8 @@ def check_paths(repo_root: Path, paths: list[Path]) -> list[str]:
 
 def check_corpus(repo_root: Path) -> list[str]:
     """Corpus mode (CI). Full shrink-only set-equality ratchet, both rules."""
-    live_sentinel, live_folded = scan_corpus(repo_root)
+    scope = load_yamlfmt_scope(repo_root)
+    live_sentinel, live_folded = scan_corpus(repo_root, scope)
     failures: list[str] = []
 
     for label, live, baseline_rel, remedy in (
@@ -420,6 +649,7 @@ def check_corpus(repo_root: Path) -> list[str]:
             )
 
     print(
+        f"  yamlfmt scope: {scope.describe()}\n"
         f"  corpus scan: {len(live_sentinel)} file(s) carry the sentinel, "
         f"{len(live_folded)} file(s) carry a folded scalar with an internal newline"
     )
@@ -544,7 +774,11 @@ def check_wiring(ci_yaml_path: Path) -> list[str]:
 _USAGE = f"""\
 usage: check_yamlfmt_contamination.py [-h] [--corpus | --check-wiring] [PATH ...]
 
-{_TICKET}: yamlfmt contamination ratchet over contracts/ + drift/dod_receipts/.
+{_TICKET}: yamlfmt contamination ratchet over every YAML file yamlfmt formats.
+Scope is read from the yamlfmt hook's own `files`/`exclude` in
+{PRE_COMMIT_CONFIG_REL} at run time, so the gate cannot drift narrower than the
+formatter; an absent/renamed/duplicated yamlfmt hook is a hard failure, never a
+silent narrowing.
 
 Rule S  a parsed YAML value containing the yamlfmt sentinel `{SENTINEL}`
         -- proof the formatter rewrote authored evidence content.
@@ -627,7 +861,7 @@ def main(argv: list[str] | None = None) -> int:
             failures = check_corpus(repo_root)
         else:
             failures = check_paths(repo_root, paths)
-    except (CorpusUnreadableError, yaml.YAMLError) as exc:
+    except (CorpusUnreadableError, YamlfmtScopeError, yaml.YAMLError) as exc:
         print(f"YAMLFMT CONTAMINATION GATE FAILED: {exc}")
         return 1
 

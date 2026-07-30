@@ -3,13 +3,21 @@
 """OMN-15479: RED/GREEN controls for the yamlfmt contamination ratchet.
 
 These tests prove the gate FIRES on each defect vector rather than asserting
-that it exists. Four groups:
+that it exists. Five groups:
 
 * **Detector controls.** The two proven-safe shapes (literal block scalars,
   single-paragraph folded scalars) must stay green, and the two defect shapes
   (the sentinel in a parsed value, a folded scalar carrying an internal
   newline) must go red. A detector that flagged the safe shapes would be a
-  7,286-file false-positive wall and would be ignored within a day.
+  7,286-file false-positive wall and would be ignored within a day. Two
+  adversarial encodings that assemble the marker at parse time -- a `\\x23`
+  hex escape and a `\\` line continuation -- are held RED so the parsed-value
+  contract in the gate's docstring stays true of its code.
+* **Scope.** The gate's file set is derived from the yamlfmt hook's own
+  `files`/`exclude`, never restated. Proven by moving the formatter's
+  declaration and watching scope follow it, by failing closed on every
+  unresolvable declaration, and by an identify-vs-suffix equivalence check over
+  every tracked path.
 * **Corpus ratchets.** Shrink-only set equality against the frozen baselines, in
   all three directions -- new path, grown count on a baselined path, stale entry
   a live scan no longer reproduces.
@@ -24,9 +32,11 @@ that it exists. Four groups:
 
 from __future__ import annotations
 
+import ast
 import copy
 import importlib.util
 import re
+import subprocess
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -72,10 +82,43 @@ SENTINEL = gate.SENTINEL
 
 
 @lru_cache(maxsize=1)
+def _real_scope() -> Any:
+    return gate.load_yamlfmt_scope(_REPO_ROOT)
+
+
+@lru_cache(maxsize=1)
 def _live_corpus() -> tuple[dict[str, int], dict[str, int]]:
     """Scan the whole corpus once; four ratchet tests consume the same scan."""
-    scanned: tuple[dict[str, int], dict[str, int]] = gate.scan_corpus(_REPO_ROOT)
+    scanned: tuple[dict[str, int], dict[str, int]] = gate.scan_corpus(
+        _REPO_ROOT, _real_scope()
+    )
     return scanned
+
+
+@lru_cache(maxsize=1)
+def _tracked_paths() -> tuple[str, ...]:
+    """Every tracked + untracked-not-ignored path, exactly as the gate sees it."""
+    completed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(_REPO_ROOT),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return tuple(completed.stdout.splitlines())
+
+
+# The scope the gate was hardcoded to before 2026-07-30. Kept as a live control:
+# `test_widened_scope_catches_what_the_hardcoded_prefixes_missed` proves each of
+# the newly-admitted baseline entries was invisible under it.
+_PRE_WIDENING_PREFIXES = ("contracts/", "drift/dod_receipts/")
 
 
 # ---------------------------------------------------------------------------
@@ -102,13 +145,85 @@ def test_sentinel_in_a_comment_only_is_not_a_violation() -> None:
 
     A ticket contract, baseline header, or runbook that DISCUSSES the marker in
     a comment is documentation, not corrupted evidence. Measured on the live
-    corpus at authoring time, raw-byte and parsed-value detection agree exactly
-    (510 files / 784 occurrences either way, zero raw-only hits), so choosing
-    the precise one costs no coverage and buys the ability to write about the
-    defect.
+    widened corpus: raw bytes find 521 files / 808 occurrences, parsed values
+    find 518 / 805, and all three raw-only files are this gate's own
+    documentation (the two baselines and the pre-commit config comment). The
+    parsed-only set is empty, so the precision costs no coverage.
     """
     text = f"# this gate rejects {SENTINEL} in a value\nactual_output: 'clean text'\n"
     assert gate.count_sentinel_in_values(text) == 0
+
+
+@pytest.mark.unit
+def test_double_quoted_hex_escape_encoding_is_detected() -> None:
+    """D3 vector 1: the marker is assembled by the parser, never by the bytes.
+
+    A double-quoted YAML scalar resolves `\\x23` to `#`, so the sentinel exists
+    in the parsed value while the raw file does not contain it anywhere. The
+    original gate short-circuited on a raw-byte `SENTINEL not in text` check and
+    returned 0 here -- parsed-value detection in the docstring, raw-byte
+    detection in the code.
+    """
+    text = 'actual_output: "before \\x23magic___^_^___line after"\n'
+    assert SENTINEL not in text, "the raw bytes must NOT spell the sentinel"
+    assert yaml.safe_load(text)["actual_output"].count(SENTINEL) == 1
+    assert gate.count_sentinel_in_values(text) == 1
+
+
+@pytest.mark.unit
+def test_line_continuation_split_encoding_is_detected() -> None:
+    """D3 vector 2: a `\\`-continuation splits the marker across source lines.
+
+    Double-quoted scalars fold a backslash-terminated line into the next with no
+    separator, so the value is contiguous even though no single raw line holds
+    the whole token.
+    """
+    text = 'actual_output: "before #magic___^_^_\\\n  __line after"\n'
+    assert SENTINEL not in text, "the raw bytes must NOT spell the sentinel"
+    assert yaml.safe_load(text)["actual_output"].count(SENTINEL) == 1
+    assert gate.count_sentinel_in_values(text) == 1
+
+
+@pytest.mark.unit
+def test_detection_is_not_gated_on_a_raw_byte_prefilter() -> None:
+    """The general property, not the two specific encodings.
+
+    Stated as a source-level assertion as well as a behavioural one: a future
+    performance patch that reinstates a raw-byte fast path reopens both vectors
+    above, and the behavioural tests alone would not say why.
+
+    Asserted over the function's EXECUTABLE body with its docstring stripped --
+    the docstring names the removed short-circuit verbatim, so a raw text search
+    would match the prose that explains the fix and be permanently red.
+    """
+    module = ast.parse(
+        (
+            _REPO_ROOT / "scripts" / "validation" / "check_yamlfmt_contamination.py"
+        ).read_text(encoding="utf-8")
+    )
+    functions = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "count_sentinel_in_values"
+    ]
+    assert len(functions) == 1, "count_sentinel_in_values is the Rule S entrypoint"
+    body = list(functions[0].body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+    source = "\n".join(ast.unparse(stmt) for stmt in body)
+    # Non-vacuity: the stripped body is real code, not an empty stub.
+    assert "yaml.safe_load_all" in source
+    assert "if SENTINEL not in text" not in source, (
+        "a raw-byte short-circuit was reinstated in the Rule S path; it makes "
+        "the parsed-value contract false again (see the two encoding tests "
+        'above). Rule F\'s `">" not in text` check is the sound one -- a folded '
+        "scalar needs a literal indicator byte."
+    )
 
 
 @pytest.mark.unit
@@ -209,7 +324,7 @@ def test_gate_is_read_only_on_the_files_it_scans(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scope
+# Scope -- derived from the yamlfmt hook, provably not restated
 # ---------------------------------------------------------------------------
 
 
@@ -221,14 +336,186 @@ def test_gate_is_read_only_on_the_files_it_scans(tmp_path: Path) -> None:
         ("drift/dod_receipts/OMN-11599/dod-x/command.yaml", True),
         ("drift/dod_receipts/OMN-1/d/command.supersede.0001.yaml", True),
         ("contracts/nested/thing.yml", True),
+        # Formatter-exposed and previously ungated -- the D1 gap.
+        ("src/onex_change_control/handlers/contract.yaml", True),
+        ("schemas/dogfood_scorecard.yaml", True),
+        ("tests/fixtures/evidence_admissibility_cases.yaml", True),
+        ("workflows/stale-todo-gate.yml", True),
+        ("docs/runbooks/thing.yaml", True),
+        (".onex_ratchets/omn_15479_yamlfmt_sentinel_baseline.yaml", True),
+        (".pre-commit-config.yaml", True),
+        # Under yamlfmt's own exclude, therefore out of scope.
+        (".github/workflows/ci.yml", False),
+        ("templates/contract.template.yaml", False),
+        # Not YAML at all.
         ("src/onex_change_control/models/model_x.py", False),
-        ("docs/runbooks/thing.yaml", False),
-        (".onex_ratchets/omn_15479_yamlfmt_sentinel_baseline.yaml", False),
         ("contracts/README.md", False),
     ],
 )
 def test_scope_predicate(rel: str, *, expected: bool) -> None:
-    assert gate.is_in_scope(rel) is expected
+    assert gate.is_in_scope(rel, _real_scope()) is expected
+
+
+def _scope_from_config(tmp_path: Path, hook_yaml: str) -> Any:
+    (tmp_path / gate.PRE_COMMIT_CONFIG_REL).write_text(hook_yaml, encoding="utf-8")
+    return gate.load_yamlfmt_scope(tmp_path)
+
+
+_YAMLFMT_REPO_HEADER = (
+    "repos:\n"
+    "  - repo: https://github.com/google/yamlfmt\n"
+    "    rev: v0.21.0\n"
+    "    hooks:\n"
+    "      - id: yamlfmt\n"
+)
+
+
+@pytest.mark.unit
+def test_scope_follows_the_yamlfmt_exclude_rather_than_a_hardcoded_list(
+    tmp_path: Path,
+) -> None:
+    """The anti-drift property, proven by moving the formatter's declaration.
+
+    This is the whole mechanism behind D1. If the gate restated its own scope,
+    editing the yamlfmt exclude would silently un-gate files. Here the same
+    path flips in and out of scope purely from the config edit.
+    """
+    wide = _scope_from_config(tmp_path, _YAMLFMT_REPO_HEADER)
+    assert gate.is_in_scope("src/a/contract.yaml", wide) is True
+    assert gate.is_in_scope(".github/workflows/ci.yml", wide) is True
+
+    narrowed = _scope_from_config(
+        tmp_path, _YAMLFMT_REPO_HEADER + "        exclude: ^src/\n"
+    )
+    assert gate.is_in_scope("src/a/contract.yaml", narrowed) is False
+    assert gate.is_in_scope("contracts/OMN-1.yaml", narrowed) is True
+
+    with_files = _scope_from_config(
+        tmp_path, _YAMLFMT_REPO_HEADER + "        files: ^contracts/\n"
+    )
+    assert gate.is_in_scope("src/a/contract.yaml", with_files) is False
+    assert gate.is_in_scope("contracts/OMN-1.yaml", with_files) is True
+
+
+@pytest.mark.unit
+def test_repo_level_filters_are_honoured(tmp_path: Path) -> None:
+    """pre-commit applies top-level files/exclude to every hook; so must this."""
+    scope = _scope_from_config(tmp_path, "exclude: ^vendor/\n" + _YAMLFMT_REPO_HEADER)
+    assert gate.is_in_scope("vendor/thing.yaml", scope) is False
+    assert gate.is_in_scope("contracts/OMN-1.yaml", scope) is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("body", "because"),
+    [
+        ("repos: []\n", "yamlfmt hook removed entirely"),
+        (
+            "repos:\n  - repo: local\n    hooks:\n      - id: yamlfmt\n",
+            "hook id kept but moved off the google/yamlfmt repo",
+        ),
+        (
+            _YAMLFMT_REPO_HEADER + _YAMLFMT_REPO_HEADER.replace("repos:\n", ""),
+            "two yamlfmt hooks -- union of scopes is ambiguous",
+        ),
+        (
+            _YAMLFMT_REPO_HEADER + "        types: [yaml, json]\n",
+            "types overridden away from the suffix test's assumption",
+        ),
+        (
+            _YAMLFMT_REPO_HEADER + "        exclude: '['\n",
+            "exclude is not a compilable regex",
+        ),
+        ("not_repos: true\n", "config has no repos list"),
+    ],
+)
+def test_scope_resolution_fails_closed(tmp_path: Path, body: str, because: str) -> None:
+    """Every unresolvable scope raises; none degrades to a narrower guess.
+
+    A gate that quietly scans nothing reports PASSED, which is the failure this
+    whole ticket exists to stop (OMN-14666/14668).
+    """
+    (tmp_path / gate.PRE_COMMIT_CONFIG_REL).write_text(body, encoding="utf-8")
+    try:
+        scope = gate.load_yamlfmt_scope(tmp_path)
+    except gate.YamlfmtScopeError:
+        return
+    pytest.fail(
+        f"scope resolution silently succeeded ({scope!r}) when it should have "
+        f"failed closed: {because}"
+    )
+
+
+@pytest.mark.unit
+def test_scope_resolution_fails_closed_on_a_missing_config(tmp_path: Path) -> None:
+    with pytest.raises(gate.YamlfmtScopeError):
+        gate.load_yamlfmt_scope(tmp_path)
+
+
+@pytest.mark.unit
+def test_suffix_filter_equals_identify_yaml_tag() -> None:
+    """The suffix test stands in for pre-commit's `types: [yaml]`; prove it.
+
+    pre-commit selects yamlfmt's files with identify's `yaml` tag, not with a
+    suffix match. If those two ever disagree on a real path, this gate's scope
+    silently stops being the formatter's scope. Checked against every tracked
+    and untracked file in the repo, not a sample.
+    """
+    from identify import identify as identify_mod
+
+    disagreements = []
+    for rel in _tracked_paths():
+        path = _REPO_ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            tagged = "yaml" in identify_mod.tags_from_path(str(path))
+        except (OSError, ValueError):  # pragma: no cover - unreadable path
+            continue
+        if tagged is not rel.endswith(gate.YAML_SUFFIXES):
+            disagreements.append(rel)
+    assert not disagreements, (
+        "identify's `yaml` tag and the gate's suffix test disagree on "
+        f"{len(disagreements)} path(s): {disagreements[:10]}. pre-commit hands "
+        "yamlfmt the identify set, so the gate is now scanning a different set "
+        "than the formatter formats."
+    )
+
+
+@pytest.mark.unit
+def test_widened_scope_catches_what_the_hardcoded_prefixes_missed() -> None:
+    """RED-before/GREEN-after for D1, held permanently as a control.
+
+    Every path the widening admitted is asserted (a) outside the old hardcoded
+    prefixes -- i.e. genuinely invisible to the previous gate -- and (b) in
+    scope now. If someone re-narrows the scope to the old prefixes, this test
+    goes red instead of the coverage silently disappearing.
+    """
+    baselines = [
+        gate.load_baseline(_REPO_ROOT / gate.SENTINEL_BASELINE_REL),
+        gate.load_baseline(_REPO_ROOT / gate.FOLDED_BASELINE_REL),
+    ]
+    newly = sorted(
+        {
+            rel
+            for baseline in baselines
+            for rel in baseline
+            if not rel.startswith(_PRE_WIDENING_PREFIXES)
+        }
+    )
+    assert len(newly) >= 9, (
+        "the baselines no longer hold any entry outside contracts/ + "
+        f"drift/dod_receipts/ (found {newly}). Either the scope was re-narrowed "
+        "or the widened-scope debt was dropped without being repaired."
+    )
+    for rel in newly:
+        assert not rel.startswith(_PRE_WIDENING_PREFIXES)
+        assert gate.is_in_scope(rel, _real_scope()), rel
+        assert (_REPO_ROOT / rel).is_file(), rel
+
+    # The five live node/module contract.yaml descriptions are the reason this
+    # gap mattered: the corruption had reached shipped metadata, not evidence.
+    assert sum(1 for rel in newly if rel.endswith("/contract.yaml")) >= 5
 
 
 # ---------------------------------------------------------------------------
@@ -364,16 +651,19 @@ def test_baselines_are_frozen_debt_not_an_empty_formality() -> None:
     folded_baseline = gate.load_baseline(_REPO_ROOT / gate.FOLDED_BASELINE_REL)
     assert sentinel_baseline, "the Rule S baseline may only SHRINK, never vanish"
     assert folded_baseline, "the Rule F baseline may only SHRINK, never vanish"
-    assert len(sentinel_baseline) <= 510
-    assert len(folded_baseline) <= 14
+    # 518/15 as of the 2026-07-30 scope widening (510/14 plus exactly the
+    # pre-existing debt the hardcoded prefixes could not see). Ceilings only --
+    # these may fall as the debt is repaired, never rise.
+    assert len(sentinel_baseline) <= 518
+    assert len(folded_baseline) <= 15
     assert all(rel.endswith((".yaml", ".yml")) for rel in sentinel_baseline)
-    assert all(gate.is_in_scope(rel) for rel in sentinel_baseline)
-    assert all(gate.is_in_scope(rel) for rel in folded_baseline)
+    assert all(gate.is_in_scope(rel, _real_scope()) for rel in sentinel_baseline)
+    assert all(gate.is_in_scope(rel, _real_scope()) for rel in folded_baseline)
 
 
 @pytest.mark.unit
 def test_corpus_mode_is_green_on_the_real_tree() -> None:
-    """The 510 baselined files must NOT fail; a permanently-red gate is not a
+    """The 518 baselined files must NOT fail; a permanently-red gate is not a
     gate, it is an outage.
     """
     assert gate.check_corpus(_REPO_ROOT) == []
@@ -387,6 +677,12 @@ def test_corpus_mode_is_green_on_the_real_tree() -> None:
 def _fake_repo(tmp_path: Path, sentinel_base: str = "", folded_base: str = "") -> Path:
     ratchets = tmp_path / ".onex_ratchets"
     ratchets.mkdir()
+    # Per-file mode resolves scope from the yamlfmt hook like every other mode;
+    # a fixture repo without one must (and does) fail closed, so give it one.
+    (tmp_path / gate.PRE_COMMIT_CONFIG_REL).write_text(
+        _YAMLFMT_REPO_HEADER + "        exclude: ^(\\.github/|templates/)\n",
+        encoding="utf-8",
+    )
     (tmp_path / gate.SENTINEL_BASELINE_REL).write_text(
         f"baseline:\n{sentinel_base}" if sentinel_base else "baseline: {}\n",
         encoding="utf-8",
@@ -605,30 +901,80 @@ def _hook(hook_id: str) -> dict[str, Any]:
 
 
 @pytest.mark.unit
-def test_hook_files_regex_matches_real_corpus_paths() -> None:
-    """Compiled against paths taken from the live baseline, not invented ones."""
+def test_hook_files_regex_reaches_every_in_scope_path() -> None:
+    """The hook must never be NARROWER than the script's derived scope.
+
+    pre-commit filters filenames before the script ever sees them, so a hook
+    regex tighter than the yamlfmt scope silently re-creates the D1 gap on the
+    local half of the gate. Compiled against real baselined paths -- including
+    the ones the widening admitted -- not invented ones.
+    """
     pattern = re.compile(_hook(_HOOK_ID)["files"])
     baseline = gate.load_baseline(_REPO_ROOT / gate.SENTINEL_BASELINE_REL)
     receipts = [p for p in baseline if p.startswith("drift/dod_receipts/")]
     contracts = [p for p in baseline if p.startswith("contracts/")]
+    widened = [p for p in baseline if not p.startswith(_PRE_WIDENING_PREFIXES)]
     assert receipts, "baseline must cover drift/dod_receipts/"
     assert contracts, "baseline must cover contracts/"
-    for real_path in (*sorted(receipts)[:5], *sorted(contracts)[:5]):
+    assert widened, "baseline must cover the formatter-exposed files outside them"
+    for real_path in (
+        *sorted(receipts)[:5],
+        *sorted(contracts)[:5],
+        *sorted(widened),
+    ):
         assert pattern.search(real_path), f"hook would never fire on {real_path}"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "out_of_scope",
+    "non_yaml",
     [
         "src/onex_change_control/models/model_x.py",
-        "docs/runbooks/thing.yaml",
-        ".onex_ratchets/omn_15479_folded_scalar_baseline.yaml",
-        ".github/workflows/ci.yml",
+        "docs/RECEIPT_LOCATIONS.md",
+        "pyproject.toml",
     ],
 )
-def test_hook_files_regex_does_not_over_match(out_of_scope: str) -> None:
-    assert not re.compile(_hook(_HOOK_ID)["files"]).search(out_of_scope)
+def test_hook_files_regex_does_not_over_match(non_yaml: str) -> None:
+    """Non-YAML never reaches the gate.
+
+    The hook deliberately matches every `.yaml`/`.yml` path and lets the script
+    apply the yamlfmt-derived exclude, so that scope lives in exactly one place.
+    Out-of-scope YAML (`.github/`, `templates/`) is skipped by the script with a
+    NOTE rather than by a second regex that could drift from the first.
+    """
+    assert not re.compile(_hook(_HOOK_ID)["files"]).search(non_yaml)
+
+
+@pytest.mark.unit
+def test_hook_scope_is_delegated_to_the_script_not_duplicated() -> None:
+    excluded_yaml = ".github/workflows/ci.yml"
+    assert re.compile(_hook(_HOOK_ID)["files"]).search(excluded_yaml)
+    assert gate.is_in_scope(excluded_yaml, _real_scope()) is False
+
+
+@pytest.mark.unit
+def test_scanning_hook_declares_fail_fast() -> None:
+    """D2: ordering alone does NOT protect the working tree; fail_fast does.
+
+    With the repo-level `fail_fast: false`, pre-commit runs the remaining hooks
+    after an earlier one fails -- so yamlfmt executed in the same `git commit`
+    and rewrote the file the gate had just rejected. Declaring `fail_fast: true`
+    on the scanning hook stops the run at the failure, which is the only reason
+    the author's original text is still on disk to repair. Order still matters:
+    fail_fast only helps if this hook is reached first, which
+    `test_contamination_hook_runs_before_yamlfmt` holds.
+    """
+    assert _hook(_HOOK_ID).get("fail_fast") is True, (
+        "check-yamlfmt-contamination must declare fail_fast: true. Without it "
+        "the yamlfmt hook still runs in the same invocation and corrupts the "
+        "working tree even though this gate already rejected the file."
+    )
+    config = yaml.safe_load(_PRECOMMIT_CONFIG.read_text(encoding="utf-8"))
+    assert config.get("fail_fast") is not True, (
+        "this test is only meaningful while the repo-level fail_fast is off; if "
+        "it were on, the per-hook declaration would be redundant and the "
+        "rationale comment above the hook needs rewriting."
+    )
 
 
 @pytest.mark.unit

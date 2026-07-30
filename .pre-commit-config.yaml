@@ -22,22 +22,43 @@
 repos:
   # OMN-15479: yamlfmt contamination ratchet.
   #
-  # DECLARED BEFORE THE yamlfmt HOOK ON PURPOSE. pre-commit runs hooks in file
-  # order, and yamlfmt v0.21.0 rewrites the PARSED VALUE of a folded (`>`) block
-  # scalar carrying an internal newline -- replacing each internal newline with
-  # the literal `#magic___^_^___line` and destroying the newline -- while
-  # reporting `Passed`. If this gate ran after yamlfmt, the author's evidence
-  # would already have been silently rewritten in the working tree by the time
-  # the gate objected, and the corruption is a FIXED POINT (a second yamlfmt
-  # pass is a no-op), so it never self-heals. Running first means the
-  # precondition shape is rejected while the original text still exists.
+  # yamlfmt v0.21.0 rewrites the PARSED VALUE of a folded (`>`) block scalar
+  # carrying an internal newline -- replacing each internal newline with the
+  # literal `#magic___^_^___line` and destroying the newline -- while reporting
+  # `Passed`. The corruption is a FIXED POINT (a second yamlfmt pass is a
+  # no-op), so it never self-heals.
   #
-  # Rule S: the sentinel in a parsed value under contracts/ or
-  # drift/dod_receipts/ -- proof the formatter rewrote authored evidence.
-  # Rule F: a folded scalar carrying an internal newline -- the precondition.
-  # Both are shrink-only ratchets against frozen baselines in .onex_ratchets/,
-  # because 510 files already carry the sentinel and 14 carry the precondition;
-  # a flat assertion would be permanently red and therefore unmergeable.
+  # WHAT THE ORDERING + fail_fast ACTUALLY BUY (corrected 2026-07-30; the
+  # earlier note here was wrong). Declaration order alone does NOT protect the
+  # working tree: with the repo-level `fail_fast: false`, pre-commit keeps
+  # running the remaining hooks after an earlier one fails, so yamlfmt executed
+  # in the SAME `git commit` and rewrote the file anyway -- the gate objected
+  # while the formatter destroyed the text it was objecting about. The real
+  # guarantee was never "the original survives", it was "the corrupted image
+  # cannot LAND": the commit aborts, and on every retry the now-corrupted file
+  # trips Rule S, which stays red until a human restores the text.
+  #
+  # `fail_fast: true` on the scanning hook below closes the remaining half.
+  # pre-commit stops the run at the first failing hook when that hook declares
+  # it, so yamlfmt never executes in an invocation this gate has already
+  # rejected, and the author's original text is still on disk to fix. The cost
+  # is that a failure here suppresses the rest of the chain for that run --
+  # one failure reported instead of several. That is the right trade when the
+  # suppressed hook is the one that would silently overwrite the evidence.
+  # Declaration order still matters: fail_fast only helps if this hook is
+  # reached before yamlfmt.
+  #
+  # Rule S: the sentinel in a parsed value -- proof the formatter rewrote
+  # authored content. Rule F: a folded scalar carrying an internal newline --
+  # the precondition. SCOPE IS NOT RESTATED HERE: the gate reads the yamlfmt
+  # hook's own `files`/`exclude` below and scans exactly what the formatter
+  # formats, so widening that exclude widens the gate in the same commit.
+  # `files:` on this hook is therefore every YAML file -- the script, not the
+  # hook regex, is the single scope authority; out-of-scope paths print a NOTE.
+  # Both rules are shrink-only ratchets against frozen baselines in
+  # .onex_ratchets/, because 518 files already carry the sentinel and 15 carry
+  # the precondition; a flat assertion would be permanently red and therefore
+  # unmergeable.
   #
   # The gate NEVER auto-fixes. Formatter mutation is the disease, not the cure.
   - repo: local
@@ -45,14 +66,17 @@ repos:
       - id: check-yamlfmt-contamination
         name: yamlfmt contamination ratchet (OMN-15479)
         description: >
-          Reject the yamlfmt sentinel `#magic___^_^___line` in a parsed evidence value (Rule S) and NEW
-          folded (`>`) block scalars carrying an internal newline (Rule F, the corruption precondition)
-          under contracts/ + drift/dod_receipts/. Shrink-only ratchets against frozen baselines; never
-          mutates a file.
+          Reject the yamlfmt line-marker sentinel in a parsed value (Rule S) and NEW folded (`>`) block
+          scalars carrying an internal newline (Rule F, the corruption precondition), across exactly the
+          file set the yamlfmt hook formats. Shrink-only ratchets against frozen baselines; never mutates
+          a file. Note this text names the sentinel in prose rather than spelling it: Rule S fires on
+          the literal token in any parsed value, and the gate holds its own declaration surfaces to that
+          rule instead of exempting them.
         entry: uv run python scripts/validation/check_yamlfmt_contamination.py
         language: system
-        files: ^(contracts/|drift/dod_receipts/).*\.ya?ml$
+        files: \.ya?ml$
         pass_filenames: true
+        fail_fast: true
         stages: [pre-commit]
       - id: check-yamlfmt-contamination-wiring
         name: yamlfmt contamination ratchet stays wired into required CI (OMN-15479)
