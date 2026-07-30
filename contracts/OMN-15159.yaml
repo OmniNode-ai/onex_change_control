@@ -1,0 +1,100 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15159"
+title: "LlmBusDelegationClient + build_llm_dependencies() wiring — receipt contract for already-merged
+  work (false-Backlog reconciliation)"
+summary: >-
+  OMN-15159 is a false-Backlog ticket, not unbuilt work. The client landed on jonahgabriel/steel_onslaught
+  `main` in PR #217, merge commit 35868b660413d005cbf8d4e4b8c2c5ddff8e3c41, merged 2026-07-26T09:36:53Z,
+  and the Linear ticket nevertheless held a single Backlog stateHistory entry (startedAt=null, completedAt=null)
+  through the build. This contract is the receipt surface for the dod_verify path; it makes no status
+  change. It also corrects an inverted drift premise carried by an earlier session: OMN-15170's driver
+  test (Done) was suspected of falsely claiming a real `LlmBusDelegationClient` while OMN-15159 sat Backlog.
+  The opposite holds — the client merged at 2026-07-26T09:36:53Z, which PRECEDES the OMN-15170 driver-test
+  PRs (#220/#221/#222). The driver test's claim was truthful; the Backlog status was the defect. Scope
+  honesty: the client implements only `complete(request) -> LlmResponse` per `ProtocolLlmClient`, routes
+  through the platform def-B CONTRACT+NODE+HANDLER path (`node_delegate_skill_orchestrator`) rather than
+  the superseded 2026-07-02 raw-Kafka probe design, and adds exactly one `isinstance` branch in `build_llm_dependencies()`.
+  Every check below is pinned to the merge SHA, was executed GREEN at authoring time, and was RED-proven
+  against the merge commit's parent (965d574558de2164e2f573014eb8cad6bef6c8a0), where `client_delegation.py`
+  does not exist and every probe returns count 0.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "steel PR #217 is MERGED on jonahgabriel/steel_onslaught main at merge commit 35868b66"
+    command: "gh pr view 217 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-15159-pr-217-merged"
+    description: >-
+      steel PR #217 is MERGED with merge commit exactly 35868b660413d005cbf8d4e4b8c2c5ddff8e3c41. State
+      and SHA are asserted in a single line so a closed-unmerged PR ("CLOSED none"), an open PR ("OPEN
+      none"), or a re-land under a different SHA all produce count 0 and fail the assertion.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 217 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")' | grep -cFx 'MERGED 35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' | grep -qx 1
+  - id: "dod-omn-15159-client-complete-signature"
+    description: >-
+      At the merge SHA, `src/steel_onslaught/llm/client_delegation.py` defines `class LlmBusDelegationClient:`
+      and implements the ProtocolLlmClient surface with the exact single-method signature the ticket scopes:
+      `def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:`. Asserting the full signature
+      line — not merely the method name — is what makes this falsifiable against a widened or reshaped
+      interface, which is the failure mode the ticket's "implements ONLY complete()" constraint exists
+      to prevent.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cF 'class LlmBusDelegationClient:' | grep -qx 1
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cF 'def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:' | grep -qx 1
+  - id: "dod-omn-15159-cli-runner-seam"
+    description: >-
+      The subprocess boundary is DI-confined rather than reached for directly: the module declares both
+      halves of the injected-runner seam — a protocol (`class ProtocolDelegationCliRunner`) and its concrete
+      implementation (`class SubprocessDelegationCliRunner`) — asserted as exactly two anchored class
+      definitions. This is the structural fact behind the ticket's DI-confinement constraint (zero os.environ
+      reads, injected `new_correlation_id`, explicit `omnibase_infra_path`/`state_root` binding fields);
+      collapsing the two into one direct-subprocess call would return count 1 and go RED.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cE '^class (Protocol|Subprocess)DelegationCliRunner' | grep -qx 2
+  - id: "dod-omn-15159-composition-wiring"
+    description: >-
+      The client is actually reachable from composition, not merely defined: at the merge SHA `src/steel_onslaught/match/composition.py`
+      imports it (`from steel_onslaught.llm.client_delegation import LlmBusDelegationClient`) and constructs
+      it inside the one new dispatch branch (`clients[provider.provider_id] = LlmBusDelegationClient(`).
+      An imported-but-never- constructed client is the silent-no-op class this pair discriminates.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cF 'from steel_onslaught.llm.client_delegation import LlmBusDelegationClient' | grep -qx 1
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cF 'clients[provider.provider_id] = LlmBusDelegationClient(' | grep -qx 1
+  - id: "dod-omn-15159-client-test"
+    description: >-
+      The client ships with its own test at the merge SHA: `tests/llm/test_client_delegation_omn15159.py`
+      is present in the tracked tree, probed via an anchored exact-name match over the directory listing
+      so a renamed, moved, or absent file returns count 0.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/llm?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.[].name' | grep -cFx 'test_client_delegation_omn15159.py' | grep -qx 1
