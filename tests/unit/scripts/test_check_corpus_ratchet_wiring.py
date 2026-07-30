@@ -15,7 +15,8 @@ that it exists.
 
 from __future__ import annotations
 
-import sys
+import importlib.util
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +24,32 @@ import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_SCRIPTS_DIR = _REPO_ROOT / "scripts" / "validation"
-sys.path.insert(0, str(_SCRIPTS_DIR))
-
-import check_corpus_ratchet_wiring as wiring  # noqa: E402
-
 _CI_YAML = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+
+def _load_wiring_module() -> Any:
+    """Load the validator by path, matching the repo pattern for scripts/validation.
+
+    ``scripts`` is on ``mypy_path`` but ``scripts/validation`` is not, so a bare
+    ``import check_corpus_ratchet_wiring`` type-checks locally and fails
+    ``mypy src/ tests/`` in CI with ``import-not-found``. Every other test that
+    exercises a ``scripts/validation`` module (e.g. test_check_ai_slop.py) uses
+    this loader for the same reason.
+    """
+    script_path = (
+        _REPO_ROOT / "scripts" / "validation" / "check_corpus_ratchet_wiring.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "check_corpus_ratchet_wiring", script_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+wiring: Any = _load_wiring_module()
 
 
 def _load() -> dict[str, Any]:
@@ -171,8 +192,6 @@ def test_hook_is_registered_in_precommit_config() -> None:
     assert hook["stages"] == ["pre-commit"]
     # Must match ci.yml, and only ci.yml -- broader scope would run the check on
     # unrelated files; narrower (or absent) means edits to ci.yml go unchecked.
-    import re
-
     pattern = re.compile(hook["files"])
     assert pattern.search(".github/workflows/ci.yml")
     assert not pattern.search(".github/workflows/product-readiness-shadow.yml")
