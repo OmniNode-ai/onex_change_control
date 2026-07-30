@@ -533,7 +533,15 @@ def test_omn_15391_round2_repairs_contribute_nothing_to_rule_c_or_d() -> None:
 # than restated in prose, so a future correction lands as a test diff with the
 # real numbers attached.
 _RULE_E_RATCHETED_CENSUS: dict[str, tuple[int, int]] = {
-    "base64-decoded file body": (160, 177),
+    # 2026-07-30, OCC#5673: 160 -> 159 items / 177 -> 176 checks. The
+    # concurrent codex-merge-sweep append on this PR superseded
+    # contracts/OMN-15192.yaml::dod-omn-15192-mutate-leg-app-credentialed
+    # with dod-15192-mut-r34-stable, which buffers the producer
+    # (body="$(...)" && printf '%s' "$body" | grep -qF) instead of piping
+    # base64 -d straight into grep -q. The lint skips superseded ids, so the
+    # instance leaves the live scan and this shrink-only pin must follow it
+    # in the SAME PR.
+    "base64-decoded file body": (159, 176),
     "gh pr diff": (143, 143),
     "paginated REST list": (5, 5),
     "git history walk": (4, 4),
@@ -620,7 +628,9 @@ def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
     # _RULE_E_GENERATED_BUCKETS above), so it is asserted non-empty rather than
     # equal; a zero would mean the detector stopped seeing the producer's output
     # entirely, which is a detector regression, not a repair.
-    assert len(live_t1) == len(baseline) == 312
+    # 312 -> 311 (2026-07-30, OCC#5673): see the shrink note on
+    # _RULE_E_RATCHETED_CENSUS["base64-decoded file body"].
+    assert len(live_t1) == len(baseline) == 311
     assert len(live_gen) >= 58
 
     for label, census, distinct in (
