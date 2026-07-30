@@ -90,3 +90,63 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5523 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn15411-rule-e-lint-warns-not-blocks"
+    description: >-
+      scripts/lint_contract_check_values.py carries OMN-15411 Rule E (sigpipe-fragile early-exit consumer)
+      as a WARNING-tier check on a separate code path (lint_contract_warnings) from the hard-finding path
+      (lint_contract), so a Rule E hit never changes the linter's exit code. This is the ticket's item-3
+      lint assist. It is warning tier on purpose: a SIGPIPE false RED fails CLOSED -- it blocks a Done
+      flip, it never passes something that should fail -- so it does not warrant failing a pre-commit
+      hook on an unrelated edit to a legacy contract.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'sigpipe-fragile' scripts/lint_contract_check_values.py && grep -q 'def
+          lint_contract_warnings' scripts/lint_contract_check_values.py"
+  - id: "dod-omn15411-rule-e-unit-controls"
+    description: >-
+      Rule E's unit controls pass: four measured-exposed positive controls (base64-decoded body, gh pr
+      diff, git history walk, --paginate list) and six measured-safe negative controls, including the
+      sanctioned OCC#5496/#5523 buffered repair itself and the machine-authored self-bind boolean probe.
+      The buffered-repair control is load-bearing -- a first draft of Rule E flagged its own sanctioned
+      fix, because a naive split on `|` treated the pipe INSIDE `body="$(producer | base64 -d)"` as a
+      pipeline separator. A rule that fires on its own repair can never be cleared by repairing anything.
+      The shipped detector splits shell-aware (quote and $() nesting aware) and examines only the writer
+      immediately adjacent to the grep. Also asserts the warning path leaves main()'s exit code at 0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values.py -q -k rule_e"
+  - id: "dod-omn15411-rule-e-corpus-ratchet"
+    description: >-
+      The shrink-only corpus ratchet that actually stops the class growing (a warning alone does not).
+      .onex_ratchets/omn_15411_rule_e_baseline.yaml freezes the 312 pre-existing non-generated tier-1
+      instances; a new one hard-fails set equality on CI. Mutation-proven RED-before/GREEN-after: appending
+      one fragile item (`gh api ... --jq .content | base64 -d | grep -q 'MARKER'`) to contracts/OMN-10041.yaml
+      failed the ratchet with "1 NEW Rule E ... instance(s) found ... ['contracts/OMN-10041.yaml::dod-ratchet-mutation-probe']";
+      reverting the mutation returned it to GREEN. Two companion tests pin the ratchet's two deliberate
+      exclusions so neither silently inverts: the generated-producer carve-out must stay OUT of the baseline
+      (ratcheting a machine-authored shape would wedge every future autobind PR), and the tier-2 volume-dependent
+      advisory set must not leak IN (its 84 `find <one-receipt-dir> | grep -q .` instances measured 0/5
+      exits -- they are not debt).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py
+          -q -k rule_e"
+      - check_type: "command"
+        check_value: "test \"$(grep -c '^  - ' .onex_ratchets/omn_15411_rule_e_baseline.yaml)\" = \"312\""
+  - id: "occ-self-bind-pr-5541"
+    description: >-
+      Binds OMN-15411 to OCC PR #5541 (self-bind). #5541 is the ticket's item-3 lint assist: OMN-15411
+      Rule E in scripts/lint_contract_check_values.py (warning tier, separate code path so the exit code
+      is unchanged) plus the frozen shrink-only corpus ratchet that actually stops the class growing.
+      OCC PRs validate their own in-tree contract and receipts (invariant I3), so the occ-preflight eligibility
+      gate needs a PASS receipt binding OMN-15411 to this PR.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5541 --repo OmniNode-ai/onex_change_control --json number,state"

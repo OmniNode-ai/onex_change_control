@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -455,6 +456,350 @@ def _fail_open_zero_count_violation(value: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# OMN-15411 Rule E: SIGPIPE-fragile early-exit consumer (WARNING tier)
+#
+# `grep -q` exits at the FIRST match and closes its stdin. If the upstream
+# stage still has bytes to write, it is killed by SIGPIPE and exits 141
+# (128+13). omnimarket#1949 (OMN-15382) correctly moved the dod_verify command
+# runner to `bash -o pipefail`, so that 141 now propagates as the pipeline's
+# exit status -- a **false RED on genuinely-passing evidence**. The same
+# command exits 0 when run outside pipefail, which is what makes the class so
+# confusing in the field: the check reproduces green by hand and red in the
+# runner.
+#
+# Whether a given pipeline is exposed depends on whether the producer still
+# has unwritten output when grep exits -- i.e. on output volume relative to
+# the pipe buffer, and on how many write syscalls the producer makes. That is
+# not statically decidable, so this rule flags only producer shapes MEASURED
+# to reproduce 141 against the corpus' own real inputs (5 runs each, under
+# `bash -o pipefail -c`, 2026-07-29):
+#
+#   gh api <contents> --jq .content | base64 -d | grep -q ...   -> 141,0,141,0,141
+#   gh pr diff <n> --repo <r>       | grep -q ...               -> 141,141,0,141,141
+#   git log --oneline -200          | grep -q ...               -> 141 x5
+#   find contracts -name '*.yaml'   | grep -q ...               -> 141 x5
+#
+# and shapes measured NOT to reproduce it, which this rule must NOT flag or it
+# becomes noise the corpus learns to ignore:
+#
+#   gh pr view <n> --json state --jq .state | grep -qx MERGED   -> 0 x5
+#   gh api .../pulls/<n> --jq '<scalar>'    | grep -qx true     -> 0 x5
+#   find <single-receipt-dir> -type f       | grep -q .         -> 0 x5
+#   cat <30KB file>                         | grep -q ...       -> 0 x5
+#
+# TIER 1 (`_SIGPIPE_FRAGILE_PRODUCERS`) is the ratcheted set: producers whose
+# output size is unbounded by construction (a decoded file body, a PR diff, a
+# git history walk, a paginated REST list, an iterating jq projection).
+#
+# TIER 2 (`_SIGPIPE_VOLUME_DEPENDENT_PRODUCERS`) is advisory only: `find`,
+# `cat`, `rg`, `docker logs`, `uv run pytest` reproduce 141 on a large input
+# and 0 on a small one. The corpus' 84 `find <one-receipt-dir> | grep -q .`
+# instances are provably NOT exposed, so ratcheting tier 2 would freeze 85
+# non-defects into a debt list.
+#
+# WARNING TIER, DELIBERATELY: this is a reliability foot-gun, not a fail-open
+# hole -- a SIGPIPE false RED fails CLOSED (it blocks a Done flip; it never
+# passes something that should fail). Per the ticket, Rule E does NOT change
+# this linter's exit code. Growth of the class is stopped by the corpus
+# ratchet in tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py,
+# which DOES hard-fail on a new non-generated instance.
+#
+# The fail-closed replacement is a buffered read: assign the producer's output
+# to a shell variable first, so it runs to completion and exits before anything
+# reads from it, then pipe a printf of that variable into grep -qF. See the
+# OCC#5496 and OCC#5523 repairs for the exact merged form.
+#
+# ---------------------------------------------------------------------------
+
+# `grep -q` / `grep -qx` / `grep -qF` / `egrep -q`... -- any early-exit form.
+_EARLY_EXIT_CONSUMER_RE = re.compile(
+    r"\|\s*(?:grep|egrep|fgrep)\s+-[A-Za-z]*q[A-Za-z]*\b"
+)
+
+# Tier 1: output unbounded by construction. Ratcheted.
+_SIGPIPE_FRAGILE_PRODUCERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("base64-decoded file body", re.compile(r"\bbase64\s+(?:-d\b|--decode\b|-D\b)")),
+    ("gh pr diff", re.compile(r"\bgh\s+pr\s+diff\b")),
+    (
+        "git history walk",
+        re.compile(r"\bgit\s+(?:log|diff|show|ls-files|grep|blame)\b"),
+    ),
+    ("paginated REST list", re.compile(r"--paginate\b")),
+    (
+        "iterating jq projection",
+        re.compile(r"--jq\s+(?:'[^']*\.\[\][^']*'|\"[^\"]*\.\[\][^\"]*\")"),
+    ),
+)
+
+# Tier 2: exposed only above a volume threshold. Advisory, never ratcheted.
+_SIGPIPE_VOLUME_DEPENDENT_PRODUCERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("find", re.compile(r"(?:^|[|;&(]\s*)find\s")),
+    ("cat", re.compile(r"(?:^|[|;&(]\s*)cat\s")),
+    ("recursive grep", re.compile(r"(?:^|[|;&(]\s*)(?:rg|ag)\s")),
+    ("docker logs", re.compile(r"\bdocker\s+logs\b")),
+    ("pytest output", re.compile(r"\buv\s+run\s+pytest\b")),
+)
+
+
+# Command separators that end one simple command inside a pipeline stage.
+_SIMPLE_COMMAND_SEPARATORS = ("&&", "||", ";")
+
+# Shell keywords that introduce a fresh simple command inside a compound
+# fragment (`if ...; then <cmd>`, `else <cmd>`, `do <cmd>`).
+_COMPOUND_INTRODUCERS_RE = re.compile(r"(?:^|\s)(?:then|else|do|\{)\s")
+
+
+@dataclass
+class _ShellScanState:
+    """Quoting / nesting state carried across one check_value scan."""
+
+    in_single: bool = False
+    in_double: bool = False
+    in_backtick: bool = False
+    depth: int = 0
+
+
+def _consume_quoted(value: str, i: int, state: _ShellScanState, buf: list[str]) -> int:
+    """Consume one quoted/escaped span. Return chars consumed, 0 if none."""
+    ch = value[i]
+    nxt = value[i + 1] if i + 1 < len(value) else ""
+
+    if state.in_single:
+        if ch == "'":
+            state.in_single = False
+        buf.append(ch)
+        return 1
+
+    if ch == "\\":
+        buf.append(ch)
+        if nxt:
+            buf.append(nxt)
+            return 2
+        return 1
+
+    if state.in_double:
+        if ch == "$" and nxt == "(":
+            state.depth += 1
+            buf.append(ch)
+            buf.append(nxt)
+            return 2
+        if ch == ")" and state.depth > 0:
+            state.depth -= 1
+        elif ch == '"':
+            state.in_double = False
+        buf.append(ch)
+        return 1
+
+    return 0
+
+
+def _consume_structural(
+    value: str, i: int, state: _ShellScanState, buf: list[str]
+) -> int:
+    """Consume one unquoted char, updating nesting state. Return chars consumed."""
+    ch = value[i]
+    nxt = value[i + 1] if i + 1 < len(value) else ""
+
+    if ch == "$" and nxt == "(":
+        state.depth += 1
+        buf.append(ch)
+        buf.append(nxt)
+        return 2
+
+    if ch == "'":
+        state.in_single = True
+    elif ch == '"':
+        state.in_double = True
+    elif ch == "`":
+        state.in_backtick = not state.in_backtick
+    elif ch == "(":
+        state.depth += 1
+    elif ch == ")":
+        state.depth = max(0, state.depth - 1)
+
+    buf.append(ch)
+    return 1
+
+
+def _split_top_level_pipeline(value: str) -> list[str]:
+    """Split *value* on `|` characters that are genuine pipeline separators.
+
+    Naive ``value.split("|")`` is wrong here in the one way that matters most:
+    the SANCTIONED repair for this very rule --
+    ``body="$(producer | base64 -d)" && printf '%s' "$body" | grep -qF 'X'`` --
+    contains a `|` INSIDE a command substitution. Treating that as a pipeline
+    separator makes ``base64 -d`` look like the stage feeding grep, so Rule E
+    flags its own fix and no repair could ever clear it. This scanner tracks
+    quoting and `$( )` / `( )` nesting so only top-level pipes split, and
+    leaves `||` alone (a logical OR, not a pipe).
+    """
+    stages: list[str] = []
+    buf: list[str] = []
+    state = _ShellScanState()
+
+    i = 0
+    while i < len(value):
+        consumed = _consume_quoted(value, i, state, buf)
+        if consumed:
+            i += consumed
+            continue
+
+        ch = value[i]
+        nxt = value[i + 1] if i + 1 < len(value) else ""
+        if ch == "|" and nxt == "|":
+            buf.append(ch)
+            buf.append(nxt)
+            i += 2
+            continue
+        if ch == "|" and state.depth == 0 and not state.in_backtick:
+            stages.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+
+        i += _consume_structural(value, i, state, buf)
+
+    stages.append("".join(buf))
+    return stages
+
+
+def _writer_command(stage: str) -> str:
+    """Return the last simple command of *stage* -- the process holding the pipe.
+
+    In ``body="$(...)" && printf '%s' "$body"`` only ``printf`` inherits the
+    pipe's write end; the command substitution ran to completion in a child that
+    was never connected to it. Likewise for ``if ...; then <cmd>``.
+    """
+    tail = stage
+    for separator in _SIMPLE_COMMAND_SEPARATORS:
+        pieces = tail.split(separator)
+        tail = pieces[-1]
+    matches = list(_COMPOUND_INTRODUCERS_RE.finditer(tail))
+    if matches:
+        tail = tail[matches[-1].end() :]
+    return tail
+
+
+def _sigpipe_producer_label(
+    value: str, producers: tuple[tuple[str, re.Pattern[str]], ...]
+) -> str | None:
+    """Return the matched producer label for the first exposed `grep -q`.
+
+    Only the writer IMMEDIATELY upstream of the early-exit consumer is
+    examined: that is the process the closed pipe kills. A `base64 -d` three
+    stages back is irrelevant if a small `--jq` scalar or a `wc -c` sits
+    directly in front of the grep -- it was already drained.
+    """
+    stages = _split_top_level_pipeline(value)
+    for index, stage in enumerate(stages[1:], start=1):
+        if not _EARLY_EXIT_CONSUMER_RE.match("|" + stage):
+            continue
+        writer = _writer_command(stages[index - 1])
+        for label, pattern in producers:
+            if pattern.search(writer):
+                return label
+    return None
+
+
+def sigpipe_fragile_violation(value: str) -> str | None:
+    """Return a tier-1 (ratcheted) Rule E label, or ``None``."""
+    label = _sigpipe_producer_label(value, _SIGPIPE_FRAGILE_PRODUCERS)
+    if label is None:
+        return None
+    return (
+        f"sigpipe-fragile: an unbounded producer ({label}) is piped straight "
+        "into `grep -q`, which exits at the first match and closes the pipe. "
+        "The producer is then killed by SIGPIPE (exit 141) and, under the "
+        "dod_verify runner's `bash -o pipefail`, 141 becomes the pipeline's "
+        "exit status -- a false RED on evidence that is actually present "
+        "(the same command exits 0 when run by hand outside pipefail). "
+        "Buffer the producer instead: "
+        "body=\"$(<producer>)\" && printf '%s' \"$body\" | grep -qF 'MARKER' "
+        "(OMN-15411 Rule E)"
+    )
+
+
+def sigpipe_volume_dependent_violation(value: str) -> str | None:
+    """Return a tier-2 (advisory, never ratcheted) Rule E label, or ``None``."""
+    if sigpipe_fragile_violation(value) is not None:
+        return None
+    label = _sigpipe_producer_label(value, _SIGPIPE_VOLUME_DEPENDENT_PRODUCERS)
+    if label is None:
+        return None
+    return (
+        f"sigpipe-possible: a volume-dependent producer ({label}) is piped "
+        "straight into `grep -q`. This reproduces exit 141 under the "
+        "dod_verify runner's `bash -o pipefail` once the producer's output "
+        "outgrows the pipe buffer, and exits 0 below it -- so it is a latent "
+        "false RED that appears when the input grows. Buffer the producer if "
+        "its output is not bounded small by construction (OMN-15411 Rule E, "
+        "advisory tier)"
+    )
+
+
+def lint_contract_warnings(path: Path) -> list[tuple[str, str, str]]:
+    """Return non-blocking Rule E findings for *path*.
+
+    Kept separate from :func:`lint_contract` on purpose: these findings must
+    never contribute to this script's exit code (see the Rule E block above).
+    """
+    warnings: list[tuple[str, str, str]] = []
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw)
+    except (OSError, yaml.YAMLError):
+        # lint_contract() already reports read/parse failures as hard findings.
+        return warnings
+
+    if not isinstance(data, dict):
+        return warnings
+
+    dod_evidence = data.get("dod_evidence", []) or []
+    if not isinstance(dod_evidence, list):
+        return warnings
+    superseded = _superseded_dod_ids(dod_evidence)
+
+    for item in dod_evidence:
+        if not isinstance(item, dict):
+            continue
+        raw_dod_id = item.get("id", "<unknown>")
+        dod_id = raw_dod_id if isinstance(raw_dod_id, str) else "<unknown>"
+        if dod_id in superseded:
+            continue
+
+        for value in _item_check_values(item):
+            for detector in (
+                sigpipe_fragile_violation,
+                sigpipe_volume_dependent_violation,
+            ):
+                label = detector(value)
+                if label is not None:
+                    warnings.append(
+                        (str(path), f"{dod_id}: {label}", value.strip()[:80])
+                    )
+
+    return warnings
+
+
+def _item_check_values(item: dict[object, object]) -> list[str]:
+    """Return every non-empty check_value string on *item* (nested + legacy flat)."""
+    values: list[str] = []
+    checks = item.get("checks", [])
+    if isinstance(checks, list):
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            value = check.get("check_value", "")
+            if isinstance(value, str) and value.strip():
+                values.append(value)
+    flat_value = item.get("check_value", "")
+    if isinstance(flat_value, str) and flat_value.strip():
+        values.append(flat_value)
+    return values
+
+
+# ---------------------------------------------------------------------------
 # Core linting logic
 # ---------------------------------------------------------------------------
 
@@ -711,8 +1056,32 @@ def main(argv: list[str]) -> int:
         return 2
 
     all_findings: list[tuple[str, str, str]] = []
+    all_warnings: list[tuple[str, str, str]] = []
     for arg in argv[1:]:
-        all_findings.extend(lint_contract(Path(arg)))
+        path = Path(arg)
+        all_findings.extend(lint_contract(path))
+        all_warnings.extend(lint_contract_warnings(path))
+
+    # OMN-15411 Rule E is WARNING tier: printed, never fatal. Emitted before
+    # the hard findings so it is not buried under a failure block.
+    if all_warnings:
+        print(
+            "WARN: SIGPIPE-fragile early-exit consumers found in contract "
+            "check_value fields (OMN-15411 Rule E -- advisory, does NOT fail "
+            "this hook):",
+            file=sys.stderr,
+        )
+        for path_str, pattern_label, fragment in all_warnings:
+            print(f"  {path_str}: {pattern_label}", file=sys.stderr)
+            print(f"    ...{fragment}...", file=sys.stderr)
+        print(
+            "\nFix SIGPIPE-fragile pipelines by buffering the producer:\n"
+            "  BAD:  gh api '...?ref=SHA' --jq .content | base64 -d"
+            " | grep -q 'MARKER'\n"
+            "  GOOD: body=\"$(gh api '...?ref=SHA' --jq .content | base64 -d)\""
+            " && printf '%s' \"$body\" | grep -qF 'MARKER'\n",
+            file=sys.stderr,
+        )
 
     if all_findings:
         print(

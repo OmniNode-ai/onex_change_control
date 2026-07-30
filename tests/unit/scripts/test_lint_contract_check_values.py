@@ -944,3 +944,201 @@ def test_rule_c_allows_identity_conjoined_with_falsifiable_predicate(
     assert not any(
         "tautological-self-comparison" in label for _, label, _ in findings
     ), f"Rule C false-positived on a falsifiable conjunction: {findings}"
+
+
+# ---------------------------------------------------------------------------
+# OMN-15411 Rule E: SIGPIPE-fragile early-exit consumer (WARNING tier)
+#
+# Every positive control below was MEASURED to reproduce exit 141 under
+# `bash -o pipefail -c` against real corpus inputs (5 runs each, 2026-07-29),
+# and every negative control was measured to exit 0 on 5/5 runs. Rule E is a
+# claim about which shapes are actually exposed, so its tests pin the measured
+# outcome rather than the pattern's shape.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rule_e_flags_base64_decoded_body_into_grep_q(tmp_path: Path) -> None:
+    """Measured 141,0,141,0,141 -- the first live instance (contracts/OMN-15170)."""
+    bad = (
+        "gh api repos/jonahgabriel/steel_onslaught/contents/tests/live/"
+        "test_omn15170_live_driver.py?ref=24f3f517 --jq .content "
+        "| base64 -d | grep -q 'def test_live_match'"
+    )
+    path = write_contract(tmp_path, bad)
+    warnings = linter.lint_contract_warnings(path)
+    assert any("sigpipe-fragile" in label for _, label, _ in warnings), warnings
+
+
+@pytest.mark.unit
+def test_rule_e_flags_gh_pr_diff_into_grep_q(tmp_path: Path) -> None:
+    """Measured 141,141,0,141,141 on a real PR diff."""
+    bad = "gh pr diff 5523 --repo OmniNode-ai/onex_change_control | grep -q 'sigpipe'"
+    path = write_contract(tmp_path, bad)
+    warnings = linter.lint_contract_warnings(path)
+    assert any("sigpipe-fragile" in label for _, label, _ in warnings), warnings
+
+
+@pytest.mark.unit
+def test_rule_e_flags_git_history_walk_into_grep_q(tmp_path: Path) -> None:
+    """Measured 141 on 5/5 runs of `git log --oneline -200 | grep -q 'OMN-'`."""
+    bad = "git log --oneline -200 | grep -q 'OMN-15411'"
+    path = write_contract(tmp_path, bad)
+    warnings = linter.lint_contract_warnings(path)
+    assert any("sigpipe-fragile" in label for _, label, _ in warnings), warnings
+
+
+@pytest.mark.unit
+def test_rule_e_flags_paginated_list_into_grep_q(tmp_path: Path) -> None:
+    bad = (
+        "gh api repos/OmniNode-ai/omnimarket/pulls/1944/files --paginate "
+        "--jq '.[].filename' | grep -qx 'src/omnimarket/nodes/node_x/handler.py'"
+    )
+    path = write_contract(tmp_path, bad)
+    warnings = linter.lint_contract_warnings(path)
+    assert any("sigpipe-fragile" in label for _, label, _ in warnings), warnings
+
+
+@pytest.mark.unit
+def test_rule_e_does_not_flag_scalar_jq_state_probe(tmp_path: Path) -> None:
+    """Measured 0 on 5/5 runs. This is the shape OCC#5523 deliberately KEPT.
+
+    `gh` writes one short token and exits before grep reads, so nothing is ever
+    written to a closed pipe. Flagging it would contradict the merged repair and
+    make Rule E noise across ~180 corpus instances.
+    """
+    ok = (
+        "gh pr view 220 --repo jonahgabriel/steel_onslaught --json state "
+        "--jq .state | grep -qx MERGED"
+    )
+    path = write_contract(tmp_path, ok)
+    warnings = linter.lint_contract_warnings(path)
+    assert not warnings, f"Rule E false-positived on a measured-safe shape: {warnings}"
+
+
+@pytest.mark.unit
+def test_rule_e_does_not_flag_generated_self_bind_boolean_probe(tmp_path: Path) -> None:
+    """Measured 0 on 5/5 runs; also the machine-authored self-bind idiom."""
+    ok = (
+        "gh api repos/OmniNode-ai/onex_change_control/pulls/5523 "
+        "--jq '.state == \"closed\" and .merged_at != null' | grep -qx true"
+    )
+    path = write_contract(tmp_path, ok)
+    warnings = linter.lint_contract_warnings(path)
+    assert not warnings, f"Rule E false-positived on a measured-safe shape: {warnings}"
+
+
+@pytest.mark.unit
+def test_rule_e_does_not_flag_the_sanctioned_buffered_repair(tmp_path: Path) -> None:
+    """The OCC#5496 / OCC#5523 replacement idiom must be clean.
+
+    A rule that still fires on its own sanctioned fix is unusable: the stage
+    immediately upstream of the grep is `printf`, and the producer has already
+    exited into a shell variable.
+    """
+    ok = (
+        'body="$(gh api repos/OmniNode-ai/omnibase_core/contents/README.md'
+        '?ref=abc123 --jq .content | base64 -d)" '
+        "&& printf '%s' \"$body\" | grep -qF 'MARKER'"
+    )
+    path = write_contract(tmp_path, ok)
+    warnings = linter.lint_contract_warnings(path)
+    assert not warnings, f"Rule E flagged its own sanctioned repair: {warnings}"
+
+
+@pytest.mark.unit
+def test_rule_e_tier2_find_is_advisory_not_fragile(tmp_path: Path) -> None:
+    """`find <one-receipt-dir> | grep -q .` measured 0/5 -- advisory tier only.
+
+    84 corpus instances have this exact shape over a directory holding one or
+    two receipt files, where `find` finishes writing before grep reads. It is
+    reported so a reader knows the shape is volume-dependent, but it is NOT
+    ratcheted (see the corpus baseline test).
+    """
+    borderline = (
+        "find drift/dod_receipts/OMN-10081/dod-001 -type f -name '*.yaml' | grep -q ."
+    )
+    path = write_contract(tmp_path, borderline)
+    warnings = linter.lint_contract_warnings(path)
+    labels = [label for _, label, _ in warnings]
+    assert any("sigpipe-possible" in label for label in labels), labels
+    assert not any("sigpipe-fragile" in label for label in labels), labels
+
+
+@pytest.mark.unit
+def test_rule_e_examines_only_the_stage_adjacent_to_grep(tmp_path: Path) -> None:
+    """An unbounded producer upstream of a SMALL final stage is not exposed.
+
+    SIGPIPE kills the process holding the write end of the closed pipe -- the
+    stage immediately in front of grep. A `base64 -d` two stages back has
+    already been drained by `wc -c`, which writes one short line.
+    """
+    ok = (
+        "gh api repos/OmniNode-ai/omnibase_core/contents/README.md?ref=abc123 "
+        "--jq .content | base64 -d | wc -c | grep -q '[0-9]'"
+    )
+    path = write_contract(tmp_path, ok)
+    warnings = linter.lint_contract_warnings(path)
+    assert not warnings, f"Rule E looked past the adjacent stage: {warnings}"
+
+
+@pytest.mark.unit
+def test_rule_e_skips_superseded_items(tmp_path: Path) -> None:
+    """A repaired item must stop being reported once it is superseded.
+
+    Otherwise every OCC#5496-style append-only repair would leave its own
+    historical entry warning forever, and the ratchet could never shrink.
+    """
+    items = [
+        {
+            "id": "dod-old-fragile",
+            "checks": [
+                {
+                    "check_type": "command",
+                    "check_value": (
+                        "gh api repos/O/R/contents/f.py?ref=abc --jq .content "
+                        "| base64 -d | grep -q 'MARKER'"
+                    ),
+                }
+            ],
+        },
+        {
+            "id": "dod-new-buffered",
+            "evidence_artifact": "supersedes_dod_evidence:dod-old-fragile",
+            "checks": [
+                {
+                    "check_type": "command",
+                    "check_value": (
+                        'body="$(gh api repos/O/R/contents/f.py?ref=abc '
+                        '--jq .content | base64 -d)" '
+                        "&& printf '%s' \"$body\" | grep -qF 'MARKER'"
+                    ),
+                }
+            ],
+        },
+    ]
+    path = write_contract_with_items(tmp_path, items)
+    warnings = linter.lint_contract_warnings(path)
+    assert not warnings, f"Superseded fragile item still reported: {warnings}"
+
+
+@pytest.mark.unit
+def test_rule_e_is_warning_tier_and_does_not_change_exit_code(tmp_path: Path) -> None:
+    """The load-bearing property: Rule E must never fail this linter.
+
+    A SIGPIPE false RED fails CLOSED -- it blocks a Done flip, it never passes
+    something that should fail -- so it does not warrant blocking a commit that
+    merely touches a legacy contract. Growth is stopped by the corpus ratchet in
+    test_lint_contract_check_values_corpus_baseline.py instead.
+    """
+    bad = (
+        "gh api repos/O/R/contents/f.py?ref=abc --jq .content "
+        "| base64 -d | grep -q 'MARKER'"
+    )
+    path = write_contract(tmp_path, bad)
+
+    assert linter.lint_contract_warnings(path), "expected a Rule E warning"
+    assert not linter.lint_contract(path), (
+        "Rule E leaked into the hard-finding path -- it must be warning tier"
+    )
+    assert linter.main(["lint_contract_check_values.py", str(path)]) == 0

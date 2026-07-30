@@ -26,6 +26,7 @@ These are frozen into ``.onex_ratchets/omn_15382_rule_a_baseline.yaml`` and
 
 from __future__ import annotations
 
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -43,6 +44,24 @@ _RULE_A_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15382_rule_a_baseli
 _RULE_B_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15382_rule_b_baseline.yaml"
 _RULE_C_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15391_rule_c_baseline.yaml"
 _RULE_D_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15391_rule_d_baseline.yaml"
+_RULE_E_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15411_rule_e_baseline.yaml"
+
+# OMN-15411 Rule E generated-item carve-out. The live OCC companion producer
+# mints `dod-deploy-assessment` with
+# `gh pr diff ${PR_NUMBER} --repo ${REPO} --name-only | grep -qiE '...'` on
+# EVERY companion contract, and older producer revisions minted the same shape
+# in `dod-<repo>-pr-<n>-ci` and `*self-bind-pr-<n>` items. Those ids are
+# authored by a machine, not by a human or an agent editing a contract, so a
+# consumer-side ratchet cannot stop them entering -- it can only hard-fail
+# every future autobind PR. They are excluded from the ratchet and tracked for
+# repair at the producer (omnimarket node_occ_companion_compute).
+_GENERATED_SIGPIPE_ITEM_RE = re.compile(
+    r"^(?:dod-deploy-assessment|dod-[A-Za-z].*-pr-\d+-ci|.*self-bind-pr-\d+)$"
+)
+
+
+def _is_generated_sigpipe_item(dod_id: str) -> bool:
+    return bool(_GENERATED_SIGPIPE_ITEM_RE.match(dod_id))
 
 
 def _load_baseline(path: Path) -> frozenset[str]:
@@ -86,6 +105,36 @@ def _scan_corpus() -> tuple[
                 rule_d.add(f"{rel}::{dod_id}")
 
     return frozenset(rule_a), frozenset(rule_b), frozenset(rule_c), frozenset(rule_d)
+
+
+@lru_cache(maxsize=1)
+def _scan_corpus_rule_e() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Return (tier1_ratcheted, tier1_generated, tier2_advisory) Rule E ids.
+
+    Rule E findings come from ``lint_contract_warnings`` rather than
+    ``lint_contract``: they are warning tier and must never contribute to the
+    linter's exit code (see the Rule E block in the linter). The corpus ratchet
+    below is where the class is actually stopped from growing.
+    """
+    contracts_dir = _REPO_ROOT / "contracts"
+    tier1_ratcheted: set[str] = set()
+    tier1_generated: set[str] = set()
+    tier2: set[str] = set()
+
+    for path in sorted(contracts_dir.glob("*.yaml")):
+        rel = f"contracts/{path.name}"
+        for _path_str, label, _fragment in linter.lint_contract_warnings(path):
+            dod_id = label.split(":", 1)[0]
+            entry = f"{rel}::{dod_id}"
+            if "sigpipe-fragile" in label:
+                if _is_generated_sigpipe_item(dod_id):
+                    tier1_generated.add(entry)
+                else:
+                    tier1_ratcheted.add(entry)
+            elif "sigpipe-possible" in label:
+                tier2.add(entry)
+
+    return frozenset(tier1_ratcheted), frozenset(tier1_generated), frozenset(tier2)
 
 
 @pytest.mark.unit
@@ -232,6 +281,83 @@ def test_rule_d_corpus_matches_frozen_baseline_exactly() -> None:
         f"({_RULE_D_BASELINE_PATH}) was not updated to remove them: "
         f"{sorted(healed)[:20]}. Shrink the baseline when you repair a "
         "contract -- do not leave stale entries."
+    )
+
+
+@pytest.mark.unit
+def test_rule_e_corpus_matches_frozen_baseline_exactly() -> None:
+    """Tier-1 SIGPIPE-fragile instances must match the frozen baseline exactly.
+
+    This is the assertion that stops the class growing. The linter itself only
+    WARNS on Rule E (per OMN-15411: a SIGPIPE false RED fails closed -- it
+    blocks a Done flip, it never passes something that should fail -- so it does
+    not warrant failing a pre-commit hook on an unrelated edit). A warning
+    nobody must act on does not stop growth, so growth is stopped here instead:
+    a new non-generated instance is not in the baseline and hard-fails on CI.
+    """
+    baseline = _load_baseline(_RULE_E_BASELINE_PATH)
+    live, _generated, _tier2 = _scan_corpus_rule_e()
+
+    new_violations = live - baseline
+    healed = baseline - live
+
+    assert not new_violations, (
+        f"{len(new_violations)} NEW Rule E (sigpipe-fragile early-exit "
+        "consumer) instance(s) found that are not in the frozen shrink-only "
+        f"baseline ({_RULE_E_BASELINE_PATH}): {sorted(new_violations)[:20]}. "
+        "An unbounded producer piped straight into `grep -q` is killed by "
+        "SIGPIPE when grep exits at the first match, and the dod_verify "
+        "runner's `bash -o pipefail` turns that 141 into a false RED on "
+        "evidence that is actually present. Buffer the producer instead: "
+        "body=\"$(<producer>)\" && printf '%s' \"$body\" | grep -qF 'MARKER'."
+    )
+    assert not healed, (
+        f"{len(healed)} baseline entr{'y is' if len(healed) == 1 else 'ies are'} "
+        "no longer reproduced by a live corpus scan, but the baseline file "
+        f"({_RULE_E_BASELINE_PATH}) was not updated to remove them: "
+        f"{sorted(healed)[:20]}. Shrink the baseline when you repair a "
+        "contract -- do not leave stale entries."
+    )
+
+
+@pytest.mark.unit
+def test_rule_e_baseline_holds_no_generated_producer_items() -> None:
+    """The generated carve-out must stay OUT of the ratcheted baseline.
+
+    If a `dod-deploy-assessment` / `dod-*-pr-<n>-ci` / `*self-bind-pr-<n>` entry
+    ever lands in this baseline, the next producer-authored companion contract
+    will carry an instance that is not in the frozen set and every autobind PR
+    will hard-fail. The producer emits the shape unconditionally, so the repair
+    belongs at the producer (omnimarket node_occ_companion_compute), not here.
+    """
+    baseline = _load_baseline(_RULE_E_BASELINE_PATH)
+    offenders = sorted(
+        entry
+        for entry in baseline
+        if _is_generated_sigpipe_item(entry.split("::", 1)[-1])
+    )
+    assert not offenders, (
+        "Generated-producer item id(s) present in the Rule E baseline: "
+        f"{offenders[:20]}. Ratcheting a machine-authored shape wedges every "
+        "future autobind PR -- fix the producer instead."
+    )
+
+
+@pytest.mark.unit
+def test_rule_e_tier2_advisory_set_is_not_ratcheted() -> None:
+    """Tier-2 (volume-dependent) instances must not leak into the baseline.
+
+    `find <one-receipt-dir> -type f | grep -q .` measured 0/5 exits under
+    `bash -o pipefail -c` -- it is not exposed, because `find` finishes writing
+    before grep reads. Ratcheting the 80-odd instances of that shape would
+    freeze non-debt into a debt list and train readers to ignore the ratchet.
+    """
+    baseline = _load_baseline(_RULE_E_BASELINE_PATH)
+    _live, _generated, tier2 = _scan_corpus_rule_e()
+    overlap = sorted(baseline & tier2)
+    assert not overlap, (
+        f"Tier-2 advisory entries leaked into the ratcheted Rule E baseline: "
+        f"{overlap[:20]}."
     )
 
 
