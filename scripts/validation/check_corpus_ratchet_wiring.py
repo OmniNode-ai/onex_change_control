@@ -181,8 +181,36 @@ def check_wiring(ci_yaml_path: Path) -> list[str]:
     return failures + _check_summary_job(summary)
 
 
+_USAGE = f"""\
+usage: check_corpus_ratchet_wiring.py [-h] [CI_YAML ...]
+
+{_TICKET}: assert the Rule A/B/C/D/E contract corpus ratchets are wired into a
+REQUIRED CI context. Checks that ci.yml declares the `{_JOB_ID}` job, that the
+job is unconditional (no `needs:`, no `if:`), that it runs
+`{_CORPUS_TEST_MODULE}` and re-runs this validator, and that `{_SUMMARY_JOB_ID}`
+both lists it in `needs:` AND carries a strict success-only check for it (the
+generic `contains(needs.*.result, 'failure')` rollup passes on a SKIPPED need).
+
+positional arguments:
+  CI_YAML     workflow file(s) to check; defaults to .github/workflows/ci.yml
+
+options:
+  -h, --help  show this help message and exit
+
+exit codes: 0 wiring intact, 1 wiring broken / file missing / file unparseable.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+
+    # The Pre-commit job's changed-validator step executes every modified
+    # validator with `--help` before merging, so a gate that cannot even print
+    # usage is rejected as broken. Without this branch `--help` was treated as a
+    # path and the gate failed itself.
+    if "-h" in args or "--help" in args:
+        print(_USAGE, end="")
+        return 0
     # pre-commit passes the matched filenames (its `files:` regex already
     # restricts them to ci.yml). Every supplied path is checked AS GIVEN -- an
     # earlier draft filtered on `endswith("ci.yml")` and fell back to the

@@ -460,35 +460,66 @@ _RULE_E_RATCHETED_CENSUS: dict[str, tuple[int, int]] = {
     "paginated REST list": (5, 5),
     "git history walk": (4, 4),
 }
-_RULE_E_GENERATED_CENSUS: dict[str, tuple[int, int]] = {
-    "gh pr diff": (47, 47),
-    "paginated REST list": (5, 5),
-    "iterating jq projection": (4, 4),
-    "base64-decoded file body": (2, 3),
-}
+# The GENERATED side is deliberately NOT count-pinned.
+#
+# A first draft of this test pinned it exactly, at 58 distinct items. CI caught
+# that within 40 minutes: OCC#5545 (the OMN-15441 companion for omnimarket#1963)
+# landed on dev mid-review and the producer minted one more
+# `dod-deploy-assessment`, taking `gh pr diff` from 47 to 48 and the total from
+# 58 to 59. An exact pin on a machine-authored, monotonically-growing set would
+# hard-fail EVERY future autobind PR -- the precise failure mode the carve-out
+# exists to avoid, reintroduced one layer up.
+#
+# What IS asserted is the bucket SHAPE: the producer may mint more instances of
+# the shapes it already mints, but if it starts emitting a NEW fragile producer
+# kind that is a change in the producer, not routine growth, and it should fail.
+# The count is recorded here as an observation with its as-of date, not enforced.
+_RULE_E_GENERATED_BUCKETS: frozenset[str] = frozenset(
+    {
+        "gh pr diff",
+        "paginated REST list",
+        "iterating jq projection",
+        "base64-decoded file body",
+    }
+)
+# Observed 2026-07-30T03:30Z: 59 distinct items / 60 check_values. Growth is
+# expected and tracked at the producer (OMN-15407), not here.
 
 
 @pytest.mark.unit
 def test_rule_e_per_bucket_census_is_pinned() -> None:
-    """The per-bucket remaining-work census matches a live detector scan.
+    """The human-authored per-bucket census matches a live detector scan.
 
     Shrink-only in spirit like the baselines: repairing a bucket must update
     this dict in the same PR, which is exactly the moment the remaining count
     posted on the ticket should change too.
     """
-    ratcheted, generated = _scan_corpus_rule_e_buckets()
+    ratcheted, _generated = _scan_corpus_rule_e_buckets()
     assert ratcheted == _RULE_E_RATCHETED_CENSUS, (
         "Rule E ratcheted per-bucket census drifted from the live scan. "
         f"live={ratcheted} pinned={_RULE_E_RATCHETED_CENSUS}. Update the pin in "
         "the SAME PR that repairs (or adds) instances, and update the "
         "remaining-count comment on OMN-15411 to match."
     )
-    assert generated == _RULE_E_GENERATED_CENSUS, (
-        "Rule E generated (carved-out) per-bucket census drifted from the live "
-        f"scan. live={generated} pinned={_RULE_E_GENERATED_CENSUS}. The "
-        "carve-out is producer-side debt tracked at omnimarket "
-        "node_occ_companion_compute (OMN-15407); growth here means the producer "
-        "minted more instances, not that a human authored them."
+
+
+@pytest.mark.unit
+def test_rule_e_generated_producer_emits_no_new_fragile_shape() -> None:
+    """The producer may mint MORE of what it mints; it may not mint a NEW shape.
+
+    Counts on the generated side grow by one on most autobind PRs, so pinning
+    them wedges the fleet. A new *bucket*, by contrast, means the producer's
+    emitted command shape changed and a fresh class of false RED is being
+    manufactured -- that is worth failing on.
+    """
+    _ratcheted, generated = _scan_corpus_rule_e_buckets()
+    unexpected = set(generated) - _RULE_E_GENERATED_BUCKETS
+    assert not unexpected, (
+        f"The OCC companion producer began emitting NEW SIGPIPE-fragile producer "
+        f"shape(s) {sorted(unexpected)} (live buckets {sorted(generated)}). This "
+        "is not routine growth of the carved-out set -- it is a change in what "
+        "omnimarket node_occ_companion_compute generates. Fix it at the producer "
+        "(OMN-15407) rather than widening this set."
     )
 
 
@@ -506,8 +537,13 @@ def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
     live_t1, live_gen, _tier2 = _scan_corpus_rule_e()
     baseline = _load_baseline(_RULE_E_BASELINE_PATH)
 
+    # Only the RATCHETED side gets an exact count -- it is the shrink-only
+    # baseline. `live_gen` grows on most autobind PRs (see
+    # _RULE_E_GENERATED_BUCKETS above), so it is asserted non-empty rather than
+    # equal; a zero would mean the detector stopped seeing the producer's output
+    # entirely, which is a detector regression, not a repair.
     assert len(live_t1) == len(baseline) == 312
-    assert len(live_gen) == 58
+    assert len(live_gen) >= 58
 
     for label, census, distinct in (
         ("ratcheted", ratcheted, len(live_t1)),

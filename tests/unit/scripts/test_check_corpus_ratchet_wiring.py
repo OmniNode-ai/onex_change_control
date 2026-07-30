@@ -195,3 +195,21 @@ def test_hook_is_registered_in_precommit_config() -> None:
     pattern = re.compile(hook["files"])
     assert pattern.search(".github/workflows/ci.yml")
     assert not pattern.search(".github/workflows/product-readiness-shadow.yml")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_help_flag_exits_zero_and_prints_usage(
+    flag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Pre-commit changed-validator step runs every modified gate with --help.
+
+    CI caught this: without an explicit branch, `--help` was treated as a path
+    and the gate failed itself with "CORPUS-RATCHET WIRING GATE FAILED (--help):
+    --help does not exist", which the step reports as "the gate itself is
+    broken".
+    """
+    assert wiring.main([flag]) == 0
+    out = capsys.readouterr().out
+    assert "usage: check_corpus_ratchet_wiring.py" in out
+    assert wiring._JOB_ID in out
