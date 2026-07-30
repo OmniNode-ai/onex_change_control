@@ -74,11 +74,20 @@ _RULE_F_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15540_rule_f_baseli
 # half stays hard for everything including it. Once the lane lands, delete the
 # entry from the baseline AND from this set -- the follow-up is named in
 # OMN-15540. This set may only shrink.
-_RULE_F_CONCURRENT_REPAIR_EXEMPT: frozenset[str] = frozenset(
-    {
-        "contracts/OMN-15192.yaml::dod-omn-15192-b3-accepted-deviation-census",
-    }
-)
+#
+# THE LANE LANDED (2026-07-30, OCC#5673 / OMN-15192), so the instruction above
+# was carried out and this set is now EMPTY. Both OMN-15192 Rule F entries --
+# dod-omn-15192-bullet1-first-post-flip-mint and
+# dod-omn-15192-b3-accepted-deviation-census -- are superseded append-only by
+# `-r34` items that re-ask the identical question over the CLOSED window
+# created:2026-07-29T03:01:23Z..2026-07-30T08:00:00Z, and a live corpus rescan
+# reproduces neither id. They were deleted from
+# .onex_ratchets/omn_15540_rule_f_baseline.yaml in the same PR, which is what
+# forced this deletion too: test_rule_f_concurrent_repair_exemptions_are_still_
+# baseline_entries requires every exempt id to still be a baseline entry.
+# Keeping the exemption while shrinking the baseline is not an option the
+# ratchet allows -- by design.
+_RULE_F_CONCURRENT_REPAIR_EXEMPT: frozenset[str] = frozenset()
 
 # OMN-15411 Rule E generated-item carve-out. The live OCC companion producer
 # mints `dod-deploy-assessment` with
@@ -524,7 +533,15 @@ def test_omn_15391_round2_repairs_contribute_nothing_to_rule_c_or_d() -> None:
 # than restated in prose, so a future correction lands as a test diff with the
 # real numbers attached.
 _RULE_E_RATCHETED_CENSUS: dict[str, tuple[int, int]] = {
-    "base64-decoded file body": (160, 177),
+    # 2026-07-30, OCC#5673: 160 -> 159 items / 177 -> 176 checks. The
+    # concurrent codex-merge-sweep append on this PR superseded
+    # contracts/OMN-15192.yaml::dod-omn-15192-mutate-leg-app-credentialed
+    # with dod-15192-mut-r34-stable, which buffers the producer
+    # (body="$(...)" && printf '%s' "$body" | grep -qF) instead of piping
+    # base64 -d straight into grep -q. The lint skips superseded ids, so the
+    # instance leaves the live scan and this shrink-only pin must follow it
+    # in the SAME PR.
+    "base64-decoded file body": (159, 176),
     "gh pr diff": (143, 143),
     "paginated REST list": (5, 5),
     "git history walk": (4, 4),
@@ -611,7 +628,9 @@ def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
     # _RULE_E_GENERATED_BUCKETS above), so it is asserted non-empty rather than
     # equal; a zero would mean the detector stopped seeing the producer's output
     # entirely, which is a detector regression, not a repair.
-    assert len(live_t1) == len(baseline) == 312
+    # 312 -> 311 (2026-07-30, OCC#5673): see the shrink note on
+    # _RULE_E_RATCHETED_CENSUS["base64-decoded file body"].
+    assert len(live_t1) == len(baseline) == 311
     assert len(live_gen) >= 58
 
     for label, census, distinct in (
