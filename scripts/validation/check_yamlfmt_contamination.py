@@ -63,7 +63,7 @@ double-quoted scalar split across lines with a ``\\`` line continuation. Neither
 occurs in the live corpus -- the parsed-only set is empty, so removing the
 short-circuit changed no baseline, only the adversarial floor. Measured cost of
 parsing every in-scope file: **0.40s -> 15.4s** over 23,706 files (whole gate
-~5s -> ~20s; the job's budget is a minute). A "sound" cheap pre-filter was
+~5s -> ~20s; the job's ``timeout-minutes`` is 20). A "sound" cheap pre-filter was
 considered and rejected: it would be a second clever short-circuit, which is
 the defect being repaired.
 
