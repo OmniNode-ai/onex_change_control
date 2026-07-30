@@ -38,6 +38,8 @@ class ModelDodCheck(BaseModel):
     - grep: check_value is a dict with 'pattern' and 'path' keys
     - command: check_value is a shell command (exit 0 = pass)
     - endpoint: check_value is a URL or path to check
+    - behavior_proven: historical attestation vocabulary retained for parsing;
+      the hosted runner reports it as non-executable WARN evidence
     - semantic_grading: check_value is a receipt path produced by
       node_pr_semantic_grader_llm_effect; the receipt gate requires a
       semantic_grading.yaml receipt at the canonical path for this evidence
@@ -54,7 +56,7 @@ class ModelDodCheck(BaseModel):
     prefix introduced as a temporary fix in OMN-10049 / PR #448.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     check_type: Literal[
         "test_exists",
@@ -63,6 +65,7 @@ class ModelDodCheck(BaseModel):
         "grep",
         "command",
         "endpoint",
+        "behavior_proven",
         "semantic_grading",
     ] = Field(..., description="Type of executable check")
     check_value: str | dict[str, str] = Field(
@@ -84,7 +87,7 @@ class ModelDodCheck(BaseModel):
 class ModelDodEvidenceItem(BaseModel):
     """A single DoD evidence item mapping a requirement to executable checks."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str = Field(
         ...,
@@ -106,9 +109,16 @@ class ModelDodEvidenceItem(BaseModel):
         max_length=_MAX_STRING_LENGTH,
     )
     checks: list[ModelDodCheck] = Field(
-        ...,
+        default_factory=list,
         description="Executable checks that verify this DoD item",
         max_length=_MAX_LIST_ITEMS,
+    )
+    execution_scope: Literal["hosted_and_local", "local_done_gate"] = Field(
+        default="hosted_and_local",
+        description=(
+            "Gate audience authorized to execute this evidence item. "
+            "local_done_gate items are not evaluated by hosted compliance."
+        ),
     )
     status: Literal["pending", "verified", "failed", "skipped"] = Field(
         default="pending",

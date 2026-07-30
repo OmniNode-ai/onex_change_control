@@ -65,11 +65,12 @@ class TestDodEvidenceItemValidation:
                 {"checks": [{"check_type": "command", "check_value": "echo ok"}]}
             )
 
-    def test_dod_evidence_entry_requires_checks(self) -> None:
-        with pytest.raises(ValidationError):
-            ModelDodEvidenceItem.model_validate(
-                {"id": "dod-001", "description": "Must have checks"}
-            )
+    def test_dod_evidence_entry_without_checks_defaults_to_empty(self) -> None:
+        item = ModelDodEvidenceItem.model_validate(
+            {"id": "dod-001", "description": "Historical item without checks"}
+        )
+
+        assert item.checks == []
 
     def test_valid_dod_evidence_item(self) -> None:
         item = ModelDodEvidenceItem.model_validate(
@@ -84,10 +85,57 @@ class TestDodEvidenceItemValidation:
         assert item.status == "pending"
         assert item.linear_dod_text is None
         assert item.evidence_artifact is None
+        assert item.execution_scope == "hosted_and_local"
+
+    def test_local_done_gate_execution_scope_round_trips(self) -> None:
+        item = ModelDodEvidenceItem.model_validate(
+            {
+                "id": "dod-private-runtime-proof",
+                "description": "Private proof runs at the local Done gate",
+                "execution_scope": "local_done_gate",
+                "checks": [{"check_type": "command", "check_value": "false"}],
+            }
+        )
+
+        dumped = item.model_dump(mode="json")
+        assert dumped["execution_scope"] == "local_done_gate"
+        assert ModelDodEvidenceItem.model_validate(dumped) == item
+
+    def test_unknown_execution_scope_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ModelDodEvidenceItem.model_validate(
+                {
+                    "id": "dod-unknown-scope",
+                    "description": "Unknown consumers fail closed",
+                    "execution_scope": "local-ish",
+                    "checks": [{"check_type": "command", "check_value": "true"}],
+                }
+            )
+
+    def test_misspelled_execution_scope_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ModelDodEvidenceItem.model_validate(
+                {
+                    "id": "dod-misspelled-scope",
+                    "description": "A misspelled audience must not default",
+                    "execution_scpoe": "local_done_gate",
+                    "checks": [{"check_type": "command", "check_value": "false"}],
+                }
+            )
+
+    def test_unknown_check_field_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ModelDodCheck.model_validate(
+                {
+                    "check_type": "command",
+                    "check_value": "true",
+                    "command": "false",
+                }
+            )
 
 
 class TestDodCheckTypes:
-    """Validate all 7 check types."""
+    """Validate every OCC-supported check type."""
 
     @pytest.mark.parametrize(
         "check_type",
@@ -98,6 +146,7 @@ class TestDodCheckTypes:
             "grep",
             "command",
             "endpoint",
+            "behavior_proven",
             "semantic_grading",
         ],
     )
@@ -112,6 +161,29 @@ class TestDodCheckTypes:
             ModelDodCheck.model_validate(
                 {"check_type": "invalid_type", "check_value": "x"}
             )
+
+    def test_legacy_behavior_proven_item_remains_parseable(self) -> None:
+        """OMN-10839's sole historical vocabulary must survive strict parsing."""
+        item = ModelDodEvidenceItem.model_validate(
+            {
+                "id": "dod-syntax-check",
+                "description": (
+                    "/bin/bash -n scripts/prune-worktrees.sh passes on macOS bash 3.2"
+                ),
+                "source": "manual",
+                "checks": [
+                    {
+                        "check_type": "behavior_proven",
+                        "check_value": (
+                            "Verified: /bin/bash -n scripts/prune-worktrees.sh "
+                            "exits 0 on macOS bash 3.2.57"
+                        ),
+                    }
+                ],
+            }
+        )
+
+        assert item.checks[0].check_type == "behavior_proven"
 
     def test_semantic_grading_check_type_loads(self) -> None:
         """OMN-10859: semantic_grading check_type accepted by ModelDodCheck."""

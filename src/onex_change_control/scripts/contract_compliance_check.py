@@ -54,6 +54,9 @@ from dataclasses import field as dc_field
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from onex_change_control.models.model_dod_check import ModelDodEvidenceItem
 from onex_change_control.validation.evidence_admissibility import (
     EXECUTED_HERMETIC_COMMANDS,
     LIVE_PROBE_COMMANDS,
@@ -72,6 +75,12 @@ _OMN_TICKET_PATTERN = re.compile(r"\b(OMN-\d+)\b", re.IGNORECASE)
 _RESULT_PASS = "PASS"  # noqa: S105
 _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
+_RESULT_NOT_EVALUATED = "NOT_EVALUATED"
+_EXECUTION_SCOPE_HOSTED_AND_LOCAL = "hosted_and_local"
+_EXECUTION_SCOPE_LOCAL_DONE_GATE = "local_done_gate"
+_EXECUTION_SCOPES = frozenset(
+    {_EXECUTION_SCOPE_HOSTED_AND_LOCAL, _EXECUTION_SCOPE_LOCAL_DONE_GATE}
+)
 _ALLOWLIST_FIELDS = 2  # each entry is 'OMN-1234 <sha256>'
 
 # OMN-15309 -- admissibility is decided by ONE predicate, shared with deploy-gate.
@@ -912,10 +921,39 @@ def _run_dod_checks(
     results: list[tuple[str, str, str, str]] = []
     superseded = _superseded_dod_ids(dod_evidence)
     for dod_item in dod_evidence:
-        item_id = dod_item.get("id", "?")
-        item_desc = dod_item.get("description", "")
+        item_id = dod_item.get("id", "?") if isinstance(dod_item, dict) else "?"
+        item_desc = (
+            dod_item.get("description", "") if isinstance(dod_item, dict) else ""
+        )
+        print(f"\n[DoD {item_id}] {str(item_desc)[:80]}", flush=True)
+
+        validated_item, validation_error = _validate_dod_item(dod_item)
+        if validation_error is not None:
+            results.append(
+                (item_id, "dod_evidence_schema", _RESULT_BLOCK, validation_error)
+            )
+            print(f"  [X] dod_evidence_schema: {validation_error}", flush=True)
+            continue
+        assert validated_item is not None
+
+        checks = validated_item["checks"]
+        if not checks:
+            detail = (
+                "NO_EXECUTABLE_CHECKS -- dod_evidence item declares no checks; "
+                "an evidence requirement with no executable observation cannot "
+                "produce a gate result."
+            )
+            result = _RESULT_BLOCK
+            marker = "[X]"
+            if context.is_legacy:
+                result = _RESULT_WARN
+                marker = "[~]"
+                detail = "GRANDFATHERED (OMN-14436 content-pinned ratchet) -- " + detail
+            results.append((item_id, "checks", result, detail))
+            print(f"  {marker} checks: {detail}", flush=True)
+            continue
+
         if item_id in superseded:
-            print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
             detail = (
                 "SUPERSEDED -- a later append-only dod_evidence item declares "
                 f"evidence_artifact='supersedes_dod_evidence:{item_id}'; old "
@@ -925,8 +963,17 @@ def _run_dod_checks(
             results.append((item_id, "superseded", _RESULT_WARN, detail))
             print(f"  [~] superseded: {detail}", flush=True)
             continue
-        checks = dod_item.get("checks", [])
-        print(f"\n[DoD {item_id}] {item_desc[:80]}", flush=True)
+
+        execution_scope = validated_item["execution_scope"]
+        if execution_scope == _EXECUTION_SCOPE_LOCAL_DONE_GATE:
+            detail = (
+                "NOT-EVALUATED [local_done_gate] -- hosted contract compliance "
+                "is not an authorized consumer; the local Done gate must execute "
+                "this item and persist its result."
+            )
+            results.append((item_id, "execution_scope", _RESULT_NOT_EVALUATED, detail))
+            print(f"  [-] execution_scope: {detail}", flush=True)
+            continue
         for check in checks:
             check_type, result, detail = _run_single_check(check, workspace, context)
             result, detail, label = _demote(check, result, detail, context)
@@ -935,6 +982,34 @@ def _run_dod_checks(
             tag = f"{label} " if label else ""
             print(f"  [{icon}] {tag}{check_type}: {detail}", flush=True)
     return results
+
+
+def _validate_dod_item(
+    dod_item: Any,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Strictly validate one active item before any declared check can execute."""
+    if not isinstance(dod_item, dict):
+        return None, "INVALID_DOD_EVIDENCE_ITEM -- item must be a mapping"
+
+    execution_scope = dod_item.get("execution_scope", _EXECUTION_SCOPE_HOSTED_AND_LOCAL)
+    if not isinstance(execution_scope, str) or execution_scope not in _EXECUTION_SCOPES:
+        return None, (
+            f"UNKNOWN_EXECUTION_SCOPE {execution_scope!r} -- allowed values: "
+            f"{', '.join(sorted(_EXECUTION_SCOPES))}; refusing to execute with "
+            "an ambiguous evidence audience."
+        )
+
+    try:
+        validated = ModelDodEvidenceItem.model_validate(dod_item)
+    except ValidationError as exc:
+        locations = sorted(
+            {".".join(str(part) for part in error["loc"]) for error in exc.errors()}
+        )
+        return None, (
+            "INVALID_DOD_EVIDENCE_ITEM -- strict schema rejected field(s): "
+            f"{', '.join(locations)}"
+        )
+    return validated.model_dump(mode="json"), None
 
 
 def _superseded_dod_ids(dod_evidence: list[Any]) -> set[str]:
@@ -973,14 +1048,25 @@ def _has_effective_check(
     runner only ever showed authors the receipt store -- so the legacy corpus is
     grandfathered. A NEW ticket gets no such pass.
     """
+    superseded = _superseded_dod_ids(dod_evidence)
     for dod_item in dod_evidence:
         if not isinstance(dod_item, dict):
             continue
-        for check in dod_item.get("checks", []) or []:
-            if isinstance(check, dict) and not _is_inert_check(
-                check.get("check_value", ""),
-                changed_paths,
-                str(check.get("check_type", "command") or "command"),
+        validated_item, validation_error = _validate_dod_item(dod_item)
+        if validation_error is not None or validated_item is None:
+            continue
+        if validated_item["id"] in superseded:
+            continue
+        if validated_item["execution_scope"] != _EXECUTION_SCOPE_HOSTED_AND_LOCAL:
+            continue
+        for check in validated_item["checks"]:
+            if not isinstance(check, dict):
+                continue
+            check_type = str(check.get("check_type", "") or "")
+            if check_type not in _CHECK_RUNNERS:
+                continue
+            if not _is_inert_check(
+                check.get("check_value", ""), changed_paths, check_type
             ):
                 return True
     return False
@@ -1075,9 +1161,12 @@ def run_compliance_check(
     passes = sum(1 for _, _, r, _ in results if r == _RESULT_PASS)
     warns = sum(1 for _, _, r, _ in results if r == _RESULT_WARN)
     blocks = sum(1 for _, _, r, _ in results if r == _RESULT_BLOCK)
+    not_evaluated = sum(1 for _, _, r, _ in results if r == _RESULT_NOT_EVALUATED)
 
+    not_evaluated_summary = f", {not_evaluated} NOT_EVALUATED" if not_evaluated else ""
     print(
-        f"\n[SUMMARY] {ticket_id}: {passes}/{total} PASS, {warns} WARN, {blocks} BLOCK",
+        f"\n[SUMMARY] {ticket_id}: {passes}/{total} PASS"
+        f"{not_evaluated_summary}, {warns} WARN, {blocks} BLOCK",
         flush=True,
     )
 
@@ -1093,9 +1182,11 @@ def run_compliance_check(
             )
         else:
             print(
-                f"[BLOCK] {ticket_id}: every check is INADMISSIBLE -- not one of "
-                f"them is EXECUTED, FALSIFIABLE, and OUTSIDE ITS OWN DIFF, so this "
-                f"contract cannot certify the code it claims to about {repo}.\n"
+                f"[BLOCK] {ticket_id}: no hosted-and-local effective check exists "
+                f"-- every hosted check is INADMISSIBLE or every evidence item is "
+                f"reserved for another execution scope. Not one hosted check is "
+                f"EXECUTED, FALSIFIABLE, and OUTSIDE ITS OWN DIFF, so this contract "
+                f"cannot certify the code it claims to about {repo}.\n"
                 f"{admissible_evidence_guidance(repo)}",
                 flush=True,
             )
