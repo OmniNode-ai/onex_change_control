@@ -455,12 +455,23 @@ dod_evidence:
       (c) the two per-PR legs return 2 today and would return 1 if either hand companion were removed.
       Runs entirely against onex_change_control's own search surface, so the contract-compliance runner's
       OCC-scoped token is sufficient (no cross-repo actions:read, unlike the readbacks in evidence_requirements).
+      CI-ADMISSIBILITY REWORK, recorded because the first attempt was WRONG and CI caught it: the first
+      pushed revision of this value carried the empty-field guard as `awk ... if (length(e)==0) e=S`,
+      and the Contract Compliance Check classified the whole leg `INERT [NOT_FALSIFIABLE]` (run 30526689447,
+      job 90819147757) -- i.e. it was NEVER EXECUTED in CI. Root cause, reproduced locally against onex_change_control.validation.evidence_admissibility.commands_in:
+      a nested function-call paren inside an `if (...)` condition inside a single-quoted awk program makes
+      the lexer lose EVERY command in the value, so `gh` disappears from command position and the check
+      silently degrades to a WARN instead of gating. Reworked to move the null->sentinel into jq (`(.closed_at
+      // "9999-99-99")`), which removes the nested paren; `commands_in` now returns ['[', 'awk', 'gh',
+      'gh-api'] and classify_evidence_item returns ADMISSIBLE for both this and the forward guard. The
+      lexer defect itself is a real gate hole (any check can be silently downgraded this way) and is reported
+      on the PR rather than worked around silently.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: |-
-          STATS="$(gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A2026-07-29T03%3A01%3A23Z..2026-07-30T08%3A00%3A00Z&per_page=100' --jq '.items[]|[.title,.created_at,.closed_at]|@tsv' | awk -F'\t' -v S=9999-99-99 '$1 ~ /OCC companion for OmniNode-ai\/[a-z_]+#[0-9]+$/ { t=$1; sub(/.* /,x,t); e=$3; if (length(e)==0) e=S; n[t]++; st[t,n[t]]=$2; en[t,n[t]]=e; tot++ } END { for (k in n) { if (n[k]<2) continue; dups++; hit=0; for (i=1;i<=n[k];i++) for (j=i+1;j<=n[k];j++) if (st[k,i] < en[k,j] && st[k,j] < en[k,i]) hit=1; races+=hit } print tot+0, dups+0, races+0 }')" && TOT="${STATS%% *}" && REST="${STATS#* }" && DUPS="${REST%% *}" && RACES="${REST##* }" && [ "$TOT" -ge 60 ] && [ "$DUPS" -eq 5 ] && [ "$RACES" -eq 2 ]
+          STATS="$(gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A2026-07-29T03%3A01%3A23Z..2026-07-30T08%3A00%3A00Z&per_page=100' --jq '.items[]|[.title,.created_at,(.closed_at // "9999-99-99")]|@tsv' | awk -F'\t' '$1 ~ /OCC companion for OmniNode-ai\/[a-z_]+#[0-9]+$/ { t=$1; sub(/.* /,x,t); n[t]++; st[t,n[t]]=$2; en[t,n[t]]=$3; tot++ } END { for (k in n) { if (n[k]<2) continue; dups++; hit=0; for (i=1;i<=n[k];i++) for (j=i+1;j<=n[k];j++) if (st[k,i] < en[k,j] && st[k,j] < en[k,i]) hit=1; races+=hit } print tot+0, dups+0, races+0 }')" && TOT="${STATS%% *}" && REST="${STATS#* }" && DUPS="${REST%% *}" && RACES="${REST##* }" && [ "$TOT" -ge 60 ] && [ "$DUPS" -eq 5 ] && [ "$RACES" -eq 2 ]
       - check_type: "command"
         check_value: |-
           COUNT="$(gh api 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%2Fomnibase_infra%232536%22' --jq .total_count)" && [ "$COUNT" -eq 2 ]
@@ -495,13 +506,21 @@ dod_evidence:
       demonstrably sees #1949 -- it is classified as a sequential re-mint rather than a race because OCC#5459
       merged 14:35:13Z BEFORE OCC#5466 was created at 14:45:21Z, which is a measured fact, not an exemption;
       (c) against a non-existent repo the fetch 422s, every counter resolves to 0 and the corpus control
-      fails the check -- fail-CLOSED.
+      fails the check -- fail-CLOSED. SIMULTANEOUSLY-OPEN PATH PROVEN ON SYNTHETIC INPUT, because live
+      data cannot exercise it today: every companion in both windows is currently closed, so the `(.closed_at
+      // "9999-99-99")` open-interval sentinel would otherwise be untested code. Fed a 4-row fixture through
+      the identical jq+awk pipeline (two companions for foo#1 both with `closed_at: null`; two for bar#2
+      where the first closed before the second was created) the detector returns `tot=4 dups=2 races=1
+      racelist=[OmniNode-ai/foo#1]` -- it fires on the two simultaneously-open companions and does not
+      fire on the sequential pair. That is the exact discrimination bullet 3 asks for, demonstrated rather
+      than argued. See also the CI-admissibility rework recorded on dod-omn-15192-b3-accepted-deviation-census:
+      this value carried the same INERT-in-CI defect and was reworked with it.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: |-
-          STATS="$(gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A%3E2026-07-29T05%3A00%3A00Z&per_page=100' --jq '.items[]|[.title,.created_at,.closed_at]|@tsv' | awk -F'\t' -v S=9999-99-99 '$1 ~ /OCC companion for OmniNode-ai\/[a-z_]+#[0-9]+$/ { t=$1; sub(/.* /,x,t); e=$3; if (length(e)==0) e=S; n[t]++; st[t,n[t]]=$2; en[t,n[t]]=e; tot++ } END { for (k in n) { if (n[k]<2) continue; dups++; hit=0; for (i=1;i<=n[k];i++) for (j=i+1;j<=n[k];j++) if (st[k,i] < en[k,j] && st[k,j] < en[k,i]) hit=1; races+=hit } print tot+0, dups+0, races+0 }')" && TOT="${STATS%% *}" && REST="${STATS#* }" && DUPS="${REST%% *}" && RACES="${REST##* }" && [ "$TOT" -ge 40 ] && [ "$DUPS" -ge 1 ] && [ "$RACES" -eq 0 ]
+          STATS="$(gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A%3E2026-07-29T05%3A00%3A00Z&per_page=100' --jq '.items[]|[.title,.created_at,(.closed_at // "9999-99-99")]|@tsv' | awk -F'\t' '$1 ~ /OCC companion for OmniNode-ai\/[a-z_]+#[0-9]+$/ { t=$1; sub(/.* /,x,t); n[t]++; st[t,n[t]]=$2; en[t,n[t]]=$3; tot++ } END { for (k in n) { if (n[k]<2) continue; dups++; hit=0; for (i=1;i<=n[k];i++) for (j=i+1;j<=n[k];j++) if (st[k,i] < en[k,j] && st[k,j] < en[k,i]) hit=1; races+=hit } print tot+0, dups+0, races+0 }')" && TOT="${STATS%% *}" && REST="${STATS#* }" && DUPS="${REST%% *}" && RACES="${REST##* }" && [ "$TOT" -ge 40 ] && [ "$DUPS" -ge 1 ] && [ "$RACES" -eq 0 ]
       - check_type: "command"
         check_value: |-
           REPOS="$(gh api --paginate 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+OmniNode-ai%22+created%3A%3E2026-07-29T05%3A00%3A00Z&per_page=100' --jq '.items[].title' | awk -F'OmniNode-ai/' 'NF>1 { split($2,a,/#/); print a[1] }' | sort -u | wc -l | tr -d ' ')" && [ "$REPOS" -ge 5 ]
