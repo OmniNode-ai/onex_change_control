@@ -137,6 +137,50 @@ def _scan_corpus_rule_e() -> tuple[frozenset[str], frozenset[str], frozenset[str
     return frozenset(tier1_ratcheted), frozenset(tier1_generated), frozenset(tier2)
 
 
+_PRODUCER_LABEL_RE = re.compile(r"unbounded producer \(([^)]+)\)")
+
+
+@lru_cache(maxsize=1)
+def _scan_corpus_rule_e_buckets() -> tuple[
+    dict[str, tuple[int, int]], dict[str, tuple[int, int]]
+]:
+    """Return ({bucket: (items, check_values)}, same-for-generated).
+
+    The per-bucket split is what a repair lane batches on, so the numbers get
+    quoted in ticket comments and PR bodies -- and get quoted wrong. This
+    derives them from the shipped detector so the assertion below is a
+    measurement, not a restatement.
+    """
+    contracts_dir = _REPO_ROOT / "contracts"
+    ratcheted: dict[str, set[str]] = {}
+    ratcheted_checks: dict[str, int] = {}
+    generated: dict[str, set[str]] = {}
+    generated_checks: dict[str, int] = {}
+
+    for path in sorted(contracts_dir.glob("*.yaml")):
+        rel = f"contracts/{path.name}"
+        for _path_str, label, _fragment in linter.lint_contract_warnings(path):
+            if "sigpipe-fragile" not in label:
+                continue
+            match = _PRODUCER_LABEL_RE.search(label)
+            if match is None:  # pragma: no cover - detector always labels
+                continue
+            bucket = match.group(1)
+            dod_id = label.split(":", 1)[0]
+            entry = f"{rel}::{dod_id}"
+            if _is_generated_sigpipe_item(dod_id):
+                generated.setdefault(bucket, set()).add(entry)
+                generated_checks[bucket] = generated_checks.get(bucket, 0) + 1
+            else:
+                ratcheted.setdefault(bucket, set()).add(entry)
+                ratcheted_checks[bucket] = ratcheted_checks.get(bucket, 0) + 1
+
+    return (
+        {b: (len(v), ratcheted_checks[b]) for b, v in ratcheted.items()},
+        {b: (len(v), generated_checks[b]) for b, v in generated.items()},
+    )
+
+
 @pytest.mark.unit
 def test_rule_a_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_A_BASELINE_PATH)
@@ -224,8 +268,29 @@ def test_omn_14968_and_omn_15382_contribute_nothing_to_either_baseline() -> None
 #
 # The corpus scan is the enforcement surface that matters: the pre-commit hook
 # only sees CHANGED files, so a rule wired there alone would never have caught
-# the 23 checks OCC#5481 appended to contracts CI never resolved. These tests
-# run under pytest over EVERY contract, on every PR.
+# the 23 checks OCC#5481 appended to contracts CI never resolved.
+#
+# CORRECTION (OMN-15411 round 2). A previous revision of this comment claimed
+# these tests "run under pytest over EVERY contract, on every PR". That was
+# FALSE on the dev merge path, and it is the reason this module's ratchets had
+# no merge-blocking force for months:
+#
+#   * ci.yml's `test` job carries
+#     `if: ... (github.event_name != 'pull_request' || github.base_ref != 'dev')`
+#     -- it is SKIPPED on every PR targeting `dev`, and ci-summary's generic
+#     `contains(needs.*.result, 'failure')` rollup passes on a skipped need.
+#   * The only other runner was `tests+coverage (shadow)` in
+#     product-readiness-shadow.yml, which that file's own comment describes as
+#     "deliberately kept OUT of `required_status_checks`".
+#   * OCC dev's required contexts are exactly
+#     ["CI Summary", "required-check-skip-guard / check-skip-vectors"].
+#
+# They DO now, via the unconditional `contract-corpus-ratchets` job in ci.yml,
+# which is in ci-summary's `needs:` AND has a strict success-only check there
+# (a plain `needs:` entry is not enough -- the generic rollup tolerates
+# `skipped`). scripts/validation/check_corpus_ratchet_wiring.py is the
+# anti-removal anchor, wired as a pre-commit hook on ci.yml and re-run inside
+# the job itself.
 # ---------------------------------------------------------------------------
 
 
@@ -376,3 +441,85 @@ def test_omn_15391_round2_repairs_contribute_nothing_to_rule_c_or_d() -> None:
             f"An OMN-15391 round-2 item is in a violation baseline: {entry}. "
             "Round-2 items must be clean, not baselined."
         )
+
+
+# OMN-15411 round-2 numeric pin.
+#
+# PR #5541's body stated "the `gh pr diff ${PR_NUMBER}` bucket (283 checks)".
+# That number is wrong, and it is the number a repair lane would batch on. An
+# independent scan with the shipped detector measures 143 items / 143
+# check_values in that bucket. The builder's own OMN-15411 comment said 143, so
+# the PR body contradicted its own evidence.
+#
+# The remaining-work census is now derived from the detector by this test rather
+# than restated in prose, so a future correction lands as a test diff with the
+# real numbers attached.
+_RULE_E_RATCHETED_CENSUS: dict[str, tuple[int, int]] = {
+    "base64-decoded file body": (160, 177),
+    "gh pr diff": (143, 143),
+    "paginated REST list": (5, 5),
+    "git history walk": (4, 4),
+}
+_RULE_E_GENERATED_CENSUS: dict[str, tuple[int, int]] = {
+    "gh pr diff": (47, 47),
+    "paginated REST list": (5, 5),
+    "iterating jq projection": (4, 4),
+    "base64-decoded file body": (2, 3),
+}
+
+
+@pytest.mark.unit
+def test_rule_e_per_bucket_census_is_pinned() -> None:
+    """The per-bucket remaining-work census matches a live detector scan.
+
+    Shrink-only in spirit like the baselines: repairing a bucket must update
+    this dict in the same PR, which is exactly the moment the remaining count
+    posted on the ticket should change too.
+    """
+    ratcheted, generated = _scan_corpus_rule_e_buckets()
+    assert ratcheted == _RULE_E_RATCHETED_CENSUS, (
+        "Rule E ratcheted per-bucket census drifted from the live scan. "
+        f"live={ratcheted} pinned={_RULE_E_RATCHETED_CENSUS}. Update the pin in "
+        "the SAME PR that repairs (or adds) instances, and update the "
+        "remaining-count comment on OMN-15411 to match."
+    )
+    assert generated == _RULE_E_GENERATED_CENSUS, (
+        "Rule E generated (carved-out) per-bucket census drifted from the live "
+        f"scan. live={generated} pinned={_RULE_E_GENERATED_CENSUS}. The "
+        "carve-out is producer-side debt tracked at omnimarket "
+        "node_occ_companion_compute (OMN-15407); growth here means the producer "
+        "minted more instances, not that a human authored them."
+    )
+
+
+@pytest.mark.unit
+def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
+    """Cross-foot the per-bucket census against the two set-based scans.
+
+    Guards the arithmetic error class directly: an item can hit more than one
+    producer bucket, so per-bucket item counts do NOT sum to the distinct-item
+    total, and check_value counts are >= item counts. Asserting the relation
+    rather than a hand-added total is what makes the pinned numbers safe to
+    quote.
+    """
+    ratcheted, generated = _scan_corpus_rule_e_buckets()
+    live_t1, live_gen, _tier2 = _scan_corpus_rule_e()
+    baseline = _load_baseline(_RULE_E_BASELINE_PATH)
+
+    assert len(live_t1) == len(baseline) == 312
+    assert len(live_gen) == 58
+
+    for label, census, distinct in (
+        ("ratcheted", ratcheted, len(live_t1)),
+        ("generated", generated, len(live_gen)),
+    ):
+        summed_items = sum(items for items, _checks in census.values())
+        assert summed_items >= distinct, (
+            f"{label}: per-bucket item counts ({summed_items}) cannot be below "
+            f"the distinct-item total ({distinct})."
+        )
+        for bucket, (items, checks) in census.items():
+            assert checks >= items, (
+                f"{label}/{bucket}: {checks} check_values < {items} items -- "
+                "impossible, each item contributes at least one check_value."
+            )
