@@ -1,0 +1,92 @@
+---
+# Receipt for the HOSTED-RUNNABLE half of OMN-15352 AC4 plus the tamper-evident
+# seal over the live-readback receipt. All four check_values were executed
+# verbatim through `sh -c` (the same invocation path
+# `contract_compliance_check._check_command` / node_dod_verify use), from the OCC
+# repo root on the gate host, against the exact committed bytes in this PR.
+#
+# Each check was ALSO falsified deliberately (RED controls recorded in
+# actual_output). A check that was never seen to go RED is not evidence that it
+# can — `feedback_prove_red_against_exists_but_wrong`.
+schema_version: "1.0.0"
+ticket_id: "OMN-15352"
+evidence_item_id: "dod-omn-15352-ac4-live-readback-hosted-seal"
+check_type: "command"
+check_value: "test \"$(gh api repos/OmniNode-ai/omnibase_infra/compare/b6df2d16169a71394a087f268f2be6d72d99551e...f420d5fa26f704c75c3854ba2efc788d36175d13
+  --jq '.status')\" = \"ahead\""
+contract_entry_sha256: "sha256:5b44992a72d81a8aa027dcebfdb861ff6990e93d9c368ed7b1b26ecf441cfc9e"
+status: PASS
+run_timestamp: "2026-07-30T04:58:00Z"
+commit_sha: "790b1b286c2c3b0abf213ff2596df1dbd3863c8f"
+runner: "fable-ac4-receipt-0730/omn15352-ac4-durable-receipt"
+verifier: "executed-probe"
+probe_command: "for each of the 4 check_values in dod_evidence item dod-omn-15352-ac4-live-readback-hosted-seal:
+  sh -c \"<check_value>\", run from the OCC repo root on the gate host (Stickybeatz-Studio.local), against
+  the committed bytes of this PR"
+probe_stdout: |
+  check 1  exit=0  stdout=''      # test "$(gh api .../compare/b6df2d16...f420d5fa --jq .status)" = "ahead"
+  check 2  exit=0  stdout='5'     # gh api .../contents/scripts/deploy-runtime.sh?ref=f420d5fa... | base64 -d | grep -c snapshot_latest_image_tags
+  check 3  exit=0  stdout=''      # sha256 seal over the live-readback receipt
+  check 4  exit=0  stdout=''      # six pinned readback values present in that receipt
+actual_output: |
+  PASS — 4/4 checks executed and green; 5/5 RED controls fired.
+
+  GREEN (verbatim exits above). Check 2 is the only one that emits stdout: `5`,
+  the number of `snapshot_latest_image_tags` occurrences in
+  scripts/deploy-runtime.sh at the DEPLOYED ref f420d5fa26f704c75c3854ba2efc788d36175d13.
+
+  RED CONTROLS — each check was made to fail on purpose:
+    RED-1  compare pair reversed (f420d5fa...b6df2d16) -> GitHub returns `behind`,
+           test exits 1. So check 1 is decided by GitHub's own ancestry answer,
+           not by the string this author typed.
+    RED-2  same contents read, same ref, grepping for the marker the fix REMOVED
+           (`registry.json may contain stale metadata`) -> count 0, exit 1.
+           Falsifiable in both directions at one ref.
+    RED-3  one hex character flipped in the pinned receipt digest
+           (d8... -> df...) -> exit 1.
+    RED-4  one pinned readback value replaced with 64 zeroes -> exit 1.
+    RED-5  the real tamper test: appended `# tamper` to the live-readback receipt
+           on disk -> seal exits 1; file restored, digest back to
+           d8dcc7a34f2e931989fbe430ada79b433858c103df34cb86affdf8fc06bc4c96.
+           This is the one that proves the seal is a seal.
+
+  ADMISSIBILITY, STATED PLAINLY RATHER THAN ASSUMED (OMN-14505 / OMN-15309):
+    checks 1 and 2 are ADMISSIBLE — `gh api` is in
+      evidence_admissibility.LIVE_PROBE_COMMANDS, both are in command position,
+      both read a surface this PR does not author, both pinned to immutable SHAs,
+      and neither endpoint matches the metadata-only refusal
+      (_GH_METADATA_ENDPOINT_RE covers /pulls|issues/<n>, not /compare or /contents).
+    checks 3 and 4 are INADMISSIBLE BY CONSTRUCTION and are not dressed up as
+      proof: their path operands match SELF_REFERENTIAL_PATTERNS (`dod_receipts`),
+      which the predicate DENIES first and unconditionally, and the file they read
+      is added by this same PR, so the INSIDE_OWN_DIFF rule would refuse them too.
+      They still EXECUTE and still go RED (RED-3/4/5), which is exactly what a
+      tamper seal is for — but they establish integrity of the record, not the
+      runtime fact. Anyone reading a green here as proof that `.201` is running
+      f420d5fa26f7 is reading it wrong; that fact is proven only by the live
+      readback in the superseded sibling receipt, and re-proving it requires
+      `.201` access.
+
+  WHY THIS ITEM SUPERSEDES THE LIVE-READBACK ITEM RATHER THAN REPLACING IT:
+    `dod-omn-15352-ac4-dev-lane-live-readback` carries an `ssh omni-201-ts` probe.
+    That probe cannot run in a hosted runner, so left un-superseded it would be a
+    guaranteed red on every hosted evaluation. Supersession is append-only (only a
+    LATER item may retire an EARLIER one) and, per node_dod_verify's
+    `_supersession_is_in_effect`, retires its target ONLY IF this item is itself
+    VERIFIED — so if any of the four checks above go red, the live-readback item is
+    executed normally instead of being silently swallowed. Fail-closed by design.
+
+  NOT PROVEN HERE (unchanged residuals, carried forward):
+    * AC1 / AC2 — the RED-first regression test driving the real deploy-runtime.sh
+      failure path. Carried by
+      tests/scripts/test_deploy_runtime_registry_commit_on_success.py in
+      https://github.com/OmniNode-ai/omnibase_infra/pull/2541 . An independent RED
+      re-execution is still owed; 4 of that suite's 9 assertions are behavioural
+      and 5 are static ordering greps, so the "9/9 RED" figure in the PR body is
+      partly carried by greps that would flip trivially.
+    * The `.201` live half is not hosted-reproducible at all. That is a property of
+      the surface, not a gap this contract can close.
+exit_code: 0
+duration_ms: 3960
+branch: "jonah/omn-15352-ac4-durable-receipt"
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-15352-ac4-receipt/onex_change_control"
