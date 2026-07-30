@@ -58,6 +58,46 @@
 # and `--branch main` both return PASS (empty diff in both directions) —
 # see PR body for full command output.
 #
+# RECONCILED 2026-07-30 (OMN-12592, "Require Receipt Gate, Pre-commit, CI
+# Summary checks on OCC dev"). `dev` branch protection was flipped FIRST (per
+# the Migration Safety procedure below), adding `verify / verify` and
+# `occ-preflight / eligibility` to `required_status_checks` on `dev`; this file
+# follows that flip. Live `dev` set went 2 -> 4 contexts:
+#   ["CI Summary", "required-check-skip-guard / check-skip-vectors",
+#    "verify / verify", "occ-preflight / eligibility"]
+# with `strict: false` and every non-`required_status_checks` protection field
+# preserved byte-for-byte (additive PATCH on the
+# `.../protection/required_status_checks` sub-resource).
+#
+# WHY (the gap this closes): both contexts fired on every `dev` PR but were
+# required on `main` only, so on `dev` they failed OPEN — OCC#5597 merged
+# 2026-07-30T11:35:59Z with `verify / verify` RED (completed 11:12:17Z) and
+# `occ-preflight / eligibility` RED (completed 11:10:03Z), neither a
+# superseded stale run. `CI Summary` cannot cover them: OCC has no
+# `scripts/ci/ci_summary_gate.py` poller — its `ci-summary` job is a plain
+# `needs:` aggregator over `ci.yml` jobs only, and both of these live in
+# separate workflow files (`call-receipt-gate.yml`, `call-occ-preflight.yml`),
+# i.e. separate workflow runs a `needs:` expression can never observe. `dev`
+# was therefore strictly weaker than `main` on the repo where every real merge
+# lands on `dev`.
+#
+# Three rows changed in this pass:
+#   - `verify / verify`             : `branch: main` REMOVED (now both branches)
+#   - `occ-preflight / eligibility` : `branch: main` REMOVED (now both branches)
+#   - `required-check-skip-guard / check-skip-vectors`: ADVISORY -> REQUIRED
+#     with `branch: dev` — pre-existing manifest drift, not introduced here.
+#     Branch protection already required it on `dev` as of the 2026-07-27
+#     OMN-15241 flip (>=2 independent green runs, the bar its own ADVISORY
+#     rationale set); the manifest row was never updated, so
+#     `reconcile_manifest_vs_live.py --branch dev` was already FAILing
+#     `missing_from_manifest` on it before this change. It is NOT required on
+#     `main` (main's 23-context set does not contain it), hence `branch: dev`.
+#
+# `Pre-commit` deliberately gets NO dev row: it is a `ci.yml` job inside
+# `ci-summary`'s `needs:` list, so `CI Summary` already gates it transitively
+# on `dev`. Adding it as a direct dev context would be redundant, and the
+# manifest must mirror live protection exactly or the reconcile fails.
+#
 # Do NOT rename/remove a REQUIRED row without following the Branch Protection
 # Migration Safety procedure — flip branch protection first (or same PR), then
 # update this file, so the reconcile job never observes a divergence window.
@@ -87,15 +127,19 @@ gates:
 
   - name: "verify / verify"
     mode: REQUIRED
-    branch: main
     producer_kind: cross_repo
     caller_workflow: call-receipt-gate.yml
     caller_job: verify
     cross_repo_ref: "OmniNode-ai/omnibase_core/.github/workflows/receipt-gate.yml@main"
     skip_semantics: never
-    rationale: "Receipt Gate (cross-repo reusable hosted in omnibase_core). Live required status check
-      on onex_change_control main branch protection only as of the 2026-07-25 readback (no longer
-      required on dev, which now enforces only CI Summary)."
+    rationale: "Receipt Gate (cross-repo reusable hosted in omnibase_core). OMN-12592 (2026-07-30):
+      `branch: main` REMOVED — now a live required status check on BOTH dev and main. Previously
+      main-only, which made it fail OPEN on dev (OCC#5597 merged with this context RED). Trigger is
+      `pull_request: branches: [main, dev, hotfix/**]` with no `paths:` filter, so it reports on every
+      dev PR; verified reporting on 8/8 of the most recently merged dev PRs before the flip.
+      NOTE: this repo's own CLAUDE.md and this workflow file's header comment both call the context
+      `Receipt Gate / verify`; the LIVE check-run name is `verify / verify` (caller job id `verify` /
+      reusable job id `verify`) — that prose is stale, the name here is the live one."
 
   - name: "Pre-commit"
     mode: REQUIRED
@@ -121,14 +165,19 @@ gates:
 
   - name: "occ-preflight / eligibility"
     mode: REQUIRED
-    branch: main
     producer_kind: cross_repo
     caller_workflow: call-occ-preflight.yml
     caller_job: occ-preflight
     cross_repo_ref: "OmniNode-ai/omnibase_core/.github/workflows/occ-preflight.yml@main"
     skip_semantics: never
-    rationale: "Central OCC eligibility gate (cross-repo reusable hosted in omnibase_core). Live required
-      status check on main only (verified 2026-07-25 — no longer required on dev)."
+    rationale: "Central OCC eligibility gate (cross-repo reusable hosted in omnibase_core). OMN-12592
+      (2026-07-30): `branch: main` REMOVED — now a live required status check on BOTH dev and main.
+      Closes the OMN-13332 residual: that ticket ('make occ-preflight REQUIRED across all auto-merging
+      repos') is Done, yet OCC — which has repo-level auto-merge enabled and ships
+      .github/workflows/auto-merge.yml — did not require it on dev, the branch every real merge lands
+      on. Trigger is `pull_request: branches: [main, dev, hotfix/**]` with no `paths:` filter, so it
+      reports on every dev PR; verified reporting on 8/8 of the most recently merged dev PRs before the
+      flip."
 
   - name: "Doctrine Coverage Matrix"
     mode: REQUIRED
@@ -340,14 +389,17 @@ gates:
       status check on main only, previously uncovered by this (dev-only) manifest."
 
   - name: "required-check-skip-guard / check-skip-vectors"
-    mode: ADVISORY
+    mode: REQUIRED
+    branch: dev
     producer_kind: cross_repo
     caller_workflow: required-check-skip-guard-caller.yml
     caller_job: required-check-skip-guard
     cross_repo_ref: "OmniNode-ai/omniclaude/.github/workflows/required-check-skip-guard-reusable.yml@dev"
     skip_semantics: never
     rationale: "OMN-14864: this guard's own required check (fan-out from the OMN-14854 omniclaude canary).
-      Runs on every PR but is NOT YET in required_status_checks — the branch-protection flip happens only
-      after 2 independent green runs on dev, tracked as a follow-up. mode stays ADVISORY until that flip
-      lands (same PR as the flip, per schema-v3 rule: mode changes and branch-protection changes land
-      together)."
+      ADVISORY -> REQUIRED (OMN-12592, 2026-07-30) — a LAGGING manifest correction, not a new flip: branch
+      protection already required this context on dev as of the 2026-07-27 OMN-15241 pass, which cleared
+      the >=2-independent-green-runs bar this row's prior rationale set (100+ greens on OCC dev). The row
+      was never updated, so `reconcile_manifest_vs_live.py --branch dev` was already FAILing
+      `missing_from_manifest` on it before this change. `branch: dev` because main's 23-context required
+      set does NOT contain it."
