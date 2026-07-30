@@ -20,6 +20,53 @@
 #   pre-commit install --hook-type pre-push  # Install pre-push hooks
 #   pre-commit run --all-files            # Run all pre-commit hooks
 repos:
+  # OMN-15479: yamlfmt contamination ratchet.
+  #
+  # DECLARED BEFORE THE yamlfmt HOOK ON PURPOSE. pre-commit runs hooks in file
+  # order, and yamlfmt v0.21.0 rewrites the PARSED VALUE of a folded (`>`) block
+  # scalar carrying an internal newline -- replacing each internal newline with
+  # the literal `#magic___^_^___line` and destroying the newline -- while
+  # reporting `Passed`. If this gate ran after yamlfmt, the author's evidence
+  # would already have been silently rewritten in the working tree by the time
+  # the gate objected, and the corruption is a FIXED POINT (a second yamlfmt
+  # pass is a no-op), so it never self-heals. Running first means the
+  # precondition shape is rejected while the original text still exists.
+  #
+  # Rule S: the sentinel in a parsed value under contracts/ or
+  # drift/dod_receipts/ -- proof the formatter rewrote authored evidence.
+  # Rule F: a folded scalar carrying an internal newline -- the precondition.
+  # Both are shrink-only ratchets against frozen baselines in .onex_ratchets/,
+  # because 510 files already carry the sentinel and 14 carry the precondition;
+  # a flat assertion would be permanently red and therefore unmergeable.
+  #
+  # The gate NEVER auto-fixes. Formatter mutation is the disease, not the cure.
+  - repo: local
+    hooks:
+      - id: check-yamlfmt-contamination
+        name: yamlfmt contamination ratchet (OMN-15479)
+        description: >
+          Reject the yamlfmt sentinel `#magic___^_^___line` in a parsed evidence value (Rule S) and NEW
+          folded (`>`) block scalars carrying an internal newline (Rule F, the corruption precondition)
+          under contracts/ + drift/dod_receipts/. Shrink-only ratchets against frozen baselines; never
+          mutates a file.
+        entry: uv run python scripts/validation/check_yamlfmt_contamination.py
+        language: system
+        files: ^(contracts/|drift/dod_receipts/).*\.ya?ml$
+        pass_filenames: true
+        stages: [pre-commit]
+      - id: check-yamlfmt-contamination-wiring
+        name: yamlfmt contamination ratchet stays wired into required CI (OMN-15479)
+        description: >
+          Anti-removal anchor. The pre-commit hook above is changed-files scoped, so the corpus-wide shrink-only
+          ratchet only has merge-blocking force through ci.yml's unconditional yamlfmt-contamination-ratchet
+          job plus its strict success-only check in ci-summary. Deleting both halves in one edit would
+          silently re-open the gap. Scoped to ci.yml so ANY edit to that file re-asserts the wiring.
+        entry: uv run python scripts/validation/check_yamlfmt_contamination.py --check-wiring
+        language: system
+        files: ^\.github/workflows/ci\.yml$
+        pass_filenames: true
+        stages: [pre-commit]
+
   # YAML formatting (standard across ecosystem, OMN-4862)
   # Configuration in .yamlfmt file (ecosystem-aligned settings)
   - repo: https://github.com/google/yamlfmt
