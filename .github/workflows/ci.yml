@@ -1314,6 +1314,66 @@ jobs:
       - name: Corpus-ratchet CI wiring is intact (anti-removal anchor)
         run: uv run python scripts/validation/check_corpus_ratchet_wiring.py
 
+  yamlfmt-contamination-ratchet:
+    name: yamlfmt Contamination Ratchet (OMN-15479)
+    # OMN-15479. yamlfmt v0.21.0 (pinned in .pre-commit-config.yaml, running on
+    # every commit) rewrites the PARSED VALUE of a folded (`>`) block scalar
+    # that carries an internal newline: every internal newline is replaced by
+    # the literal token `#magic___^_^___line` and the newline is destroyed --
+    # while the hook reports `Passed`. The output is still valid, parseable
+    # YAML, so it lands in a merged evidence receipt looking correct.
+    #
+    # contracts/ and drift/dod_receipts/ are the evidence control plane:
+    # actual_output / probe_stdout / check_value are the durable record of what
+    # was probed and what came back. A formatter that silently rewrites those
+    # fields produces evidence that says something the verifier never observed.
+    # 510 files (784 occurrences) already carry the sentinel on dev, and 14
+    # files still carry the un-corrupted precondition shape.
+    #
+    # This job is the ONLY required-path surface that sees the WHOLE corpus.
+    # The two pre-commit hooks are changed-files scoped (and on a dev PR the
+    # required `Pre-commit` job runs `pre-commit run --files <changed>`, not
+    # --all-files), so a rule wired there alone cannot see a violation in a
+    # receipt the PR does not touch, and cannot see the ratchet baselines drift
+    # out of sync with the corpus at all.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as contract-corpus-ratchets
+    # above): no needs:, no if:, no paths filter. A skip here means something is
+    # wrong, not that the gate legitimately opted out -- the strict success-only
+    # check in ci-summary below fails closed on any non-success result.
+    #
+    # ANTI-REMOVAL ANCHOR: scripts/validation/check_yamlfmt_contamination.py
+    # --check-wiring is a pre-commit hook scoped to this file AND the last step
+    # of this job, so ANY edit to ci.yml re-asserts (a) the job exists, (b) it
+    # is unconditional, (c) it runs the corpus ratchet and the gate's own
+    # RED/GREEN test module, and (d) ci-summary both needs it and applies a
+    # strict success-only check to it.
+    #
+    # The gate NEVER mutates a file. Formatter mutation is the disease, not the
+    # cure -- an auto-fixing gate here would be the same class of defect.
+    runs-on: >-
+      ${{
+        fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+      }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Rule S/F shrink-only corpus ratchet over the whole evidence corpus
+        run: uv run python scripts/validation/check_yamlfmt_contamination.py --corpus
+      - name: Detector RED/GREEN controls and hook-fires-on-a-fixture assertions
+        run: |
+          uv run pytest \
+            tests/unit/scripts/test_yamlfmt_contamination_gate.py \
+            -q -p no:randomly
+      - name: Contamination-ratchet CI wiring is intact (anti-removal anchor)
+        run: uv run python scripts/validation/check_yamlfmt_contamination.py --check-wiring
+
   validate-prod-promotion-grants:
     name: validate-prod-promotion-grants
     # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
@@ -1495,7 +1555,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1555,6 +1615,18 @@ jobs:
           # merges to dev with every required context green.
           if [[ "${{ needs.contract-corpus-ratchets.result }}" != "success" ]]; then
             echo "::error::contract-corpus-ratchets did not pass (result: ${{ needs.contract-corpus-ratchets.result }}) - fail-closed (OMN-15411)"
+            exit 1
+          fi
+          # OMN-15479: same strict fail-closed pattern for the yamlfmt
+          # contamination ratchet. Only 'success' passes; skipped/cancelled/
+          # failure ALL block. This is the ONLY required-path surface that scans
+          # the whole contracts/ + drift/dod_receipts/ corpus for the yamlfmt
+          # sentinel and for the folded-scalar shape that produces it -- the two
+          # pre-commit hooks are changed-files scoped and cannot see baseline
+          # drift at all. Without this check a newly corrupted evidence receipt
+          # merges to dev with every required context green.
+          if [[ "${{ needs.yamlfmt-contamination-ratchet.result }}" != "success" ]]; then
+            echo "::error::yamlfmt-contamination-ratchet did not pass (result: ${{ needs.yamlfmt-contamination-ratchet.result }}) - fail-closed (OMN-15479)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
