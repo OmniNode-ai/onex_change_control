@@ -74,11 +74,20 @@ _RULE_F_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15540_rule_f_baseli
 # half stays hard for everything including it. Once the lane lands, delete the
 # entry from the baseline AND from this set -- the follow-up is named in
 # OMN-15540. This set may only shrink.
-_RULE_F_CONCURRENT_REPAIR_EXEMPT: frozenset[str] = frozenset(
-    {
-        "contracts/OMN-15192.yaml::dod-omn-15192-b3-accepted-deviation-census",
-    }
-)
+#
+# THE LANE LANDED (2026-07-30, OCC#5673 / OMN-15192), so the instruction above
+# was carried out and this set is now EMPTY. Both OMN-15192 Rule F entries --
+# dod-omn-15192-bullet1-first-post-flip-mint and
+# dod-omn-15192-b3-accepted-deviation-census -- are superseded append-only by
+# `-r34` items that re-ask the identical question over the CLOSED window
+# created:2026-07-29T03:01:23Z..2026-07-30T08:00:00Z, and a live corpus rescan
+# reproduces neither id. They were deleted from
+# .onex_ratchets/omn_15540_rule_f_baseline.yaml in the same PR, which is what
+# forced this deletion too: test_rule_f_concurrent_repair_exemptions_are_still_
+# baseline_entries requires every exempt id to still be a baseline entry.
+# Keeping the exemption while shrinking the baseline is not an option the
+# ratchet allows -- by design.
+_RULE_F_CONCURRENT_REPAIR_EXEMPT: frozenset[str] = frozenset()
 
 # OMN-15411 Rule E generated-item carve-out. The live OCC companion producer
 # mints `dod-deploy-assessment` with
