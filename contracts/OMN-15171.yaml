@@ -34,8 +34,13 @@ summary: >-
   sequential-in-process lifecycle and the uncommitted PER-SEED shell wrapper, replaced by one typed Python
   entrypoint whose per-seed loop force-fails on seed death. The residual is process backgrounding plus
   an uncommitted per-CORNER chain wrapper, which is durably documented (not hidden) in the committed OMN-15265
-  runbook and is bound as a check below; OMN-15265's org-side mechanism half remains open. Every check
-  is pinned to an immutable merge SHA and was executed GREEN under `bash -o pipefail` at authoring time.
+  runbook and is bound as a check below; OMN-15265's org-side mechanism half remains open. Binding is
+  MIXED by design and the split is deliberate: every check about steel#224's own landed contribution is
+  pinned to an immutable merge SHA, but the residual-disclosure item also carries one UNPINNED leg that
+  reads the runbook at live `main`, because content frozen at a commit SHA can never observe a later deletion
+  — a pinned-only disclosure check would report GREEN forever after someone removed the section it claims
+  to guard (adversarial review F1). Every check was executed GREEN under `bash -o pipefail` from the repo
+  root on the gate host and is receipted under drift/dod_receipts/OMN-15171/.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -130,12 +135,17 @@ dod_evidence:
     description: >-
       The ticket's hard constraint — all other arms' drivers untouched, `OpenAICompatibleClient` retained
       indefinitely for the non-migrated arms — proven as a closed set rather than a spot check. Legs (a)
-      and (b) together pin the merge commit's file list to EXACTLY the three expected paths: (a) counts
-      3 matches against an anchored whitelist and (b) counts 3 filenames in total, so a fourth touched
-      file (for instance a regression in `scripts/run_ogate_objectives_battery.py`, whose last modification
-      is PR #204 at 59a1082) makes the totals disagree and goes RED, which neither leg alone would catch.
-      Leg (c) asserts `class OpenAICompatibleClient` still exists at the merge SHA, so the non-migrated
-      arms' binding was not removed as a side effect of migrating this one.
+      and (b) together pin the merge commit's file list to EXACTLY the three expected paths, and they
+      are complementary in a specific direction each — an earlier revision of this description claimed
+      the fourth-file case is caught by neither leg alone, which is wrong and is corrected here. Leg (b)
+      counts 3 filenames in total, so leg (b) ALONE catches an ADDITION: a fourth touched file (for instance
+      a regression in `scripts/run_ogate_objectives_battery.py`, whose last modification is PR #204 at
+      59a1082) returns 4 and goes RED. Leg (a) counts 3 matches against an anchored whitelist, so leg
+      (a) ALONE catches a SUBSTITUTION: a whitelisted path swapped for some other path keeps the total
+      at 3 (leg (b) stays GREEN) while dropping the whitelist count to 2. Neither direction is covered
+      by the other leg, which is why both are load-bearing. Leg (c) asserts `class OpenAICompatibleClient`
+      still exists at the merge SHA, so the non-migrated arms' binding was not removed as a side effect
+      of migrating this one.
     source: "manual"
     status: "pending"
     checks:
@@ -217,9 +227,17 @@ dod_evidence:
       is durably DISCLOSED rather than hidden: the committed OMN-15265 runbook docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md
       (added by steel PR #229, MERGED at 375c98015463b794c46dde59fca91c5805d19312) carries an explicit
       launch-discipline section documenting the `nohup </dev/null`/`disown`/pgrep-before-relaunch recipe,
-      and names `chain_prominent.sh` as living in the untracked snapshot. If that disclosure is ever deleted,
-      this check goes RED and the residual stops being silently inherited. Closing the residual (a committed,
-      supervised launch surface) is org-side work still open under OMN-15265, not a gap in #224.
+      and names `chain_prominent.sh` as living in the untracked snapshot. FALSIFIABILITY, CORRECTED (adversarial
+      review F1): an earlier revision of this item claimed that deleting the disclosure would drive this
+      check RED while binding ONLY pinned refs. That was false — content at an immutable commit SHA is
+      frozen forever, so a pinned read cannot observe a later deletion on main. This item now carries
+      a MIXED binding, deliberately: legs (a)-(c) stay pinned to `375c9801` as the historical provenance
+      anchor (they prove the disclosure LANDED, and cannot be rewritten by later history), while leg (d)
+      reads the SAME runbook path at LIVE `main` with NO `?ref=` pin, so it tracks the current state of
+      the file. Deleting or renaming the `## 5. Launch discipline:` section on main returns count 0 and
+      drives leg (d) RED — that leg, and only that leg, is what makes the disclosure a live invariant
+      rather than a historical fact. Closing the residual itself (a committed, supervised launch surface)
+      is org-side work still open under OMN-15265, not a gap in #224.
     source: "manual"
     status: "pending"
     checks:
@@ -232,3 +250,25 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh api 'repos/jonahgabriel/steel_onslaught/contents/docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md?ref=375c98015463b794c46dde59fca91c5805d19312' --jq '.content' | base64 -d | grep -cF 'chain_prominent.sh' | grep -qx 1
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md' --jq '.content' | base64 -d | grep -cF '## 5. Launch discipline:' | grep -qx 1
+  - id: "occ-self-bind-pr-5567"
+    description: >-
+      OCC self-bind stamp for this PR, per the merged OCC#5544 / OCC#5568 precedent. `occ-preflight /
+      eligibility` requires that at least one PASS receipt for every cited ticket bind to the PR under
+      evaluation (`pr_number`) or to one of its commit SHAs; without such a stamp the gate returns `pr_ticket_mismatch`
+      even when every other receipt is present and PASS. This item is a binding stamp, not a substantive
+      claim about steel#224 — it asserts only the falsifiable fact that PR 5567 in this repository actually
+      carries `contracts/OMN-15171.yaml` in its own file list, read from the GitHub API rather than from
+      the working tree. It adjudicates nothing and flips no status. OMN-15382 Rule B: 5567 is pinned as
+      a literal, never `${PR_NUMBER}`, because the runner pre-substitutes that placeholder with whatever
+      PR it happens to be evaluating. OMN-15411 Rule E: the producer is buffered into a variable and replayed
+      through `printf` rather than piped straight into an early-exiting `grep -q`, so the paginated producer
+      cannot take SIGPIPE (141) and surface as a false RED under `bash -o pipefail`.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          files="$(gh api repos/OmniNode-ai/onex_change_control/pulls/5567/files --paginate --jq '.[].filename')" && printf '%s\n' "$files" | grep -qx 'contracts/OMN-15171.yaml'
