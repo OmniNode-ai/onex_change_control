@@ -8,7 +8,7 @@ summary: >
   merge-hold gate out of omnimarket into the two repos carrying every OMN-15483 incident: omnimarket#1976
   (the one authored reusable surface + first caller), onex_change_control#5629 (incident sections A/B/D/E)
   and omnibase_infra#2570 (incident section C). Every check below was re-derived from live GitHub surfaces
-  by the verifier, never taken from the build report.
+  by the verifier and is executable from this repository's workspace, never taken from the build report.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -24,36 +24,50 @@ dod_evidence:
   - id: "dod-OmniNode-ai-omnimarket-pr-1976"
     description: >
       omnimarket#1976 — the one authored surface (merge-hold-gate-reusable.yml) plus omnimarket as first
-      caller. The behavioural check asserts the gate context actually concluded SUCCESS, and the unit
-      suite asserts the fan-out contract.
+      caller. Asserts the shared gate context actually concluded SUCCESS, and that the pre-existing OMN-15483
+      control is still reporting beside it so the transition cannot silently drop working coverage.
     source: "generated"
     checks:
       - check_type: "command"
         check_value: "gh pr view 1976 --repo OmniNode-ai/omnimarket --json statusCheckRollup --jq '.statusCheckRollup[]|select(.name==\"merge-hold-gate
           / evaluate\")|.conclusion' | grep -qx SUCCESS"
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/scripts/ci/test_merge_hold_gate_fanout_omn15484.py -q"
+        check_value: "gh pr view 1976 --repo OmniNode-ai/omnimarket --json statusCheckRollup --jq '.statusCheckRollup[]|select(.name==\"Merge
+          Hold Gate (OMN-15483)\")|.conclusion' | grep -qx SUCCESS"
   - id: "dod-OmniNode-ai-omnibase-infra-pr-2570"
     description: >
-      omnibase_infra#2570 — OMN-15483 incident repo (section C, #2560). The AC4 falsifier: assert the
-      hold gate still concluded SUCCESS in the SAME CI run in which occ-preflight/eligibility failed,
-      so no unrelated upstream failure can cascade-skip it. Fails if the gate is ever made needs-gated.
+      omnibase_infra#2570 — OMN-15483 incident repo (section C, #2560). The AC4 falsifier: the hold gate
+      concluded SUCCESS in the SAME CI run in which occ-preflight/eligibility concluded failure, so no
+      unrelated upstream failure can cascade-skip it. Fails if the gate is ever made needs-gated.
     source: "generated"
     checks:
       - check_type: "command"
         check_value: "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108/jobs --jq '.jobs[]|select(.name==\"merge-hold-gate
           / evaluate\")|.conclusion' | grep -qx success"
       - check_type: "command"
-        check_value: "uv run pytest tests/ci/test_merge_hold_gate_omn15484.py -q"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108/jobs --jq '.jobs[]|select(.name==\"occ-preflight
+          / eligibility\")|.conclusion' | grep -qx failure"
   - id: "occ-self-bind-pr-5629"
     description: >
-      onex_change_control#5629 — OMN-15483 incident repo (sections A/B/D/E), self-bind. Asserts the anti-removal
-      wiring validator passes against the shipped ci.yml, so deleting either half of the registration
-      (the job, or ci-summary's success-only block) fails a required check rather than silently ending
-      enforcement.
+      onex_change_control#5629 — OMN-15483 incident repo (sections A/B/D/E), self-bind. Asserts the gate
+      concluded SUCCESS in this repository's own CI, and that the caller job pins the reusable workflow
+      by immutable SHA rather than a mutable feature-branch ref.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "uv run python scripts/validation/check_merge_hold_gate_wiring.py"
+        check_value: "gh pr view 5629 --repo OmniNode-ai/onex_change_control --json statusCheckRollup
+          --jq '.statusCheckRollup[]|select(.name==\"merge-hold-gate / evaluate\")|.conclusion' | grep
+          -qx SUCCESS"
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/scripts/test_merge_hold_gate_wiring_omn15484.py -q"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/contents/.github/workflows/ci.yml?ref=4c6e8a2b2d285e0f54770ccf81fa4218489f69ba
+          --jq '.content' | base64 -d | grep -qE 'merge-hold-gate-reusable[.]yml@[0-9a-f]{40}'"
+  - id: "occ-self-bind-pr-5638"
+    description: >
+      Self-bind for this evidence PR itself, as OMN-15483's companions did (occ-self-bind-pr-5596 / -5599).
+      Asserts the Receipt Honesty Gate passes over this repository's receipt corpus, which includes the
+      three receipts added here — a real gate outcome that fails if any receipt's contract binding or
+      verifier identity is wrong.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run python scripts/validation/check_receipt_hardening.py"
