@@ -1,0 +1,168 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15239"
+title: "Plain (non-card) per-tick decide() path has no bounded semantic retry — receipt contract for the
+  already-merged steel fix (false-Backlog reconciliation)"
+summary: >-
+  OMN-15239 is a false-Backlog ticket, not unbuilt work. The defect — `LLMPilot.decide()` calling `llm/effect.py`'s
+  `consume_llm_completion` exactly ONCE per tick with no retry, so a single `LlmSemanticError` (`invalid_action_parameters`)
+  escaped `match/runner.py`'s tick-loop catch (which handles only `LlmCompletionBoundaryError` and `LlmSemanticExhaustedError`)
+  and killed the whole match/seed — was fixed on jonahgabriel/steel_onslaught `main` in PR #225, squash
+  merge commit 23a88d09051565270f76cade8bc7b685cd790f38, merged 2026-07-27T13:58:25Z, while the Linear
+  ticket held a single Backlog stateHistory entry throughout. The ticket's Fix section is exactly what
+  landed: mirror `programming.py`'s bounded reprompt in the plain `decide()` path so exhaustion surfaces
+  as the classified, catchable `LlmSemanticExhaustedError`, plus the dated pre-registration amendment
+  the ticket required before any re-run. This contract is the receipt surface for the dod_verify path;
+  it makes no status change and adjudicates nothing beyond the acceptance items named below. Distinct
+  from OMN-15535/OMN-15240, which fixed the delegation-CLI stdout/stderr diagnostics on the transport
+  side and never touched the pilot decide path. Every check is pinned to the immutable merge SHA, is hosted-runnable,
+  and was executed GREEN at authoring time, then RED-proven by repointing the pinned ref at the merge
+  commit's first parent 491c52a76d90324e557f7638b7fb7312ca54057a.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      steel PR #225 is merged on jonahgabriel/steel_onslaught main at squash commit 23a88d09, and the
+      post-merge main CI run on that lineage is green.
+    command: "gh pr view 225 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+  - kind: "manual"
+    description: >-
+      Immutable GitHub content probes bind each acceptance item to steel merge SHA 23a88d09051565270f76cade8bc7b685cd790f38.
+    command: "See drift/dod_receipts/OMN-15239/dod-omn15239-*/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15239-pr-225-merged-at-23a88d09"
+    description: >-
+      Binding item. steel PR #225 is MERGED with merge commit exactly 23a88d09051565270f76cade8bc7b685cd790f38.
+      State and SHA are asserted together in a single equality so closed-unmerged, still-open, and re-landed-elsewhere
+      each yield a mismatch. This establishes binding, not correctness — the substantive proof is the
+      items below. The `--repo` flag and the PR number sit in the SAME shell clause so the dod_verify
+      collector's same-clause `_hardcoded_pr_bindings_in_value` extraction resolves (jonahgabriel/steel_onslaught,
+      225) rather than falling back to `_DEFAULT_GITHUB_ORG` (OmniNode-ai), which would resolve nothing
+      for this personal repo.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          state="$(gh pr view 225 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")')" && test "$state" = "MERGED 23a88d09051565270f76cade8bc7b685cd790f38"
+  - id: "dod-omn15239-bare-semantic-error-no-longer-escapes"
+    description: >-
+      AC1 — the root defect is closed at its exact site: a bare `LlmSemanticError` raised by `consume_llm_completion`
+      under the live `raise` failure policy no longer propagates past `LLMPilot.decide`. Asserted structurally
+      in `src/steel_onslaught/llm/pilot.py` at the merge SHA: a dedicated `except LlmSemanticError as
+      exc:` handler exists (it must precede the pre-existing broad `except Exception as exc:` to have
+      any effect), it is gated on `if self._failure_policy == "raise":`, and it hands off to the bounded
+      loop via the verbatim `return self._reprompt_or_terminate(observation, request, first_error=exc)`.
+      Grepping only for the word "retry" would pass against a comment; this asserts the executed control-flow
+      edge. A regression that deletes the handler, or that keeps it but drops the handoff, fails this
+      check.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && grep -qF 'except LlmSemanticError as exc:' "$f" && grep -qF 'return self._reprompt_or_terminate(observation, request, first_error=exc)' "$f" && grep -qF 'if self._failure_policy == "raise":' "$f" && rm -f "$f"
+  - id: "dod-omn15239-exhaustion-raises-catchable"
+    description: >-
+      AC2 — exhaustion surfaces as the type the tick loop already catches, carrying the diagnosis. At
+      the merge SHA `pilot.py` raises `LlmSemanticExhaustedError(` with all four keyword arguments the
+      runner's `provider_semantic_failure` terminal consumes: `seat=observation.mech_id,`, `semantic_failure_code=last_error.code,`,
+      `attempts=total_attempts,`, `provider_id=self._provider_id,`. The `attempts` and `provider_id` legs
+      are load-bearing rather than decorative: a raise that omitted them would still be catchable but
+      would erase which provider exhausted and after how many tries, which is precisely the diagnosis
+      the 20/30-skipped battery lacked. `LlmSemanticExhaustedError` is also asserted to be imported from
+      `schemas`, so this cannot pass against a locally-shadowed name.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && grep -qF 'raise LlmSemanticExhaustedError(' "$f" && grep -qF 'seat=observation.mech_id,' "$f" && grep -qF 'semantic_failure_code=last_error.code,' "$f" && grep -qF 'attempts=total_attempts,' "$f" && grep -qF 'provider_id=self._provider_id,' "$f" && grep -qF 'LlmSemanticExhaustedError,' "$f" && rm -f "$f"
+  - id: "dod-omn15239-budget-shared-with-card-mode"
+    description: >-
+      AC3 — the retry budget is the SAME constant card mode owns, not a second constant that can silently
+      drift from it. Three legs at the merge SHA, two positive and one negative. Positive: `pilot.py`
+      imports `from steel_onslaught.llm.programming import _DEFAULT_SEMANTIC_RETRY_LIMIT` and defaults
+      the new keyword-only parameter to it verbatim (`semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,`).
+      Negative: `pilot.py` defines NO module-level `_DEFAULT_SEMANTIC_RETRY_LIMIT` of its own (asserted
+      with a start-of-line anchor). The negative leg is the discriminator between "the ticket's stated
+      mirror-card-mode requirement was met" and "a lookalike retry loop with an independently-drifting
+      budget was bolted on". The bound is also asserted to be validated rather than trusted: `raise ValueError("semantic_retry_limit
+      must not be negative")` rejects a negative budget, which would otherwise silently degrade to zero
+      attempts and reintroduce the original single-shot defect.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && grep -qF 'from steel_onslaught.llm.programming import _DEFAULT_SEMANTIC_RETRY_LIMIT' "$f" && grep -qF 'semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,' "$f" && grep -qF 'raise ValueError("semantic_retry_limit must not be negative")' "$f" && ! grep -qE '^_DEFAULT_SEMANTIC_RETRY_LIMIT' "$f" && rm -f "$f"
+  - id: "dod-omn15239-repair-preserves-boundary"
+    description: >-
+      AC4 — the new loop does not swallow the two things it must not. At the merge SHA the repair loop
+      in `pilot.py` re-raises `LlmCompletionBoundaryError` unchanged (provider length/timeout boundaries
+      keep their own distinct terminal path and are never converted into a semantic-exhaustion terminal),
+      and each repair attempt is a real provider completion built by `_build_repair_request`, which annotates
+      the SAME model with the exact rejection (`correction = self._correction_note(error)`) and pins `"temperature":
+      0.0,` for the repair. Separately, `src/steel_onslaught/match/composition.py` threads `provider_id=selection.provider_id,`
+      into the pilot so the exhaustion error can name a real provider instead of `None`. Without the composition
+      leg the `provider_id` asserted in the item above would be structurally present but permanently null
+      in live matches.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && g="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$g" && grep -qF 'except LlmCompletionBoundaryError:' "$f" && grep -qF 'def _build_repair_request(' "$f" && grep -qF 'correction = self._correction_note(error)' "$f" && grep -qF '"temperature": 0.0,' "$f" && grep -qF 'provider_id=selection.provider_id,' "$g" && rm -f "$f" "$g"
+  - id: "dod-omn15239-tests-exhaustion-and-recovery"
+    description: >-
+      AC5 — both polarities are covered by executed tests, not just the failure one. Asserted by full
+      signature at the merge SHA. In `tests/llm/test_llm_pilot.py`: `test_omn15239_semantic_exhaustion_raises_llm_semantic_exhausted_not_bare_semantic_error`
+      (the exact type-substitution the tick-loop catch depends on) and `test_omn15239_transient_semantic_failure_recovers_within_bounds`
+      (the happy path — a single slip self-corrects and `decide` returns a decision rather than raising;
+      without this leg a "fix" that always exhausts would pass). In `tests/match/test_runner.py`, two
+      `@pytest.mark.integration` tests drive the real `MatchRunner` tick loop end to end: `test_plain_decide_semantic_exhaustion_reaches_provider_semantic_failure_terminal`
+      and `test_plain_decide_transient_semantic_failure_recovers_and_match_keeps_playing`. The runner-level
+      pair is what makes this a seam claim rather than two independent unit suites: the unit tests prove
+      the pilot raises the classified type, the runner tests prove the tick loop actually catches it and
+      reaches the terminal.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          t="$(mktemp)" && r="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/llm/test_llm_pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$t" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/match/test_runner.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$r" && grep -qF 'def test_omn15239_semantic_exhaustion_raises_llm_semantic_exhausted_not_bare_semantic_error()' "$t" && grep -qF 'def test_omn15239_transient_semantic_failure_recovers_within_bounds() -> None:' "$t" && grep -qF 'def test_plain_decide_semantic_exhaustion_reaches_provider_semantic_failure_terminal() -> None:' "$r" && grep -qF 'def test_plain_decide_transient_semantic_failure_recovers_and_match_keeps_playing() -> None:' "$r" && rm -f "$t" "$r"
+  - id: "dod-omn15239-dated-prereg-amendment"
+    description: >-
+      AC6 — the ticket's explicit "Requires a dated prereg amendment before any re-run" clause is discharged,
+      in BOTH lanes of the OMN-15172 salience pair rather than only the lane where the defect was observed.
+      At the merge SHA both `contracts_data/overlays/foundry_60_asym_v1_salience_prominent_delegation.yaml`
+      and `contracts_data/overlays/foundry_60_asym_v1_salience_default_delegation.yaml` carry a dated
+      `AMENDMENT (2026-07-27` header note naming OMN-15239. The PROMINENT overlay's note is additionally
+      asserted to state the no-hypothesis-change property verbatim (`are UNCHANGED`) and to record that
+      it landed `BEFORE any acceptance re-run of either lane` — an amendment that silently altered the
+      hypothesis, primary statistic, or decision bands would be a pre-registration violation, not a discharge,
+      so the unchanged-clause assertion is the substantive half of this check.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          p="$(mktemp)" && d="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/contracts_data/overlays/foundry_60_asym_v1_salience_prominent_delegation.yaml?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$p" && gh api 'repos/jonahgabriel/steel_onslaught/contents/contracts_data/overlays/foundry_60_asym_v1_salience_default_delegation.yaml?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$d" && grep -qF 'AMENDMENT (2026-07-27' "$p" && grep -qF 'AMENDMENT (2026-07-27' "$d" && grep -qF 'OMN-15239' "$p" && grep -qF 'OMN-15239' "$d" && grep -qF 'are UNCHANGED' "$p" && grep -qF 'BEFORE any acceptance re-run of either lane' "$p" && rm -f "$p" "$d"
+  - id: "occ-self-bind-pr-5759"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15239 to its OCC evidence PR #5759 so occ-preflight
+      eligibility can resolve a PASS receipt for this ticket against this PR. It adjudicates nothing about
+      the work and flips no Linear status; the falsifiable evidence is the merge-SHA-pinned items above.
+      Mirrors the occ-self-bind-pr-5756 / occ-self-bind-pr-5544 precedent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5759 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
