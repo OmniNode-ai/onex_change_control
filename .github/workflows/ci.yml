@@ -1619,6 +1619,69 @@ jobs:
             --pr-author-login "${PR_AUTHOR_LOGIN}" \
             --pr-author-type "${PR_AUTHOR_TYPE}"
 
+  merge-hold-gate:
+    # OMN-15484 (fan-out of OMN-15483). The merge sweep lands PRs while
+    # adversarial verification is still running against them. OMN-15483 built
+    # the fix -- a required check that fails while a PR carries a hold marker in
+    # its title or labels, so a held PR can never be required-green for ANY
+    # consumer (the Codex controller, `gh pr merge`, auto-merge, a merge queue,
+    # or the ONEX merge node) -- but shipped it in omnimarket ONLY.
+    #
+    # THIS REPOSITORY carries four of the incidents in that ticket's own table
+    # (OCC#5588, OCC#5586, OCC#5530/#5531, OCC#5584) and had zero coverage. That
+    # is the gap this job closes.
+    #
+    # NO VOCABULARY IS DECLARED HERE, deliberately. The tokens live in exactly
+    # one place fleet-wide -- omnimarket's src/omnimarket/merge_control/
+    # hold_marker.py -- and the reusable workflow below reads that module at run
+    # time. Copying it here would rebuild, across repos, the precise bug
+    # OMN-15483 round 1 found inside omnimarket: two divergent
+    # `_DO_NOT_MERGE_RE` definitions, neither a superset of the other, so the
+    # same PR was suppressed by one consumer and authored by the other. The
+    # reusable workflow scans THIS repo on every run and fails if a second
+    # vocabulary ever appears (AC1), proves the gate actually fires here by
+    # driving a held vector through it (AC3), and checks that the context name
+    # below is not itself a hold token (AC5).
+    #
+    # UNCONDITIONAL BY DESIGN (AC4): no `needs:`, no `if:`, no paths filter --
+    # the same posture as `precommit-parity-gate`, `predicate-parity`,
+    # `contract-corpus-ratchets` and `yamlfmt-contamination-ratchet` above. A
+    # hold gate an unrelated upstream failure can cascade-skip is not a gate.
+    # It is hosted-runner and stdlib-only, so it has no reason to depend on
+    # anything.
+    #
+    # ANTI-REMOVAL ANCHOR: deleting this job together with its ci-summary
+    # wiring would restore the gap silently, and no test would notice.
+    # scripts/validation/check_merge_hold_gate_wiring.py is a pre-commit hook
+    # scoped to this file, so ANY edit here re-asserts (a) the job exists,
+    # (b) it is unconditional, (c) it calls the SHARED gate at a non-feature
+    # ref, (d) its declared context_name is the context GitHub really mints,
+    # (e) ci-summary needs it, and (f) ci-summary has a strict success-only
+    # check for it. That hook runs in the required `Pre-commit` context on the
+    # dev changed-files path, so the check is not self-referential.
+    permissions:
+      contents: read
+      pull-requests: read
+    # `vocabulary_ref` MUST equal the ref in `uses:`. The first selects the
+    # workflow FILE, the second selects the omnimarket SOURCE it reads; letting
+    # them drift would run one vintage of the gate logic against another vintage
+    # of the tokens. check_merge_hold_gate_wiring.py asserts the equality.
+    #
+    # PIN AN ANCESTOR OF omnimarket `dev`, NEVER A PR-HEAD SHA. This job first
+    # pinned 879d6fc6 -- the PR HEAD of omnimarket#1976. It was 40-hex, so the
+    # validator below accepted it, but it existed only on the PR branch. When
+    # #1976 squash-merged (2026-07-30T18:29:59Z) the branch was deleted, the ref
+    # stopped resolving for Actions, and the WHOLE ci.yml failed to load in
+    # omnibase_infra, which had shipped the identical pin: runs went
+    # conclusion=failure with 0 jobs, taking the required `CI Summary` context
+    # down by ABSENCE and wedging every dev PR there. OCC was spared only
+    # because this PR had not landed yet. 454c429f is #1976's dev squash
+    # commit, reachable from dev permanently.
+    uses: OmniNode-ai/omnimarket/.github/workflows/merge-hold-gate-reusable.yml@454c429f328e68e19300f33ffb8121f1bccc7f86
+    with:
+      vocabulary_ref: 454c429f328e68e19300f33ffb8121f1bccc7f86
+      context_name: merge-hold-gate / evaluate
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -1630,7 +1693,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet, supersession-binding-ratchet]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet, merge-hold-gate, supersession-binding-ratchet]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1715,6 +1778,22 @@ jobs:
           # context green, which is exactly how OCC#5534 landed.
           if [[ "${{ needs.supersession-binding-ratchet.result }}" != "success" ]]; then
             echo "::error::supersession-binding-ratchet did not pass (result: ${{ needs.supersession-binding-ratchet.result }}) - fail-closed (OMN-15459)"
+            exit 1
+          fi
+          # OMN-15484: same strict fail-closed pattern for the Merge Hold Gate.
+          # Only 'success' passes; skipped/cancelled/failure ALL block.
+          #
+          # THIS LINE IS THE MECHANISM, not the job's existence. The generic
+          # rollup below tests only for 'failure'/'cancelled', so without this
+          # block a SKIPPED hold gate would pass CI Summary and a held PR would
+          # be required-green -- the job would look like enforcement while
+          # enforcing nothing. Measured against the real evaluator on
+          # omnimarket#1973: unregistered, `skipped` -> SUCCESS and `absent` ->
+          # SUCCESS; registered, `skipped` -> FAILURE and `absent` -> the
+          # workflow cannot even load. The job is unconditional, so a skip here
+          # means something is wrong, never that the gate opted out.
+          if [[ "${{ needs.merge-hold-gate.result }}" != "success" ]]; then
+            echo "::error::merge-hold-gate did not pass (result: ${{ needs.merge-hold-gate.result }}) - fail-closed (OMN-15484)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
