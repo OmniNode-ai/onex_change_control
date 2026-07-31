@@ -26,6 +26,16 @@ if TYPE_CHECKING:
 POST_CUTOFF_TS = "2026-06-12T03:00:00+00:00"
 PRE_CUTOFF_TS = "2026-06-11T23:59:59+00:00"
 
+# OMN-15459 (S2 family binding): a supersession replacement must reference an
+# anchor the item it supersedes actually declares. The two wrappers below exist
+# to prove supersession records are NOT run through *plain-receipt* hardening;
+# with the generic default check_value ("uv run pytest tests/ -q") their
+# `== []` assertion would also have asserted "S2 never fires", which is the
+# opposite of what this gate is for. They therefore carry an item-bound check.
+# The S2-fires direction is covered by
+# tests/unit/scripts/test_supersession_binding_gate.py.
+ITEM_BOUND_CHECK = "test -s drift/dod_receipts/OMN-13060/dod-001/command.yaml"
+
 CONTRACT_BODY = "ticket_id: OMN-13060\ntitle: test contract\n"
 
 # A contract shaped with real dod_evidence entries, for OMN-14411 per-entry
@@ -220,7 +230,10 @@ def test_minimal_supersession_record_is_not_plain_receipt_hardened(
                 "superseder": "pytest",
                 "created_at": POST_CUTOFF_TS,
                 "tombstone": False,
-                "replacement": _receipt_data(),
+                "replacement": _receipt_data(
+                    check_value=ITEM_BOUND_CHECK,
+                    probe_command=ITEM_BOUND_CHECK,
+                ),
             }
         )
     )
@@ -305,7 +318,11 @@ def test_supersession_record_is_not_plain_receipt_hardened(tmp_path: Path) -> No
                 "superseder": "codex-gpt-5",
                 "created_at": POST_CUTOFF_TS,
                 "tombstone": False,
-                "replacement": _receipt_data(run_timestamp=POST_CUTOFF_TS),
+                "replacement": _receipt_data(
+                    run_timestamp=POST_CUTOFF_TS,
+                    check_value=ITEM_BOUND_CHECK,
+                    probe_command=ITEM_BOUND_CHECK,
+                ),
             }
         )
     )
