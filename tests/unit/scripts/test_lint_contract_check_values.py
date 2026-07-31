@@ -623,9 +623,15 @@ def test_rule_b_ignores_items_with_no_gh_pr_call(tmp_path: Path) -> None:
         "checks": [
             {
                 "check_type": "command",
+                # The ref is incidental to Rule B but must be a real SHA: a
+                # placeholder like `abc123` is not a valid abbreviation (GitHub
+                # needs >=7 hex) and OMN-15540 Rule F correctly flags it as a
+                # deletable ref, which would make this Rule B test fail for an
+                # unrelated reason.
                 "check_value": (
                     "gh api repos/OmniNode-ai/omnibase_infra/contents/foo.py"
-                    "?ref=abc123 --jq .content | base64 -d | grep -q bar"
+                    "?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2"
+                    " --jq .content | base64 -d | grep -q bar"
                 ),
             }
         ],
@@ -1131,8 +1137,13 @@ def test_rule_e_is_warning_tier_and_does_not_change_exit_code(tmp_path: Path) ->
     merely touches a legacy contract. Growth is stopped by the corpus ratchet in
     test_lint_contract_check_values_corpus_baseline.py instead.
     """
+    # The ref must be a real SHA so this isolates Rule E: a placeholder like
+    # `abc` is a deletable ref under OMN-15540 Rule F, which IS hard tier, and
+    # would make the "no hard findings" assertion below fail for an unrelated
+    # reason.
     bad = (
-        "gh api repos/O/R/contents/f.py?ref=abc --jq .content "
+        "gh api repos/O/R/contents/f.py"
+        "?ref=e09a8327bc94e49ec674e2fba50b45a37c284ba2 --jq .content "
         "| base64 -d | grep -q 'MARKER'"
     )
     path = write_contract(tmp_path, bad)
@@ -1142,3 +1153,260 @@ def test_rule_e_is_warning_tier_and_does_not_change_exit_code(tmp_path: Path) ->
         "Rule E leaked into the hard-finding path -- it must be warning tier"
     )
     assert linter.main(["lint_contract_check_values.py", str(path)]) == 0
+
+
+# ---------------------------------------------------------------------------
+# OMN-15540 Rule F: predicate pinned to a MUTABLE external state.
+#
+# The RED-before anchor is the LITERAL check_value from
+# contracts/OMN-15484.yaml's `dod-OmniNode-ai-omnibase-infra-pr-2570` item --
+# not a paraphrase of it. That check asserts run 30565261108's
+# `occ-preflight / eligibility` concluded `failure`; the job was subsequently
+# re-run and reads `success`, so the check is a deterministic BLOCK that no
+# repair can clear. Against the pre-Rule-F linter these tests fail (the shape
+# was invisible); against the shipped linter they pass.
+#
+# The GREEN-after anchor is the ANCHORED replacement for the same evidence, so
+# the rule is shown to discriminate rather than to blanket-reject anything
+# mentioning a workflow run.
+# ---------------------------------------------------------------------------
+
+# Byte-for-byte the value carried in contracts/OMN-15484.yaml at Rule F
+# landing, with the YAML line-fold rejoined as the loader yields it.
+_OMN_15484_CHECK_2 = (
+    "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108/jobs "
+    "--jq '.jobs[]|select(.name==\"occ-preflight / eligibility\")|.conclusion' "
+    "| grep -qx failure"
+)
+
+# Same evidence, anchored: the conclusion was RECORDED in a durable receipt at
+# observation time, and the check asserts the receipt rather than re-reading a
+# surface that has since moved.
+_OMN_15484_CHECK_2_ANCHORED = (
+    "grep -qx 'conclusion: failure' "
+    "drift/dod_receipts/OMN-15484/dod-occ-preflight-eligibility/"
+    "2026-07-30T05-14-00Z.yaml"
+)
+
+
+@pytest.mark.unit
+def test_rule_f_red_before_on_literal_omn_15484_check_two(tmp_path: Path) -> None:
+    """RED-before: the shipped OMN-15484 check-2 bytes are flagged."""
+    path = write_contract(tmp_path, _OMN_15484_CHECK_2)
+    findings = linter.lint_contract(path)
+    labels = [label for _p, label, _f in findings]
+    assert any("mutable-state-pin/run-conclusion" in label for label in labels), (
+        "The literal contracts/OMN-15484.yaml check-2 value was NOT flagged by "
+        f"Rule F. Findings: {labels}"
+    )
+
+
+@pytest.mark.unit
+def test_rule_f_green_after_on_anchored_receipt_shape(tmp_path: Path) -> None:
+    """GREEN-after: the anchored replacement for the same evidence is clean."""
+    path = write_contract(tmp_path, _OMN_15484_CHECK_2_ANCHORED)
+    findings = linter.lint_contract(path)
+    labels = [label for _p, label, _f in findings]
+    assert not any("mutable-state-pin" in label for label in labels), (
+        "The anchored receipt-bound replacement was flagged, so Rule F is "
+        f"blanket-rejecting rather than discriminating. Findings: {labels}"
+    )
+
+
+@pytest.mark.unit
+def test_rule_f_run_conclusion_changes_exit_code(tmp_path: Path) -> None:
+    """Rule F is HARD tier -- it must move the linter's exit code."""
+    path = write_contract(tmp_path, _OMN_15484_CHECK_2)
+    assert linter.main(["lint", str(path)]) == 1
+
+
+@pytest.mark.unit
+def test_rule_f_flags_success_direction_too(tmp_path: Path) -> None:
+    """Pinning `success` on a run id is the same unstable read as `failure`."""
+    value = (
+        "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108/jobs "
+        '--jq \'.jobs[]|select(.name=="merge-hold-gate / evaluate")'
+        "|.conclusion' | grep -qx success"
+    )
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    assert any(
+        "mutable-state-pin/run-conclusion" in label for _p, label, _f in findings
+    )
+
+
+@pytest.mark.unit
+def test_rule_f_flags_deleted_feature_branch_ref(tmp_path: Path) -> None:
+    """The literal contracts/OMN-10765.yaml ref pin (live: HTTP 404)."""
+    value = (
+        'gh api "repos/OmniNode-ai/omniintelligence/contents/scripts/ci/'
+        "detect_test_paths.py?ref=jonah/omn-10765-port-change-aware-test-"
+        'selection-to-omniintelligence" --jq .name'
+    )
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    assert any(
+        "mutable-state-pin/deletable-branch-ref" in label for _p, label, _f in findings
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "dev",
+        "main",
+        "master",
+        "refs/heads/dev",
+        "e09a8327bc94e49ec674e2fba50b45a37c284ba2",  # full SHA
+        "1729c7c3",  # abbreviated SHA (a real omnibase_infra commit)
+        "${PRODUCT_HEAD}",  # runner-substituted
+        "v1.4.2",  # release tag
+    ],
+)
+def test_rule_f_stable_refs_are_not_flagged(tmp_path: Path, ref: str) -> None:
+    """Negative controls: mainline, SHA, tag and dynamic refs are exempt.
+
+    `?ref=dev` in particular is the merged-is-not-deployed discipline (assert
+    the fix is live on the mainline), not a defect -- there are 8 such
+    instances in the corpus and flagging them would make Rule F noise.
+    """
+    value = (
+        f"gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/x.py?ref={ref}'"
+        " --jq .name"
+    )
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    labels = [label for _p, label, _f in findings]
+    assert not any("mutable-state-pin" in label for label in labels), labels
+
+
+@pytest.mark.unit
+def test_rule_f_flags_unanchored_exact_count(tmp_path: Path) -> None:
+    """The literal contracts/OMN-15192.yaml `-eq 2` cumulative assertion."""
+    value = (
+        "COUNT=\"$(gh api 'search/issues?q=repo%3AOmniNode-ai%2F"
+        "onex_change_control+is%3Apr+in%3Atitle+%22OCC+companion+for+"
+        "OmniNode-ai%2Fomnibase_infra%232536%22' --jq .total_count)\" "
+        '&& [ "$COUNT" -eq 2 ]'
+    )
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    assert any(
+        "mutable-state-pin/unanchored-cumulative" in label for _p, label, _f in findings
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        (
+            "monotone lower bound",
+            "gh api 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control"
+            "+is%3Apr' --jq '.total_count >= 5' | grep -qx true",
+        ),
+        (
+            "is:open bounded",
+            "gh api 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control"
+            "+is%3Apr+is%3Aopen' --jq '.total_count <= 1' | grep -qx true",
+        ),
+        (
+            "closed date range",
+            "gh api 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control"
+            "+is%3Apr+created%3A2026-07-29T03%3A01%3A23Z..2026-07-30T08%3A00%3A00Z'"
+            " --jq '.total_count <= 3' | grep -qx true",
+        ),
+        (
+            "zero assertion is Rule D territory",
+            "gh api 'search/issues?q=repo%3AOmniNode-ai%2Fonex_change_control"
+            "+is%3Apr+created%3A%3E2026-07-29T03%3A01%3A35Z' --jq .total_count"
+            " | grep -qx 0",
+        ),
+    ],
+)
+def test_rule_f_bounded_or_monotone_counts_are_not_flagged(
+    tmp_path: Path, label: str, value: str
+) -> None:
+    """Negative controls for the unanchored-cumulative detector."""
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    labels = [lbl for _p, lbl, _f in findings]
+    assert not any("mutable-state-pin" in lbl for lbl in labels), (label, labels)
+
+
+@pytest.mark.unit
+def test_rule_f_ignores_run_id_without_conclusion_assertion(tmp_path: Path) -> None:
+    """A run id that is merely fetched, not asserted on, is not a violation."""
+    value = (
+        "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108 "
+        "--jq .html_url"
+    )
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    labels = [label for _p, label, _f in findings]
+    assert not any("mutable-state-pin" in label for label in labels), labels
+
+
+# ---------------------------------------------------------------------------
+# Rule F: attempt-anchored run reads are the SANCTIONED repair, not a defect.
+#
+# A run's latest-attempt job record is overwritten by a re-run, but per-attempt
+# records are immutable -- a re-run appends attempt N+1 and never rewrites
+# attempt N. Verified live against the corpus' own instance (run 30565261108,
+# 2026-07-30): `?filter=all` returns attempt 1 = failure alongside attempt 2 =
+# success, so the attempt-1 verdict the OMN-15484 evidence needs survives the
+# re-run that erased it from the default view.
+#
+# These tests exist because the first draft of Rule F DID flag this form, and
+# the corpus ratchet caught it on the real repair the owning lane had already
+# landed on dev. A gate that blocks the fix rather than the defect is a
+# false-RED generator; the exemption is pinned here so it cannot regress.
+# ---------------------------------------------------------------------------
+
+# Byte-for-byte the repair the infra-unwedge lane landed on dev.
+_OMN_15484_ATTEMPT_ANCHORED = (
+    "gh api 'repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108/"
+    "jobs?filter=all&per_page=100' --jq '.jobs[]|select(.run_attempt==1 and "
+    '.name=="occ-preflight / eligibility")|.conclusion\' | grep -qx failure'
+)
+
+
+@pytest.mark.unit
+def test_rule_f_exempts_attempt_anchored_filter_all_read(tmp_path: Path) -> None:
+    """The landed OMN-15484 repair (filter=all + run_attempt==1) is clean."""
+    findings = linter.lint_contract(
+        write_contract(tmp_path, _OMN_15484_ATTEMPT_ANCHORED)
+    )
+    labels = [label for _p, label, _f in findings]
+    assert not any("mutable-state-pin" in label for label in labels), (
+        "Rule F flagged the attempt-anchored repair, which reads an IMMUTABLE "
+        f"per-attempt record. Findings: {labels}"
+    )
+
+
+@pytest.mark.unit
+def test_rule_f_exempts_attempts_path_form(tmp_path: Path) -> None:
+    """The `/attempts/<n>/jobs` path form is equally attempt-pinned."""
+    value = (
+        "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108/"
+        "attempts/1/jobs --jq '.jobs[]|select(.name==\"occ-preflight / "
+        "eligibility\")|.conclusion' | grep -qx failure"
+    )
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    labels = [label for _p, label, _f in findings]
+    assert not any("mutable-state-pin" in label for label in labels), labels
+
+
+@pytest.mark.unit
+def test_rule_f_still_flags_run_attempt_without_filter_all(tmp_path: Path) -> None:
+    """`run_attempt==1` alone is NOT an anchor -- it goes RED on empty input.
+
+    The default jobs endpoint returns only the LATEST attempt, so once the job
+    is re-run the selector matches nothing, the producer emits no output, and
+    `grep -qx` fails. Same permanent block, different route -- so both halves
+    of the exemption are required.
+    """
+    value = (
+        "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30565261108/jobs "
+        "--jq '.jobs[]|select(.run_attempt==1 and .name==\"occ-preflight / "
+        "eligibility\")|.conclusion' | grep -qx failure"
+    )
+    findings = linter.lint_contract(write_contract(tmp_path, value))
+    assert any(
+        "mutable-state-pin/run-conclusion" in label for _p, label, _f in findings
+    ), "run_attempt without filter=all must stay flagged"

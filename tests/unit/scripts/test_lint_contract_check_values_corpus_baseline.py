@@ -45,6 +45,49 @@ _RULE_B_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15382_rule_b_baseli
 _RULE_C_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15391_rule_c_baseline.yaml"
 _RULE_D_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15391_rule_d_baseline.yaml"
 _RULE_E_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15411_rule_e_baseline.yaml"
+_RULE_F_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15540_rule_f_baseline.yaml"
+
+# OMN-15540 Rule F concurrent-repair exemption.
+#
+# This baseline entry is owned by a lane that was already in flight when Rule F
+# landed and that will repair it:
+#
+#   contracts/OMN-15192.yaml::dod-omn-15192-b3-accepted-deviation-census
+#       -> the OMN-15192 acceptance-bullet-3 lane
+#
+# Rules A-D assert baseline set EQUALITY: a repaired contract whose baseline
+# entry was not deleted in the same PR hard-fails as a stale entry. That is the
+# right default, and it stays the default for every other Rule F entry. It is
+# wrong for this one specifically: the repairing PR belongs to a DIFFERENT lane
+# that has no reason to know this baseline exists, so the moment it lands the
+# `healed` assertion would go RED on the required `CI Summary` context -- a
+# gate turning someone else's REPAIR into a merge block. That is a false-RED
+# generator of exactly the kind the Rule E block in the linter warns makes a
+# rule something the corpus learns to ignore.
+#
+# That hazard is not hypothetical here. contracts/OMN-15484.yaml was in the
+# original census and was ALSO exempted for the same reason; while Rule F was
+# being built its owning lane landed the correct attempt-anchored repair on
+# dev, so it left the live scan on its own and is no longer baselined at all.
+#
+# So the `healed` half tolerates this entry disappearing; the `new violations`
+# half stays hard for everything including it. Once the lane lands, delete the
+# entry from the baseline AND from this set -- the follow-up is named in
+# OMN-15540. This set may only shrink.
+#
+# THE LANE LANDED (2026-07-30, OCC#5673 / OMN-15192), so the instruction above
+# was carried out and this set is now EMPTY. Both OMN-15192 Rule F entries --
+# dod-omn-15192-bullet1-first-post-flip-mint and
+# dod-omn-15192-b3-accepted-deviation-census -- are superseded append-only by
+# `-r34` items that re-ask the identical question over the CLOSED window
+# created:2026-07-29T03:01:23Z..2026-07-30T08:00:00Z, and a live corpus rescan
+# reproduces neither id. They were deleted from
+# .onex_ratchets/omn_15540_rule_f_baseline.yaml in the same PR, which is what
+# forced this deletion too: test_rule_f_concurrent_repair_exemptions_are_still_
+# baseline_entries requires every exempt id to still be a baseline entry.
+# Keeping the exemption while shrinking the baseline is not an option the
+# ratchet allows -- by design.
+_RULE_F_CONCURRENT_REPAIR_EXEMPT: frozenset[str] = frozenset()
 
 # OMN-15411 Rule E generated-item carve-out. The live OCC companion producer
 # mints `dod-deploy-assessment` with
@@ -72,12 +115,17 @@ def _load_baseline(path: Path) -> frozenset[str]:
 
 @lru_cache(maxsize=1)
 def _scan_corpus() -> tuple[
-    frozenset[str], frozenset[str], frozenset[str], frozenset[str]
+    frozenset[str], frozenset[str], frozenset[str], frozenset[str], frozenset[str]
 ]:
-    """Return (rule_a, rule_b, rule_c, rule_d) ids for every contracts/*.yaml.
+    """Return (rule_a, rule_b, rule_c, rule_d, rule_f) ids for contracts/*.yaml.
 
-    Cached: the corpus is ~7.5k contracts and four ratchet tests consume the
+    Cached: the corpus is ~7.5k contracts and five ratchet tests consume the
     same scan. Without the cache each test re-parses the whole corpus.
+
+    Rule F rides THIS walk deliberately rather than adding its own. See
+    ``test_rule_e_corpus_is_walked_exactly_once_across_all_consumers`` below:
+    a second full-corpus walk pushed the contract's own ratchet check past the
+    DoD compliance runner's 60s timeout once already.
 
     Each id is ``"<relative-contract-path>::<dod_id>"`` -- the same shape the
     baseline files use, and the same shape OMN-15382's corpus survey used to
@@ -88,6 +136,7 @@ def _scan_corpus() -> tuple[
     rule_b: set[str] = set()
     rule_c: set[str] = set()
     rule_d: set[str] = set()
+    rule_f: set[str] = set()
 
     for path in sorted(contracts_dir.glob("*.yaml")):
         rel = f"contracts/{path.name}"
@@ -103,8 +152,16 @@ def _scan_corpus() -> tuple[
                 rule_c.add(f"{rel}::{dod_id}")
             elif "fail-open-zero-count" in label:
                 rule_d.add(f"{rel}::{dod_id}")
+            elif "mutable-state-pin" in label:
+                rule_f.add(f"{rel}::{dod_id}")
 
-    return frozenset(rule_a), frozenset(rule_b), frozenset(rule_c), frozenset(rule_d)
+    return (
+        frozenset(rule_a),
+        frozenset(rule_b),
+        frozenset(rule_c),
+        frozenset(rule_d),
+        frozenset(rule_f),
+    )
 
 
 _PRODUCER_LABEL_RE = re.compile(r"unbounded producer \(([^)]+)\)")
@@ -205,7 +262,7 @@ def _scan_corpus_rule_e_buckets() -> tuple[
 @pytest.mark.unit
 def test_rule_a_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_A_BASELINE_PATH)
-    live_a, _live_b, _live_c, _live_d = _scan_corpus()
+    live_a, _live_b, _live_c, _live_d, _live_f = _scan_corpus()
 
     new_violations = live_a - baseline
     healed = baseline - live_a
@@ -230,7 +287,7 @@ def test_rule_a_corpus_matches_frozen_baseline_exactly() -> None:
 @pytest.mark.unit
 def test_rule_b_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_B_BASELINE_PATH)
-    _live_a, live_b, _live_c, _live_d = _scan_corpus()
+    _live_a, live_b, _live_c, _live_d, _live_f = _scan_corpus()
 
     new_violations = live_b - baseline
     healed = baseline - live_b
@@ -318,7 +375,7 @@ def test_omn_14968_and_omn_15382_contribute_nothing_to_either_baseline() -> None
 @pytest.mark.unit
 def test_rule_c_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_C_BASELINE_PATH)
-    _a, _b, live_c, _d = _scan_corpus()
+    _a, _b, live_c, _d, _f = _scan_corpus()
 
     new_violations = live_c - baseline
     healed = baseline - live_c
@@ -347,7 +404,7 @@ def test_rule_c_corpus_matches_frozen_baseline_exactly() -> None:
 @pytest.mark.unit
 def test_rule_d_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_D_BASELINE_PATH)
-    _a, _b, _c, live_d = _scan_corpus()
+    _a, _b, _c, live_d, _f = _scan_corpus()
 
     new_violations = live_d - baseline
     healed = baseline - live_d
@@ -476,7 +533,15 @@ def test_omn_15391_round2_repairs_contribute_nothing_to_rule_c_or_d() -> None:
 # than restated in prose, so a future correction lands as a test diff with the
 # real numbers attached.
 _RULE_E_RATCHETED_CENSUS: dict[str, tuple[int, int]] = {
-    "base64-decoded file body": (160, 177),
+    # 2026-07-30, OCC#5673: 160 -> 159 items / 177 -> 176 checks. The
+    # concurrent codex-merge-sweep append on this PR superseded
+    # contracts/OMN-15192.yaml::dod-omn-15192-mutate-leg-app-credentialed
+    # with dod-15192-mut-r34-stable, which buffers the producer
+    # (body="$(...)" && printf '%s' "$body" | grep -qF) instead of piping
+    # base64 -d straight into grep -q. The lint skips superseded ids, so the
+    # instance leaves the live scan and this shrink-only pin must follow it
+    # in the SAME PR.
+    "base64-decoded file body": (159, 176),
     "gh pr diff": (143, 143),
     "paginated REST list": (5, 5),
     "git history walk": (4, 4),
@@ -563,7 +628,9 @@ def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
     # _RULE_E_GENERATED_BUCKETS above), so it is asserted non-empty rather than
     # equal; a zero would mean the detector stopped seeing the producer's output
     # entirely, which is a detector regression, not a repair.
-    assert len(live_t1) == len(baseline) == 312
+    # 312 -> 311 (2026-07-30, OCC#5673): see the shrink note on
+    # _RULE_E_RATCHETED_CENSUS["base64-decoded file body"].
+    assert len(live_t1) == len(baseline) == 311
     assert len(live_gen) >= 58
 
     for label, census, distinct in (
@@ -619,4 +686,73 @@ def test_rule_e_corpus_is_walked_exactly_once_across_all_consumers(
         "shared scan was cached. Both accessors must derive from "
         "_scan_corpus_rule_e_full(); a second full-corpus walk pushes the "
         "contract's own ratchet check past the compliance runner's 60s timeout."
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-15540 Rule F corpus ratchet: predicates pinned to a MUTABLE external
+# state.
+#
+# The class this stops: a dod_evidence predicate that can only ever be
+# satisfied by an immutable-past state. Two of the six baseline entries were
+# ALREADY deterministically RED when the rule landed -- contracts/OMN-10765's
+# two checks 404 against a branch deleted on merge, and contracts/OMN-15484's
+# second check asserts `failure` on a job that has since been re-run to
+# `success`. An unsatisfiable check does not merely fail; it produces an
+# unresolvable red that escalates to the operator as a "red-but-accepted"
+# adjudication. This ratchet is what stops the corpus minting new ones.
+#
+# Rule F is HARD tier (it changes the linter's exit code), unlike warning-tier
+# Rule E. The pre-commit hook catches it on CHANGED contracts; this corpus
+# ratchet is the only surface that sees contracts a PR does not touch, and it
+# runs in ci.yml's unconditional `contract-corpus-ratchets` job which is wired
+# into the required `CI Summary` context.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_rule_f_corpus_matches_frozen_baseline() -> None:
+    baseline = _load_baseline(_RULE_F_BASELINE_PATH)
+    _a, _b, _c, _d, live_f = _scan_corpus()
+
+    new_violations = live_f - baseline
+    healed = (baseline - live_f) - _RULE_F_CONCURRENT_REPAIR_EXEMPT
+
+    assert not new_violations, (
+        f"{len(new_violations)} NEW Rule F (mutable-state-pin) violation(s) "
+        "found that are not in the frozen shrink-only baseline "
+        f"({_RULE_F_BASELINE_PATH}): {sorted(new_violations)[:20]}. A "
+        "dod_evidence predicate must not pin a state that moves underneath it: "
+        "a specific `actions/runs/<id>` conclusion is rewritten by a re-run, a "
+        "feature-branch ref 404s once the branch is deleted on merge, and an "
+        "exact/upper bound on an unanchored `search/issues` count is falsified "
+        "by the next re-mint. Bind a receipt, pin the squash commit on the "
+        "mainline, or anchor the query to a closed window."
+    )
+    assert not healed, (
+        f"{len(healed)} baseline entr"
+        f"{'y is' if len(healed) == 1 else 'ies are'} no longer reproduced by "
+        f"a live corpus scan, but the baseline file ({_RULE_F_BASELINE_PATH}) "
+        f"was not updated to remove them: {sorted(healed)[:20]}. Update the "
+        "baseline file to match (shrink it) when you repair a contract -- do "
+        "not leave stale entries."
+    )
+
+
+@pytest.mark.unit
+def test_rule_f_concurrent_repair_exemptions_are_still_baseline_entries() -> None:
+    """The exemption set may only name entries the baseline actually carries.
+
+    Without this, the exemption set is a place where an arbitrary id can be
+    parked to silence the ratchet for a contract that was never in the census.
+    """
+    baseline = _load_baseline(_RULE_F_BASELINE_PATH)
+    stray = _RULE_F_CONCURRENT_REPAIR_EXEMPT - baseline
+    assert not stray, (
+        f"_RULE_F_CONCURRENT_REPAIR_EXEMPT names {sorted(stray)}, which "
+        f"{'is' if len(stray) == 1 else 'are'} not in "
+        f"{_RULE_F_BASELINE_PATH}. The exemption only suppresses the `healed` "
+        "assertion for entries that were in the frozen census; it is not a "
+        "general-purpose allowlist. Remove the stray entr"
+        f"{'y' if len(stray) == 1 else 'ies'}."
     )
