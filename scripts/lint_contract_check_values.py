@@ -37,10 +37,17 @@ like it pins PR 1721, but the ``${PR_NUMBER}`` token is already gone by the time
 the shell would apply the assignment: the assignment is inert, and the check
 silently runs against whatever PR the runner is evaluating instead of 1721).
 
+Also rejects predicates pinned to a MUTABLE external state (OMN-15540 Rule F) --
+a specific workflow run's ``.conclusion`` (rewritten by a re-run), a deletable
+feature-branch ref (404s once the branch is deleted on merge), or an
+exact/upper bound on an unanchored, monotonically growing ``search/issues``
+count. See the Rule F block below for the measured corpus instances.
+
 Usage:
     python3 scripts/lint_contract_check_values.py contracts/OMN-1234.yaml [...]
 
-Exits non-zero if any fail-open or legacy-gh-pr pattern is found.
+Exits non-zero if any fail-open, legacy-gh-pr, or mutable-state-pin pattern is
+found.
 """
 
 from __future__ import annotations
@@ -452,6 +459,242 @@ def _fail_open_zero_count_violation(value: str) -> str | None:
         "GREEN without ever reading what it claims to have read. Read once "
         "into a variable, prove the read with a positive anchor, then assert "
         "absence with `! ... grep -qF` (OMN-15391 Rule D)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-15540 Rule F: predicate pinned to a MUTABLE external state
+#
+# A check_value whose predicate can only ever be satisfied by an
+# IMMUTABLE-PAST state. Two directions, one root cause -- the predicate is
+# written against a surface that keeps moving:
+#
+#   1. It can NEVER pass, because the state it pins has already been erased
+#      (a workflow re-run, a deleted branch). Deterministic BLOCK forever.
+#   2. It pins a MUTABLE state as if it were immutable -- green today by luck,
+#      permanent BLOCK the moment the surface moves. The thing that moves it is
+#      usually the very repair the ticket exists to make.
+#
+# This is the opposite direction from OMN-14767's `check_contract_dod_authoring`
+# "impossible pre-merge" class (`state == MERGED` asserted while the PR is still
+# open), which is a TIMING defect that resolves itself on merge. Rule F's class
+# never resolves: it gets worse with time.
+#
+# Why this matters beyond a red check: an unsatisfiable check produces an
+# unresolvable red, which produces a "red-but-accepted" adjudication request,
+# which spends operator judgement on a defect that was AUTHORED rather than
+# discovered. Stopping the class stops the escalations.
+#
+# --- F1: a specific workflow run's `.conclusion`, asserted -------------------
+# Job and run conclusions are REWRITTEN in place by "Re-run jobs" / "Re-run
+# failed jobs" -- the run id is stable, the conclusion under it is not.
+# Measured at authoring time (2026-07-30) on the corpus' own instance,
+# contracts/OMN-15484.yaml: the check asserts run 30565261108's
+# `occ-preflight / eligibility` concluded `failure`; the job had since been
+# re-run and reads `success`, so `bash -o pipefail -c '<the literal bytes>'`
+# exits 1. Nothing can ever make it exit 0 again.
+#
+# Pinning `failure` is the strictly-never-passable direction and is what the
+# class is named for, but pinning `success` is flagged too: it is the same
+# unstable read, green only until someone re-runs the job. The durable form
+# records the observed conclusion in a receipt under drift/dod_receipts/ and
+# asserts the receipt, or asserts a MONOTONE property of the run (the gate job
+# exists / reported at all) rather than one transient verdict.
+#
+# --- F2: a deletable branch head pinned as a content ref --------------------
+# GitHub deletes a PR head branch on merge, after which every
+# `?ref=<that-branch>` fetch 404s forever. Corpus instance
+# contracts/OMN-10765.yaml (dod-001/dod-002) pins
+# `?ref=jonah/omn-10765-port-change-aware-test-selection-to-omniintelligence`;
+# live readback returns `HTTP 404 -- No commit found for the ref`. This is the
+# exact failure the `reference_never_pin_a_feature_branch_head` rule names:
+# pin the SQUASH COMMIT on the mainline, never the branch head.
+#
+# MAINLINE REFS ARE EXEMPT, DELIBERATELY. `?ref=dev` / `?ref=main` asserting
+# that a fix is live on the mainline is the merged-is-not-deployed discipline,
+# not a defect -- the branch is never deleted and the assertion is a live
+# readback by design. There are 8 such instances in the corpus; flagging them
+# would be exactly the noise the Rule E block above warns makes a rule
+# something the corpus learns to ignore. Short SHAs (>=7 hex) are immutable and
+# exempt; runner-substituted refs (`${PRODUCT_HEAD}`) are judged by the runner,
+# not here; `<branch>`-style placeholders inside prose examples are not refs.
+#
+# --- F3: an unanchored-cumulative count bound -------------------------------
+# An EXACT or UPPER bound (`== N`, `<= N`, `-eq N`, `grep -qx N`) on a
+# `search/issues` count whose result set only ever grows. The set is bounded
+# only by a CLOSED date range (`created:A..B`) or by `is:open` (which drains as
+# PRs close); a bare `created:>X` is open-ended and bounds nothing above.
+# Corpus instances live in contracts/OMN-15192.yaml. That contract's own R32
+# block records the class going RED on a legitimate head-refresh re-mint in
+# contract-compliance run 30462434211 -- routine producer behaviour (OMN-14941)
+# permanently falsifies the bound.
+#
+# LOWER bounds (`>= N`) are monotone-safe on a growing set and are NOT flagged.
+# `N == 0` is excluded: asserting zero over a forward window is a real forward
+# invariant, and the fail-open shape of zero-assertions is already Rule D's
+# territory -- two rules firing on one line teaches nothing.
+# ---------------------------------------------------------------------------
+
+# F1 -------------------------------------------------------------------------
+_RUN_ID_RE = re.compile(r"actions/runs/\d+\b")
+_CONCLUSION_FIELD_RE = re.compile(r"\.conclusion\b")
+# Any consumer that turns the read into an exit status: a `grep -q` family
+# filter, a `test`/`[` string comparison, or a jq boolean projection.
+_CONCLUSION_ASSERT_RE = re.compile(
+    r"\|\s*(?:grep|egrep|fgrep)\s+-[A-Za-z]*q"
+    r"|\btest\s+[\"']"
+    r"|\[\s+[\"']"
+    r"|--jq\s+'[^']*(?:==|!=|<=|>=)"
+)
+
+# ATTEMPT-ANCHORED READS ARE EXEMPT -- this is the sanctioned repair, and
+# flagging it would make Rule F block the fix rather than the defect.
+#
+# A workflow run's LATEST-attempt job record is overwritten by a re-run, but the
+# PER-ATTEMPT records are immutable: a re-run appends attempt N+1 and never
+# rewrites attempt N. Verified live on the corpus' own instance (run
+# 30565261108, 2026-07-30):
+#
+#   ?filter=all -> [{attempt:1, conclusion:"failure"},
+#                   {attempt:2, conclusion:"success"}]
+#
+# so the attempt-1 `failure` the OMN-15484 evidence needs survives the re-run
+# that erased it from the default (latest-only) view. Two spellings qualify:
+#
+#   a) `/actions/runs/<id>/attempts/<n>/jobs` -- the attempt is in the path.
+#   b) `?filter=all` AND a `run_attempt` selector -- all attempts are returned
+#      and one is selected.
+#
+# BOTH halves of (b) are required, deliberately. `select(.run_attempt==1)`
+# WITHOUT `filter=all` is still a defect and stays flagged: the default endpoint
+# returns only the latest attempt, so after a re-run the selector matches
+# nothing, the producer emits no output, and `grep -qx` goes RED on empty input
+# -- the same permanent block by a different route.
+_ATTEMPT_PATH_RE = re.compile(r"actions/runs/\d+/attempts/\d+\b")
+_FILTER_ALL_RE = re.compile(r"[?&]filter=all\b")
+_RUN_ATTEMPT_SELECTOR_RE = re.compile(r"\.run_attempt\s*==\s*\d+")
+
+
+def _is_attempt_anchored(value: str) -> bool:
+    """Return True when the run read is pinned to an immutable attempt record."""
+    if _ATTEMPT_PATH_RE.search(value):
+        return True
+    return bool(_FILTER_ALL_RE.search(value) and _RUN_ATTEMPT_SELECTOR_RE.search(value))
+
+
+# F2 -------------------------------------------------------------------------
+# A git ref that is immutable by construction: an abbreviated-or-full commit
+# SHA. GitHub resolves abbreviations from 7 characters.
+_SHA_REF_RE = re.compile(r"^[0-9a-f]{7,40}$")
+# Long-lived refs that are never deleted, so a pin against them is a live
+# mainline readback rather than a dangling reference.
+_MAINLINE_REFS: frozenset[str] = frozenset({"dev", "main", "master", "HEAD"})
+# Release tags are immutable in practice (`v1.2.3`, `1.2.3`).
+_TAG_REF_RE = re.compile(r"^v?\d+\.\d+")
+_QUERY_REF_RE = re.compile(r"[?&]ref=([^&'\"\s|)]+)")
+_COMMITS_SEGMENT_RE = re.compile(r"/commits/([^/'\"\s?&)]+)")
+
+
+def _is_stable_ref(ref: str) -> bool:
+    """Return True when *ref* cannot dangle (SHA, tag, mainline, or dynamic)."""
+    # Runner- or shell-substituted: the value is not knowable statically, and
+    # `_check_inert_token_prefix` / Rule B already govern placeholder misuse.
+    if "$" in ref or "{" in ref:
+        return True
+    # Prose placeholders inside documentation-style values (`<branch>`, `<sha>`).
+    if "<" in ref or ">" in ref or "`" in ref:
+        return True
+    bare = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+    if ref.startswith("refs/tags/"):
+        return True
+    return bool(
+        _SHA_REF_RE.match(bare) or _TAG_REF_RE.match(bare) or bare in _MAINLINE_REFS
+    )
+
+
+# F3 -------------------------------------------------------------------------
+_SEARCH_ISSUES_RE = re.compile(r"search/issues\?q=")
+_TOTAL_COUNT_RE = re.compile(r"total_count")
+# A CLOSED date range (`created:A..B`) genuinely bounds the set from above.
+# A bare `created:>X` does not -- it is open-ended forward.
+_CLOSED_RANGE_ANCHOR_RE = re.compile(
+    r"(?:created|merged|closed|updated)(?:%3A|:)[^+'\"\s]*\.\."
+)
+# `is:open` drains as PRs close, so it bounds an open-count assertion.
+_IS_OPEN_ANCHOR_RE = re.compile(r"is(?:%3A|:)open")
+_UPPER_OR_EXACT_BOUND_RE = re.compile(
+    r"total_count\s*(?:<=|<|==)\s*(\d+)"
+    r"|-(?:eq|le|lt)\s+(\d+)"
+    r"|grep\s+-[A-Za-z]*q[A-Za-z]*\s+'?\"?\^?(\d+)"
+)
+
+
+def mutable_run_conclusion_violation(value: str) -> str | None:
+    """Return a label if *value* asserts a pinned workflow run's conclusion."""
+    if not (
+        _RUN_ID_RE.search(value)
+        and _CONCLUSION_FIELD_RE.search(value)
+        and _CONCLUSION_ASSERT_RE.search(value)
+    ):
+        return None
+    if _is_attempt_anchored(value):
+        return None
+    return (
+        "mutable-state-pin/run-conclusion: the predicate asserts the "
+        "`.conclusion` of a specific `actions/runs/<id>`. Run and job "
+        "conclusions are rewritten in place by 'Re-run jobs', so the run id is "
+        "stable while the verdict under it is not -- asserting `failure` is "
+        "erased by the first re-run or repair (deterministic BLOCK, the "
+        "OMN-15484 shape), and asserting `success` is green only until someone "
+        "re-runs the job. Record the observed conclusion in a receipt under "
+        "drift/dod_receipts/ and assert the receipt, or assert a monotone "
+        "property of the run (the gate job reported at all) rather than one "
+        "transient verdict. The attempt-anchored form is exempt: "
+        "`?filter=all` plus a `.run_attempt==N` selector, or the "
+        "`/actions/runs/<id>/attempts/<n>/jobs` path (OMN-15540 Rule F)"
+    )
+
+
+def deletable_branch_ref_violation(value: str) -> str | None:
+    """Return a label if *value* pins a ref that can be deleted."""
+    refs = [m.group(1) for m in _QUERY_REF_RE.finditer(value)]
+    refs += [m.group(1) for m in _COMMITS_SEGMENT_RE.finditer(value)]
+    for ref in refs:
+        if _is_stable_ref(ref):
+            continue
+        return (
+            f"mutable-state-pin/deletable-branch-ref: the predicate pins ref "
+            f"`{ref}`, which is neither a commit SHA, a tag, nor a mainline "
+            "branch. GitHub deletes a PR head branch on merge, after which "
+            "every fetch at that ref 404s and the check can never pass again "
+            "(the OMN-10765 shape). Pin the squash commit on the mainline "
+            "instead -- `reference_never_pin_a_feature_branch_head` "
+            "(OMN-15540 Rule F)"
+        )
+    return None
+
+
+def unanchored_cumulative_bound_violation(value: str) -> str | None:
+    """Return a label if *value* upper-bounds an unbounded growing count."""
+    if not (_SEARCH_ISSUES_RE.search(value) and _TOTAL_COUNT_RE.search(value)):
+        return None
+    if _CLOSED_RANGE_ANCHOR_RE.search(value) or _IS_OPEN_ANCHOR_RE.search(value):
+        return None
+    match = _UPPER_OR_EXACT_BOUND_RE.search(value)
+    if match is None:
+        return None
+    bound = next(g for g in match.groups() if g is not None)
+    if int(bound) == 0:
+        return None
+    return (
+        f"mutable-state-pin/unanchored-cumulative: the predicate bounds a "
+        f"`search/issues` count from above (<= {bound}) but the query carries "
+        "no closed date range (`created:A..B`) and no `is:open`, so the result "
+        "set only ever grows -- the bound is falsified permanently by the next "
+        "routine head-refresh re-mint (OMN-14941; already observed going RED "
+        "in contract-compliance run 30462434211). Anchor the query to a closed "
+        "window, scope it to `is:open`, or assert a monotone lower bound "
+        "(`>= N`) instead (OMN-15540 Rule F)"
     )
 
 
@@ -1041,6 +1284,20 @@ def _scan_value(
         fragment = value.strip()[:80]
         findings.append((path_str, f"{dod_id}: {zero_count_label}", fragment))
 
+    # OMN-15540 Rule F: predicate pinned to a MUTABLE external state. HARD
+    # tier (unlike warning-tier Rule E): these fail CLOSED but they fail
+    # PERMANENTLY, and an unsatisfiable check is what turns into a
+    # "red-but-accepted" operator adjudication.
+    for detector in (
+        mutable_run_conclusion_violation,
+        deletable_branch_ref_violation,
+        unanchored_cumulative_bound_violation,
+    ):
+        mutable_label = detector(value)
+        if mutable_label is not None:
+            fragment = value.strip()[:80]
+            findings.append((path_str, f"{dod_id}: {mutable_label}", fragment))
+
 
 # ---------------------------------------------------------------------------
 # CLI entry-point
@@ -1120,6 +1377,20 @@ def main(argv: list[str]) -> int:
             "  GOOD (path absent at parent): gh api 'repos/O/R/commits/PARENT'"
             " --jq '.sha' | grep -qx 'PARENT'"
             " && ! gh api 'repos/O/R/contents/FILE?ref=PARENT' --silent\n"
+            "\nFix predicates pinned to MUTABLE state (OMN-15540 Rule F):\n"
+            "  BAD:  gh api repos/O/R/actions/runs/30565261108/jobs"
+            " --jq '...|.conclusion' | grep -qx failure"
+            "   (a re-run rewrites the conclusion -- permanent BLOCK)\n"
+            "  GOOD: assert a receipt under drift/dod_receipts/ that RECORDED"
+            " the conclusion, or assert a monotone property of the run\n"
+            "  BAD:  gh api '...?ref=jonah/omn-1234-my-feature'"
+            "   (the head branch is deleted on merge -- 404s forever)\n"
+            "  GOOD: gh api '...?ref=<squash-commit-sha-on-dev>'\n"
+            "  BAD:  COUNT=\"$(gh api 'search/issues?q=...' --jq .total_count)\""
+            ' && [ "$COUNT" -eq 2 ]'
+            "   (the set only grows -- the next re-mint falsifies it)\n"
+            "  GOOD: anchor the query to a closed window"
+            " (`created:A..B`), scope it `is:open`, or assert `>= N`\n"
             "\nRun: uv run python scripts/migrate_dod_contracts.py"
             " --apply --tickets <ID>",
             file=sys.stderr,
