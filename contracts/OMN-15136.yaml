@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15136"
+title: "Codify omniweb CI SSM deploy policy"
+summary: >
+  Manual OCC companion for OmniNode-ai/omninode_infra PR #769. The product PR codifies the omniweb-ci
+  SSM deploy policy in Terraform at exact head 89369119e6598f78e7bfa29314f505fac583a3ee. This evidence
+  binds source shape and the explicit no-live-mutation hold only; it does not claim Terraform import,
+  apply, deployment, restart, or runtime readback.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #769 CI checks and explicit remaining live gate"
+    command: "gh pr checks 769 --repo OmniNode-ai/omninode_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra769-terraform-policy-source"
+    description: >-
+      Binds the locally executed receipt artifact for omninode_infra PR #769 at exact head 89369119e6598f78e7bfa29314f505fac583a3ee.
+      The underlying receipt was executed with an operator token able to read the private omninode_infra
+      repository; hosted OCC compliance cannot read that private repo with its repo-scoped GITHUB_TOKEN,
+      so this check binds the immutable PASS receipt and its recorded product file/blob facts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15136/dod-infra769-terraform-policy-source/command.yaml" &&
+          grep -q '^status: PASS$' "$receipt" && grep -q '89369119e6598f78e7bfa29314f505fac583a3ee' "$receipt"
+          && grep -q 'aws/cluster-dev/omniweb_ci_iam.tf' "$receipt" && grep -q 'ac317c88e7656d76aac6997452fcb26664106578'
+          "$receipt" && grep -q 'infra769 Terraform source binding PASS' "$receipt"
+  - id: "dod-infra769-no-live-mutation-claim"
+    description: >-
+      Binds the locally executed receipt artifact for the PR's explicit remaining gate: no Terraform import
+      or apply has run, and the PR must not merge as a claim that the live policy is already Terraform-managed.
+      The underlying receipt was executed with an operator token able to read the private omninode_infra
+      PR body; hosted OCC compliance binds the immutable PASS receipt.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15136/dod-infra769-no-live-mutation-claim/command.yaml" && grep
+          -q '^status: PASS$' "$receipt" && grep -q 'No import or apply has been run' "$receipt" && grep
+          -q 'Do not merge as a claim that the live policy is already Terraform-managed' "$receipt" &&
+          grep -q 'infra769 live-boundary hold binding PASS' "$receipt"
+  - id: "occ-self-bind-pr-5745"
+    description: >-
+      Binds OMN-15136 central evidence to OCC companion PR #5745 so OCC preflight can prove this evidence
+      change is itself associated with the ticket it satisfies.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          number="$(gh api repos/OmniNode-ai/onex_change_control/pulls/5745 --jq .number)" && state="$(gh
+          api repos/OmniNode-ai/onex_change_control/pulls/5745 --jq .state)" && branch="$(gh api repos/OmniNode-ai/onex_change_control/pulls/5745
+          --jq .head.ref)" && test "$number" = "5745" && test "$state" = "open" && test "$branch" = "jonah/omn-15136-infra769-occ"
+          && printf 'OCC 5745 self-bind PASS\n'
+  - id: "dod-occ-hosted-private-token-boundary"
+    description: >-
+      Binds the hosted OCC compliance credential boundary that makes direct private omninode_infra probes
+      fail closed in this PR. The checked workflow on dev runs contract compliance with repo-scoped github.token
+      as GH_TOKEN and does not pass CROSS_REPO_PAT to the command execution step, so private product facts
+      must be captured by operator-token receipts rather than re-fetched by hosted OCC CI.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          workflow="$(gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/onex_change_control/contents/.github/workflows/ci.yml?ref=dev')"
+          && printf '%s' "$workflow" | grep 'uv run python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py'
+          >/dev/null && printf '%s' "$workflow" | grep 'GH_TOKEN: \${{ github.token }}' >/dev/null &&
+          printf '%s' "$workflow" | grep 'OMNI_REPO_CLONE_TOKEN: \${{ secrets.CROSS_REPO_PAT || github.token
+          }}' >/dev/null && printf 'OCC hosted compliance private-token boundary PASS\n'
