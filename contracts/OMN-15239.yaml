@@ -179,3 +179,33 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5764 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn15239-pr-225-merged-at-23a88d09-guardcompat"
+    description: >-
+      Executor-compatibility correction of the binding item dod-omn15239-pr-225-merged-at-23a88d09, APPENDED
+      under OCC append-only doctrine rather than edited in place: a merged dod_evidence entry is immutable
+      (validator_occ_append_only) and its receipt pins the entry hash, so an in-place rewrite both trips
+      the append-only gate and staleness-invalidates the receipt binding. Root cause: node_dod_verify
+      shape-guards a check_value BEFORE executing it (evidence_collector._invalid_check_value_reason)
+      by tokenizing with shlex.split(posix=True), which is NOT $()-aware. The superseded original embedded
+      the jq program .state + " " + (.mergeCommit.oid // "none") inside a double-quoted command substitution,
+      so the jq program's inner double quotes closed the outer one and the guard landed on the fragment
+      " + (.mergeCommit.oid // none)')" as the command name; that fragment contains a slash, so the guard
+      took its relative-script-path branch, found no executable, and returned INVALID_CHECK_VALUE_NOT_A_COMMAND
+      without ever running the command. A FALSE RED against a command that exits 0 in a real shell — the
+      binding fact never changed — but a hard FAIL on the verdict, which made dod_verify return status=failed
+      (9 verified / 1 failed / 10 total) for this ticket. This replacement splits the single two-field
+      query into two single-field queries so each --jq filter is a bare path expression carrying no quote
+      characters, leaving `test` as the first shlex token. Semantics preserved exactly: BOTH the state
+      MERGED AND the exact merge SHA 23a88d09051565270f76cade8bc7b685cd790f38 are asserted, so closed-unmerged,
+      still-open, and re-landed-elsewhere each still yield a mismatch. The PR number and --repo stay in
+      the SAME shell clause so the collector's same-clause _hardcoded_pr_bindings_in_value extraction
+      resolves (jonahgabriel/steel_onslaught, 225) instead of falling back to _DEFAULT_GITHUB_ORG (OmniNode-ai),
+      which resolves nothing for this personal repo. Shape mirrors the merged dod-omn15490-pr-237-merged-at-e3dbd017-guardcompat
+      precedent (OCC #5760), which the runner executed and returned verified.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15239-pr-225-merged-at-23a88d09"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 225 --repo jonahgabriel/steel_onslaught --json mergeCommit --jq .mergeCommit.oid)" = "23a88d09051565270f76cade8bc7b685cd790f38" && test "$(gh pr view 225 --repo jonahgabriel/steel_onslaught --json state --jq .state)" = "MERGED"
