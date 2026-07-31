@@ -1386,6 +1386,69 @@ jobs:
       - name: Contamination-ratchet CI wiring is intact (anti-removal anchor)
         run: uv run python scripts/validation/check_yamlfmt_contamination.py --check-wiring
 
+  supersession-binding-ratchet:
+    name: Supersession Binding Ratchet (OMN-15459)
+    # OMN-15459. Supersession is the REPAIR primitive of an append-only receipt
+    # store, and until this gate landed it was also a laundering channel:
+    # check_receipt_hardening.py validated a replacement's schema, hashes and
+    # identity and never asked whether the replacement executes the check the
+    # superseded item declares. OCC#5534 (merged, 34c8dacc) rebound 8 DISTINCT
+    # dod_evidence items to one byte-identical grep of create_kafka_topics.py --
+    # so dod-occ-evidence-admissibility-validator now attests that a Kafka-topic
+    # script defines a function while the admissibility suite it names goes
+    # unrun. OCC#5528 did the same with 6 files one PR earlier. Machine
+    # producer, ~20 cohorts/day.
+    #
+    # The falsifiability shelf cannot see this: that grep IS RED-derivable (1 at
+    # the fix ref, 0 at the parent). It is a well-formed probe that falsifies a
+    # DIFFERENT item. Every existing gate reasons about a check in isolation;
+    # rules S1/S2 reason about the item<->replacement pairing.
+    #
+    # WHY A WHOLE-CORPUS JOB AND NOT ONLY THE PRE-COMMIT HOOK: the hook
+    # (check-receipt-hardening) and the Pre-commit job's changed-receipt step are
+    # changed-files scoped, so neither can see the frozen baseline drift out of
+    # sync with the corpus, and neither sees a cohort sibling the PR does not
+    # touch. This job is the only required-path surface that scans every
+    # supersession in drift/dod_receipts/**.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as contract-corpus-ratchets and
+    # yamlfmt-contamination-ratchet above): no needs:, no if:, no paths filter. A
+    # skip here means something is wrong, not that the gate legitimately opted
+    # out -- the strict success-only check in ci-summary below fails closed on
+    # any non-success result.
+    #
+    # ANTI-REMOVAL ANCHOR: check_receipt_hardening.py --check-supersession-wiring
+    # is a pre-commit hook scoped to this file AND the last step of this job, so
+    # ANY edit to ci.yml re-asserts (a) the job exists, (b) it is unconditional,
+    # (c) it runs the corpus ratchet and the gate's own RED/GREEN test module,
+    # and (d) ci-summary both needs it and applies a strict success-only check.
+    runs-on: >-
+      ${{
+        fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+      }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: S1/S2 shrink-only corpus ratchet over every supersession
+        run: |
+          uv run python scripts/validation/check_receipt_hardening.py \
+            --supersession-corpus
+      - name: Detector RED/GREEN controls against the live OCC#5534 defect shape
+        run: |
+          uv run pytest \
+            tests/unit/scripts/test_supersession_binding_gate.py \
+            -q -p no:randomly
+      - name: Supersession-binding CI wiring is intact (anti-removal anchor)
+        run: |
+          uv run python scripts/validation/check_receipt_hardening.py \
+            --check-supersession-wiring
+
   validate-prod-promotion-grants:
     name: validate-prod-promotion-grants
     # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
@@ -1630,7 +1693,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet, merge-hold-gate]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet, merge-hold-gate, supersession-binding-ratchet]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1702,6 +1765,19 @@ jobs:
           # merges to dev with every required context green.
           if [[ "${{ needs.yamlfmt-contamination-ratchet.result }}" != "success" ]]; then
             echo "::error::yamlfmt-contamination-ratchet did not pass (result: ${{ needs.yamlfmt-contamination-ratchet.result }}) - fail-closed (OMN-15479)"
+            exit 1
+          fi
+          # OMN-15459: same strict fail-closed pattern for the supersession
+          # binding ratchet. Only 'success' passes; skipped/cancelled/failure ALL
+          # block. This is the ONLY required-path surface that scans every
+          # supersession in drift/dod_receipts/** -- the receipt-hardening hook
+          # and the Pre-commit job's changed-receipt step are changed-files
+          # scoped, so neither can see a cohort sibling the PR does not touch nor
+          # the frozen baseline drifting out of sync with the corpus. Without
+          # this check a new wrong-item rebind merges to dev with every required
+          # context green, which is exactly how OCC#5534 landed.
+          if [[ "${{ needs.supersession-binding-ratchet.result }}" != "success" ]]; then
+            echo "::error::supersession-binding-ratchet did not pass (result: ${{ needs.supersession-binding-ratchet.result }}) - fail-closed (OMN-15459)"
             exit 1
           fi
           # OMN-15484: same strict fail-closed pattern for the Merge Hold Gate.
