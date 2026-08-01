@@ -106,3 +106,48 @@ dod_evidence:
         check_value: >-
           gh api repos/OmniNode-ai/onex_change_control/commits/1c9d1f65e6b92f8c6e9ee14991b70ca9edaf539b
           --jq .sha | grep -qx '1c9d1f65e6b92f8c6e9ee14991b70ca9edaf539b'
+  - id: "dod-market1997-delegate-skill-quota-terminal"
+    description: >-
+      Append-only evidence for omnimarket PR #1997 at exact head 016150ecf9acb2db10d59500d87d30e7a5bb903e.
+      The delegate-skill producer classifies an all-attempts HTTP 429 / quota-exhausted dispatch result
+      as a typed failed terminal, routes it through the DelegateSkillFailed contract topic, and keeps
+      honest successes on the completed terminal.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          head="$(gh api repos/OmniNode-ai/omnimarket/pulls/1997 --jq .head.sha)" && test "$head" = "016150ecf9acb2db10d59500d87d30e7a5bb903e"
+          && model="$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/models/delegation/wire/model_delegate_skill_response.py?ref=016150ecf9acb2db10d59500d87d30e7a5bb903e'
+          --jq .content | base64 -d)" && handler="$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_delegate_skill_orchestrator/handlers/handler_delegate_skill.py?ref=016150ecf9acb2db10d59500d87d30e7a5bb903e'
+          --jq .content | base64 -d)" && tests="$(gh api 'repos/OmniNode-ai/omnimarket/contents/tests/test_omn15469_delegate_skill_quota_terminal_seam.py?ref=016150ecf9acb2db10d59500d87d30e7a5bb903e'
+          --jq .content | base64 -d)" && fixture="$(gh api 'repos/OmniNode-ai/omnimarket/contents/tests/fixtures/seams/quota_terminal/forced_429_dispatch_result.json?ref=016150ecf9acb2db10d59500d87d30e7a5bb903e'
+          --jq .content | base64 -d)" && printf '%s' "$model" | grep -q 'def resolve_terminal_failure_cause'
+          && printf '%s' "$model" | grep -q 'EnumDelegationTerminalFailureCause.PROVIDER_QUOTA_EXHAUSTED'
+          && printf '%s' "$model" | grep -q 'class ModelDelegateSkillFailed' && printf '%s' "$handler"
+          | grep -q 'return delegate_skill_terminal_from_response' && printf '%s' "$handler" | grep -q
+          'terminal_failure_cause = explicit_terminal_failure_cause or terminal_failure_cause' && printf
+          '%s' "$tests" | grep -q 'test_seam_quota_exhausted_command_emits_one_typed_failure_terminal'
+          && printf '%s' "$tests" | grep -q 'test_successful_delegation_still_terminalizes_as_completed'
+          && printf '%s' "$fixture" | grep -q 'provider_quota_exhausted' && printf 'market1997 delegate
+          skill quota terminal PASS\n'
+  - id: "dod-market1997-head-binding"
+    description: >-
+      Rule-B binding for omnimarket PR #1997. Pins the evidence to the exact product head and base branch
+      so a force-push or retarget turns the receipt red instead of silently admitting stale evidence.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 1997 --repo OmniNode-ai/omnimarket --json number,headRefOid,baseRefName --jq '.headRefOid
+          == "016150ecf9acb2db10d59500d87d30e7a5bb903e" and .baseRefName == "dev"' | grep -qx true
+  - id: "occ-self-bind-pr-5837"
+    description: >-
+      Binds the OMN-15469 Market #1997 evidence companion to OCC PR #5837.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 5837 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
