@@ -32,3 +32,30 @@ dod_evidence:
       - check_type: "command"
         check_value: "gh pr view 4799 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
           --jq '.number, .state, .headRefName'"
+  - id: "dod-omnibase-infra-pr-2604-ack-dlq-lineage"
+    description: "PR #2604 preserves ingress correlation lineage across ACK/DLQ roundtrip and refuses
+      to ACK a non-durable DLQ write at exact head ca599dc74ea3c7fbbe8c47135f54293c5f10e971."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2604 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid,baseRefName --jq '.number == 2604 and .headRefOid == "ca599dc74ea3c7fbbe8c47135f54293c5f10e971" and .baseRefName == "dev"' | grep -qx true &&
+          files="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2604/files --jq '.[].filename')" &&
+          printf '%s\n' "$files" | grep -qx 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py' &&
+          printf '%s\n' "$files" | grep -qx 'tests/fixtures/seams/ack_dlq/poisoned_command.json' &&
+          printf '%s\n' "$files" | grep -qx 'tests/unit/runtime/auto_wiring/test_boundary_dlq_omn14507.py' &&
+          printf '%s\n' "$files" | grep -qx 'tests/unit/runtime/auto_wiring/test_seam_correlation_survives_ack_and_dlq_roundtrip_omn14498.py' &&
+          test "$(printf '%s\n' "$files" | grep -c .)" -eq 4 &&
+          handler="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=ca599dc74ea3c7fbbe8c47135f54293c5f10e971' --jq .content | base64 -d)" &&
+          printf '%s' "$handler" | grep -qF 'def _ingress_correlation_id' &&
+          printf '%s' "$handler" | grep -qF 'class BoundaryDlqNotPersistedError' &&
+          test_body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_seam_correlation_survives_ack_and_dlq_roundtrip_omn14498.py?ref=ca599dc74ea3c7fbbe8c47135f54293c5f10e971' --jq .content | base64 -d)" &&
+          printf '%s' "$test_body" | grep -qF 'test_seam_correlation_survives_ack_and_dlq_roundtrip' &&
+          printf '%s' "$test_body" | grep -qF 'poisoned_command.json'
+  - id: "occ-self-bind-pr-5835"
+    description: "OCC companion PR #5835 -- self-bind for OMN-14498 evidence used by omnibase_infra#2604."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5835 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number, .state, .headRefName'"
