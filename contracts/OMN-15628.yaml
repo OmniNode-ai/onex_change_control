@@ -160,3 +160,28 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5913 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-deploy-assessment-live"
+    description: >-
+      OMN-14443 falsifiability backfill (remediation round). The original dod-deploy-assessment check_value
+      (`gh pr diff 2000 --repo OmniNode-ai/omnimarket --name-only | grep -ciE 'nodes/|handlers/|runtime/|services/|docker|monitor_logs|deploy'`)
+      has no live-surface probe in command position -- its exit status depends only on which paths PR
+      #2000's own diff touched, never on the state of the deployed system, and it is pinned to PR #2000
+      so it never evaluated anything about the superseding PR #2003 that actually carried this ticket's
+      fix to dev. This item supersedes dod-deploy-assessment with two genuine live-surface probes: (1)
+      the merged omnimarket dev tree is read directly via the GitHub contents API and asserted to carry
+      the fail-fast marker this ticket's fix introduced -- RED proven live 2026-08-01 against the pre-fix
+      parent commit f54bd874 (marker absent, silent-fallback code still in place), GREEN proven live against
+      the same probe at ref=dev (marker present); (2) PR #2003 is asserted base=dev, merged=true, at its
+      actual head SHA via a direct GitHub API read -- an immutable, already-merged commit identity, not
+      a deletable branch ref. Both checks' exit status depends on live GitHub/repo state, not on any text
+      this ticket's author wrote.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/adapters/llm/bifrost/config_loader_bifrost_delegation.py?ref=dev' --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'OMN-15628'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2003 --jq '.base.ref + " " + .head.sha + " " + (.merged|tostring)' | grep -qx 'dev ac89b2f8c92af24f6010035854b9617b477a6064 true'
