@@ -51,3 +51,9 @@ def drift_input_no_change(
         current_contract=base_compute_contract,
         pinned_hash=pinned_hash,
     )
+
+
+# OMN-15669: the conformant GREEN fixture tree is DATA for the contract-shape-v1
+# gate, collected deliberately in-process by that gate through the real runner.
+# The outer suite must not collect it as if it were a test of this repo.
+collect_ignore_glob = ["fixtures/contract_shape_v1/conformant/tests/*.py"]
