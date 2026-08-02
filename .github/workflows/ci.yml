@@ -1759,9 +1759,24 @@ jobs:
           echo "files=$(cat /tmp/changed_files.txt)" >> "$GITHUB_OUTPUT"
       - name: Capture the PR body for the identity leg
         if: github.event_name == 'pull_request'
+        # READ LIVE, not from github.event.pull_request.body. The event payload
+        # is a SNAPSHOT taken when the event fired, so a push that precedes the
+        # PR-body trailer update makes the gate compare against a stale body and
+        # report identity_trailer_divergence for a PR whose live trailer is
+        # correct. That false RED was observed twice on this PR's own branch and
+        # was each time cleared by an empty re-trigger commit — a workaround for
+        # a race, not a fix. Reading the body at job time removes the race.
+        #
+        # Fail-closed: `set -euo pipefail` means an API failure fails the step
+        # rather than writing an empty body that would look like "no trailer".
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$PR_BODY" > /tmp/pr_body.txt
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" \
+            --jq '.body // ""' > /tmp/pr_body.txt
+          echo "captured PR body: $(wc -c < /tmp/pr_body.txt) bytes (read live)"
       - name: Fetch ticket bodies from Linear (workflow layer, not src/)
         # The gate makes NO network call: the imperative-contract guard blocks
         # raw HTTP from src/ because it bypasses contract transport, and this
@@ -1814,12 +1829,15 @@ jobs:
           set -euo pipefail
           ARGS=(--base-ref "${{ steps.diff.outputs.base }}" --root .)
           ARGS+=(--ticket-bodies /tmp/ticket_bodies.json)
-          # P2 needs a PR body. On a pull_request run it exists and the identity
-          # leg runs; on a push/merge run there is no PR to read, and the CLI
+          # P2 needs a PR body. Keyed on the EVENT, never on whether a file
+          # happens to exist: a failed body capture must not look like "no PR
+          # here, skip the leg". On a pull_request run the leg is mandatory and
+          # the capture step above has already failed the job if it could not
+          # read the body; on a push/merge run there is no PR, and the CLI
           # requires that exclusion to be DECLARED rather than inferred from an
           # absent file (REMEDIATION r1r) — a silently dropped leg is how a DoD
           # check ended up weaker than the gate it certifies.
-          if [ -f /tmp/pr_body.txt ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
             ARGS+=(--pr-body-file /tmp/pr_body.txt)
           else
             ARGS+=(--skip-identity)
