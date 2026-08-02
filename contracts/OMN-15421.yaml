@@ -1,0 +1,258 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15421"
+title: "DoD evidence for OMN-15421 — split tenant, internal, and catalog PostgreSQL adapters with authenticated
+  context binding"
+summary: >
+  Third-party-authored DoD contract for OMN-15421, created under operator ruling R-0802-5 because no contract
+  existed at all (contracts/OMN-15421.yaml returned 404 on onex_change_control, verified 2026-08-02T05:0xZ),
+  so `onex skill dod_verify OMN-15421` terminated at CONTRACT_MISSING and the ticket could never close
+  — which in turn formally blocks OMN-15416, the tenant-RLS FORCE-RLS proof gate the operator ordered
+  started. The author of this contract is NOT the implementer: OMN-15421 was implemented by the codex-db-domain-0729/domain-adapters
+  lane, and this contract is authored by the rls-unblock-0802 lane per feedback_no_self_authored_evidence.
+  The ticket was flipped Done 2026-07-30T16:19:10Z and DEMOTED to In Progress 2026-08-01 as FALSE-DONE,
+  on the same finding as its sibling OMN-15413: the implementation PR omnibase_infra#2558 merged into
+  the feature branch jonah/omn-15418-p0-replace-raw-db_io-loading-with-typed-declarations-and rather than
+  dev, so at flip time the content was not on the mainline and dev's required check set never ran. Every
+  substantive check below is therefore a LIVE MAINLINE READBACK at `?ref=dev` — the exact condition the
+  demotion found missing — rather than a probe against the PR head. Contract authorship adjudicates nothing
+  and flips no Linear status.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC evidence PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15421-tenant-uuid-provenance"
+    description: >-
+      ACCEPTANCE BULLET 1 — "tenant UUID provenance is mechanically enforced; untrusted request fields
+      cannot select a tenant" — as a LIVE MAINLINE READBACK at ?ref=dev, not a point-in-time pin. Three
+      conjuncts. From src/omnibase_infra/runtime/projection_tenant_authority.py: `def verify_signed_projection_tenant_authority(`,
+      the signature-verification entry point that mints the opaque in-process capability, and `def parse_canonical_tenant_uuid(`,
+      the sole canonical string-to-UUID coercion. From tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py:
+      `def test_red_control_untrusted_tenant_selection(`, the RED control asserting an untrusted request
+      field cannot select a tenant — the negative half of the bullet, which a positive-only probe would
+      miss entirely. Pairing the implementation symbols with the named RED control is deliberate: presence
+      of a verifier proves a mechanism exists, presence of the RED control proves the mechanism was exercised
+      against the attack the bullet names. Falsifiable and stays falsifiable — ?ref=dev is a mainline
+      ref that is never deleted, so removing or renaming any of the three turns this RED. It is NOT an
+      immutable-commit-pin attestation and makes no frozen-true claim.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/projection_tenant_authority.py?ref=dev' --jq .content | base64 -d | grep -F 'def verify_signed_projection_tenant_authority(' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/projection_tenant_authority.py?ref=dev' --jq .content | base64 -d | grep -F 'def parse_canonical_tenant_uuid(' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_red_control_untrusted_tenant_selection(' > /dev/null
+  - id: "dod-omn15421-bad-context-fails-closed"
+    description: >-
+      ACCEPTANCE BULLET 2 — "unset, malformed, wrong, or pooled-leaked context fails closed" — evidenced
+      by the three named RED controls on the mainline, one per failure mode the bullet enumerates, read
+      live at ?ref=dev. `def test_red_control_leaked_tenant_guc(` covers the pooled-leak case (a GUC surviving
+      from a prior checkout of a pooled connection). `def test_red_control_nonlocal_tenant_guc(` covers
+      the non-transaction-local set, which is the mechanism by which a leak becomes possible at all. `def
+      test_wrong_or_malformed_row_tenant_fails_before_connect(` is the parametrized control covering wrong
+      and malformed values, and its name records the stronger property the implementation actually holds
+      — rejection happens BEFORE a connection is taken, not after. RED controls are the right evidence
+      shape for a fail-closed bullet specifically because a passing positive test cannot distinguish "rejects
+      bad context" from "never checks": only a test that fails when the guard is removed carries that
+      information (feedback_prove_red_against_exists_but_wrong). SCOPE LIMIT, stated rather than glossed:
+      this asserts the RED controls are PRESENT on the mainline, not that they PASS today — dod_verify
+      executes check_values with cwd set to the onex_change_control checkout (run_contract_compliance_check.py
+      `_run(["sh","-c",cmd_str], cwd=workspace)`, OMN-14436), so no omnibase_infra-relative pytest invocation
+      can resolve from this executor and any such check would be a false RED rather than proof. The executing
+      evidence is the hosted rebuilt-Docker attestation below.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_red_control_leaked_tenant_guc(' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_red_control_nonlocal_tenant_guc(' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_wrong_or_malformed_row_tenant_fails_before_connect(' > /dev/null
+  - id: "dod-omn15421-txn-local-guc-internal-none"
+    description: >-
+      ACCEPTANCE BULLET 3 — "internal writes/readbacks succeed with no tenant GUC" — together with the
+      scope requirement that tenant writes use a TRANSACTION-LOCAL setting rather than a session-wide
+      one. Three conjuncts at ?ref=dev. From src/omnibase_infra/runtime/auto_wiring/handler_wiring.py:
+      `_TENANT_GUC = "app.tenant_id"`, the single canonical GUC name (no sentinel, no alternate spelling),
+      and `SELECT set_config(%s, %s, true)` — the third argument `true` is libpq's is_local flag, making
+      the setting transaction-scoped and therefore unable to survive into another checkout of a pooled
+      connection. That literal is the load-bearing byte of this bullet: flipping it to `false` would leave
+      every other symbol in place while silently reintroducing the pooled-leak class, and this probe goes
+      RED on exactly that edit. From the adapter test module: `def test_internal_source_tenant_is_provenance_not_conflict_authority(`,
+      which pins the internal-domain semantic that a tenant column appearing on an internal row is provenance
+      data and never an authority to set the GUC. Falsifiable on dev in the direction that matters.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' --jq .content | base64 -d | grep -F '_TENANT_GUC = "app.tenant_id"' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' --jq .content | base64 -d | grep -F 'SELECT set_config(%s, %s, true)' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_internal_source_tenant_is_provenance_not_conflict_authority(' > /dev/null
+  - id: "dod-omn15421-domain-typed-operations"
+    description: >-
+      ACCEPTANCE BULLET 4 — "generic upserts cannot infer domain from row keys" — and the scope line "typed
+      operations selected from the table declaration and topology schema domain". Four conjuncts at ?ref=dev.
+      From handler_wiring.py, the three mapping entries that bind each schema domain to a DISTINCT typed
+      operation class: `EnumDatabaseSchemaDomain.TENANT: TenantProjectionTableOperation,`, `EnumDatabaseSchemaDomain.OMNINODE_INTERNAL:
+      InternalProjectionTableOperation,` and `EnumDatabaseSchemaDomain.PLATFORM_CATALOG: CatalogProjectionTableOperation,`.
+      Asserting all three rather than any one is the point: the defect this bullet retires is a single
+      domain-blind path, so a probe satisfied by one mapping while a second silently falls back to a generic
+      upsert would prove nothing. The fourth conjunct is the RED control `def test_red_control_domain_blind_upsert(`,
+      which pins that the old row-key-inference path cannot be reached. Together these evidence that domain
+      is selected from the declaration/topology rather than sniffed from row contents. Falsifiable on
+      dev: collapsing any domain back onto a shared generic operation, or deleting the RED control, turns
+      this RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' --jq .content | base64 -d | grep -F 'EnumDatabaseSchemaDomain.TENANT: TenantProjectionTableOperation,' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' --jq .content | base64 -d | grep -F 'EnumDatabaseSchemaDomain.OMNINODE_INTERNAL: InternalProjectionTableOperation,' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' --jq .content | base64 -d | grep -F 'EnumDatabaseSchemaDomain.PLATFORM_CATALOG: CatalogProjectionTableOperation,' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py?ref=dev' --jq .content | base64 -d | grep -F 'def test_red_control_domain_blind_upsert(' > /dev/null
+  - id: "dod-omn15421-correlation-ids-uuid"
+    description: >-
+      ACCEPTANCE BULLET 6 — "correlation IDs remain UUID objects end to end" — as a live mainline readback
+      at ?ref=dev across the two ends of the path the ticket touches. At the authority end, projection_tenant_authority.py
+      carries `isinstance(event_envelope.correlation_id, UUID)`, the type assertion that refuses a stringified
+      correlation id when binding an authority to its event. At the dispatch end, handler_wiring.py carries
+      `correlation_id = _coerce_uuid_or_none(correlation_candidate)`, the single coercion point through
+      which an extracted candidate becomes a UUID object or None — never an untyped string passed onward.
+      Probing both ends rather than one is what makes this evidence for an "end to end" claim; a single
+      isinstance call proves only that one boundary is typed. Falsifiable on dev: reverting either site
+      to string handling turns this RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/projection_tenant_authority.py?ref=dev' --jq .content | base64 -d | grep -F 'isinstance(event_envelope.correlation_id, UUID)' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' --jq .content | base64 -d | grep -F 'correlation_id = _coerce_uuid_or_none(correlation_candidate)' > /dev/null
+  - id: "dod-omn15421-proof-harness-suite-breadth"
+    description: >-
+      Supporting evidence for ACCEPTANCE BULLET 5's re-runnability, and a breadth floor under bullets
+      1-4. Two conjuncts at ?ref=dev. (a) The rebuilt-Docker proof harness is present on the mainline
+      — docker/domain-adapter-proof/prove.py and docker/domain-adapter-proof/compose.yml — so the real-PostgreSQL
+      proof is reproducible from dev by anyone, not merely something that happened once in a CI run against
+      a now-deleted branch. (b) The adapter test module declares at least 25 top-level test functions.
+      The floor is a LOWER bound deliberately: lower bounds are monotone-safe on a suite that grows, whereas
+      an exact or upper bound would be falsified by the next legitimate test added (OMN-15540 Rule F3).
+      25 is the count measured live on dev at authoring time, and the module's test names map onto every
+      bullet — signed-envelope minting, tamper and mismatched-signer RED controls, sealed capability constructor,
+      GUC locality and leak controls, per-domain binding separation, explicit catalog reader/writer grants,
+      and the domain-blind-upsert control. Falsifiability demonstrated rather than asserted: raising the
+      floor to 500 exits 1, so the awk consumer discriminates on the real count instead of passing on
+      any input.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/domain-adapter-proof/prove.py?ref=dev' --jq .content | base64 -d | grep -F 'tenant' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/domain-adapter-proof/compose.yml?ref=dev' --jq .content | base64 -d | grep -F 'postgres' > /dev/null && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py?ref=dev' --jq .content | base64 -d | awk '/^def test_/ { n++ } END { exit (n >= 25) ? 0 : 1 }'
+  - id: "dod-omn15421-docker-proof-attestation"
+    description: >-
+      ACCEPTANCE BULLET 5 — "tenant/internal/catalog positive and cross-domain negative cases pass against
+      real PostgreSQL in rebuilt Docker". THIS ENTRY IS A POINT-IN-TIME ATTESTATION AND MAKES NO ONGOING-FALSIFIABILITY
+      CLAIM — labelled as such deliberately, because the OMN-15418 contract shipped the opposite framing
+      (an immutable-pin content probe named "-falsifiable") and had to be corrected add-only by OCC #5945.
+      What it asserts: the ATTEMPT-1 job record of hosted run 30516660635 ("Docker Build", head 2a2cfb275810b34197d4d5baf55bdcddc443e6dc,
+      created 2026-07-30T05:27:19Z) shows the job "Projection Domain Adapter Proof (OMN-15421)" concluded
+      `success`. Per-attempt job records are immutable — a re-run appends attempt N+1 and never rewrites
+      attempt N — so this probe is frozen-true at that attempt and can never go RED there. That immutability
+      is also why the attempt-anchored spelling is REQUIRED rather than optional: OMN-15540 Rule F1 rejects
+      a predicate on a bare `actions/runs/<id>` `.conclusion` because "Re-run jobs" rewrites it in place;
+      the `/actions/runs/<id>/attempts/<n>/jobs` path is the sanctioned exempt form. The selector names
+      the one job that runs the real-PostgreSQL domain-adapter proof, not the run as a whole — the same
+      run contains `skipped` jobs (Trivy, Image Size Analysis, Docker Integration Tests), and asserting
+      the run-level verdict would have credited this bullet with work those jobs did not do. Falsifiability
+      demonstrated at the level available to an immutable record: the identical probe pointed at "Security
+      Scan (Trivy)" in the same attempt exits 1 rather than passing on empty stdout, and an unmatched
+      job name exits 1. WHY NOT RE-EXECUTED: the proof needs Docker plus a real PostgreSQL, and dod_verify
+      runs check_values with cwd set to the onex_change_control checkout (OMN-14436), where neither the
+      compose fixture nor the product tree is present. Re-runnability from the mainline is covered by
+      the harness-presence conjunct in the entry above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/actions/runs/30516660635/attempts/1/jobs --jq '.jobs[] | select(.name == "Projection Domain Adapter Proof (OMN-15421)") | .conclusion' | grep -Fx success > /dev/null
+  - id: "dod-omn15421-content-on-dev-via-2548"
+    description: >-
+      THE DEMOTION'S DECISIVE FINDING, converted into a standing check. OMN-15421 was flipped Done 2026-07-30T16:19:10Z
+      while its implementation PR omnibase_infra#2558 had merged (16:06:28Z) into the feature branch jonah/omn-15418-p0-replace-raw-db_io-loading-with-typed-declarations-and
+      rather than dev — so the content was not on the mainline and dev's required status-check set never
+      ran against it. The content reached dev on 2026-07-31T06:09:46Z via the #2548 rollup squash 3863623e4844dc9b0db69ceb4e77942737fbca32.
+      This probe asserts that ancestry directly and live: comparing 3863623e...dev returns `ahead` (dev
+      carries commits on top of it) or `identical`, either of which means the rollup commit is an ancestor
+      of the current dev tip. It is falsifiable and stays falsifiable — if dev is ever reset behind that
+      commit the comparison returns `behind` or `diverged` and this goes RED. Negative control demonstrated
+      on the sibling ticket's identical shape: the reverse comparison returns `behind`, so the predicate
+      discriminates direction rather than passing on any two commits. The jq expression ORs two distinct
+      status literals and never compares a field against its own selector, so it is not an OMN-15391 Rule
+      C tautology.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/compare/3863623e4844dc9b0db69ceb4e77942737fbca32...dev --jq '.status == "ahead" or .status == "identical"' | grep -Fx true > /dev/null
+  - id: "occ-self-bind-infra-pr-2558-merged"
+    description: >-
+      Product-PR self-bind for the implementation PR, written in the MERGED-ASSERTION form rather than
+      the `state == "open"` form. This is deliberate and is the direct lesson of OMN-15418: that contract's
+      generated `occ-self-bind-pr-5635` stamped `data['state'] == 'open'` at authoring time, the PR then
+      merged, and the assertion became unsatisfiable-by-construction — a check that can never go GREEN
+      again by any action on the ticket, the repo, or the product source, and one of the two probes that
+      made dod_verify refuse OMN-15418 while every product PR was already merged. The terminal, immutable
+      facts are asserted instead: omnibase_infra#2558 ("feat(runtime): split projection database domains
+      (OMN-15421)") is closed AND merged AND carries merge commit 9236ab431bf6cc70edc6db53515de94ee96c8499.
+      Falsifiability demonstrated: the identical shape with a different merge SHA substituted exits 1.
+      Executor shape — first shlex token is `gh`, zero command substitution, consumer is `grep -Fx` redirected
+      to /dev/null on fully drained input, avoiding both the `grep -q` SIGPIPE hazard and the `grep -c`
+      counting idiom that fails in both polarities under pipefail. NOTE, recorded rather than glossed:
+      #2558 merged into a feature branch, so this bind proves provenance of the change, not that it passed
+      dev's gates; the mainline-arrival proof is dod-omn15421-content-on-dev-via-2548 above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2558 --jq '.state == "closed" and .merged == true and .merge_commit_sha == "9236ab431bf6cc70edc6db53515de94ee96c8499"' | grep -Fx true > /dev/null
+  - id: "occ-self-bind-infra-pr-2548-merged"
+    description: >-
+      Product-PR self-bind for the ROLLUP PR that actually carried the OMN-15421 content onto dev, in
+      the same merged-assertion form and for the same reason as the entry above. omnibase_infra#2548 ("feat(runtime):
+      type database ownership wiring (OMN-15418)") is closed AND merged AND carries merge commit 3863623e4844dc9b0db69ceb4e77942737fbca32,
+      with base branch `dev`. Both product PRs are bound because the OMN-15421 change has a two-hop landing
+      path — authored in #2558 against a stacked feature base, delivered to the mainline by #2548 — and
+      binding only the first hop is precisely the omission the 2026-08-01 demotion punished. Recorded
+      so the shared SHA is not mistaken for an error: this is the same merge commit that OMN-15418's own
+      contract pins, because #2548 is the rollup for both tickets' stacks; it is cited here as the delivery
+      vehicle for OMN-15421's content, not as a claim over OMN-15418's deliverable.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2548 --jq '.state == "closed" and .merged == true and .merge_commit_sha == "3863623e4844dc9b0db69ceb4e77942737fbca32"' | grep -Fx true > /dev/null
+  - id: "occ-self-bind-pr-5974"
+    description: >-
+      Binding stamp, NOT substantive proof. It binds OMN-15421 to OCC evidence PR #5974 — the PR that
+      creates this contract — so `occ-preflight / eligibility` can resolve a PASS receipt for this ticket
+      against THIS PR, per the OCC in-repo invariant (I3) that an OCC PR validates contracts and receipts
+      from its own checkout. Mirrors the `occ-self-bind-pr-5945` precedent on contracts/OMN-15418.yaml.
+      SCOPE, stated so this stamp is not mistaken for evidence: it adjudicates nothing about the OMN-15421
+      work, proves nothing about the deliverable, and flips no Linear status; the substantive evidence
+      is the acceptance-bullet entries above. It is deliberately NOT written in the merged-assertion form
+      used by the product self-binds, because #5974 is open at authoring time and asserting a merge commit
+      it does not yet have would be unsatisfiable-by-construction — the inverse of the same OMN-15418
+      defect. This is the one entry in this contract whose predicate is existential (the PR resolves)
+      rather than a property of the OMN-15421 deliverable, and it is labelled as such rather than counted
+      toward the acceptance bullets.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5974 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
