@@ -9,7 +9,10 @@ this module proves each primitive those cases stand on.
 
 from __future__ import annotations
 
+import hashlib
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +29,13 @@ from onex_change_control.testing.seam_binding import (
 from onex_change_control.validation.contract_shape_v1 import (
     CONTRACT_BLOCK_HEADING,
     SCHEMA_PATH,
+    SEAM_ASSERT_NAME,
+    V1_MARKER,
     Finding,
     LinearUnreachableError,
     PytestCollector,
     canonicalize,
+    check_evidence_falsifiability,
     check_identity,
     check_schema,
     enumerate_case_space,
@@ -39,8 +45,10 @@ from onex_change_control.validation.contract_shape_v1 import (
     main,
     make_ticket_body_reader,
     parse_contract_trailers,
+    parse_source_facts,
     select_scope,
     sha256_block,
+    v1_vacuity_reason,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,20 +66,162 @@ class _Reader:
 # ---------------------------------------------------------------------------
 # P1 — exactly one schema artifact.
 # ---------------------------------------------------------------------------
+_SCAN_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        ".uv-cache",
+    }
+)
+
+
+def _declares_the_v1_shape(doc: dict[str, Any], canonical: dict[str, Any]) -> str:
+    """Why ``doc`` is a SECOND authority for the v1 shape, or the empty string."""
+    if str(doc.get("$id", "")) == str(canonical["$id"]):
+        return "declares the canonical $id"
+    if not str(doc.get("$schema", "")).startswith("https://json-schema.org/"):
+        return ""  # a contract INSTANCE carries the marker; that is correct
+    if str(doc.get("title", "")) == str(canonical["title"]):
+        return "declares the canonical title"
+    version_prop = (doc.get("properties") or {}).get("schema_version") or {}
+    if isinstance(version_prop, dict) and V1_MARKER in {
+        version_prop.get("const"),
+        *(version_prop.get("enum") or []),
+    }:
+        return f"a second schema constraining {V1_MARKER}"
+    return ""
+
+
+def second_shape_authorities(root: Path, canonical_path: Path) -> list[str]:
+    """Every file under ``root`` that is a second authority for the v1 shape.
+
+    Stated over CONTENT and IDENTITY, never over filename — see
+    :func:`test_exactly_one_contract_schema_artifact` for why. Byte needles keep
+    the scan cheap over the ~10k-file receipt corpus: a file is parsed as YAML
+    only when it actually contains one of the canonical strings.
+    """
+    canonical_bytes = canonical_path.read_bytes()
+    canonical_sha = hashlib.sha256(canonical_bytes).hexdigest()
+    canonical_doc = yaml.safe_load(canonical_bytes.decode("utf-8"))
+    needles = (
+        str(canonical_doc["$id"]).encode("utf-8"),
+        str(canonical_doc["title"]).encode("utf-8"),
+        V1_MARKER.encode("utf-8"),
+    )
+    found: list[str] = []
+    for path in root.rglob("*"):
+        if _SCAN_SKIP_DIRS & set(path.parts) or not path.is_file():
+            continue
+        if path.suffix.lower() not in {".yaml", ".yml", ".json"}:
+            continue
+        if path.resolve() == canonical_path.resolve():
+            continue
+        rel = path.relative_to(root).as_posix()
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() == canonical_sha:
+            found.append(f"{rel} (byte-identical copy of the canonical schema)")
+            continue
+        if not any(needle in raw for needle in needles):
+            continue
+        try:
+            doc = yaml.safe_load(raw.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        reason = _declares_the_v1_shape(doc, canonical_doc)
+        if reason:
+            found.append(f"{rel} ({reason})")
+    return found
+
+
 @pytest.mark.unit
 def test_exactly_one_contract_schema_artifact() -> None:
     """One-model-per-shape: the repo carries exactly one v1 contract schema.
 
-    A second artifact is the defect this rule exists to prevent, so the count
-    is asserted rather than assumed.
+    REMEDIATION r1: the first build globbed ``**/occ_contract_v*.schema.yaml``,
+    so the ratchet was a FILENAME convention, not a uniqueness proof — an
+    adversarial replay dropped a byte-identical copy at
+    ``schemas/contract_shape.schema.yaml`` and the ratchet stayed green while
+    the repo carried two authorities for one shape. The rule is now stated over
+    CONTENT and IDENTITY, which is what one-model-per-shape actually means:
+
+      * no other file in the tree is byte-identical to the canonical schema;
+      * no other file declares the canonical ``$id`` or ``title``;
+      * no other JSON Schema document constrains ``schema_version`` to the v1
+        marker — the structural signature of "a second v1 contract shape".
+
+    Filename is no longer part of the test, so renaming the copy cannot evade it.
     """
     assert SCHEMA_PATH.exists()
-    matches = sorted(
-        p.relative_to(REPO_ROOT).as_posix()
-        for p in REPO_ROOT.glob("**/occ_contract_v*.schema.yaml")
-        if ".venv" not in p.parts
+    duplicates = second_shape_authorities(REPO_ROOT, SCHEMA_PATH)
+    assert duplicates == [], (
+        "one-model-per-shape: a second v1 contract schema artifact exists. "
+        "Extend schemas/occ_contract_v1.schema.yaml instead.\n  "
+        + "\n  ".join(duplicates)
     )
-    assert matches == ["schemas/occ_contract_v1.schema.yaml"], matches
+
+
+@pytest.mark.unit
+def test_the_schema_uniqueness_ratchet_catches_a_renamed_copy(tmp_path: Path) -> None:
+    """RED-before proof for the widened ratchet, against exists-but-wrong.
+
+    The replay that defeated the previous ratchet is reproduced exactly — a
+    byte-identical copy under a DIFFERENT filename — and driven through the
+    SAME predicate the ratchet above asserts, not a re-implementation of it.
+    """
+    canonical = tmp_path / "schemas" / "occ_contract_v1.schema.yaml"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(SCHEMA_PATH.read_bytes())
+    assert second_shape_authorities(tmp_path, canonical) == []
+
+    # The exact evasion: same bytes, a name the old glob never matched.
+    copy = tmp_path / "schemas" / "contract_shape.schema.yaml"
+    copy.write_bytes(SCHEMA_PATH.read_bytes())
+    assert not copy.name.startswith("occ_contract_v"), (
+        "the copy must NOT match the old filename glob, or this proves nothing"
+    )
+    assert second_shape_authorities(tmp_path, canonical) == [
+        "schemas/contract_shape.schema.yaml (byte-identical copy of the "
+        "canonical schema)"
+    ]
+
+    # A near-copy that only shares the $id is caught by identity, not bytes.
+    canonical_doc = yaml.safe_load(canonical.read_text(encoding="utf-8"))
+    copy.write_text(
+        yaml.safe_dump({"$id": canonical_doc["$id"], "x": 1}), encoding="utf-8"
+    )
+    assert second_shape_authorities(tmp_path, canonical) == [
+        "schemas/contract_shape.schema.yaml (declares the canonical $id)"
+    ]
+
+    # A renamed schema that only reuses the structural signature is caught too.
+    copy.write_text(
+        yaml.safe_dump(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "Some other name",
+                "properties": {"schema_version": {"const": V1_MARKER}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert second_shape_authorities(tmp_path, canonical) == [
+        f"schemas/contract_shape.schema.yaml (a second schema constraining {V1_MARKER})"
+    ]
+
+    # GREEN control: a contract INSTANCE carrying the marker is not a schema.
+    copy.unlink()
+    instance = tmp_path / "contracts" / "v1" / "OMN-1.yaml"
+    instance.parent.mkdir(parents=True)
+    instance.write_text(f"schema_version: {V1_MARKER}\nticket_id: OMN-1\n")
+    assert second_shape_authorities(tmp_path, canonical) == []
 
 
 @pytest.mark.unit
@@ -426,3 +576,280 @@ def test_gate_self_applies_to_its_own_contract_cleanly() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# REMEDIATION r1 — the conformant fixture must EXECUTE, not merely be collected.
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_the_conformant_fixture_is_not_excluded_from_the_outer_suite() -> None:
+    """tests/conftest.py must not re-add a collect_ignore for the fixture tree.
+
+    The gate drives that tree with ``pytest --collect-only``, which executes no
+    line of it. With the exclusion in place the reference implementation of
+    "the mock validates against the real seam schema" ran NOWHERE in CI. This
+    is the anti-regression anchor for removing it; the mutation proof below is
+    the behavioural half.
+    """
+    conftest = (REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
+    offenders = [
+        line
+        for line in conftest.splitlines()
+        if line.strip().startswith(("collect_ignore", "collect_ignore_glob"))
+    ]
+    assert offenders == [], offenders
+
+    module = "tests/fixtures/contract_shape_v1/conformant/tests/test_widget_cases.py"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "--no-header",
+            "-p",
+            "no:randomly",
+            "-p",
+            "no:cacheprovider",
+            "tests/",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    assert module in proc.stdout, (
+        "the outer suite does not collect the conformant fixture module — its "
+        "assert_seam_shape calls execute nowhere\n" + proc.stdout[-2000:]
+    )
+
+
+@pytest.mark.integration
+def test_conformant_fixture_executes_and_catches_a_divergent_mock(
+    tmp_path: Path,
+) -> None:
+    """Break the mock's shape; the fixture must go RED.
+
+    RED-against-exists-but-wrong, not RED-against-absent: the file, the schema
+    and the assertion all still exist. Only the mock's payload is mutated into a
+    shape the seam schema forbids and the real binding never produces — the
+    OMN-15598 class the whole P5 leg exists to make unrepresentable.
+
+    The replay that motivated this test mutated ``MockWidgetStore`` in place and
+    watched the suite stay 51/51 green.
+    """
+    tree = tmp_path / "conformant"
+    shutil.copytree(CONFORMANT_ROOT, tree)
+    module = tree / "tests" / "test_widget_cases.py"
+
+    def _run() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "--no-header",
+                "-p",
+                "no:randomly",
+                "-p",
+                "no:cacheprovider",
+                str(module),
+            ],
+            cwd=tree,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+
+    # GREEN control: the untouched copy passes, so a later RED is attributable
+    # to the mutation and not to the copy being broken.
+    green = _run()
+    assert green.returncode == 0, green.stdout + green.stderr
+
+    source = module.read_text(encoding="utf-8")
+    mutated = source.replace(
+        'return {"widget_id": widget_id, "weight_g": 42}',
+        'return {"widget_id": widget_id, "weight_g": "forty-two"}',
+    )
+    assert mutated != source, "the mock payload line moved; update this mutation"
+    module.write_text(mutated, encoding="utf-8")
+
+    red = _run()
+    assert red.returncode != 0, (
+        "mutating MockWidgetStore into a shape the seam schema forbids left the "
+        "fixture green — assert_seam_shape is not executing\n" + red.stdout[-2000:]
+    )
+    assert "weight_g" in red.stdout
+
+
+# ---------------------------------------------------------------------------
+# REMEDIATION r1 — P5 is enforced semantically (AST), never by substring.
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_source_facts_ignore_comments_docstrings_and_dead_branches() -> None:
+    """The primitive under the P5 leg: what the module REALLY does."""
+    facts = parse_source_facts(
+        '"""Module docstring naming assert_seam_shape and schemas/x.yaml."""\n'
+        "SEAM = 'schemas/live.yaml'\n"
+        "def alive():\n"
+        '    """Docstring citing schemas/docstring_only.yaml."""\n'
+        "    # assert_seam_shape(payload, SEAM)\n"
+        "    if False:\n"
+        "        assert_seam_shape({}, 'schemas/dead.yaml')\n"
+        "    helper()\n"
+        "def helper():\n"
+        "    assert_seam_shape({}, SEAM)\n"
+    )
+    assert facts is not None
+    # Literals: only executable, non-docstring strings.
+    assert "schemas/live.yaml" in facts.literals
+    assert "schemas/dead.yaml" not in facts.literals
+    assert "schemas/docstring_only.yaml" not in facts.literals
+    # Reachability: through a module-local helper, yes; from the dead branch, no.
+    assert facts.reaches(["alive"], SEAM_ASSERT_NAME)
+    assert not facts.reaches(["helper_that_does_not_exist"], SEAM_ASSERT_NAME)
+    assert facts.calls_by_function["alive"] == frozenset({"helper"})
+
+
+@pytest.mark.unit
+def test_source_facts_return_none_on_unparseable_source() -> None:
+    """Unparseable source fails CLOSED — there is no substring fallback."""
+    assert parse_source_facts("def broken(:\n") is None
+
+
+# ---------------------------------------------------------------------------
+# REMEDIATION r1 — the v1 falsifiability floor carries no grandfathering.
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("check_type", "check_value", "expected"),
+    [
+        ("command", "grep -c '' README.md", "vacuous_search_pattern"),
+        ("command", "rg -q . README.md", "vacuous_search_pattern"),
+        ("command", "grep -q -e '.*' src/app.py", "vacuous_search_pattern"),
+        ("command", "grep -q 'shipped' docs/NOTES.md", "prose_only_search_target"),
+        ("command", "rg -q 'shipped' a.md b.rst", "prose_only_search_target"),
+        ("test_passes", "the suite is green on .200", "check_type_label_only"),
+        # GREEN: real assertions keep counting. Rejecting these is the perverse
+        # incentive OMN-14409 warns about.
+        ("command", "grep -q 'def check_identity' src/x.py", ""),
+        ("command", "uv run pytest tests/x.py -q", ""),
+        ("command", "grep -q 'needs.x.result' .github/workflows/ci.yml", ""),
+        ("test_passes", "uv run pytest tests/x.py -q", ""),
+        ("command", "grep -rq 'OMN-15669' src/ docs/NOTES.md", ""),
+    ],
+)
+def test_v1_vacuity_rules(check_type: str, check_value: str, expected: str) -> None:
+    """Each always-true form is named; each honest form is untouched."""
+    from onex_change_control.validation.contract_shape_v1 import (
+        _load_proof_tier_deriver,
+    )
+
+    derive = _load_proof_tier_deriver().derive_proof_tier
+    reason = v1_vacuity_reason(check_type, check_value, derive=derive)
+    if expected:
+        assert reason is not None, (check_value, expected)
+        assert reason.startswith(expected), reason
+    else:
+        assert reason is None, reason
+
+
+@pytest.mark.unit
+def test_v1_enabling_the_kill_switch_does_not_leak_into_the_legacy_gate() -> None:
+    """v1 flips GATE_SELF_REFERENTIAL on its OWN module instance only.
+
+    The substance floor ships the switch OFF for a measured reason (flipping it
+    corpus-wide rejects 98.4% of new legacy contract traffic). v1 turning it on
+    must not change one verdict of the corpus gate — so this asserts the source
+    is untouched AND that a freshly imported instance still reads False after
+    the v1 gate has run.
+    """
+    floor_source = (
+        REPO_ROOT / "scripts" / "validation" / "check_contract_substance_floor.py"
+    ).read_text(encoding="utf-8")
+    assert "\nGATE_SELF_REFERENTIAL = False\n" in floor_source
+
+    self_referential = {
+        "schema_version": V1_MARKER,
+        "dod_evidence": [
+            {
+                "id": "x",
+                "checks": [
+                    {
+                        "check_type": "command",
+                        "check_value": (
+                            "grep -q '^status: PASS$' "
+                            "drift/dod_receipts/OMN-1/dod-1/command.yaml"
+                        ),
+                    }
+                ],
+            }
+        ],
+    }
+    rules = [f.rule for f in check_evidence_falsifiability(self_referential, "x.yaml")]
+    assert rules == ["evidence_unfalsifiable_overclaim"]
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_legacy_floor_isolation_probe",
+        REPO_ROOT / "scripts" / "validation" / "check_contract_substance_floor.py",
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    fresh = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = fresh
+    spec.loader.exec_module(fresh)
+    assert fresh.GATE_SELF_REFERENTIAL is False
+
+
+# ---------------------------------------------------------------------------
+# REMEDIATION r1 — CLAUDE.md rule 5: the same check is also a LOCAL gate.
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_gate_is_wired_at_the_local_precommit_path() -> None:
+    """A CI-only gate is detection; the pre-commit counterpart is enforcement.
+
+    CLAUDE.md rule 5 and the SHARED SEAM TABLE clause S5(c) both require the
+    local hook to ship in the SAME PR as the CI job. This asserts the hook
+    exists, runs the SAME entrypoint the CI job runs (so the two verdicts cannot
+    diverge on validator logic), and is scoped to the contract paths.
+    """
+    config = yaml.safe_load(
+        (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    )
+    hooks = [
+        hook
+        for repo in config["repos"]
+        for hook in repo.get("hooks", [])
+        if hook.get("id") == "check-contract-shape-v1"
+    ]
+    assert len(hooks) == 1, "expected exactly one contract-shape-v1 pre-commit hook"
+    hook = hooks[0]
+    assert "check-contract-shape-v1" in hook["entry"], hook["entry"]
+    assert hook["pass_filenames"] is True
+    assert hook["files"] == r"^contracts/.*\.yaml$"
+    assert hook["stages"] == ["pre-commit"]
+
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "check-contract-shape-v1" in ci, (
+        "the CI job and the pre-commit hook must invoke the same entrypoint"
+    )
+
+
+@pytest.mark.unit
+def test_the_precommit_entrypoint_accepts_positional_filenames() -> None:
+    """pass_filenames passes paths POSITIONALLY; the CLI must accept them.
+
+    Without this the hook would crash on argv rather than gate — the shape of
+    "a hook that is wired but has never run".
+    """
+    code = main(["contracts/v1/OMN-15669.yaml", "--root", str(REPO_ROOT)])
+    assert code == 0
+
+    # A non-contract path selects an empty scope and reads nothing.
+    assert main(["README.md", "--root", str(REPO_ROOT)]) == 0

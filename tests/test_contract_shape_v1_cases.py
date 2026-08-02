@@ -235,8 +235,64 @@ def test_evidence_unfalsifiable_overclaim(binding: str) -> None:
     assert [f.rule for f in findings] == ["evidence_unfalsifiable_overclaim"]
     assert "L0" in findings[0].diff
 
+    # REMEDIATION r1: the four always-true forms that survived the OMN-14409
+    # family-level derivation and reached GREEN in the first build. Each is a
+    # single-check contract, so a PASS here would mean the whole floor is inert.
+    always_true: list[tuple[str, str, str]] = [
+        (
+            "self_referential",
+            "command",
+            "grep -q '^status: PASS$' drift/dod_receipts/OMN-99999/dod-1/command.yaml",
+        ),
+        ("vacuous_pattern_empty", "command", "grep -c '' README.md"),
+        ("vacuous_pattern_dot", "command", "rg -q . README.md"),
+        (
+            "prose_only_target",
+            "command",
+            "grep -q 'the gate is wired at the required path' "
+            "docs/standards/DUAL_BINDING_CASES.md",
+        ),
+        (
+            "check_type_label_only",
+            "test_passes",
+            "the declared cases all pass locally on the .200 gate host",
+        ),
+    ]
+    for label, check_type, check_value in always_true:
+        probe = _conformant()
+        probe["dod_evidence"] = [
+            {
+                "id": f"dod-{label}",
+                "status": "PASS",
+                "checks": [{"check_type": check_type, "check_value": check_value}],
+            }
+        ]
+        rules = [f.rule for f in check_evidence_falsifiability(probe, "x.yaml")]
+        assert rules == ["evidence_unfalsifiable_overclaim"], (label, rules)
+
     # GREEN control: the conformant fixture's test_passes check is falsifiable.
     assert check_evidence_falsifiability(_conformant(), "x.yaml") == []
+
+    # GREEN control 2: a NON-vacuous grep over source still counts. The rules
+    # above reject arguments, not the verb — rejecting honest static assertions
+    # is the perverse incentive OMN-14409 warns about.
+    honest = _conformant()
+    honest["dod_evidence"] = [
+        {
+            "id": "dod-static-assert",
+            "status": "PASS",
+            "checks": [
+                {
+                    "check_type": "command",
+                    "check_value": (
+                        "grep -q 'needs.contract-shape-v1.result' "
+                        ".github/workflows/ci.yml"
+                    ),
+                }
+            ],
+        }
+    ]
+    assert check_evidence_falsifiability(honest, "x.yaml") == []
 
 
 # ---------------------------------------------------------------------------
@@ -382,24 +438,123 @@ def test_seam_schema_not_cited(binding: str, tmp_path: Path) -> None:
     assert "seam_schema_not_cited" in rules
     assert "seam_validation_not_executed" not in rules
 
+    # REMEDIATION r1: a ref that appears ONLY in a docstring or a comment is not
+    # a citation. It is never handed to the validator, so under the previous
+    # substring test it bought silence it had not earned.
+    for prose in (
+        '"""Uses schemas/widget_seam.schema.yaml."""\n',
+        "# validated against schemas/widget_seam.schema.yaml\n",
+    ):
+        (tmp_path / "tests" / "test_widget_cases.py").write_text(
+            prose + "def test_widget_store_seam():\n"
+            "    assert_seam_shape({}, 'other')\n"
+        )
+        rules = [f.rule for f in check_dependencies(_conformant(), "x.yaml", tmp_path)]
+        assert "seam_schema_not_cited" in rules, prose
+
+    # GREEN control: the same ref as a real string literal IS a citation.
+    (tmp_path / "tests" / "test_widget_cases.py").write_text(
+        "SEAM = 'schemas/widget_seam.schema.yaml'\n"
+        "def test_widget_store_seam():\n    assert_seam_shape({}, SEAM)\n"
+    )
+    rules = [f.rule for f in check_dependencies(_conformant(), "x.yaml", tmp_path)]
+    assert "seam_schema_not_cited" not in rules
+    assert "seam_validation_not_executed" not in rules
+
 
 # ---------------------------------------------------------------------------
 # case: seam_validation_not_executed (bindings: mock)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("binding", binding_params("mock"))
 def test_seam_validation_not_executed(binding: str, tmp_path: Path) -> None:
-    """Citing the seam schema in prose without executing validation is RED."""
+    """Citing the seam schema without EXECUTING the validation is RED.
+
+    REMEDIATION r1: the first build enforced this leg with the substring test
+    ``"assert_seam_shape(" not in source``. The adversarial replay defeated it
+    with a file whose only occurrences of the symbol were a ``#`` comment and an
+    ``if False:`` branch — the gate AND pytest both went green while the seam
+    validation never ran. Every form below is now driven, and the assertion is
+    semantic (AST reachability from the case's own test function).
+    """
     assert binding == "mock"
     (tmp_path / "schemas").mkdir()
     (tmp_path / "schemas" / "widget_seam.schema.yaml").write_text("type: object\n")
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_widget_cases.py").write_text(
-        '"""Uses schemas/widget_seam.schema.yaml."""\n'
-        "def test_widget_store_seam():\n    assert True\n"
-    )
+    test_file = tmp_path / "tests" / "test_widget_cases.py"
+    cite = "SEAM = 'schemas/widget_seam.schema.yaml'\n"
+
+    never_executes: dict[str, str] = {
+        # The declared symbol appears nowhere executable at all.
+        "absent": cite + "def test_widget_store_seam():\n    assert True\n",
+        # THE ADVERSARIAL FORM: a comment plus a dead branch. Substring-passes.
+        "comment_plus_dead_branch": (
+            cite + "def test_widget_store_seam():\n"
+            "    # assert_seam_shape(payload, SEAM)\n"
+            "    if False:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+            "    assert True\n"
+        ),
+        # Same idea via `while 0:`.
+        "dead_while": (
+            cite + "def test_widget_store_seam():\n"
+            "    while 0:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+            "    assert True\n"
+        ),
+        # Dead `else` arm of a constant-true `if`.
+        "dead_else": (
+            cite + "def test_widget_store_seam():\n"
+            "    if True:\n"
+            "        assert True\n"
+            "    else:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+        ),
+        # Quoted inside a docstring — text, not code.
+        "docstring_only": (
+            cite + "def test_widget_store_seam():\n"
+            '    """Calls assert_seam_shape(payload, SEAM)."""\n'
+            "    assert True\n"
+        ),
+        # Executed, but from an UNRELATED function this case never reaches.
+        "wrong_function": (
+            cite + "def helper_never_called():\n"
+            "    assert_seam_shape({}, SEAM)\n"
+            "def test_widget_store_seam():\n"
+            "    assert True\n"
+        ),
+    }
+    for label, source in never_executes.items():
+        test_file.write_text(source)
+        rules = [f.rule for f in check_dependencies(_conformant(), "x.yaml", tmp_path)]
+        assert "seam_validation_not_executed" in rules, (label, rules)
+        assert "seam_schema_not_cited" not in rules, (label, rules)
+
+    # GREEN controls: a live call in the body, and a live call reached through a
+    # module-local helper (the shape this very module uses).
+    really_executes: dict[str, str] = {
+        "inline": (
+            cite + "def test_widget_store_seam():\n    assert_seam_shape({}, SEAM)\n"
+        ),
+        "via_helper": (
+            cite + "def _resolve(binding):\n"
+            "    assert_seam_shape({}, SEAM)\n"
+            "def test_widget_store_seam():\n    _resolve('mock')\n"
+        ),
+        "live_branch": (
+            cite + "def test_widget_store_seam(flag=True):\n"
+            "    if flag:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+        ),
+    }
+    for label, source in really_executes.items():
+        test_file.write_text(source)
+        rules = [f.rule for f in check_dependencies(_conformant(), "x.yaml", tmp_path)]
+        assert "seam_validation_not_executed" not in rules, (label, rules)
+
+    # A file that does not parse fails CLOSED — no substring fallback.
+    test_file.write_text("def test_widget_store_seam(:\n")
     rules = [f.rule for f in check_dependencies(_conformant(), "x.yaml", tmp_path)]
-    assert "seam_validation_not_executed" in rules
-    assert "seam_schema_not_cited" not in rules
+    assert "case_source_unparseable" in rules
 
 
 # ---------------------------------------------------------------------------

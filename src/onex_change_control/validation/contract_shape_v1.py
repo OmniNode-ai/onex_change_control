@@ -14,7 +14,13 @@ The six properties, and where each one is enforced
 P1  ONE CANONICAL SHAPE, ZERO HUMAN REVIEW
     :func:`check_schema` validates the instance against the single schema
     artifact. No rule in this file consults a reviewer, an author, an approver,
-    or any human judgement: shape validation *replaces* review.
+    or any human judgement: shape validation *replaces* review. The companion
+    falsifiability floor (:func:`check_evidence_falsifiability`) carries NO
+    grandfathering: v1 turns on the OMN-14417 self-reference kill switch that
+    the legacy corpus gate defers, and :func:`v1_vacuity_reason` rejects the
+    always-true check forms (vacuous search pattern, prose-only search target,
+    ``check_type`` label without a runnable value) that survive a verb-level
+    family match.
 
 P2  TICKET IDENTITY, fail-closed + identity-blind
     :func:`check_identity` compares three artifacts — the ``## OCC Contract
@@ -50,7 +56,12 @@ P5  SHAPE-CORRECT INJECTED MOCKS
     (:func:`onex_change_control.testing.seam_binding.assert_seam_shape`), which
     validates mock and real payloads against the SAME schema. Mock-shape
     divergence (the OMN-15598 class) is thereby unrepresentable rather than
-    merely discouraged.
+    merely discouraged. Enforcement is SEMANTIC, via :func:`parse_source_facts`:
+    the citation must be a real string literal in executable code and the
+    validator call must be reachable from the case's own test function. A
+    commented-out call, one quoted in a docstring, and one parked in an
+    ``if False:`` branch are all NOT executed — the substring test the first
+    build shipped accepted every one of them.
 
 P6  DUAL-BINDING EXECUTION
     ``bindings`` is per-case in the schema. :func:`check_bindings` reads the
@@ -67,6 +78,7 @@ Exit codes: 0 clean, 1 findings, 2 usage error.
 from __future__ import annotations
 
 import argparse
+import ast
 import difflib
 import functools
 import hashlib
@@ -74,6 +86,7 @@ import importlib
 import importlib.util
 import json
 import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -86,9 +99,13 @@ from jsonschema import Draft202012Validator
 __all__ = [
     "CONTRACT_BLOCK_HEADING",
     "SCHEMA_PATH",
+    "SEAM_ASSERT_NAME",
+    "V1_DIR",
+    "V1_MARKER",
     "Finding",
     "LinearUnreachableError",
     "PytestCollector",
+    "SourceFacts",
     "canonicalize",
     "check_bindings",
     "check_case_space",
@@ -104,8 +121,10 @@ __all__ = [
     "main",
     "make_ticket_body_reader",
     "parse_contract_trailers",
+    "parse_source_facts",
     "select_scope",
     "sha256_block",
+    "v1_vacuity_reason",
 ]
 
 # --------------------------------------------------------------------------
@@ -143,7 +162,17 @@ _BLOCK_RE = re.compile(
 )
 
 # The shared seam-validation helper a P5 seam case must execute.
-SEAM_ASSERT_SYMBOL = "assert_seam_shape("
+#
+# REMEDIATION r1 (2026-08-02): the first build enforced this by the substring
+# test ``SEAM_ASSERT_SYMBOL not in source``. An adversarial replay showed a seam
+# case whose ONLY ``assert_seam_shape(`` occurrences were a ``#`` comment and an
+# ``if False:`` branch passed both this gate and pytest — validation that never
+# executes, which is precisely the class the leg exists to forbid. Enforcement
+# is now SEMANTIC (:func:`parse_source_facts`): a real, reachable call node
+# reached from the case's own test function. ``SEAM_ASSERT_SYMBOL`` survives
+# only as the rendered spelling inside finding messages.
+SEAM_ASSERT_NAME = "assert_seam_shape"
+SEAM_ASSERT_SYMBOL = SEAM_ASSERT_NAME + "("
 
 
 class LinearUnreachableError(RuntimeError):
@@ -633,6 +662,173 @@ def check_case_space(contract: dict[str, Any], subject: str) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------
+# Reachable-source facts. Textual containment is NOT enforcement.
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SourceFacts:
+    """What a Python module REALLY does, as opposed to what its bytes contain.
+
+    Built by :func:`parse_source_facts` from the AST with two prunings applied:
+
+    * **comments and docstrings are gone.** A ``# assert_seam_shape(...)`` line
+      or a schema ref quoted in a docstring never reaches the AST as executable
+      code, so it cannot satisfy a citation or an execution requirement.
+    * **compile-time-dead branches are pruned.** ``if False:`` / ``while 0:``
+      bodies (and the ``else`` arm of ``if True:``) are not visited, so parking
+      a call in an unreachable branch does not count as calling it.
+
+    ``literals`` holds every string constant in reachable, non-docstring code —
+    the only form in which a contract's ``seam_schema`` ref can actually be
+    handed to the validator. ``calls_by_function`` maps each function name to
+    the callee names reachable inside it, which is what lets the gate ask "does
+    THIS case's test body reach the seam validator", directly or through a
+    module-local helper, rather than "does the file mention it anywhere".
+    """
+
+    literals: frozenset[str]
+    calls_by_function: dict[str, frozenset[str]]
+    module_calls: frozenset[str]
+
+    def reaches(self, roots: list[str], symbol: str) -> bool:
+        """True when ``symbol`` is called from any of ``roots``, transitively.
+
+        The walk follows module-local callees only: a helper defined in the same
+        module is followed, an imported name is a leaf. That is enough for the
+        shapes this convention produces (a test body that validates inline, or
+        one that validates through a module-local binding-resolver helper) and
+        it terminates on every input because ``seen`` is monotone.
+        """
+        seen: set[str] = set()
+        stack = list(roots)
+        while stack:
+            name = stack.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            callees = self.calls_by_function.get(name)
+            if callees is None:
+                continue
+            if symbol in callees:
+                return True
+            stack.extend(callees)
+        return False
+
+
+def _constant_truth(node: ast.expr) -> bool | None:
+    """``True``/``False`` for a compile-time constant test, else ``None``."""
+    if isinstance(node, ast.Constant):
+        return bool(node.value)
+    return None
+
+
+def _callee_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _strip_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+class _ReachableCollector(ast.NodeVisitor):
+    """Collects :class:`SourceFacts` over reachable, non-docstring code only."""
+
+    def __init__(self) -> None:
+        self.literals: set[str] = set()
+        self.calls_by_function: dict[str, set[str]] = {}
+        self.module_calls: set[str] = set()
+        self._stack: list[str] = []
+
+    # -- reachability pruning ------------------------------------------------
+    def visit_If(self, node: ast.If) -> None:
+        truth = _constant_truth(node.test)
+        if truth is None:
+            self.generic_visit(node)
+            return
+        for stmt in node.body if truth else node.orelse:
+            self.visit(stmt)
+
+    def visit_While(self, node: ast.While) -> None:
+        if _constant_truth(node.test) is False:
+            for stmt in node.orelse:
+                self.visit(stmt)
+            return
+        self.generic_visit(node)
+
+    # -- docstring stripping + function scoping ------------------------------
+    def visit_Module(self, node: ast.Module) -> None:
+        for stmt in _strip_docstring(list(node.body)):
+            self.visit(stmt)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for stmt in _strip_docstring(list(node.body)):
+            self.visit(stmt)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        # Decorators evaluate at DEFINITION time, outside the body's scope.
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self.calls_by_function.setdefault(node.name, set())
+        self._stack.append(node.name)
+        for stmt in _strip_docstring(list(node.body)):
+            self.visit(stmt)
+        self._stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    # -- leaves --------------------------------------------------------------
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if isinstance(node.value, str):
+            self.literals.add(node.value)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = _callee_name(node.func)
+        if name is not None:
+            if self._stack:
+                # Attribute to every enclosing function so a call buried in a
+                # nested def still counts for the outer test body.
+                for enclosing in self._stack:
+                    self.calls_by_function.setdefault(enclosing, set()).add(name)
+            else:
+                self.module_calls.add(name)
+        self.generic_visit(node)
+
+
+def parse_source_facts(source: str) -> SourceFacts | None:
+    """Parse ``source`` into :class:`SourceFacts`; ``None`` when unparseable."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    collector = _ReachableCollector()
+    collector.visit(tree)
+    return SourceFacts(
+        literals=frozenset(collector.literals),
+        calls_by_function={
+            name: frozenset(callees)
+            for name, callees in collector.calls_by_function.items()
+        },
+        module_calls=frozenset(collector.module_calls),
+    )
+
+
+# --------------------------------------------------------------------------
 # P5 — shape-correct injected mocks.
 # --------------------------------------------------------------------------
 def _seam_schema_resolves(ref: str, root: Path) -> bool:
@@ -646,6 +842,82 @@ def _seam_schema_resolves(ref: str, root: Path) -> bool:
     except (ImportError, ValueError):
         return False
     return hasattr(module, attribute)
+
+
+def _check_seam_source(
+    case: dict[str, Any], subject: str, root: Path, seam_schema: str
+) -> list[Finding]:
+    """P5's source half: the seam ref is cited AND the validator really runs.
+
+    Split out of :func:`check_dependencies` so the semantic (AST) enforcement
+    reads as one unit. Every rule here is about what the module DOES, never
+    about what its bytes contain.
+    """
+    findings: list[Finding] = []
+    case_id = str(case.get("id", "<unnamed>"))
+    test_path = str(case.get("test_path", ""))
+    test_file = root / test_path
+    if not test_file.exists():
+        return findings  # reported by check_cases
+
+    facts = parse_source_facts(test_file.read_text(encoding="utf-8"))
+    if facts is None:
+        return [
+            Finding(
+                rule="case_source_unparseable",
+                subject=f"{subject}:{case_id}",
+                message=(
+                    f"{test_path} does not parse as Python, so the seam leg "
+                    "cannot be proven semantically. A gate that falls back to "
+                    "substring matching here is the hole this rule closes"
+                ),
+            )
+        ]
+
+    if seam_schema and seam_schema not in facts.literals:
+        findings.append(
+            Finding(
+                rule="seam_schema_not_cited",
+                subject=f"{subject}:{case_id}",
+                message=(
+                    f"{test_path} does not cite seam_schema {seam_schema!r} as a "
+                    "string literal in executable code. The mock fixture must "
+                    "validate against the SAME schema ref the real dependency "
+                    "does; a ref that appears only in a comment or a docstring "
+                    "is never handed to the validator"
+                ),
+            )
+        )
+
+    # SEMANTIC, not textual. The case's own test function(s) must reach the seam
+    # validator — directly, or through a module-local helper. When the file
+    # declares no function carrying this case id, the missing-case finding is
+    # check_cases' to report, so fall back to module scope here rather than
+    # double-reporting the same defect.
+    entry_points = [fn for fn in facts.calls_by_function if case_id in fn]
+    if entry_points:
+        executed = facts.reaches(entry_points, SEAM_ASSERT_NAME)
+        scope = f"the test function(s) for case {case_id!r}"
+    else:
+        executed = SEAM_ASSERT_NAME in facts.module_calls or any(
+            SEAM_ASSERT_NAME in callees for callees in facts.calls_by_function.values()
+        )
+        scope = "any reachable code in the file"
+    if not executed:
+        findings.append(
+            Finding(
+                rule="seam_validation_not_executed",
+                subject=f"{subject}:{case_id}",
+                message=(
+                    f"{test_path}: {scope} never reaches {SEAM_ASSERT_SYMBOL}...). "
+                    "Enforcement is by AST, not by substring: a commented-out "
+                    "call, a call quoted in a docstring, and a call parked in an "
+                    "`if False:` branch all read as NOT executed. The check must "
+                    "actually run against the schema"
+                ),
+            )
+        )
+    return findings
 
 
 def check_dependencies(
@@ -704,36 +976,7 @@ def check_dependencies(
                         ),
                     )
                 )
-            test_file = root / str(case.get("test_path", ""))
-            if not test_file.exists():
-                continue  # reported by check_cases
-            source = test_file.read_text(encoding="utf-8")
-            if seam_schema and seam_schema not in source:
-                findings.append(
-                    Finding(
-                        rule="seam_schema_not_cited",
-                        subject=f"{subject}:{case_id}",
-                        message=(
-                            f"{case.get('test_path')} does not cite seam_schema "
-                            f"{seam_schema!r}. The mock fixture must validate "
-                            "against the SAME schema ref the real dependency "
-                            "does, or the two can drift silently"
-                        ),
-                    )
-                )
-            if SEAM_ASSERT_SYMBOL not in source:
-                findings.append(
-                    Finding(
-                        rule="seam_validation_not_executed",
-                        subject=f"{subject}:{case_id}",
-                        message=(
-                            f"{case.get('test_path')} never calls "
-                            f"{SEAM_ASSERT_SYMBOL[:-1]}(...). Citing a seam schema "
-                            "in a comment is not validation — the check must "
-                            "EXECUTE against the schema"
-                        ),
-                    )
-                )
+            findings += _check_seam_source(case, subject, root, seam_schema)
     return findings
 
 
@@ -763,6 +1006,177 @@ def _load_proof_tier_deriver() -> Any:
     return module
 
 
+# Search verbs whose invocation the v1 vacuity rules inspect. `grep`/`rg` are
+# in the substance floor's SUBSTANTIVE family (a static assertion over source is
+# genuinely falsifiable) — which is exactly why their ARGUMENTS have to be read.
+_SEARCH_VERBS = frozenset({"grep", "egrep", "fgrep", "rg", "ag", "ack", "ast-grep"})
+
+# Wrappers that delegate to the real command; the verb sits after them.
+_RUNNER_PREFIXES = frozenset({"uv", "poetry", "sudo", "env", "time", "xargs", "exec"})
+_RUNNER_SUBCOMMANDS = frozenset({"run", "--"})
+
+# Flags that consume the NEXT token, so it is neither the pattern nor a path.
+_VALUE_TAKING_FLAGS = frozenset(
+    {
+        "-m",
+        "--max-count",
+        "-A",
+        "--after-context",
+        "-B",
+        "--before-context",
+        "-C",
+        "--context",
+        "-f",
+        "--file",
+        "--include",
+        "--exclude",
+        "--exclude-dir",
+        "-d",
+        "--devices",
+        "-t",
+        "--type",
+        "-g",
+        "--glob",
+    }
+)
+_PATTERN_FLAGS = frozenset({"-e", "--regexp", "--pattern"})
+
+# Patterns that match ANY non-empty content. A search for one of these is not
+# an assertion about the change; it is a file-is-non-empty probe wearing the
+# costume of a static assertion.
+_VACUOUS_SEARCH_PATTERNS = frozenset(
+    {"", ".", ".*", ".+", "^", "$", "^.*$", "^$", "^.*", ".*$", "[\\s\\S]*", "(?s).*"}
+)
+
+# Prose targets. Asserting a sentence exists in documentation cannot fail when
+# the CODE is wrong — only when someone deletes the sentence.
+_PROSE_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+
+
+def _strip_runner_prefix(tokens: list[str]) -> list[str]:
+    index = 0
+    while index < len(tokens) and (
+        tokens[index] in _RUNNER_PREFIXES or tokens[index] in _RUNNER_SUBCOMMANDS
+    ):
+        index += 1
+    return tokens[index:]
+
+
+def _shell_segments(command: str) -> list[list[str]]:
+    """Split a shell command into argv-ish segments; unparseable parts dropped."""
+    segments: list[list[str]] = []
+    for raw in re.split(r"\|\||&&|[|;\n]", command):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        try:
+            tokens = shlex.split(stripped)
+        except ValueError:
+            continue
+        if tokens:
+            segments.append(tokens)
+    return segments
+
+
+def _parse_search(tokens: list[str]) -> tuple[str | None, list[str]]:
+    """Return ``(pattern, paths)`` for a search invocation's argv."""
+    pattern: str | None = None
+    paths: list[str] = []
+    index = 1
+    while index < len(tokens):
+        arg = tokens[index]
+        if arg == "--":
+            index += 1
+            continue
+        if arg.startswith("-") and arg != "-":
+            if arg in _PATTERN_FLAGS and index + 1 < len(tokens):
+                pattern = tokens[index + 1] if pattern is None else pattern
+                index += 2
+                continue
+            if "=" in arg:
+                head, _, tail = arg.partition("=")
+                if head in _PATTERN_FLAGS and pattern is None:
+                    pattern = tail
+                index += 1
+                continue
+            if arg in _VALUE_TAKING_FLAGS and index + 1 < len(tokens):
+                index += 2
+                continue
+            index += 1
+            continue
+        if pattern is None:
+            pattern = arg
+        else:
+            paths.append(arg)
+        index += 1
+    return pattern, paths
+
+
+def _is_prose_path(candidate: str) -> bool:
+    return candidate.lower().endswith(_PROSE_SUFFIXES)
+
+
+def v1_vacuity_reason(
+    check_type: str, check_value: str, derive: Any = None
+) -> str | None:
+    """Why this check cannot count toward the v1 falsifiability floor, or None.
+
+    The OMN-14409 substance floor is deliberately GENEROUS at the family level
+    ("when in doubt, ACCEPT") because it governs a 6,900-contract legacy corpus
+    where a false reject teaches authors that honest evidence does not pay. v1
+    has no legacy corpus — every v1 contract is authored under this gate — so
+    the shipped claim is that v1 carries NO grandfathering. These rules are what
+    make that claim true; they are ADDITIVE to the tier derivation, never a
+    second tier vocabulary.
+
+    Three always-true forms survive the family-level derivation, and each is
+    closed by reading the check's own arguments rather than its verb:
+
+    ``vacuous_search_pattern``
+        ``grep -c '' README.md`` / ``rg -q . src`` derive L1 as static
+        assertions, but their pattern matches any non-empty content.
+    ``prose_only_search_target``
+        a search whose every target is a ``.md``/``.rst``/``.txt`` file asserts
+        that prose exists. It passes identically whether the code is right or
+        catastrophically broken — the exact definition the floor rejects.
+    ``check_type_label_only``
+        ``derive_proof_tier`` short-circuits to L1 on ``check_type ==
+        "test_passes"`` WITHOUT reading ``check_value``, so a prose value under
+        that label is a self-declared tier. v1 requires the value itself to be a
+        runnable, falsifiable command; the label may not carry the claim alone.
+    """
+    command = (check_value or "").strip()
+    if not command:
+        return None  # already L0 by derivation; nothing to add
+    for raw_tokens in _shell_segments(command):
+        tokens = _strip_runner_prefix(raw_tokens)
+        if not tokens or tokens[0] not in _SEARCH_VERBS:
+            continue
+        pattern, paths = _parse_search(tokens)
+        if pattern is not None and pattern.strip() in _VACUOUS_SEARCH_PATTERNS:
+            return (
+                f"vacuous_search_pattern: {pattern!r} matches any non-empty "
+                "content, so the probe passes whether the work is right or wrong"
+            )
+        if paths and all(_is_prose_path(p) for p in paths):
+            return (
+                "prose_only_search_target: every search target is prose "
+                f"({', '.join(paths)}); asserting a sentence exists in "
+                "documentation cannot fail when the code is wrong"
+            )
+    if derive is not None and check_type:
+        labelled = derive(check_type, command)
+        unlabelled = derive("", command)
+        if labelled != unlabelled:
+            return (
+                f"check_type_label_only: the tier comes from check_type "
+                f"{check_type!r}, not from check_value — the value alone derives "
+                f"{unlabelled.value}. A label is a claim; v1 requires the check "
+                "itself to be a runnable, falsifiable command"
+            )
+    return None
+
+
 def check_evidence_falsifiability(
     contract: dict[str, Any], subject: str
 ) -> list[Finding]:
@@ -770,10 +1184,29 @@ def check_evidence_falsifiability(
 
     Reuses ``derive_proof_tier`` from the OMN-14409 substance floor rather than
     introducing a second proof vocabulary. Unlike that gate, v1 has NO legacy
-    allowlist: an open-state self-bind probe plus a claim of proof is an
-    unfalsifiability overclaim and is shape-RED.
+    allowlist, and REMEDIATION r1 (2026-08-02) is what makes that sentence true
+    rather than aspirational. An adversarial replay found five always-true check
+    forms deriving L1 GREEN here — the shipped claim and the shipped behaviour
+    disagreed. Two mechanisms close the gap, both scoped to v1 only:
+
+    1. The OMN-14417 kill switch is turned **ON for v1**. ``GATE_SELF_REFERENTIAL``
+       ships ``False`` in the substance floor for a measured reason: flipping it
+       corpus-wide rejects 98.4% of new legacy contract traffic, because reading
+       one's own receipt is the current house style there. That measurement is
+       about the LEGACY corpus. v1 has no legacy corpus, so the concession does
+       not transfer, and a circular ``grep -q '^status: PASS' drift/dod_receipts/…``
+       is L0 here. The flip is applied to this gate's own privately-loaded module
+       instance (:func:`_load_proof_tier_deriver` re-execs the file under a
+       private name on every call), so the legacy gate's verdicts are untouched.
+    2. :func:`v1_vacuity_reason` reads each check's ARGUMENTS, closing the
+       vacuous-pattern, prose-only-target and label-only forms that survive a
+       verb-level family match.
     """
     module = _load_proof_tier_deriver()
+    # v1 enables the kill switch the legacy gate defers. See (1) above; the
+    # module object is private to this call, so nothing else observes the flip.
+    module.GATE_SELF_REFERENTIAL = True
+    self_referential = getattr(module, "_SELF_REFERENTIAL_RE", None)
     derive = module.derive_proof_tier
     floor = module.SUBSTANCE_FLOOR
     probes: list[str] = []
@@ -784,10 +1217,26 @@ def check_evidence_falsifiability(
         for check in item.get("checks") or []:
             if not isinstance(check, dict):
                 continue
+            check_type = str(check.get("check_type") or "")
             value = str(check.get("check_value") or "")
-            tier = derive(str(check.get("check_type") or ""), value)
-            probes.append(f"[{tier.value}] {value[:90]}")
-            if bool(tier.satisfies(floor)):
+            tier = derive(check_type, value)
+            reason = v1_vacuity_reason(check_type, value, derive=derive)
+            if (
+                reason is None
+                and self_referential is not None
+                and self_referential.search(value)
+            ):
+                reason = (
+                    "self_referential: the probe reads the receipt corpus it is "
+                    "itself part of (OMN-14417 circular class). v1 does not carry "
+                    "the legacy grandfathering that defers this in the corpus gate"
+                )
+            counts = bool(tier.satisfies(floor)) and reason is None
+            probes.append(
+                f"[{tier.value}] {value[:90]}"
+                + (f"\n    -> {reason}" if reason else "")
+            )
+            if counts:
                 substantive += 1
     if substantive == 0:
         return [
@@ -795,8 +1244,12 @@ def check_evidence_falsifiability(
                 rule="evidence_unfalsifiable_overclaim",
                 subject=subject,
                 message=(
-                    "every dod_evidence check is an existence/self-bind probe "
-                    "(tier L0) while the contract declares cases claiming proof. "
+                    "no dod_evidence check can fail when the work is wrong. "
+                    "Every check is either an existence/self-bind probe (tier "
+                    "L0) or one of the always-true forms v1 rejects outright "
+                    "(vacuous search pattern, prose-only search target, "
+                    "check_type label without a runnable value, or a probe that "
+                    "reads its own receipt). The per-check verdicts are below. "
                     "A probe that passes identically whether the code is correct "
                     "or broken cannot carry a proof claim"
                 ),
@@ -922,6 +1375,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Canonical OCC contract shape v1 gate (OMN-15669, R-0802-9).",
     )
     parser.add_argument("--changed-files", nargs="*", default=[])
+    # pre-commit passes the staged files POSITIONALLY (pass_filenames: true).
+    # Accepting them here is what lets the identical entrypoint be both the CI
+    # gate and the local hook — CLAUDE.md rule 5: a detection surface that is
+    # not also a local gate is advisory, and two spellings of the same check
+    # drift. The union is taken so `--changed-files` keeps working unchanged.
+    parser.add_argument("files", nargs="*", default=[])
     parser.add_argument("--base-ref", default="origin/dev")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument(
@@ -941,9 +1400,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root: Path = args.root.resolve()
-    scope = select_scope(
-        list(args.changed_files), root, GitBaseReader(root, args.base_ref)
-    )
+    requested = list(dict.fromkeys([*args.changed_files, *args.files]))
+    scope = select_scope(requested, root, GitBaseReader(root, args.base_ref))
     if not scope:
         print(
             "contract shape v1: no in-scope contract in this PR "
