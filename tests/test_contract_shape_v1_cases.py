@@ -28,6 +28,7 @@ from onex_change_control.testing.seam_binding import assert_seam_shape, binding_
 from onex_change_control.validation.contract_shape_v1 import (
     CONTRACT_BLOCK_HEADING,
     GitBaseReader,
+    IdentityInputs,
     PytestCollector,
     check_bindings,
     check_case_space,
@@ -153,12 +154,44 @@ def test_conformant_fixture_green(binding: str) -> None:
         CONFORMANT_CONTRACT,
         CONFORMANT_ROOT,
         collector,
-        pr_body=(
-            f"Body.\n\nContract-Ticket-Hash: OMN-99999={sha256_block(contract_text)}\n"
+        IdentityInputs(
+            pr_body=(
+                "Body.\n\nContract-Ticket-Hash: "
+                f"OMN-99999={sha256_block(contract_text)}\n"
+            ),
+            ticket_body_reader=lambda _tid: _ticket_body(contract_text),
         ),
-        ticket_body_reader=lambda _tid: _ticket_body(contract_text),
     )
     assert findings == [], [f.render() for f in findings]
+
+
+# ---------------------------------------------------------------------------
+# case: identity_not_evaluated (bindings: mock)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("binding", binding_params("mock"))
+def test_identity_not_evaluated(binding: str) -> None:
+    """Dropping the P2 leg silently is RED; declaring the exclusion is not.
+
+    REMEDIATION r1r. The adversarial verifier found that this contract's own
+    ``dod-omn15669-gate-self-applies`` check ran the gate WITHOUT a PR body, so
+    ``check_identity`` never ran — the DoD check certifying the gate was weaker
+    than the gate, and could be receipted PASS while the required CI job was RED
+    on the same contract for an identity finding. Absence of the leg is now a
+    finding unless the caller states the exclusion.
+    """
+    assert binding == "mock"
+    collector = _collector(binding, _ALL_WIDGET_NODE_IDS)
+
+    silent = evaluate_contract(CONFORMANT_CONTRACT, CONFORMANT_ROOT, collector)
+    assert [f.rule for f in silent] == ["identity_not_evaluated"]
+
+    declared = evaluate_contract(
+        CONFORMANT_CONTRACT,
+        CONFORMANT_ROOT,
+        collector,
+        IdentityInputs(waived=True),
+    )
+    assert declared == [], [f.render() for f in declared]
 
 
 # ---------------------------------------------------------------------------
@@ -473,8 +506,18 @@ def test_seam_validation_not_executed(binding: str, tmp_path: Path) -> None:
     ``"assert_seam_shape(" not in source``. The adversarial replay defeated it
     with a file whose only occurrences of the symbol were a ``#`` comment and an
     ``if False:`` branch — the gate AND pytest both went green while the seam
-    validation never ran. Every form below is now driven, and the assertion is
-    semantic (AST reachability from the case's own test function).
+    validation never ran.
+
+    REMEDIATION r1r: compile-time reachability was still too weak. A second
+    replay drove five RUNTIME-dead forms past it, two of which are green in
+    pytest as well (``pytest.skip(...)`` and an early ``return`` before the
+    call). The bar is now UNCONDITIONAL execution with a verdict that can still
+    fail the test, which is what P5 actually claims. One consequence is
+    deliberate and visible below: ``live_branch`` — a call guarded by a runtime
+    ``if`` — moved from a GREEN control to a RED form. There is no way to
+    distinguish ``if flag:`` from ``if os.environ.get('NEVER_SET'):`` statically,
+    so the convention is that the seam validator sits on the test's straight-line
+    path.
     """
     assert binding == "mock"
     (tmp_path / "schemas").mkdir()
@@ -522,6 +565,66 @@ def test_seam_validation_not_executed(binding: str, tmp_path: Path) -> None:
             "def test_widget_store_seam():\n"
             "    assert True\n"
         ),
+        # --- r1r: RUNTIME-dead forms. Compile-time pruning missed every one. --
+        # The exact replay: a condition that is never true at runtime.
+        "runtime_conditional_never_true": (
+            "import os\n" + cite + "def test_widget_store_seam():\n"
+            "    if os.environ.get('NEVER_SET'):\n"
+            "        assert_seam_shape({}, SEAM)\n"
+        ),
+        # Gate-GREEN *and* pytest-GREEN in r1: the test is skipped before the call.
+        "pytest_skip_before_the_call": (
+            "import pytest\n" + cite + "def test_widget_store_seam():\n"
+            "    pytest.skip('not today')\n"
+            "    assert_seam_shape({}, SEAM)\n"
+        ),
+        # Likewise green in both: nothing after the return runs.
+        "early_return_before_the_call": (
+            cite + "def test_widget_store_seam():\n"
+            "    return\n"
+            "    assert_seam_shape({}, SEAM)\n"
+        ),
+        # The call RUNS, but its verdict is discarded — it cannot fail the test.
+        "verdict_swallowed_by_except": (
+            cite + "def test_widget_store_seam():\n"
+            "    try:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+            "    except Exception:\n"
+            "        pass\n"
+        ),
+        "verdict_swallowed_by_bare_except": (
+            cite + "def test_widget_store_seam():\n"
+            "    try:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+            "    except BaseException:\n"
+            "        pass\n"
+        ),
+        # Constructed by extending the same attack: a zero-iteration loop, a
+        # skip MARK, and a conditional hidden one hop away in a helper.
+        "loop_that_may_not_iterate": (
+            cite + "def test_widget_store_seam(items=()):\n"
+            "    for _ in items:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+        ),
+        "skip_mark_on_the_test": (
+            "import pytest\n" + cite + "@pytest.mark.skip(reason='parked')\n"
+            "def test_widget_store_seam():\n"
+            "    assert_seam_shape({}, SEAM)\n"
+        ),
+        "conditional_inside_the_helper": (
+            "import os\n" + cite + "def _resolve(binding):\n"
+            "    if os.environ.get('NEVER_SET'):\n"
+            "        assert_seam_shape({}, SEAM)\n"
+            "def test_widget_store_seam():\n"
+            "    _resolve('mock')\n"
+        ),
+        # r1's GREEN control, now RED by design: a runtime `if` is statically
+        # indistinguishable from the never-true form two entries above.
+        "live_branch": (
+            cite + "def test_widget_store_seam(flag=True):\n"
+            "    if flag:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+        ),
     }
     for label, source in never_executes.items():
         test_file.write_text(source)
@@ -540,10 +643,19 @@ def test_seam_validation_not_executed(binding: str, tmp_path: Path) -> None:
             "    assert_seam_shape({}, SEAM)\n"
             "def test_widget_store_seam():\n    _resolve('mock')\n"
         ),
-        "live_branch": (
-            cite + "def test_widget_store_seam(flag=True):\n"
-            "    if flag:\n"
+        # A `with` body always runs, and a handler that re-raises preserves the
+        # verdict — neither is a way to duck the validation.
+        "inside_a_with_block": (
+            cite + "def test_widget_store_seam():\n"
+            "    with open('/dev/null') as fh:\n"
             "        assert_seam_shape({}, SEAM)\n"
+        ),
+        "try_that_reraises": (
+            cite + "def test_widget_store_seam():\n"
+            "    try:\n"
+            "        assert_seam_shape({}, SEAM)\n"
+            "    except Exception:\n"
+            "        raise\n"
         ),
     }
     for label, source in really_executes.items():

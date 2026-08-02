@@ -15,12 +15,13 @@ P1  ONE CANONICAL SHAPE, ZERO HUMAN REVIEW
     :func:`check_schema` validates the instance against the single schema
     artifact. No rule in this file consults a reviewer, an author, an approver,
     or any human judgement: shape validation *replaces* review. The companion
-    falsifiability floor (:func:`check_evidence_falsifiability`) carries NO
-    grandfathering: v1 turns on the OMN-14417 self-reference kill switch that
-    the legacy corpus gate defers, and :func:`v1_vacuity_reason` rejects the
-    always-true check forms (vacuous search pattern, prose-only search target,
-    ``check_type`` label without a runnable value) that survive a verb-level
-    family match.
+    falsifiability floor (:func:`check_evidence_falsifiability`) carries no
+    grandfathering — no exemption by age or author: v1 turns on the OMN-14417
+    self-reference kill switch that the legacy corpus gate defers, and
+    :func:`v1_vacuity_reason` rejects an ENUMERATED list of always-true check
+    forms that survive a verb-level family match. That list is a denylist under
+    active attack, not a decision procedure; its open residuals are named in
+    that function's docstring and must be quoted with it.
 
 P2  TICKET IDENTITY, fail-closed + identity-blind
     :func:`check_identity` compares three artifacts — the ``## OCC Contract
@@ -54,14 +55,17 @@ P5  SHAPE-CORRECT INJECTED MOCKS
     covering each dependency, and requires that case's test file to cite the
     same ``seam_schema`` string and to execute the shared validator
     (:func:`onex_change_control.testing.seam_binding.assert_seam_shape`), which
-    validates mock and real payloads against the SAME schema. Mock-shape
-    divergence (the OMN-15598 class) is thereby unrepresentable rather than
-    merely discouraged. Enforcement is SEMANTIC, via :func:`parse_source_facts`:
-    the citation must be a real string literal in executable code and the
-    validator call must be reachable from the case's own test function. A
-    commented-out call, one quoted in a docstring, and one parked in an
-    ``if False:`` branch are all NOT executed — the substring test the first
-    build shipped accepted every one of them.
+    validates mock and real payloads against the SAME schema. Enforcement is
+    SEMANTIC, via :func:`parse_source_facts`: the citation must be a real string
+    literal in executable code, and the validator call must be reached from the
+    case's own test function on an UNCONDITIONAL path whose failure can still
+    fail the test. A commented-out call, one quoted in a docstring, one parked
+    in ``if False:``, one behind a runtime condition or loop, one after a
+    ``return``/``pytest.skip(...)``, and one inside a ``try`` that swallows the
+    failure are all NOT executed. What this proves is that the declared seam
+    validation RUNS for the case; it does not prove the mock is faithful in any
+    respect the seam schema does not constrain, so "the OMN-15598 class is
+    unrepresentable" is exactly as strong as the seam schema is.
 
 P6  DUAL-BINDING EXECUTION
     ``bindings`` is per-case in the schema. :func:`check_bindings` reads the
@@ -90,7 +94,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 import yaml
@@ -103,6 +107,7 @@ __all__ = [
     "V1_DIR",
     "V1_MARKER",
     "Finding",
+    "IdentityInputs",
     "LinearUnreachableError",
     "PytestCollector",
     "SourceFacts",
@@ -683,13 +688,29 @@ class SourceFacts:
     the callee names reachable inside it, which is what lets the gate ask "does
     THIS case's test body reach the seam validator", directly or through a
     module-local helper, rather than "does the file mention it anywhere".
+
+    REMEDIATION r1r (2026-08-02): compile-time pruning alone was not enough.
+    An adversarial replay drove five RUNTIME-dead forms past it — a call under
+    ``if os.environ.get("NEVER_SET"):``, a call after ``pytest.skip(...)``, a
+    call after an early ``return``, and a call inside a ``try`` whose handler
+    swallows the exception (``except Exception: pass`` / bare ``except``). Two
+    of those are green in pytest as well as in the gate, with the seam
+    validation never executing. ``unconditional_calls`` is therefore the graph
+    the seam leg reads: it holds only the callees invoked on EVERY entry to a
+    function, with the verdict still able to fail the test. ``calls_by_function``
+    is retained as the looser "appears in reachable code" view — it is not what
+    P5 asserts.
     """
 
     literals: frozenset[str]
     calls_by_function: dict[str, frozenset[str]]
     module_calls: frozenset[str]
+    unconditional_calls: dict[str, frozenset[str]] = field(default_factory=dict)
+    unconditional_module_calls: frozenset[str] = frozenset()
 
-    def reaches(self, roots: list[str], symbol: str) -> bool:
+    def reaches(
+        self, roots: list[str], symbol: str, *, unconditional: bool = True
+    ) -> bool:
         """True when ``symbol`` is called from any of ``roots``, transitively.
 
         The walk follows module-local callees only: a helper defined in the same
@@ -697,7 +718,13 @@ class SourceFacts:
         shapes this convention produces (a test body that validates inline, or
         one that validates through a module-local binding-resolver helper) and
         it terminates on every input because ``seen`` is monotone.
+
+        ``unconditional`` (the default, and what P5 asserts) walks the
+        every-entry graph: each edge means "entering the caller ALWAYS invokes
+        the callee, and a failure there still fails the caller". Pass
+        ``unconditional=False`` for the looser reachable-code view.
         """
+        graph = self.unconditional_calls if unconditional else self.calls_by_function
         seen: set[str] = set()
         stack = list(roots)
         while stack:
@@ -705,7 +732,7 @@ class SourceFacts:
             if name in seen:
                 continue
             seen.add(name)
-            callees = self.calls_by_function.get(name)
+            callees = graph.get(name)
             if callees is None:
                 continue
             if symbol in callees:
@@ -740,6 +767,161 @@ def _strip_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
+# --------------------------------------------------------------------------
+# Unconditional-execution analysis (REMEDIATION r1r).
+#
+# "Present in reachable code" is weaker than "runs". These helpers answer the
+# stronger question the seam leg needs: entering this function, is the callee
+# ALWAYS invoked, with a failure there still able to fail the caller?
+# --------------------------------------------------------------------------
+
+# Calls that end the current statement sequence: nothing after them executes.
+# `_callee_name` returns the attribute, so this covers pytest.skip / pytest.xfail
+# / pytest.fail / sys.exit / os._exit written in any import style.
+_TERMINATING_CALLS = frozenset({"skip", "xfail", "fail", "exit", "_exit"})
+
+# pytest marks that stop the decorated body from running at all.
+_SKIPPING_MARKS = frozenset({"skip", "xfail"})
+
+# Expression forms whose sub-calls are NOT guaranteed to evaluate.
+_CONDITIONAL_EXPRS: tuple[type[ast.AST], ...] = (
+    ast.IfExp,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+_DEFERRED_SCOPES: tuple[type[ast.AST], ...] = (
+    ast.Lambda,
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+)
+# ``try``/``try*`` — the handler decides whether a failure inside survives.
+_TRY_STMTS: tuple[type[ast.AST], ...] = tuple(
+    node for node in (ast.Try, getattr(ast, "TryStar", None)) if node is not None
+)
+# Statement forms whose bodies run zero-or-more times, never exactly-once.
+_CONDITIONAL_STMTS: tuple[type[ast.AST], ...] = tuple(
+    node
+    for node in (
+        ast.If,
+        ast.While,
+        ast.For,
+        ast.AsyncFor,
+        getattr(ast, "Match", None),
+    )
+    if node is not None
+)
+
+
+def _calls_in_expression(node: ast.AST) -> set[str]:
+    """Callee names guaranteed to be invoked when ``node`` is evaluated.
+
+    Deliberately conservative: a call parked in a lambda, a nested def, a
+    comprehension body, a conditional expression, or the short-circuit arm of a
+    ``and``/``or`` is not counted, because none of them is guaranteed to run.
+    """
+    names: set[str] = set()
+    stack: list[ast.AST] = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, ast.Call):
+            callee = _callee_name(current.func)
+            if callee is not None:
+                names.add(callee)
+        if isinstance(current, ast.BoolOp):
+            # Only the FIRST operand is always evaluated.
+            children: list[ast.AST] = [current.values[0]] if current.values else []
+        else:
+            children = list(ast.iter_child_nodes(current))
+        for child in children:
+            if isinstance(child, _DEFERRED_SCOPES + _CONDITIONAL_EXPRS):
+                continue
+            stack.append(child)
+    return names
+
+
+def _terminates(stmt: ast.stmt) -> bool:
+    """True when no statement after ``stmt`` can run."""
+    if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+        return True
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+        return _callee_name(stmt.value.func) in _TERMINATING_CALLS
+    return False
+
+
+def _handler_reraises(handler: ast.ExceptHandler) -> bool:
+    """True when this handler re-raises rather than swallowing the failure."""
+    return any(isinstance(node, ast.Raise) for node in ast.walk(handler))
+
+
+def _with_calls(stmt: ast.With | ast.AsyncWith) -> tuple[set[str], bool]:
+    """A ``with`` body always runs, so its unconditional calls carry through."""
+    names: set[str] = set()
+    for item in stmt.items:
+        names |= _calls_in_expression(item.context_expr)
+    inner, stopped = _unconditional_calls(stmt.body)
+    return names | inner, stopped
+
+
+def _try_calls(stmt: ast.stmt) -> tuple[set[str], bool]:
+    """``try`` body calls count only when no handler swallows the failure."""
+    handlers = list(getattr(stmt, "handlers", []))
+    inner, _ = _unconditional_calls(list(getattr(stmt, "body", [])))
+    if handlers and not all(_handler_reraises(h) for h in handlers):
+        # The call may run, but its VERDICT is discarded — a swallowed
+        # assertion cannot fail the test, so it proves nothing.
+        inner = set()
+    final, stopped = _unconditional_calls(list(getattr(stmt, "finalbody", [])))
+    return inner | final, stopped
+
+
+def _unconditional_calls(body: list[ast.stmt]) -> tuple[set[str], bool]:
+    """``(callees always invoked by ``body``, whether ``body`` terminates)``."""
+    names: set[str] = set()
+    for stmt in _strip_docstring(body):
+        if isinstance(stmt, _DEFERRED_SCOPES):
+            continue  # defined here, executed only if something calls it
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            inner, stopped = _with_calls(stmt)
+        elif isinstance(stmt, _TRY_STMTS):
+            inner, stopped = _try_calls(stmt)
+        elif isinstance(stmt, _CONDITIONAL_STMTS):
+            continue  # runtime-conditional: not every entry runs it
+        else:
+            inner, stopped = _calls_in_expression(stmt), _terminates(stmt)
+        names |= inner
+        if stopped:
+            return names, True
+    return names, False
+
+
+def _is_pytest_mark(node: ast.expr, mark: str) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == mark
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "mark"
+    )
+
+
+def _decorator_skips_body(decorators: list[ast.expr]) -> bool:
+    """True when a decorator stops the body from running on every entry."""
+    for decorator in decorators:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if any(_is_pytest_mark(target, mark) for mark in _SKIPPING_MARKS):
+            return True
+        if (
+            _is_pytest_mark(target, "skipif")
+            and isinstance(decorator, ast.Call)
+            and decorator.args
+            and _constant_truth(decorator.args[0]) is True
+        ):
+            return True
+    return False
+
+
 class _ReachableCollector(ast.NodeVisitor):
     """Collects :class:`SourceFacts` over reachable, non-docstring code only."""
 
@@ -747,6 +929,8 @@ class _ReachableCollector(ast.NodeVisitor):
         self.literals: set[str] = set()
         self.calls_by_function: dict[str, set[str]] = {}
         self.module_calls: set[str] = set()
+        self.unconditional_calls: dict[str, set[str]] = {}
+        self.unconditional_module_calls: set[str] = set()
         self._stack: list[str] = []
 
     # -- reachability pruning ------------------------------------------------
@@ -767,6 +951,8 @@ class _ReachableCollector(ast.NodeVisitor):
 
     # -- docstring stripping + function scoping ------------------------------
     def visit_Module(self, node: ast.Module) -> None:
+        unconditional, _ = _unconditional_calls(list(node.body))
+        self.unconditional_module_calls |= unconditional
         for stmt in _strip_docstring(list(node.body)):
             self.visit(stmt)
 
@@ -781,6 +967,10 @@ class _ReachableCollector(ast.NodeVisitor):
         for decorator in node.decorator_list:
             self.visit(decorator)
         self.calls_by_function.setdefault(node.name, set())
+        entry = self.unconditional_calls.setdefault(node.name, set())
+        if not _decorator_skips_body(node.decorator_list):
+            unconditional, _ = _unconditional_calls(list(node.body))
+            entry |= unconditional
         self._stack.append(node.name)
         for stmt in _strip_docstring(list(node.body)):
             self.visit(stmt)
@@ -825,6 +1015,11 @@ def parse_source_facts(source: str) -> SourceFacts | None:
             for name, callees in collector.calls_by_function.items()
         },
         module_calls=frozenset(collector.module_calls),
+        unconditional_calls={
+            name: frozenset(callees)
+            for name, callees in collector.unconditional_calls.items()
+        },
+        unconditional_module_calls=frozenset(collector.unconditional_module_calls),
     )
 
 
@@ -899,21 +1094,27 @@ def _check_seam_source(
         executed = facts.reaches(entry_points, SEAM_ASSERT_NAME)
         scope = f"the test function(s) for case {case_id!r}"
     else:
-        executed = SEAM_ASSERT_NAME in facts.module_calls or any(
-            SEAM_ASSERT_NAME in callees for callees in facts.calls_by_function.values()
+        executed = SEAM_ASSERT_NAME in facts.unconditional_module_calls or any(
+            SEAM_ASSERT_NAME in callees
+            for callees in facts.unconditional_calls.values()
         )
-        scope = "any reachable code in the file"
+        scope = "any unconditionally executed code in the file"
     if not executed:
         findings.append(
             Finding(
                 rule="seam_validation_not_executed",
                 subject=f"{subject}:{case_id}",
                 message=(
-                    f"{test_path}: {scope} never reaches {SEAM_ASSERT_SYMBOL}...). "
-                    "Enforcement is by AST, not by substring: a commented-out "
-                    "call, a call quoted in a docstring, and a call parked in an "
-                    "`if False:` branch all read as NOT executed. The check must "
-                    "actually run against the schema"
+                    f"{test_path}: {scope} never reaches {SEAM_ASSERT_SYMBOL}...) "
+                    "on every entry with a verdict that can still fail the test. "
+                    "Enforcement is by AST, not by substring, and the bar is "
+                    "UNCONDITIONAL execution: a commented-out call, a call quoted "
+                    "in a docstring, a call in an `if False:` branch, a call "
+                    "behind ANY runtime condition or loop, a call after a "
+                    "`return`/`raise`/`pytest.skip(...)`, a call under a "
+                    "skip/xfail mark, and a call inside a `try` whose handler "
+                    "swallows the failure all read as NOT executed. Put the "
+                    "validator on the test's straight-line path"
                 ),
             )
         )
@@ -1015,6 +1216,24 @@ _SEARCH_VERBS = frozenset({"grep", "egrep", "fgrep", "rg", "ag", "ack", "ast-gre
 _RUNNER_PREFIXES = frozenset({"uv", "poetry", "sudo", "env", "time", "xargs", "exec"})
 _RUNNER_SUBCOMMANDS = frozenset({"run", "--"})
 
+# Verbs that feed a file's CONTENT into the next pipeline stage. `cat x | grep`
+# searches x; the search segment itself carries no path, so a rule that reads
+# only the search segment's own argv sees no target at all.
+_FILE_SOURCE_VERBS = frozenset({"cat", "bat", "zcat", "head", "tail", "strings"})
+
+# Task runners with a real dry-run mode. `-n` is listed only for THESE verbs:
+# on grep/rg it means "print line numbers", which is not a dry run.
+_DRY_RUN_VERBS = frozenset({"make", "just", "task", "rsync", "ansible-playbook"})
+_DRY_RUN_FLAGS = frozenset(
+    {"--dry-run", "--dryrun", "--just-print", "--recon", "--no-act", "-n"}
+)
+
+# Comparison verbs. `diff a a` is a tautology, not a comparison.
+_COMPARISON_VERBS = frozenset({"diff", "cmp"})
+
+# Interpreters that take an inline program via `-c`.
+_INLINE_PROGRAM_VERBS = frozenset({"python", "python3", "bash", "sh", "zsh"})
+
 # Flags that consume the NEXT token, so it is neither the pattern nor a path.
 _VALUE_TAKING_FLAGS = frozenset(
     {
@@ -1041,41 +1260,123 @@ _VALUE_TAKING_FLAGS = frozenset(
 )
 _PATTERN_FLAGS = frozenset({"-e", "--regexp", "--pattern"})
 
-# Patterns that match ANY non-empty content. A search for one of these is not
-# an assertion about the change; it is a file-is-non-empty probe wearing the
-# costume of a static assertion.
+# Literal patterns that match ANY non-empty content. Kept as a fast path and as
+# documentation; the LOAD-BEARING rule is :func:`_pattern_is_vacuous`, which
+# executes the pattern rather than looking it up. REMEDIATION r1r: as a
+# standalone denylist this was defeated by `x*` — `.` with a different spelling.
 _VACUOUS_SEARCH_PATTERNS = frozenset(
     {"", ".", ".*", ".+", "^", "$", "^.*$", "^$", "^.*", ".*$", "[\\s\\S]*", "(?s).*"}
 )
 
+# Content-free strings a pattern is executed against. A pattern that matches
+# EVERY one of these matches arbitrary bytes, so finding it proves nothing about
+# the change. They are deliberately unrelated to any real source line.
+_VACUITY_PROBES = ("a", "0", " ", "zq7f3k9v", "—§—", "x")
+
 # Prose targets. Asserting a sentence exists in documentation cannot fail when
 # the CODE is wrong — only when someone deletes the sentence.
-_PROSE_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+_PROSE_SUFFIXES = (
+    ".md",
+    ".markdown",
+    ".mdx",
+    ".rst",
+    ".txt",
+    ".text",
+    ".adoc",
+    ".org",
+)
+# Extensionless prose files, and directories whose whole purpose is prose.
+_PROSE_BASENAMES = frozenset(
+    {
+        "README",
+        "CHANGELOG",
+        "CHANGES",
+        "HISTORY",
+        "NEWS",
+        "NOTES",
+        "LICENSE",
+        "LICENCE",
+        "COPYING",
+        "NOTICE",
+        "AUTHORS",
+        "CONTRIBUTORS",
+        "CONTRIBUTING",
+    }
+)
+_PROSE_DIRS = frozenset({"docs", "doc", "documentation"})
+
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _strip_runner_prefix(tokens: list[str]) -> list[str]:
+    """Drop leading wrappers and env assignments so the real verb is at [0]."""
     index = 0
     while index < len(tokens) and (
-        tokens[index] in _RUNNER_PREFIXES or tokens[index] in _RUNNER_SUBCOMMANDS
+        tokens[index] in _RUNNER_PREFIXES
+        or tokens[index] in _RUNNER_SUBCOMMANDS
+        or _ENV_ASSIGNMENT_RE.match(tokens[index])
     ):
         index += 1
     return tokens[index:]
 
 
-def _shell_segments(command: str) -> list[list[str]]:
-    """Split a shell command into argv-ish segments; unparseable parts dropped."""
+_PIPE_SEPARATOR = "|"
+_PIPELINE_BREAKS = frozenset({"||", "&&", ";", "&", "\n"})
+
+
+def _tokenize(command: str) -> list[str]:
+    """Tokenize like a shell: quotes protect their contents, operators split.
+
+    A regex-level split cannot do this. ``grep -qE '(a|)' src/foo.py`` contains a
+    ``|`` INSIDE the quoted pattern, and splitting the raw string on ``|`` tore
+    the pattern in half — which is precisely how the r1 build let ``(a|)``
+    through while catching ``x*``. An untokenizable command (unbalanced quotes)
+    yields no tokens, so no argument rule fires: a NAMED residual.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        return []
+
+
+def _shell_pipelines(command: str) -> list[list[list[str]]]:
+    """Split a command into pipelines, each an ORDERED list of argv segments.
+
+    Pipeline structure is retained (unlike the flat split the first build used)
+    because `cat README.md | grep -q x` puts the search TARGET in a different
+    segment from the search itself.
+    """
+    pipelines: list[list[list[str]]] = []
     segments: list[list[str]] = []
-    for raw in re.split(r"\|\||&&|[|;\n]", command):
-        stripped = raw.strip()
-        if not stripped:
-            continue
-        try:
-            tokens = shlex.split(stripped)
-        except ValueError:
-            continue
-        if tokens:
-            segments.append(tokens)
-    return segments
+    current: list[str] = []
+
+    def flush_segment() -> None:
+        if current:
+            segments.append(list(current))
+            current.clear()
+
+    def flush_pipeline() -> None:
+        flush_segment()
+        if segments:
+            pipelines.append(list(segments))
+            segments.clear()
+
+    for token in _tokenize(command):
+        if token in _PIPELINE_BREAKS:
+            flush_pipeline()
+        elif token == _PIPE_SEPARATOR:
+            flush_segment()
+        else:
+            current.append(token)
+    flush_pipeline()
+    return pipelines
+
+
+def _shell_segments(command: str) -> list[list[str]]:
+    """Every argv segment in ``command``, pipeline structure flattened away."""
+    return [segment for pipeline in _shell_pipelines(command) for segment in pipeline]
 
 
 def _parse_search(tokens: list[str]) -> tuple[str | None, list[str]]:
@@ -1113,57 +1414,275 @@ def _parse_search(tokens: list[str]) -> tuple[str | None, list[str]]:
 
 
 def _is_prose_path(candidate: str) -> bool:
-    return candidate.lower().endswith(_PROSE_SUFFIXES)
+    """True for documentation targets, by suffix, by basename, or by directory.
+
+    All three forms are needed: ``docs/notes.mdx`` (unlisted suffix),
+    ``CHANGELOG`` (no suffix at all) and ``docs/whatever`` are prose exactly as
+    much as ``README.md`` is, and each defeated a suffix-only rule.
+    """
+    path = PurePosixPath(candidate.strip().lstrip("./"))
+    if candidate.lower().endswith(_PROSE_SUFFIXES):
+        return True
+    if path.name.upper() in _PROSE_BASENAMES:
+        return True
+    return any(part.lower() in _PROSE_DIRS for part in path.parts)
+
+
+def _same_path(left: str, right: str) -> bool:
+    normalized = [
+        PurePosixPath(value.strip().lstrip("./")).as_posix() for value in (left, right)
+    ]
+    return normalized[0] == normalized[1]
+
+
+def _pattern_is_vacuous(pattern: str) -> bool:
+    """True when ``pattern`` matches arbitrary content.
+
+    EXECUTED, not looked up: the pattern is compiled and run against strings
+    that have nothing to do with any source file. `x*`, `(a|)`, `\\s*` and `.`
+    all match every one of them, so a search for any of them succeeds against a
+    correct tree and a catastrophically broken one alike.
+
+    A pattern Python cannot compile falls back to the literal denylist. That is
+    a NAMED residual, not a closed class — a POSIX BRE that Python rejects and
+    that is also vacuous would slip through.
+    """
+    if pattern.strip() in _VACUOUS_SEARCH_PATTERNS:
+        return True
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        return False
+    return all(compiled.search(probe) is not None for probe in _VACUITY_PROBES)
+
+
+def _python_snippet_is_noop(code: str) -> bool:
+    """True when an inline `python -c` program cannot fail on wrong code."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    body = _strip_docstring(list(tree.body))
+    if not body:
+        return True
+    for stmt in body:
+        if isinstance(stmt, ast.Pass):
+            continue
+        if isinstance(stmt, ast.Expr):
+            value = stmt.value
+            if isinstance(value, ast.Constant):
+                continue
+            if isinstance(value, ast.Call) and _callee_name(value.func) == "print":
+                continue
+        return False
+    return True
+
+
+# The no-op family, restated locally so an inline `sh -c 'true'` is read the
+# same way the substance floor reads a bare `true`.
+_NO_OP_INNER_RE = re.compile(r"^(true|:|exit\s+0|echo(\s|$).*|printf(\s|$).*)$")
+
+
+def _inline_program_reason(verb: str, tokens: list[str], derive: Any) -> str | None:
+    """Why an inline `-c` program cannot carry a proof claim, or None."""
+    payload: str | None = None
+    for index, argument in enumerate(tokens):
+        if argument == "-c" and index + 1 < len(tokens):
+            payload = tokens[index + 1]
+            break
+    if payload is None:
+        return None
+    if verb.startswith("python"):
+        if _python_snippet_is_noop(payload):
+            return (
+                "no_op_program: the inline python program "
+                f"{payload!r} has no assertion, no import and no failing exit "
+                "path — it succeeds against any tree"
+            )
+        return None
+    if derive is not None and _NO_OP_INNER_RE.match(payload.strip()):
+        return (
+            f"wrapped_no_op_command: {verb} -c {payload!r} runs a command that "
+            "passes unconditionally; wrapping it in a shell does not make it "
+            "falsifiable"
+        )
+    return None
+
+
+_MIN_COMPARISON_OPERANDS = 2
+
+
+def _search_vacuity_reason(
+    tokens: list[str], upstream_paths: list[str], contract_path: str | None
+) -> str | None:
+    """Why this search invocation asserts nothing about the change, or None."""
+    pattern, paths = _parse_search(tokens)
+    targets = paths or upstream_paths
+    if pattern is not None and _pattern_is_vacuous(pattern):
+        return (
+            f"vacuous_search_pattern: {pattern!r} matches arbitrary content, so "
+            "the probe passes whether the work is right or wrong"
+        )
+    if contract_path is not None and any(
+        _same_path(target, contract_path) for target in targets
+    ):
+        return (
+            f"self_target_search: the search target is {contract_path} — the "
+            "contract declaring this very check. It confirms the author wrote "
+            "what the author wrote"
+        )
+    prose = [target for target in targets if _is_prose_path(target)]
+    if prose:
+        return (
+            f"prose_satisfiable_search_target: a match in {', '.join(prose)} "
+            "alone satisfies this search, and a sentence in documentation "
+            "cannot fail when the code is wrong"
+        )
+    return None
+
+
+def _pipeline_vacuity_reason(
+    pipeline: list[list[str]], derive: Any, contract_path: str | None
+) -> str | None:
+    """Walk one pipeline left to right, carrying `cat`-supplied targets along."""
+    upstream_paths: list[str] = []
+    for raw_tokens in pipeline:
+        tokens = _strip_runner_prefix(raw_tokens)
+        if not tokens:
+            continue
+        verb = PurePosixPath(tokens[0]).name
+        operands = [t for t in tokens[1:] if not t.startswith("-")]
+
+        if verb in _FILE_SOURCE_VERBS:
+            upstream_paths += operands
+            continue
+        if verb in _SEARCH_VERBS:
+            reason = _search_vacuity_reason(tokens, upstream_paths, contract_path)
+        else:
+            reason = _non_search_vacuity_reason(verb, tokens, operands, derive)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _non_search_vacuity_reason(
+    verb: str, tokens: list[str], operands: list[str], derive: Any
+) -> str | None:
+    """The always-true forms that are not searches: tautological comparison,
+    dry run, and an inline program that cannot fail."""
+    if verb in _COMPARISON_VERBS:
+        if len(operands) >= _MIN_COMPARISON_OPERANDS and len(set(operands)) == 1:
+            return (
+                f"self_comparison: {verb} compares {operands[0]} with itself, "
+                "which cannot differ"
+            )
+        return None
+    if verb in _DRY_RUN_VERBS and any(arg in _DRY_RUN_FLAGS for arg in tokens[1:]):
+        return (
+            f"dry_run_invocation: {verb} is invoked in dry-run mode, so the "
+            "recipe is printed and never executed"
+        )
+    if verb in _INLINE_PROGRAM_VERBS:
+        return _inline_program_reason(verb, tokens, derive)
+    return None
+
+
+def _runner_mask_reason(command: str, derive: Any, floor: Any) -> str | None:
+    """True when a wrapper is the only thing lifting the command off the floor."""
+    if derive is None or floor is None or not derive("", command).satisfies(floor):
+        return None
+    for raw_tokens in _shell_segments(command):
+        stripped = _strip_runner_prefix(raw_tokens)
+        if not stripped or stripped == raw_tokens:
+            continue
+        inner = shlex.join(stripped)
+        inner_tier = derive("", inner)
+        if not inner_tier.satisfies(floor):
+            return (
+                f"runner_prefix_masks_no_op: {inner!r} derives {inner_tier.value} "
+                "on its own; the runner prefix is what moved it into a "
+                "substantive family"
+            )
+    return None
 
 
 def v1_vacuity_reason(
-    check_type: str, check_value: str, derive: Any = None
+    check_type: str,
+    check_value: str,
+    derive: Any = None,
+    floor: Any = None,
+    contract_path: str | None = None,
 ) -> str | None:
     """Why this check cannot count toward the v1 falsifiability floor, or None.
 
     The OMN-14409 substance floor is deliberately GENEROUS at the family level
     ("when in doubt, ACCEPT") because it governs a 6,900-contract legacy corpus
     where a false reject teaches authors that honest evidence does not pay. v1
-    has no legacy corpus — every v1 contract is authored under this gate — so
-    the shipped claim is that v1 carries NO grandfathering. These rules are what
-    make that claim true; they are ADDITIVE to the tier derivation, never a
-    second tier vocabulary.
+    has no legacy corpus, so these rules are ADDITIVE to the tier derivation —
+    never a second tier vocabulary — and they read each check's ARGUMENTS
+    instead of its verb.
 
-    Three always-true forms survive the family-level derivation, and each is
-    closed by reading the check's own arguments rather than its verb:
+    SCOPE — read this before quoting the gate. This is an ENUMERATED denylist of
+    always-true forms, not a decision procedure for "can this command fail?".
+    That question is undecidable in general, and the r1 round shipped prose
+    claiming class closure that an adversarial replay falsified in eleven ways.
+    What is closed is exactly the list below; what remains open is named at the
+    end. Adding a form here is cheap — the list is meant to grow under attack.
+
+    Named forms, each with the replay that motivated it:
 
     ``vacuous_search_pattern``
-        ``grep -c '' README.md`` / ``rg -q . src`` derive L1 as static
-        assertions, but their pattern matches any non-empty content.
-    ``prose_only_search_target``
-        a search whose every target is a ``.md``/``.rst``/``.txt`` file asserts
-        that prose exists. It passes identically whether the code is right or
-        catastrophically broken — the exact definition the floor rejects.
+        the pattern matches arbitrary content. EXECUTED against unrelated probe
+        strings (:func:`_pattern_is_vacuous`), so ``x*``, ``(a|)``, ``\\s*`` and
+        ``.`` are all caught by behaviour — the r1 literal denylist caught only
+        the spellings it listed.
+    ``prose_satisfiable_search_target``
+        a search that ANY prose target can satisfy. ``grep`` over several files
+        succeeds when one of them matches, so ``grep -q x README.md src/a.py``
+        is satisfied by the README alone; r1's ``all()`` let that through.
+        Prose is recognised by suffix, by extensionless basename
+        (``CHANGELOG``) and by directory (``docs/``).
+    ``self_target_search``
+        the search target IS the contract declaring the check. It reports that
+        the author wrote what the author wrote.
+    ``dry_run_invocation``
+        ``make -n`` / ``--dry-run``: the recipe is printed, never executed.
+    ``self_comparison``
+        ``diff -u X X``: comparing a file with itself cannot differ.
+    ``no_op_program`` / ``wrapped_no_op_command``
+        ``python -c 'pass'`` and ``sh -c 'true'``: an inline program with no
+        assertion, no import and no failing exit path.
+    ``runner_prefix_masks_no_op``
+        ``uv run true``. The substance floor already derives ``true`` to L0; a
+        runner prefix moved it out of command position and it derived L1.
     ``check_type_label_only``
         ``derive_proof_tier`` short-circuits to L1 on ``check_type ==
         "test_passes"`` WITHOUT reading ``check_value``, so a prose value under
-        that label is a self-declared tier. v1 requires the value itself to be a
-        runnable, falsifiable command; the label may not carry the claim alone.
+        that label is a self-declared tier.
+
+    KNOWN RESIDUALS (open, by name — do not describe this function as closing
+    the class): a hand-written script that always exits 0 (``./scripts/ok.sh``);
+    ``python -c`` bodies that do real work but cannot fail; a POSIX BRE that
+    Python's ``re`` refuses to compile; a search pattern that is specific yet
+    matches something unrelated to the change; an extensionless prose file whose
+    basename is not in ``_PROSE_BASENAMES``; a command with unbalanced quotes,
+    which does not tokenize and so is not analysed at all; and any bespoke verb
+    the floor's generous ``_EXECUTABLE_RE`` family accepts. These are gaps in an
+    enumerated denylist, which is what this is.
     """
     command = (check_value or "").strip()
     if not command:
         return None  # already L0 by derivation; nothing to add
-    for raw_tokens in _shell_segments(command):
-        tokens = _strip_runner_prefix(raw_tokens)
-        if not tokens or tokens[0] not in _SEARCH_VERBS:
-            continue
-        pattern, paths = _parse_search(tokens)
-        if pattern is not None and pattern.strip() in _VACUOUS_SEARCH_PATTERNS:
-            return (
-                f"vacuous_search_pattern: {pattern!r} matches any non-empty "
-                "content, so the probe passes whether the work is right or wrong"
-            )
-        if paths and all(_is_prose_path(p) for p in paths):
-            return (
-                "prose_only_search_target: every search target is prose "
-                f"({', '.join(paths)}); asserting a sentence exists in "
-                "documentation cannot fail when the code is wrong"
-            )
+
+    for pipeline in _shell_pipelines(command):
+        reason = _pipeline_vacuity_reason(pipeline, derive, contract_path)
+        if reason is not None:
+            return reason
+
+    masked = _runner_mask_reason(command, derive, floor)
+    if masked is not None:
+        return masked
+
     if derive is not None and check_type:
         labelled = derive(check_type, command)
         unlabelled = derive("", command)
@@ -1183,11 +1702,16 @@ def check_evidence_falsifiability(
     """A v1 contract needs at least one check that fails when the work is wrong.
 
     Reuses ``derive_proof_tier`` from the OMN-14409 substance floor rather than
-    introducing a second proof vocabulary. Unlike that gate, v1 has NO legacy
-    allowlist, and REMEDIATION r1 (2026-08-02) is what makes that sentence true
-    rather than aspirational. An adversarial replay found five always-true check
-    forms deriving L1 GREEN here — the shipped claim and the shipped behaviour
-    disagreed. Two mechanisms close the gap, both scoped to v1 only:
+    introducing a second proof vocabulary. Unlike that gate, v1 carries no
+    legacy allowlist: nothing here is exempted by age or by author.
+
+    The honest statement of strength, after two adversarial rounds: this leg
+    rejects an ENUMERATED set of always-true forms (r1 closed five, r1r closed
+    eleven more found by extending the same attacks), and it does NOT decide the
+    general question "can this command fail when the work is wrong". Do not read
+    "no grandfathering" as "no evasion" — the residuals are named in
+    :func:`v1_vacuity_reason`. Two mechanisms carry what IS enforced, both
+    scoped to v1 only:
 
     1. The OMN-14417 kill switch is turned **ON for v1**. ``GATE_SELF_REFERENTIAL``
        ships ``False`` in the substance floor for a measured reason: flipping it
@@ -1198,9 +1722,11 @@ def check_evidence_falsifiability(
        is L0 here. The flip is applied to this gate's own privately-loaded module
        instance (:func:`_load_proof_tier_deriver` re-execs the file under a
        private name on every call), so the legacy gate's verdicts are untouched.
-    2. :func:`v1_vacuity_reason` reads each check's ARGUMENTS, closing the
-       vacuous-pattern, prose-only-target and label-only forms that survive a
-       verb-level family match.
+    2. :func:`v1_vacuity_reason` reads each check's ARGUMENTS rather than its
+       verb, rejecting the named always-true forms listed in its docstring
+       (vacuous pattern, prose-satisfiable target, self-targeting search,
+       dry-run, self-comparison, no-op inline program, runner-masked no-op,
+       label-only tier). Its residual list is part of the shipped claim.
     """
     module = _load_proof_tier_deriver()
     # v1 enables the kill switch the legacy gate defers. See (1) above; the
@@ -1220,7 +1746,13 @@ def check_evidence_falsifiability(
             check_type = str(check.get("check_type") or "")
             value = str(check.get("check_value") or "")
             tier = derive(check_type, value)
-            reason = v1_vacuity_reason(check_type, value, derive=derive)
+            reason = v1_vacuity_reason(
+                check_type,
+                value,
+                derive=derive,
+                floor=floor,
+                contract_path=subject,
+            )
             if (
                 reason is None
                 and self_referential is not None
@@ -1325,14 +1857,34 @@ def select_scope(
 # --------------------------------------------------------------------------
 # Whole-contract evaluation.
 # --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class IdentityInputs:
+    """The P2 leg's inputs, as ONE object so the exclusion cannot be implicit.
+
+    ``waived`` is a caller DECLARATION, never a default. REMEDIATION r1r:
+    omitting the PR body used to silently drop P2, which made the contract's own
+    ``gate-self-applies`` DoD check WEAKER than the CI gate it certifies — that
+    check could be receipted PASS while the required gate was RED on the same
+    contract for an identity finding. Absent evidence is now RED
+    (``identity_not_evaluated``); a caller with no PR to read (the pre-commit
+    hook, a push-event CI run) must say so, and the exclusion is then visible in
+    the invocation itself.
+    """
+
+    pr_body: str | None = None
+    ticket_body_reader: Any = None
+    waived: bool = False
+
+
 def evaluate_contract(
     path: str,
     root: Path,
     collector: Collector,
-    pr_body: str | None = None,
-    ticket_body_reader: Any = None,
+    identity: IdentityInputs | None = None,
 ) -> list[Finding]:
     """Run every leg over one contract. Returns all findings, never raises."""
+    identity = identity or IdentityInputs()
+    pr_body = identity.pr_body
     text = (root / path).read_text(encoding="utf-8")
     try:
         contract = yaml.safe_load(text) or {}
@@ -1354,11 +1906,27 @@ def evaluate_contract(
     findings += check_dependencies(contract, path, root)
     findings += check_evidence_falsifiability(contract, path)
 
+    if pr_body is None and not identity.waived:
+        findings.append(
+            Finding(
+                rule="identity_not_evaluated",
+                subject=path,
+                message=(
+                    "the P2 ticket-identity leg did not run: no PR body was "
+                    "supplied and no caller declared the exclusion. Pass "
+                    "--pr-body-file to prove three-way identity, or "
+                    "--skip-identity to state on the record that this "
+                    "invocation is a strict subset of the CI gate. A silent "
+                    "subset is how a DoD check ends up weaker than the gate it "
+                    "certifies"
+                ),
+            )
+        )
     if pr_body is not None:
         ticket_id = str(contract.get("ticket_id") or Path(path).stem)
         # No reader at all is the same fact as an unreachable Linear: the ticket
         # body could not be obtained, so identity cannot be proven. RED.
-        reader = ticket_body_reader or make_ticket_body_reader({})
+        reader = identity.ticket_body_reader or make_ticket_body_reader({})
         ticket_body: str | None
         try:
             ticket_body = str(reader(ticket_id))
@@ -1394,8 +1962,15 @@ def main(argv: list[str] | None = None) -> int:
         "--pr-body-file",
         type=Path,
         default=None,
-        help="File holding the PR body. Omit to skip the P2 identity leg "
-        "(the leg is meaningless without a PR).",
+        help="File holding the PR body. Required for the P2 identity leg; "
+        "omitting it without --skip-identity is RED.",
+    )
+    parser.add_argument(
+        "--skip-identity",
+        action="store_true",
+        help="Declare on the record that this invocation excludes the P2 "
+        "identity leg (no PR exists to read: the pre-commit hook, a push-event "
+        "run). Without it, a missing PR body is identity_not_evaluated RED.",
     )
     args = parser.parse_args(argv)
 
@@ -1423,7 +1998,14 @@ def main(argv: list[str] | None = None) -> int:
     all_findings: list[Finding] = []
     for path in scope:
         all_findings += evaluate_contract(
-            path, root, collector, pr_body=pr_body, ticket_body_reader=reader
+            path,
+            root,
+            collector,
+            IdentityInputs(
+                pr_body=pr_body,
+                ticket_body_reader=reader,
+                waived=bool(args.skip_identity),
+            ),
         )
 
     if all_findings:

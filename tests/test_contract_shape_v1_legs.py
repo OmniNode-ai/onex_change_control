@@ -79,6 +79,28 @@ _SCAN_SKIP_DIRS = frozenset(
         ".uv-cache",
     }
 )
+# A JSON Schema document larger than this is not a plausible second authority
+# for one contract shape; the cap bounds the whole-tree scan. Byte-identical
+# copies are caught by digest regardless of size.
+_MAX_SCANNED_BYTES = 1_000_000
+
+
+def _constrains_the_marker(node: Any) -> bool:
+    """True when ``node`` constrains a value to the v1 marker, anywhere in it.
+
+    REMEDIATION r1r: reading only ``const``/``enum`` was defeated by a schema
+    that used ``pattern: occ-contract/v1`` instead — the same constraint spelled
+    differently. This recurses over the whole ``schema_version`` subschema, so
+    ``const``, ``enum``, ``pattern``, and any ``allOf``/``anyOf``/``oneOf``/
+    ``$defs`` nesting of them are all covered.
+    """
+    if isinstance(node, str):
+        return V1_MARKER in node
+    if isinstance(node, dict):
+        return any(_constrains_the_marker(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_constrains_the_marker(item) for item in node)
+    return False
 
 
 def _declares_the_v1_shape(doc: dict[str, Any], canonical: dict[str, Any]) -> str:
@@ -89,11 +111,8 @@ def _declares_the_v1_shape(doc: dict[str, Any], canonical: dict[str, Any]) -> st
         return ""  # a contract INSTANCE carries the marker; that is correct
     if str(doc.get("title", "")) == str(canonical["title"]):
         return "declares the canonical title"
-    version_prop = (doc.get("properties") or {}).get("schema_version") or {}
-    if isinstance(version_prop, dict) and V1_MARKER in {
-        version_prop.get("const"),
-        *(version_prop.get("enum") or []),
-    }:
+    version_prop = (doc.get("properties") or {}).get("schema_version")
+    if isinstance(version_prop, dict) and _constrains_the_marker(version_prop):
         return f"a second schema constraining {V1_MARKER}"
     return ""
 
@@ -101,10 +120,13 @@ def _declares_the_v1_shape(doc: dict[str, Any], canonical: dict[str, Any]) -> st
 def second_shape_authorities(root: Path, canonical_path: Path) -> list[str]:
     """Every file under ``root`` that is a second authority for the v1 shape.
 
-    Stated over CONTENT and IDENTITY, never over filename — see
-    :func:`test_exactly_one_contract_schema_artifact` for why. Byte needles keep
-    the scan cheap over the ~10k-file receipt corpus: a file is parsed as YAML
-    only when it actually contains one of the canonical strings.
+    Stated over CONTENT and IDENTITY, never over filename OR EXTENSION — see
+    :func:`test_exactly_one_contract_schema_artifact` for why. REMEDIATION r1r:
+    the r1 scan skipped everything whose suffix was not ``.yaml``/``.yml``/
+    ``.json``, so a byte-identical copy saved as ``.txt`` evaded it. Every
+    regular file under ``root`` is now digested; the size check makes that cheap
+    (a copy of the canonical schema has the canonical schema's byte length), and
+    byte needles gate the more expensive parse.
     """
     canonical_bytes = canonical_path.read_bytes()
     canonical_sha = hashlib.sha256(canonical_bytes).hexdigest()
@@ -118,27 +140,48 @@ def second_shape_authorities(root: Path, canonical_path: Path) -> list[str]:
     for path in root.rglob("*"):
         if _SCAN_SKIP_DIRS & set(path.parts) or not path.is_file():
             continue
-        if path.suffix.lower() not in {".yaml", ".yml", ".json"}:
-            continue
         if path.resolve() == canonical_path.resolve():
             continue
-        rel = path.relative_to(root).as_posix()
-        raw = path.read_bytes()
-        if hashlib.sha256(raw).hexdigest() == canonical_sha:
-            found.append(f"{rel} (byte-identical copy of the canonical schema)")
-            continue
-        if not any(needle in raw for needle in needles):
-            continue
-        try:
-            doc = yaml.safe_load(raw.decode("utf-8"))
-        except (UnicodeDecodeError, yaml.YAMLError):
-            continue
-        if not isinstance(doc, dict):
-            continue
-        reason = _declares_the_v1_shape(doc, canonical_doc)
+        reason = _second_authority_reason(
+            path, canonical_bytes, canonical_sha, canonical_doc, needles
+        )
         if reason:
-            found.append(f"{rel} ({reason})")
+            found.append(f"{path.relative_to(root).as_posix()} ({reason})")
     return found
+
+
+def _second_authority_reason(
+    path: Path,
+    canonical_bytes: bytes,
+    canonical_sha: str,
+    canonical_doc: dict[str, Any],
+    needles: tuple[bytes, ...],
+) -> str:
+    """Why this one file is a second authority for the v1 shape, or ``""``."""
+    try:
+        size = path.stat().st_size
+    except OSError:  # pragma: no cover - races on transient files
+        return ""
+    if size == len(canonical_bytes) and (
+        hashlib.sha256(path.read_bytes()).hexdigest() == canonical_sha
+    ):
+        return "byte-identical copy of the canonical schema"
+    if size > _MAX_SCANNED_BYTES:
+        return ""
+    raw = path.read_bytes()
+    if not any(needle in raw for needle in needles):
+        return ""
+    doc = _parse_document(raw)
+    return _declares_the_v1_shape(doc, canonical_doc) if doc is not None else ""
+
+
+def _parse_document(raw: bytes) -> dict[str, Any] | None:
+    """Parse ``raw`` as a YAML/JSON mapping, or None when it is neither."""
+    try:
+        doc = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return None
+    return doc if isinstance(doc, dict) else None
 
 
 @pytest.mark.unit
@@ -152,12 +195,23 @@ def test_exactly_one_contract_schema_artifact() -> None:
     the repo carried two authorities for one shape. The rule is now stated over
     CONTENT and IDENTITY, which is what one-model-per-shape actually means:
 
-      * no other file in the tree is byte-identical to the canonical schema;
+      * no other file in the tree, at ANY path and ANY extension, is
+        byte-identical to the canonical schema;
       * no other file declares the canonical ``$id`` or ``title``;
-      * no other JSON Schema document constrains ``schema_version`` to the v1
-        marker — the structural signature of "a second v1 contract shape".
+      * no other JSON Schema document constrains ``schema_version`` to a string
+        CONTAINING the v1 marker — ``const``, ``enum``, ``pattern``, or any
+        nesting of them.
 
-    Filename is no longer part of the test, so renaming the copy cannot evade it.
+    Neither filename nor extension is part of the test, so renaming the copy
+    cannot evade it. REMEDIATION r1r closed the two evasions an adversarial
+    replay found in the r1 version: ``pattern:`` in place of ``const:`` (r1 read
+    only ``const``/``enum``), and a byte-identical copy with a ``.txt`` suffix
+    (r1 scanned only ``.yaml``/``.yml``/``.json``).
+
+    NOT covered, by name: a schema that constrains ``schema_version`` without
+    ever naming the marker string — e.g. ``pattern: "^occ-contract/v[0-9]+$"``,
+    or a ``$ref`` to an external document. This is a content ratchet over the
+    marker literal, not a semantic equivalence checker.
     """
     assert SCHEMA_PATH.exists()
     duplicates = second_shape_authorities(REPO_ROOT, SCHEMA_PATH)
@@ -199,6 +253,36 @@ def test_the_schema_uniqueness_ratchet_catches_a_renamed_copy(tmp_path: Path) ->
     )
     assert second_shape_authorities(tmp_path, canonical) == [
         "schemas/contract_shape.schema.yaml (declares the canonical $id)"
+    ]
+
+    # REMEDIATION r1r EVASION-2: byte-identical, saved under a suffix the r1
+    # scan skipped entirely. Extension is not part of the rule.
+    copy.unlink()
+    txt_copy = tmp_path / "schemas" / "contract_shape.schema.yaml.txt"
+    txt_copy.write_bytes(SCHEMA_PATH.read_bytes())
+    assert second_shape_authorities(tmp_path, canonical) == [
+        "schemas/contract_shape.schema.yaml.txt (byte-identical copy of the "
+        "canonical schema)"
+    ]
+    txt_copy.unlink()
+
+    # REMEDIATION r1r EVASION-1: the same constraint spelled `pattern:` rather
+    # than `const:`, with a different $id AND a different title, so identity
+    # cannot catch it. r1 read only const/enum and returned clean here.
+    copy = tmp_path / "schemas" / "contract_shape.schema.yaml"
+    copy.write_text(
+        yaml.safe_dump(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "https://example.invalid/some-other-id.json",
+                "title": "Totally unrelated name",
+                "properties": {"schema_version": {"pattern": V1_MARKER}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert second_shape_authorities(tmp_path, canonical) == [
+        f"schemas/contract_shape.schema.yaml (a second schema constraining {V1_MARKER})"
     ]
 
     # A renamed schema that only reuses the structural signature is caught too.
@@ -559,23 +643,49 @@ def test_gate_is_wired_at_the_required_path() -> None:
 # ---------------------------------------------------------------------------
 @pytest.mark.integration
 def test_gate_self_applies_to_its_own_contract_cleanly() -> None:
-    """contracts/OMN-15669.yaml passes every non-identity leg of its own gate."""
+    """contracts/OMN-15669.yaml passes every non-identity leg of its own gate.
+
+    Driven through the SAME argv the ``dod-omn15669-gate-self-applies`` check
+    runs, so the receipt and this test cannot disagree. REMEDIATION r1r: that
+    argv now carries ``--skip-identity``, and the run WITHOUT it is asserted RED
+    below — the DoD check that certifies this gate is no longer allowed to be
+    silently weaker than the gate.
+    """
+    argv = [
+        "python",
+        "-m",
+        "onex_change_control.validation.contract_shape_v1",
+        "--skip-identity",
+        "contracts/v1/OMN-15669.yaml",
+        "--root",
+        str(REPO_ROOT),
+    ]
     proc = subprocess.run(
-        [
-            "python",
-            "-m",
-            "onex_change_control.validation.contract_shape_v1",
-            "--changed-files",
-            "contracts/v1/OMN-15669.yaml",
-            "--root",
-            str(REPO_ROOT),
-        ],
+        argv, cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    declared = yaml.safe_load(
+        (REPO_ROOT / "contracts" / "v1" / "OMN-15669.yaml").read_text(encoding="utf-8")
+    )
+    self_applies = next(
+        item
+        for item in declared["dod_evidence"]
+        if item["id"] == "dod-omn15669-gate-self-applies"
+    )
+    assert self_applies["checks"][0]["check_value"] == (
+        "uv run check-contract-shape-v1 --skip-identity contracts/v1/OMN-15669.yaml"
+    ), "the receipt command and this test must drive the same argv"
+
+    silent = subprocess.run(
+        [arg for arg in argv if arg != "--skip-identity"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert silent.returncode == 1, silent.stdout + silent.stderr
+    assert "identity_not_evaluated" in silent.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -728,34 +838,132 @@ def test_source_facts_return_none_on_unparseable_source() -> None:
 @pytest.mark.parametrize(
     ("check_type", "check_value", "expected"),
     [
+        # --- r1: the five forms the first adversarial replay found. ----------
         ("command", "grep -c '' README.md", "vacuous_search_pattern"),
         ("command", "rg -q . README.md", "vacuous_search_pattern"),
         ("command", "grep -q -e '.*' src/app.py", "vacuous_search_pattern"),
-        ("command", "grep -q 'shipped' docs/NOTES.md", "prose_only_search_target"),
-        ("command", "rg -q 'shipped' a.md b.rst", "prose_only_search_target"),
+        ("command", "grep -q 'shipped' docs/NOTES.md", "prose_satisfiable_search"),
+        ("command", "rg -q 'shipped' a.md b.rst", "prose_satisfiable_search"),
         ("test_passes", "the suite is green on .200", "check_type_label_only"),
+        # --- r1r: every form the SECOND replay found, verbatim. --------------
+        # B1/B12: `.` respelled. The rule now EXECUTES the pattern.
+        ("command", "grep -q 'x*' src/foo.py", "vacuous_search_pattern"),
+        ("command", "grep -q . src/foo.py", "vacuous_search_pattern"),
+        # B2: the `|` lives INSIDE the quoted pattern — tokenization, not regex.
+        ("command", "grep -qE '(a|)' src/foo.py", "vacuous_search_pattern"),
+        # B3: the target is supplied by an upstream pipeline stage.
+        ("command", "cat README.md | grep -q anything", "prose_satisfiable_search"),
+        # B4: a prose match ALONE satisfies a multi-target search (r1 used all()).
+        ("command", "grep -q 'seam' README.md src/x.py", "prose_satisfiable_search"),
+        # B5/B6: prose by unlisted suffix, by directory, and by bare basename.
+        ("command", "grep -q 'foo' docs/notes.mdx", "prose_satisfiable_search"),
+        ("command", "grep -q 'foo' CHANGELOG", "prose_satisfiable_search"),
+        ("command", "grep -q 'foo' docs/whatever", "prose_satisfiable_search"),
+        # B8: an inline program with no assertion and no failing exit path.
+        ("command", "python -c 'pass'", "no_op_program"),
+        ("command", "python3 -c 'print(1)'", "no_op_program"),
+        ("command", "sh -c 'true'", "wrapped_no_op_command"),
+        # B9: printed, never executed.
+        ("command", "make -n help", "dry_run_invocation"),
+        ("command", "make --dry-run verify", "dry_run_invocation"),
+        # B10: comparing a file with itself.
+        ("command", "diff -u README.md README.md", "self_comparison"),
         # GREEN: real assertions keep counting. Rejecting these is the perverse
         # incentive OMN-14409 warns about.
         ("command", "grep -q 'def check_identity' src/x.py", ""),
         ("command", "uv run pytest tests/x.py -q", ""),
         ("command", "grep -q 'needs.x.result' .github/workflows/ci.yml", ""),
         ("test_passes", "uv run pytest tests/x.py -q", ""),
-        ("command", "grep -rq 'OMN-15669' src/ docs/NOTES.md", ""),
+        ("command", "diff -u expected.json actual.json", ""),
+        ("command", "python -c 'import onex_change_control'", ""),
+        ("command", "make verify", ""),
+        ("command", "uv run pre-commit run --all-files", ""),
+        ("command", "grep -q 'x' src/a.py src/b.py", ""),
     ],
 )
 def test_v1_vacuity_rules(check_type: str, check_value: str, expected: str) -> None:
-    """Each always-true form is named; each honest form is untouched."""
+    """Each always-true form is named; each honest form is untouched.
+
+    The r1r rows are the eleven forms an adversarial verifier constructed by
+    extending the r1 attack rather than replaying it — `x*` for `.`, a prose
+    target reached through `cat`, an extensionless `CHANGELOG`, `uv run true`.
+    Each is a NAMED form; see :func:`v1_vacuity_reason` for the residuals this
+    list does not close.
+    """
     from onex_change_control.validation.contract_shape_v1 import (
         _load_proof_tier_deriver,
     )
 
-    derive = _load_proof_tier_deriver().derive_proof_tier
-    reason = v1_vacuity_reason(check_type, check_value, derive=derive)
+    module = _load_proof_tier_deriver()
+    derive = module.derive_proof_tier
+    reason = v1_vacuity_reason(
+        check_type, check_value, derive=derive, floor=module.SUBSTANCE_FLOOR
+    )
     if expected:
         assert reason is not None, (check_value, expected)
         assert reason.startswith(expected), reason
     else:
         assert reason is None, reason
+
+
+@pytest.mark.unit
+def test_v1_vacuity_rejects_a_search_of_the_contract_itself() -> None:
+    """B7: a probe whose target IS the declaring contract is circular."""
+    from onex_change_control.validation.contract_shape_v1 import (
+        _load_proof_tier_deriver,
+    )
+
+    module = _load_proof_tier_deriver()
+    kwargs: dict[str, Any] = {
+        "derive": module.derive_proof_tier,
+        "floor": module.SUBSTANCE_FLOOR,
+    }
+    contract = "contracts/v1/OMN-15669.yaml"
+    reason = v1_vacuity_reason(
+        "command", f"grep -q ticket_id {contract}", contract_path=contract, **kwargs
+    )
+    assert reason is not None
+    assert reason.startswith("self_target_search"), reason
+
+    # A search of a DIFFERENT contract is a real cross-file assertion.
+    assert (
+        v1_vacuity_reason(
+            "command",
+            "grep -q ticket_id contracts/v1/OMN-99999.yaml",
+            contract_path=contract,
+            **kwargs,
+        )
+        is None
+    )
+
+
+@pytest.mark.unit
+def test_v1_vacuity_rejects_a_runner_masked_no_op() -> None:
+    """B11: the floor derives `true` to L0; a runner prefix hid it at L1.
+
+    Driven through the REAL deriver so the claim is about the shipped tier
+    derivation, not a restatement of it.
+    """
+    from onex_change_control.validation.contract_shape_v1 import (
+        _load_proof_tier_deriver,
+    )
+
+    module = _load_proof_tier_deriver()
+    derive, floor = module.derive_proof_tier, module.SUBSTANCE_FLOOR
+
+    # RED-before, against exists-but-wrong: the tier derivation alone says L1.
+    assert derive("command", "uv run true").satisfies(floor)
+    reason = v1_vacuity_reason("command", "uv run true", derive=derive, floor=floor)
+    assert reason is not None
+    assert reason.startswith("runner_prefix_masks_no_op"), reason
+
+    # GREEN control: the same prefix over a real command is untouched.
+    assert (
+        v1_vacuity_reason(
+            "command", "uv run pytest tests/x.py -q", derive=derive, floor=floor
+        )
+        is None
+    )
 
 
 @pytest.mark.unit
@@ -848,8 +1056,15 @@ def test_the_precommit_entrypoint_accepts_positional_filenames() -> None:
     Without this the hook would crash on argv rather than gate — the shape of
     "a hook that is wired but has never run".
     """
-    code = main(["contracts/v1/OMN-15669.yaml", "--root", str(REPO_ROOT)])
+    code = main(
+        ["contracts/v1/OMN-15669.yaml", "--root", str(REPO_ROOT), "--skip-identity"]
+    )
     assert code == 0
 
     # A non-contract path selects an empty scope and reads nothing.
     assert main(["README.md", "--root", str(REPO_ROOT)]) == 0
+
+    # REMEDIATION r1r: the same invocation WITHOUT the declared exclusion is
+    # RED. The local hook is a strict subset of the CI gate, and it has to say
+    # so — a silent subset is how a DoD check ends up weaker than its gate.
+    assert main(["contracts/v1/OMN-15669.yaml", "--root", str(REPO_ROOT)]) == 1
