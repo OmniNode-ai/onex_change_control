@@ -51,3 +51,22 @@ def drift_input_no_change(
         current_contract=base_compute_contract,
         pinned_hash=pinned_hash,
     )
+
+
+# OMN-15669 REMEDIATION r1: there is deliberately NO `collect_ignore_glob` here.
+#
+# The first build excluded `fixtures/contract_shape_v1/conformant/tests/*.py`
+# from the outer suite on the reasoning that the tree is "data the gate
+# collects, not a test of this repo". The gate collects it with
+# `pytest --collect-only`, which never EXECUTES a line — so the conformant
+# fixture's `assert_seam_shape` calls ran nowhere in CI, and an adversarial
+# replay confirmed that mutating `MockWidgetStore` to return a shape the seam
+# schema forbids left the suite 51/51 green. The reference implementation of
+# "the mock is validated against the real seam schema" was itself unvalidated.
+#
+# The fixture module is a real, passing, self-contained test module: it resolves
+# its schema from its own FIXTURE_ROOT, so it runs correctly from the outer
+# rootdir. Collecting it normally is what makes the reference shape load-bearing
+# — break the mock and the suite goes red. `test_conformant_fixture_executes_
+# and_catches_a_divergent_mock` in tests/test_contract_shape_v1_legs.py is the
+# anti-regression anchor for this decision.

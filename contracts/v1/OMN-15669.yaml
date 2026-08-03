@@ -1,0 +1,224 @@
+---
+# Canonical shape: schemas/occ_contract_v1.schema.yaml (OMN-15669, R-0802-9).
+# Every scalar is a single line under 100 chars so the yamlfmt hook cannot fold
+# it and inject the OMN-15479 contamination sentinel.
+schema_version: occ-contract/v1
+ticket_id: OMN-15669
+title: Canonical contract shape v1 — one schema for every OCC contract
+
+interface:
+  inputs:
+    - name: changed_files
+      type: list[str]
+      required: true
+      constraints:
+        contracts_prefix: path must start with contracts/ to be in scope
+        yaml_suffix: path must end with .yaml to be in scope
+    - name: contract_document
+      type: dict[str, object]
+      required: true
+      constraints:
+        schema_version_const: must equal occ-contract/v1
+        cases_min_items: cases must hold at least one declared case
+    - name: pr_body
+      type: str
+      required: false
+      constraints:
+        trailer_format: "Contract-Ticket-Hash: OMN-<n>=<sha256 hex>"
+  outputs:
+    - name: findings
+      type: list[onex_change_control.validation.contract_shape_v1.Finding]
+      required: true
+    - name: exit_code
+      type: int
+      required: true
+  error_taxonomy:
+    - code: SHAPE_INVALID
+      when: the instance does not validate against the one canonical schema artifact
+    - code: CASE_SPACE_UNMAPPED
+      when: an error class or input boundary maps to no case and no exclusion
+    - code: CASE_TEST_ABSENT
+      when: a declared case names a test_path that is not in the PR tree
+    - code: CASE_NOT_COLLECTED
+      when: the declared test file exists but the real runner collects no such case
+    - code: BINDING_AXIS_MISMATCH
+      when: the declared bindings differ from the parameterized axis actually wired
+    - code: SEAM_SCHEMA_UNRESOLVABLE
+      when: a seam_schema resolves to neither a file nor an importable model
+    - code: SEAM_SCHEMA_NOT_CITED
+      when: a seam case's test file never names the schema its mock must satisfy
+    - code: SEAM_VALIDATION_NOT_EXECUTED
+      when: the case's test body never reaches assert_seam_shape in reachable code
+    - code: CASE_SOURCE_UNPARSEABLE
+      when: a case's test file does not parse, so the seam leg cannot be proven
+    - code: IDENTITY_BLOCK_DIVERGENCE
+      when: the ticket-embedded contract sha differs from the landed contract sha
+    - code: IDENTITY_TRAILER_BLOCK_DIVERGENCE
+      when: the PR trailer sha differs from the ticket block sha after a ticket edit
+    - code: IDENTITY_LINEAR_UNREACHABLE
+      when: the ticket body cannot be read, so identity cannot be proven at all
+    - code: IDENTITY_NOT_EVALUATED
+      when: a caller ran the gate without a PR body and without declaring the exclusion
+    - code: EVIDENCE_UNFALSIFIABLE_OVERCLAIM
+      when: no dod_evidence check can fail when the work is wrong, yet cases claim proof
+    - code: CONTRACT_UNPARSEABLE
+      when: the contract file is not parseable YAML or is not a mapping
+
+dependencies:
+  - name: collector
+    seam_schema: onex_change_control.models.model_seam_binding.ModelCollectorSeam
+    injectable: true
+  - name: base_reader
+    seam_schema: onex_change_control.models.model_seam_binding.ModelBaseBlobSeam
+    injectable: true
+
+cases:
+  - id: conformant_fixture_green
+    class: golden_chain
+    behavior: a fully conformant contract passes every leg with zero findings
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: both
+    covers:
+      - dependency:collector
+  - id: shape_invalid
+    class: unit
+    behavior: a contract missing a required v1 block is RED against the one schema
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:SHAPE_INVALID
+      - input:contract_document.schema_version_const
+      - input:contract_document.cases_min_items
+  - id: case_space_unmapped
+    class: unit
+    behavior: an error class with no case and no labeled exclusion is RED
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:CASE_SPACE_UNMAPPED
+  - id: evidence_unfalsifiable_overclaim
+    class: error_chain
+    behavior: an open-state self-bind probe as the only evidence is RED
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:EVIDENCE_UNFALSIFIABLE_OVERCLAIM
+  - id: identity_block_divergence
+    class: error_chain
+    behavior: the real f6197f0b3 rewrite vs the acc18c627 embed is RED with a diff
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:IDENTITY_BLOCK_DIVERGENCE
+  - id: identity_trailer_block_divergence
+    class: error_chain
+    behavior: a ticket edited after the PR was opened is trailer-RED
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:IDENTITY_TRAILER_BLOCK_DIVERGENCE
+      - input:pr_body.trailer_format
+  - id: identity_linear_unreachable
+    class: error_chain
+    behavior: an unreadable ticket body is RED, never a skip
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:IDENTITY_LINEAR_UNREACHABLE
+  - id: identity_not_evaluated
+    class: error_chain
+    behavior: silently skipping the identity leg is RED; a declared waiver is not
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:IDENTITY_NOT_EVALUATED
+  - id: case_test_absent
+    class: error_chain
+    behavior: a declared case whose test file is not in the PR tree is RED
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: both
+    covers:
+      - error:CASE_TEST_ABSENT
+  - id: case_not_collected
+    class: golden_chain
+    behavior: a case the real runner does not collect is RED via real collection
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: both
+    covers:
+      - error:CASE_NOT_COLLECTED
+      - dependency:collector
+  - id: binding_axis_mismatch
+    class: error_chain
+    behavior: a case declared bindings both with only one leg wired is RED
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: both
+    covers:
+      - error:BINDING_AXIS_MISMATCH
+  - id: seam_schema_unresolvable
+    class: error_chain
+    behavior: a dependency whose seam schema does not resolve is RED
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:SEAM_SCHEMA_UNRESOLVABLE
+  - id: seam_schema_not_cited
+    class: error_chain
+    behavior: a seam case whose test file never names the seam schema is RED
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:SEAM_SCHEMA_NOT_CITED
+  - id: seam_validation_not_executed
+    class: error_chain
+    behavior: a comment, a docstring or an if False branch is not execution
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: mock
+    covers:
+      - error:SEAM_VALIDATION_NOT_EXECUTED
+      - error:CASE_SOURCE_UNPARSEABLE
+  - id: legacy_contract_grandfathered
+    class: golden_chain
+    behavior: an unmarked legacy contract is out of scope; a v1 path is in scope
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: both
+    covers:
+      - dependency:base_reader
+  - id: non_contract_pr_untouched
+    class: unit
+    behavior: a PR touching no contract selects an empty scope and reads nothing
+    test_path: tests/test_contract_shape_v1_cases.py
+    bindings: both
+    covers:
+      - input:changed_files.contracts_prefix
+
+exclusions:
+  - target: input:changed_files.yaml_suffix
+    reason: asserted by the same select_scope predicate as the contracts/ prefix
+  - target: error:CONTRACT_UNPARSEABLE
+    reason: already gated corpus-wide by the required Validate Contract YAML job
+
+dod_evidence:
+  - id: dod-omn15669-cases-green
+    description: Every declared case is collected and passes under the real runner.
+    status: PASS
+    checks:
+      - check_type: test_passes
+        check_value: uv run pytest tests/test_contract_shape_v1_cases.py -q
+  - id: dod-omn15669-legs-green
+    description: Every per-leg RED/GREEN discriminator passes.
+    status: PASS
+    checks:
+      - check_type: test_passes
+        check_value: uv run pytest tests/test_contract_shape_v1_legs.py -q
+  - id: dod-omn15669-gate-self-applies
+    description: Gate self-applied, zero findings. P2 needs a PR body, hence the declared skip.
+    status: PASS
+    checks:
+      - check_type: command
+        check_value: uv run check-contract-shape-v1 --skip-identity contracts/v1/OMN-15669.yaml
+  - id: dod-omn15669-required-path-wiring
+    description: The gate is a ci-summary need with a strict success-only check.
+    status: PASS
+    checks:
+      - check_type: command
+        check_value: grep -q 'needs.contract-shape-v1.result' .github/workflows/ci.yml

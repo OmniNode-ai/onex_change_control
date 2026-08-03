@@ -33,6 +33,7 @@ from onex_change_control.scripts.contract_compliance_check import (
     _check_file_exists,
     _check_grep,
     _check_test_exists,
+    _check_test_passes,
     _command_binaries,
     _contract_digest,
     _extract_ticket_id,
@@ -146,6 +147,49 @@ def test_check_test_exists_pass(tmp_path: Path) -> None:
 def test_check_test_exists_block(tmp_path: Path) -> None:
     result, _ = _check_test_exists("tests/test_nonexistent_*.py", tmp_path)
     assert result == _RESULT_BLOCK
+
+
+def test_check_test_passes_ignores_own_contract_compliance_context(
+    tmp_path: Path,
+) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"tests+coverage (shadow)","state":"SUCCESS"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_PASS
+    assert "green" in detail
+
+
+def test_check_test_passes_blocks_non_self_failed_context(tmp_path: Path) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"tests+coverage (shadow)","state":"FAILURE"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_BLOCK
+    assert "tests+coverage (shadow)" in detail
+    assert "Contract Compliance Check" not in detail
 
 
 def test_check_file_exists_pass(tmp_path: Path) -> None:
