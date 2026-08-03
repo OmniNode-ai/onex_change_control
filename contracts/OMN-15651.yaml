@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15651"
+title: "Make Market task authority explicit — gateway_exposure + consumer copies"
+summary: >
+  Central OCC evidence for OmniNode-ai/omnimarket PR #2012, which lands the Market-owned task_class_contracts.v1.yaml
+  authority with an explicit, fail-closed gateway_exposure partition (public/internal) over the 15-class
+  task-class universe, and syncs every Market full-consumer copy to it — including a pre-existing code_review
+  gap on node_delegation_orchestrator's delegation_request_v1.yaml. This is landing step 1a of an OMN-14208
+  seam pair; a parallel, independent omnibase_core PR is step 1b (adds documentation + validator_generation
+  to ModelDelegationRequest.task_type). The omninode_infra follow-up is explicitly deferred until both
+  1a and 1b merge, because its manifest pins commit/blob-oid/sha256 against merged SHAs.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2012 CI and receipt gates green"
+    command: "gh pr checks 2012 --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2012"
+    description: "PR #2012 on OmniNode-ai/omnimarket is open on dev at the exact evidence-bound head."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2012 --jq 'if (.base.ref == "dev" and .head.sha == "d1aef37ecc7359d4294da9551959852dac9617f2" and .state == "open") then "true" else error("unexpected #2012 state") end'
+  - id: "dod-market-2012-authority-partition-total"
+    description: >-
+      Exact-head source probe proves the Market task-class authority declares exactly 15 task classes
+      with a total, disjoint gateway_exposure partition (11 public / 4 internal).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/task_class_contracts.v1.yaml?ref=d1aef37ecc7359d4294da9551959852dac9617f2' --jq .content | base64 -d | python3 -c 'import sys,yaml; doc=yaml.safe_load(sys.stdin.read()); classes=doc["task_classes"]; assert len(classes) == 15, len(classes); pub={k for k,v in classes.items() if v["gateway_exposure"] == "public"}; internal={k for k,v in classes.items() if v["gateway_exposure"] == "internal"}; assert len(pub) == 11 and len(internal) == 4 and not (pub & internal) and (pub | internal) == set(classes); print("OK 15-class total disjoint partition 11/4")'
+  - id: "dod-market-2012-delegation-v1-code-review-fix"
+    description: >-
+      Exact-head source probe proves node_delegation_orchestrator's delegation_request_v1.yaml task_type
+      enum now carries all 15 classes, including the pre-existing code_review gap this ticket closes (the
+      enum was 12 members, missing code_review, vs its own 13-member peers).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_delegation_orchestrator/contracts/delegation_request_v1.yaml?ref=d1aef37ecc7359d4294da9551959852dac9617f2' --jq .content | base64 -d | python3 -c 'import sys,yaml; doc=yaml.safe_load(sys.stdin.read()); fields=doc["required_fields"]; task_type=next(f for f in fields if f["name"] == "task_type"); enum=set(task_type["constraints"]["enum"]); assert len(enum) == 15, len(enum); assert {"code_review","documentation","validator_generation"} <= enum; print("OK 15-member enum, code_review+documentation+validator_generation present")'
+  - id: "dod-market-2012-no-core-to-market-runtime-import"
+    description: >-
+      Live cross-repo probe proves omnibase_core carries no Core->Market runtime import (only string-literal
+      topic/comment mentions of omnimarket, never an import statement).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test -z "$(git -C "${OMNI_HOME:?}/omnibase_core" grep -n '^import omnimarket\|^from omnimarket' -- src/ 2>/dev/null)" && echo 'OK no Core->Market runtime import'
