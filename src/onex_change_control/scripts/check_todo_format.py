@@ -10,7 +10,7 @@ Usage:
 
 Exit code 0 = clean. Exit code 1 = violations found.
 
-Valid format:  # TODO(OMN-1234): description
+Valid format:  # TODO(OMN-XXXX): description
 Invalid:       # TODO: description   (no ticket reference)
 
 Centralised in onex_change_control so downstream repos consume

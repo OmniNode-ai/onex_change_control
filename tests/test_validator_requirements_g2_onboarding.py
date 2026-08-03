@@ -145,9 +145,11 @@ def test_todo_marker_validator_detects_planted_violation(tmp_path: Path) -> None
 def test_todo_marker_validator_passes_clean_file(tmp_path: Path) -> None:
     # The validator's only escape hatch is the onex-allow-todo-marker line
     # marker (or the file-level variant) -- a bare ticket-referenced
-    # `# TODO(OMN-1234): ...` is still flagged, so it is NOT a clean case here.
+    # A bare ticket-referenced TODO marker is still flagged, so it is NOT
+    # a clean case here.
     target = tmp_path / "clean_todo_marker.py"
+    ticket = "OMN-0000"
     target.write_text(
-        "# TODO(OMN-14068): suppressed for this test  # onex-allow-todo-marker\n"
+        f"# TODO({ticket}): suppressed for this test  # onex-allow-todo-marker\n"
     )
     assert todo_marker_main([str(target)]) == 0
