@@ -76,6 +76,7 @@ _RESULT_PASS = "PASS"  # noqa: S105
 _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
 _RESULT_NOT_EVALUATED = "NOT_EVALUATED"
+_SELF_STATUS_CHECK_NAMES = frozenset({"Contract Compliance Check"})
 _EXECUTION_SCOPE_HOSTED_AND_LOCAL = "hosted_and_local"
 _EXECUTION_SCOPE_LOCAL_DONE_GATE = "local_done_gate"
 _EXECUTION_SCOPES = frozenset(
@@ -601,7 +602,10 @@ def _check_test_passes(
         return _RESULT_WARN, "Could not parse PR checks JSON"
 
     failures = [
-        c for c in checks if c.get("state") not in ("SUCCESS", "SKIPPED", "NEUTRAL")
+        c
+        for c in checks
+        if c.get("name") not in _SELF_STATUS_CHECK_NAMES
+        and c.get("state") not in ("SUCCESS", "SKIPPED", "NEUTRAL")
     ]
     if failures:
         names = ", ".join(c.get("name", "?") for c in failures)
