@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15667"
+title: "Canonical quarantine schema — represent failed primary-DLQ publishes before DLQ partition/offset
+  exists"
+summary: >
+  Central OCC evidence for OmniNode-ai/omnibase_core PR #1542, which lands the causal-split quarantine
+  schema: ModelQuarantineWirePayload (pre-ack, event_bus, exactly 10 required fields, no quarantine broker
+  coordinates by construction) plus ModelQuarantineDispositionReceipt (post-ack, runtime, the sole surface
+  carrying quarantine_topic/quarantine_partition/quarantine_offset) and the shared ModelDeliveryFailureEvidence.
+  Encodes the causal invariant that a Kafka record cannot contain the broker offset assigned by publishing
+  that same record. Frozen public Core names/fields sourced from Linear comment cfb64e0f-c2e6-4ae2-94cf-308c7e1a1efb
+  on OMN-15666, matched field-for-field against the R2 harness pin (omni_worktrees/OMN-15663/omninode_infra-renewal/tests/fixtures/omn_15663_r2/target_models.py,
+  READ-ONLY).
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1542 CI green"
+    command: "gh pr checks 1542 --repo OmniNode-ai/omnibase_core"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1542"
+    description: "PR #1542 on OmniNode-ai/omnibase_core is open on dev at the exact evidence-bound head."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_core/pulls/1542 --jq 'if (.base.ref == "dev" and .head.sha == "2960aea471e4d278c7d9411220a13d39bd379c0e" and .state == "open") then "true" else error("unexpected #1542 state") end'
+  - id: "dod-core-1542-quarantine-wire-payload-shape"
+    description: >-
+      Exact-head source probe proves ModelQuarantineWirePayload declares exactly the ten frozen r2 fields,
+      is frozen/extra="forbid", and carries zero quarantine-coordinate fields (quarantine_topic/partition/offset)
+      -- the causal-impossibility invariant enforced by construction.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/event_bus/model_quarantine_wire_payload.py?ref=2960aea471e4d278c7d9411220a13d39bd379c0e' --jq .content | base64 -d | python3 -c 'import sys; src=sys.stdin.read(); assert "ConfigDict(frozen=True, extra=\"forbid\"" in src; required=["source_envelope_id","source_topic","source_partition","source_offset","source_key_b64","source_value_b64","source_headers_b64","primary_dlq_error_type","primary_dlq_error_message","source_failure"]; [exec(f"assert \"    {f}:\" in src, {f!r}") for f in required]; forbidden=["quarantine_topic","quarantine_partition","quarantine_offset"]; [exec(f"assert {f!r} not in src, {f!r}") for f in forbidden]; print("OK wire payload: exact 10 required fields present, frozen+forbid, zero quarantine-coordinate fields")'
+  - id: "dod-core-1542-quarantine-disposition-receipt-shape"
+    description: >-
+      Exact-head source probe proves ModelQuarantineDispositionReceipt declares exactly the four frozen
+      r2 fields (embedded quarantine_payload plus broker-returned quarantine_topic/partition/offset),
+      is frozen/extra="forbid", and is the sole model referencing ModelQuarantineWirePayload as the post-ack
+      wrapper.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/models/runtime/model_quarantine_disposition_receipt.py?ref=2960aea471e4d278c7d9411220a13d39bd379c0e' --jq .content | base64 -d | python3 -c 'import sys; src=sys.stdin.read(); assert "ConfigDict(frozen=True, extra=\"forbid\"" in src; required=["quarantine_payload","quarantine_topic","quarantine_partition","quarantine_offset"]; [exec(f"assert \"    {f}:\" in src, {f!r}") for f in required]; assert "ModelQuarantineWirePayload" in src; print("OK disposition receipt: exact 4 required fields present, frozen+forbid")'
