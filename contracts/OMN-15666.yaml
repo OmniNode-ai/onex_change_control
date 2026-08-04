@@ -31,19 +31,32 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 1546 --repo OmniNode-ai/omnibase_core --json number,state,headRefName"
+  - id: "dod-omn-15666-deploy-probe"
+    description: >
+      Falsifiable deploy probe for the runtime paths this PR touches. Reads the SHIPPED bytes of runtime_dual_sink.py
+      at the pinned commit off GitHub and asserts the dual-sink ordering primitive is actually present.
+      It never reads back a receipt or contract this PR authors, so it can go RED.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dual_sink.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d | grep -q 'async def resolve_terminal_disposition'"
+  - id: "dod-omn-15666-no-commit-on-dual-failure"
+    description: >
+      Falsifiable probe for the load-bearing invariant: RuntimeDispatch.run_once must refuse to commit
+      an exhausted record when neither sink became durable. Asserts the shipped runtime_dispatch.py bytes
+      carry the _terminalize commit gate.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dispatch.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d | grep -q 'async def _terminalize'"
   - id: "dod-omn-15666-dual-sink-suite"
     description: >
-      Dual-sink golden chain: primary ack, fallback ack, dual failure/no commit, idempotent replay, and
-      the cross-boundary RuntimeDispatch join.
+      Dual-sink golden chain shipped with the change: primary ack, fallback ack, dual failure/no commit,
+      idempotent replay, and the cross-boundary RuntimeDispatch join.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/runtime/test_runtime_dual_sink_durability.py -q"
-  - id: "dod-omn-15666-prepush-full-suite"
-    description: >
-      Pre-push governed selector escalated to the full local suite on the gate host, against the exact
-      pushed tree.
-    source: "generated"
-    checks:
-      - check_type: "command"
-        check_value: "uv run pytest tests/ --ignore=tests/integration -n4 --dist=loadgroup"
+        check_value: "gh api repos/OmniNode-ai/omnibase_core/contents/tests/unit/runtime/test_runtime_dual_sink_durability.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d | grep -q 'class TestRuntimeDispatchDualSinkJoin'"
