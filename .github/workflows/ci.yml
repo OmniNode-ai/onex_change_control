@@ -976,6 +976,17 @@ jobs:
     # Receipt Honesty Gate (OMN-12791): scan drift/dod_receipts/ for gamed probes.
     # Blocking: no-op echo probes, deferral language in PASS receipts, self-attestation,
     # fake human verifiers, and deploy-keyword evidence backed by echo-only probe_command.
+    #
+    # OMN-15689 (R3a AC(e) residual): this job used to check out omnibase_core at a
+    # hardcoded SHA (d4884c590...). Per the R3a ruling (no hardcoded validator ref
+    # ANYWHERE — not @main, not @dev, not a literal SHA), that pin is a live-skew
+    # risk of the same class the ruling fixed for call-receipt-gate.yml /
+    # call-occ-preflight.yml: a validator fix merged to omnibase_core dev could not
+    # reach this in-repo gate until someone manually bumped the SHA. The checkout
+    # ref below is now resolved dynamically by the "Resolve omnibase_core validator
+    # ref" step — see that step's comment for the full event matrix (this job runs
+    # on push, pull_request, merge_group, AND workflow_dispatch, unlike the PR-only
+    # reusable callers R3a originally covered).
     name: Receipt Honesty Gate
     runs-on: >-
       ${{
@@ -991,10 +1002,51 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # OMN-15689 (R3a AC(e) residual): resolve the omnibase_core validator ref
+      # dynamically instead of the hardcoded SHA this job used to pin. ci.yml
+      # (unlike the PR-only reusable callers) runs on four event types, so every
+      # one needs a correct, non-hardcoded answer:
+      #   - pull_request: the PR's own base branch (github.event.pull_request.base.ref).
+      #   - merge_group:  the merge_group's target branch (github.event.merge_group.base_ref).
+      #   - push / workflow_dispatch: neither pull_request nor merge_group context
+      #     exists, but both events run against an explicit branch — the branch
+      #     pushed to, or the branch selected in the manual-dispatch UI — which
+      #     GitHub exposes as github.ref_name. That branch is this run's target the
+      #     same way a PR's base branch is: dynamically resolved, never a literal.
+      # No fallback ref: if none of the above resolves, the job fails closed here
+      # before any omnibase_core checkout is attempted.
+      - name: Resolve omnibase_core validator ref
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
+            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref (honesty-gate) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+
       - uses: actions/checkout@v7
         with:
           repository: OmniNode-ai/omnibase_core
-          ref: d4884c59068e1a2989178ab2cc91678ad203f6d3
+          ref: ${{ steps.validator_ref.outputs.ref }}
           path: omnibase_core_source
           persist-credentials: false
       - uses: ./.github/actions/setup-uv
@@ -1036,9 +1088,19 @@ jobs:
     # edits/deletes/renames a merged dod_evidence entry (per-entry hash change)
     # or a merged receipt file under drift/dod_receipts/<TICKET>/. Existing
     # entries are immutable; corrections must be net-new add-only supersession
-    # files. Mirrors honesty-gate: omnibase_core is pinned by source ref so the
-    # validator version is controlled by the workflow, not OCC's installed dep
-    # (which is capped <0.46.0 and predates the append_only validator).
+    # files.
+    #
+    # OMN-15689 (R3a AC(e) residual): this job used to check out omnibase_core at
+    # a hardcoded SHA (f873d8307...), one bump-cycle behind honesty-gate's pin by
+    # design ("bump alongside the honesty-gate pin when refreshing"). Per the R3a
+    # ruling (no hardcoded validator ref ANYWHERE), both pins are the same
+    # live-skew risk the ruling fixed for call-receipt-gate.yml /
+    # call-occ-preflight.yml — a validator fix merged to omnibase_core dev could
+    # not reach this in-repo gate until someone manually bumped the SHA, and the
+    # two pins could (and did) drift out of lockstep with each other. The
+    # checkout ref below is now resolved dynamically by the "Resolve omnibase_core
+    # validator ref" step — see that step's comment for the full event matrix
+    # (this job runs on push, pull_request, merge_group, AND workflow_dispatch).
     name: OCC Append-Only Gate
     runs-on: >-
       ${{
@@ -1054,12 +1116,43 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # OMN-15689 (R3a AC(e) residual): same dynamic resolution as honesty-gate
+      # above, duplicated per-job (not a composite action) to match this repo's
+      # existing per-job inline pattern in call-receipt-gate.yml /
+      # call-occ-preflight.yml. See honesty-gate's "Resolve omnibase_core
+      # validator ref" step for the full event-matrix rationale. No fallback ref.
+      - name: Resolve omnibase_core validator ref
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
+            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref (append-only-gate) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+
       - uses: actions/checkout@v7
         with:
           repository: OmniNode-ai/omnibase_core
-          # main pin where validator_occ_append_only is present (the honesty-gate
-          # pin predates it). Bump alongside the honesty-gate pin when refreshing.
-          ref: f873d8307d87d41f6581847fe630bfbc139e1bf8
+          ref: ${{ steps.validator_ref.outputs.ref }}
           path: omnibase_core_source
           persist-credentials: false
       - uses: ./.github/actions/setup-uv
