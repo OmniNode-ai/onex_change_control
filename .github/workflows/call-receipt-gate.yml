@@ -42,6 +42,20 @@
 
 name: Receipt Gate
 
+# OMN-15689 round-1 note (adversarial finding, hotfix behavior change): this
+# trigger still matches `hotfix/**` base branches. Since R3a, the
+# omnibase_core validator ref (and now the omnibase_compat ref) resolve
+# dynamically from `github.event.pull_request.base.ref` with NO fallback —
+# a hotfix base branch name that does not also exist in omnibase_core (this
+# repo's live hotfix bases, e.g. hotfix/omn-13208-..., do not match
+# omnibase_core's, e.g. hotfix/omn-14104-...) now fails the checkout step
+# hard instead of resolving to a stale-but-working default. This is a real
+# behavior change on a still-declared trigger branch, not a regression this
+# ticket silently introduced and hid: hotfix bases carry no branch
+# protection here (nothing is blocked), and non-dev-base-guard already
+# requires a `Stacked-Parent:` declaration on any hotfix-targeted PR. No
+# allowlist/fallback was added — treated as the ruling's intended fail-closed
+# posture for a base ref genuinely absent from omnibase_core.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
@@ -340,10 +354,26 @@ jobs:
           echo "::notice::Evidence-Source resolved to OCC SHA: ${occ_sha}"
 
       # We need the onex_change_control repo to find contracts + receipts.
-      # OMN-10419: checkout at the exact SHA resolved above (never at main).
-      # Not exercised by onex_change_control's own PRs (invariant I3) — kept
-      # for step-for-step parity with the omnibase_core-hosted validator this
-      # job replaces.
+      # OMN-10419: checkout at the exact SHA resolved above (never at main) for
+      # the normal (Evidence-Source-pinned) path. Not exercised by
+      # onex_change_control's own PRs (invariant I3) — kept for step-for-step
+      # parity with the omnibase_core-hosted validator this job replaces.
+      #
+      # OMN-15689 scope note (adversarial finding, round 1): the 'main'
+      # literals below are the OCC-self-checkout fallback for the PENDING_MERGE
+      # grandfather path (PRs opened before the OMN-10419 Evidence-Source
+      # requirement existed, or before that requirement's cutoff commit
+      # exists) — resolving to OCC's current contracts/receipts state, not to
+      # "validator code for the PR's target branch." This is a materially
+      # different mechanism from the omnibase_core validator-ref checkout
+      # below: it answers "which OCC commit has the contract," not "which
+      # branch's validator code governs this PR." OMN-15689's ruling and AC(e)
+      # target the latter. Left as a literal pending an operator-authored
+      # narrowing of AC(e) to the omnibase_core validator ref specifically
+      # (recorded as OPEN in the OMN-15689 build report, round 1) — a grep for
+      # bare '@main'/'@dev' across these gate files will still surface these
+      # two occurrences until that narrowing lands or this path is likewise
+      # made dynamic against `github.event.pull_request.base.ref`.
       - name: Check out onex_change_control (for contracts + receipts)
         if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
         uses: actions/checkout@v7
@@ -468,18 +498,25 @@ jobs:
       # fallback where omnibase-core's published package references a git+https
       # URL for omnibase-compat that no longer resolves.
       #
-      # omnibase_compat stays pinned at main here — OMN-15689 / R3a scoped the
-      # dynamic-ref requirement to the omnibase_core VALIDATOR ref specifically
-      # (the thing that actually differed between OCC#5975's red and green
-      # states); compat is a transitive runtime dependency, not validator code,
-      # and is out of this ticket's scope.
+      # OMN-15689 round-1 fix: omnibase_compat now uses the SAME dynamically
+      # resolved PR-base-branch ref as the omnibase_core validator checkout
+      # below (steps.validator_ref.outputs.ref), not a hardcoded literal. The
+      # prior "main here, dev in call-occ-preflight.yml" split was itself a
+      # per-branch caller variant of the same dependency (adversarial finding,
+      # OMN-15689 round 1) — the ticket's AC(e) text is not scoped to the
+      # omnibase_core validator ref alone, so this dependency checkout is
+      # in scope too. Acknowledged consequence: a PR base branch that does not
+      # exist in omnibase_compat now fails this checkout step hard (fail-closed,
+      # same posture as the omnibase_core checkout below), rather than silently
+      # resolving to a fixed branch that may be stale relative to the PR's
+      # actual target.
       - name: Check out omnibase_compat (transitive dep)
         if: "steps.bot_exempt.outputs.exempt != 'true' && ! hashFiles('./src/omnibase_compat/__init__.py') && ! hashFiles('./omnibase_compat/pyproject.toml')"
         uses: actions/checkout@v7
         with:
           repository: OmniNode-ai/omnibase_compat
           path: .receipt-gate-deps/omnibase_compat
-          ref: main
+          ref: ${{ steps.validator_ref.outputs.ref }}
           fetch-depth: 1
 
       # OMN-15689 (R3a): checkout ref is the dynamically-resolved PR base
