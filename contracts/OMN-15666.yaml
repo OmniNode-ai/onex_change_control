@@ -34,29 +34,35 @@ dod_evidence:
   - id: "dod-omn-15666-deploy-probe"
     description: >
       Falsifiable deploy probe for the runtime paths this PR touches. Reads the SHIPPED bytes of runtime_dual_sink.py
-      at the pinned commit off GitHub and asserts the dual-sink ordering primitive is actually present.
-      It never reads back a receipt or contract this PR authors, so it can go RED.
+      at the pinned commit off GitHub and asserts the dual-sink ordering primitive is present. Never reads
+      back a receipt or contract this PR authors, so it can go RED. The producer is BUFFERED into a variable
+      before grep (OMN-15411 Rule E): piping an unbounded producer straight into an early-exit `grep -q`
+      is SIGPIPE-killed at the first match, and `bash -o pipefail` turns that 141 into a false RED.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dual_sink.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
-          --jq .content | base64 -d | grep -q 'async def resolve_terminal_disposition'"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dual_sink.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'async def resolve_terminal_disposition'
   - id: "dod-omn-15666-no-commit-on-dual-failure"
     description: >
-      Falsifiable probe for the load-bearing invariant: RuntimeDispatch.run_once must refuse to commit
-      an exhausted record when neither sink became durable. Asserts the shipped runtime_dispatch.py bytes
-      carry the _terminalize commit gate.
+      Falsifiable probe for the load-bearing invariant: RuntimeDispatch.run_once refuses to commit an
+      exhausted record when neither sink became durable. Asserts the shipped runtime_dispatch.py bytes
+      carry the _terminalize commit gate. Buffered producer per OMN-15411 Rule E.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dispatch.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
-          --jq .content | base64 -d | grep -q 'async def _terminalize'"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dispatch.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'async def _terminalize'
   - id: "dod-omn-15666-dual-sink-suite"
     description: >
       Dual-sink golden chain shipped with the change: primary ack, fallback ack, dual failure/no commit,
-      idempotent replay, and the cross-boundary RuntimeDispatch join.
+      idempotent replay, and the cross-boundary RuntimeDispatch join. Buffered producer per OMN-15411
+      Rule E.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh api repos/OmniNode-ai/omnibase_core/contents/tests/unit/runtime/test_runtime_dual_sink_durability.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
-          --jq .content | base64 -d | grep -q 'class TestRuntimeDispatchDualSinkJoin'"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnibase_core/contents/tests/unit/runtime/test_runtime_dual_sink_durability.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'class TestRuntimeDispatchDualSinkJoin'
