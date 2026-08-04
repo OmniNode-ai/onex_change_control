@@ -33,6 +33,7 @@ from onex_change_control.scripts.contract_compliance_check import (
     _check_file_exists,
     _check_grep,
     _check_test_exists,
+    _check_test_passes,
     _command_binaries,
     _contract_digest,
     _extract_ticket_id,
@@ -146,6 +147,49 @@ def test_check_test_exists_pass(tmp_path: Path) -> None:
 def test_check_test_exists_block(tmp_path: Path) -> None:
     result, _ = _check_test_exists("tests/test_nonexistent_*.py", tmp_path)
     assert result == _RESULT_BLOCK
+
+
+def test_check_test_passes_ignores_own_contract_compliance_context(
+    tmp_path: Path,
+) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"tests+coverage (shadow)","state":"SUCCESS"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_PASS
+    assert "green" in detail
+
+
+def test_check_test_passes_blocks_non_self_failed_context(tmp_path: Path) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"tests+coverage (shadow)","state":"FAILURE"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_BLOCK
+    assert "tests+coverage (shadow)" in detail
+    assert "Contract Compliance Check" not in detail
 
 
 def test_check_file_exists_pass(tmp_path: Path) -> None:
@@ -1298,6 +1342,123 @@ def test_superseded_dod_item_is_warn_not_block(tmp_path: Path) -> None:
     ):
         rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
     assert rc == 0
+
+
+def test_disclosed_skip_supersession_is_warn_not_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """OMN-15664 AC4 / OMN-15413 AC6 regression (OCC#5975).
+
+    A terminal item that explicitly discloses status: skipped with no checks
+    and an evidence_artifact supersedes marker pointing at an earlier item is
+    an intentional, auditable statement -- not an omission. It must WARN, not
+    BLOCK, even for a brand-new (non-legacy) ticket.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_omn1005.py").write_text(
+        "def test_omn1005():\n    pass\n"
+    )
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1005"
+        summary: "Test ticket with disclosed-skip supersession"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-real
+            description: "real, admissible proof"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'def test_omn1005' tests/test_omn1005.py"
+            status: verified
+          - id: dod-always-true
+            description: "later found to be always-true"
+            checks:
+              - check_type: command
+                check_value: "false"
+            status: verified
+          - id: dod-disclosed-skip
+            evidence_artifact: supersedes_dod_evidence:dod-always-true
+            description: "honest disclosure: mechanically unprovable"
+            checks: []
+            status: skipped
+    """)
+    (contracts / "OMN-1005.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1005",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "DISCLOSED-SKIP SUPERSESSION" in out
+    assert "NO_EXECUTABLE_CHECKS" not in out
+
+
+def test_undisclosed_empty_checks_supersession_still_blocks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The disclosed-skip exemption requires an EXPLICIT status: skipped.
+
+    A superseding item with empty checks and no "skipped" status (e.g. left
+    at the schema default) must NOT be exempted -- fail closed, it still
+    BLOCKs as NO_EXECUTABLE_CHECKS. This is the guard against a bare
+    placeholder entry silently laundering an unprovable requirement past the
+    gate.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_omn1006.py").write_text(
+        "def test_omn1006():\n    pass\n"
+    )
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1006"
+        summary: "Test ticket with undisclosed empty-checks supersession"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-real
+            description: "real, admissible proof"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'def test_omn1006' tests/test_omn1006.py"
+            status: verified
+          - id: dod-always-true
+            description: "later found to be always-true"
+            checks:
+              - check_type: command
+                check_value: "false"
+            status: verified
+          - id: dod-placeholder
+            evidence_artifact: supersedes_dod_evidence:dod-always-true
+            description: "no explicit skipped status"
+            checks: []
+    """)
+    (contracts / "OMN-1006.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1006",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NO_EXECUTABLE_CHECKS" in out
 
 
 # ---------------------------------------------------------------------------

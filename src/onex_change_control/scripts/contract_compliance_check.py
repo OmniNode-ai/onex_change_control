@@ -76,6 +76,7 @@ _RESULT_PASS = "PASS"  # noqa: S105
 _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
 _RESULT_NOT_EVALUATED = "NOT_EVALUATED"
+_SELF_STATUS_CHECK_NAMES = frozenset({"Contract Compliance Check"})
 _EXECUTION_SCOPE_HOSTED_AND_LOCAL = "hosted_and_local"
 _EXECUTION_SCOPE_LOCAL_DONE_GATE = "local_done_gate"
 _EXECUTION_SCOPES = frozenset(
@@ -601,7 +602,10 @@ def _check_test_passes(
         return _RESULT_WARN, "Could not parse PR checks JSON"
 
     failures = [
-        c for c in checks if c.get("state") not in ("SUCCESS", "SKIPPED", "NEUTRAL")
+        c
+        for c in checks
+        if c.get("name") not in _SELF_STATUS_CHECK_NAMES
+        and c.get("state") not in ("SUCCESS", "SKIPPED", "NEUTRAL")
     ]
     if failures:
         names = ", ".join(c.get("name", "?") for c in failures)
@@ -920,6 +924,7 @@ def _run_dod_checks(
     """Run all DoD checks and return (dod_id, check_type, result, detail) list."""
     results: list[tuple[str, str, str, str]] = []
     superseded = _superseded_dod_ids(dod_evidence)
+    disclosed_skips = _disclosed_skip_supersession_ids(dod_evidence)
     for dod_item in dod_evidence:
         item_id = dod_item.get("id", "?") if isinstance(dod_item, dict) else "?"
         item_desc = (
@@ -938,6 +943,25 @@ def _run_dod_checks(
 
         checks = validated_item["checks"]
         if not checks:
+            if item_id in disclosed_skips:
+                # OMN-15664 AC4: an item with no checks was previously always
+                # BLOCK, indistinguishable from an accidental omission. A
+                # disclosed skip (status "skipped", no checks, and an
+                # evidence_artifact supersession marker naming an earlier
+                # item) is an intentional, auditable statement that no check
+                # can exist (e.g. a universally-quantified claim no probe can
+                # falsify), not an omission. WARN, not BLOCK. See
+                # _disclosed_skip_supersession_ids for the exact honesty
+                # conditions (OMN-15413 AC6 incident: OCC#5975).
+                detail = (
+                    "DISCLOSED-SKIP SUPERSESSION -- dod_evidence item explicitly "
+                    "declares status='skipped' with no checks and "
+                    "evidence_artifact='supersedes_dod_evidence:<earlier-id>'; a "
+                    "disclosed, mechanically unprovable claim, not an omission."
+                )
+                results.append((item_id, "checks", _RESULT_WARN, detail))
+                print(f"  [~] checks: {detail}", flush=True)
+                continue
             detail = (
                 "NO_EXECUTABLE_CHECKS -- dod_evidence item declares no checks; "
                 "an evidence requirement with no executable observation cannot "
@@ -1026,6 +1050,46 @@ def _superseded_dod_ids(dod_evidence: list[Any]) -> set[str]:
         if isinstance(item_id, str):
             seen.add(item_id)
     return superseded
+
+
+def _disclosed_skip_supersession_ids(dod_evidence: list[Any]) -> set[str]:
+    """Return dod_evidence ids that are honest, disclosed-skip terminal supersessions.
+
+    OMN-15664 AC4: an item with EMPTY ``checks`` previously always BLOCKed
+    (``NO_EXECUTABLE_CHECKS``), indistinguishable from an accidental
+    omission. A disclosed skip -- ``status: "skipped"``, no ``checks``, and
+    an ``evidence_artifact: "supersedes_dod_evidence:<id>"`` marker pointing
+    at an id already declared EARLIER in the list (same append-only ordering
+    rule as ``_superseded_dod_ids``) -- is not an omission: it is an
+    intentional, auditable statement that no executable check can exist for
+    this requirement (e.g. a universally-quantified claim no probe reachable
+    from the gate can falsify). Reported WARN, not BLOCK.
+
+    Any item missing ONE of these three conditions (no explicit "skipped"
+    status, non-empty checks, or a supersedes marker whose target was never
+    declared) is NOT in the returned set: fail closed, it still BLOCKs under
+    the normal NO_EXECUTABLE_CHECKS path.
+    """
+    seen: set[str] = set()
+    disclosed: set[str] = set()
+    for dod_item in dod_evidence:
+        if not isinstance(dod_item, dict):
+            continue
+        item_id = dod_item.get("id")
+        target = _supersedes_marker(dod_item.get("evidence_artifact"))
+        checks = dod_item.get("checks", [])
+        has_checks = isinstance(checks, list) and len(checks) > 0
+        if (
+            isinstance(item_id, str)
+            and target is not None
+            and target in seen
+            and dod_item.get("status") == "skipped"
+            and not has_checks
+        ):
+            disclosed.add(item_id)
+        if isinstance(item_id, str):
+            seen.add(item_id)
+    return disclosed
 
 
 def _supersedes_marker(value: object) -> str | None:

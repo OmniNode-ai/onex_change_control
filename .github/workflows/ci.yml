@@ -1682,6 +1682,170 @@ jobs:
       vocabulary_ref: 454c429f328e68e19300f33ffb8121f1bccc7f86
       context_name: merge-hold-gate / evaluate
 
+  contract-shape-v1:
+    name: Contract Shape v1 (OMN-15669)
+    # OMN-15669 / operator ruling R-0802-9. The assembled contract-testing
+    # mechanism: ONE canonical shape (schemas/occ_contract_v1.schema.yaml),
+    # ticket identity, binding-agnostic cases, an enumerable case space,
+    # shape-correct injected mocks, and dual-binding execution.
+    #
+    # WHY THIS IS THE REQUIRED-PATH WIRING POINT: OCC dev's required contexts
+    # are exactly ["CI Summary", "required-check-skip-guard / check-skip-vectors",
+    # "verify / verify", "occ-preflight / eligibility"] (live readback
+    # 2026-08-02). `CI Summary` is the only umbrella a new gate can reach, and
+    # reaching it requires BOTH a `needs:` entry AND a strict success-only check
+    # below — the generic rollup only tests for failure/cancelled, so a SKIPPED
+    # job would pass it and this gate would enforce nothing.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as precommit-parity-gate,
+    # predicate-parity and contract-corpus-ratchets above): no needs:, no if:,
+    # no paths filter. A skip here means something is wrong, never that the gate
+    # legitimately opted out. Scope is decided INSIDE the gate from the changed
+    # files, not by a workflow-level path filter that CI cannot prove correct.
+    #
+    # ANTI-REMOVAL ANCHOR: tests/test_contract_shape_v1_legs.py::
+    # test_gate_is_wired_at_the_required_path asserts (a) this job exists,
+    # (b) ci-summary needs it, and (c) ci-summary strict-checks its result. That
+    # test runs in this job's own first step.
+    runs-on: >-
+      ${{
+        fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+      }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Per-leg RED/GREEN units + every declared case (mock-bound leg)
+        run: |
+          uv run pytest \
+            tests/test_contract_shape_v1_legs.py \
+            tests/test_contract_shape_v1_cases.py \
+            tests/fixtures/contract_shape_v1/conformant/tests/test_widget_cases.py \
+            -q -p no:randomly
+      - name: Declared cases, real-bound leg (P6 integration selection)
+        run: |
+          uv run pytest \
+            tests/test_contract_shape_v1_legs.py \
+            tests/test_contract_shape_v1_cases.py \
+            tests/fixtures/contract_shape_v1/conformant/tests/test_widget_cases.py \
+            -q -p no:randomly -m integration
+      # REMEDIATION r1: the conformant fixture module is now EXECUTED above, not
+      # merely --collect-only'd by the gate. Without this the reference
+      # implementation of "the mock validates against the real seam schema" ran
+      # nowhere in CI and a divergent mock left the suite green.
+      - name: Local pre-commit counterpart runs the SAME entrypoint (rule 5)
+        run: |
+          set -euo pipefail
+          uv run pre-commit run check-contract-shape-v1 --all-files
+      - name: Compute changed files vs base
+        id: diff
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --no-tags
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          git diff --name-only "$BASE"...HEAD | tr '\n' ' ' > /tmp/changed_files.txt
+          echo "files=$(cat /tmp/changed_files.txt)" >> "$GITHUB_OUTPUT"
+      - name: Capture the PR body for the identity leg
+        if: github.event_name == 'pull_request'
+        # READ LIVE, not from github.event.pull_request.body. The event payload
+        # is a SNAPSHOT taken when the event fired, so a push that precedes the
+        # PR-body trailer update makes the gate compare against a stale body and
+        # report identity_trailer_divergence for a PR whose live trailer is
+        # correct. That false RED was observed twice on this PR's own branch and
+        # was each time cleared by an empty re-trigger commit — a workaround for
+        # a race, not a fix. Reading the body at job time removes the race.
+        #
+        # Fail-closed: `set -euo pipefail` means an API failure fails the step
+        # rather than writing an empty body that would look like "no trailer".
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" \
+            --jq '.body // ""' > /tmp/pr_body.txt
+          echo "captured PR body: $(wc -c < /tmp/pr_body.txt) bytes (read live)"
+      - name: Fetch ticket bodies from Linear (workflow layer, not src/)
+        # The gate makes NO network call: the imperative-contract guard blocks
+        # raw HTTP from src/ because it bypasses contract transport, and this
+        # repo already reads Linear from the workflow layer (stale-todo-gate.yml,
+        # todo-audit-on-merge.yml, staleness-monitor.yml). Same idiom here.
+        #
+        # NOT a graceful degradation: if LINEAR_API_KEY is unset, or a query
+        # fails, this writes a map that does not contain the ticket, and the
+        # gate returns identity_linear_unreachable RED. Unreachable is RED.
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          CHANGED: ${{ steps.diff.outputs.files }}
+        run: |
+          set -uo pipefail
+          echo '{}' > /tmp/ticket_bodies.json
+          TICKETS=$(printf '%s' "$CHANGED" | tr ' ' '\n' \
+            | grep -oE 'contracts/(v1/)?OMN-[0-9]+\.yaml' \
+            | grep -oE 'OMN-[0-9]+' | sort -u || true)
+          if [ -z "${LINEAR_API_KEY:-}" ]; then
+            echo "::warning::LINEAR_API_KEY unset — ticket bodies unavailable;" \
+                 "the identity leg will fail closed for any in-scope contract."
+            exit 0
+          fi
+          python3 - "$TICKETS" <<'PY'
+          import json, os, sys, urllib.request
+          keys = [t for t in sys.argv[1].split() if t]
+          out = {}
+          for tid in keys:
+              payload = json.dumps({
+                  "query": "query($id:String!){issue(id:$id){identifier description}}",
+                  "variables": {"id": tid},
+              }).encode()
+              req = urllib.request.Request(
+                  "https://api.linear.app/graphql", data=payload,
+                  headers={"Authorization": os.environ["LINEAR_API_KEY"],
+                           "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      issue = (json.loads(r.read().decode()).get("data") or {}).get("issue")
+                  if isinstance(issue, dict) and isinstance(issue.get("description"), str):
+                      out[tid] = issue["description"]
+              except Exception as exc:  # noqa: BLE001 - fail closed, never raise
+                  print(f"::warning::Linear fetch failed for {tid}: {exc}")
+          with open("/tmp/ticket_bodies.json", "w", encoding="utf-8") as fh:
+              json.dump(out, fh)
+          print(f"fetched {len(out)}/{len(keys)} ticket body/bodies")
+          PY
+      - name: Gate — canonical contract shape v1 (fail-closed, no allowlist)
+        run: |
+          set -euo pipefail
+          ARGS=(--base-ref "${{ steps.diff.outputs.base }}" --root .)
+          ARGS+=(--ticket-bodies /tmp/ticket_bodies.json)
+          # P2 needs a PR body. Keyed on the EVENT, never on whether a file
+          # happens to exist: a failed body capture must not look like "no PR
+          # here, skip the leg". On a pull_request run the leg is mandatory and
+          # the capture step above has already failed the job if it could not
+          # read the body; on a push/merge run there is no PR, and the CLI
+          # requires that exclusion to be DECLARED rather than inferred from an
+          # absent file (REMEDIATION r1r) — a silently dropped leg is how a DoD
+          # check ended up weaker than the gate it certifies.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ARGS+=(--pr-body-file /tmp/pr_body.txt)
+          else
+            ARGS+=(--skip-identity)
+          fi
+          # shellcheck disable=SC2086
+          uv run check-contract-shape-v1 "${ARGS[@]}" \
+            --changed-files ${{ steps.diff.outputs.files }}
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -1693,7 +1857,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet, merge-hold-gate, supersession-binding-ratchet]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet, merge-hold-gate, supersession-binding-ratchet, contract-shape-v1]
     if: always()
     steps:
       - name: Check all jobs passed
@@ -1794,6 +1958,21 @@ jobs:
           # means something is wrong, never that the gate opted out.
           if [[ "${{ needs.merge-hold-gate.result }}" != "success" ]]; then
             echo "::error::merge-hold-gate did not pass (result: ${{ needs.merge-hold-gate.result }}) - fail-closed (OMN-15484)"
+            exit 1
+          fi
+          # OMN-15669: same strict fail-closed pattern for the canonical
+          # contract-shape-v1 gate. Only 'success' passes; skipped/cancelled/
+          # failure ALL block.
+          #
+          # THIS LINE IS THE MECHANISM, not the job's existence. The generic
+          # rollup below tests only for 'failure'/'cancelled', so without this
+          # block a SKIPPED shape gate would pass CI Summary and a contract
+          # could land with no ticket identity, no declared cases, unmapped
+          # error classes and unvalidated mocks -- required-green the whole way.
+          # The job is unconditional, so a skip here means something is wrong,
+          # never that the gate opted out.
+          if [[ "${{ needs.contract-shape-v1.result }}" != "success" ]]; then
+            echo "::error::contract-shape-v1 did not pass (result: ${{ needs.contract-shape-v1.result }}) - fail-closed (OMN-15669)"
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
