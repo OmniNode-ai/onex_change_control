@@ -359,28 +359,41 @@ jobs:
       # onex_change_control's own PRs (invariant I3) — kept for step-for-step
       # parity with the omnibase_core-hosted validator this job replaces.
       #
-      # OMN-15689 scope note (adversarial finding, round 1): the 'main'
-      # literals below are the OCC-self-checkout fallback for the PENDING_MERGE
-      # grandfather path (PRs opened before the OMN-10419 Evidence-Source
-      # requirement existed, or before that requirement's cutoff commit
-      # exists) — resolving to OCC's current contracts/receipts state, not to
-      # "validator code for the PR's target branch." This is a materially
-      # different mechanism from the omnibase_core validator-ref checkout
-      # below: it answers "which OCC commit has the contract," not "which
-      # branch's validator code governs this PR." OMN-15689's ruling and AC(e)
-      # target the latter. Left as a literal pending an operator-authored
-      # narrowing of AC(e) to the omnibase_core validator ref specifically
-      # (recorded as OPEN in the OMN-15689 build report, round 1) — a grep for
-      # bare '@main'/'@dev' across these gate files will still surface these
-      # two occurrences until that narrowing lands or this path is likewise
-      # made dynamic against `github.event.pull_request.base.ref`.
+      # OMN-15689 round-2 fix (D1): the PENDING_MERGE grandfather path used to
+      # fall back to a literal 'main' here — resolving to OCC's current
+      # contracts/receipts state, not to "validator code for the PR's target
+      # branch" (a materially different mechanism from the omnibase_core
+      # validator-ref checkout below, which answers "which branch's validator
+      # governs this PR"). AC(e)'s grep-for-hardcoded-refs check does not
+      # distinguish the two mechanisms, so the literal is resolved dynamically
+      # here too: fetch OCC's own default branch from the API instead of
+      # hardcoding 'main'. This step (like the checkout below) is unreachable
+      # for onex_change_control's own PRs — invariant I3 means the guard
+      # `github.repository != 'OmniNode-ai/onex_change_control'` is always
+      # false in this file, so this path only fires when another repo reuses
+      # this pattern.
+      - name: Resolve onex_change_control default branch (self-checkout fallback)
+        id: resolve_occ_default_branch
+        if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api repos/OmniNode-ai/onex_change_control --jq '.default_branch')"
+          if [ -z "$default_branch" ]; then
+            echo "::error::RECEIPT GATE FAILED: could not resolve onex_change_control's default branch via the GitHub API (OMN-15689 D1)."
+            exit 1
+          fi
+          echo "ref=${default_branch}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: onex_change_control self-checkout fallback ref resolved dynamically to '${default_branch}'."
+
       - name: Check out onex_change_control (for contracts + receipts)
         if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
         uses: actions/checkout@v7
         with:
           repository: OmniNode-ai/onex_change_control
           path: .onex_change_control
-          ref: ${{ steps.resolve_evidence_source.outputs.occ_sha == 'PENDING_MERGE' && 'main' || steps.resolve_evidence_source.outputs.occ_sha || 'main' }}
+          ref: ${{ steps.resolve_evidence_source.outputs.occ_sha == 'PENDING_MERGE' && steps.resolve_occ_default_branch.outputs.ref || steps.resolve_evidence_source.outputs.occ_sha || steps.resolve_occ_default_branch.outputs.ref }}
           fetch-depth: 1
 
       # OMN-10419 Finding 2: assert that the contract for the cited ticket exists
