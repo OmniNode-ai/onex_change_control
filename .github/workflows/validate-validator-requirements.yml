@@ -35,13 +35,38 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v7
 
+      - name: Resolve omnibase_core validator ref
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
+            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref (validate-validator-requirements) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+
       - name: Checkout omnibase_core
         uses: actions/checkout@v7
         with:
           repository: OmniNode-ai/omnibase_core
-          # Pinned to the commit that exports validate-validator-requirements hook (OMN-13299).
-          # Update by running: gh api repos/OmniNode-ai/omnibase_core/commits/dev --jq '.sha'
-          ref: f826fb0a0d7891c9ca1bb5c60781edca52052499
+          ref: ${{ steps.validator_ref.outputs.ref }}
           path: omnibase_core
           token: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
 
