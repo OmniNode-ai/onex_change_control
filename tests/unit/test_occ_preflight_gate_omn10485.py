@@ -53,24 +53,40 @@ def test_occ_preflight_caller_targets_promotion_branches() -> None:
 
 
 @pytest.mark.unit
-def test_occ_preflight_caller_uses_core_reusable_workflow() -> None:
+def test_occ_preflight_caller_preserves_required_check_name() -> None:
     workflow = _load_workflow(PREFLIGHT_CALLER)
     job_keys = list(workflow["jobs"].keys())
     assert len(job_keys) >= 1
     job = workflow["jobs"][job_keys[0]]
-    uses = job.get("uses", "")
-    assert uses.startswith(
-        "OmniNode-ai/omnibase_core/.github/workflows/occ-preflight.yml"
-    ), f"caller must delegate to omnibase_core occ-preflight.yml, got: {uses}"
+    assert "uses" not in job
+    assert job["name"] == "occ-preflight / eligibility"
+
+
+@pytest.mark.unit
+def test_occ_preflight_caller_resolves_validator_from_pr_base_ref() -> None:
+    workflow = _load_workflow(PREFLIGHT_CALLER)
+    job = workflow["jobs"][next(iter(workflow["jobs"].keys()))]
+    step_by_id = {step["id"]: step for step in job["steps"] if "id" in step}
+    validator_ref = step_by_id["validator_ref"]
+    assert "PR_BASE_REF" in validator_ref["env"]
+    assert "MERGE_GROUP_BASE_REF" in validator_ref["env"]
+    assert "ref=${resolved_ref}" in validator_ref["run"]
 
 
 @pytest.mark.unit
 def test_occ_preflight_caller_passes_contracts_and_receipts_dirs() -> None:
     workflow = _load_workflow(PREFLIGHT_CALLER)
     job = workflow["jobs"][next(iter(workflow["jobs"].keys()))]
-    with_block = job.get("with", {})
-    assert with_block.get("contracts-dir") == "contracts"
-    assert with_block.get("receipts-dir") == "drift/dod_receipts"
+    step_by_id = {step["id"]: step for step in job["steps"] if "id" in step}
+    occ_sha_step = step_by_id["occ_sha"]
+    assert 'contracts_dir="contracts"' in occ_sha_step["run"]
+    assert 'receipts_dir="drift/dod_receipts"' in occ_sha_step["run"]
+
+    eligibility_step = step_by_id["occ_eligibility"]
+    assert "--contracts-dir" in eligibility_step["run"]
+    assert "steps.occ_sha.outputs.contracts_dir" in eligibility_step["run"]
+    assert "--receipts-dir" in eligibility_step["run"]
+    assert "steps.occ_sha.outputs.receipts_dir" in eligibility_step["run"]
 
 
 # ---------------------------------------------------------------------------
