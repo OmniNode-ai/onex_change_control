@@ -395,3 +395,38 @@ dod_evidence:
           "$receipt" | sed '1d;$d')" && probe="$(sed -n '/^probe_stdout: |$/,/^[a-z]/p' "$receipt" | sed
           '1d;$d')" && test "$actual" = "$probe" && printf 'occ6080 grammar-repair actual_output byte-exact
           match PASS\n'
+  # --- OMN-15374/OMN-15136 carrier retirement (append-only correction of the sole remaining dod_verify failure) ---
+  - id: "occ-carrier-retire-6077-receipt-attribution-fix"
+    description: >-
+      Append-only single-id supersession retiring the CARRIER item `occ6077-receipt-attribution-fix` (landed
+      by PR #6080), which is permanently DANGLING_SUPERSESSION because its own `evidence_artifact` is
+      the malformed three-id comma-joined marker `supersedes_dod_evidence:occ-self-bind-pr-5745-superseded,dod-infra769-no-live-mutation-claim-superseded,occ-self-bind-pr-6077`
+      documented in `occ6080-grammar-repair-note` above. PR #6084 already correctly retired all THREE
+      individual targets that marker tried and failed to name (`occ6080-attribution-fix-5745`, `occ6080-attribution-fix-no-live-mutation`,
+      `occ6080-attribution-fix-6077` below) via well-formed single-id markers -- but `occ6077-receipt-attribution-fix`
+      itself, as the CARRIER of the broken marker, still hard-failed unconditionally as DANGLING_SUPERSESSION,
+      because `EvidenceCollector._collect_impl` (omnimarket, prior to OMN-15708) checked an item's own
+      outbound marker validity BEFORE checking whether some LATER, well-formed marker had itself retired
+      that item. omnimarket OMN-15708 (merged, `evidence_collector.py` phase-3 reorder) fixed exactly
+      this: an item's own retirement is now checked FIRST -- a well-formed, single-id supersession that
+      targets `occ6077-receipt-attribution-fix` by id now takes effect and marks it SUPERSEDED regardless
+      of its own outbound marker's validity, per the explicit OMN-15708 code comment in `evidence_collector.py`
+      citing this exact OMN-15374/OCC#6080 case. This entry is that single-id supersession, using the
+      same proven pattern PR #6084/#6099 used for the three individual targets: `evidence_artifact: "supersedes_dod_evidence:occ6077-receipt-attribution-fix"`.
+      The check below re-verifies live that the three PR #6084 replacement entries this retirement depends
+      on are still present in the contract (the underlying attribution facts were never in question --
+      only the carrier's own unreachable marker was the defect). Note this ticket has independent, unrelated
+      open failures (PR #5745 live-check-state, occ6087/occ6088 items) NOT addressed by this entry --
+      this entry retires only the `occ6077-receipt-attribution-fix` carrier. Receipt bound at `drift/dod_receipts/OMN-15136/occ-carrier-retire-6077-receipt-attribution-fix/command.yaml`,
+      `status: PENDING` (this lane is the runner only; a distinct identity must independently re-execute
+      and flip to PASS before merge eligibility).
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "supersedes_dod_evidence:occ6077-receipt-attribution-fix"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f contracts/OMN-15136.yaml && grep -q 'occ6080-attribution-fix-5745' contracts/OMN-15136.yaml
+          && grep -q 'occ6080-attribution-fix-no-live-mutation' contracts/OMN-15136.yaml && grep -q 'occ6080-attribution-fix-6077'
+          contracts/OMN-15136.yaml && printf 'carrier retirement precondition: three replacement entries
+          present PASS\n'
