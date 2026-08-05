@@ -204,6 +204,27 @@ with the existing denylisted-verifier check above): a PENDING/FAIL/ADVISORY
 receipt is not asserting the check ran cleanly, so shape-consistency of its
 output is not this gate's concern.
 
+**Residual: a superseded base receipt's own dirty content is never
+re-scanned by ABS_PATH/STDOUT_EMIT.** ``check_receipt_file`` resolves a
+base receipt with a valid ``*.supersede.*.yaml`` sibling and returns ``[]``
+for the base *before* either rule (or any rule in this file) runs against
+the base's own fields — only the sibling's ``replacement`` is validated
+(via ``_valid_supersession_replacement`` -> ``_receipt_binding_violations``,
+which does run both new rules). This is the same append-only design the
+four pre-existing rules already rely on (a merged receipt is immutable;
+supersession is the repair primitive, not a rewrite), so ABS_PATH/STDOUT_EMIT
+inherit it rather than introduce it. The practical effect: an immutable base
+receipt that itself contains a machine-specific absolute path or a
+non-reproducible ``probe_stdout`` is never independently flagged once a
+clean replacement sibling exists, even though the dirty original stays on
+disk. OCC autobind mints these supersede siblings routinely — it is what
+produced the still-open ``command.supersede.6087.yaml`` finding this same
+PR reports — so this is a live, not theoretical, channel. Closing it would
+mean re-scanning every historically-superseded base for the two new rules,
+which is a corpus-wide retro-audit outside this PR's "gate extensions only"
+scope (operator ruling R-c); it is recorded here, not silently, per that
+same scope decision.
+
 Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 """
 
