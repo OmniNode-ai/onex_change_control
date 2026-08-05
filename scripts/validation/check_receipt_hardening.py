@@ -213,11 +213,10 @@ import argparse
 import json
 import re
 import sys
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache, lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
@@ -521,8 +520,7 @@ def _is_jq_sha_segment(segment: str) -> bool:
     return re.search(r"sha|oid", last_field, re.IGNORECASE) is not None
 
 
-@dataclass(frozen=True)
-class EmittabilitySpec:
+class EmittabilitySpec(NamedTuple):
     """One entry in the closed, documented terminal-command shape registry."""
 
     name: str
