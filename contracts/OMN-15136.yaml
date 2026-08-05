@@ -430,3 +430,98 @@ dod_evidence:
           && grep -q 'occ6080-attribution-fix-no-live-mutation' contracts/OMN-15136.yaml && grep -q 'occ6080-attribution-fix-6077'
           contracts/OMN-15136.yaml && printf 'carrier retirement precondition: three replacement entries
           present PASS\n'
+  # --- OMN-15136 pipefail-supersession (root-cause A of the wave-10 flip-audit 7-item gap list) ---
+  - id: "occ6087-pipefail-safe-reprobe"
+    description: >-
+      Append-only supersession of `occ6087-no-live-mutation-portable-reprobe` (landed by PR #6087). That
+      entry's `check_value` re-asserts the OCC#6080 no-live-mutation claim via `printf '%s\n' "$files"
+      | grep -vE '^(contracts/|drift/dod_receipts/)' | wc -l`. When OCC#6080 touched ONLY `contracts/`
+      and `drift/dod_receipts/` paths -- the exact condition being asserted -- `grep -v` filters every
+      line and exits 1. `EvidenceCollector._run_command_check` executes checks as `subprocess.run(["bash",
+      "-o", "pipefail", "-c", cmd_str], ...)` (OMN-15382 hardening), so `pipefail` propagates grep's exit-1-on-full-filter
+      as the pipeline status even though `wc -l` itself succeeds and prints `0` -- the `&&` chain aborts
+      before `test "$non_receipt_count" -eq 0` ever runs, so the check fails precisely BECAUSE the no-live-mutation
+      claim it asserts is true. Proven both directions (see `occ6088-pipefail-safe-reprobe` immediately
+      below for the isolated repro transcript, identical underlying grammar). The underlying facts were
+      never in question and are re-asserted below using `awk '!/pattern/'` in place of `grep -v` -- unlike
+      `grep`, `awk`'s exit status reflects only execution success, never the count of lines selected,
+      so an all-filtered result no longer poisons the pipeline's exit status under `pipefail`, while a
+      genuine non-empty match (a real live-mutation file) still fails the `test -eq 0` and correctly returns
+      non-zero -- verified as a negative control before this entry was authored. A `{ grep -v ... || true;
+      }` wrapper was tried first and rejected: `lint_contract_check_values.py`'s `trailing || true` anti-pattern
+      (OMN-9350) matches `|| true` anywhere in the value, not only at the very end, so it flagged the
+      wrapper even though it guards one sub-command, not the whole check -- the `awk` rewrite avoids a
+      fail-open guard entirely rather than requesting a lint exemption. This entry supersedes ONLY `occ6087-no-live-mutation-portable-reprobe`
+      by single id, mirroring the proven shape of merged OCC#6111 (`supersedes_dod_evidence:occ6077-receipt-attribution-fix`,
+      no comma-join). Receipt bound at `drift/dod_receipts/OMN-15136/occ6087-pipefail-safe-reprobe/command.yaml`,
+      `status: PENDING` (this lane is the runner only; a distinct identity must independently re-execute
+      and flip to PASS before merge eligibility, matching merged #6111 precedent).
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "supersedes_dod_evidence:occ6087-no-live-mutation-portable-reprobe"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          out="$(gh pr view 6080 --repo OmniNode-ai/onex_change_control --json state,mergeCommit,files
+          --jq '.state, .mergeCommit.oid, (.files[].path)')" && state="$(printf '%s\n' "$out" | sed -n
+          '1p')" && merge_sha="$(printf '%s\n' "$out" | sed -n '2p')" && files="$(printf '%s\n' "$out"
+          | tail -n +3)" && test "$state" = "MERGED" && test "$merge_sha" = "90b63455e171f01779b85bfaa861b65ce94498ef"
+          && non_receipt_count="$(printf '%s\n' "$files" | awk '!/^(contracts\/|drift\/dod_receipts\/)/'
+          | wc -l | tr -d ' ')" && test "$non_receipt_count" -eq 0 && printf 'OCC6080 no-live-mutation
+          (receipt/contract paths only, pipefail-safe) PASS\n'
+  - id: "occ6088-pipefail-safe-reprobe"
+    description: |-
+      Append-only supersession of `occ6088-supersedes-occ6080-no-live-mutation` (landed by PR #6088). Same
+      defect class and same fix as `occ6087-pipefail-safe-reprobe` immediately above -- both superseded
+      entries share the identical `grep -vE ... | wc -l` grammar, so both fail identically under `bash
+      -o pipefail -c` when OCC#6080's file list is fully filtered out (the exact no-live-mutation condition
+      both entries exist to prove). Isolated repro, run from this repo's root, both directions:
+
+        $ bash <check>
+        0
+        OCC6080 no-live-mutation (receipt/contract paths only) PASS
+        exit=0
+
+        $ bash -o pipefail -c <check>
+        0
+        exit=1
+
+        $ bash -o pipefail -c 'files="contracts/a.yaml"; printf "%s\n" "$files" | grep -vE "^(contracts/|drift/dod_receipts/)" | wc -l'
+        0
+        exit=1
+
+      Pipefail-safe replacement (`awk '!/pattern/'` instead of `grep -v ...`), same two directions, plus
+      a negative control proving the fix does not launder a genuine live-mutation file past the check:
+
+        $ bash -o pipefail -c 'files="contracts/a.yaml"; non_receipt_count="$(printf "%s\n" "$files" | awk "!/^(contracts\\/|drift\\/dod_receipts\\/)/" | wc -l | tr -d " ")"; test "$non_receipt_count" -eq 0 && printf "PASS\n"'
+        PASS
+        exit=0
+
+        $ bash -o pipefail -c 'files="contracts/a.yaml
+        other/file.py"; non_receipt_count="$(printf "%s\n" "$files" | awk "!/^(contracts\\/|drift\\/dod_receipts\\/)/" | wc -l | tr -d " ")"; test "$non_receipt_count" -eq 0 && printf "PASS\n"'
+        exit=1
+
+      `awk`'s exit status reflects only its own execution success -- never the count of lines it selected
+      -- so unlike `grep -v`, an all-filtered (zero-line) result does not poison the pipeline's exit status
+      under `pipefail`, while `wc -l`'s output and the downstream `test -eq 0` semantics are unchanged:
+      a real non-receipt file still produces a non-zero count and correctly fails. A `{ grep -v ... ||
+      true; }` wrapper was tried and rejected first -- `lint_contract_check_values.py`'s OMN-9350 `trailing
+      || true` anti-pattern matches `|| true` anywhere in the value, not only at the literal end, so it
+      flagged the wrapper despite it guarding only one sub-command; the `awk` rewrite avoids a fail-open
+      guard entirely rather than requesting a lint exemption. This entry supersedes ONLY `occ6088-supersedes-occ6080-no-live-mutation`
+      by single id, mirroring merged OCC#6111's shape. Receipt bound at `drift/dod_receipts/OMN-15136/occ6088-pipefail-safe-reprobe/command.yaml`,
+      `status: PENDING` (runner only; independent verifier flips to PASS, per merged #6111 precedent --
+      contract entry itself deliberately left `status: pending`).
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "supersedes_dod_evidence:occ6088-supersedes-occ6080-no-live-mutation"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          out="$(gh pr view 6080 --repo OmniNode-ai/onex_change_control --json state,mergeCommit,files
+          --jq '.state, .mergeCommit.oid, (.files[].path)')" && state="$(printf '%s\n' "$out" | sed -n
+          '1p')" && merge_sha="$(printf '%s\n' "$out" | sed -n '2p')" && files="$(printf '%s\n' "$out"
+          | tail -n +3)" && test "$state" = "MERGED" && test "$merge_sha" = "90b63455e171f01779b85bfaa861b65ce94498ef"
+          && non_receipt_count="$(printf '%s\n' "$files" | awk '!/^(contracts\/|drift\/dod_receipts\/)/'
+          | wc -l | tr -d ' ')" && test "$non_receipt_count" -eq 0 && printf 'OCC6080 no-live-mutation
+          (receipt/contract paths only, pipefail-safe) PASS\n'
