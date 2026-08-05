@@ -105,17 +105,119 @@ against that baseline in BOTH directions — a new violation fails, and a
 repaired entry that was not removed from the baseline also fails. The
 baseline may only shrink; never pad it to make a new supersession pass.
 
+ABSOLUTE-PATH + STDOUT-EMITTABILITY (OMN-15710), the fifth and sixth
+invariants
+------------------------------------------------------------------
+``onex_change_control#6084`` (merged 2026-08-05, ``3e24d9bd9``) landed three
+receipts that passed every existing gate — Receipt Honesty Gate (rules A-E,
+``omnibase_core.validation.validator_receipt_honesty``), this file's
+contract-hash/verifier checks, ``verify / verify``, and
+``Contract Compliance Check`` — while being demonstrably dishonest:
+
+* ``occ6080-attribution-fix-no-live-mutation`` hardcoded
+  ``/Users/jonah/Code/omni_home/docs/tracking/ROLLING_WORK_LEDGER.md`` into
+  ``probe_command``/``check_value`` (unreproducible on any other host or a CI
+  checkout), AND its recorded ``probe_stdout`` for the trailing ``grep -c``
+  command was hand-written prose, not the integer ``grep -c`` can only emit.
+* Two ``occ6080-grammar-repair-note`` receipts recorded a ``probe_stdout``
+  that WAS byte-exact for their declared ``printf '...'`` command, but an
+  ``actual_output`` that was hand-written prose the ``printf`` literal cannot
+  produce.
+
+None of A-E check whether recorded output is *structurally reproducible*
+from the declared command, and none reject a machine-specific absolute path
+in a probe body. Two new rules close both gaps, applied to the same
+post-cutoff, PASS-receipt population as the checks above (same
+``HARDENING_CUTOFF`` exemption — see ``check_receipt_file``):
+
+``ABS_PATH`` — **no machine-specific absolute paths in probe bodies.**
+``check_value``/``probe_command`` (receipts) and ``dod_evidence[*].checks[*
+].check_value`` (contract files) may not contain ``/Users/``, ``/Volumes/``,
+or ``/home/<user>/``. Unlike source-code lint (``aislop_sweep``'s
+hardcoded-path rule), **no ``# local-path-ok`` allowlist is honored here**: a
+receipt/contract check body is re-executed by CI on a fresh checkout as the
+proof a claim is true, and there is no legitimate case for "this proof only
+runs on my machine" — that is precisely the OCC#6084(a) defect. Source code
+can have a justified machine-only branch; a probe cannot.
+
+``STDOUT_EMIT`` — **bounded, honest shape-consistency check.** For a small,
+explicitly enumerated registry of terminal-command shapes this file can
+reason about structurally, assert the recorded ``probe_stdout`` — and
+**only** ``probe_stdout``, see below — is consistent with what that command
+can emit:
+
+* ``printf '<literal>'`` / ``echo '<literal>'`` (no ``%`` format specifier)
+  as the terminal command → ``probe_stdout`` must equal the literal,
+  byte-for-byte (after ``\\n``/``\\t`` un-escaping for ``printf``).
+* ``grep -c ...`` as the terminal command → the last non-empty output line
+  must be a bare integer. Catches the OCC#6080(a) defect directly.
+* ``wc -l`` as the terminal command → the last non-empty line must be an
+  integer, optionally followed by a filename.
+* ``--jq '<simple-scalar-path>'`` where the path's final segment matches
+  ``sha``/``oid`` (e.g. ``.sha``, ``.mergeCommit.oid``) → the output must be
+  a hex string.
+
+Every class first skips (undetectable, not a violation) when ``probe_stdout``
+parses as JSON — a ``{"evidence_ref": ..., "green_exit": 0, "red_exit": 1,
+"red_ref": ...}`` bundle is a distinct, structured RED/GREEN differential
+proof format used across dozens of receipts in this corpus, not the bare
+scalar shape any registry entry describes.
+
+**``actual_output`` is deliberately OUT OF SCOPE for every class**, including
+the printf/echo literal one — this is a narrowing made during OMN-15710's own
+verification, not the original design. ``ModelDodReceipt.actual_output``'s
+own docstring (omnibase_core) states it is "distinct from probe_stdout... may
+be a structured / truncated rendering" — schema-sanctioned to diverge from
+the literal captured stream. A corpus-wide dry run of the original
+(``probe_stdout``-and-``actual_output``) design against live ``dev`` found
+dozens of pre-existing, legitimate PASS receipts across many tickets
+(OMN-15571, OMN-15651, OMN-7334, and others) using ``actual_output`` for
+exactly that documented purpose — narrative summaries, in at least one case
+describing a second (RED) probe leg never shown in ``probe_command`` at all.
+Checking ``actual_output`` for literal equality was a systemic false
+positive against schema-sanctioned usage, not a defect signal, so the rule
+was narrowed to ``probe_stdout`` only. **Documented residual**: the
+occ6080-grammar-repair-note defect shape itself — ``probe_stdout`` correct,
+``actual_output`` paraphrased — is therefore NOT caught by this mechanism
+going forward; OMN-15710 AC1 tracks that specific pair's closure via
+independent verification instead, and this residual is called out explicitly
+in the OMN-15710 PR body/ticket comment per the ticket's own "false positive
+→ narrow the check" instruction.
+
+This is deliberately **not** general command execution or emulation — it is
+a documented, closed registry (``_EMITTABILITY_REGISTRY`` plus the
+printf/echo special case) of command shapes whose *only* possible stdout
+shape can be derived without running anything. What it does **not** catch,
+by design (residual, OMN-15710 PR body/ticket comment carries this too):
+compound/piped ``jq`` filters (``[.a,.b] | @tsv``, the exact shape of the
+OCC#6080(a) ``--jq`` clause — that defect is still caught, but via the
+``grep -c`` half of the same command, not via this class), any command not
+in the registry (``curl``, ``psql``, ``docker exec``, arbitrary scripts),
+JSON-shaped ``probe_stdout`` of any kind (see above), multi-line/tabular
+output, ``actual_output`` (see above), and quoting edge cases in the naive
+top-level ``;``/``|``/``&`` command-segment splitter. A defect outside this
+bounded registry is a false negative here, not a false pass — partial
+mechanical coverage, not full command-emulation confidence.
+
+Both rules apply only to ``EnumReceiptStatus.PASS`` receipts (consistent
+with the existing denylisted-verifier check above): a PENDING/FAIL/ADVISORY
+receipt is not asserting the check ran cleanly, so shape-consistency of its
+output is not this gate's concern.
+
 Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
@@ -125,11 +227,37 @@ from omnibase_core.validation.validator_receipt_gate import (
     compute_contract_entry_sha256,
     compute_contract_sha256,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 from pydantic import ValidationError
 
 # Receipts produced on/after this UTC instant are subject to the gate.
 # Earlier receipts are legacy migration debt (see module docstring).
 HARDENING_CUTOFF = datetime(2026, 6, 12, 0, 0, 0, tzinfo=UTC)
+
+# OMN-15710: ABS_PATH + STDOUT_EMIT are subject to their OWN, LATER cutoff,
+# separate from HARDENING_CUTOFF. A corpus-wide dry run against every
+# post-HARDENING_CUTOFF receipt on dev (OMN-15710 verification) found ~200
+# pre-existing receipts, spanning 2026-06-12 through 2026-07-30, that predate
+# these two rules and do not comply with them — largely two established,
+# legitimate corpus conventions these rules did not anticipate: OCC
+# self-binding receipts routinely embed the authoring worktree's absolute
+# path, and "content-bound differential probe" receipts routinely record a
+# narrative/JSON summary in probe_stdout rather than a literal single-command
+# capture. Retro-blocking ~200 already-merged receipts is exactly what this
+# file's own migration-debt philosophy exists to avoid (see module
+# docstring: "a ratchet on NEW receipts, not a retro-block"). The latest
+# such pre-existing receipt is timestamped 2026-07-30T23:05:00Z; the three
+# receipts OMN-15710 was filed to fix (and the propagated-defect supersede
+# file AC1 discusses) are all timestamped 2026-08-04/05 — a clean gap.
+OMN_15710_CUTOFF = datetime(2026, 8, 1, 0, 0, 0, tzinfo=UTC)
+
+
+def _after_omn_15710_cutoff(run_timestamp: datetime) -> bool:
+    ts = run_timestamp if run_timestamp.tzinfo else run_timestamp.replace(tzinfo=UTC)
+    return ts >= OMN_15710_CUTOFF
+
 
 # Session-local / generic verifier aliases that cannot satisfy independent
 # verification for a PASS receipt. Exact match after strip().lower().
@@ -164,6 +292,403 @@ def _is_denylisted_verifier(verifier: str) -> bool:
     if normalized in DENYLISTED_VERIFIERS:
         return True
     return any(p.match(normalized) for p in DENYLISTED_VERIFIER_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 rule 1 — ABS_PATH: no machine-specific absolute paths in probes.
+# ---------------------------------------------------------------------------
+
+# Matches the path root plus at least one path segment, so a bare mention of
+# the word "Users" or "home" in prose does not false-positive. No allowlist
+# is honored here — see the module docstring for why receipt/contract probe
+# bodies are held to a stricter bar than source code.
+_ABS_PATH_RE = re.compile(
+    r"(/Users/[^\s'\"]+|/Volumes/[^\s'\"]+|/home/[^/\s'\"]+/[^\s'\"]*)"
+)
+
+
+def _absolute_path_violations(receipt: ModelDodReceipt) -> list[str]:
+    """Return ABS_PATH violation fragments for a receipt's probe fields.
+
+    Gated on ``OMN_15710_CUTOFF``, not ``HARDENING_CUTOFF`` — see that
+    constant's comment.
+    """
+    if not _after_omn_15710_cutoff(receipt.run_timestamp):
+        return []
+    violations: list[str] = []
+    for field_name in ("check_value", "probe_command"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str):
+            continue
+        match = _ABS_PATH_RE.search(value)
+        if match is None:
+            continue
+        violations.append(
+            f"[ABS_PATH] {field_name} contains a machine-specific absolute "
+            f"path ({match.group(1)!r}) — a receipt probe must be "
+            "re-executable by CI on a fresh checkout of any host; no "
+            "allowlist is honored for receipt/contract check bodies "
+            "(OMN-15710). Use a repo-relative path or an env-var-resolved "
+            "path instead."
+        )
+    return violations
+
+
+CONTRACT_ABS_PATH_BASELINE_PATH = Path(
+    ".onex_ratchets/omn_15710_contract_abs_path_baseline.yaml"
+)
+
+
+def load_contract_abs_path_baseline(baseline_path: Path) -> frozenset[str]:
+    """Load the frozen, shrink-only baseline of pre-existing contract ABS_PATH hits.
+
+    Mirrors ``load_supersession_baseline``'s shape/semantics for the same
+    reason: contract files (unlike receipts) carry no ``run_timestamp``, so
+    ``OMN_15710_CUTOFF`` cannot gate them — a frozen baseline is this file's
+    only precedented mechanism for "pre-existing, not a retro-block" when a
+    time-based cutoff isn't available.
+    """
+    data = _load_mapping(baseline_path)
+    if data is None:
+        return frozenset()
+    entries = data.get("violations")
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(str(entry) for entry in entries if isinstance(entry, str))
+
+
+def _contract_dod_evidence_abs_path_violations(
+    contract_path: Path, data: dict[str, object], baseline: frozenset[str]
+) -> list[str]:
+    """Return ABS_PATH violation fragments for a contract's dod_evidence checks."""
+    entries = data.get("dod_evidence")
+    if not isinstance(entries, list):
+        return []
+    violations: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        item_id = entry.get("id", "<unknown>")
+        if f"{contract_path.as_posix()}::{item_id}" in baseline:
+            continue
+        checks = entry.get("checks")
+        if not isinstance(checks, list):
+            continue
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            check_value = check.get("check_value")
+            if not isinstance(check_value, str):
+                continue
+            match = _ABS_PATH_RE.search(check_value)
+            if match is None:
+                continue
+            violations.append(
+                f"{contract_path}: [ABS_PATH] dod_evidence[{item_id!r}]."
+                f"check_value contains a machine-specific absolute path "
+                f"({match.group(1)!r}) — no allowlist is honored for "
+                "contract check bodies (OMN-15710). Use a repo-relative "
+                "path or an env-var-resolved path instead."
+            )
+    return violations
+
+
+def check_contract_file(
+    contract_path: Path, baseline: frozenset[str] | None = None
+) -> list[str]:
+    """Return ABS_PATH violations for one contract YAML (empty = clean).
+
+    ``baseline`` suppresses pre-existing ``<path>::<item_id>`` entries
+    frozen in ``CONTRACT_ABS_PATH_BASELINE_PATH`` — see
+    ``load_contract_abs_path_baseline``.
+    """
+    if not contract_path.is_file():
+        return []
+    try:
+        data = yaml.safe_load(contract_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"{contract_path}: unreadable contract YAML: {exc}"]
+    if not isinstance(data, dict):
+        return []
+    return _contract_dod_evidence_abs_path_violations(
+        contract_path, data, baseline if baseline is not None else frozenset()
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 rule 2 — STDOUT_EMIT: bounded shape-consistency of recorded output
+# against a closed, documented registry of terminal-command shapes.
+# ---------------------------------------------------------------------------
+
+
+def _split_top_level(command: str, seps: str) -> list[str]:
+    """Split ``command`` on unquoted characters in ``seps``.
+
+    Quote-aware so a separator character inside ``'...'``/``"..."`` does not
+    split. Does not handle nested subshells or backslash-escaped quotes —
+    documented residual scope, see module docstring.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for ch in command:
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in seps:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def _trusted_terminal_segment(probe_command: str) -> str | None:
+    """Return the terminal command segment IF this file trusts its context.
+
+    Returns ``None`` (undetectable — not a violation) when:
+
+    * ``probe_command`` spans multiple physical lines (heredocs/multi-line
+      scripts routinely carry visible intermediate output this splitter
+      cannot reason about);
+    * the terminal segment carries an unquoted ``#`` — this corpus uses
+      trailing ``# ...`` prose to describe ADDITIONAL steps/refs not shown
+      as real shell syntax (a narrated methodology, not a literal
+      one-command probe); a ``#`` here means the field is not what it looks
+      like to this naive splitter.
+
+    This does NOT additionally require every ``;``/``&``-joined prefix
+    statement to be provably silent (an earlier design in this ticket's own
+    verification history did, and it silently excluded the exact OCC#6084(a)
+    shape — a non-silent ``gh pr view ...`` prefix before the terminal
+    ``grep -c`` — from detection at all). A ``;``-chain's LAST statement
+    still contributes only its own lines to the tail of combined stdout
+    regardless of what an earlier statement wrote, so "last non-empty line"
+    validation on the terminal command's own class remains sound even with a
+    non-silent prefix. Residual noise from receipts whose ``probe_stdout``
+    is a narrative/summary rather than a literal capture (a real,
+    widespread convention in this corpus — see the frozen baseline below)
+    is absorbed by ``ABS_PATH_STDOUT_EMIT_BASELINE_PATH``, not by
+    over-narrowing detection here.
+    """
+    if "\n" in probe_command:
+        return None
+
+    parts = [p.strip() for p in _split_top_level(probe_command, ";|&") if p.strip()]
+    terminal_segment = parts[-1] if parts else probe_command.strip()
+
+    if len(_split_top_level(terminal_segment, "#")) > 1:
+        return None
+
+    return terminal_segment
+
+
+_PRINTF_LITERAL_RE = re.compile(r"printf\s+(['\"])((?:(?!\1).)*)\1\s*$")
+_ECHO_LITERAL_RE = re.compile(r"echo\s+(['\"])((?:(?!\1).)*)\1\s*$")
+
+
+def _decode_printf_literal(raw: str) -> str:
+    return raw.replace("\\n", "\n").replace("\\t", "\t")
+
+
+_JQ_SCALAR_ARG_RE = re.compile(r"--jq\s+(['\"])(?P<expr>[^'\"]+)\1")
+_JQ_SIMPLE_PATH_RE = re.compile(r"\.[A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def _is_jq_sha_segment(segment: str) -> bool:
+    """True when ``segment`` ends in ``--jq '<simple scalar path>'`` naming a sha/oid.
+
+    Deliberately excludes any expression containing ``|``, ``,``, or ``[`` —
+    a compound/array jq filter (e.g. ``[.state,.mergeCommit.oid] | @tsv``) is
+    out of scope for this closed registry; see module docstring.
+    """
+    match = _JQ_SCALAR_ARG_RE.search(segment)
+    if match is None:
+        return False
+    expr = match.group("expr").strip()
+    if any(c in expr for c in "|,[]"):
+        return False
+    if _JQ_SIMPLE_PATH_RE.fullmatch(expr) is None:
+        return False
+    last_field = expr.rsplit(".", maxsplit=1)[-1]
+    return re.search(r"sha|oid", last_field, re.IGNORECASE) is not None
+
+
+@dataclass(frozen=True)
+class EmittabilitySpec:
+    """One entry in the closed, documented terminal-command shape registry."""
+
+    name: str
+    matches: Callable[[str], bool]
+    validate: Callable[[str], bool]
+    expectation: str
+
+
+_EMITTABILITY_REGISTRY: tuple[EmittabilitySpec, ...] = (
+    EmittabilitySpec(
+        name="GREP_COUNT",
+        matches=lambda seg: (
+            bool(re.match(r"^grep\b", seg))
+            and re.search(r"(?:^|\s)-c(?:\s|$)", seg) is not None
+        ),
+        validate=lambda line: re.fullmatch(r"\d+", line) is not None,
+        expectation="a bare non-negative integer (grep -c line count)",
+    ),
+    EmittabilitySpec(
+        name="WC_LINES",
+        matches=lambda seg: (
+            bool(re.match(r"^wc\b", seg))
+            and re.search(r"(?:^|\s)-l(?:\s|$)", seg) is not None
+        ),
+        validate=lambda line: re.fullmatch(r"\d+(?:\s+\S+)?", line) is not None,
+        expectation="a bare integer, optionally followed by a filename (wc -l)",
+    ),
+    EmittabilitySpec(
+        name="JQ_SHA",
+        matches=_is_jq_sha_segment,
+        validate=lambda line: re.fullmatch(r"[0-9a-fA-F]{7,64}", line) is not None,
+        expectation="a hex SHA (--jq path whose final segment is sha/oid)",
+    ),
+)
+
+
+def _last_nonempty_line(text: str) -> str:
+    for line in reversed(text.strip().splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _is_json_shaped(value: str) -> bool:
+    """True when ``value`` parses as a JSON object/array.
+
+    A JSON evidence bundle (e.g. ``{"evidence_ref": ..., "green_exit": 0,
+    "red_exit": 1, "red_ref": ...}``) is a distinct, structured proof format
+    used across this corpus for RED/GREEN differential probes — legitimately
+    not the bare scalar shape any entry in ``_EMITTABILITY_REGISTRY``
+    describes. Out of scope for this closed registry; see module docstring.
+    """
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "{[":
+        return False
+    try:
+        json.loads(stripped)
+    except ValueError:
+        return False
+    return True
+
+
+def _literal_emit_match(segment: str) -> tuple[str, str] | None:
+    """Return ``(kind, raw_literal)`` for a terminal printf/echo literal, else None."""
+    match = _PRINTF_LITERAL_RE.search(segment)
+    if match is not None:
+        return "printf", match.group(2)
+    match = _ECHO_LITERAL_RE.search(segment)
+    if match is not None:
+        return "echo", match.group(2)
+    return None
+
+
+def _literal_emit_violations(segment: str, receipt: ModelDodReceipt) -> list[str]:
+    """STDOUT_EMIT violations for a terminal printf/echo literal command.
+
+    ``probe_stdout`` ONLY — see module docstring for why ``actual_output`` is
+    out of scope for every STDOUT_EMIT class, not just this one.
+    """
+    matched = _literal_emit_match(segment)
+    if matched is None:
+        return []
+    literal_kind, raw_literal = matched
+    if "%" in raw_literal:
+        # Contains a format specifier this file does not evaluate —
+        # undetectable, not clean. Documented residual.
+        return []
+    literal = (
+        _decode_printf_literal(raw_literal) if literal_kind == "printf" else raw_literal
+    ).strip()
+
+    value = receipt.probe_stdout
+    if not value or value.strip() == literal:
+        return []
+    return [
+        f"[STDOUT_EMIT] probe_stdout does not equal the terminal "
+        f"command's own literal output — probe_command ends in "
+        f"{literal_kind} {raw_literal!r}, which can only emit "
+        f"{literal!r}, but probe_stdout is {value.strip()!r}. Rerun "
+        "the declared command and record its byte-exact output; do "
+        "not paraphrase (OMN-15710)."
+    ]
+
+
+def _registry_emit_violations(segment: str, receipt: ModelDodReceipt) -> list[str]:
+    """STDOUT_EMIT violations against the closed terminal-command registry.
+
+    ``probe_stdout`` ONLY — see module docstring.
+    """
+    spec = next((s for s in _EMITTABILITY_REGISTRY if s.matches(segment)), None)
+    if spec is None:
+        return []
+
+    value = receipt.probe_stdout
+    if not value or _is_json_shaped(value):
+        return []
+    last_line = _last_nonempty_line(value)
+    if spec.validate(last_line):
+        return []
+    return [
+        f"[STDOUT_EMIT] probe_stdout is not shape-consistent with "
+        f"the terminal command {segment!r} (detected class: "
+        f"{spec.name}, expected {spec.expectation}) — got "
+        f"{last_line!r}. Rerun the declared command and record its "
+        "actual output (OMN-15710)."
+    ]
+
+
+def _stdout_emittability_violations(receipt: ModelDodReceipt) -> list[str]:
+    """Return STDOUT_EMIT violation fragments (empty = clean or undetectable class).
+
+    Scoped to ``probe_stdout`` only — deliberately excludes ``actual_output``.
+    ``ModelDodReceipt.actual_output`` is documented (see the field's own
+    docstring in omnibase_core) as "distinct from probe_stdout... may be a
+    structured / truncated rendering" — i.e. schema-sanctioned to diverge
+    from the literal captured stream. A corpus-wide dry run of this rule
+    against ``actual_output`` (OMN-15710 verification) found dozens of
+    pre-existing, legitimate receipts across many tickets using
+    ``actual_output`` for exactly that documented purpose — a narrative
+    summary, sometimes describing a second (RED) probe leg not shown in
+    ``probe_command`` at all. Checking ``actual_output`` for literal
+    equality is incompatible with that schema-sanctioned use and was a
+    systemic false positive, not a defect signal — narrowed accordingly.
+    Documented residual: the occ6080-grammar-repair-note defect shape
+    (probe_stdout correct, actual_output paraphrased) is therefore NOT
+    caught by this mechanism; OMN-15710 AC1 tracks that pair's closure via
+    independent verification instead.
+
+    Gated on ``OMN_15710_CUTOFF``, not ``HARDENING_CUTOFF`` — see that
+    constant's comment.
+    """
+    if not _after_omn_15710_cutoff(receipt.run_timestamp):
+        return []
+    if receipt.status is not EnumReceiptStatus.PASS:
+        return []
+
+    segment = _trusted_terminal_segment(receipt.probe_command)
+    if segment is None:
+        return []
+
+    # The printf/echo literal class and the registry classes are mutually
+    # exclusive by construction: a terminal command is either a bare literal
+    # emitter or a shape checked by the registry, never both.
+    if _literal_emit_match(segment) is not None:
+        return _literal_emit_violations(segment, receipt)
+    return _registry_emit_violations(segment, receipt)
 
 
 def _supersession_candidates(receipt_path: Path) -> list[Path]:
@@ -268,6 +793,9 @@ def _receipt_binding_violations(
             f"{receipt.verifier!r} (OMN-13060/A-5). Name an identifiable "
             "independent verifier."
         )
+
+    violations.extend(_absolute_path_violations(receipt))
+    violations.extend(_stdout_emittability_violations(receipt))
 
     return violations
 
@@ -471,7 +999,7 @@ def _supersede_token(path: Path) -> str | None:
     return match.group(1) if match else None
 
 
-@lru_cache(maxsize=None)
+@cache
 def _load_mapping(path: Path) -> dict[str, object] | None:
     """Parse a YAML mapping once per process.
 
@@ -508,7 +1036,7 @@ def _supersession_check_value(data: dict[str, object]) -> str | None:
     return _normalize_check(check_value)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _contract_entry(
     contracts_dir: Path, ticket_id: str, item_id: str
 ) -> dict[str, object] | None:
@@ -524,7 +1052,7 @@ def _contract_entry(
     return None
 
 
-@lru_cache(maxsize=None)
+@cache
 def _item_anchors(
     contracts_dir: Path, ticket_id: str, item_id: str
 ) -> tuple[frozenset[str], frozenset[str]]:
@@ -575,12 +1103,11 @@ def _check_references_item(
     if any(anchor in lowered for anchor in text_anchors):
         return True
     return any(
-        re.search(rf"\b{re.escape(pr)}\b", check_value) is not None
-        for pr in pr_anchors
+        re.search(rf"\b{re.escape(pr)}\b", check_value) is not None for pr in pr_anchors
     )
 
 
-@lru_cache(maxsize=None)
+@cache
 def _cohort_members(path: Path) -> tuple[Path, ...]:
     """Supersessions minted together with ``path`` for the same consuming PR.
 
@@ -597,7 +1124,7 @@ def _cohort_members(path: Path) -> tuple[Path, ...]:
     return tuple(sorted(ticket_dir.glob(f"*/*.supersede.{token}.yaml")))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _repaired_targets(item_dir: Path, contracts_dir: Path) -> frozenset[str]:
     """Paths in ``item_dir`` cured by a net-new, itself-clean repair record.
 
@@ -1027,6 +1554,23 @@ def check_receipt_file(
     return _validate_hardened_receipt(receipt_path, receipt, contracts_dir)
 
 
+def _check_staged_file(
+    path: Path,
+    contracts_dir: Path,
+    supersession_baseline: frozenset[str],
+    contract_abs_path_baseline: frozenset[str],
+) -> list[str]:
+    """Route one staged file to the contract- or receipt-shaped check (OMN-15710).
+
+    Contract files (``contracts/<TICKET>.yaml``) carry
+    ``dod_evidence[*].checks[*].check_value`` directly and get the
+    contract-shaped ABS_PATH scan instead of ``ModelDodReceipt`` parsing.
+    """
+    if path.as_posix().startswith(f"{contracts_dir.as_posix()}/"):
+        return check_contract_file(path, contract_abs_path_baseline)
+    return check_receipt_file(path, contracts_dir, supersession_baseline)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -1085,9 +1629,22 @@ def main(argv: list[str] | None = None) -> int:
         default=".github/workflows/ci.yml",
         help="Workflow file inspected by --check-supersession-wiring.",
     )
+    parser.add_argument(
+        "--contract-abs-path-baseline",
+        default=str(CONTRACT_ABS_PATH_BASELINE_PATH),
+        help=(
+            "Frozen shrink-only baseline of pre-existing OMN-15710 ABS_PATH "
+            "violations in contract dod_evidence check_value entries "
+            "(contracts carry no run_timestamp, so OMN_15710_CUTOFF cannot "
+            "gate them)."
+        ),
+    )
     args = parser.parse_args(argv)
     contracts_dir = Path(args.contracts_dir)
     baseline_path = Path(args.supersession_baseline)
+    contract_abs_path_baseline = load_contract_abs_path_baseline(
+        Path(args.contract_abs_path_baseline)
+    )
 
     if args.write_supersession_baseline:
         return write_supersession_baseline(
@@ -1120,7 +1677,9 @@ def main(argv: list[str] | None = None) -> int:
         if not path.is_file():
             continue  # deleted/renamed paths are not this gate's concern
         all_violations.extend(
-            check_receipt_file(path, contracts_dir, supersession_baseline)
+            _check_staged_file(
+                path, contracts_dir, supersession_baseline, contract_abs_path_baseline
+            )
         )
 
     if all_violations:

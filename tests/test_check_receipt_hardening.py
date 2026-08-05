@@ -16,6 +16,7 @@ from omnibase_core.validation.validator_receipt_gate import (
 
 from scripts.validation.check_receipt_hardening import (
     DENYLISTED_VERIFIERS,
+    check_contract_file,
     check_receipt_file,
     main,
 )
@@ -23,8 +24,19 @@ from scripts.validation.check_receipt_hardening import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
 POST_CUTOFF_TS = "2026-06-12T03:00:00+00:00"
 PRE_CUTOFF_TS = "2026-06-11T23:59:59+00:00"
+
+# OMN-15710 (ABS_PATH / STDOUT_EMIT) uses its OWN, later cutoff
+# (OMN_15710_CUTOFF, 2026-08-01) than the other rules' HARDENING_CUTOFF
+# (2026-06-12) — see that constant's comment in check_receipt_hardening.py.
+# POST_CUTOFF_TS above predates OMN_15710_CUTOFF, so it would silently
+# exempt every ABS_PATH/STDOUT_EMIT test; those tests must override
+# run_timestamp with this constant instead.
+POST_OMN15710_CUTOFF_TS = "2026-08-02T00:00:00+00:00"
+PRE_OMN15710_CUTOFF_TS = "2026-07-31T23:59:59+00:00"
 
 # OMN-15459 (S2 family binding): a supersession replacement must reference an
 # anchor the item it supersedes actually declares. The two wrappers below exist
@@ -459,3 +471,454 @@ def test_append_new_entry_does_not_invalidate_prior_receipt(tmp_path: Path) -> N
     # (legacy) contract_sha256 is now stale — that is exactly the condition
     # contract_entry_sha256 exists to make irrelevant.
     assert check_receipt_file(receipt, contract.parent) == []
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 — ABS_PATH: no machine-specific absolute paths in probe bodies.
+# ---------------------------------------------------------------------------
+
+
+def test_abs_path_in_probe_command_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "grep -c 'x' /Users/jonah/Code/omni_home/docs/tracking/LEDGER.md"
+            ),
+            probe_stdout="4",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v and "probe_command" in v for v in violations)
+
+
+def test_abs_path_in_check_value_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value="test -f /Volumes/data/marker.txt",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v and "check_value" in v for v in violations)
+
+
+def test_abs_path_home_user_variant_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="cat /home/alice/notes.txt",
+            probe_stdout="ok",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v for v in violations)
+
+
+def test_repo_relative_path_receipt_passes(tmp_path: Path) -> None:
+    """Negative control: a repo-relative path never trips ABS_PATH."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' docs/tracking/ROLLING_WORK_LEDGER.md",
+            probe_stdout="4",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[ABS_PATH]" in v for v in violations)
+
+
+def test_check_contract_file_abs_path_fails(tmp_path: Path) -> None:
+    contract_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    contract_data["dod_evidence"][0]["checks"][0]["check_value"] = (  # type: ignore[index]
+        "grep -c pattern /Users/jonah/Code/omni_home/CLAUDE.md"
+    )
+    contract = _write_entry_contract(tmp_path, contract_data)
+    violations = check_contract_file(contract)
+    assert len(violations) == 1
+    assert "[ABS_PATH]" in violations[0]
+    assert "dod-001" in violations[0]
+
+
+def test_check_contract_file_repo_relative_passes(tmp_path: Path) -> None:
+    contract_data = copy.deepcopy(ENTRY_CONTRACT_DATA)
+    contract_data["dod_evidence"][0]["checks"][0]["check_value"] = (  # type: ignore[index]
+        "grep -c pattern docs/CLAUDE.md"
+    )
+    contract = _write_entry_contract(tmp_path, contract_data)
+    assert check_contract_file(contract) == []
+
+
+def test_check_contract_file_no_dod_evidence_passes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)  # CONTRACT_BODY has no dod_evidence key
+    assert check_contract_file(contract) == []
+
+
+# ---------------------------------------------------------------------------
+# OMN-15710 — STDOUT_EMIT: bounded terminal-command shape consistency.
+# ---------------------------------------------------------------------------
+
+
+def test_grep_c_prose_stdout_fails(tmp_path: Path) -> None:
+    """Regression for the live OCC#6080(a) defect shape: a grep -c terminal
+    command recorded prose instead of the integer it can only emit."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "gh pr view 769 --json state --jq '.state' ; "
+                "grep -c 'wave-0730/terraform' docs/tracking/LEDGER.md"
+            ),
+            probe_stdout=(
+                "OPEN\nledger citations of wave-0730/terraform confirmed present"
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v and "GREP_COUNT" in v for v in violations), (
+        violations
+    )
+
+
+def test_grep_c_integer_stdout_passes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'pattern' docs/CLAUDE.md",
+            probe_stdout="4",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_actual_output_paraphrase_is_documented_residual_not_flagged(
+    tmp_path: Path,
+) -> None:
+    """Documented residual (narrowed during OMN-15710 verification): the
+    occ6080-grammar-repair-note shape (probe_stdout byte-exact, actual_output
+    paraphrased) is NOT caught by STDOUT_EMIT — actual_output is out of
+    scope for every class because ModelDodReceipt.actual_output is
+    schema-sanctioned to be a "structured / truncated rendering" distinct
+    from probe_stdout. A corpus-wide dry run of the pre-narrowing design
+    against live dev found dozens of legitimate receipts using
+    actual_output that way; checking it for literal equality was a
+    systemic false positive, not a defect signal. See module docstring."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value=(
+                "test -f contracts/OMN-13060.yaml "
+                "&& grep -q 'x' contracts/OMN-13060.yaml "
+                "&& printf 'diagnostic note anchor PASS\\n'"
+            ),
+            probe_command=(
+                "test -f contracts/OMN-13060.yaml "
+                "&& grep -q 'x' contracts/OMN-13060.yaml "
+                "&& printf 'diagnostic note anchor PASS\\n'"
+            ),
+            probe_stdout="diagnostic note anchor PASS",
+            actual_output=(
+                "Diagnostic note anchor independently re-probed live at "
+                "2026-08-05T02:16:43Z; contracts/OMN-13060.yaml contains "
+                "the anchor."
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations), violations
+
+
+def test_registry_class_skips_json_shaped_probe_stdout(tmp_path: Path) -> None:
+    """Regression for a live dev-tip corpus pattern: a JSON RED/GREEN
+    differential evidence bundle in probe_stdout is a distinct structured
+    proof format, not the bare integer GREP_COUNT expects — must not
+    false-positive."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "gh api 'repos/OmniNode-ai/x/contents/y.py?ref=abc' "
+                "--jq '.content' | base64 -d | grep -c 'def _seed'"
+            ),
+            probe_stdout=(
+                '{"evidence_ref":"abc123","green_exit":0,"red_exit":1,'
+                '"red_ref":"def456"}'
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations), violations
+
+
+def test_printf_literal_matching_actual_output_passes(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value="printf 'diagnostic note anchor PASS\\n'",
+            probe_command="printf 'diagnostic note anchor PASS\\n'",
+            probe_stdout="diagnostic note anchor PASS",
+            actual_output="diagnostic note anchor PASS",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_echo_literal_mismatch_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value="echo 'anchor PASS'",
+            probe_command="echo 'anchor PASS'",
+            probe_stdout="something else entirely",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_wc_l_integer_passes_and_prose_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    passing = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="wc -l docs/CLAUDE.md",
+            probe_stdout="120 docs/CLAUDE.md",
+        ),
+    )
+    assert not any(
+        "[STDOUT_EMIT]" in v
+        for v in check_receipt_file(passing, tmp_path / "contracts")
+    )
+
+    failing_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-002"
+    failing_dir.mkdir(parents=True, exist_ok=True)
+    failing = failing_dir / "command.yaml"
+    failing.write_text(
+        yaml.safe_dump(
+            _receipt_data(
+                evidence_item_id="dod-002",
+                contract_sha256=_contract_sha(contract),
+                run_timestamp=POST_OMN15710_CUTOFF_TS,
+                probe_command="wc -l docs/CLAUDE.md",
+                probe_stdout="lots of lines",
+            )
+        )
+    )
+    violations = check_receipt_file(failing, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v and "WC_LINES" in v for v in violations)
+
+
+def test_jq_sha_hex_passes_and_prose_fails(tmp_path: Path) -> None:
+    contract = _write_contract(tmp_path)
+    passing = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="gh pr view 1 --json mergeCommit --jq '.mergeCommit.oid'",
+            probe_stdout="3e24d9bd9aa1122334455667788990011223344",
+        ),
+    )
+    assert not any(
+        "[STDOUT_EMIT]" in v
+        for v in check_receipt_file(passing, tmp_path / "contracts")
+    )
+
+    failing_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-003"
+    failing_dir.mkdir(parents=True, exist_ok=True)
+    failing = failing_dir / "command.yaml"
+    failing.write_text(
+        yaml.safe_dump(
+            _receipt_data(
+                evidence_item_id="dod-003",
+                contract_sha256=_contract_sha(contract),
+                run_timestamp=POST_OMN15710_CUTOFF_TS,
+                probe_command="gh pr view 1 --json mergeCommit --jq '.mergeCommit.oid'",
+                probe_stdout="the merge commit sha",
+            )
+        )
+    )
+    violations = check_receipt_file(failing, tmp_path / "contracts")
+    assert any("[STDOUT_EMIT]" in v and "JQ_SHA" in v for v in violations)
+
+
+def test_stdout_emit_compound_jq_filter_is_undetectable_not_flagged(
+    tmp_path: Path,
+) -> None:
+    """Documented residual: a compound jq filter ([.a,.b] | @tsv) is out of
+    the closed registry's scope and must not false-positive."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command=(
+                "gh pr view 769 --json state,mergeCommit "
+                "--jq '[.state,.mergeCommit.oid] | @tsv'"
+            ),
+            probe_stdout="anything at all, not shape-checked",
+        ),
+    )
+    assert not any(
+        "[STDOUT_EMIT]" in v
+        for v in check_receipt_file(receipt, tmp_path / "contracts")
+    )
+
+
+def test_stdout_emit_skips_non_pass_status(tmp_path: Path) -> None:
+    """PENDING receipts are not asserting the check ran cleanly — out of scope."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            status="PENDING",
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' docs/CLAUDE.md",
+            probe_stdout="not an integer at all",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_stdout_emit_unregistered_command_class_not_flagged(tmp_path: Path) -> None:
+    """A command shape outside the closed registry (curl) is a documented
+    false negative, not a false pass to be reported as clean-but-unchecked."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="curl -sf https://example.invalid/health",
+            probe_stdout="anything the server happened to return",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[STDOUT_EMIT]" in v for v in violations)
+
+
+def test_occ6084_fabricated_receipt_fixture_fails_both_rules(tmp_path: Path) -> None:
+    """Scratch reproduction of the merged OCC#6084(a) defect
+    (occ6080-attribution-fix-no-live-mutation): must fail with a pointed
+    message on BOTH new rules simultaneously."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            check_value=(
+                "gh pr view 769 --repo OmniNode-ai/omninode_infra "
+                "--json state,mergeCommit "
+                "--jq '[.state,.mergeCommit.oid] | @tsv' ; "
+                "grep -c 'wave-0730/terraform' "
+                "/Users/jonah/Code/omni_home/docs/tracking/LEDGER.md"
+            ),
+            probe_command=(
+                "gh pr view 769 --repo OmniNode-ai/omninode_infra "
+                "--json state,mergeCommit "
+                "--jq '[.state,.mergeCommit.oid] | @tsv' ; "
+                "grep -c 'wave-0730/terraform' "
+                "/Users/jonah/Code/omni_home/docs/tracking/LEDGER.md"
+            ),
+            probe_stdout=(
+                "MERGED\t3e24d9bd9\n"
+                "ledger citations of wave-0730/terraform confirmed present"
+            ),
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any("[ABS_PATH]" in v for v in violations), violations
+    assert any("[STDOUT_EMIT]" in v and "GREP_COUNT" in v for v in violations), (
+        violations
+    )
+
+
+def test_omn_15710_cutoff_exempts_pre_existing_corpus_receipts(
+    tmp_path: Path,
+) -> None:
+    """The same fabricated shape as the test above, but timestamped just
+    before OMN_15710_CUTOFF: must be exempt from BOTH new rules, mirroring
+    HARDENING_CUTOFF's own migration-debt exemption for the other rules.
+    Regression for the corpus-wide false-positive volume ABS_PATH/STDOUT_EMIT
+    produced when applied retroactively (OMN-15710 verification)."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=PRE_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' /Users/jonah/Code/omni_home/notes.txt",
+            probe_stdout="not an integer at all",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[ABS_PATH]" in v or "[STDOUT_EMIT]" in v for v in violations), (
+        violations
+    )
+
+
+def test_main_reports_both_rule_violations_exit_1(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15710_CUTOFF_TS,
+            probe_command="grep -c 'x' /Users/jonah/notes.txt",
+            probe_stdout="not an integer",
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    exit_code = main(
+        [
+            str(receipt.relative_to(tmp_path)),
+            "--contracts-dir",
+            "contracts",
+        ]
+    )
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "[ABS_PATH]" in captured.out
+    assert "[STDOUT_EMIT]" in captured.out
