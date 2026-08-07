@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15722"
+title: "OCC guard-job timeout budgets raised above observed runner latency"
+summary: >-
+  Five guard jobs in onex_change_control/.github/workflows/ci.yml carried timeout-minutes budgets below
+  the observed latency of the self-hosted omnibase-ci runner fleet under concurrent load. A job that hits
+  its own timeout wall is recorded conclusion=cancelled, and the sole required umbrella context CI Summary
+  compares every needs.<job>.result against "success" fail-closed, so a guard that had already passed
+  was scored as a violation and turned the required context red. This ticket raises those five budgets
+  to 20 minutes and changes nothing else.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #6173 CI checks reach a terminal state with the five guard jobs no longer cancelled"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-occ-guard-timeout-budgets-raised"
+    description: >-
+      All five starved guard jobs in .github/workflows/ci.yml declare timeout-minutes 20. Substantive
+      and falsifiable - it fails if any of the five jobs still carries its old under-scoped budget, if
+      a job key was renamed, or if the wrong job's budget was edited.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          python3 -c "import sys,yaml; j=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']; keys=('validate-prod-promotion-grants','check-platform-leads-review-tripwire','check-bot-authored-authz-guard','predicate-parity','no-noncanonical-lifecycle-classes');
+          bad=[k for k in keys if j.get(k, {}).get('timeout-minutes') != 20]; sys.exit('starved guard
+          budgets remain: %s' % bad) if bad else print('true')"
+  - id: "dod-occ-guards-still-fail-closed"
+    description: >-
+      The five guards remain gating after the budget change - each is still a member of ci-summary's needs
+      list, still carries no continue-on-error, and CI Summary still asserts its result != "success" fail-closed;
+      and ci.yml still declares no top-level concurrency block. Falsifiable - it fails if any guard was
+      dropped from needs, made non-blocking, had its fail-closed comparison removed, or if a cancel-in-progress
+      concurrency block was introduced.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-guard-timeout-budgets-raised"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          python3 -c "import sys,yaml; src=open('.github/workflows/ci.yml').read(); w=yaml.safe_load(src);
+          jobs=w['jobs']; keys=('validate-prod-promotion-grants','check-platform-leads-review-tripwire','check-bot-authored-authz-guard','predicate-parity','no-noncanonical-lifecycle-classes');
+          needs=jobs['ci-summary']['needs']; missing=[k for k in keys if k not in needs]; soft=[k for
+          k in keys if 'continue-on-error' in jobs[k]]; unguarded=[k for k in keys if ('needs.'+k+'.result
+          }}\" != \"success\"') not in src]; conc=[k for k in w if str(k)=='concurrency']; sys.exit('gate
+          weakened missing=%s soft=%s unguarded=%s concurrency=%s' % (missing, soft, unguarded, conc))
+          if (missing or soft or unguarded or conc) else print('true')"
+  - id: "occ-self-bind-pr-6173"
+    description: >-
+      OCC self-binding stamp for OMN-15722. Binding only - it proves the companion PR identity for receipt-gate
+      binding and adjudicates no product behavior.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-guards-still-fail-closed"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6173 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          'if (.number == 6173 and .state == "OPEN" and .headRefName == "jonah/omn-15722-occ-guard-timeout-budget")
+          then "true" else error("unexpected OCC self-bind PR state") end'
