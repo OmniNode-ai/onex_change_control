@@ -3,23 +3,26 @@ schema_version: "1.0.0"
 ticket_id: "OMN-15722"
 title: "OCC guard-job timeout budgets raised above observed runner latency"
 summary: >-
-  Five guard jobs in onex_change_control/.github/workflows/ci.yml carried timeout-minutes budgets below
-  the observed latency of the self-hosted omnibase-ci runner fleet under concurrent load. A job that hits
+  Ten jobs in onex_change_control/.github/workflows/ci.yml declare a timeout-minutes and are members of
+  ci-summary's needs list. Their budgets (5, 10, 20 and 25 minutes on origin/dev) sat below the observed
+  runner-provisioning latency of the self-hosted omnibase-ci fleet under concurrent load. A job that hits
   its own timeout wall is recorded conclusion=cancelled, and the sole required umbrella context CI Summary
   compares every needs.<job>.result against "success" fail-closed, so a guard that had already passed
-  was scored as a violation and turned the required context red. This ticket raises those five budgets
-  and changes nothing else. Four go to 20 minutes. validate-prod-promotion-grants goes to 45, not 20,
-  because it measured 19m02s on PR #6173 run 31222755192 - 20 would have left it ~58 seconds of headroom,
-  which is the same defect one contention spike later. Its 19m02s is 11m48s of actions/checkout plus 5m30s
-  of setup-uv against a 2-second validation step, and checkout for the same repo and SHA ranged 74s to
-  708s across runners within that single run, so the budget must cover the fleet-latency tail rather than
-  the job's own work. Profiling that checkout phase is separate, un-ticketed work.
+  its own check was scored as a violation and turned the required context red. On PR #6173 run 31222755192,
+  inside that single run and for the same repo and SHA, actions/checkout ranged 6s to 1358s (22m38s) and
+  the setup-uv composite ranged 93s to 571s (9m31s), while validate-prod-promotion-grants' own validation
+  step took 2 seconds. The preamble alone has therefore been observed above 30 minutes, so any per-job
+  budget sized to that job's own worst observation is the same defect one contention spike later. This
+  ticket sets a uniform 45-minute floor across all ten and changes nothing else - no job is removed from
+  needs, made non-blocking, or exempted from the fail-closed comparison. Reducing the preamble itself
+  (fetch-depth: 0 full-history clone plus uv provisioning) is separate work.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "ci"
-    description: "PR #6173 CI checks reach a terminal state with the five guard jobs no longer cancelled"
+    description: "PR #6173 CI checks reach a terminal state with no ci-summary needs member cancelled
+      at its timeout wall"
     command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
 emergency_bypass:
   enabled: false
@@ -28,26 +31,25 @@ emergency_bypass:
 dod_evidence:
   - id: "dod-occ-guard-timeout-budgets-raised"
     description: >-
-      All five starved guard jobs in .github/workflows/ci.yml declare their intended per-job budget -
-      validate-prod-promotion-grants 45 (measured 19m02s, contention-dominated), the other four 20. Substantive
-      and falsifiable - it fails if any of the five jobs still carries its old under-scoped budget, if
-      a job key was renamed, if the wrong job's budget was edited, or if the worst offender was left at
-      the 20 that gave it only ~58s of headroom.
+      Every ci-summary needs member that declares a timeout-minutes carries the uniform 45-minute floor,
+      and there are exactly ten such members. Substantive and falsifiable - it fails if any member still
+      carries its old under-scoped budget, if a job key was renamed out of the needs list, if the wrong
+      job's budget was edited, or if a member's timeout-minutes was deleted to make the check pass vacuously.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
-          python3 -c "import sys,yaml; j=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']; exp={'validate-prod-promotion-grants':45,'check-platform-leads-review-tripwire':20,'check-bot-authored-authz-guard':20,'predicate-parity':20,'no-noncanonical-lifecycle-classes':20};
-          bad=[(k, j.get(k, {}).get('timeout-minutes'), v) for k, v in exp.items() if j.get(k, {}).get('timeout-minutes')
-          != v]; sys.exit('guard budgets not at intended values (job, actual, expected): %s' % bad) if
-          bad else print('true')"
+          python3 -c "import sys,yaml; j=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']; b={k:
+          j[k].get('timeout-minutes') for k in j['ci-summary']['needs'] if j[k].get('timeout-minutes')
+          is not None}; bad={k: v for k, v in b.items() if v != 45}; sys.exit('off the 45m floor: %s (budgeted
+          members: %d, expected 10)' % (bad, len(b))) if (bad or len(b) != 10) else print('true')"
   - id: "dod-occ-guards-still-fail-closed"
     description: >-
-      The five guards remain gating after the budget change - each is still a member of ci-summary's needs
-      list, still carries no continue-on-error, and CI Summary still asserts its result != "success" fail-closed;
-      and ci.yml still declares no top-level concurrency block. Falsifiable - it fails if any guard was
-      dropped from needs, made non-blocking, had its fail-closed comparison removed, or if a cancel-in-progress
+      All ten budgeted guards remain gating after the change - each is still a member of ci-summary's
+      needs list, still carries no continue-on-error, and CI Summary still asserts its result != "success"
+      fail-closed; and ci.yml still declares no top-level concurrency block. Falsifiable - it fails if
+      any guard was made non-blocking, had its fail-closed comparison removed, or if a cancel-in-progress
       concurrency block was introduced.
     source: "manual"
     status: "verified"
@@ -56,12 +58,11 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           python3 -c "import sys,yaml; src=open('.github/workflows/ci.yml').read(); w=yaml.safe_load(src);
-          jobs=w['jobs']; keys=('validate-prod-promotion-grants','check-platform-leads-review-tripwire','check-bot-authored-authz-guard','predicate-parity','no-noncanonical-lifecycle-classes');
-          needs=jobs['ci-summary']['needs']; missing=[k for k in keys if k not in needs]; soft=[k for
-          k in keys if 'continue-on-error' in jobs[k]]; unguarded=[k for k in keys if ('needs.'+k+'.result
-          }}\" != \"success\"') not in src]; conc=[k for k in w if str(k)=='concurrency']; sys.exit('gate
-          weakened missing=%s soft=%s unguarded=%s concurrency=%s' % (missing, soft, unguarded, conc))
-          if (missing or soft or unguarded or conc) else print('true')"
+          jobs=w['jobs']; keys=[k for k in jobs['ci-summary']['needs'] if jobs[k].get('timeout-minutes')
+          is not None]; soft=[k for k in keys if 'continue-on-error' in jobs[k]]; unguarded=[k for k in
+          keys if ('needs.'+k+'.result }}\" != \"success\"') not in src]; conc=[k for k in w if str(k)=='concurrency'];
+          sys.exit('gate weakened count=%d soft=%s unguarded=%s concurrency=%s' % (len(keys), soft, unguarded,
+          conc)) if (len(keys) != 10 or soft or unguarded or conc) else print('true')"
   - id: "occ-self-bind-pr-6173"
     description: >-
       OCC self-binding stamp for OMN-15722. Binding only - it proves the companion PR identity for receipt-gate
