@@ -1665,7 +1665,22 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 5
+    # OMN-15765: 5m was a budget sized to this job's own ~1s of Python logic,
+    # not to the preamble it depends on. `actions/checkout@v7` with
+    # `fetch-depth: 0` plus the `setup-uv` composite have been observed taking
+    # up to ~23m combined on the contended trusted-CI runner fleet
+    # (OMN-15722, PR #6173, run 31222755192: checkout alone ranged 6s-22m38s
+    # across jobs in one run). A job that hits `timeout-minutes` is recorded
+    # `conclusion=cancelled`, and CI Summary's fail-closed `!= success`
+    # comparison reddens that as an authz-guard REJECT even though the guard's
+    # own logic never ran — this produced 12/17 false "authz violation" reds
+    # on the 2026-08-08 D-cluster census (OMN-15765), 5 of them human-authored
+    # (occ#6172/#6175/#6176/#6182/#6188). This is starvation, not a matcher
+    # defect — the identity/path matcher itself is unit-tested correct in both
+    # directions (tests/unit/scripts/test_check_bot_authored_authz_guard.py)
+    # and is NOT touched here. 45m matches the uniform floor OMN-15722 set for
+    # the other nine timed ci-summary members on this same preamble.
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
