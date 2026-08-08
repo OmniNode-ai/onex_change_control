@@ -8,6 +8,12 @@ on:
     branches: [main, "hotfix/**"]
   pull_request:
     branches: [main, dev, "hotfix/**"]
+    # OMN-15731: default types (opened/synchronize/reopened) don't retrigger
+    # on a label change. label-gated CI pilot needs `labeled`/`unlabeled` so
+    # applying/removing `ci:ready` fires (or retracts) a heavy CI wave
+    # without requiring a new push; `ready_for_review` is included so a
+    # draft->ready flip also re-evaluates against the label state.
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   merge_group:
   workflow_dispatch:
 
@@ -30,7 +36,28 @@ jobs:
   pre-commit:
     name: Pre-commit
     needs: [zone-filter]
-    if: always()
+    # OMN-15731 label-gated CI pilot: this job is gated here -- and ONLY for
+    # dev-targeting PRs; push/merge_group/main-or-hotfix-targeting PRs are
+    # unaffected (`always()` still holds for them), preserving the
+    # promotion-boundary guarantee exactly as before. Gating `test` and
+    # `type-check` for the `main` promotion boundary would weaken the
+    # unconditional full-suite guarantee root CLAUDE.md rule #4 requires at
+    # that boundary, so they stay ungated there.
+    #
+    # Stale-comment correction (same OMN-15731 ticket, later commit): this
+    # comment previously claimed `test`/`type-check` "already skip on PRs
+    # targeting dev by design," so gating them here would add "zero
+    # incremental savings." That claim was the exact bug this ticket fixes
+    # elsewhere in this file -- a `github.base_ref != 'dev'` carve-out on
+    # both jobs' `if:` meant they silently skipped on every dev PR while
+    # reading as passing. That carve-out is now removed (see `test`/
+    # `type-check` below and their CI-Summary strict block); `test` and
+    # `type-check` run unconditionally on non-docs-only PRs, dev included.
+    # This job's own `ci:ready` gate is unaffected by that fix -- it was
+    # never conditioned on the (mis)stated rationale, only on the label --
+    # but the rationale text is corrected here so it does not misdescribe
+    # the file it sits in.
+    if: always() && (github.event_name != 'pull_request' || github.base_ref != 'dev' || contains(github.event.pull_request.labels.*.name, 'ci:ready'))
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -2042,6 +2069,21 @@ jobs:
               echo "::error::type-check did not pass (result: ${{ needs.type-check.result }}) - fail-closed (OMN-15731)"
               exit 1
             fi
+          fi
+          # OMN-15731: same strict fail-closed pattern for the label-gated CI
+          # pilot. `pre-commit` now legitimately skips ONLY for a dev-targeting
+          # PR missing the `ci:ready` label -- the exact same shape as every
+          # other block above (unconditional job, `if: always()` before this
+          # change), so a skip here is either that specific pilot case or an
+          # anomaly, never a pre-existing legitimate exemption. The generic
+          # rollup below tests only for 'failure'/'cancelled', so without this
+          # block a SKIPPED-because-unlabeled `pre-commit` would read CI
+          # Summary = SUCCESS with zero lint/type/contract checks run -- the
+          # exact AC(b) trap named on OMN-15731. Only 'success' passes;
+          # skipped/cancelled/failure ALL block.
+          if [[ "${{ needs.pre-commit.result }}" != "success" ]]; then
+            echo "::error::pre-commit did not pass (result: ${{ needs.pre-commit.result }}) - fail-closed (OMN-15731). If this is a dev-targeting PR missing the label, apply 'ci:ready' to run the full pre-commit suite."
+            exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
             echo "One or more required jobs failed or were cancelled"
