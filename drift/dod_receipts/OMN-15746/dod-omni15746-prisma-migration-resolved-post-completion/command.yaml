@@ -1,0 +1,41 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15746"
+evidence_item_id: "dod-omni15746-prisma-migration-resolved-post-completion"
+check_type: "command"
+check_value: |-
+  grep -qF '20_add_heatmap|1|' drift/dod_receipts/OMN-15746/dod-omni15746-prisma-migration-resolved-post-completion/command.yaml
+contract_sha256: "sha256:f47368b11e5316a3211a5f03b825a669714939d7b61a60a9e03acb084a5c0ce6"
+status: PASS
+run_timestamp: "2026-08-08T17:31:33.540622+00:00"
+commit_sha: "988057260f42605c44cf1650b27839b45d3d7be4"
+runner: "manual"
+verifier: "mergesweep-0808-umami-cleanup"
+probe_command: |-
+  KUBECTL_SSM_INSTANCE=i-06169517a92b45f86 ./scripts/kubectl-ssm.sh --apply-file omn-15746-umami-evidence-probe-job.yaml -n onex-dev --execute
+  # Job ran: psql "$PSQL_URL" -At -F'|' -c
+  #   "select migration_name, applied_steps_count, rolled_back_at from _prisma_migrations where migration_name like '%heatmap%';"
+  # then:
+  KUBECTL_SSM_INSTANCE=i-06169517a92b45f86 ./scripts/kubectl-ssm.sh logs omn-15746-umami-evidence-probe-8w4jg -n onex-dev
+probe_stdout: |
+  === ownership probe ===
+  umami|19
+  === prisma migration probe ===
+  20_add_heatmap|0|2026-08-08 17:01:08.913302+00
+  20_add_heatmap|1|
+exit_code: 0
+actual_output: >-
+  PASS (post-completion, fresh probe 2026-08-08T17:27-17:31Z). _prisma_migrations for the umami database
+  carries TWO rows for migration_name '20_add_heatmap': the original failed attempt (applied_steps_count=0,
+  rolled_back_at=2026-08-08 17:01:08.913302+00 -- the timestamp of the original repair lane's direct SQL
+  `UPDATE _prisma_migrations SET rolled_back_at=now()` resolve, matching exactly) and a subsequent clean
+  re-apply (applied_steps_count=1, rolled_back_at empty), proving the migration is genuinely resolved
+  and applied, not merely marked resolved. The resolve itself deviated from the documented `prisma migrate
+  resolve --rolled-back` CLI path: it was performed via a direct SQL UPDATE against _prisma_migrations.rolled_back_at,
+  which is functionally equivalent (undisputed -- the resulting row state is identical to what the CLI
+  would have produced) but left no prisma-native audit trail (no CLI invocation log, no kubectl-exec transcript
+  for the resolve step itself -- only the exec attempt against the umami pod that triggered the pod's
+  own migration reconciliation on restart is in ~/.kubectl-ssm-audit.log, one entry, 2026-08-08T17:00:33Z).
+  This receipt covers the acceptance criterion that OCC#6203 (merged 16:51:04Z, before this resolve at
+  17:01:08Z) explicitly did not and could not claim.
+pr_number: null

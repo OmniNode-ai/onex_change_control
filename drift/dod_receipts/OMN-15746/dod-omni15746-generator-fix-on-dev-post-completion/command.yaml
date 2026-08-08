@@ -1,0 +1,49 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15746"
+evidence_item_id: "dod-omni15746-generator-fix-on-dev-post-completion"
+check_type: "command"
+check_value: |-
+  grep -qF 'uselibpqcompat=true' drift/dod_receipts/OMN-15746/dod-omni15746-generator-fix-on-dev-post-completion/command.yaml
+contract_sha256: "sha256:f47368b11e5316a3211a5f03b825a669714939d7b61a60a9e03acb084a5c0ce6"
+status: PASS
+run_timestamp: "2026-08-08T17:31:33.540622+00:00"
+commit_sha: "988057260f42605c44cf1650b27839b45d3d7be4"
+runner: "manual"
+verifier: "mergesweep-0808-umami-cleanup"
+probe_command: |-
+  gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/setup-cluster-secrets.sh?ref=dev" --jq '.content' | base64 -d | sed -n '705,726p'
+  gh api repos/OmniNode-ai/omninode_infra/commits/dev --jq '.sha'
+probe_stdout: |
+  local app_secret=""
+  if [ "${ROTATE_UMAMI_SECRET:-0}" = "0" ] && secret_exists "umami-credentials" "$target_ns"; then
+    umami_db_password=$(get_secret_key "umami-credentials" "$target_ns" "UMAMI_DB_PASSWORD") || true
+    app_secret=$(get_secret_key "umami-credentials" "$target_ns" "APP_SECRET") || true
+  fi
+  [ -z "$umami_db_password" ] && umami_db_password=$(openssl rand -hex 24)
+  [ -z "$app_secret" ] && app_secret=$(openssl rand -hex 32)
+
+  local encoded_pass
+  encoded_pass=$(urlencode "$umami_db_password")
+  local database_url="postgresql://umami:${encoded_pass}@${POSTGRES_HOST}:${POSTGRES_PORT}/umami?sslmode=${POSTGRES_SSLMODE}"
+  # umami's `pg-connection-string` driver aliases bare sslmode=require to
+  # verify-full (full CA-chain validation), which fails against RDS's
+  # Amazon-issued cert with no CA bundle mounted in the pod
+  # ("self-signed certificate in certificate chain"). uselibpqcompat=true
+  # restores classic libpq `require` semantics (encrypt, don't verify) --
+  # matching how every other in-cluster client already behaves under
+  # sslmode=require. Without this, RDS-mode umami connections TLS-fail.
+  # See OMN-15738 / OMN-15746.
+  if [ "$POSTGRES_SSLMODE" != "disable" ]; then
+    database_url="${database_url}&uselibpqcompat=true"
+  fi
+  c032fa5aa8d58918f6880b89256c2340d882b8d3
+exit_code: 0
+actual_output: >-
+  PASS (post-completion, fresh probe 2026-08-08T17:31Z). The prior receipt dod-omni15746-generator-fix-committed
+  only proved the fix landed on PR #826's HEAD commit (69376862, 2026-08-08T16:22:48Z). This receipt re-probes
+  directly against origin/dev's live tip (commit c032fa5aa8d58918f6880b89256c2340d882b8d3), confirming
+  the create_umami_credentials() &uselibpqcompat=true guard is present on the promoted, merged mainline
+  -- not just on the now-closed PR branch -- consistent with the ledger correction that #826 merged 2026-08-08T16:55:42Z
+  via auto-merge pre-armed by github-actions[bot] at 15:49:54Z.
+pr_number: null
