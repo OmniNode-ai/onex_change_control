@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15744"
+evidence_item_id: "outbound-forwarding-live-proof"
+check_type: "command"
+check_value: |-
+  docker exec omnibase-infra-redpanda sh -c '(cat /tmp/synth_record2.json; echo) | rpk topic produce onex.evt.omniintelligence.llm-call-completed.v1 --key SYNTHETIC-mergesweep-0808-gwproof-67440bd5'
+contract_sha256: "sha256:7e2b3b79d22229e53898d0e6dcd10b32976eef8d48e0c64f5f5c51dbc7add852"
+contract_entry_sha256: "sha256:37cf078e0196084bbdb31a659fffe6208a4bac618bb40d4ba81b5032fc5cd169"
+status: PASS
+run_timestamp: "2026-08-08T16:52:56Z"
+commit_sha: "07eeccbf0d895a172c34fef2dbb191e2f7685b3a"
+runner: "mergesweep-0808-gwproof (Claude Code lane, foreground SSH exec)"
+verifier: "one synthetic ModelEventEnvelope record published to local dev-lane redpanda on .201, forwarder
+  log watched live for the outbound delivery line"
+probe_command: |-
+  ssh jonah@192.168.86.201 "docker exec omnibase-infra-redpanda sh -c '(cat /tmp/synth_record2.json; echo) | rpk topic produce onex.evt.omniintelligence.llm-call-completed.v1 --key SYNTHETIC-mergesweep-0808-gwproof-67440bd5'"; then: ssh jonah@192.168.86.201 "docker logs omninode-gateway-forwarder --since 3m 2>&1 | grep -iE 'direction=outbound'"; then: ssh jonah@192.168.86.201 "docker exec omnibase-infra-redpanda rpk group describe tenant-beta-gateway-canary-79afa7263852-gateway-forwarder-outbound"
+probe_stdout: |
+  Mutation scope: ONE synthetic record to onex.evt.omniintelligence.llm-call-completed.v1,
+  an outbound member of node_bus_forwarder_effect/contract.yaml mirror_topics, chosen
+  because it already held only stale pre-container records and is not consumed by any
+  live production path. Local dev redpanda only (omnibase-infra-redpanda, alias `redpanda`
+  on omnibase-infra-network, per local_bus.bootstrap_servers in beta-gateway-canary.yaml).
+  No cloud MSK write, no container restart/recreate command issued by this lane, no
+  prod/stability/judge topic touched.
+
+  BEFORE: rpk topic describe -p at 16:52:39Z showed HIGH-WATERMARK=4 (offset 3 was a
+  first-attempt malformed record -- flat payload copied from an existing stale record,
+  missing the required ModelEventEnvelope `payload` wrapper key -- that failed pydantic
+  validation server-side and was never delivered: "pydantic_core._pydantic_core.ValidationError:
+  1 validation error for ModelEventEnvelope[dict[str, object]] / payload / Field required").
+  Outbound consumer group tenant-beta-gateway-canary-79afa7263852-gateway-forwarder-outbound
+  was Stable, TOTAL-LAG=3 against 3 pre-existing stale records. Fixed per the two-strike
+  rule (one retry, malformed-payload cause identified and corrected) by wrapping the same
+  fields under {"payload": {...}, "envelope_id", "envelope_timestamp", "correlation_id",
+  "event_type"} -- only `payload` is a required field on ModelEventEnvelope, confirmed by
+  reading omnibase_core.models.events.model_event_envelope.
+
+  $ produce (retry, envelope-wrapped), 16:52:xxZ:
+  Produced to partition 0 at offset 4 with timestamp 1786207976355.
+
+  $ forwarder log, 16:52:56,408:
+  2026-08-08 16:52:56,408 INFO omnibase_infra.nodes.node_bus_forwarder_effect.services.service_gateway_delivery Gateway delivery acknowledged envelope_id=8b0b9e02-857a-4eca-9a60-25d83c2e4484 direction=outbound source_topic=onex.evt.omniintelligence.llm-call-completed.v1 source_partition=0 source_offset=4
+
+  $ rpk group describe, 16:53:24Z:
+  GROUP        tenant-beta-gateway-canary-79afa7263852-gateway-forwarder-outbound
+  STATE        Stable
+  TOTAL-LAG    0
+  onex.evt.omniintelligence.llm-call-completed.v1  0  CURRENT-OFFSET=5  LOG-END-OFFSET=5  LAG=0
+
+  Synthetic record body (envelope_id=8b0b9e02-857a-4eca-9a60-25d83c2e4484,
+  clearly marked synthetic in payload):
+  {"payload": {"session_id": "SYNTHETIC-MARKER-mergesweep-0808-gwproof-outbound-proof", "model_id": "SYNTHETIC-outbound-proof-probe", "reporting_source": "SYNTHETIC-mergesweep-0808-gwproof", "usage_source": "SYNTHETIC", "correlation_id": "23abca57-9d18-4bc0-9850-9ac0cf32e6ab", "input_tokens": 0, "output_tokens": 0, "total_cost_usd": 0.0, "idempotency_key": "af1c81c2dd384602a8516ad929e27bff-retry2", "source_file_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "emitted_at": "2026-08-08T16:52:35.476888+00:00", "synthetic": true, "synthetic_probe_id": "67440bd5-d40b-4a10-a14c-fb017768a2a4"}, "envelope_id": "8b0b9e02-857a-4eca-9a60-25d83c2e4484", "envelope_timestamp": "2026-08-08T16:52:35.477031+00:00", "correlation_id": "23abca57-9d18-4bc0-9850-9ac0cf32e6ab", "event_type": "omniintelligence.llm-call-completed"}
+
+  Caveat: no InitProducerId log line was observed at INFO level in this
+  aiokafka build (0 matches over full container log history); the
+  direction=outbound delivery-acknowledged line is the decisive proof
+  instead. Container RestartCount was 1 (StartedAt 2026-08-08T16:50:03Z,
+  ExitCode 0) at receipt time, believed coincident with the offset-3
+  ValidationError above; this lane issued no restart/recreate command.
+actual_output: >-
+  PASS: the previously-unproven outbound leg of the OMN-15744 stopgap is now proven live. One synthetic
+  record produced to the local dev-lane redpanda topic onex.evt.omniintelligence.llm-call-completed.v1
+  (envelope_id 8b0b9e02-857a-4eca-9a60-25d83c2e4484) was forwarded to the cloud MSK broker within ~19
+  seconds of publish, evidenced by the forwarder's own direction=outbound delivery-acknowledged log line
+  naming that exact envelope_id, source_topic, partition, and offset; the outbound consumer group advanced
+  to zero lag on the source topic. This closes the "BRIDGE STATE: HALF LIVE" finding from the mergesweep-0808-gwfix2-verify
+  ledger row (2026-08-08T16:46:25Z) -- the bridge is now proven live in both directions, not just inbound.
+exit_code: 0
+pr_number: 2686
