@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15746"
+title: "umami RDS ownership repair + prisma resolve + durable uselibpqcompat fix"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #826 (branch jonah/omn-15738-pgweb-umami-onexdev). Binds
+  live evidence for the durable half already landed (uselibpqcompat=true generator fix in create_umami_credentials())
+  and the state the fix builds on: pgweb Running, umami TLS-connecting to RDS, and the applied NetworkPolicy
+  egress rule. Remaining acceptance criteria on OMN-15746 (RDS ownership repair, prisma migrate resolve,
+  sustained 1/1 Running) are open and NOT claimed here.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #826 CI checks"
+    command: "gh pr checks 826 --repo OmniNode-ai/omninode_infra"
+  - kind: "manual"
+    description: "pgweb pod Running, umami pod TLS-connecting, NetworkPolicy applied"
+    command: "scripts/kubectl-ssm.sh get pods -n onex-dev -l app.kubernetes.io/name=pgweb"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-826"
+    description: "PR #826 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 826 --repo OmniNode-ai/omninode_infra --json number,state,files"
+  - id: "dod-omni15746-pgweb-running"
+    description: >-
+      Live readback: pgweb pod is 1/1 Running on onex-dev via kubectl-ssm against i-06169517a92b45f86
+      (2026-08-08).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          KUBECTL_SSM_INSTANCE=i-06169517a92b45f86 bash scripts/kubectl-ssm.sh get pods -n onex-dev -l app.kubernetes.io/name=pgweb -o jsonpath='{.items[0].status.phase}' | grep -qx Running
+  - id: "dod-omni15746-umami-tls-connect"
+    description: >-
+      Live readback: umami app container reaches "Database connection successful" over TLS against RDS
+      before failing at the known, already-diagnosed P3009 (failed migration 20_add_heatmap), confirming
+      TLS connectivity is solved and only migration state remains open (2026-08-08).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          KUBECTL_SSM_INSTANCE=i-06169517a92b45f86 bash scripts/kubectl-ssm.sh logs -n onex-dev -l app.kubernetes.io/name=umami -c umami --tail=40 | grep -qF 'Database connection successful'
+  - id: "dod-omni15746-networkpolicy-applied"
+    description: >-
+      Live readback: onex-dev-allow-egress-managed-postgres NetworkPolicy in the onex-dev namespace includes
+      both pgweb and umami in its podSelector allowlist (2026-08-08).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          KUBECTL_SSM_INSTANCE=i-06169517a92b45f86 bash scripts/kubectl-ssm.sh get networkpolicy -n onex-dev onex-dev-allow-egress-managed-postgres -o jsonpath='{.spec.podSelector.matchExpressions[0].values}' | grep -qF 'pgweb' && KUBECTL_SSM_INSTANCE=i-06169517a92b45f86 bash scripts/kubectl-ssm.sh get networkpolicy -n onex-dev onex-dev-allow-egress-managed-postgres -o jsonpath='{.spec.podSelector.matchExpressions[0].values}' | grep -qF 'umami'
+  - id: "dod-omni15746-generator-fix-committed"
+    description: >-
+      create_umami_credentials() in scripts/setup-cluster-secrets.sh appends &uselibpqcompat=true to DATABASE_URL
+      when sslmode is require or stronger, landed on PR #826 head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          SHA=$(gh api repos/OmniNode-ai/omninode_infra/pulls/826 --jq '.head.sha') && gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/setup-cluster-secrets.sh?ref=${SHA}" --jq '.content' | base64 -d | grep -qF 'uselibpqcompat=true'
