@@ -158,6 +158,7 @@ _COMMAND_HEAD_ALLOWLIST: frozenset[str] = frozenset(
         "sh",
         "pytest",
         "docker",
+        "kubectl",
         "pre-commit",
         "rg",
         "grep",
