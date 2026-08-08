@@ -43,3 +43,36 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6204 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dns-tls-broker-connectivity-proof"
+    description: >-
+      Live proof that the gateway-forwarder container on .201 resolves all 6 MSK broker FQDNs to the SNI-routing
+      bastion (extra_hosts stopgap, OMN-15744) and completes a full TLS handshake with cert verification
+      against the bastion. Commands executed live inside the running omninode-gateway-forwarder container,
+      not simulated.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "docker exec omninode-gateway-forwarder getent hosts b-1.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com
+          b-2.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com b-3.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com
+          b-4.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com b-5.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com
+          b-6.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com"
+      - check_type: "command"
+        check_value: "docker exec omninode-gateway-forwarder sh -c 'echo | openssl s_client -connect b-4.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com:9098
+          -servername b-4.omninodedevmsk.7ozyd3.c14.kafka.us-east-1.amazonaws.com 2>&1 | grep -E \"subject=|issuer=|Verify
+          return code|Verification\"'"
+      - check_type: "command"
+        check_value: "docker inspect omninode-gateway-forwarder --format '{{json .HostConfig.ExtraHosts}}'"
+  - id: "outbound-forwarding-live-proof"
+    description: >-
+      Live proof of a local-to-cloud outbound forward: one synthetic ModelEventEnvelope-wrapped record
+      was produced to the local redpanda mirror topic onex.evt.omniintelligence.llm-call-completed.v1
+      on omnibase-infra-redpanda (.201 dev lane), and the gateway-forwarder logged a direction=outbound
+      delivery-acknowledged line for that exact envelope_id within seconds. This closes the OMN-15744
+      stopgap's previously-unproven outbound leg (inbound was already flowing).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "docker exec omnibase-infra-redpanda sh -c '(cat /tmp/synth_record2.json; echo) |
+          rpk topic produce onex.evt.omniintelligence.llm-call-completed.v1 --key SYNTHETIC-mergesweep-0808-gwproof-67440bd5'"
+      - check_type: "command"
+        check_value: "docker logs omninode-gateway-forwarder --since 3m 2>&1 | grep -iE 'direction=outbound'"
