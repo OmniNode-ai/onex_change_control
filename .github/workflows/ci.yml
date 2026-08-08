@@ -8,8 +8,18 @@ on:
     branches: [main, "hotfix/**"]
   pull_request:
     branches: [main, dev, "hotfix/**"]
+    # OMN-15731: default types (opened/synchronize/reopened) don't retrigger
+    # on a label change. label-gated CI pilot needs `labeled`/`unlabeled` so
+    # applying/removing `ci:ready` fires (or retracts) a heavy CI wave
+    # without requiring a new push; `ready_for_review` is included so a
+    # draft->ready flip also re-evaluates against the label state.
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   merge_group:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Zone filter (OMN-10475): short-circuit heavy jobs on docs-only and
@@ -26,7 +36,17 @@ jobs:
   pre-commit:
     name: Pre-commit
     needs: [zone-filter]
-    if: always()
+    # OMN-15731 label-gated CI pilot: `test` and `type-check` (below) already
+    # skip on PRs targeting `dev` -- the everyday path -- by design (see the
+    # `test` job's own `if:`), so gating them adds zero incremental savings
+    # there and gating them for the `main` promotion boundary would weaken
+    # the unconditional full-suite guarantee root CLAUDE.md rule #4 requires
+    # at that boundary. `pre-commit` is the job that actually runs
+    # unconditionally on every dev PR today (`if: always()`), so it is the
+    # one gated here -- and ONLY for dev-targeting PRs; push/merge_group/
+    # main-or-hotfix-targeting PRs are unaffected (`always()` still holds for
+    # them), preserving the promotion-boundary guarantee exactly as before.
+    if: always() && (github.event_name != 'pull_request' || github.base_ref != 'dev' || contains(github.event.pull_request.labels.*.name, 'ci:ready'))
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -1645,7 +1665,22 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 5
+    # OMN-15765: 5m was a budget sized to this job's own ~1s of Python logic,
+    # not to the preamble it depends on. `actions/checkout@v7` with
+    # `fetch-depth: 0` plus the `setup-uv` composite have been observed taking
+    # up to ~23m combined on the contended trusted-CI runner fleet
+    # (OMN-15722, PR #6173, run 31222755192: checkout alone ranged 6s-22m38s
+    # across jobs in one run). A job that hits `timeout-minutes` is recorded
+    # `conclusion=cancelled`, and CI Summary's fail-closed `!= success`
+    # comparison reddens that as an authz-guard REJECT even though the guard's
+    # own logic never ran — this produced 12/17 false "authz violation" reds
+    # on the 2026-08-08 D-cluster census (OMN-15765), 5 of them human-authored
+    # (occ#6172/#6175/#6176/#6182/#6188). This is starvation, not a matcher
+    # defect — the identity/path matcher itself is unit-tested correct in both
+    # directions (tests/unit/scripts/test_check_bot_authored_authz_guard.py)
+    # and is NOT touched here. 45m matches the uniform floor OMN-15722 set for
+    # the other nine timed ci-summary members on this same preamble.
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -2034,6 +2069,21 @@ jobs:
           # never that the gate opted out.
           if [[ "${{ needs.contract-shape-v1.result }}" != "success" ]]; then
             echo "::error::contract-shape-v1 did not pass (result: ${{ needs.contract-shape-v1.result }}) - fail-closed (OMN-15669)"
+            exit 1
+          fi
+          # OMN-15731: same strict fail-closed pattern for the label-gated CI
+          # pilot. `pre-commit` now legitimately skips ONLY for a dev-targeting
+          # PR missing the `ci:ready` label -- the exact same shape as every
+          # other block above (unconditional job, `if: always()` before this
+          # change), so a skip here is either that specific pilot case or an
+          # anomaly, never a pre-existing legitimate exemption. The generic
+          # rollup below tests only for 'failure'/'cancelled', so without this
+          # block a SKIPPED-because-unlabeled `pre-commit` would read CI
+          # Summary = SUCCESS with zero lint/type/contract checks run -- the
+          # exact AC(b) trap named on OMN-15731. Only 'success' passes;
+          # skipped/cancelled/failure ALL block.
+          if [[ "${{ needs.pre-commit.result }}" != "success" ]]; then
+            echo "::error::pre-commit did not pass (result: ${{ needs.pre-commit.result }}) - fail-closed (OMN-15731). If this is a dev-targeting PR missing the label, apply 'ci:ready' to run the full pre-commit suite."
             exit 1
           fi
           if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
