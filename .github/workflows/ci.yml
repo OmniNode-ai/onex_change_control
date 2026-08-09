@@ -36,16 +36,27 @@ jobs:
   pre-commit:
     name: Pre-commit
     needs: [zone-filter]
-    # OMN-15731 label-gated CI pilot: `test` and `type-check` (below) already
-    # skip on PRs targeting `dev` -- the everyday path -- by design (see the
-    # `test` job's own `if:`), so gating them adds zero incremental savings
-    # there and gating them for the `main` promotion boundary would weaken
-    # the unconditional full-suite guarantee root CLAUDE.md rule #4 requires
-    # at that boundary. `pre-commit` is the job that actually runs
-    # unconditionally on every dev PR today (`if: always()`), so it is the
-    # one gated here -- and ONLY for dev-targeting PRs; push/merge_group/
-    # main-or-hotfix-targeting PRs are unaffected (`always()` still holds for
-    # them), preserving the promotion-boundary guarantee exactly as before.
+    # OMN-15731 label-gated CI pilot: this job is gated here -- and ONLY for
+    # dev-targeting PRs; push/merge_group/main-or-hotfix-targeting PRs are
+    # unaffected (`always()` still holds for them), preserving the
+    # promotion-boundary guarantee exactly as before. Gating `test` and
+    # `type-check` for the `main` promotion boundary would weaken the
+    # unconditional full-suite guarantee root CLAUDE.md rule #4 requires at
+    # that boundary, so they stay ungated there.
+    #
+    # Stale-comment correction (same OMN-15731 ticket, later commit): this
+    # comment previously claimed `test`/`type-check` "already skip on PRs
+    # targeting dev by design," so gating them here would add "zero
+    # incremental savings." That claim was the exact bug this ticket fixes
+    # elsewhere in this file -- a `github.base_ref != 'dev'` carve-out on
+    # both jobs' `if:` meant they silently skipped on every dev PR while
+    # reading as passing. That carve-out is now removed (see `test`/
+    # `type-check` below and their CI-Summary strict block); `test` and
+    # `type-check` run unconditionally on non-docs-only PRs, dev included.
+    # This job's own `ci:ready` gate is unaffected by that fix -- it was
+    # never conditioned on the (mis)stated rationale, only on the label --
+    # but the rationale text is corrected here so it does not misdescribe
+    # the file it sits in.
     if: always() && (github.event_name != 'pull_request' || github.base_ref != 'dev' || contains(github.event.pull_request.labels.*.name, 'ci:ready'))
     runs-on: >-
       ${{
@@ -200,9 +211,24 @@ jobs:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
     # Pre-commit hook runs mypy only on changed files (pre-push stage), while this job
     # checks the entire codebase (src/ and tests/) to catch type errors across all files.
+    #
+    # OMN-15731: previously skipped on every dev-targeting PR via a
+    # `github.base_ref != 'dev'` clause AND'd onto this condition (added by
+    # OMN-14098 / PR #3665, 2026-07-07), on the theory that `smart-test-select`
+    # (below) would cover dev PRs instead. It never did -- its outputs
+    # (`selected_paths`/`matrix`/`is_full_suite`) were never consumed by any
+    # job (no `needs: smart-test-select` anywhere in this file), so the dev
+    # path ran NEITHER the full check NOR a governed narrowed one. Since dev
+    # is this repo's default branch, that meant type-check ran on
+    # essentially zero real PRs for a month. Root fix: no per-branch carve-out
+    # here; mypy runs on every non-docs-only PR. OCC's codebase is small
+    # enough that unconditional-on-dev matches the CLAUDE.md rule-4
+    # fail-closed default until a governed selector is actually wired for
+    # type-checking (it currently only narrows pytest, and only in repos
+    # that consume it -- OCC never did).
     name: Type Check
     needs: zone-filter
-    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    if: needs.zone-filter.outputs.docs_only != 'true'
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -218,59 +244,23 @@ jobs:
       - name: Run mypy
         run: uv run mypy src/ tests/
 
-  smart-test-select:
-    name: Compute Smart Test Selection
-    # OMN-14098 evidence-only fast-lane: docs_only guard AND'd onto the if: below.
-    needs: [zone-filter]
-    runs-on: >-
-      ${{
-        (github.event_name == 'pull_request' &&
-            github.event.pull_request.head.repo.full_name != github.repository)
-        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
-        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
-      }}
-    if: github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.zone-filter.outputs.docs_only != 'true'
-    outputs:
-      selected_paths: ${{ steps.select.outputs.selected_paths }}
-      split_count: ${{ steps.select.outputs.split_count }}
-      matrix: ${{ steps.select.outputs.matrix }}
-      is_full_suite: ${{ steps.select.outputs.is_full_suite }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-uv
-        with:
-          python-version: "3.12"
-      - name: Compute changed files vs PR base
-        id: changed
-        run: |
-          git fetch origin "${{ github.base_ref }}" --no-tags
-          git diff --name-only "origin/${{ github.base_ref }}"...HEAD > /tmp/changed_files.txt
-          echo "Changed files:"
-          cat /tmp/changed_files.txt
-      - name: Run smart test selection
-        id: select
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          ENABLE_SMART_TESTS: ${{ vars.ENABLE_SMART_TESTS }}
-        run: |
-          [ "$ENABLE_SMART_TESTS" = "true" ] && FEATURE_FLAG="on" || FEATURE_FLAG="off"
-          RESULT=$(PYTHONPATH=. uv run python scripts/ci/detect_test_paths.py \
-            --changed-files-from /tmp/changed_files.txt \
-            --ref-name "$HEAD_REF" \
-            --event-name pull_request \
-            --feature-flag "$FEATURE_FLAG")
-          echo "Selection result: $RESULT"
-          echo "selected_paths=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(json.dumps(d["selected_paths"]))')" >> "$GITHUB_OUTPUT"
-          echo "split_count=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["split_count"])')" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(json.dumps(d["matrix"]))')" >> "$GITHUB_OUTPUT"
-          echo "is_full_suite=$(echo "$RESULT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(str(d["is_full_suite"]).lower())')" >> "$GITHUB_OUTPUT"
-
   test:
     name: Tests
+    # OMN-15731: `smart-test-select` (computed changed-file-based selection
+    # via scripts/ci/detect_test_paths.py) existed in this file but was never
+    # wired to this job -- no `needs: smart-test-select`, no consumption of
+    # its `selected_paths`/`matrix` outputs anywhere. Combined with a
+    # `github.base_ref != 'dev'` clause on THIS job's own `if:` (added by
+    # OMN-14098 / PR #3665, 2026-07-07), the net effect was that dev-targeting
+    # PRs ran neither the governed selector's narrowed set nor the full
+    # suite -- zero unit tests, on the default branch. The orphaned
+    # smart-test-select job has been removed rather than wired: OCC's suite
+    # is small enough that full-suite-on-every-PR matches the CLAUDE.md
+    # rule-4 fail-closed default (governed selection is for repos where the
+    # full suite is the bottleneck; wiring a selector here is a separate,
+    # deliberate follow-up, not a silent-skip default).
     needs: zone-filter
-    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    if: needs.zone-filter.outputs.docs_only != 'true'
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -1196,7 +1186,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -1253,7 +1243,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -1300,7 +1290,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 10
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -1377,7 +1367,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -1450,7 +1440,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -1512,7 +1502,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -1555,7 +1545,21 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 5
+    # OMN-15722: a uniform 45m floor across every ci-summary `needs:` member
+    # that declares a timeout-minutes. Measured on PR #6173 run 31222755192
+    # (head 2df62fc62): inside that ONE run, for the same repo and the same SHA,
+    # `Checkout code` ranged 6s to 1358s (22m38s), and `Run ./.github/actions/
+    # setup-uv` ranged 93s to 571s (9m31s) across the jobs that reached it,
+    # while the ten budgeted gates' own steps took at most 53s. Checkout alone
+    # has therefore been observed at 22m38s, so the 5/10/20/25 budgets on dev
+    # all sat below an already-observed single-phase latency, and a budget sized
+    # to one job's worst total is the same defect one contention spike later.
+    # A job that hits its wall is recorded conclusion=cancelled, which CI
+    # Summary's fail-closed `!= success` comparison reddens — so this is a
+    # starvation bug, not a slow check. Reducing the preamble (fetch-depth: 0
+    # full-history clone plus uv provisioning on a 64-runner shared fleet) is
+    # separate work.
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -1603,7 +1607,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 5
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -1665,7 +1669,22 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 5
+    # OMN-15765: 5m was a budget sized to this job's own ~1s of Python logic,
+    # not to the preamble it depends on. `actions/checkout@v7` with
+    # `fetch-depth: 0` plus the `setup-uv` composite have been observed taking
+    # up to ~23m combined on the contended trusted-CI runner fleet
+    # (OMN-15722, PR #6173, run 31222755192: checkout alone ranged 6s-22m38s
+    # across jobs in one run). A job that hits `timeout-minutes` is recorded
+    # `conclusion=cancelled`, and CI Summary's fail-closed `!= success`
+    # comparison reddens that as an authz-guard REJECT even though the guard's
+    # own logic never ran — this produced 12/17 false "authz violation" reds
+    # on the 2026-08-08 D-cluster census (OMN-15765), 5 of them human-authored
+    # (occ#6172/#6175/#6176/#6182/#6188). This is starvation, not a matcher
+    # defect — the identity/path matcher itself is unit-tested correct in both
+    # directions (tests/unit/scripts/test_check_bot_authored_authz_guard.py)
+    # and is NOT touched here. 45m matches the uniform floor OMN-15722 set for
+    # the other nine timed ci-summary members on this same preamble.
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -1794,7 +1813,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 25
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -2055,6 +2074,30 @@ jobs:
           if [[ "${{ needs.contract-shape-v1.result }}" != "success" ]]; then
             echo "::error::contract-shape-v1 did not pass (result: ${{ needs.contract-shape-v1.result }}) - fail-closed (OMN-15669)"
             exit 1
+          fi
+          # OMN-15731: strict fail-closed pattern for `test` and `type-check`.
+          # Both jobs are LEGITIMATELY skipped when zone-filter's docs_only
+          # output is 'true' (the OMN-14098 evidence-only fast lane) -- that
+          # skip must still pass CI Summary. Any OTHER skip (or a
+          # failure/cancelled) is exactly the hole this ticket closes: a
+          # since-orphaned `smart-test-select` job's outputs were never
+          # consumed by `test`, and a `github.base_ref != 'dev'` clause on
+          # both jobs' own `if:` (removed by this same change) meant every
+          # dev-targeting PR skipped both jobs outright while the generic
+          # rollup below -- which only checks for 'failure'/'cancelled' --
+          # reported them as passing. dev is this repo's default branch, so
+          # that was effectively zero unit tests and zero type-checking on
+          # all normal OCC traffic. THIS LINE IS THE MECHANISM, not the
+          # jobs' existence.
+          if [[ "${{ needs.zone-filter.outputs.docs_only }}" != "true" ]]; then
+            if [[ "${{ needs.test.result }}" != "success" ]]; then
+              echo "::error::test did not pass (result: ${{ needs.test.result }}) - fail-closed (OMN-15731)"
+              exit 1
+            fi
+            if [[ "${{ needs.type-check.result }}" != "success" ]]; then
+              echo "::error::type-check did not pass (result: ${{ needs.type-check.result }}) - fail-closed (OMN-15731)"
+              exit 1
+            fi
           fi
           # OMN-15731: same strict fail-closed pattern for the label-gated CI
           # pilot. `pre-commit` now legitimately skips ONLY for a dev-targeting
