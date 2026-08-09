@@ -1558,13 +1558,48 @@ jobs:
     # Summary's fail-closed `!= success` comparison reddens — so this is a
     # starvation bug, not a slow check. Reducing the preamble (fetch-depth: 0
     # full-history clone plus uv provisioning on a 64-runner shared fleet) is
-    # separate work.
+    # addressed below (OMN-15724): this validator has zero git/subprocess
+    # usage (single-file read of grants/prod_promotion_grants.yaml, no
+    # --pr-author/--base-ref since OMN-14814 removed dual-control), so
+    # fetch-depth:1 is provably safe here — unlike check-bot-authored-authz-
+    # guard below, which shells git merge-base and keeps fetch-depth:0.
     timeout-minutes: 45
+    # OMN-15724 C1: reach the OMN-14027 devpi pull-through cache
+    # (omninode-pypi-cache on .201, confirmed healthy/soaked 12d) for this
+    # job's setup-uv PyPI downloads. Scoped to this job only — NOT the
+    # omnibase_infra fleet-wide activation the 2026-08-08 canary measurement
+    # left unauthorized (whole-job p95 did not clear the operator standing
+    # rule at fleet scale). Falls back to public PyPI when the runner-type
+    # ternary above resolves to ubuntu-latest (fork-origin PRs can't reach
+    # the Tailscale-only cache host), and PIP_EXTRA_INDEX_URL keeps PyPI as
+    # a live fallback even on the self-hosted path so a cache miss/outage
+    # degrades rather than fails closed (matches the OMN-14027 runbook).
+    env:
+      UV_DEFAULT_INDEX: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      UV_INDEX_STRATEGY: unsafe-best-match
+      PIP_INDEX_URL: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      PIP_EXTRA_INDEX_URL: https://pypi.org/simple/
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - uses: ./.github/actions/setup-uv
         with:
@@ -1685,6 +1720,32 @@ jobs:
     # and is NOT touched here. 45m matches the uniform floor OMN-15722 set for
     # the other nine timed ci-summary members on this same preamble.
     timeout-minutes: 45
+    # OMN-15724 C1: same scoped devpi-cache activation as
+    # validate-prod-promotion-grants above (see that job's comment for full
+    # rationale). fetch-depth stays 0 here — this job shells
+    # `git fetch origin $BASE_REF` + `git merge-base` below and genuinely
+    # needs base history (OMN-15724 AC1 split; guard logic untouched).
+    env:
+      UV_DEFAULT_INDEX: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      UV_INDEX_STRATEGY: unsafe-best-match
+      PIP_INDEX_URL: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      PIP_EXTRA_INDEX_URL: https://pypi.org/simple/
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
