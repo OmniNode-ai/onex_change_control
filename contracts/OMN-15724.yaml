@@ -1,0 +1,128 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15724"
+title: "onex_change_control needs-list guard jobs pay unneeded fetch-depth:0 checkout + setup-uv provisioning
+  cost"
+summary: >-
+  validate-prod-promotion-grants and check-bot-authored-authz-guard, both members of ci-summary's needs
+  list, pay fetch-depth: 0 full-history checkout plus cold setup-uv provisioning on every run - the durable
+  root cause behind OMN-15722's timeout-cancellation stopgap. Measured on OCC run 31222755192 (head 2df62fc62):
+  validate-prod-promotion-grants took 19m02s total, of which Checkout code was 11m48s and setup-uv was
+  5m30s against 2 seconds of actual validation work. This ticket lowers that cost on the same two jobs
+  without weakening either guard: (AC1) fetch-depth is reduced to 1 on validate-prod-promotion-grants
+  only - its validator has zero git/subprocess usage - while check-bot-authored-authz-guard keeps fetch-depth:
+  0 because it shells git merge-base against the PR base ref; (AC2) both jobs' setup-uv step is wired,
+  at job level and scoped to these two jobs only, to the existing OMN-14027 devpi pull-through cache on
+  .201 (healthy, soaked ~12 days, confirmed live this session), falling back to public PyPI for fork-origin
+  PRs that resolve to ubuntu-latest. This is explicitly NOT the omnibase_infra fleet-wide cache rollout
+  - that path was left unauthorized by the 2026-08-08 canary measurement (whole-job p95 did not clear
+  the operator's fleet-roll criterion) - no runner-fleet compose/env mutation, recreate, or image rebuild
+  is made here. AC3 (p95 threshold) and AC4 (post-landing observation window) are recorded as measured-baseline
+  and open-follow-up respectively; neither is closed by this contract.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #6267 CI checks reach a terminal state; validate-prod-promotion-grants and check-bot-authored-authz-guard
+      both pass with the new fetch-depth/env configuration"
+    command: "gh pr checks 6267 --repo OmniNode-ai/onex_change_control"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-occ-guard-fetch-depth-split"
+    description: >-
+      validate-prod-promotion-grants' Checkout code step declares fetch-depth: 1; check-bot-authored-authz-guard's
+      Checkout code step keeps fetch-depth: 0 (unchanged, it needs base history for git merge-base). Falsifiable
+      - it fails if either job's fetch-depth was set to the wrong value, if fetch-depth was removed entirely
+      (defaulting to 1, which would silently break check-bot-authored-authz-guard's history requirement),
+      or if the wrong job name was edited.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "
+          import sys, yaml
+          j = yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']
+          checks = {'validate-prod-promotion-grants': 1, 'check-bot-authored-authz-guard': 0}
+          bad = {}
+          for name, expect in checks.items():
+              steps = j[name]['steps']
+              co = next(s for s in steps if s.get('name') == 'Checkout code')
+              actual = co.get('with', {}).get('fetch-depth', 1)
+              if actual != expect:
+                  bad[name] = (expect, actual)
+          sys.exit('fetch-depth mismatch: %s' % bad) if bad else print('true')
+          "
+  - id: "dod-occ-guard-cache-activation-scoped"
+    description: >-
+      validate-prod-promotion-grants and check-bot-authored-authz-guard both carry job-level env pointing
+      UV_DEFAULT_INDEX/PIP_INDEX_URL at the OMN-14027 devpi cache host, and no other member of ci-summary's
+      needs list carries that same env - the activation is scoped to exactly these two jobs, not a fleet-wide
+      or repo-wide default. Falsifiable - it fails if either target job is missing the cache env, or if
+      the cache host string leaks into any other needs-list job's env (which would indicate a workflow-level
+      default instead of the intended per-job scoping).
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-guard-fetch-depth-split"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "
+          import sys, yaml
+          j = yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']
+          targets = ['validate-prod-promotion-grants', 'check-bot-authored-authz-guard']
+          cache_host = 'omninode-pc.tail75df5e.ts.net:3141'
+          bad = []
+          for name in targets:
+              env = j[name].get('env', {})
+              idx = str(env.get('UV_DEFAULT_INDEX', ''))
+              pip = str(env.get('PIP_INDEX_URL', ''))
+              if cache_host not in idx or cache_host not in pip:
+                  bad.append(name)
+          needs = j['ci-summary']['needs']
+          other_scoped = [k for k in needs if k not in targets and cache_host in str(j.get(k, {}).get('env', {}))]
+          sys.exit('scope violation: missing=%s leaked_to=%s' % (bad, other_scoped)) if (bad or other_scoped) else print('true')
+          "
+  - id: "dod-occ-guards-still-fail-closed"
+    description: >-
+      Both target jobs remain gating after the change - each is still a member of ci-summary's needs list,
+      still carries no continue-on-error, and CI Summary still asserts each result != "success" fail-closed.
+      Falsifiable - it fails if either guard was made non-blocking or had its fail-closed comparison removed.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-guard-cache-activation-scoped"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "
+          import sys, yaml
+          src = open('.github/workflows/ci.yml').read()
+          norm = src.replace(chr(39), chr(34))
+          jobs = yaml.safe_load(src)['jobs']
+          targets = ['validate-prod-promotion-grants', 'check-bot-authored-authz-guard']
+          needs = jobs['ci-summary']['needs']
+          missing = [k for k in targets if k not in needs]
+          soft = [k for k in targets if 'continue-on-error' in jobs[k]]
+          unguarded = [k for k in targets if ('needs.' + k + '.result }}') not in norm]
+          sys.exit('gate weakened missing=%s soft=%s unguarded=%s' % (missing, soft, unguarded)) if (missing or soft or unguarded) else print('true')
+          "
+  - id: "occ-self-bind-pr-6267"
+    description: >-
+      OCC self-binding stamp for OMN-15724, PR #6267. Binding only - proves the companion PR identity
+      for receipt-gate binding and adjudicates no product behavior. Uses the admissible gh api shape (bare
+      gh pr view is inadmissible under the OMN-15309 predicate) and pins non-count fields (number/state/head
+      ref/base ref) that do not change as the PR's own diff grows, avoiding the self-referential file-count
+      staleness trap OMN-15722's contract hit and corrected twice.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-guards-still-fail-closed"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/6267 --jq 'if (.number == 6267 and .state
+          == "open" and .head.ref == "jonahgabriel/omn-15724-guard-job-cost" and .base.ref == "dev") then
+          "true" else error("unexpected OCC self-bind PR state") end'
