@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15763"
+title: "Seam registry + canonical seam-projection serialization (seam-projection/v1)"
+summary: >
+  OCC companion for omnimarket PR #2027 (jonah/omn-15763-seam-registry-serialization): node_seam_graph_compute
+  + node_seam_match_compute (COMPUTE, def-B, pure) plus the seams.v1.yaml registry seeded from docs/design/2026-08-08-delegation-seam-graph.json.
+  Compute-only, no live-deploy change (no runtime container image touched) — falsifiable evidence below
+  is a live GitHub content probe against the PR head commit, per the deploy-gate hermetic pattern for
+  compute-only tickets (OMN-14051 / OMN-14505). Probes use the OMN-15411 Rule E buffered-read form (body="$(<producer>)"
+  && printf '%s' "$body" | grep -qF 'MARKER') to avoid the SIGPIPE-fragile `base64 -d | grep -q` false-RED
+  class.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2027 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15763-canonical-serializer-live-content"
+    description: >
+      Falsifiable deploy probe (OMN-14505 sense): live GitHub content read of src/omnimarket/seams/canonical.py
+      at the omnimarket PR #2027 head commit f1741be0163ab757738bb9ddbf7d2d67aca6aa49, asserting the canonical
+      seam-projection/v1 sha256 hasher (canonical_sha256) is present in the committed source. Goes RED
+      if the file is reverted, renamed, or the function removed at that ref.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/seams/canonical.py?ref=f1741be0163ab757738bb9ddbf7d2d67aca6aa49
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'def canonical_sha256'
+  - id: "dod-omn15763-seam-match-handler-live-content"
+    description: >
+      Falsifiable deploy probe: live GitHub content read of src/omnimarket/nodes/node_seam_match_compute/handlers/handler_seam_match.py
+      at the same PR #2027 head commit, asserting the three-leg classifier (HandlerSeamMatch) is present
+      in the committed source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_seam_match_compute/handlers/handler_seam_match.py?ref=f1741be0163ab757738bb9ddbf7d2d67aca6aa49
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'class HandlerSeamMatch'
+  - id: "dod-omn15763-seams-registry-live-content"
+    description: >
+      Falsifiable deploy probe: live GitHub content read of src/omnimarket/configs/seams.v1.yaml at the
+      same PR #2027 head commit, asserting the registry carries the schema-versioned seams-registry/v1
+      header.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/seams.v1.yaml?ref=f1741be0163ab757738bb9ddbf7d2d67aca6aa49
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'schema_version: seams-registry/v1'
+  - id: "dod-occ-self"
+    description: >
+      OCC companion self-bind for OMN-15763 plus a live CI-side observation of this OCC PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
