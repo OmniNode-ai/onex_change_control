@@ -58,3 +58,44 @@ dod_evidence:
         check_value: >-
           gh pr view 6271 --repo OmniNode-ai/onex_change_control --json number,state --jq 'if (.number
           == 6271 and .state == "OPEN") then "true" else error("unexpected OCC self-bind PR state") end'
+  - id: "dod-deploy-live-probe-pr-2701"
+    description: >
+      Falsifiable deploy-scope probe for PR #2701 (OMN-14443 correction — the original dod-deploy-assessment
+      check_value used `gh pr diff` file-name matching, which the deploy-gate falsifiability ratchet correctly
+      rejects as vacuous: its exit status never depends on the state of a live/deployed surface). This
+      probe instead reads the ACTUAL merged source content at the PR's exact head via the GitHub contents
+      API and asserts the new resolver symbol is present -- it is genuinely falsifiable (would fail if
+      the branch did not actually contain the change) and does not read back this repo's own receipts/contract.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_bus_forwarder_effect/handlers/handler_forward_outbound.py?ref=6b20eac24"
+          --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'resolve_physical_topic'
+  - id: "occ-self-bind-pr-6274"
+    description: >
+      Binds OMN-15792 to OCC follow-up companion PR #6274 (self-bind). Deliberately does NOT supersede
+      dod-deploy-live-probe-pr-2701 -- a self-bind PR-existence attestation is weaker evidence than a
+      falsifiable content probe and must never retire one from "live" (non-superseded) status; the falsifiable
+      probe is the contract's one EXECUTED+FALSIFIABLE+OUTSIDE-OWN-DIFF admissible check (OMN-15309) and
+      must remain the current tip.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6274 --repo OmniNode-ai/onex_change_control --json number,state --jq 'if (.number
+          == 6274 and .state == "OPEN") then "true" else error("unexpected OCC self-bind PR state") end'
+  - id: "occ-self-bind-pr-6271-rebind-merged"
+    description: >
+      Corrects occ-self-bind-pr-6271: that check asserted `.state == "OPEN"`, which became permanently
+      false once #6271 (correctly) merged -- a live, ongoing Contract Compliance Check failure, not a
+      flake. Rebinds against the merged state instead.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-6271"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6271 --repo OmniNode-ai/onex_change_control --json number,state,mergedAt --jq 'if
+          (.number == 6271 and .state == "MERGED" and .mergedAt != null) then "true" else error("unexpected
+          OCC companion PR #6271 state") end'
