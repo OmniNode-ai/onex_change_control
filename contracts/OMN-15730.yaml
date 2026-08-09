@@ -1,0 +1,97 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15730"
+title: "CI concurrency auto-cancel stopgap — onex_change_control + omnibase_infra"
+summary: >-
+  Stopgap fix for the 2026-08-08 CI gridlock: every `pull_request`-triggered workflow in onex_change_control
+  and omnibase_infra gets a top-level `concurrency` block keyed by `${{ github.workflow }}-${{ github.event.pull_request.number
+  || github.ref }}` with `cancel-in-progress: true`, so a superseded push cancels its own prior check
+  wave instead of leaving it queued to compete for saturated runner capacity. Self-contained OCC-side
+  code change lands in this same PR (#6190); the omnibase_infra half lands in a sibling PR (#2682). This
+  is the STOPGAP, not the end-state (durable fix tracked separately per the OMN-15730 ticket body's STOPGAP-vs-END-STATE
+  split).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #6190 CI checks green (this PR, self-bound)"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "manual"
+    description: >-
+      Every pull_request-triggered workflow file in both repos carries a top-level concurrency block with
+      cancel-in-progress: true, verified by a live parse of the working tree, not by grep.
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2682"
+    description: "PR #2682 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2682 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 2682 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2682"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-6193"
+    description: "Binds OMN-15730 to OCC companion PR #6193 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6193 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-6190"
+    description: >-
+      Binds OMN-15730 to its own OCC PR #6190 (self-bind). This PR IS the onex_change_control code change
+      — no separate companion PR exists for the OCC half of this ticket.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6190 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-6190-concurrency-coverage"
+    description: >-
+      Live parse (not grep) of every .github/workflows/*.yml in this working tree: every workflow whose
+      `on:` declares `pull_request` carries a top-level `concurrency` key. Executed locally against this
+      branch on 2026-08-08; result was 21/21 covered, 0 missing, matching the PR diff of exactly 17 files
+      each adding a 4-line concurrency block (the other 4 of the 21 already carried concurrency pre-existing).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "python3 -c \"import glob,yaml; rows=[(f,yaml.safe_load(open(f))) for f in sorted(glob.glob('.github/workflows/*.yml'))];
+          docs=[d for _,d in rows if isinstance(d,dict)]; prs=[d for d in docs if 'pull_request' in (d.get(True,d.get('on'))
+          if isinstance(d.get(True,d.get('on')),(dict,list)) else [d.get(True,d.get('on'))])]; total=len(prs);
+          covered=sum(1 for d in prs if 'concurrency' in d); assert total==21 and covered==21, (total,covered);
+          print(f'coverage {covered}/{total} PASS')\""
+  - id: "dod-infra-2682-concurrency-coverage"
+    description: >-
+      omnibase_infra PR #2682 carries the sibling concurrency rollout — 12 workflow files each adding
+      the same 4-line concurrency block, bringing that repo's pull_request-triggered coverage to 56/56
+      per the 2026-08-08T12:37:28Z adversarial re-derive (docs/tracking/ROLLING_WORK_LEDGER.md row 13321
+      in omni_home). PENDING, not PASS: PR #2682 is currently RED — CI Summary and gate / CodeRabbit Thread
+      Check are failing. The vendored migration SQL / "PostgreSQL 16 Fresh + Legacy Fixture" failure that
+      previously blocked this PR was fixed by the 2026-08-08T18:3xZ rebase; the live blocker is 2 unresolved
+      CodeRabbit review threads on the concurrency diff (cancel-in-progress safety on the PR-webhook publish
+      workflow, and non-PR-scoped concurrency-group identity on auto-merge.yml / cr-thread-gate-caller.yml).
+      This item stays pending until both threads are resolved (fix or reasoned reply + resolve) and #2682
+      merges green.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr checks 2682 --repo OmniNode-ai/omnibase_infra --json name,state --jq '[.[] | select(.state=="FAILURE")]
+          | length == 0'
+  - id: "dod-occ-evidence-validator-pr-6190"
+    description: "Hosted OCC evidence admissibility validator for OMN-15730 / PR #6190."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
