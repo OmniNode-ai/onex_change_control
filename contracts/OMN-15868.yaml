@@ -1,0 +1,50 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15868"
+title: "BaseProjectionRunner.run() retry-loop guard never enters -- every projection writer exits clean
+  after fake \"0 retries\""
+summary: >
+  DoD contract for OMN-15868: omnimarket/src/omnimarket/projection/runner.py's __init__ sets self._running
+  = False, and run()'s while-guard read `self._running is not False` -- always False on a freshly constructed
+  runner (Python singleton identity), so the retry-loop body (the only site that constructs AIOKafkaConsumer,
+  awaits start(), and sets self._running = True) never executed, for any BaseProjectionRunner subclass,
+  on any invocation. The process logged "Consumer failed after 10 retries" with zero real attempts and
+  exited 0, which Kubernetes reports as CrashLoopBackOff (OMN-15800, deploy run 31493137810). Fixed in
+  OmniNode-ai/omnimarket#2050 by tracking shutdown intent with a dedicated self._shutdown_requested sentinel,
+  separate from the self._running readiness signal.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC evidence PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2050"
+    description: "PR #2050 on OmniNode-ai/omnimarket - BaseProjectionRunner retry-loop guard fix, exact
+      head and three-file diff."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2050 --repo OmniNode-ai/omnimarket --json number,headRefName,headRefOid,files --jq
+          'if (.number == 2050 and .headRefName == "jonah/omn-15868-projection-runner-retry-loop" and
+          .headRefOid == "90a758e4ed15535aceda23cd5f767fc899e3b753" and ([.files[].path] | sort) == ["src/omnimarket/projection/runner.py","tests/test_projection_kafka_auth_kwargs_omn15816.py","tests/test_projection_runner_retry_loop_omn15868.py"])
+          then "true" else error("unexpected #2050 state, head, or file set") end'
+  - id: "dod-omn15868-red-then-green-retry-loop"
+    description: >-
+      RED-then-GREEN proof that BaseProjectionRunner.run()'s retry loop actually enters and retries post-fix.
+      Live-runs tests/test_projection_runner_retry_loop_omn15868.py against PR #2050's exact head and
+      asserts both tests pass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2050 --repo OmniNode-ai/omnimarket --json headRefOid --jq '.headRefOid' | grep -qx
+          90a758e4ed15535aceda23cd5f767fc899e3b753
