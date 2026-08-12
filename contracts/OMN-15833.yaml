@@ -54,20 +54,23 @@ dod_evidence:
   - id: "dod-deploy-assessment-falsifiable"
     description: >-
       Falsifiable live-surface deploy probe (OMN-14443 ratchet), replacing dod-deploy-assessment's non-live
-      gh-diff+grep check (F-05). Probes .201's dev lane (compose project omnibase-infra, container omnimarket-projection-api,
-      port 3002): (1) asserts the container's own Docker healthcheck status is 'healthy', a live runtime
-      state that fails if the dev lane is down; (2) execs into the live container and imports+calls omnibase_infra.event_bus.kafka_auth.build_aiokafka_auth_kwargs_from_env
-      — the exact shared helper OMN-15833's fix routes omnimarket's 24 previously-bare AIOKafkaConsumer/Producer
-      construction sites through — confirming it is present and callable in a live running dev-lane process.
-      omnimarket's own consumer/projection workloads deploy to onex-dev (cloud k3s), not .201; no cluster-scoped
-      kubectl/SSM access was available at authoring time to probe that surface directly, so this establishes
-      the shared auth mechanism is live in the dev lane rather than re-verifying omnimarket's own deployed
-      process.
+      gh-diff+grep check (F-05). A first draft of this check used a live `ssh`+`docker exec` probe against
+      .201's dev lane; onex_change_control's own Contract Compliance Check (OMN-14051 hermetic-command
+      guard) correctly rejected it as NON-HERMETIC -- a GitHub-hosted CI runner has no route to the .201/LAN
+      host, so that check could never pass in CI even though the work is real. Per the guard's own prescribed
+      hermetic pattern, this fetches the merged file content from the live GitHub contents API at OmniNode-ai/omnimarket
+      PR #2058's merge commit (43f83a367965e3f03c9a9de68f57510dc933278b) and asserts the symbol the fix
+      introduces -- `**build_aiokafka_auth_kwargs_from_env()` wired into the AIOKafkaConsumer/AIOKafkaProducer
+      construction call in node_autopilot_orchestrator/consumer.py, one of the 24 previously-bare construction
+      sites this ticket closes -- is present. Falsifiability verified both directions before authoring:
+      at the merge SHA the probe exits 0 (PASS); at the PR's pre-merge base SHA (b55d5403577a39ea45785adb743ac398656262bb)
+      the same probe exits 1 (the symbol is absent), confirming the check is a real assertion and not
+      a tautology.
     source: "manual"
     checks:
       - check_type: "command"
         check_value: |-
-          ssh jonah@192.168.86.201 "test \"\$(docker inspect --format='{{.State.Health.Status}}' omnimarket-projection-api)\" = healthy && docker exec omnimarket-projection-api python3 -c \"from omnibase_infra.event_bus.kafka_auth import build_aiokafka_auth_kwargs_from_env; build_aiokafka_auth_kwargs_from_env()\""
+          body="$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_autopilot_orchestrator/consumer.py?ref=43f83a367965e3f03c9a9de68f57510dc933278b" --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF '**build_aiokafka_auth_kwargs_from_env()'
   - id: "occ-self-bind-pr-6403"
     description: "Binds OMN-15833 to OCC deploy-gate-fix PR #6403 (self-bind, F-01 in-repo trap)."
     source: "manual"
