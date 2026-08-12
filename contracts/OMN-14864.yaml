@@ -33,3 +33,117 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+  - id: "dod-omniclaude-pr-1977-product-head-b6081778"
+    description: >-
+      Product-head verification for omniclaude PR #1977 at b6081778787953038cd5ea63535cefaf3d3ad747. The
+      proof reads live PR metadata and changed files from GitHub, then checks the branch is based on dev,
+      carries the OMN-14864 required-OCC-context title, and includes the reusable OCC companion-effect
+      workflow, secrets baseline update, and workflow/CI regression tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1977; PRODUCT_REPO=OmniNode-ai/omniclaude; PRODUCT_HEAD=b6081778787953038cd5ea63535cefaf3d3ad747;
+          d="$(mktemp -d)" && gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,baseRefName,title,files
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "${d}/pr.txt" && grep -Fq "${PRODUCT_HEAD}" "${d}/pr.txt" && grep -Fxq dev "${d}/pr.txt" &&
+          grep -Fq 'fix(ci): materialize required OCC context for bots (OMN-14864)' "${d}/pr.txt" && for
+          p in .github/workflows/call-occ-companion-effect-reusable.yml .secrets.baseline tests/ci/test_omn_15373_no_ungated_linear_done_policy.py
+          tests/workflows/test_call_occ_companion_effect_reusable.py; do grep -Fq "$p" "${d}/pr.txt";
+          done
+  - id: "dod-omniclaude-pr-1977-diff-scope-b6081778"
+    description: >-
+      Diff-scope verification for omniclaude PR #1977 at b6081778787953038cd5ea63535cefaf3d3ad747. The
+      diff is limited to GitHub workflow configuration, the secrets baseline, and regression tests; it
+      does not touch runtime source, live deploy scripts, systemd units, Docker compose, or .201 deployment
+      surfaces.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1977; PRODUCT_REPO=OmniNode-ai/omniclaude; PRODUCT_HEAD=b6081778787953038cd5ea63535cefaf3d3ad747;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid,files --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'" and ((.files | map(.path)) | all((startswith(".github/") or startswith("tests/")
+          or (. == ".secrets.baseline")) and (. | test("(^|/)(src|systemd|deploy/scripts|docker/compose)(/|$)")
+          | not)))' | grep -qx true
+  - id: "dod-omniclaude-pr-1977-body-proof-b6081778"
+    description: >-
+      Hosted-readable proof-summary verification for omniclaude PR #1977 at b6081778787953038cd5ea63535cefaf3d3ad747.
+      Reads the live PR body and asserts it carries the concrete verification markers for the focused
+      workflow/CI regression tests, changed-file pre-commit run, and pre-push hooks reported by the author.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1977; PRODUCT_REPO=OmniNode-ai/omniclaude; PRODUCT_HEAD=b6081778787953038cd5ea63535cefaf3d3ad747;
+          gh pr view "${PRODUCT_PR_NUMBER}" --repo "${PRODUCT_REPO}" --json headRefOid --jq '.headRefOid
+          == "'${PRODUCT_HEAD}'"' | grep -qx true && BODY="$(gh pr view "${PRODUCT_PR_NUMBER}" --repo
+          "${PRODUCT_REPO}" --json body --jq '.body')" && echo "$BODY" | grep -Fq 'uv run pytest tests/workflows/test_call_occ_companion_effect_reusable.py
+          tests/ci/test_omn_15373_no_ungated_linear_done_policy.py -q' && echo "$BODY" | grep -Fq '19
+          passed' && echo "$BODY" | grep -Fq 'uv run pre-commit run --files .github/workflows/call-occ-companion-effect-reusable.yml'
+          && echo "$BODY" | grep -Fq 'pre-push hooks: mypy, pyright, ONEX validation, root cleanliness,
+          secret detection, model and DoD checks'
+  - id: "dod-omnibase_core-pr-1549-cross-ticket-35447552"
+    description: >-
+      Cross-ticket product-head binding for omnibase_core PR #1549 at 354475527b8b5df144f0e2a15c312ffe7b69520f.
+      OCC PR #6172 intentionally carries both OMN-15120 and OMN-14864 because the core and claude PRs
+      close the same required-context materialization chain; this receipt binds OMN-14864 to the core
+      PR so occ-preflight does not fail closed on pr_ticket_mismatch.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 1549 --repo OmniNode-ai/omnibase_core --json number,state,headRefOid --jq 'if (.number
+          == 1549 and .state == "OPEN" and .headRefOid == "354475527b8b5df144f0e2a15c312ffe7b69520f")
+          then "true" else error("unexpected omnibase_core#1549 state or head") end'
+  - id: "occ-self-bind-pr-6172-omn14864"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #6172. Verifies this PR is the expected codex/omn-15120-14864-occ-pr1549-1977
+      branch and contains the initial evidence commit 77fe817b4.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6172 --repo OmniNode-ai/onex_change_control --json headRefName,state,mergedAt
+          --jq '.headRefName == \"codex/omn-15120-14864-occ-pr1549-1977\" and (.state == \"OPEN\" or (.state
+          == \"MERGED\" and .mergedAt != null))' | grep -qx true && gh api repos/OmniNode-ai/onex_change_control/pulls/6172/commits
+          --jq '.[].sha' | grep -Fx 77fe817b42b60ff1c847a554a34c17462226aebb"
+  - id: "legacy-pin-dod-onex-change-control-pr-4512-6172"
+    description: >-
+      Append-only literal-PR-pin supersession for legacy dod_evidence item dod-OmniNode-ai-onex-change-control-pr-4512.
+      Keeps the merged base item intact while adding a fail-closed literal GitHub PR probe for OCC#6172
+      lint compatibility.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-onex-change-control-pr-4512"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4512 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "legacy-pin-dod-onex-change-control-pr-4512-ci-6172"
+    description: >-
+      Append-only literal-PR-pin supersession for legacy dod_evidence item dod-OmniNode-ai-onex-change-control-pr-4512-ci.
+      Keeps the merged base item intact while adding a fail-closed literal GitHub PR probe for OCC#6172
+      lint compatibility.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-onex-change-control-pr-4512-ci"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4512 --repo OmniNode-ai/onex_change_control --json files"
+
+  - id: "legacy-pin-occ-self-bind-pr-4512-6172"
+    description: >-
+      Append-only literal-PR-pin supersession for legacy dod_evidence item occ-self-bind-pr-4512. Keeps
+      the merged base item intact while adding a fail-closed literal GitHub PR probe for OCC#6172 lint
+      compatibility.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-4512"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4512 --repo OmniNode-ai/onex_change_control --json number,state"
