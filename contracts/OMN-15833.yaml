@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-15833"
@@ -49,3 +51,20 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6405 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-deploy-assessment-falsifiable"
+    description: >-
+      Falsifiable live-surface deploy probe (OMN-14443 ratchet), replacing dod-deploy-assessment's non-live
+      gh-diff+grep check (F-05). Probes .201's dev lane (compose project omnibase-infra, container omnimarket-projection-api,
+      port 3002): (1) asserts the container's own Docker healthcheck status is 'healthy', a live runtime
+      state that fails if the dev lane is down; (2) execs into the live container and imports+calls omnibase_infra.event_bus.kafka_auth.build_aiokafka_auth_kwargs_from_env
+      — the exact shared helper OMN-15833's fix routes omnimarket's 24 previously-bare AIOKafkaConsumer/Producer
+      construction sites through — confirming it is present and callable in a live running dev-lane process.
+      omnimarket's own consumer/projection workloads deploy to onex-dev (cloud k3s), not .201; no cluster-scoped
+      kubectl/SSM access was available at authoring time to probe that surface directly, so this establishes
+      the shared auth mechanism is live in the dev lane rather than re-verifying omnimarket's own deployed
+      process.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          ssh jonah@192.168.86.201 "test \"\$(docker inspect --format='{{.State.Health.Status}}' omnimarket-projection-api)\" = healthy && docker exec omnimarket-projection-api python3 -c \"from omnibase_infra.event_bus.kafka_auth import build_aiokafka_auth_kwargs_from_env; build_aiokafka_auth_kwargs_from_env()\""
