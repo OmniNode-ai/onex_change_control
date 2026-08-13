@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16031"
+evidence_item_id: "dod-occ-suppression"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16031/dod-occ-suppression/command.yaml"
+  && grep -q '^ticket_id: "OMN-16031"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16031/dod-occ-suppression/command.yaml"
+contract_sha256: "sha256:fb4c14ad20ab5277e117dae184fd1ef4dbcb7e8eb86d787643534beca860f9f1"
+contract_entry_sha256: "sha256:60a2fb27b428c54337ac0f7628aa2baa3dc606b2f99abfffad476a7825609d33"
+status: PASS
+run_timestamp: "2026-08-13T22:35:00Z"
+commit_sha: "48486f04367c3b4303ad5686b426ea2822e7a43b"
+runner: "worktree-agent-omn-16031-occ-suppression"
+verifier: "receipt-gate-local"
+probe_command: >-
+  uv run check-migration-conflicts --repos-root <depth-1 clones of omniintelligence, omnibase_infra, omnimemory,
+  omniclaude, omnibase_core @ dev> --check-columns --warn-columns --suppressions-file migration_conflict_suppressions.yaml
+probe_stdout: |
+  # BEFORE (origin/dev suppressions, baselines entries absent):
+  Found 2 migration conflict(s):
+
+    NAME_CONFLICT: table `baselines_quality_snapshots`
+      - omnibase_infra: 001_create_baselines_quality_snapshots.sql (11 columns)
+      - omnibase_infra: 002_realign_quality_snapshots_to_producer_schema.sql (11 columns)
+        missing in 001_create_baselines_quality_snapshots.sql: patterns_significant, significant_rate
+        missing in 002_realign_quality_snapshots_to_producer_schema.sql: patterns_recommended, recommend_rate
+
+    NAME_CONFLICT: table `baselines_roi_snapshots`
+      - omnibase_infra: 001_create_baselines_roi_snapshots.sql (9 columns)
+      - omnibase_infra: 002_realign_roi_snapshots_to_producer_schema.sql (9 columns)
+        missing in 001_create_baselines_roi_snapshots.sql: cost_improvement_pct_avg, latency_improvement_pct_avg, roi_pct_avg, sample_size
+        missing in 002_realign_roi_snapshots_to_producer_schema.sql: confidence, recommendations, retry_delta, time_delta_ms
+
+  Suppressed 41 known conflict(s) via suppressions file.
+  $ echo "exit: $?"  -> exit 1
+
+  # AFTER (this branch's suppressions, both baselines entries added):
+  No migration conflicts found.
+  Suppressed 43 known conflict(s) via suppressions file.
+  SCHEMA_AMBIGUOUS: 6 table(s) ... column validation skipped   # unchanged, pre-existing
+  Found 35 column-reference violation(s)                       # --warn-columns, non-fatal, unchanged
+  $ echo "exit: $?"  -> exit 0
+actual_output: >-
+  PASS: baselines_quality_snapshots and baselines_roi_snapshots were the only two unsuppressed conflicts
+  blocking the OCC Migration Conflict Check. Both are intra-repo NAME_CONFLICTs in omnibase_infra between
+  a node's own 001_create_*.sql and its 002_realign_*_to_producer_schema.sql, which DROPs and recreates
+  the table against the real producer event schema; migrations are append-only so both definitions stay
+  in tree. Adding the two schema_evolution suppression entries (repos [omnibase_infra], owner omnibase_infra,
+  reference to the realignment ticket) takes the scan from "Found 2 migration conflict(s)" exit 1 to "No
+  migration conflicts found, Suppressed 43 known conflict(s)" exit 0 against the same five-repo clone
+  set the CI job builds. The 35 MISSING_COLUMN findings and the 6 SCHEMA_AMBIGUOUS tables are unchanged
+  --warn-columns warnings (non-fatal) and were never the blocker. Verifier receipt-gate-local is distinct
+  from the worktree runner.
+exit_code: 0
+pr_number: 6452
+branch: "jonah/omn-16031-suppress-baselines-snapshot-name-conflicts"
