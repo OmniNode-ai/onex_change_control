@@ -4,9 +4,14 @@ ticket_id: "OMN-15861"
 title: "Autobind OCC evidence for OMN-15861"
 summary: >
   OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #2738.
-is_seam_ticket: false
-interface_change: false
-interfaces_touched: []
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "omnibase_infra.event_bus.event_bus_kafka.EventBusKafka.publish"
+  - "omnibase_infra.event_bus.event_bus_inmemory.EventBusInmemory.publish"
+  - "omnibase_infra.protocols.protocol_event_bus_like.ProtocolEventBusLike.publish"
+  - "omnibase_infra.protocols.protocol_pattern_b_broker_transport.ProtocolPatternBBrokerTransport.publish"
+  - "omnibase_infra.event_bus.mixin_kafka_broadcast.ProtocolKafkaBroadcastHost.publish"
 evidence_requirements:
   - kind: "ci"
     description: "PR #2738 CI checks green"
@@ -37,3 +42,43 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6459 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omnibase-infra-pr-2738-publish-returns-receipt"
+    description: >-
+      PR #2738 — EventBusKafka.publish and EventBusInmemory.publish return a
+      typed ModelPublishReceipt instead of None. Content-bound: GREEN at the PR
+      head, RED at the merge-base where the method returned None.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/event_bus_kafka.py?ref=038207950a9e10d947d91d8bd719e7ca3abfc451 --jq '.content' | base64 -d | grep -c ') -> ModelPublishReceipt:'
+  - id: "dod-omnibase-infra-pr-2738-unknown-fails-closed"
+    description: >-
+      PR #2738 — ModelDurabilityConfirmation.is_durable is true ONLY for
+      CONFIRMED, so an UNKNOWN (indeterminate) confirmation fails closed and
+      cannot authorise a durable claim or an outbox truncation.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/models/model_durability_confirmation.py?ref=038207950a9e10d947d91d8bd719e7ca3abfc451 --jq '.content' | base64 -d | grep -c 'return self.state is EnumConfirmationState.CONFIRMED'
+  - id: "dod-omnibase-infra-pr-2738-cross-boundary-seam-test"
+    description: >-
+      PR #2738 — the cross-boundary seam regression test (OMN-14208 doctrine)
+      exists and contains the falsifiable zero-false-durable-claims case:
+      publish succeeds, confirmation fails, the record survives unacked.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/integration/event_bus/test_publish_confirmation_seam.py?ref=038207950a9e10d947d91d8bd719e7ca3abfc451 --jq '.content' | base64 -d | grep -c 'def test_publish_succeeds_but_confirmation_fails_keeps_the_record'
+  - id: "dod-omnibase-infra-pr-2738-ack-on-return-test-inverted"
+    description: >-
+      PR #2738 — the pre-existing test that asserted `result is None` on publish
+      (which encoded the ack-on-publish-return anti-pattern) is INVERTED to
+      assert a ModelPublishReceipt is returned.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/event_bus/test_kafka_event_bus.py?ref=038207950a9e10d947d91d8bd719e7ca3abfc451 --jq '.content' | base64 -d | grep -c 'OMN-15861 INVERTED'
