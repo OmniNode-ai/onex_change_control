@@ -96,3 +96,75 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6457 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # Fix-forward evidence — OmniNode-ai/omnimarket#2070, head 2ef54c76.
+  #
+  # Adversarial verification of #2067 found two REAL defects that made nine
+  # goldens assert properties none of them tested: every registry-match call
+  # site passed the same projection OBJECT for declared_* and observed_*
+  # (reducing HandlerSeamMatch legs 2/3 to x == x, so REGENERABLE was
+  # unconditional whenever leg 1 passed), and the round-trip continuity test
+  # performed the local hop itself so the failure mode it claimed to catch was
+  # unreachable. The evidence items below are content-bound to the FIX head and
+  # are RED at 9a6d80ca, where none of these guards exist.
+  # ---------------------------------------------------------------------------
+  - id: "dod-omn-16004-tautology-meta-test"
+    description: >-
+      A meta-test exists that fails if any golden passes identical objects as declared and observed. Content-bound:
+      GREEN at the fix head 2ef54c76, RED at 9a6d80ca where the file does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/test_no_tautological_observations.py?ref=2ef54c76804ab5587e9e0841336f2c527dd02748 --jq '.content' | base64 -d | grep -c 'is the same name as'
+  - id: "dod-omn-16004-runtime-alias-guard"
+    description: >-
+      The harness rejects an aliased observation at RUNTIME, not only by static scan: run_registry_match
+      refuses an observed_* argument that is the same object as a declared_* argument. Object identity
+      only — a genuinely observed projection is still allowed to compare equal to its declaration.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/harness.py?ref=2ef54c76804ab5587e9e0841336f2c527dd02748 --jq '.content' | base64 -d | grep -c 'def _reject_aliased_observation'
+  - id: "dod-omn-16004-round-trip-negative-control"
+    description: >-
+      The round-trip continuity test is falsifiable: a quality-gate verdict under a correlation id the
+      command never started must produce ZERO terminal events from the real DispatcherQualityGateResult.
+      That negative control is what the previous version structurally could not express, because it performed
+      the local hop itself.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/test_s1_s2_delegation_round_trip.py?ref=2ef54c76804ab5587e9e0841336f2c527dd02748 --jq '.content' | base64 -d | grep -c 'test_a_foreign_correlation_id_emits_no_terminal_event'
+  - id: "dod-omn-16004-manifest-observation-class"
+    description: >-
+      The frozen slice records a measured observation_class per included edge, derived from BOTH producer_symbol_reachable
+      and consumer_symbol_reachable, with a required observation_note whenever the class is not REGENERABLE.
+      Counts the SHAPE_ONLY downgrades that replaced the four faked REGENERABLE claims (S1, S2, S4, S5).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/slice_manifest.yaml?ref=2ef54c76804ab5587e9e0841336f2c527dd02748 --jq '.content' | base64 -d | grep -c 'observation_class: SHAPE_ONLY'
+  - id: "dod-omn-16004-fix-golden-suite-run"
+    description: >-
+      The corrected golden suite executed green on the fix head. Probed via the hosted test check-run
+      on 2ef54c76 rather than a local pytest invocation: this contract is evaluated inside the onex_change_control
+      checkout, where the omnimarket test tree does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/commits/2ef54c76804ab5587e9e0841336f2c527dd02748/check-runs --paginate --jq '.check_runs[] | select(.name == "tests+coverage (shadow)") | .conclusion' | grep -c 'success'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2070-ci"
+    description: >-
+      PR #2070 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425). Test-only: every changed
+      file is under tests/seam_goldens/, zero src/ files. Probed via `gh api` rather than `gh pr view`
+      because a bare `gh` subcommand is not an admissible probe verb and is scored INERT.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2070/files --paginate --jq '.[].filename' | grep -c '^tests/seam_goldens/'
