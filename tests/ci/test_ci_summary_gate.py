@@ -32,6 +32,7 @@ import pytest
 import yaml
 
 from scripts.ci.ci_summary_gate import (
+    CLASSIFICATION_ONLY,
     EXEMPT_CONTEXTS,
     EXPECTED_EXTERNAL_CONTEXTS,
     EXTERNAL_GOOD_CONCLUSIONS,
@@ -109,6 +110,7 @@ def _classified_names() -> frozenset[str]:
         frozenset(STRICT_GATE_JOBS)
         | frozenset(SKIPPABLE_GATE_JOBS)
         | frozenset(SOFT_ALLOWLIST)
+        | frozenset(CLASSIFICATION_ONLY)
         | frozenset(EXPECTED_EXTERNAL_CONTEXTS)
         | frozenset(EXEMPT_CONTEXTS)
         | {SELF_JOB_NAME}
@@ -195,11 +197,6 @@ def test_no_job_carries_a_base_ref_dev_exemption() -> None:
             "if: always() && (github.event_name != 'pull_request' || "
             "github.base_ref != 'dev' || contains(github.event.pull_request"
             ".labels.*.name, 'ci:ready'))",
-        ),
-        (
-            "ci.yml",
-            "if: needs.zone-filter.outputs.docs_only != 'true' && "
-            "(github.event_name != 'pull_request' || github.base_ref != 'dev')",
         ),
     }
     violations: list[str] = []
@@ -383,6 +380,36 @@ def test_default_deny_sweep_tolerates_allowlisted_job() -> None:
         external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
     )
     assert code == 0
+
+
+@pytest.mark.parametrize("zone_name", ["zone-filter", "zone-filter / filter"])
+def test_failed_zone_filter_cascade_is_not_a_vacuous_success(zone_name: str) -> None:
+    """Regression pin for the PR #6435 verifier-reproduced fail-open.
+
+    A FAILED zone-filter cascades every job that `needs:` it to `skipped`.
+    All 12 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
+    SKIPPABLE tier tolerates `skipped` unconditionally -- so with zone-filter
+    in SOFT_ALLOWLIST the gate returned SUCCESS with zero tests and zero
+    type-checks having run. Parametrized over both name shapes GitHub can
+    surface for a reusable caller (bare id, and `<caller> / <inner job>`).
+    """
+
+    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:12])
+    assert {"Type Check", "Tests"} <= cascaded, (
+        "docs_only tier reordered -- re-derive the cascaded slice"
+    )
+    jobs = [_job(n, "success") for n in STRICT_GATE_JOBS]
+    jobs += [
+        _job(n, "skipped" if n in cascaded else "success") for n in SKIPPABLE_GATE_JOBS
+    ]
+    jobs.append(_job(zone_name, "failure"))
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1, f"fail-open: zone-filter failure yielded exit {code}\n{report}"
+    assert "zone-filter" in report
 
 
 def test_self_job_excluded_from_sweep() -> None:

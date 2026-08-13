@@ -176,16 +176,26 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # surface"), enforced instead by the `no-new-os-environ` pre-commit
         # hook.
         "No New os.environ Reads (OMN-13563)",
-        # Structural reusable-workflow caller (zone-filter.yml@dev), not a
-        # validator. Its docs_only OUTPUT gates the SKIPPABLE jobs above; the
-        # caller job itself is excluded from the sweep to match the reference
-        # implementation's precedent (omnibase_infra ci_summary_gate.py) --
-        # zone-filter's inner job name is not independently verified here and
-        # a failed zone-filter cascades to `skipped` on every job that
-        # `needs:` it, which the SKIPPABLE tier already tolerates.
-        "zone-filter",
     }
 )
+
+# ---------------------------------------------------------------------------
+# L3b -- CLASSIFICATION-ONLY. Accounted for by the completeness test, but
+# DELIBERATELY NOT allowlisted: the L3 default-deny sweep still fails the run
+# on a present+completed+not-good entry here. The sweep ignores ABSENT jobs,
+# so listing a name here can never wedge a branch.
+# ---------------------------------------------------------------------------
+CLASSIFICATION_ONLY: dict[str, str] = {
+    "zone-filter": (
+        "Structural reusable-workflow caller (zone-filter.yml@dev), not a "
+        "validator -- so not a STRICT/SKIPPABLE gate. It is NOT soft-"
+        "allowlisted: all 12 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
+        "FAILED zone-filter cascades every one of them to `skipped`, which "
+        "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
+        "with zero tests and zero type-checks having run. The sweep catching "
+        "the zone-filter failure itself closes that fail-open."
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # L4 -- cross-workflow ("external") required contexts (OMN-15496 pattern).
