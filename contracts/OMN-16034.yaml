@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16034"
+title: "Re-derive seams.v1.yaml to close the measured-stale S12 row"
+summary: >-
+  The seam goldens landed with an explicit drift pin on edge S12 and named their own exit condition. This
+  re-derivation is that exit. seams.v1.yaml is generated and never hand-edited; scripts/seed_seams_registry.py
+  reads only the seam-graph JSON, so the graph source was corrected first and the generator re-run. Exactly
+  one of fifteen registry rows changes. Edge S6 is deliberately left byte-identical because scoring it
+  requires settling a pinned-vs-upstream tracing convention that is a semantics decision, not a measurement
+  gap.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2071 product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "tests"
+    description: >-
+      The seam goldens and both registry suites pass against the re-derived registry, including the inverted
+      drift pin that now fails if S12 regresses to MISMATCH.
+    command: "uv run pytest tests/seam_goldens/ tests/test_seams_registry_contract.py tests/test_seams_registry_match_integration.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-16034-s12-row-rederived"
+    description: >-
+      The generated registry records S12 as MATCHED at the PR head. Content-bound: GREEN at the head,
+      RED at the merge-base where the same row reads MISMATCH.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/seams.v1.yaml?ref=34052b69ed1325d9e52df65c1b419a907ad7593e" --jq '.content' | base64 -d | grep -A4 '^- edge_id: S12$' | grep -c '^  classification: MATCHED$'
+  - id: "dod-omn-16034-s6-row-untouched"
+    description: >-
+      The scope guard, asserted rather than promised: S6 still reads MATCHED_UNTESTED at the PR head,
+      proving the re-derivation did not silently rescore the edge whose semantics are undecided. Unlike
+      the other checks here this one is deliberately NOT content-bound - it is GREEN at both the merge-base
+      and the head, and that invariance IS the evidence. A RED-at-base control would be the wrong shape
+      for a no-change assertion.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/seams.v1.yaml?ref=34052b69ed1325d9e52df65c1b419a907ad7593e" --jq '.content' | base64 -d | grep -A4 '^- edge_id: S6$' | grep -c '^  classification: MATCHED_UNTESTED$'
+  - id: "dod-omn-16034-drift-pin-inverted"
+    description: >-
+      The golden's drift pin is retired and inverted. It asserted the registry still recorded MISMATCH;
+      it now asserts the registry records MATCHED, so the test fails on regression rather than on repair.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/test_s12_dispatch_route_identity.py?ref=34052b69ed1325d9e52df65c1b419a907ad7593e" --jq '.content' | base64 -d | grep -c 'registry_classification("S12") == "MATCHED"'
+  - id: "dod-omn-16034-manifest-mirrors-registry"
+    description: >-
+      The frozen slice manifest mirrors the registry row it binds to. The manifest-registry binding test
+      asserts classification and severity agree, so a manifest left at MISMATCH would go red.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/slice_manifest.yaml?ref=34052b69ed1325d9e52df65c1b419a907ad7593e" --jq '.content' | base64 -d | grep -A6 '^  - edge_id: S12$' | grep -c 'registry_classification: MATCHED'
+  - id: "dod-omn-16034-suite-green"
+    description: >-
+      The hosted test check-run concluded success on the PR head. Probed via the check-run rather than
+      a local pytest invocation, because this contract is evaluated inside the onex_change_control checkout
+      where the omnimarket test tree does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/commits/34052b69ed1325d9e52df65c1b419a907ad7593e/check-runs" --paginate --jq '.check_runs[] | select(.name == "tests+coverage (shadow)") | .conclusion' | grep -c 'success'
