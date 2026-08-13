@@ -47,28 +47,34 @@ dod_evidence:
       omnibase_infra, omnimemory, omniclaude, omnibase_core — all at dev): before the change the scan
       reported "Found 2 migration conflict(s)" with both NAME_CONFLICTs and exited 1; after the change
       it reports "No migration conflicts found", "Suppressed 43 known conflict(s)", and exits 0. Documents
-      an intentional in-repo schema realignment; does not hide a real conflict.
+      an intentional in-repo schema realignment; does not hide a real conflict. Every check below reads
+      omnibase_infra — a repo this PR does not author — at its live dev ref, so each can go RED independently
+      of anything typed in this PR.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16031/dod-occ-suppression/command.yaml"
-          && grep -q '^ticket_id: "OMN-16031"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16031/dod-occ-suppression/command.yaml"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_quality/001_create_baselines_quality_snapshots.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'CREATE TABLE IF NOT EXISTS baselines_quality_snapshots'"
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_quality/002_realign_quality_snapshots_to_producer_schema.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'DROP TABLE IF EXISTS baselines_quality_snapshots'"
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_roi/001_create_baselines_roi_snapshots.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'CREATE TABLE IF NOT EXISTS baselines_roi_snapshots'"
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines_roi/002_realign_roi_snapshots_to_producer_schema.sql?ref=dev'
+          --jq .content | base64 -d | grep -c 'DROP TABLE IF EXISTS baselines_roi_snapshots'"
   - id: "dod-delivery-pr"
     description: >-
-      This OCC PR is self-contained: it carries BOTH the migration_conflict_suppressions.yaml entries
-      (the fix) AND contracts/OMN-16031.yaml plus the dod-occ-suppression / dod-delivery-pr PASS receipts
-      (Evidence-Source: self). Folding the fix and the receipts into one PR is required because the unsuppressed
-      NAME_CONFLICTs otherwise fail the OCC Migration Conflict Check on any non-docs_only OCC PR, blocking
-      the evidence PR that would carry the receipts. contracts/OMN-16031.yaml validates as ModelTicketContract;
-      receipt-honesty and receipt-hardening gates pass on the receipt files.
+      Self-bind: OCC PR 6452 is this ticket's own carrier PR, proven by its own GitHub-reported file list
+      containing migration_conflict_suppressions.yaml — the file this ticket changes. The PR is self-contained
+      (fix + contract + receipts in one PR) because the unsuppressed NAME_CONFLICTs otherwise fail Migration
+      Conflict Check on any non-docs_only OCC PR, which would block a separate evidence-only PR from landing
+      the receipts.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
-        check_value: >-
-          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16031/dod-delivery-pr/command.yaml"
-          && grep -q '^ticket_id: "OMN-16031"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16031/dod-delivery-pr/command.yaml"
-          && grep -q 'baselines_quality_snapshots' "$CONTRACT_REPO_DIR/migration_conflict_suppressions.yaml"
-          && grep -q 'baselines_roi_snapshots' "$CONTRACT_REPO_DIR/migration_conflict_suppressions.yaml"
+        check_value: "gh pr view 6452 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'migration_conflict_suppressions.yaml'"
