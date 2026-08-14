@@ -1,0 +1,101 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15922
+title: Port the onex auth gateway JWT client into omnibase_infra
+summary: 'OCC companion for OmniNode-ai/omnibase_infra PR #2747. The gateway JWT client -- the surface
+  an unattended runtime uses to mint a token, store a credential, and keep a session attached -- was built
+  in omnibase_core, where it could not stay: ADR-005 forbids core reaching outward for a live HTTP transport,
+  and the slice had been routing around that with an entry-point group whose only purpose was the detour.
+  This companion binds the evidence that the slice now lives in omnibase_infra behind an infra-owned transport
+  protocol (the layering the port exists to restore), that the entry-point indirection is gone rather
+  than relocated, that the CLI surface is actually wired so the deployed image gains an ``onex auth``
+  command group, and that the ported classes satisfy the OMN-14350 lifecycle-class ratchet under their
+  new home rather than being baselined into an allowlist that may only shrink.'
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - protocols
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: 'PR #2747 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-OmniNode-ai-omnibase_infra-pr-2747
+    description: 'PR #2747 on OmniNode-ai/omnibase_infra ports the gateway JWT client out of core and
+      into infra.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 2747 --repo OmniNode-ai/omnibase_infra --json number,state
+  - id: dod-transport-protocol-is-infra-owned
+    description: The live-HTTP seam is a protocol owned by omnibase_infra. This is the whole point of
+      the port -- ADR-005 forbids omnibase_core owning a transport that reaches outward, and a port that
+      left the protocol behind in core would have moved the code without moving the dependency.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/protocols/protocol_gateway_transport.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'class ProtocolGatewayTransport(Protocol):'
+  - id: dod-entry-point-indirection-removed-not-relocated
+    description: 'The ADR-005 workaround is deleted, not rehomed. The slice previously resolved its transport
+      through an entry-point group that existed solely so core could avoid importing httpx directly; with
+      the code in infra that indirection has no reason to exist, and leaving it would preserve the defect
+      under a new address. Asserted positively -- the CLI constructs the concrete adapter at its callsite
+      -- because the corresponding absence check (grep -v for the loader) is satisfied by any file that
+      has other lines and would go green on a build that still shipped the indirection.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_auth.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq ''.content'' | base64 -d | grep -c ''transport=GatewayTransportHttpx()'''
+  - id: dod-lifecycle-class-names-satisfy-the-ratchet
+    description: The ported classes carry ratchet-compliant names under their new home. omnibase_infra
+      enforces the same OMN-14350 lifecycle-class ban as core and hard-fails Service*/Client*/Adapter*;
+      the allowlist may only shrink, so the port renamed rather than baselined. Verified as a positive
+      assertion on the names that now exist.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/gateway/client/gateway_token_minter.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'class GatewayTokenMinter:'
+  - id: dod-credential-secrets-are-not-plain-strings
+    description: The stored credential holds its secret material in SecretStr, so a log line, a repr,
+      or an exception rendering the model cannot spill a live gateway token. This is the property that
+      makes an on-disk credential store safe to keep at all.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/gateway/models/model_gateway_credential.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'SecretStr'
+  - id: dod-transport-adapter-has-its-own-tests
+    description: 'The real httpx adapter is exercised directly, not only through fakes. Every other test
+      in the slice drives a stand-in for the transport seam; those assertions are only honest if the one
+      real implementation behaves the same way, and the adapter is new code that could not exist in core
+      at all.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/gateway/test_gateway_transport_httpx.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'GatewayTransportHttpx'
+  - id: dod-deploy-assessment
+    description: 'Falsifiable deploy probe (OMN-14443). The deployed surface this ticket changes is the
+      CLI: the port is only real in a runtime image if that image''s ``onex`` entrypoint actually exposes
+      the ``auth`` command group, and a build that ported the modules but never registered the group would
+      import cleanly, pass every unit test, and still leave an unattended runtime with no way to mint
+      a credential -- the failure this probe exists to catch. This reads commands.py back from GitHub
+      at the pinned omnibase_infra head via gh api and asserts the registration line, so it goes RED the
+      moment the wiring is dropped or renamed; it reads a surface outside this repo and never a receipt
+      or contract this PR authors. The live-cluster half (docker exec ${RUNTIME_CONTAINER:-omninode-runtime}
+      onex auth --help, then a real mint -> store -> attach against deployed onex-api) is the post-deploy
+      acceptance test tracked on the ticket; it cannot run before the image carrying this port exists,
+      and asserting it here would be the vacuous evidence this ratchet exists to reject.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/commands.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq .content | base64 -d | grep -q ''cli.add_command(auth_group)'''
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
