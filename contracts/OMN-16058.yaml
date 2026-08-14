@@ -4,7 +4,13 @@ ticket_id: "OMN-16058"
 title: "Autobind OCC evidence for OMN-16058"
 summary: >
   OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/onex_change_control
-  PR #6500.
+  PR #6500. Extended by the quarterly db-boundary exception review and cross-repo clone-retry port
+  (PR #6601): onex_change_control@main had merged nothing since 2026-07-27 because two required
+  checks failed on every main-target PR. Pre-commit failed on three db-boundary exceptions whose
+  review_by (2026-07) had expired; Kafka Boundary Parity and Migration Conflict Check exited 128 on
+  an unretried cross-repo clone. This contract also covers the genuine per-entry review of all three
+  exceptions (renew only where deleting the entry re-exposes a live violation) and the port of dev's
+  existing clone-retry wrappers to all three hard-failing clone sites on main.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -12,6 +18,10 @@ evidence_requirements:
   - kind: "ci"
     description: "PR #6500 CI checks green"
     command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "ci"
+    description: The previously failing pre-commit gate passes against the reviewed registry, and the
+      renewed exceptions still validate.
+    command: uv run check-db-boundary --validate-all --registry registry/db-boundary-exceptions.yaml
 emergency_bypass:
   enabled: false
   justification: ""
@@ -38,3 +48,37 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6537 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-db-boundary-exception-review-2026-08"
+    description: "All three db-boundary exceptions were reviewed against live source rather than re-dated.
+      Each was proven load-bearing by deleting it from a scratch copy of the registry and re-running check-db-boundary
+      against a current clone: every deletion re-exposed the exact violation that entry grandfathers (omniintelligence
+      handler_gmail_intent_evaluate.py cross_service_env at line 643; omniintelligence runtime/introspection.py
+      cross_service_import at line 43; omnimemory runtime/introspection.py cross_service_import at line
+      42). No entry was obsolete, so all three were renewed to 2026-11 and zero were deleted."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-16058/dod-db-boundary-exception-review-2026-08/command.yaml"
+  - id: "dod-precommit-all-files-green-on-main"
+    description: "The required Pre-commit check that wedged main now passes. Running the exact main-target
+      CI invocation (pre-commit run --all-files with the same SKIP list) against this branch exits 0 with
+      zero failed hooks and leaves the working tree clean, whereas main's registry reproduces three expired_review
+      violations."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-16058/dod-precommit-all-files-green-on-main/command.yaml"
+  - id: "dod-cross-repo-clone-retry-ported"
+    description: "The exit-128 failures in Kafka Boundary Parity and Migration Conflict Check were diagnosed
+      from the live job logs as unretried cross-repo clone egress failures (Empty reply from server; GnuTLS
+      recv error (-9) / early EOF), not a fetch-depth or missing-ref problem. dev already carried a 3-attempt
+      retry wrappers at every clone site that main never received; those are ported verbatim to all three
+      hard-failing sites on main (migration-conflicts, kafka-boundary-parity, and the omnidash clone in
+      cross-repo-null-contract), leaving the best-effort inventory-sync helper unchanged."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-16058/dod-cross-repo-clone-retry-ported/command.yaml"
