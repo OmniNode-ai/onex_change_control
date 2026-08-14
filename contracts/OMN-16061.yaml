@@ -1,0 +1,91 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16061
+title: Freeze deterministic serialized code-intelligence seam and replay manifest
+summary: >-
+  Freeze the proof-local Code Projection v1 artifact boundary in OmniIntelligence so later Intelligence
+  and Memory lanes can exchange versioned canonical JSON without a Python package dependency. The product
+  change is internal and runtime-free: it adds no node, topic, registration, migration, model call, live
+  store, deployment, or external importer. Evidence binds the exact schema digest, replay scenarios, privacy
+  flags, hosted unit and static gates, and the PR file-scope boundary to omniintelligence PR #821 head
+  f14ff8b7e05a488f1d8f584a611a3a98e56af410.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: The focused Code Projection suite passes at the product head.
+    command: >-
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run --no-sync pytest -p pytest_asyncio.plugin tests/unit/code_projection
+      -q
+  - kind: ci
+    description: All ten hosted unit shards and the lint, type, and pre-commit gates pass.
+    command: >-
+      gh api repos/OmniNode-ai/omniintelligence/commits/f14ff8b7e05a488f1d8f584a611a3a98e56af410/check-runs
+  - kind: docs
+    description: The checked-in Code Projection v1 schema and digest remain byte-bound.
+    command: >-
+      gh api repos/OmniNode-ai/omniintelligence/contents/tests/fixtures/code_projection/v1/code_projection_batch_v1.schema.sha256?ref=f14ff8b7e05a488f1d8f584a611a3a98e56af410
+dod_evidence:
+  - id: dod-code-projection-schema-digest
+    description: >-
+      The checked-in schema digest is the frozen A0 digest. This is content-bound: the probe returns one
+      at the product head and the artifact is absent at merge-base 8c67665a.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api "repos/OmniNode-ai/omniintelligence/contents/tests/fixtures/code_projection/v1/code_projection_batch_v1.schema.sha256?ref=f14ff8b7e05a488f1d8f584a611a3a98e56af410"
+          --jq '.content' | base64 -d | grep -c '^91183d15b1aa9c9c3c4190af880de1196fbdd696f355e2a9dcec8f37b3f81aa1
+          code_projection_batch_v1.schema.json$'
+  - id: dod-code-projection-replay-manifest
+    description: >-
+      The canonical replay manifest pins A-to-B-to-A, source deletion, policy revocation, no-network,
+      and no-inline-content behavior. This artifact is absent at the merge base.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api "repos/OmniNode-ai/omniintelligence/contents/tests/fixtures/code_projection/v1/replay_manifest.json?ref=f14ff8b7e05a488f1d8f584a611a3a98e56af410"
+          --jq '.content' | base64 -d | jq -c '.no_network_required == true and .no_inline_source_or_chunk_text
+          == true and .replay_scenarios.a_to_b_to_a == ["python_a_seq1.json","python_b_seq2.json","python_a_seq3.json"]
+          and .replay_scenarios.source_tombstone == "source_tombstone_seq4.json" and .replay_scenarios.policy_tombstone
+          == "policy_tombstone_seq5.json"' | grep -c '^true$'
+  - id: dod-code-projection-unit-matrix
+    description: >-
+      All ten hosted unit shards concluded success on the exact product head. The same probe returns zero
+      at the merge base, which has no hosted split matrix for this change.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api "repos/OmniNode-ai/omniintelligence/commits/f14ff8b7e05a488f1d8f584a611a3a98e56af410/check-runs"
+          --paginate --jq '[.check_runs[] | select(.name | startswith("Unit Tests (Split ")) | select(.conclusion
+          == "success")] | unique_by(.name) | length' | grep -c '^10$'
+  - id: dod-code-projection-static-gates
+    description: >-
+      Hosted lint, strict type checking, and all-file pre-commit concluded success on the exact product
+      head.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api "repos/OmniNode-ai/omniintelligence/commits/f14ff8b7e05a488f1d8f584a611a3a98e56af410/check-runs"
+          --paginate --jq '[.check_runs[] | select((.name == "Lint" or .name == "Type Check" or .name
+          == "Pre-commit Hooks") and .conclusion == "success")] | unique_by(.name) | length' | grep -c
+          '^3$'
+  - id: dod-code-projection-runtime-boundary
+    description: >-
+      The exact base-to-head comparison does not touch runtime registration, migrations, node contracts,
+      or workflow wiring. The predicate fails if any such path enters that immutable comparison.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api "repos/OmniNode-ai/omniintelligence/compare/8c67665add2b611307a78a3f351e0fac18c5bad8...f14ff8b7e05a488f1d8f584a611a3a98e56af410"
+          --jq '[.files[].filename | select(test("(^|/)(runtime|migrations)(/|$)|contract\\.yaml$|(^|/)\\.github/workflows/"))]
+          | length' | grep -c '^0$'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
