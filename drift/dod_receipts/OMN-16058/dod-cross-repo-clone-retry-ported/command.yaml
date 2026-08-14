@@ -1,0 +1,48 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16058"
+evidence_item_id: "dod-cross-repo-clone-retry-ported"
+check_type: "command"
+check_value: "python3 -c \"import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))\" && bash -n
+  over every clone step, and sha256 comparison of each clone helper block against origin/dev"
+contract_sha256: "sha256:64517f2eaacb1079f1130113922b412acd4f620822cfaf9ca60c5e7930caa4e6"
+contract_entry_sha256: "sha256:9b1a5bf8f44ecda1591c62f73489cdb1057d032a9ff3922ef918f7ba96720d64"
+status: PASS
+run_timestamp: "2026-08-14T11:48:38Z"
+commit_sha: "ae4bfe842c5cdf02b47f708a06e167bdc38cb9d3"
+runner: "occ-main-unwedge-lane"
+verifier: "claude-workflow-independent-verifier/omn-16058-wf_7b28201d-companion"
+probe_command: "gh run view --job <failing job> --log-failed on OCC#6491 for root cause; then brace-match
+  every clone helper block in origin/dev and HEAD ci.yml and sha256 each for port fidelity"
+probe_stdout: |
+  # Root cause, verbatim from the two failing required jobs on OCC#6491:
+  Kafka Boundary Parity (job 94736873447):
+    fatal: unable to access 'https://github.com/OmniNode-ai/omnidash.git/': Empty reply from server
+    ##[error]Process completed with exit code 128
+  Migration Conflict Check (job 94736873369):
+    error: RPC failed; curl 56 GnuTLS recv error (-9): Error decoding the received TLS packet.
+    fatal: early EOF / fatal: fetch-pack: invalid index-pack output
+    ##[error]Process completed with exit code 128
+
+  # Port fidelity (independent verifier; origin/dev 0cc01e4ef vs HEAD):
+  dev  L563-587 sha=ab77f680997273c8 (retry) | L629-639 sha=cd0ae621d493793f (no retry) | L671-695 sha=ab77f680997273c8 (retry)
+  HEAD L269-293 sha=ab77f680997273c8 (retry) | L333-343 sha=cd0ae621d493793f (no retry) | L370-394 sha=ab77f680997273c8 (retry)
+  omnidash site: dev L736-756 vs HEAD L421-441 -> empty diff, sha 034b2475b65cc69510c6c9f0f9a9cf2813e9f71c
+  git diff origin/main HEAD -- .github/workflows/ci.yml -> exactly 3 hunks, no other edits
+
+  # Live CI on GitHub runners, run 31794732236:
+  Migration Conflict Check  PASS   (previously exit 128)
+  Kafka Boundary Parity     PASS   (previously exit 128)
+actual_output: "PASS: the exit-128 failures were unretried cross-repo clone egress failures, not the fetch-depth
+  or missing-ref problem first hypothesised — both died inside the clone step before any checked-out ref
+  was used. dev already carried retry wrappers that main never received because main has been wedged since
+  2026-07-27, so they are ported verbatim rather than reimplemented; an independent verifier confirmed
+  every helper block is byte-identical to dev by sha256, including the deliberately unretried one. Three
+  sites are covered: migration-conflicts, kafka-boundary-parity, and the omnidash clone in cross-repo-null-contract.
+  The best-effort migration-inventory helper is correctly left unretried, matching dev, because its call
+  site is 'clone_omni_repo ... || true' with stderr suppressed. The retry cannot mask a real outage: after
+  3 attempts it emits ::error:: and returns 1, which bash -e propagates to a job failure. Both previously-128
+  jobs pass in live CI."
+exit_code: 0
+pr_number: 6501
+branch: "hotfix/occ-db-boundary-exception-review"

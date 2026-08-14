@@ -1,0 +1,40 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16058"
+evidence_item_id: "dod-db-boundary-exception-review-2026-08"
+check_type: "command"
+check_value: "uv run check-db-boundary --validate-all --registry registry/db-boundary-exceptions.yaml"
+contract_sha256: "sha256:64517f2eaacb1079f1130113922b412acd4f620822cfaf9ca60c5e7930caa4e6"
+contract_entry_sha256: "sha256:38895bedd25fa424600f0e7104d79be052a615458e7fdd6f5ecdb389b9a2783b"
+status: PASS
+run_timestamp: "2026-08-14T11:47:57Z"
+commit_sha: "ae4bfe842c5cdf02b47f708a06e167bdc38cb9d3"
+runner: "occ-main-unwedge-lane"
+verifier: "claude-workflow-independent-verifier/omn-16058-wf_7b28201d-companion"
+probe_command: "leave-one-out: for each entry, emit a registry copy minus exactly that entry, then run
+  'uv run check-db-boundary --repo <repo> --path $OMNI_HOME/<repo> --registry <minus-N>' and diff the
+  violation set against the full-registry baseline"
+probe_stdout: |
+  # Independent verifier's leave-one-out deltas (baseline = full registry):
+  minus0 -> handlers/handler_gmail_intent_evaluate.py:643 [cross_service_env] OMNIBASE_INFRA_DB_URL   MATCH
+  minus1 -> omniintelligence/src/omniintelligence/runtime/introspection.py:43 [cross_service_import]   MATCH
+  minus2 -> omnimemory/src/omnimemory/runtime/introspection.py:42 [cross_service_import]              MATCH
+
+  # Migration-target claim, independently confirmed:
+  grep -rn "class ModelIntrospectionConfig" omnibase_infra/src -> model_introspection_config.py:78 (sole definition)
+  grep -rn "ModelIntrospectionConfig" omnibase_spi/src  -> no hits (exit 1)
+  grep -rn "ModelIntrospectionConfig" omnibase_core/src -> no hits (exit 1)
+
+  # Renewed registry validates:
+  uv run check-db-boundary --validate-all --registry registry/db-boundary-exceptions.yaml -> exit 0, all checks passed
+actual_output: "PASS: all three exceptions are load-bearing, confirmed by an independent verifier running
+  the leave-one-out probe from a separate session. Each deletion re-exposed exactly the violation that
+  entry grandfathers, at the exact expected line, and no other. None was a stale deadline extension, so
+  all three were renewed to 2026-11 and zero deleted. The justification's stated omnibase_spi migration
+  target for entries 2 and 3 genuinely does not exist: ModelIntrospectionConfig is defined solely at omnibase_infra/src/omnibase_infra/models/discovery/model_introspection_config.py:78,
+  with no hits in omnibase_spi or omnibase_core, so those two entries share one blocker and retire together.
+  Two live cross-boundary violations outside the registry were surfaced and reported rather than silently
+  registered: omniintelligence review_pairing/cli_calibration.py:313 and omnimemory runtime/dispatch_handlers.py:43."
+exit_code: 0
+pr_number: 6501
+branch: "hotfix/occ-db-boundary-exception-review"
