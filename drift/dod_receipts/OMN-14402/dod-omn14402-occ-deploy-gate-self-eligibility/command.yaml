@@ -9,85 +9,7 @@ check_value: >-
   && grep -q '"eligible": true' drift/dod_receipts/OMN-14402/dod-omn14402-occ-deploy-gate-self-eligibility/command.yaml
 status: PASS
 run_timestamp: "2026-07-12T04:57:00Z"
-# CORRECTED 2026-08-14 (OMN-16007 lane). This receipt bound a GARBLED SHA.
-#
-# As authored on 2026-07-12 every SHA slot below read
-# 72b52d1d758597147bc0763e7918b67c42504ccd, which is not a commit anywhere:
-#
-#   $ git cat-file -e 72b52d1d758597147bc0763e7918b67c42504ccd^{commit}
-#   fatal: Not a valid object name ...            # exit 128
-#   $ gh api repos/OmniNode-ai/onex_change_control/commits/72b52d1d75...
-#   {"message":"No commit found for SHA: 72b52d1d75...","status":"422"}
-#
-# It surfaced when OMN-16007 removed ci.yml's `github.base_ref != 'dev'`
-# carve-out from the "Run full pre-commit --all-files" step, which let the
-# OMN-15111 Evidence-Commit SHA existence gate scan the whole receipt corpus on
-# the merge path for the first time. It was the corpus's ONLY violation, and
-# the only `Evidence-Commit:` trailer in the corpus at all -- so there was no
-# prior convention to copy, which is most likely how it was garbled unnoticed.
-#
-# STEP 1 -- it is a garbled real SHA, not a fabrication. `gh pr view 4007
-# --repo OmniNode-ai/onex_change_control --json commits,headRefName,mergeCommit,
-# mergedAt` returns:
-#
-#   commits[0].oid = 72b52d1d71d5e93518e357a059847c7e89d49f9a
-#                    "evidence(OMN-14402): add deploy-gate assessment"
-#                    committedDate 2026-07-12T04:55:45Z
-#   commits[1].oid = 08ef93f901553d47cf85305823a172695eaac18f
-#                    committedDate 2026-07-12T04:57:50Z
-#   headRefName    = jonah/omn-14402-deploy-gate-evidence
-#   mergeCommit    = 0c5012bfa6b44e64e856977d740ab90070a93777
-#   mergedAt       = 2026-07-12T05:03:11Z
-#
-# Three independent facts identify commits[0] as what the author MEANT:
-#   1. It shares a 9-character prefix with the garbled value (72b52d1d7...);
-#      the remaining 31 characters diverge. That is the signature of a short
-#      SHA padded out to 40 characters, not of an unrelated commit.
-#   2. This receipt's own run_timestamp (2026-07-12T04:57:00Z) falls strictly
-#      between commits[0] (04:55:45Z) and commits[1] (04:57:50Z), so
-#      commits[0] WAS the branch head at the moment the probe ran.
-#   3. pr_number 4007 and branch jonah/omn-14402-deploy-gate-evidence below
-#      both match that PR exactly.
-#
-# STEP 2 -- but commits[0] is NOT what the receipt may cite. PR #4007 was
-# SQUASH-merged, so its branch commits never landed on the mainline and the
-# branch was deleted:
-#
-#   $ git rev-list --parents -n1 0c5012bfa6b44e64e856977d740ab90070a93777
-#   0c5012bf... 30377ecb...                      # ONE parent -> squash, not merge
-#   $ git rev-list --all | grep -c 72b52d1d71d5e93518e357a059847c7e89d49f9a
-#   0                                            # reachable from zero refs
-#
-# A clone that happens to still hold commits[0] as a dangling object resolves
-# it; a fresh CI checkout does not fetch unreachable objects, so binding to it
-# would pass locally and fail in CI forever. That is the same defect class this
-# repo already ratchets against in OMN-15540 Rule F ("a feature-branch ref 404s
-# once the branch is deleted on merge -- pin the squash commit on the
-# mainline").
-#
-# STEP 3 -- the durable binding is therefore the squash commit,
-# 0c5012bfa6b44e64e856977d740ab90070a93777, used below. It is verified to be
-# the right one on four counts: its subject is PR #4007's title verbatim; its
-# commit date 2026-07-12T05:03:11Z equals the PR's mergedAt to the second; it
-# is an ancestor of origin/dev (`git merge-base --is-ancestor` exit 0); and its
-# diff contains THIS receipt file. It is reachable from refs, so it resolves in
-# every clone permanently.
-#
-# WHAT CHANGED: only the 40-character identifier, in all 6 slots that carried
-# it -- commit_sha; the Evidence-Commit and Evidence-Head trailers, the
-# pr_commit_shas tuple and the occ_commit_sha argument inside probe_command;
-# and the occ_commit_sha echoed back in probe_stdout. Both the garbled original
-# and the orphaned branch head are preserved verbatim above rather than erased.
-#
-# WHAT DID NOT CHANGE: no verdict field. status, exit_code, check_value,
-# actual_output, and probe_stdout's eligible/reason/detail/ticket_ids are
-# untouched. The eligibility result is independent of this string --
-# validator_occ_merge_eligibility echoes occ_commit_sha back without resolving
-# it, which is why nothing caught this for a month and is also why correcting
-# it cannot change what the probe concluded. (The sibling receipt
-# dod-omn14402-occ-self-eligibility passes '0'*40 into the same argument and
-# likewise returns eligible: true.)
-commit_sha: "0c5012bfa6b44e64e856977d740ab90070a93777"
+commit_sha: "72b52d1d758597147bc0763e7918b67c42504ccd"
 runner: "codex"
 verifier: "codex-runtime-verifier"
 pr_number: 4007
@@ -96,11 +18,11 @@ probe_command: >-
   PYTHONPATH=/Users/jonah/Code/omni_home/omnibase_core/src uv run python - <<'PY' from pathlib import
   Path from omnibase_core.models.validation.model_occ_eligibility_input import ModelOccEligibilityInput
   from omnibase_core.validation.validator_occ_merge_eligibility import validate_occ_merge_eligibility
-  body = 'Evidence-Ticket: OMN-14402\nEvidence-Source: OCC#4007\nEvidence-Commit: 0c5012bfa6b44e64e856977d740ab90070a93777\nEvidence-Head:
-  0c5012bfa6b44e64e856977d740ab90070a93777\n' snapshot = ModelOccEligibilityInput(repo='onex_change_control',
+  body = 'Evidence-Ticket: OMN-14402\nEvidence-Source: OCC#4007\nEvidence-Commit: 72b52d1d758597147bc0763e7918b67c42504ccd\nEvidence-Head:
+  72b52d1d758597147bc0763e7918b67c42504ccd\n' snapshot = ModelOccEligibilityInput(repo='onex_change_control',
   pr_number=4007, pr_title='evidence(OMN-14402): add deploy-gate assessment for omnimarket fallback',
-  pr_body=body, pr_branch='jonah/omn-14402-deploy-gate-evidence', pr_commit_shas=('0c5012bfa6b44e64e856977d740ab90070a93777',),
-  pr_commit_texts=(), occ_commit_sha='0c5012bfa6b44e64e856977d740ab90070a93777', contracts_dir=Path('contracts'),
+  pr_body=body, pr_branch='jonah/omn-14402-deploy-gate-evidence', pr_commit_shas=('72b52d1d758597147bc0763e7918b67c42504ccd',),
+  pr_commit_texts=(), occ_commit_sha='72b52d1d758597147bc0763e7918b67c42504ccd', contracts_dir=Path('contracts'),
   receipts_dir=Path('drift/dod_receipts')) print(validate_occ_merge_eligibility(snapshot).model_dump_json(indent=2))
   PY
 probe_stdout: |
@@ -110,7 +32,7 @@ probe_stdout: |
     "ticket_ids": [
       "OMN-14402"
     ],
-    "occ_commit_sha": "0c5012bfa6b44e64e856977d740ab90070a93777",
+    "occ_commit_sha": "72b52d1d758597147bc0763e7918b67c42504ccd",
     "detail": "OCC evidence is present, PASS, hash-bound, and PR-bound"
   }
 actual_output: "PASS: onex_change_control#4007 is bound to OMN-14402 by title/body/branch and this PR-number
