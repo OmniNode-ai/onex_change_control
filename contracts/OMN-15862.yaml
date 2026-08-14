@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15862"
+title: "Verification honesty: SKIP never aggregates into PASS in contract.verify.replay"
+summary: >
+  node_contract_verify_replay_compute returned overall_status=PASS for a tier-2 run that executed zero
+  checks: the tier-2 branch was a hardcoded SKIP and the aggregation treated "no FAIL" as PASS. The narrow
+  fix makes aggregation honest (FAIL > SKIP > PASS, so SKIP can never reach PASS) and fails CLOSED for
+  packages whose manifest declares required scenarios or invariant suites, which only tier-2 simulated
+  replay can discharge. The wrong-assertion test test_tier2_yields_skip is inverted, not deleted. The
+  full tier-2 executable-replay program is separately scoped and explicitly out of scope.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  # EnumOverallStatus gains a SKIP member and ModelVerifyReplayOutput.overall_status can now
+  # carry it; both are public API surface of omnibase_core.
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_core PR #1557 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1557"
+    description: >
+      omnibase_core PR #1557 — the narrow verification-honesty fix. Carries the RED-first proof against
+      base 39cf6d9135, the inverted test, the fail-closed tier-2 tests, and the consumer survey.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1557 --repo OmniNode-ai/omnibase_core --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 1557 --repo OmniNode-ai/omnibase_core --json files"
+  - id: "dod-skip-never-aggregates-into-pass"
+    description: >
+      The aggregation is honest: EnumOverallStatus carries SKIP and _aggregate_overall_status applies
+      FAIL > SKIP > PASS, so a run containing any skipped check can never report PASS.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/nodes/node_contract_verify_replay_compute/test_node_contract_verify_replay_compute.py::test_tier2_skip_never_aggregates_into_pass
+          -q"
+  - id: "dod-tier2-fails-closed-when-replay-required"
+    description: >
+      A bundle declaring required scenarios or required invariant suites fails CLOSED on a tier-2 skip,
+      because those artifacts can only be discharged by tier-2 simulated replay.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/nodes/node_contract_verify_replay_compute/test_node_contract_verify_replay_compute.py::test_tier2_skip_fails_closed_when_bundle_requires_replay
+          tests/unit/nodes/node_contract_verify_replay_compute/test_node_contract_verify_replay_compute.py::test_tier2_skip_fails_closed_when_bundle_requires_invariants
+          -q"
+  - id: "dod-wrong-assertion-inverted-not-deleted"
+    description: >
+      test_tier2_yields_skip asserted the fail-open ("all checks skipped -> overall pass") as correct.
+      It is inverted and renamed test_tier2_skip_never_aggregates_into_pass; the old name no longer exists
+      anywhere in the tree.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/nodes/node_contract_verify_replay_compute/ -q"
+  - id: "dod-consumer-survey-no-pass-consumers"
+    description: >
+      Consumer survey completed before landing: no module in any repo reads this node's overall_status.
+      EnumOverallStatus is imported by exactly two modules — the handler and model_verify_replay_output
+      — so a new enum member cannot reach an unaudited consumer.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -rln 'enum_overall_status import EnumOverallStatus' src/ | sort"
