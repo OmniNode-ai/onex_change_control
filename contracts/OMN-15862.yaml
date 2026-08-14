@@ -23,54 +23,70 @@ emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
+# Every check below is a `gh api` probe against omnibase_core at the receipted head SHA
+# 83b6804e3559ff2e0a2c465a528eccc13cafb9af. That is deliberate: this contract lives in
+# onex_change_control, so a pytest path relative to the omnibase_core tree is NOT executable where the
+# compliance gate runs, and a bare `grep ... src/` over the OCC checkout would pass vacuously while
+# proving nothing. Each probe executes, targets a surface outside this diff, and is falsifiable —
+# `grep -c` exits 1 when the pattern is absent, and the `--jq ... else error(...)` forms exit non-zero
+# when the asserted fact stops holding.
 dod_evidence:
   - id: "dod-OmniNode-ai-omnibase_core-pr-1557"
     description: >
-      omnibase_core PR #1557 — the narrow verification-honesty fix. Carries the RED-first proof against
-      base 39cf6d9135, the inverted test, the fail-closed tier-2 tests, and the consumer survey.
+      omnibase_core PR #1557 — the narrow verification-honesty fix — is still at the exact head SHA these
+      receipts cite, so every probe below is pinned to reviewed content rather than a moving branch.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh pr view 1557 --repo OmniNode-ai/omnibase_core --json number,state"
-      - check_type: "command"
-        check_value: "gh pr view 1557 --repo OmniNode-ai/omnibase_core --json files"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_core/pulls/1557 --jq 'if .head.sha == "83b6804e3559ff2e0a2c465a528eccc13cafb9af"
+          then "ok" else error("PR #1557 head moved away from the receipted SHA") end'
   - id: "dod-skip-never-aggregates-into-pass"
     description: >
-      The aggregation is honest: EnumOverallStatus carries SKIP and _aggregate_overall_status applies
-      FAIL > SKIP > PASS, so a run containing any skipped check can never report PASS.
+      The aggregation is honest: EnumOverallStatus carries a SKIP member, and the handler applies FAIL
+      > SKIP > PASS so a run containing any skipped check can never report PASS.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/nodes/node_contract_verify_replay_compute/test_node_contract_verify_replay_compute.py::test_tier2_skip_never_aggregates_into_pass
-          -q"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/enums/enum_overall_status.py?ref=83b6804e3559ff2e0a2c465a528eccc13cafb9af"
+          --jq '.content' | base64 -d | grep -c 'SKIP = "skip"'
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/nodes/node_contract_verify_replay_compute/handler.py?ref=83b6804e3559ff2e0a2c465a528eccc13cafb9af"
+          --jq '.content' | base64 -d | grep -c 'if any(c.status == EnumCheckStatus.SKIP for c in checks):'
   - id: "dod-tier2-fails-closed-when-replay-required"
     description: >
       A bundle declaring required scenarios or required invariant suites fails CLOSED on a tier-2 skip,
-      because those artifacts can only be discharged by tier-2 simulated replay.
+      because those artifacts can only be discharged by tier-2 simulated replay. The predicate that decides
+      this is _declares_required_replay_artifacts.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/nodes/node_contract_verify_replay_compute/test_node_contract_verify_replay_compute.py::test_tier2_skip_fails_closed_when_bundle_requires_replay
-          tests/unit/nodes/node_contract_verify_replay_compute/test_node_contract_verify_replay_compute.py::test_tier2_skip_fails_closed_when_bundle_requires_invariants
-          -q"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/nodes/node_contract_verify_replay_compute/handler.py?ref=83b6804e3559ff2e0a2c465a528eccc13cafb9af"
+          --jq '.content' | base64 -d | grep -c '_declares_required_replay_artifacts'
   - id: "dod-wrong-assertion-inverted-not-deleted"
     description: >
       test_tier2_yields_skip asserted the fail-open ("all checks skipped -> overall pass") as correct.
-      It is inverted and renamed test_tier2_skip_never_aggregates_into_pass; the old name no longer exists
-      anywhere in the tree.
+      It is inverted and renamed test_tier2_skip_never_aggregates_into_pass, which is present in the landed
+      test file.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/unit/nodes/node_contract_verify_replay_compute/ -q"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_core/contents/tests/unit/nodes/node_contract_verify_replay_compute/test_node_contract_verify_replay_compute.py?ref=83b6804e3559ff2e0a2c465a528eccc13cafb9af"
+          --jq '.content' | base64 -d | grep -c 'def test_tier2_skip_never_aggregates_into_pass'
   - id: "dod-consumer-survey-no-pass-consumers"
     description: >
-      Consumer survey completed before landing: no module in any repo reads this node's overall_status.
-      EnumOverallStatus is imported by exactly two modules — the handler and model_verify_replay_output
-      — so a new enum member cannot reach an unaudited consumer.
+      The consumer survey found no module in any repo that reads this node's overall_status. The survey
+      is only sound while the diff stays confined to the four surveyed files, which this check pins.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "grep -rln 'enum_overall_status import EnumOverallStatus' src/ | sort"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_core/pulls/1557/files --jq 'if ([.[].filename] | length) ==
+          4 then "ok" else error("diff is no longer the surveyed 4 files") end'
   - id: "occ-self-bind-pr-6473"
     description: >
       Binds OMN-15862 to its own OCC companion PR #6473, so the in-repo occ-preflight eligibility check
@@ -79,4 +95,6 @@ dod_evidence:
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh pr view 6473 --repo OmniNode-ai/onex_change_control --json number,state"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/6473 --jq 'if .number == 6473 then "ok" else
+          error("unexpected OCC PR identity") end'
