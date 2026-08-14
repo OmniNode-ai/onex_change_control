@@ -1,0 +1,135 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16033"
+title: "Settle the seam-graph tracing convention and re-score S6 at the pinned ref"
+summary: >-
+  The delegation seam graph never stated which surface it describes, so edge S6 was unscoreable: its claim
+  is true at omnibase_infra upstream HEAD and false at the revision omnimarket resolves, and both trees
+  report version 0.38.4 so the version string cannot tell them apart. The decision is convention A, PINNED_REF
+  - an edge is scored against the surface that actually executes for omnimarket, which for a dependency
+  is the revision resolved from pyproject [tool.uv.sources] plus uv.lock, never that repo's upstream HEAD.
+  It is recorded as a top-level tracing_convention object in the graph JSON rather than prose. S6 re-scored
+  at the pin measures UNMATCHED severity high, restoring the 2026-08-08 finding. seams.v1.yaml is generated,
+  so the graph source was corrected first and scripts/seed_seams_registry.py re-run; exactly one of fifteen
+  registry rows changes.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2076 product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "tests"
+    description: >-
+      The seam goldens, the gates suite and both registry suites pass against the re-derived registry,
+      including the tautological-observation guards that forbid a NOT_CLAIMED-only module from supplying
+      an observed projection.
+    command: "uv run pytest tests/gates/ tests/seam_goldens/ tests/test_seams_registry_contract.py tests/test_seams_registry_match_integration.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-16033-s6-rescored-unmatched"
+    description: >-
+      The generated registry records S6 as UNMATCHED at the PR head. Content-bound: GREEN at the head,
+      RED at the merge-base where the same row reads MATCHED_UNTESTED.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/seams.v1.yaml?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -A6 '^- edge_id: S6$' | grep -c '^  classification: UNMATCHED$'
+  - id: "dod-omn-16033-s6-severity-restored"
+    description: >-
+      Severity is restored to high, not left at the low the superseded row carried. The downgrade was
+      justified only by a delegation the resolved rev does not contain, so scoring the pin restores the
+      severity along with the classification.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/seams.v1.yaml?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -A6 '^- edge_id: S6$' | grep -c '^  severity: high$'
+  - id: "dod-omn-16033-summary-recounted"
+    description: >-
+      The registry summary is reconciled against an independent recount of the fifteen edges: UNMATCHED
+      moves 5 to 6. by_classification is copied straight from the source JSON's summary_counts, so a recount
+      that disagreed with the row would surface here.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/configs/seams.v1.yaml?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -A6 '^  by_classification:$' | grep -c '^    UNMATCHED: 6$'
+  - id: "dod-omn-16033-manifest-mirrors-registry"
+    description: >-
+      The frozen slice manifest mirrors the registry row it binds to. The manifest-registry binding test
+      asserts classification and severity agree, so a manifest left at MATCHED_UNTESTED would go red.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/slice_manifest.yaml?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -A8 '^  - edge_id: S6$' | grep -c 'registry_classification: UNMATCHED'
+  - id: "dod-omn-16033-observation-class-not-claimed"
+    description: >-
+      An UNMATCHED edge has no second side to observe, so the frozen slice records NOT_CLAIMED rather
+      than REGENERABLE. This is the load-bearing half: the anti-tautology meta-guard reads this field
+      and then rejects any observed projection supplied by a NOT_CLAIMED-only golden module, so the class
+      recorded here is what forces the golden to stop claiming an observation it cannot make. Content-bound:
+      the same row reads REGENERABLE at the merge-base.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/slice_manifest.yaml?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -A12 '^  - edge_id: S6$' | grep -c 'observation_class: NOT_CLAIMED'
+  - id: "dod-omn-16033-no-consumer-is-encoded-faithfully"
+    description: >-
+      The registry-match leg runs with declared_consumer=None, the faithful encoding of "there is no consumer",
+      rather than a synthesised consumer that would manufacture the agreement this row exists to record
+      as absent. Content-bound: absent at the merge-base.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/test_s6_contract_handler_dispatch.py?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -c 'declared_consumer=None'
+  - id: "dod-omn-16033-nondelegation-pin-preserved"
+    description: >-
+      The executable measurement behind the classification survives the rewrite: the golden still asserts
+      the module that actually runs never references either contract-declared handler class. Unlike the
+      other checks here this one is deliberately NOT content-bound - it is GREEN at both the merge-base
+      and the head, and that invariance IS the evidence, because the point is that the re-score preserved
+      the assertion rather than deleting the inconvenient half of the golden.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/test_s6_contract_handler_dispatch.py?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -c 'assert "HandlerForwardOutbound" not in source'
+  - id: "dod-omn-16033-regenerable-set-pin-updated"
+    description: >-
+      The measured-REGENERABLE pin is updated deliberately, per that test's own instruction, from S6/S10/S11/S12/S13
+      to S10/S11/S12/S13. S6 leaves the set because it re-scored one-sided, not because anything was downgraded
+      to stay green.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/seam_goldens/test_manifest_registry_binding.py?ref=b309e2d2a768fd63d4f52f88a2c20724219bb05a" --jq '.content' | base64 -d | grep -c 'measured == {"S10", "S11", "S12", "S13"}'
+  - id: "dod-omn-16033-suite-green"
+    description: >-
+      The hosted test check-run concluded success on the PR head. Probed via the check-run rather than
+      a local pytest invocation, because this contract is evaluated inside the onex_change_control checkout
+      where the omnimarket test tree does not exist.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/commits/b309e2d2a768fd63d4f52f88a2c20724219bb05a/check-runs" --paginate --jq '.check_runs[] | select(.name == "tests+coverage (shadow)") | .conclusion' | grep -c 'success'
+  - id: "occ-self-bind-pr-6493"
+    description: >-
+      OCC companion PR #6493 - self-bind for OMN-16033 (OMN-14650). OCC evaluates its own PRs from the
+      in-tree checkout (invariant I3), so at least one PASS receipt must bind to this OCC PR rather than
+      only to the product PR it carries evidence for.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/6493 --jq '.number' | grep -c '^6493$'
