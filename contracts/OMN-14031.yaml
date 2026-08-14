@@ -1,0 +1,89 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-14031
+title: "fix(OMN-14031): bound every gh/git subprocess in pr_lifecycle so merge-sweep skill can't hang"
+summary: >
+  Root cause of the 2026-07-06 fleet-wide merge gap: the merge_sweep skill (node_pr_lifecycle_orchestrator)
+  hung forever and drove zero merges because the inventory sub-node ran every gh CLI call via a bare subprocess.run
+  with NO timeout. Under GitHub API throttling / fleet egress saturation a single stalled gh call blocks
+  in select() indefinitely and wedges the org-wide sweep with zero stdout (captured live via faulthandler
+  at _collect_check_runs). Fix: a _run_gh helper bounds every gh call at 90s and, on TimeoutExpired, returns
+  a synthetic non-zero CompletedProcess so each caller's existing returncode!=0 fail-soft branch handles
+  it; the two OCC fix-effect _run_git helpers are bounded at 120s. Fail-soft, never a hang; org-wide census
+  fails CLOSED on timeout. Proven: fixed skill completes end-to-end and its org-wide census matches the
+  manual gh census exactly.
+is_seam_ticket: false
+interface_change: false
+evidence_requirements:
+  - kind: "manual"
+    description: "omnimarket PR #1637 carries the OMN-14031 timeout fix (inventory _run_gh + OCC _run_git)
+      and regression tests"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-omnimarket-pr-1637/command.yaml"
+  - kind: "ci"
+    description: "ruff format + check clean, mypy --strict clean, pre-commit all-pass, 695 pr_lifecycle
+      tests + 5 new timeout tests pass"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-local-gates/command.yaml"
+  - kind: "manual"
+    description: "Census parity: fixed skill org-wide census (60) matches the manual gh census exactly;
+      prior invocation hung, fixed invocation EXIT=0"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-parity-proof/command.yaml"
+  - kind: "manual"
+    description: "Deploy-scope evidence: PR #1637 touches runtime handler paths but does not perform a
+      live deployment; post-merge validation is bounded to deploy smoke of the merge-sweep lifecycle path."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-deploy-scope/command.yaml"
+  - kind: "manual"
+    description: "Self-binding OCC receipt for OCC PR #3677 carrying the deploy-scope evidence extension."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-occ-self-3677/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1637"
+    description: "omnimarket PR #1637 carries the OMN-14031 timeout fix (inventory _run_gh + OCC _run_git)
+      and regression tests"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-omnimarket-pr-1637/command.yaml
+          && grep -q '^pr_number: 1637$' drift/dod_receipts/OMN-14031/dod-omnimarket-pr-1637/command.yaml"
+  - id: "dod-local-gates"
+    description: "ruff format + check clean, mypy --strict clean, pre-commit all-pass, 695 pr_lifecycle
+      tests + 5 new timeout tests pass"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-local-gates/command.yaml
+          && grep -q '^evidence_item_id: dod-local-gates$' drift/dod_receipts/OMN-14031/dod-local-gates/command.yaml"
+  - id: "dod-parity-proof"
+    description: "Census parity: fixed skill org-wide census (60) matches manual gh census exactly; prior
+      invocation hung, fixed invocation EXIT=0"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-parity-proof/command.yaml
+          && grep -q '^evidence_item_id: dod-parity-proof$' drift/dod_receipts/OMN-14031/dod-parity-proof/command.yaml"
+  - id: "dod-occ-self"
+    description: "Self-binding OCC receipt: this onex_change_control PR carries the OMN-14031 central
+      contract and PASS receipts consumed by omnimarket PR #1637."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-occ-self/command.yaml
+          && grep -q '^pr_number: 3653$' drift/dod_receipts/OMN-14031/dod-occ-self/command.yaml"
+  - id: "dod-deploy-scope"
+    description: "Deploy-scope evidence: PR #1637 touches runtime handler paths but does not perform a
+      live deployment; post-merge validation is bounded to deploy smoke of the merge-sweep lifecycle path."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-deploy-scope/command.yaml
+          && grep -q '^pr_number: 1637$' drift/dod_receipts/OMN-14031/dod-deploy-scope/command.yaml"
+  - id: "dod-occ-self-3677"
+    description: "Self-binding OCC receipt: OCC PR #3677 carries the deploy-scope evidence extension consumed
+      by omnimarket PR #1637."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14031/dod-occ-self-3677/command.yaml
+          && grep -q '^pr_number: 3677$' drift/dod_receipts/OMN-14031/dod-occ-self-3677/command.yaml"

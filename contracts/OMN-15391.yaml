@@ -1,0 +1,133 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15391
+title: Retire evidence items whose description narrates a proof their command cannot produce
+summary: '14 dod_evidence items across 11 OCC contracts carried a description narrating a product proof
+  while their only check_value was ''uv run pytest tests/test_evidence_admissibility.py -q'' -- OCC''s
+  own OMN-15309 predicate suite, which node_dod_verify resolves into the OCC checkout and which passes
+  whether or not the fact it is filed under is true. This PR retires all 14 by the append-only supersession
+  idiom (#4528), binding each claim to a real product fact at a pinned merge commit with an absence control
+  at that commit''s first parent where one applies. Contract repair only: no ticket is flipped, because
+  node_dod_verify has no contract-entry supersedes_dod_evidence handling until OMN-15390 lands. Also repairs,
+  by the same idiom, the 9 pre-existing OMN-15382 Rule B violations inside the touched contracts and shrinks
+  the frozen Rule B baseline by exactly those 9 entries.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: manual
+    description: Every superseding check executes with a real exit code and can go RED
+    command: uv run pytest tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py -q
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-15391-infra2537-baselines-bound
+    description: 'The OMN-15376 supersession this PR adds binds a real, fix-discriminating product fact
+      rather than OCC''s own predicate suite: the baselines_snapshots reconciliation is present in the
+      guarded CREATE migration at omnibase_infra#2537''s merge commit 78b8731103a019ea90eee3164b53e882a064fe34
+      and absent at its first parent 11b460db23d40dd2ca7704d0c3e9fd89851af60c. Public repo, so every runner
+      can execute it.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines/0001_create_baselines_tables.sql?ref=78b8731103a019ea90eee3164b53e882a064fe34''
+          | grep -q ''ALTER TABLE baselines_snapshots ADD COLUMN IF NOT EXISTS snapshot_id'''
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines/0001_create_baselines_tables.sql?ref=11b460db23d40dd2ca7704d0c3e9fd89851af60c''
+          | grep -c ''ALTER TABLE baselines_snapshots ADD COLUMN IF NOT EXISTS snapshot_id'' | grep -qx
+          0'
+  - id: dod-15391-omniclaude1961-bound
+    description: 'The OMN-15362 supersession this PR adds binds the shipped artifact, not the validator
+      suite: the reusable verifier-stamp workflow exists at omniclaude#1961''s merge commit 7009244192111177d172825bb8374308797a0413
+      and did not exist at its first parent 5703f123fe272a1214cca50d0fdd66e34180ed14.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omniclaude/contents/.github/workflows/verifier-stamp-reusable.yml?ref=7009244192111177d172825bb8374308797a0413''
+          | grep -q ''name: Verifier Stamp (reusable)'''
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omniclaude/contents/.github/workflows/verifier-stamp-reusable.yml?ref=5703f123fe272a1214cca50d0fdd66e34180ed14''
+          | grep -c ''name: Verifier Stamp (reusable)'' | grep -qx 0'
+  - id: dod-15391-market1944-scope-bound
+    description: 'The OMN-14979 Rule B collateral repair this PR adds pins a literal cross-repo PR instead
+      of the bare ${PR_NUMBER} placeholder: omnimarket#1944''s diff contains the push-validation request
+      model the seam adds, so the check goes RED if that scope changes. Honest limit on this contract
+      as a whole: 9 of the 11 contracts repaired here bind facts in the PRIVATE OmniNode-ai/omninode_infra
+      repo, whose endpoints 404 under this runner''s repo-scoped github.token; those checks are carried
+      in their own contracts with that limit stated, and are deliberately NOT restated here, because a
+      check that cannot evaluate on the runner executing this contract would report RED for an authorization
+      reason rather than a product reason.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnimarket/pulls/1944/files --paginate --jq '.[].filename'
+          | grep -qx 'src/omnimarket/nodes/node_push_validation_effect/models/model_push_validation_request.py'
+  - id: "occ-self-bind-pr-5502"
+    description: "Binds OMN-15391 to OCC companion PR #5502 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5502 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: dod-15391-infra2537-baselines-rb2
+    description: 'Append-only replacement for dod-15391-infra2537-baselines-bound (OMN-15391 round 2,
+      Rule D). The superseded item''s GREEN leg is correct and is carried forward here unchanged; its
+      ABSENCE leg was ''... | grep -c ''ALTER TABLE baselines_snapshots ADD COLUMN IF NOT EXISTS snapshot_id''
+      | grep -qx 0'', which FAILS OPEN. check_values are handed to `sh -c` without pipefail, so a producer
+      that 404s, is denied, or hits a network error emits nothing, `grep -c` prints 0, and `grep -qx 0`
+      exits 0 -- GREEN, having read nothing. Executed proof of the defect at authoring time: the superseded
+      shape returns rc=0 against OmniNode-ai/no_such_repo_xyz, a repository that does not exist. The replacement
+      absence leg reads the parent revision ONCE into a variable, PROVES the read landed by requiring
+      the structural anchor ''OMN-11887: node-owned projection migration'' (present in this file at both
+      11b460db23d4 and 78b8731103a0, so it tracks the read rather than the fix), and only then asserts
+      the marker is absent. A failed fetch now yields an empty body, the anchor leg fails, and the check
+      goes RED. Claim bound, unchanged: the baselines_snapshots reconciling ALTER exists at omnibase_infra#2537''s
+      merge commit 78b8731103a019ea90eee3164b53e882a064fe34, and was absent at its first parent 11b460db23d40dd2ca7704d0c3e9fd89851af60c.
+      Executed at authoring time: green leg rc=0, absence leg rc=0; and the absence leg goes RED under
+      all four mutations -- invalid token, nonexistent repo, pointed at the merge commit instead of the
+      parent, and anchor mutated.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-15391-infra2537-baselines-bound
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines/0001_create_baselines_tables.sql?ref=78b8731103a019ea90eee3164b53e882a064fe34''
+          | grep -q ''ALTER TABLE baselines_snapshots ADD COLUMN IF NOT EXISTS snapshot_id'''
+      - check_type: command
+        check_value: 'body=$(gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_baselines/0001_create_baselines_tables.sql?ref=11b460db23d40dd2ca7704d0c3e9fd89851af60c'')
+          && printf ''%s'' "$body" | grep -qF ''OMN-11887: node-owned projection migration'' && ! printf
+          ''%s'' "$body" | grep -qF ''ALTER TABLE baselines_snapshots ADD COLUMN IF NOT EXISTS snapshot_id'''
+  - id: dod-15391-omniclaude1961-rb2
+    description: 'Append-only replacement for dod-15391-omniclaude1961-bound (OMN-15391 round 2, Rule
+      D). The superseded item''s GREEN leg is correct and is carried forward here unchanged; its ABSENCE
+      leg was ''... | grep -c ''name: Verifier Stamp (reusable)'' | grep -qx 0'', which FAILS OPEN. check_values
+      are handed to `sh -c` without pipefail, so a producer that 404s, is denied, or hits a network error
+      emits nothing, `grep -c` prints 0, and `grep -qx 0` exits 0 -- GREEN, having read nothing. Executed
+      proof of the defect at authoring time: the superseded shape returns rc=0 against OmniNode-ai/no_such_repo_xyz,
+      a repository that does not exist. This file did not exist AT ALL at the parent 5703f123fe272a1214cca50d0fdd66e34180ed14,
+      so the superseded leg passed on a 404 -- it never read anything, and would have passed identically
+      had the repo been deleted. The replacement pairs a REACHABILITY CONTROL with the absence assertion:
+      it first proves the token can resolve 5703f123fe27 in this repo (`gh api .../commits/5703f123fe27
+      --jq .sha` must echo the sha back), and only then requires the contents fetch for the path to FAIL.
+      A 404 is therefore admissible as evidence of absence only after the same token has demonstrably
+      read the same ref -- an auth or network failure fails the control leg first and the check goes RED.
+      Claim bound, unchanged: the reusable verifier-stamp workflow exists at omniclaude#1961''s merge
+      commit 7009244192111177d172825bb8374308797a0413, and the path did not exist at its first parent
+      5703f123fe272a1214cca50d0fdd66e34180ed14. Executed at authoring time: green leg rc=0, absence leg
+      rc=0; and the absence leg goes RED under all three mutations -- invalid token, nonexistent repo,
+      and pointed at the merge commit where the path does exist.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-15391-omniclaude1961-bound
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omniclaude/contents/.github/workflows/verifier-stamp-reusable.yml?ref=7009244192111177d172825bb8374308797a0413''
+          | grep -q ''name: Verifier Stamp (reusable)'''
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omniclaude/commits/5703f123fe272a1214cca50d0fdd66e34180ed14'
+          --jq '.sha' | grep -qx '5703f123fe272a1214cca50d0fdd66e34180ed14' && ! gh api 'repos/OmniNode-ai/omniclaude/contents/.github/workflows/verifier-stamp-reusable.yml?ref=5703f123fe272a1214cca50d0fdd66e34180ed14'
+          --silent

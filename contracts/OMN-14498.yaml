@@ -1,0 +1,111 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14498"
+title: "Autobind OCC evidence for OMN-14498"
+summary: "Central deploy-gate evidence for omnibase_infra PR #2436."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2436 product diff scope present"
+    command: "gh pr view 2436 --repo OmniNode-ai/omnibase_infra --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2436-deploy-scope"
+    description: "Deploy-gate scope for OMN-14498 delivered by omnibase_infra PR #2436. The runtime handler
+      path adds _route_sync_publisher_failure so failed fire-and-forget sync publisher payloads are routed
+      to the existing duck-typed _publish_raw_to_dlq surface instead of being only logged. No live deploy,
+      docker exec, or .201 mutation is authorized by this evidence repair."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=d2be06024541bd5fa3dfd1e90ce655570f10a0bd'
+          --jq .content | base64 -d | grep -Fq '_route_sync_publisher_failure'"
+  - id: "occ-self-bind-pr-4799"
+    description: "OCC companion PR #4799 -- self-bind for OMN-14498 evidence used by omnibase_infra#2436."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4799 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number, .state, .headRefName'"
+  - id: "dod-omnibase-infra-pr-2604-ack-dlq-lineage"
+    description: "PR #2604 preserves ingress correlation lineage across ACK/DLQ roundtrip and refuses
+      to ACK a non-durable DLQ write at exact head ca599dc74ea3c7fbbe8c47135f54293c5f10e971."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2604 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid,baseRefName --jq '.number == 2604 and .headRefOid == "ca599dc74ea3c7fbbe8c47135f54293c5f10e971" and .baseRefName == "dev"' | grep -qx true &&
+          files="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2604/files --jq '.[].filename')" &&
+          printf '%s\n' "$files" | grep -qx 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py' &&
+          printf '%s\n' "$files" | grep -qx 'tests/fixtures/seams/ack_dlq/poisoned_command.json' &&
+          printf '%s\n' "$files" | grep -qx 'tests/unit/runtime/auto_wiring/test_boundary_dlq_omn14507.py' &&
+          printf '%s\n' "$files" | grep -qx 'tests/unit/runtime/auto_wiring/test_seam_correlation_survives_ack_and_dlq_roundtrip_omn14498.py' &&
+          test "$(printf '%s\n' "$files" | grep -c .)" -eq 4 &&
+          handler="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=ca599dc74ea3c7fbbe8c47135f54293c5f10e971' --jq .content | base64 -d)" &&
+          printf '%s' "$handler" | grep -qF 'def _ingress_correlation_id' &&
+          printf '%s' "$handler" | grep -qF 'class BoundaryDlqNotPersistedError' &&
+          test_body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_seam_correlation_survives_ack_and_dlq_roundtrip_omn14498.py?ref=ca599dc74ea3c7fbbe8c47135f54293c5f10e971' --jq .content | base64 -d)" &&
+          printf '%s' "$test_body" | grep -qF 'test_seam_correlation_survives_ack_and_dlq_roundtrip' &&
+          printf '%s' "$test_body" | grep -qF 'poisoned_command.json'
+  - id: "occ-self-bind-pr-5835"
+    description: "OCC companion PR #5835 -- self-bind for OMN-14498 evidence used by omnibase_infra#2604."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5835 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number, .state, .headRefName'"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2672"
+    description: "PR #2672 on OmniNode-ai/omnibase_infra - exact-head result-applier publish seam diff."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2672 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid,files
+          --jq 'if (.number == 2672 and .state == "OPEN" and .headRefName == "jonah/omn-14498-result-applier-dlq-seam"
+          and .headRefOid == "cd4966c0d197d2c1c0ee2528ebbacfbf32e5a0d8" and ([.files[].path] | sort) ==
+          ["src/omnibase_infra/runtime/auto_wiring/handler_wiring.py","tests/unit/runtime/auto_wiring/test_result_applier_publish_failure_seam_omn14498.py"])
+          then "true" else error("unexpected #2672 state, head, or file set") end'
+  - id: "dod-occ-evidence-validator-pr-2672"
+    description: "Hosted OCC evidence admissibility validator for OMN-14498 / PR #2672."
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2672"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-6139"
+    description: "Binds OMN-14498 to OCC companion PR #6139."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6139 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2672-rebind"
+    description: >
+      Rebind of dod-OmniNode-ai-omnibase_infra-pr-2672 to PR #2672's current head after new commits landed
+      post-#6139 merge (same file set, new head commit). Append-only: does not edit the original entry's
+      bytes.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2672"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2672 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid,files
+          --jq 'if (.number == 2672 and .state == "OPEN" and .headRefName == "jonah/omn-14498-result-applier-dlq-seam"
+          and .headRefOid == "be65d9c4ddf2b391f4b730922331011940cf8a1c" and ([.files[].path] | sort) ==
+          ["src/omnibase_infra/runtime/auto_wiring/handler_wiring.py","tests/unit/runtime/auto_wiring/test_result_applier_publish_failure_seam_omn14498.py"])
+          then "true" else error("unexpected #2672 state, head, or file set") end'
+  - id: "occ-self-bind-pr-6266"
+    description: "Binds OMN-14498 to replacement OCC companion PR #6266, rebinding infra PR #2672 to its
+      current head after #6139 merged against a stale head."
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-6139"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6266 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          'if (.number == 6266 and (.state == "OPEN" or .state == "MERGED") and .headRefName == "mergesweep-0809-occ2672-rebind")
+          then "true" else error("unexpected OCC self-bind PR state") end'

@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13946"
+title: "CI runner image missing libatomic1 — Pyright fails with \"node: libatomic.so.1: cannot open shared
+  object file\""
+summary: >-
+  The self-hosted CI runner image's bundled GitHub Actions node runtime (used by node-based actions, e.g.
+  the Pyright action) dlopens libatomic.so.1 at load time. Ubuntu 22.04 does not pull libatomic1 in transitively,
+  so every node-based action on the runner image fails deterministically with "node: libatomic.so.1: cannot
+  open shared object file" — a real missing-system-lib defect, not a transient fleet issue. This blocked
+  omniclaude PR #1860 (OMN-13502) and would block any omniclaude PR that runs pyright regardless of fleet
+  health. omnibase_infra PR binds this contract: adds libatomic1 to the runner image apt install list,
+  bumps image_version 5->6 (a real image content change), and regenerates the bound identity in docker/runners/runner-image.lock.json.
+  The Dockerfile apt-list is not itself a binding input to the identity digest, so identity_digest only
+  moves because image_version does; shared_env_digest is unchanged. This is pre-deploy code evidence only
+  — the image rebuild + fleet redeploy on .201 is a separate gated live-runtime step, out of scope here.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR implements the libatomic1 fix (Dockerfile apt-list addition,
+      image_version bump 5->6, regenerated runner-image.lock.json identity, and the OMN-12765 release-backmerge
+      identity-pin test updated to the regenerated digest). Full local gates green (ruff format/check,
+      mypy, pre-commit --all-files, full pytest suite) on all new/changed files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13946/dod-omnibase-infra-pr/command.yaml"
+  - id: "dod-no-runtime-deploy"
+    description: >-
+      Deploy-gate evidence for this PR: the change is a Dockerfile + lock-file fix to the runner image
+      build definition. No image was built, pushed, or deployed by this PR; no runner was restarted; no
+      .201/cluster mutation was performed. deploy-gate reports deploy-neutral on the code PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'No image build, push, restart, or .201/cluster mutation' drift/dod_receipts/OMN-13946/dod-no-runtime-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      OCC self-binding: this onex_change_control PR carries the OMN-13946 contract and receipts that the
+      omnibase_infra PR cites via Evidence-Source.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^pr_number:' drift/dod_receipts/OMN-13946/dod-occ-pr/command.yaml"

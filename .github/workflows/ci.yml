@@ -1,0 +1,2183 @@
+name: CI
+
+# Runner-routing policy: only fork pull requests use the public selector.
+# Same-repository pull requests, pushes, and merge-group events use trusted CI.
+
+on:
+  push:
+    branches: [main, "hotfix/**"]
+  pull_request:
+    branches: [main, dev, "hotfix/**"]
+    # OMN-15731: default types (opened/synchronize/reopened) don't retrigger
+    # on a label change. label-gated CI pilot needs `labeled`/`unlabeled` so
+    # applying/removing `ci:ready` fires (or retracts) a heavy CI wave
+    # without requiring a new push; `ready_for_review` is included so a
+    # draft->ready flip also re-evaluates against the label state.
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Zone filter (OMN-10475): short-circuit heavy jobs on docs-only and
+  # declarative-evidence-only PRs. Most OCC traffic is contract+receipt
+  # YAML in contracts/ and drift/dod_receipts/, both DOCS zone now.
+  zone-filter:
+    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@dev
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      python-version: "3.12"
+
+  pre-commit:
+    name: Pre-commit
+    needs: [zone-filter]
+    # OMN-15731 label-gated CI pilot: this job is gated here -- and ONLY for
+    # dev-targeting PRs; push/merge_group/main-or-hotfix-targeting PRs are
+    # unaffected (`always()` still holds for them), preserving the
+    # promotion-boundary guarantee exactly as before. Gating `test` and
+    # `type-check` for the `main` promotion boundary would weaken the
+    # unconditional full-suite guarantee root CLAUDE.md rule #4 requires at
+    # that boundary, so they stay ungated there.
+    #
+    # Stale-comment correction (same OMN-15731 ticket, later commit): this
+    # comment previously claimed `test`/`type-check` "already skip on PRs
+    # targeting dev by design," so gating them here would add "zero
+    # incremental savings." That claim was the exact bug this ticket fixes
+    # elsewhere in this file -- a `github.base_ref != 'dev'` carve-out on
+    # both jobs' `if:` meant they silently skipped on every dev PR while
+    # reading as passing. That carve-out is now removed (see `test`/
+    # `type-check` below and their CI-Summary strict block); `test` and
+    # `type-check` run unconditionally on non-docs-only PRs, dev included.
+    # This job's own `ci:ready` gate is unaffected by that fix -- it was
+    # never conditioned on the (mis)stated rationale, only on the label --
+    # but the rationale text is corrected here so it does not misdescribe
+    # the file it sits in.
+    if: always() && (github.event_name != 'pull_request' || github.base_ref != 'dev' || contains(github.event.pull_request.labels.*.name, 'ci:ready'))
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      # OMN-15241: reject-required-check-skip-vector is SKIPped in CI *only*.
+      # It is a LOCAL shift-left wrapper that resolves the canonical validator
+      # from $OMNI_HOME/omniclaude, which does not exist on a GitHub-hosted
+      # runner -- it would hard-error here for a missing sibling clone, not for
+      # a real skip vector. ZERO enforcement is lost: the identical validator
+      # runs in CI on every PR via .github/workflows/required-check-skip-guard-caller.yml
+      # (context `required-check-skip-guard / check-skip-vectors`). This is a
+      # duplicate-invocation removal, not a gate bypass.
+      - name: Run full pre-commit
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        run: SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --all-files
+      - name: Run dev PR changed-file pre-commit
+        if: needs.zone-filter.outputs.docs_only != 'true' && github.event_name == 'pull_request' && github.base_ref == 'dev'
+        env:
+          BASE_REF: ${{ github.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REF" --no-tags
+          mapfile -t changed_files < <(git diff --name-only --diff-filter=ACMRT "origin/${BASE_REF}"...HEAD || true)
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "Dev PR fast-lane: no changed files for pre-commit."
+            exit 0
+          fi
+          SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --files "${changed_files[@]}"
+      - name: Run evidence-only pre-commit
+        if: needs.zone-filter.outputs.docs_only == 'true'
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          mapfile -t changed_files < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- contracts/ drift/dod_receipts/ \
+              | grep -E '^(contracts/.*\.ya?ml|drift/dod_receipts/.*\.ya?ml)$' || true
+          )
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "Evidence-only fast-lane: no changed contract or receipt YAML files."
+            exit 0
+          fi
+          SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --files "${changed_files[@]}"
+      - name: Run receipt hardening on changed receipts
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          # OMN-15710: the gate's ABS_PATH rule also scans contracts/*.yaml
+          # dod_evidence[*].checks[*].check_value, so changed contract files
+          # must reach the same invocation as changed receipt files.
+          mapfile -t receipt_files < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- drift/dod_receipts/ contracts/ \
+              | grep -E '^(drift/dod_receipts/.*\.ya?ml|contracts/.*\.ya?ml)$' || true
+          )
+          if [ "${#receipt_files[@]}" -eq 0 ]; then
+            echo "No changed receipt or contract files for receipt hardening."
+            exit 0
+          fi
+          uv run python scripts/validation/check_receipt_hardening.py "${receipt_files[@]}"
+
+      # OMN-14428: every gate above is scoped to the data files it validates
+      # (drift/dod_receipts/, contracts/, ...), so a PR that edits the gate's
+      # own code but touches zero data files never executes it. That exact
+      # hole is how OCC#3986 merged green with a stale-import ImportError in
+      # check_receipt_hardening.py — the file-scoped diff was empty, so the
+      # gate script never ran, and only the caught-ImportError compat shim it
+      # shipped with kept the (never-exercised) import path "succeeding".
+      # A change to a gate must run the gate. `--help` forces full
+      # module-level import execution (argparse handles -h before validating
+      # required positionals, so this needs no fixture data and works
+      # uniformly for any argparse-based validator); check_receipt_hardening
+      # additionally gets a real corpus run so a broken gate can't hide
+      # behind an import that merely succeeds but a runtime path that
+      # doesn't.
+      - name: Validator self-check — a gate must run when its own code changes
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          mapfile -t changed_validators < <(
+            git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- scripts/validation/ \
+              | grep -E '^scripts/validation/check_[^/]*\.py$' || true
+          )
+          if [ "${#changed_validators[@]}" -eq 0 ]; then
+            echo "No changed validator scripts; skipping self-check."
+            exit 0
+          fi
+          echo "Validator code changed — executing (not just importing via tests) so the gate can't merge broken behind an empty data-file diff:"
+          printf '  %s\n' "${changed_validators[@]}"
+          fail=0
+          for validator in "${changed_validators[@]}"; do
+            if [ ! -f "$validator" ]; then
+              echo "  $validator: deleted, skipping."
+              continue
+            fi
+            if ! uv run python "$validator" --help > /tmp/validator_help.log 2>&1; then
+              echo "  $validator: FAILED to execute even --help — the gate itself is broken:"
+              cat /tmp/validator_help.log
+              fail=1
+              continue
+            fi
+            echo "  $validator: --help OK (module-level imports execute cleanly)."
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more changed validators cannot execute. Fix the gate before merging."
+            exit 1
+          fi
+
+          # Stronger, corpus-backed check for check_receipt_hardening.py specifically:
+          # a script that imports fine but breaks on real data (e.g. a lazily-imported
+          # symbol) wouldn't be caught by --help alone.
+          for validator in "${changed_validators[@]}"; do
+            if [ "$(basename "$validator")" != "check_receipt_hardening.py" ] || [ ! -f "$validator" ]; then
+              continue
+            fi
+            mapfile -t corpus_receipts < <(find drift/dod_receipts -name '*.yaml' ! -name '*.supersede.*')
+            echo "Running $validator against the full corpus (${#corpus_receipts[@]} receipts)..."
+            set +e
+            uv run python "$validator" "${corpus_receipts[@]}" > /tmp/validator_corpus.log 2>&1
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              echo "Corpus run: clean (0 violations)."
+            elif [ "$status" -eq 1 ] && grep -q "violation(s):" /tmp/validator_corpus.log; then
+              echo "Corpus run: gate executed and reported expected violations (legacy corpus debt, not a gate defect)."
+            else
+              echo "Corpus run FAILED — the gate crashed instead of reporting violations:"
+              cat /tmp/validator_corpus.log
+              exit 1
+            fi
+          done
+
+  type-check:
+    # Note: This job runs mypy separately from pre-commit for full codebase checking.
+    # Pre-commit hook runs mypy only on changed files (pre-push stage), while this job
+    # checks the entire codebase (src/ and tests/) to catch type errors across all files.
+    #
+    # OMN-15731: previously skipped on every dev-targeting PR via a
+    # `github.base_ref != 'dev'` clause AND'd onto this condition (added by
+    # OMN-14098 / PR #3665, 2026-07-07), on the theory that `smart-test-select`
+    # (below) would cover dev PRs instead. It never did -- its outputs
+    # (`selected_paths`/`matrix`/`is_full_suite`) were never consumed by any
+    # job (no `needs: smart-test-select` anywhere in this file), so the dev
+    # path ran NEITHER the full check NOR a governed narrowed one. Since dev
+    # is this repo's default branch, that meant type-check ran on
+    # essentially zero real PRs for a month. Root fix: no per-branch carve-out
+    # here; mypy runs on every non-docs-only PR. OCC's codebase is small
+    # enough that unconditional-on-dev matches the CLAUDE.md rule-4
+    # fail-closed default until a governed selector is actually wired for
+    # type-checking (it currently only narrows pytest, and only in repos
+    # that consume it -- OCC never did).
+    name: Type Check
+    needs: zone-filter
+    if: needs.zone-filter.outputs.docs_only != 'true'
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run mypy
+        run: uv run mypy src/ tests/
+
+  test:
+    name: Tests
+    # OMN-15731: `smart-test-select` (computed changed-file-based selection
+    # via scripts/ci/detect_test_paths.py) existed in this file but was never
+    # wired to this job -- no `needs: smart-test-select`, no consumption of
+    # its `selected_paths`/`matrix` outputs anywhere. Combined with a
+    # `github.base_ref != 'dev'` clause on THIS job's own `if:` (added by
+    # OMN-14098 / PR #3665, 2026-07-07), the net effect was that dev-targeting
+    # PRs ran neither the governed selector's narrowed set nor the full
+    # suite -- zero unit tests, on the default branch. The orphaned
+    # smart-test-select job has been removed rather than wired: OCC's suite
+    # is small enough that full-suite-on-every-PR matches the CLAUDE.md
+    # rule-4 fail-closed default (governed selection is for repos where the
+    # full suite is the bottleneck; wiring a selector here is a separate,
+    # deliberate follow-up, not a silent-skip default).
+    needs: zone-filter
+    if: needs.zone-filter.outputs.docs_only != 'true'
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run tests with coverage
+        run: uv run pytest --cov=onex_change_control --cov-report=term-missing
+
+  schema-purity:
+    name: Schema Purity & Naming Check
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    needs: [zone-filter, test, contract-compliance]
+    # Run when test was successful or skipped (zone-filter docs-only path).
+    # Skip only when contract-compliance failed/cancelled or test outright failed.
+    if: |
+      always() && needs.zone-filter.outputs.docs_only != 'true'
+        && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        && needs.contract-compliance.result == 'success'
+        && (needs.test.result == 'success' || needs.test.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Check schema purity and naming conventions
+        run: uv run check-schema-purity
+
+  substance-floor:
+    name: Contract Substance Floor (OMN-14409)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    # Deliberately UNCONDITIONAL — no zone-filter gate, no path filter, no
+    # docs_only skip. The pre-commit hook only fires when a PR touches
+    # contracts/*.yaml, so a PR that changes the gate itself (like the one that
+    # introduced it) would never execute it: the hook logs "(no files to check)
+    # Skipped" and CI goes green having proven nothing. That is precisely the
+    # OMN-14416 failure — a defense that never runs — and it nearly shipped
+    # inside the fix for it. This job executes the gate on every PR.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Unit tests for the deriver + floor
+        run: uv run pytest tests/test_check_contract_substance_floor.py -v
+      - name: Sweep the full contract corpus
+        run: uv run python scripts/validation/check_contract_substance_floor.py --all
+      # OMN-14767 / F-15 — DoD-authoring hygiene gate (placeholder + self-PR
+      # impossible-merge). Runs in this same UNCONDITIONAL job (no new workflow,
+      # net-minimal surface) so the per-row authoring gate executes on every PR,
+      # not only when a PR happens to touch contracts/*.yaml (the OMN-14416
+      # "defense that never runs" lesson the substance floor above already learned).
+      - name: Unit tests for the DoD-authoring gate
+        run: uv run pytest tests/test_check_contract_dod_authoring.py -v
+      - name: Sweep the full contract corpus (DoD authoring)
+        run: uv run python scripts/validation/check_contract_dod_authoring.py --all
+
+  divergent-automation-pr-guard:
+    name: No Divergent Automation PRs (OMN-14778)
+    # Deliberately UNCONDITIONAL — no zone-filter/docs_only gate and no path
+    # filter. The pre-commit hook only fires when a PR touches a workflow or the
+    # checker itself, so a PR that changes neither would never execute it. This
+    # job runs the gate on every PR (the OMN-14416 "defense that never runs"
+    # lesson) so the retired occ-rerun-downstream anti-pattern — a push-to-main
+    # workflow that cuts a branch off main and opens a PR to the divergent `dev`
+    # base — cannot be reintroduced.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Unit tests for the guard (RED/GREEN discrimination)
+        run: uv run pytest tests/test_no_divergent_automation_pr.py -v
+      - name: Scan all workflows for the divergent-automation-PR anti-pattern
+        run: uv run python scripts/validation/check_no_divergent_automation_pr.py --all --repo-root .
+
+  no-localhost-fallbacks:
+    name: No localhost env-var fallbacks in src/ (OMN-10737)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    needs: [zone-filter, test]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate no localhost fallbacks
+        run: uv run python scripts/validation/validate_no_env_fallbacks.py
+
+  url-authority-gate:
+    # OMN-13563 Wave 4: URL authority ratchet (non-blocking report; pre-commit hook is the
+    # blocking surface). Fails only on NEW URL literals outside contracts — baseline is
+    # burn-down only. Suppress with: # url-authority-ok: <reason>
+    name: URL Authority Gate (OMN-13563)
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run URL authority ratchet
+        continue-on-error: true
+        run: >
+          uv run python -m omnibase_core.validation.validator_url_authority
+          --repo onex_change_control --repo-root . --all src/
+
+  no-new-os-environ:
+    # OMN-13563 Wave 4: AST os.environ read gate (non-blocking report; pre-commit hook is
+    # the blocking surface). Exempts tests/, scripts/, examples/. Suppress with:
+    # # env-read-ok: <reason>
+    name: No New os.environ Reads (OMN-13563)
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run no-new-os-environ validator
+        continue-on-error: true
+        run: uv run pre-commit run no-new-os-environ --all-files
+
+  imperative-contract-guard:
+    name: Imperative Contract Guard
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate imperative contract guard wiring
+        run: |
+          uv run check-imperative-contracts \
+            --repo-root . \
+            --allowlists-dir allowlists \
+            --scan-freestanding
+      - name: Scripts canonical-form guard (DEFAULT-DENY new scripts, OMN-14475)
+        run: |
+          uv run check-imperative-contracts \
+            --repo-root . \
+            --allowlists-dir allowlists \
+            --scan-scripts
+
+  ai-slop-check:
+    name: AI-Slop Pattern Check (strict, PR diff)
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Compute changed Python/Markdown files vs PR base
+        id: changed
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --no-tags --depth=1
+            FILES=$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD -- '*.py' '*.md' | tr '\n' ' ')
+          else
+            FILES=$(git diff --name-only HEAD~1 -- '*.py' '*.md' 2>/dev/null | tr '\n' ' ')
+          fi
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+      - name: Check changed files for AI-slop patterns (strict)
+        run: |
+          FILES="${{ steps.changed.outputs.files }}"
+          if [ -z "$FILES" ]; then exit 0; fi
+          python scripts/validation/check_ai_slop.py --strict $FILES
+
+  context-integrity-contracts:
+    name: Context Integrity Contract Compliance
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Check context integrity contract references (dry-run, no agents root)
+        # This job validates the script itself works correctly. When an agents-root
+        # directory is available (e.g. from a checked-out omniclaude), pass it as
+        # --agents-root. Until then, run with an empty self-test dir so CI stays green.
+        run: |
+          mkdir -p /tmp/ci_agents_stub /tmp/ci_contracts_stub
+          python scripts/check_context_integrity_contracts.py \
+            --agents-root /tmp/ci_agents_stub \
+            --contracts-root /tmp/ci_contracts_stub \
+            --dry-run
+
+  migration-conflicts:
+    name: Migration Conflict Check
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Clone cross-repo dependencies
+        env:
+          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+        run: |
+          clone_omni_repo() {
+            local repo="$1"
+            local target="$2"
+            local clone_args=()
+            if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+              local auth_header
+              auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
+              clone_args=(-c "http.https://github.com/.extraheader=${auth_header}")
+            fi
+
+            for attempt in 1 2 3; do
+              rm -rf "${target}"
+              if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"; then
+                return 0
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep_seconds=$((attempt * 10))
+                echo "::warning::Cross-repo clone attempt ${attempt}/3 failed for ${repo}; retrying in ${sleep_seconds}s"
+                sleep "${sleep_seconds}"
+              fi
+            done
+
+            echo "::error::Failed to clone ${repo} after 3 attempts"
+            return 1
+          }
+          rm -rf /tmp/omni_repos
+          mkdir -p /tmp/omni_repos
+          clone_omni_repo omniintelligence /tmp/omni_repos/omniintelligence
+          clone_omni_repo omnibase_infra /tmp/omni_repos/omnibase_infra
+          clone_omni_repo omnimemory /tmp/omni_repos/omnimemory
+          clone_omni_repo omniclaude /tmp/omni_repos/omniclaude
+          clone_omni_repo omnibase_core /tmp/omni_repos/omnibase_core
+      - name: Copy suppressions file
+        run: cp migration_conflict_suppressions.yaml /tmp/omni_repos/
+      - name: Check for migration conflicts
+        # Hard-fail on unsuppressed migration conflicts (OMN-6438).
+        # Known intentional conflicts are listed in migration_conflict_suppressions.yaml.
+        # --warn-columns: Column-reference violations are warnings until upstream repos fix them.
+        run: >
+          uv run check-migration-conflicts
+          --repos-root /tmp/omni_repos
+          --check-columns
+          --warn-columns
+          --suppressions-file migration_conflict_suppressions.yaml
+
+  migration-inventory:
+    name: Migration Inventory Sync
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    needs: [pre-commit, zone-filter]
+    # OMN-14098 evidence-only fast-lane: skip on docs_only PRs; not required on dev/main.
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Clone peer repos
+        env:
+          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+        run: |
+          clone_omni_repo() {
+            local repo="$1"
+            local target="$2"
+            if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+              local auth_header
+              auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}" 2>/dev/null
+            else
+              git clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}" 2>/dev/null
+            fi
+          }
+          mkdir -p /tmp/repos
+          for repo in omnibase_infra omnidash-archived omniintelligence omnimemory omninode_infra omniclaude omniweb; do
+            clone_omni_repo "$repo" "/tmp/repos/$repo" || true
+          done
+          ln -s "$GITHUB_WORKSPACE" /tmp/repos/onex_change_control
+      - name: Validate inventory
+        run: uv run check-migration-inventory --repos-root /tmp/repos
+
+  kafka-boundary-parity:
+    name: Kafka Boundary Parity
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Clone cross-repo dependencies
+        env:
+          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+        run: |
+          clone_omni_repo() {
+            local repo="$1"
+            local target="$2"
+            local clone_args=()
+            if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+              local auth_header
+              auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
+              clone_args=(-c "http.https://github.com/.extraheader=${auth_header}")
+            fi
+
+            for attempt in 1 2 3; do
+              rm -rf "${target}"
+              if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"; then
+                return 0
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep_seconds=$((attempt * 10))
+                echo "::warning::Cross-repo clone attempt ${attempt}/3 failed for ${repo}; retrying in ${sleep_seconds}s"
+                sleep "${sleep_seconds}"
+              fi
+            done
+
+            echo "::error::Failed to clone ${repo} after 3 attempts"
+            return 1
+          }
+          rm -rf /tmp/omni_repos
+          mkdir -p /tmp/omni_repos
+          clone_omni_repo omniclaude /tmp/omni_repos/omniclaude
+          clone_omni_repo omnidash /tmp/omni_repos/omnidash
+          clone_omni_repo omniintelligence /tmp/omni_repos/omniintelligence
+          clone_omni_repo omnibase_infra /tmp/omni_repos/omnibase_infra
+          clone_omni_repo omnimemory /tmp/omni_repos/omnimemory
+          clone_omni_repo omnimarket /tmp/omni_repos/omnimarket
+          ln -s "$GITHUB_WORKSPACE" /tmp/omni_repos/onex_change_control
+      - name: Check Kafka boundary parity
+        run: uv run check-boundary-parity --repos-root /tmp/omni_repos
+
+  cross-repo-null-contract:
+    name: "Python\u2194TypeScript Null Contract"
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: uv sync --frozen --group dev
+      - name: Clone omnidash for cross-repo schema check
+        env:
+          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+        run: |
+          clone_omnidash() {
+            rm -rf ../omnidash
+            if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+              auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+            else
+              git clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+            fi
+          }
+          for attempt in 1 2 3; do
+            if clone_omnidash; then
+              exit 0
+            fi
+            rm -rf ../omnidash
+            sleep $((attempt * 5))
+          done
+          clone_omnidash
+      - name: Run Python null vs TypeScript optional contract test
+        run: uv run pytest tests/integration/cross_repo/test_python_null_vs_ts_optional.py -v
+
+  seam-contract-coverage:
+    name: Seam Contract Coverage
+    # OMN-14098 evidence-only fast-lane: skip heavy code analysis on pure
+    # contracts/ + drift/dod_receipts/ evidence PRs (docs_only). Not a required
+    # context on dev or main, so skipping cannot wedge branch protection.
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Fetch base branch for diff
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --no-tags --depth=1
+          fi
+      - name: Check seam contract coverage
+        run: |
+          BASE="${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD~1' }}"
+          uv run python scripts/validation/check_seam_contract_coverage.py --base "$BASE"
+
+  validate-contracts:
+    name: Validate Contract YAML (OMN-8808)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate all ticket contracts against ModelTicketContract
+        run: uv run validate-yaml contracts/OMN-*.yaml
+
+  contract-sync-gate:
+    name: Contract Sync Gate (Layer 3)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Compute changed files and diff
+        id: diff
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --no-tags
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          git diff --name-only "$BASE"...HEAD > /tmp/changed_files.txt
+          git diff "$BASE"...HEAD > /tmp/pr_diff.txt
+          echo "files_arg=$(cat /tmp/changed_files.txt | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - name: Run contract sync gate
+        run: |
+          FILES="${{ steps.diff.outputs.files_arg }}"
+          if [ -z "$FILES" ]; then
+            echo "[SKIP] No changed files."
+            exit 0
+          fi
+          uv run python -m onex_change_control.scripts.validate_pr_contracts \
+            --diff-files $FILES \
+            --diff-content /tmp/pr_diff.txt
+
+  contract-compliance:
+    name: Contract Compliance Check
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    # Only run where we can resolve a PR number: pull_request or merge_group.
+    # The `push` event has no associated PR context (main commits have no
+    # PR to validate against), so we exclude it — otherwise every push to
+    # main would fail at the PR-number resolver step.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Bootstrap exemption check
+        # The gate cannot validate its own CLI before that CLI exists on main.
+        # If this PR is the one adding run_contract_compliance_check.py, skip
+        # the check — once merged, all downstream PRs will run the full gate.
+        id: bootstrap_check
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q 'scripts/ci/run_contract_compliance_check.py'; then
+            echo "Bootstrap PR detected: this PR introduces the contract compliance CLI itself."
+            echo "Skipping gate — once merged, all subsequent PRs will be checked."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set up contracts source
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        id: contracts_setup
+        env:
+          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+        run: |
+          if [ "${{ github.repository }}" = "OmniNode-ai/onex_change_control" ]; then
+            # Running in this repo itself — use checked-out contracts (PR diff version)
+            ln -s "$GITHUB_WORKSPACE" /tmp/onex_change_control
+          else
+            if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
+              auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
+              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 https://github.com/OmniNode-ai/onex_change_control.git /tmp/onex_change_control
+            else
+              git clone --depth=1 https://github.com/OmniNode-ai/onex_change_control.git /tmp/onex_change_control
+            fi
+          fi
+      - name: Set up uv toolchain
+        # The runner shells out to ``uv run`` for several check_value commands
+        # (e.g. ``uv run pytest``, ``uv run python -c "import yaml; ..."``).
+        # Without this step the gate fails with ``sh: 1: uv: not found``.
+        # ``uv sync`` (inside setup-uv) also installs pyyaml as a transitive
+        # dep of the project, so the previous ``pip install pyyaml`` is
+        # redundant.
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Resolve PR number (handle merge_group + pull_request)
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        id: pr_num
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # pull_request event carries github.event.pull_request.number directly.
+          # merge_group event does not — the head ref encodes it as
+          # gh-readonly-queue/<base>/pr-<NUM>-<sha>, so parse NUM from there.
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            HEAD_REF="${{ github.event.merge_group.head_ref }}"
+            # e.g. refs/heads/gh-readonly-queue/main/pr-287-<sha>
+            PR_NUM="$(echo "$HEAD_REF" | sed -nE 's@.*pr-([0-9]+)-[0-9a-f]+.*@\1@p')"
+          else
+            PR_NUM=""
+          fi
+          if [[ -z "$PR_NUM" ]]; then
+            echo "::error::Could not resolve PR number for event=${{ github.event_name }}"
+            exit 1
+          fi
+          echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
+          echo "Resolved PR #$PR_NUM"
+      - name: Run contract compliance check
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        # Use ``uv run python`` so the runner script and any ``uv``-prefixed
+        # commands inside check_values share the same project venv. This is
+        # what lets ``uv run pytest`` / ``uv run python -c …`` succeed inside
+        # the runner — see OMN-10086.
+        run: |
+          uv run python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py \
+            --pr ${{ steps.pr_num.outputs.pr_num }} \
+            --repo ${{ github.repository }} \
+            --contracts-dir /tmp/onex_change_control/contracts
+        env:
+          EMERGENCY_BYPASS: ${{ secrets.EMERGENCY_BYPASS || '' }}
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+
+  honesty-gate:
+    permissions:
+      contents: read
+    # Receipt Honesty Gate (OMN-12791): scan drift/dod_receipts/ for gamed probes.
+    # Blocking: no-op echo probes, deferral language in PASS receipts, self-attestation,
+    # fake human verifiers, and deploy-keyword evidence backed by echo-only probe_command.
+    #
+    # OMN-15689 (R3a AC(e) residual): this job used to check out omnibase_core at a
+    # hardcoded SHA (d4884c590...). Per the R3a ruling (no hardcoded validator ref
+    # ANYWHERE — not @main, not @dev, not a literal SHA), that pin is a live-skew
+    # risk of the same class the ruling fixed for call-receipt-gate.yml /
+    # call-occ-preflight.yml: a validator fix merged to omnibase_core dev could not
+    # reach this in-repo gate until someone manually bumped the SHA. The checkout
+    # ref below is now resolved dynamically by the "Resolve omnibase_core validator
+    # ref" step — see that step's comment for the full event matrix (this job runs
+    # on push, pull_request, merge_group, AND workflow_dispatch, unlike the PR-only
+    # reusable callers R3a originally covered).
+    name: Receipt Honesty Gate
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # OMN-15689 (R3a AC(e) residual): resolve the omnibase_core validator ref
+      # dynamically instead of the hardcoded SHA this job used to pin. ci.yml
+      # (unlike the PR-only reusable callers) runs on four event types, so every
+      # one needs a correct, non-hardcoded answer:
+      #   - pull_request: the PR's own base branch (github.event.pull_request.base.ref).
+      #   - merge_group:  the merge_group's target branch (github.event.merge_group.base_ref).
+      #   - push / workflow_dispatch: neither pull_request nor merge_group context
+      #     exists, but both events run against an explicit branch — the branch
+      #     pushed to, or the branch selected in the manual-dispatch UI — which
+      #     GitHub exposes as github.ref_name. That branch is this run's target the
+      #     same way a PR's base branch is: dynamically resolved, never a literal.
+      # No fallback ref: if none of the above resolves, the job fails closed here
+      # before any omnibase_core checkout is attempted.
+      - name: Resolve omnibase_core validator ref
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
+            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref (honesty-gate) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+
+      - uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          ref: ${{ steps.validator_ref.outputs.ref }}
+          path: omnibase_core_source
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run receipt honesty scan on changed receipts
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          BEFORE_SHA: ${{ github.event.before || '' }}
+          PYTHONPATH: ${{ github.workspace }}/omnibase_core_source/src
+        run: |
+          set -euo pipefail
+          changed_file_list=/tmp/changed_receipts.txt
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            base_ref="${BASE_REF#refs/heads/}"
+            git fetch origin "$base_ref" --no-tags
+            git diff --name-only "origin/${base_ref}"...HEAD -- 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --name-only "$BEFORE_SHA"...HEAD -- 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
+          else
+            git ls-files 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
+          fi
+          if [[ ! -s "$changed_file_list" ]]; then
+            echo "RECEIPT HONESTY GATE PASSED: no changed receipt YAML files"
+            exit 0
+          fi
+          echo "Changed receipt files:"
+          cat "$changed_file_list"
+          mapfile -t changed_receipts < "$changed_file_list"
+          uv run python -m omnibase_core.validation.validator_receipt_honesty \
+            --receipts-dir drift/dod_receipts \
+            "${changed_receipts[@]}"
+
+  append-only-gate:
+    permissions:
+      contents: read
+    # OCC Append-Only Gate (OMN-13962): enforce the append-only invariant —
+    # reject any PR that
+    # edits/deletes/renames a merged dod_evidence entry (per-entry hash change)
+    # or a merged receipt file under drift/dod_receipts/<TICKET>/. Existing
+    # entries are immutable; corrections must be net-new add-only supersession
+    # files.
+    #
+    # OMN-15689 (R3a AC(e) residual): this job used to check out omnibase_core at
+    # a hardcoded SHA (f873d8307...), one bump-cycle behind honesty-gate's pin by
+    # design ("bump alongside the honesty-gate pin when refreshing"). Per the R3a
+    # ruling (no hardcoded validator ref ANYWHERE), both pins are the same
+    # live-skew risk the ruling fixed for call-receipt-gate.yml /
+    # call-occ-preflight.yml — a validator fix merged to omnibase_core dev could
+    # not reach this in-repo gate until someone manually bumped the SHA, and the
+    # two pins could (and did) drift out of lockstep with each other. The
+    # checkout ref below is now resolved dynamically by the "Resolve omnibase_core
+    # validator ref" step — see that step's comment for the full event matrix
+    # (this job runs on push, pull_request, merge_group, AND workflow_dispatch).
+    name: OCC Append-Only Gate
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # OMN-15689 (R3a AC(e) residual): same dynamic resolution as honesty-gate
+      # above, duplicated per-job (not a composite action) to match this repo's
+      # existing per-job inline pattern in call-receipt-gate.yml /
+      # call-occ-preflight.yml. See honesty-gate's "Resolve omnibase_core
+      # validator ref" step for the full event-matrix rationale. No fallback ref.
+      - name: Resolve omnibase_core validator ref
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
+            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref (append-only-gate) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+
+      - uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          ref: ${{ steps.validator_ref.outputs.ref }}
+          path: omnibase_core_source
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Run append-only enforcement on changed tickets
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          BEFORE_SHA: ${{ github.event.before || '' }}
+          PYTHONPATH: ${{ github.workspace }}/omnibase_core_source/src
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            git fetch origin "$base_ref" --no-tags
+            # Diff against the merge-base, not origin/<base> directly, so receipts
+            # that only landed on the base after this branch forked are not
+            # mis-flagged as deletions (the validator CLI uses a two-dot diff).
+            base_sha="$(git merge-base "origin/${base_ref}" HEAD)"
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            base_sha="$BEFORE_SHA"
+          else
+            echo "APPEND-ONLY GATE PASSED: non-PR event, nothing to diff"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$base_sha"...HEAD -- contracts/ drift/dod_receipts/ || true)"
+          # Distinct ticket ids (OMN-NNNN) touched via a contract or receipt path.
+          tickets="$(printf '%s\n' "$changed" \
+            | sed -nE 's@^(contracts/(OMN-[0-9]+)\.yaml|drift/dod_receipts/(OMN-[0-9]+)/.*)$@\2\3@p' \
+            | sort -u)"
+          if [[ -z "$tickets" ]]; then
+            echo "APPEND-ONLY GATE PASSED: no contract/receipt changes"
+            exit 0
+          fi
+          echo "Tickets touched:"
+          printf '%s\n' "$tickets"
+          rc=0
+          while IFS= read -r tid; do
+            [[ -z "$tid" ]] && continue
+            echo "--- append-only check: ${tid} (base ${base_sha}) ---"
+            if ! uv run python -m omnibase_core.validation.validator_occ_append_only \
+                --repo . --ticket-id "$tid" --base-ref "$base_sha"; then
+              rc=1
+            fi
+          done <<< "$tickets"
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::APPEND-ONLY GATE FAILED: a PR edited/deleted/renamed a merged dod_evidence entry or receipt. Corrections must be net-new add-only supersession files."
+          fi
+          exit "$rc"
+
+  no-noncanonical-lifecycle-classes:
+    name: no-noncanonical-lifecycle-classes
+    # OMN-14350: non-canonical lifecycle-class ratchet. Unconditional (no needs/if) so
+    # it never skips; wired into required CI Summary via needs: + strict success-only check.
+    runs-on: >-
+      ${{
+        (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.3"
+      - name: Ratchet non-canonical lifecycle-word classes against frozen allowlist (OMN-14350)
+        run: |
+          uv run --no-project \
+            --with 'omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core@63635097705d832e0ee9c4811093efb31349105c' \
+            python -m omnibase_core.validators.no_noncanonical_lifecycle_classes \
+            --check-stale \
+            --allowlist .onex_ratchets/noncanonical_class_allowlist.yaml \
+            src/onex_change_control
+
+  precommit-parity-gate:
+    name: Precommit Parity Gate
+    # OMN-14672 (WS7 fan-out #4, canary OMN-14655 / omnimarket#1783 / omnibase_infra#2318):
+    # CI mirror of the two local pre-commit meta-gates over .pre-commit-config.yaml —
+    #   1. fail-loud meta-gate (exit-0-on-missing / WARN-SKIP-degrade + stages
+    #      coverage: a skipped gate must be byte-indistinguishable from a failing one), and
+    #   2. pin-parity (pre-commit `rev:` vs the omnibase_core SHA ci.yml pins for the
+    #      SAME validator — the no-noncanonical-lifecycle-classes pair).
+    #
+    # UNCONDITIONAL BY DESIGN (OMN-14666/14668 lesson). No `needs:`, no `if:`, no
+    # paths filter, so the byte-match proof fires on EVERY PR and passes/fails on its
+    # own evidence — never conditioned on another job's result (the omnimarket#1783
+    # skip-then-vacuous-green window came from a `needs: occ-preflight`). In OCC a
+    # STANDALONE workflow file is the wrong shape: OMN-14441 REMOVED a standalone
+    # workflow precisely because a separate run_id is invisible to the REQUIRED CI
+    # Summary rollup and so cannot block a merge. This job is folded into ci.yml and
+    # wired into ci-summary's needs + a strict success-only check below, mirroring
+    # no-noncanonical-lifecycle-classes (OMN-14350) — unconditional AND enforced.
+    #
+    # OMN-14668: runner is HOSTED-PINNED through the centralized public-PR
+    # selector, unconditionally. The prior form routed ONLY public-fork PRs to
+    # hosted and left every trusted internal PR / push / merge_group on the
+    # private runner fleet — a saturated/absent fleet would leave this job
+    # queued/cancelled. The ci-summary strict success-only check below
+    # already fails closed on a non-`success` result, but pinning to hosted
+    # removes the private-runner dependency entirely so the byte-match proof always
+    # executes. The gate is short and dependency-free (`uv run --no-project
+    # --with pyyaml`), matching the already-hosted omnibase_spi / omnibase_compat
+    # parity gates.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Fail-loud meta-gate (exit-0-on-missing / stages coverage)
+        run: |
+          uv run --no-project --with pyyaml \
+            python3 src/onex_change_control/scripts/validate_precommit_fail_loud.py
+      - name: Pin-parity check (pre-commit rev vs CI-pinned SHA)
+        run: |
+          uv run --no-project --with pyyaml \
+            python3 src/onex_change_control/scripts/validate_precommit_pin_parity.py
+
+  predicate-parity:
+    name: Evidence Admissibility Predicate Parity
+    # OMN-15309 (operator ruling 2026-07-29): the OMN-14505 deploy-gate
+    # falsifiability predicate — EXECUTED, FALSIFIABLE, OUTSIDE ITS OWN DIFF —
+    # is THE admissibility rule for evidence, and this repo's adoption of it
+    # lives in src/onex_change_control/validation/evidence_admissibility.py.
+    #
+    # A comment saying "adopted from omniclaude" is not a mechanism. This job IS
+    # the mechanism: it checks out the cited source and EXECUTES the shared case
+    # corpus (tests/fixtures/evidence_admissibility_cases.yaml) against BOTH
+    # implementations, asserting (a) this repo is never LOOSER than deploy-gate,
+    # and (b) the two agree exactly on every case that does not declare a
+    # ticketed parity_divergence. Drift into a second definition of "admissible
+    # evidence" fails the merge instead of shipping silently.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as precommit-parity-gate above):
+    # no needs:, no if:, no paths filter, hosted-pinned runner. A skip here means
+    # something is wrong, not that the gate legitimately opted out — the strict
+    # success-only check in ci-summary below fails closed on any non-success.
+    #
+    # OMNICLAUDE_PIN: pinned to a MERGED commit on omniclaude@main (the ref the
+    # deploy-gate reusable workflow is itself consumed at), never a branch head.
+    # Bump it deliberately when the upstream predicate changes; a bump that
+    # breaks parity is exactly the signal this job exists to raise.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Check out omniclaude (the cited source of the OMN-14505 predicate)
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omniclaude
+          ref: 7b69d9ba546a1631ec68e96ea03653f94db9eac1
+          path: omniclaude_source
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Predicate + parity, proven by execution
+        env:
+          # Turns a "cannot resolve the upstream file" SKIP into a FAILURE. A
+          # skipped parity check in CI is a false green.
+          OMN15309_PARITY_REQUIRED: "1"
+          OMNICLAUDE_CHECKOUT: ${{ github.workspace }}/omniclaude_source
+        run: |
+          uv run pytest \
+            tests/test_evidence_admissibility.py \
+            tests/test_evidence_admissibility_parity.py \
+            -q -p no:randomly
+
+  contract-corpus-ratchets:
+    name: Contract Corpus Ratchets (OMN-15411)
+    # OMN-15411 round 2. The Rule A/B/C/D/E corpus ratchets in
+    # tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py are
+    # the ONLY surface that sees every contracts/*.yaml: the
+    # lint-contract-check-values pre-commit hook is changed-files-scoped (and on
+    # a dev PR the CI `Pre-commit` job runs `pre-commit run --files <changed>`,
+    # not --all-files), so a rule wired there alone cannot see a violation in a
+    # contract the PR does not touch. That module's own docstring claimed these
+    # tests "run under pytest over EVERY contract, on every PR" -- they did NOT:
+    #
+    #   * ci.yml's `test` job carries
+    #     `if: ... (github.event_name != 'pull_request' || github.base_ref != 'dev')`
+    #     so it is SKIPPED on every PR targeting dev -- the everyday merge path --
+    #     and ci-summary's generic rollup passes on a skipped need.
+    #   * The only other runner was `tests+coverage (shadow)` in
+    #     product-readiness-shadow.yml, which that file's own comment states is
+    #     "deliberately kept OUT of required_status_checks, so a red shadow ...
+    #     CANNOT block merges".
+    #   * OCC dev's required contexts are exactly
+    #     ["CI Summary", "required-check-skip-guard / check-skip-vectors"].
+    #   * Rule E is warning tier by design (it never changes the linter's exit
+    #     code), so the required Pre-commit job is not a backstop for it either.
+    #
+    # Net effect before this job existed: a NEW Rule A/B/C/D/E violation could
+    # land on dev with every required context green. The ratchet was a rule, not
+    # a mechanism (feedback_a_rule_is_not_a_mechanism).
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as precommit-parity-gate and
+    # predicate-parity above): no needs:, no if:, no paths filter,
+    # hosted-pinned runner. A skip here means something is wrong, not that the
+    # gate legitimately opted out -- the strict success-only check in ci-summary
+    # below fails closed on any non-success result.
+    #
+    # ANTI-REMOVAL ANCHOR: deleting this job while also deleting its ci-summary
+    # wiring would restore the gap silently. scripts/validation/check_corpus_ratchet_wiring.py
+    # is a pre-commit hook scoped to .github/workflows/ci.yml, so ANY edit to
+    # this file re-asserts (a) the job exists, (b) it is unconditional, (c) it
+    # runs the corpus module, (d) ci-summary needs it, and (e) ci-summary has a
+    # strict success-only check for it. That hook runs in the required
+    # `Pre-commit` context on the dev changed-files path, so the check is not
+    # self-referential.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Rule A/B/C/D/E shrink-only corpus ratchets over every contract
+        run: |
+          uv run pytest \
+            tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py \
+            -q -p no:randomly
+      - name: Corpus-ratchet CI wiring is intact (anti-removal anchor)
+        run: uv run python scripts/validation/check_corpus_ratchet_wiring.py
+
+  yamlfmt-contamination-ratchet:
+    name: yamlfmt Contamination Ratchet (OMN-15479)
+    # OMN-15479. yamlfmt v0.21.0 (pinned in .pre-commit-config.yaml, running on
+    # every commit) rewrites the PARSED VALUE of a folded (`>`) block scalar
+    # that carries an internal newline: every internal newline is replaced by
+    # the literal token `#magic___^_^___line` and the newline is destroyed --
+    # while the hook reports `Passed`. The output is still valid, parseable
+    # YAML, so it lands in a merged evidence receipt looking correct.
+    #
+    # contracts/ and drift/dod_receipts/ are the evidence control plane:
+    # actual_output / probe_stdout / check_value are the durable record of what
+    # was probed and what came back. A formatter that silently rewrites those
+    # fields produces evidence that says something the verifier never observed.
+    # 518 files (805 occurrences) already carry the sentinel on dev, and 15
+    # files still carry the un-corrupted precondition shape.
+    #
+    # SCOPE IS DERIVED, NOT DECLARED HERE. The gate reads the yamlfmt hook's own
+    # `files`/`exclude` out of .pre-commit-config.yaml and scans exactly what
+    # that formatter formats. The first cut hardcoded contracts/ +
+    # drift/dod_receipts/ while yamlfmt excludes only ^(\.github/|templates/),
+    # leaving 151 files formatter-exposed and ungated -- 8 already contaminated,
+    # five of them live node contract.yaml descriptions. Reading the formatter's
+    # own declaration is what stops the two drifting apart again; an
+    # absent/renamed/duplicated yamlfmt hook fails the gate rather than silently
+    # narrowing it. This is also why the sentinel may be spelled literally in
+    # THIS file: .github/ is under yamlfmt's exclude, so the formatter never
+    # rewrites it and Rule S never scans it.
+    #
+    # This job is the ONLY required-path surface that sees the WHOLE corpus.
+    # The two pre-commit hooks are changed-files scoped (and on a dev PR the
+    # required `Pre-commit` job runs `pre-commit run --files <changed>`, not
+    # --all-files), so a rule wired there alone cannot see a violation in a
+    # receipt the PR does not touch, and cannot see the ratchet baselines drift
+    # out of sync with the corpus at all.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as contract-corpus-ratchets
+    # above): no needs:, no if:, no paths filter. A skip here means something is
+    # wrong, not that the gate legitimately opted out -- the strict success-only
+    # check in ci-summary below fails closed on any non-success result.
+    #
+    # ANTI-REMOVAL ANCHOR: scripts/validation/check_yamlfmt_contamination.py
+    # --check-wiring is a pre-commit hook scoped to this file AND the last step
+    # of this job, so ANY edit to ci.yml re-asserts (a) the job exists, (b) it
+    # is unconditional, (c) it runs the corpus ratchet and the gate's own
+    # RED/GREEN test module, and (d) ci-summary both needs it and applies a
+    # strict success-only check to it.
+    #
+    # The gate NEVER mutates a file. Formatter mutation is the disease, not the
+    # cure -- an auto-fixing gate here would be the same class of defect.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Rule S/F shrink-only corpus ratchet over the whole evidence corpus
+        run: uv run python scripts/validation/check_yamlfmt_contamination.py --corpus
+      - name: Detector RED/GREEN controls and hook-fires-on-a-fixture assertions
+        run: |
+          uv run pytest \
+            tests/unit/scripts/test_yamlfmt_contamination_gate.py \
+            -q -p no:randomly
+      - name: Contamination-ratchet CI wiring is intact (anti-removal anchor)
+        run: uv run python scripts/validation/check_yamlfmt_contamination.py --check-wiring
+
+  supersession-binding-ratchet:
+    name: Supersession Binding Ratchet (OMN-15459)
+    # OMN-15459. Supersession is the REPAIR primitive of an append-only receipt
+    # store, and until this gate landed it was also a laundering channel:
+    # check_receipt_hardening.py validated a replacement's schema, hashes and
+    # identity and never asked whether the replacement executes the check the
+    # superseded item declares. OCC#5534 (merged, 34c8dacc) rebound 8 DISTINCT
+    # dod_evidence items to one byte-identical grep of create_kafka_topics.py --
+    # so dod-occ-evidence-admissibility-validator now attests that a Kafka-topic
+    # script defines a function while the admissibility suite it names goes
+    # unrun. OCC#5528 did the same with 6 files one PR earlier. Machine
+    # producer, ~20 cohorts/day.
+    #
+    # The falsifiability shelf cannot see this: that grep IS RED-derivable (1 at
+    # the fix ref, 0 at the parent). It is a well-formed probe that falsifies a
+    # DIFFERENT item. Every existing gate reasons about a check in isolation;
+    # rules S1/S2 reason about the item<->replacement pairing.
+    #
+    # WHY A WHOLE-CORPUS JOB AND NOT ONLY THE PRE-COMMIT HOOK: the hook
+    # (check-receipt-hardening) and the Pre-commit job's changed-receipt step are
+    # changed-files scoped, so neither can see the frozen baseline drift out of
+    # sync with the corpus, and neither sees a cohort sibling the PR does not
+    # touch. This job is the only required-path surface that scans every
+    # supersession in drift/dod_receipts/**.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as contract-corpus-ratchets and
+    # yamlfmt-contamination-ratchet above): no needs:, no if:, no paths filter. A
+    # skip here means something is wrong, not that the gate legitimately opted
+    # out -- the strict success-only check in ci-summary below fails closed on
+    # any non-success result.
+    #
+    # ANTI-REMOVAL ANCHOR: check_receipt_hardening.py --check-supersession-wiring
+    # is a pre-commit hook scoped to this file AND the last step of this job, so
+    # ANY edit to ci.yml re-asserts (a) the job exists, (b) it is unconditional,
+    # (c) it runs the corpus ratchet and the gate's own RED/GREEN test module,
+    # and (d) ci-summary both needs it and applies a strict success-only check.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: S1/S2 shrink-only corpus ratchet over every supersession
+        run: |
+          uv run python scripts/validation/check_receipt_hardening.py \
+            --supersession-corpus
+      - name: Detector RED/GREEN controls against the live OCC#5534 defect shape
+        run: |
+          uv run pytest \
+            tests/unit/scripts/test_supersession_binding_gate.py \
+            -q -p no:randomly
+      - name: Supersession-binding CI wiring is intact (anti-removal anchor)
+        run: |
+          uv run python scripts/validation/check_receipt_hardening.py \
+            --check-supersession-wiring
+
+  validate-prod-promotion-grants:
+    name: validate-prod-promotion-grants
+    # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had
+    # a validator that ran, could fail, and could NOT block a merge — it lived
+    # in a standalone workflow file (.github/workflows/validate-prod-promotion-grants.yml,
+    # now retired), invisible to this required CI Summary rollup (a separate
+    # workflow file gets a separate run_id; OMN-14415 instance #1). Folded in
+    # here, unconditional (no needs/if) so it never skips — mirrors
+    # no-noncanonical-lifecycle-classes (OMN-14350) below. Deliberately bypasses
+    # zone-filter: a grants-file change must never be able to be misclassified
+    # into a short-circuited zone.
+    runs-on: >-
+      ${{
+        (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    # OMN-15722: a uniform 45m floor across every ci-summary `needs:` member
+    # that declares a timeout-minutes. Measured on PR #6173 run 31222755192
+    # (head 2df62fc62): inside that ONE run, for the same repo and the same SHA,
+    # `Checkout code` ranged 6s to 1358s (22m38s), and `Run ./.github/actions/
+    # setup-uv` ranged 93s to 571s (9m31s) across the jobs that reached it,
+    # while the ten budgeted gates' own steps took at most 53s. Checkout alone
+    # has therefore been observed at 22m38s, so the 5/10/20/25 budgets on dev
+    # all sat below an already-observed single-phase latency, and a budget sized
+    # to one job's worst total is the same defect one contention spike later.
+    # A job that hits its wall is recorded conclusion=cancelled, which CI
+    # Summary's fail-closed `!= success` comparison reddens — so this is a
+    # starvation bug, not a slow check. Reducing the preamble (fetch-depth: 0
+    # full-history clone plus uv provisioning on a 64-runner shared fleet) is
+    # addressed below (OMN-15724): this validator has zero git/subprocess
+    # usage (single-file read of grants/prod_promotion_grants.yaml, no
+    # --pr-author/--base-ref since OMN-14814 removed dual-control), so
+    # fetch-depth:1 is provably safe here — unlike check-bot-authored-authz-
+    # guard below, which shells git merge-base and keeps fetch-depth:0.
+    timeout-minutes: 45
+    # OMN-15724 C1: reach the OMN-14027 devpi pull-through cache
+    # (omninode-pypi-cache on .201, confirmed healthy/soaked 12d) for this
+    # job's setup-uv PyPI downloads. Scoped to this job only — NOT the
+    # omnibase_infra fleet-wide activation the 2026-08-08 canary measurement
+    # left unauthorized (whole-job p95 did not clear the operator standing
+    # rule at fleet scale). Falls back to public PyPI when the runner-type
+    # ternary above resolves to the GitHub-hosted fallback (fork-origin PRs
+    # can't reach the Tailscale-only cache host), and PIP_EXTRA_INDEX_URL
+    # keeps PyPI as a live fallback even on the dedicated-fleet path so a
+    # cache miss/outage degrades rather than fails closed (matches the
+    # OMN-14027 runbook).
+    env:
+      UV_DEFAULT_INDEX: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      UV_INDEX_STRATEGY: unsafe-best-match
+      PIP_INDEX_URL: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      PIP_EXTRA_INDEX_URL: https://pypi.org/simple/
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate prod-promotion-grants trust anchor (OMN-14441 / OMN-14814)
+        run: |
+          set -euo pipefail
+          # OMN-14814: the approved_by != PR-author dual-control check was
+          # removed (sole CODEOWNER — a second, different approver can never
+          # be supplied), so --pr-author/--base-ref are no longer passed. The
+          # schema + duplicate-id integrity checks remain fail-closed.
+          uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml
+
+  check-platform-leads-review-tripwire:
+    name: check-platform-leads-review-tripwire
+    # OMN-14445: validate-prod-promotion-grants' approved_by != PR-author check
+    # (above) is a COMPLETE defense against forged self-approval only while
+    # @OmniNode-ai/platform-leads has exactly one member — required_pull_
+    # request_reviews (CODEOWNERS enforcement) is intentionally OFF on dev
+    # (enabling it would deadlock a solo-lead grant PR; GitHub blocks
+    # self-approval of your own PR). This job is the tripwire: it fails the
+    # moment platform-leads grows past one member while that gap remains, so
+    # the safety property can't silently expire. Unconditional (no needs/if),
+    # mirrors validate-prod-promotion-grants / no-noncanonical-lifecycle-classes.
+    #
+    # NOTE: reading org team membership requires org-scoped read access the
+    # default GITHUB_TOKEN does not have (GitHub restricts it to repository-
+    # scoped resources). This job uses CROSS_REPO_PAT, verified live on this
+    # PR (run 29182101941, job 86621583642) to have sufficient scope: it read
+    # a real member count (1) and a real branch-protection fact (False) on
+    # the first push. If a future PAT rotation loses read:org scope, this
+    # job reports INCONCLUSIVE (exit 2) and fails closed via ci-summary's
+    # explicit check below — never a silent pass.
+    runs-on: >-
+      ${{
+        (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Scope dependency-bot tripwire run
+        id: dependency-bot-tripwire-scope
+        if: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          changed_files="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json files --jq '.files[].path')"
+          printf '%s\n' "$changed_files"
+          if grep -qx 'grants/prod_promotion_grants.yaml' <<<"$changed_files"; then
+            echo "skip_live_tripwire=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_live_tripwire=true" >> "$GITHUB_OUTPUT"
+            echo "Dependency-bot PR does not change prod-promotion grants; skipping live org-private tripwire because repository secrets are withheld for this actor."
+          fi
+      - name: Check platform-leads-review tripwire (OMN-14445)
+        if: ${{ steps.dependency-bot-tripwire-scope.outputs.skip_live_tripwire != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          # OMN-14445 review: names which token backed this run so an
+          # INCONCLUSIVE failure reads as "token problem" instead of a
+          # mystery. secrets.CROSS_REPO_PAT != '' is '' (falsy) when the
+          # secret is unset OR withheld by GitHub for a fork-origin PR.
+          TOKEN_SOURCE: ${{ secrets.CROSS_REPO_PAT != '' && 'cross_repo_pat' || 'fallback' }}
+        run: uv run check-platform-leads-review-tripwire --credential-origin "$TOKEN_SOURCE"
+
+  check-bot-authored-authz-guard:
+    name: check-bot-authored-authz-guard
+    # OMN-14919: the mechanical closure for the canonical machine OCC producer.
+    # A machine writer with a repo-scoped App token can push to ANY path in this
+    # repo — App tokens scope by repo, not by path. OCC has no required reviews on
+    # dev, CODEOWNERS here is advisory (OMN-14445), and OMN-14441's
+    # approved_by != PR-author is trivially satisfied by a bot carrying
+    # approved_by: jonah. So a bot could edit grants/** (the prod-promotion trust
+    # anchor) or allowlists/** (compliance exemptions) and self-authorize. This job
+    # REJECTS any bot-authored PR that touches those two authorization surfaces.
+    # Evidence surfaces (contracts/, drift/) are intentionally NOT guarded —
+    # machine-minted evidence companions are allowed. Unconditional (no needs/if)
+    # so it never skips; folded into the required CI Summary rollup below with a
+    # strict fail-closed check, mirroring validate-prod-promotion-grants /
+    # check-platform-leads-review-tripwire (a standalone workflow that "runs but
+    # cannot block" is the OMN-14415 anti-pattern). Uses only the default
+    # GITHUB_TOKEN the checkout persists for the base fetch — the changed-file set
+    # and commit identities come from LOCAL git, so NO org-wide CROSS_REPO_PAT is
+    # used or needed (OMN-14919 explicitly rejects it).
+    runs-on: >-
+      ${{
+        (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    # OMN-15765: 5m was a budget sized to this job's own ~1s of Python logic,
+    # not to the preamble it depends on. `actions/checkout@v7` with
+    # `fetch-depth: 0` plus the `setup-uv` composite have been observed taking
+    # up to ~23m combined on the contended trusted-CI runner fleet
+    # (OMN-15722, PR #6173, run 31222755192: checkout alone ranged 6s-22m38s
+    # across jobs in one run). A job that hits `timeout-minutes` is recorded
+    # `conclusion=cancelled`, and CI Summary's fail-closed `!= success`
+    # comparison reddens that as an authz-guard REJECT even though the guard's
+    # own logic never ran — this produced 12/17 false "authz violation" reds
+    # on the 2026-08-08 D-cluster census (OMN-15765), 5 of them human-authored
+    # (occ#6172/#6175/#6176/#6182/#6188). This is starvation, not a matcher
+    # defect — the identity/path matcher itself is unit-tested correct in both
+    # directions (tests/unit/scripts/test_check_bot_authored_authz_guard.py)
+    # and is NOT touched here. 45m matches the uniform floor OMN-15722 set for
+    # the other nine timed ci-summary members on this same preamble.
+    timeout-minutes: 45
+    # OMN-15724 C1: same scoped devpi-cache activation as
+    # validate-prod-promotion-grants above (see that job's comment for full
+    # rationale). fetch-depth stays 0 here — this job shells
+    # `git fetch origin $BASE_REF` + `git merge-base` below and genuinely
+    # needs base history (OMN-15724 AC1 split; guard logic untouched).
+    env:
+      UV_DEFAULT_INDEX: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      UV_INDEX_STRATEGY: unsafe-best-match
+      PIP_INDEX_URL: >-
+        ${{
+          (
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name != github.repository
+          )
+          && 'https://pypi.org/simple/'
+          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
+        }}
+      PIP_EXTRA_INDEX_URL: https://pypi.org/simple/
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Reject bot-authored PRs touching grants/** or allowlists/** (OMN-14919)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.base_ref || 'dev' }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          set -euo pipefail
+          # This is a PR-time authorship check; it is enforced on pull_request.
+          # On merge_group / push there is no PR author and the pull_request run
+          # already gated the change, so pass rather than emit a false INCONCLUSIVE.
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "event=${EVENT_NAME}: authorship guard is enforced on pull_request; passing."
+            exit 0
+          fi
+          # Make origin/${BASE_REF} resolvable for the diff/log range. fetch-depth:0
+          # already gave the full head history; this adds the base tip + shared
+          # history so the merge-base resolves.
+          git fetch origin "${BASE_REF}" --no-tags --quiet || true
+          uv run check-bot-authored-authz-guard \
+            --repo-root . \
+            --base-ref "${BASE_REF}" \
+            --pr-author-login "${PR_AUTHOR_LOGIN}" \
+            --pr-author-type "${PR_AUTHOR_TYPE}"
+
+  merge-hold-gate:
+    # OMN-15484 (fan-out of OMN-15483). The merge sweep lands PRs while
+    # adversarial verification is still running against them. OMN-15483 built
+    # the fix -- a required check that fails while a PR carries a hold marker in
+    # its title or labels, so a held PR can never be required-green for ANY
+    # consumer (the Codex controller, `gh pr merge`, auto-merge, a merge queue,
+    # or the ONEX merge node) -- but shipped it in omnimarket ONLY.
+    #
+    # THIS REPOSITORY carries four of the incidents in that ticket's own table
+    # (OCC#5588, OCC#5586, OCC#5530/#5531, OCC#5584) and had zero coverage. That
+    # is the gap this job closes.
+    #
+    # NO VOCABULARY IS DECLARED HERE, deliberately. The tokens live in exactly
+    # one place fleet-wide -- omnimarket's src/omnimarket/merge_control/
+    # hold_marker.py -- and the reusable workflow below reads that module at run
+    # time. Copying it here would rebuild, across repos, the precise bug
+    # OMN-15483 round 1 found inside omnimarket: two divergent
+    # `_DO_NOT_MERGE_RE` definitions, neither a superset of the other, so the
+    # same PR was suppressed by one consumer and authored by the other. The
+    # reusable workflow scans THIS repo on every run and fails if a second
+    # vocabulary ever appears (AC1), proves the gate actually fires here by
+    # driving a held vector through it (AC3), and checks that the context name
+    # below is not itself a hold token (AC5).
+    #
+    # UNCONDITIONAL BY DESIGN (AC4): no `needs:`, no `if:`, no paths filter --
+    # the same posture as `precommit-parity-gate`, `predicate-parity`,
+    # `contract-corpus-ratchets` and `yamlfmt-contamination-ratchet` above. A
+    # hold gate an unrelated upstream failure can cascade-skip is not a gate.
+    # It is hosted-runner and stdlib-only, so it has no reason to depend on
+    # anything.
+    #
+    # ANTI-REMOVAL ANCHOR: deleting this job together with its ci-summary
+    # wiring would restore the gap silently, and no test would notice.
+    # scripts/validation/check_merge_hold_gate_wiring.py is a pre-commit hook
+    # scoped to this file, so ANY edit here re-asserts (a) the job exists,
+    # (b) it is unconditional, (c) it calls the SHARED gate at a non-feature
+    # ref, (d) its declared context_name is the context GitHub really mints,
+    # (e) ci-summary needs it, and (f) ci-summary has a strict success-only
+    # check for it. That hook runs in the required `Pre-commit` context on the
+    # dev changed-files path, so the check is not self-referential.
+    permissions:
+      contents: read
+      pull-requests: read
+    # `vocabulary_ref` MUST equal the ref in `uses:`. The first selects the
+    # workflow FILE, the second selects the omnimarket SOURCE it reads; letting
+    # them drift would run one vintage of the gate logic against another vintage
+    # of the tokens. check_merge_hold_gate_wiring.py asserts the equality.
+    #
+    # PIN AN ANCESTOR OF omnimarket `dev`, NEVER A PR-HEAD SHA. This job first
+    # pinned 879d6fc6 -- the PR HEAD of omnimarket#1976. It was 40-hex, so the
+    # validator below accepted it, but it existed only on the PR branch. When
+    # #1976 squash-merged (2026-07-30T18:29:59Z) the branch was deleted, the ref
+    # stopped resolving for Actions, and the WHOLE ci.yml failed to load in
+    # omnibase_infra, which had shipped the identical pin: runs went
+    # conclusion=failure with 0 jobs, taking the required `CI Summary` context
+    # down by ABSENCE and wedging every dev PR there. OCC was spared only
+    # because this PR had not landed yet. 454c429f is #1976's dev squash
+    # commit, reachable from dev permanently.
+    uses: OmniNode-ai/omnimarket/.github/workflows/merge-hold-gate-reusable.yml@2520515ea4d516047950ce6cea5b86caa563c13c
+    with:
+      vocabulary_ref: 2520515ea4d516047950ce6cea5b86caa563c13c
+      context_name: merge-hold-gate / evaluate
+
+  contract-shape-v1:
+    name: Contract Shape v1 (OMN-15669)
+    # OMN-15669 / operator ruling R-0802-9. The assembled contract-testing
+    # mechanism: ONE canonical shape (schemas/occ_contract_v1.schema.yaml),
+    # ticket identity, binding-agnostic cases, an enumerable case space,
+    # shape-correct injected mocks, and dual-binding execution.
+    #
+    # WHY THIS IS THE REQUIRED-PATH WIRING POINT: OCC dev's required contexts
+    # are exactly ["CI Summary", "required-check-skip-guard / check-skip-vectors",
+    # "verify / verify", "occ-preflight / eligibility"] (live readback
+    # 2026-08-02). `CI Summary` is the only umbrella a new gate can reach, and
+    # reaching it requires BOTH a `needs:` entry AND a strict success-only check
+    # below — the generic rollup only tests for failure/cancelled, so a SKIPPED
+    # job would pass it and this gate would enforce nothing.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as precommit-parity-gate,
+    # predicate-parity and contract-corpus-ratchets above): no needs:, no if:,
+    # no paths filter. A skip here means something is wrong, never that the gate
+    # legitimately opted out. Scope is decided INSIDE the gate from the changed
+    # files, not by a workflow-level path filter that CI cannot prove correct.
+    #
+    # ANTI-REMOVAL ANCHOR: tests/test_contract_shape_v1_legs.py::
+    # test_gate_is_wired_at_the_required_path asserts (a) this job exists,
+    # (b) ci-summary needs it, and (c) ci-summary strict-checks its result. That
+    # test runs in this job's own first step.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Per-leg RED/GREEN units + every declared case (mock-bound leg)
+        run: |
+          uv run pytest \
+            tests/test_contract_shape_v1_legs.py \
+            tests/test_contract_shape_v1_cases.py \
+            tests/fixtures/contract_shape_v1/conformant/tests/test_widget_cases.py \
+            -q -p no:randomly
+      - name: Declared cases, real-bound leg (P6 integration selection)
+        run: |
+          uv run pytest \
+            tests/test_contract_shape_v1_legs.py \
+            tests/test_contract_shape_v1_cases.py \
+            tests/fixtures/contract_shape_v1/conformant/tests/test_widget_cases.py \
+            -q -p no:randomly -m integration
+      # REMEDIATION r1: the conformant fixture module is now EXECUTED above, not
+      # merely --collect-only'd by the gate. Without this the reference
+      # implementation of "the mock validates against the real seam schema" ran
+      # nowhere in CI and a divergent mock left the suite green.
+      - name: Local pre-commit counterpart runs the SAME entrypoint (rule 5)
+        run: |
+          set -euo pipefail
+          uv run pre-commit run check-contract-shape-v1 --all-files
+      - name: Compute changed files vs base
+        id: diff
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --no-tags
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          git diff --name-only "$BASE"...HEAD | tr '\n' ' ' > /tmp/changed_files.txt
+          echo "files=$(cat /tmp/changed_files.txt)" >> "$GITHUB_OUTPUT"
+      - name: Capture the PR body for the identity leg
+        if: github.event_name == 'pull_request'
+        # READ LIVE, not from github.event.pull_request.body. The event payload
+        # is a SNAPSHOT taken when the event fired, so a push that precedes the
+        # PR-body trailer update makes the gate compare against a stale body and
+        # report identity_trailer_divergence for a PR whose live trailer is
+        # correct. That false RED was observed twice on this PR's own branch and
+        # was each time cleared by an empty re-trigger commit — a workaround for
+        # a race, not a fix. Reading the body at job time removes the race.
+        #
+        # Fail-closed: `set -euo pipefail` means an API failure fails the step
+        # rather than writing an empty body that would look like "no trailer".
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" \
+            --jq '.body // ""' > /tmp/pr_body.txt
+          echo "captured PR body: $(wc -c < /tmp/pr_body.txt) bytes (read live)"
+      - name: Fetch ticket bodies from Linear (workflow layer, not src/)
+        # The gate makes NO network call: the imperative-contract guard blocks
+        # raw HTTP from src/ because it bypasses contract transport, and this
+        # repo already reads Linear from the workflow layer (stale-todo-gate.yml,
+        # todo-audit-on-merge.yml, staleness-monitor.yml). Same idiom here.
+        #
+        # NOT a graceful degradation: if LINEAR_API_KEY is unset, or a query
+        # fails, this writes a map that does not contain the ticket, and the
+        # gate returns identity_linear_unreachable RED. Unreachable is RED.
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          CHANGED: ${{ steps.diff.outputs.files }}
+        run: |
+          set -uo pipefail
+          echo '{}' > /tmp/ticket_bodies.json
+          TICKETS=$(printf '%s' "$CHANGED" | tr ' ' '\n' \
+            | grep -oE 'contracts/(v1/)?OMN-[0-9]+\.yaml' \
+            | grep -oE 'OMN-[0-9]+' | sort -u || true)
+          if [ -z "${LINEAR_API_KEY:-}" ]; then
+            echo "::warning::LINEAR_API_KEY unset — ticket bodies unavailable;" \
+                 "the identity leg will fail closed for any in-scope contract."
+            exit 0
+          fi
+          python3 - "$TICKETS" <<'PY'
+          import json, os, sys, urllib.request
+          keys = [t for t in sys.argv[1].split() if t]
+          out = {}
+          for tid in keys:
+              payload = json.dumps({
+                  "query": "query($id:String!){issue(id:$id){identifier description}}",
+                  "variables": {"id": tid},
+              }).encode()
+              req = urllib.request.Request(
+                  "https://api.linear.app/graphql", data=payload,
+                  headers={"Authorization": os.environ["LINEAR_API_KEY"],
+                           "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      issue = (json.loads(r.read().decode()).get("data") or {}).get("issue")
+                  if isinstance(issue, dict) and isinstance(issue.get("description"), str):
+                      out[tid] = issue["description"]
+              except Exception as exc:  # noqa: BLE001 - fail closed, never raise
+                  print(f"::warning::Linear fetch failed for {tid}: {exc}")
+          with open("/tmp/ticket_bodies.json", "w", encoding="utf-8") as fh:
+              json.dump(out, fh)
+          print(f"fetched {len(out)}/{len(keys)} ticket body/bodies")
+          PY
+      - name: Gate — canonical contract shape v1 (fail-closed, no allowlist)
+        run: |
+          set -euo pipefail
+          ARGS=(--base-ref "${{ steps.diff.outputs.base }}" --root .)
+          ARGS+=(--ticket-bodies /tmp/ticket_bodies.json)
+          # P2 needs a PR body. Keyed on the EVENT, never on whether a file
+          # happens to exist: a failed body capture must not look like "no PR
+          # here, skip the leg". On a pull_request run the leg is mandatory and
+          # the capture step above has already failed the job if it could not
+          # read the body; on a push/merge run there is no PR, and the CLI
+          # requires that exclusion to be DECLARED rather than inferred from an
+          # absent file (REMEDIATION r1r) — a silently dropped leg is how a DoD
+          # check ended up weaker than the gate it certifies.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ARGS+=(--pr-body-file /tmp/pr_body.txt)
+          else
+            ARGS+=(--skip-identity)
+          fi
+          # shellcheck disable=SC2086
+          uv run check-contract-shape-v1 "${ARGS[@]}" \
+            --changed-files ${{ steps.diff.outputs.files }}
+
+  ci-summary:
+    name: CI Summary
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, append-only-gate, no-noncanonical-lifecycle-classes, validate-prod-promotion-grants, check-platform-leads-review-tripwire, check-bot-authored-authz-guard, precommit-parity-gate, predicate-parity, contract-corpus-ratchets, yamlfmt-contamination-ratchet, merge-hold-gate, supersession-binding-ratchet, contract-shape-v1]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          # OMN-14350: strict fail-closed gate on the non-canonical lifecycle-class
+          # ratchet. Only 'success' passes; skipped/cancelled/failure ALL block. The
+          # ratchet is in needs: so this job WAITS for it (no race).
+          if [[ "${{ needs.no-noncanonical-lifecycle-classes.result }}" != "success" ]]; then
+            echo "::error::no-noncanonical-lifecycle-classes ratchet did not pass (result: ${{ needs.no-noncanonical-lifecycle-classes.result }}) - fail-closed (OMN-14350)"
+            exit 1
+          fi
+          # OMN-14441: same strict fail-closed pattern for the prod-promotion-grant
+          # validator. Only 'success' passes; skipped/cancelled/failure ALL block.
+          if [[ "${{ needs.validate-prod-promotion-grants.result }}" != "success" ]]; then
+            echo "::error::validate-prod-promotion-grants did not pass (result: ${{ needs.validate-prod-promotion-grants.result }}) - fail-closed (OMN-14441)"
+            exit 1
+          fi
+          # OMN-14445: same strict fail-closed pattern for the platform-leads
+          # review tripwire. Only 'success' passes; skipped/cancelled/failure/
+          # INCONCLUSIVE (exit 2, surfaces as 'failure') ALL block.
+          if [[ "${{ needs.check-platform-leads-review-tripwire.result }}" != "success" ]]; then
+            echo "::error::check-platform-leads-review-tripwire did not pass (result: ${{ needs.check-platform-leads-review-tripwire.result }}) - fail-closed (OMN-14445)"
+            exit 1
+          fi
+          # OMN-14919: same strict fail-closed pattern for the bot-authored-authz
+          # guard. Only 'success' passes; skipped/cancelled/failure/INCONCLUSIVE
+          # (exit 2, surfaces as 'failure') ALL block. A bot must never be able to
+          # mint its own authorization by touching grants/** or allowlists/**.
+          if [[ "${{ needs.check-bot-authored-authz-guard.result }}" != "success" ]]; then
+            echo "::error::check-bot-authored-authz-guard did not pass (result: ${{ needs.check-bot-authored-authz-guard.result }}) - fail-closed (OMN-14919)"
+            exit 1
+          fi
+          # OMN-14672: same strict fail-closed pattern for the CI<->pre-commit
+          # byte-match parity gate. Only 'success' passes; skipped/cancelled/
+          # failure ALL block. Unconditional job (no needs/if), so a skip here
+          # means something is wrong, not that the gate legitimately opted out.
+          if [[ "${{ needs.precommit-parity-gate.result }}" != "success" ]]; then
+            echo "::error::precommit-parity-gate did not pass (result: ${{ needs.precommit-parity-gate.result }}) - fail-closed (OMN-14672)"
+            exit 1
+          fi
+          # OMN-15309: same strict fail-closed pattern for the evidence-admissibility
+          # predicate-parity gate. Only 'success' passes; skipped/cancelled/failure
+          # ALL block. Unconditional job (no needs/if), so a skip means the shared
+          # OMN-14505 predicate could not be proven identical across its two
+          # consumers -- which is precisely the drift this gate exists to stop.
+          if [[ "${{ needs.predicate-parity.result }}" != "success" ]]; then
+            echo "::error::predicate-parity did not pass (result: ${{ needs.predicate-parity.result }}) - fail-closed (OMN-15309)"
+            exit 1
+          fi
+          # OMN-15411: same strict fail-closed pattern for the Rule A/B/C/D/E
+          # contract corpus ratchets. Only 'success' passes; skipped/cancelled/
+          # failure ALL block. This is the ONLY required-path surface that scans
+          # every contracts/*.yaml -- the pre-commit linter is changed-files
+          # scoped, ci.yml's `test` job is skipped on dev PRs, and the shadow
+          # workflow that previously carried these tests is deliberately
+          # non-required. Without this check a new Rule A/B/C/D/E violation
+          # merges to dev with every required context green.
+          if [[ "${{ needs.contract-corpus-ratchets.result }}" != "success" ]]; then
+            echo "::error::contract-corpus-ratchets did not pass (result: ${{ needs.contract-corpus-ratchets.result }}) - fail-closed (OMN-15411)"
+            exit 1
+          fi
+          # OMN-15479: same strict fail-closed pattern for the yamlfmt
+          # contamination ratchet. Only 'success' passes; skipped/cancelled/
+          # failure ALL block. This is the ONLY required-path surface that scans
+          # the whole contracts/ + drift/dod_receipts/ corpus for the yamlfmt
+          # sentinel and for the folded-scalar shape that produces it -- the two
+          # pre-commit hooks are changed-files scoped and cannot see baseline
+          # drift at all. Without this check a newly corrupted evidence receipt
+          # merges to dev with every required context green.
+          if [[ "${{ needs.yamlfmt-contamination-ratchet.result }}" != "success" ]]; then
+            echo "::error::yamlfmt-contamination-ratchet did not pass (result: ${{ needs.yamlfmt-contamination-ratchet.result }}) - fail-closed (OMN-15479)"
+            exit 1
+          fi
+          # OMN-15459: same strict fail-closed pattern for the supersession
+          # binding ratchet. Only 'success' passes; skipped/cancelled/failure ALL
+          # block. This is the ONLY required-path surface that scans every
+          # supersession in drift/dod_receipts/** -- the receipt-hardening hook
+          # and the Pre-commit job's changed-receipt step are changed-files
+          # scoped, so neither can see a cohort sibling the PR does not touch nor
+          # the frozen baseline drifting out of sync with the corpus. Without
+          # this check a new wrong-item rebind merges to dev with every required
+          # context green, which is exactly how OCC#5534 landed.
+          if [[ "${{ needs.supersession-binding-ratchet.result }}" != "success" ]]; then
+            echo "::error::supersession-binding-ratchet did not pass (result: ${{ needs.supersession-binding-ratchet.result }}) - fail-closed (OMN-15459)"
+            exit 1
+          fi
+          # OMN-15484: same strict fail-closed pattern for the Merge Hold Gate.
+          # Only 'success' passes; skipped/cancelled/failure ALL block.
+          #
+          # THIS LINE IS THE MECHANISM, not the job's existence. The generic
+          # rollup below tests only for 'failure'/'cancelled', so without this
+          # block a SKIPPED hold gate would pass CI Summary and a held PR would
+          # be required-green -- the job would look like enforcement while
+          # enforcing nothing. Measured against the real evaluator on
+          # omnimarket#1973: unregistered, `skipped` -> SUCCESS and `absent` ->
+          # SUCCESS; registered, `skipped` -> FAILURE and `absent` -> the
+          # workflow cannot even load. The job is unconditional, so a skip here
+          # means something is wrong, never that the gate opted out.
+          if [[ "${{ needs.merge-hold-gate.result }}" != "success" ]]; then
+            echo "::error::merge-hold-gate did not pass (result: ${{ needs.merge-hold-gate.result }}) - fail-closed (OMN-15484)"
+            exit 1
+          fi
+          # OMN-15669: same strict fail-closed pattern for the canonical
+          # contract-shape-v1 gate. Only 'success' passes; skipped/cancelled/
+          # failure ALL block.
+          #
+          # THIS LINE IS THE MECHANISM, not the job's existence. The generic
+          # rollup below tests only for 'failure'/'cancelled', so without this
+          # block a SKIPPED shape gate would pass CI Summary and a contract
+          # could land with no ticket identity, no declared cases, unmapped
+          # error classes and unvalidated mocks -- required-green the whole way.
+          # The job is unconditional, so a skip here means something is wrong,
+          # never that the gate opted out.
+          if [[ "${{ needs.contract-shape-v1.result }}" != "success" ]]; then
+            echo "::error::contract-shape-v1 did not pass (result: ${{ needs.contract-shape-v1.result }}) - fail-closed (OMN-15669)"
+            exit 1
+          fi
+          # OMN-15731: strict fail-closed pattern for `test` and `type-check`.
+          # Both jobs are LEGITIMATELY skipped when zone-filter's docs_only
+          # output is 'true' (the OMN-14098 evidence-only fast lane) -- that
+          # skip must still pass CI Summary. Any OTHER skip (or a
+          # failure/cancelled) is exactly the hole this ticket closes: a
+          # since-orphaned `smart-test-select` job's outputs were never
+          # consumed by `test`, and a `github.base_ref != 'dev'` clause on
+          # both jobs' own `if:` (removed by this same change) meant every
+          # dev-targeting PR skipped both jobs outright while the generic
+          # rollup below -- which only checks for 'failure'/'cancelled' --
+          # reported them as passing. dev is this repo's default branch, so
+          # that was effectively zero unit tests and zero type-checking on
+          # all normal OCC traffic. THIS LINE IS THE MECHANISM, not the
+          # jobs' existence.
+          if [[ "${{ needs.zone-filter.outputs.docs_only }}" != "true" ]]; then
+            if [[ "${{ needs.test.result }}" != "success" ]]; then
+              echo "::error::test did not pass (result: ${{ needs.test.result }}) - fail-closed (OMN-15731)"
+              exit 1
+            fi
+            if [[ "${{ needs.type-check.result }}" != "success" ]]; then
+              echo "::error::type-check did not pass (result: ${{ needs.type-check.result }}) - fail-closed (OMN-15731)"
+              exit 1
+            fi
+          fi
+          # OMN-15731: same strict fail-closed pattern for the label-gated CI
+          # pilot. `pre-commit` now legitimately skips ONLY for a dev-targeting
+          # PR missing the `ci:ready` label -- the exact same shape as every
+          # other block above (unconditional job, `if: always()` before this
+          # change), so a skip here is either that specific pilot case or an
+          # anomaly, never a pre-existing legitimate exemption. The generic
+          # rollup below tests only for 'failure'/'cancelled', so without this
+          # block a SKIPPED-because-unlabeled `pre-commit` would read CI
+          # Summary = SUCCESS with zero lint/type/contract checks run -- the
+          # exact AC(b) trap named on OMN-15731. Only 'success' passes;
+          # skipped/cancelled/failure ALL block.
+          if [[ "${{ needs.pre-commit.result }}" != "success" ]]; then
+            echo "::error::pre-commit did not pass (result: ${{ needs.pre-commit.result }}) - fail-closed (OMN-15731). If this is a dev-targeting PR missing the label, apply 'ci:ready' to run the full pre-commit suite."
+            exit 1
+          fi
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more required jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All required jobs passed"

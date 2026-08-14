@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13444"
+title: "Phase 1b — Relocate RuntimeLocal + helpers + adapter → omnibase_core.runtime; clear line-1404
+  infra residual; bump 0.46.0"
+summary: >-
+  Phase 1b of the local-first runtime re-convergence (epic OMN-13442). Relocates the local runtime orchestrator
+  from omnibase_infra into omnibase_core so the runtime installs and runs from core alone, with ZERO omnibase_infra
+  dependency on any code path. New omnibase_core.runtime.runtime_local (RuntimeLocal, parse_backend_overrides,
+  load_workflow_contract, _exit_code_for, ResolvedRoutingEntry, the onex.backends discovery constants)
+  + omnibase_core.runtime.runtime_local_adapter (LocalRuntimeBusAdapter). The five local-runtime protocols
+  are placed core-resident under omnibase_core.protocols.runtime rather than imported from omnibase_spi.protocols.runtime:
+  spi hard-depends on core and core's sdk-boundary-check forbids omnibase-spi as a hard dependency, so
+  importing the spi copy would be a circular/inverted package dependency — this is the plan CONTINGENCY
+  (place runtime protocols in core, self-contained, infra-free). AC#2: cleared the runtime_local.py line-1404
+  function-local 'from omnibase_infra.event_bus.models.config import ModelKafkaEventBusConfig'; the kafka_bootstrap
+  override now routes through the entry-point-loaded provider's from_bootstrap(bootstrap) factory, so
+  core names ZERO omnibase_infra symbols on any path (grep-verified). The infra-side EventBusKafka.from_bootstrap
+  and the deletion of infra's copies land in Phase 3a (OMN-13445). Core version bumped 0.45.0 -> 0.46.0.
+  This OCC PR carries the central contract consumed by the omnibase_core PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Core-resident RuntimeLocal + LocalRuntimeBusAdapter + the five local-runtime protocols compile and
+      pass a focused 26-test suite (tests/unit/runtime/test_runtime_local.py + tests/unit/test_no_internal_deps.py):
+      parse_backend_overrides validation, in-memory default selection, unsupported-value rejection, kafka
+      entry-point dispatch, kafka_bootstrap routed through the provider from_bootstrap factory (no infra
+      symbol), structural conformance of core EventBusInmemory to ProtocolLocalRuntimeBus, and the sdk-boundary
+      no-internal-deps guard. All 26 pass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13444/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      AC#2 grep-verification that omnibase_core source names ZERO omnibase_infra symbols on any code path:
+      no 'import omnibase_infra' / 'from omnibase_infra' import statements and no ModelKafkaEventBusConfig
+      reference remain in src/ (only comments, docstrings, and the contract-validator regex strings mention
+      the name). sdk-boundary-check (test_no_internal_deps.py) green; core-infra boundary script green;
+      __all__ exports validation green.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13444/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this PR is a pure import-path relocation of RuntimeLocal + adapter + the five
+      local-runtime protocols into omnibase_core, with NO runtime/topology/Dockerfile change and NO new
+      Kafka topic. The deploy semantics are verified WITHOUT a live .201 deploy: an in-process import
+      of the relocated symbols against the built core wheel + the focused 26-test suite prove the new
+      omnibase_core.runtime / omnibase_core.protocols.runtime surfaces load and behave correctly. No omninode-runtime
+      image rebuild is required for this PR (infra still ships its own runtime_local until Phase 3a OMN-13445
+      re-points it at core); a live prod/stability deploy is explicitly OUT OF SCOPE and owner-gated under
+      Phase 7 (OMN-13448). The probe greps this PASS receipt.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'deploy' drift/dod_receipts/OMN-13444/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by the omnibase_core
+      PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13444.yaml
+      is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13444\"$' contracts/OMN-13444.yaml"

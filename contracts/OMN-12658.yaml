@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12658"
+title: "ci(OMN-12658): runtime image build-time delegation import smoke guard + CI gate"
+summary: >-
+  OCC evidence for omnibase_infra PR #2066 (Wave E — runtime fresh-deploy hardening). Adds a build-time
+  import smoke step to the runtime image (docker/Dockerfile.runtime): after all wheels install, a RUN
+  step imports omnibase_compat, omnibase_core, and the canonical delegation node handler (omnimarket.nodes.node_llm_delegation_call_effect.HandlerLlmDelegationCall).
+  A skewed omnibase_compat / omnibase_core wheel — or a delegation-node import break — fails the docker
+  build non-zero at build time instead of degrading silently as a runtime entry-point load failure. The
+  docker-build CI job (.github/workflows/docker-build.yml), which runs on PRs touching docker/** and Dockerfile*,
+  loads the image and re-asserts the same delegation import as a labeled required-status-check step. A
+  static unit test (tests/unit/docker/test_delegation_import_smoke_guard.py) pins the guard in both the
+  Dockerfile and the CI job so it cannot be silently removed, and asserts the guard runs AFTER the omnimarket
+  install. Scope is strictly the runtime image (evidence + delegation node imports); does not touch the
+  OMN-12584 runner-image work.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-import-smoke-path"
+    description: >-
+      The canonical delegation node handler import path baked into the Dockerfile build-time smoke guard
+      resolves against the omnimarket clone: `from omnimarket.nodes.node_llm_delegation_call_effect import
+      HandlerLlmDelegationCall` -> "OMNIMARKET IMPORT OK HandlerLlmDelegationCall".
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12658/dod-import-smoke-path/command.yaml"
+  - id: "dod-pin-check"
+    description: >-
+      Adding the build-time import smoke RUN step does not violate Dockerfile plugin-pin rules: scripts/check_dockerfile_pins.py
+      --dockerfile docker/Dockerfile.runtime reports "Dockerfile pin check passed".
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12658/dod-pin-check/command.yaml"
+  - id: "dod-unit-tests"
+    description: >-
+      Static unit tests pin the build-time smoke guard in both the Dockerfile and the docker-build CI
+      job and assert the guard runs after the omnimarket install: 3 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12658/dod-unit-tests/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-12658.yaml consumed
+      by the omnibase_infra PR #2066 Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-12658\"$' contracts/OMN-12658.yaml"
+  - id: "dod-deploy-gate"
+    description: >-
+      deploy-gate evidence for the runtime-image build change in omnibase_infra PR #2066. No live deploy,
+      restart, docker exec, rpk topic produce, or runtime lane mutation was performed; the change is a
+      build-time CI guard only. Post-merge runtime redeploy remains the downstream runtime lane responsibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'deploy-gate evidence' contracts/OMN-12658.yaml"

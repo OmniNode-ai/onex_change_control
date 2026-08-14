@@ -1,0 +1,92 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12977"
+title: "Workspace-build sibling-pin ratchet — honor consuming lock, fail-fast on stale vendor"
+summary: >
+  The omnibase_infra workspace-mode image build (BUILD_SOURCE=workspace, used by the stability-test deploy
+  procedure) vendored sibling/foundation packages from whatever the canonical OMNI_HOME clones happened
+  to be checked out at, ignoring the consuming repo's uv.lock. On 2026-06-11 the 11:20Z --no-cache rebuild
+  onto omnimarket dev vendored a 13-day-stale omnibase_infra 0.37.0-dev (~2c1d672f, pre-OMN-12501 Protocol-quarantine
+  guard) + omnibase_core 0.42.0 even though omnimarket dev's uv.lock pins omnibase-infra 0.38.1 @ e2dbdc95
+  / omnibase-core 0.44.0 @ c97c2c9a. The stale image dropped the OMN-12501 guard that converts the node_overseer_observer
+  Protocol-handler failure into a non-fatal quarantine, so wire_from_manifest crashed bootstrap fatally
+  (stability lane down on demo day; this is the deploy-composition trigger condition in RESOLVER-CRASH-DIAGNOSIS.md
+  fault classification (c)). Fix + recurrence ratchet in omnibase_infra PR #1936: a new preflight (check_sibling_lock_pins.py)
+  makes the consuming repo's uv.lock the pin authority — it parses expected version+git-rev per package
+  (scoped to the package's own source line so editable/registry pins are not cross-attributed a dependency's
+  rev), resolves the actual canonical-clone version+HEAD, compares, classifies drift backward/forward/none,
+  and fails fast (exit 1; build aborts exit 3 via stage_workspace.sh) on any unacknowledged drift. --allow-drift
+  records an explicit operator override durably, never silent. compute_workspace_provenance.py folds the
+  expected-vs-actual comparison into build-provenance.json for deploy verifiers; Dockerfile.runtime COPYs
+  the artifact. Scripts/test-only change to the build tooling; no node contract, topic schema, envelope,
+  or runtime API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD-first unit suite (written red before the module existed) covers lock parsing across git/registry/editable
+      sources, drift classification, the exact 0.37.0-vs-0.38.1 stale case, the check_pins exit codes
+      (0 pass / 1 drift / 2 malformed input), and the --allow-drift override.
+    command: "uv run pytest tests/unit/scripts/test_check_sibling_lock_pins.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-1936"
+    description: >
+      omnibase_infra PR #1936 adds scripts/runtime_build/check_sibling_lock_pins.py (preflight + ratchet)
+      and its 19-test TDD suite, wires the preflight into stage_workspace.sh (build aborts exit 3 on drift),
+      folds the comparison into build-provenance.json via compute_workspace_provenance.py, and COPYs the
+      artifact in Dockerfile.runtime. Evidence anchor: omnibase_infra head commit e813e39bb167fc4f4686174a044733ac5e9a06e6.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12977/dod-omnibase-infra-pr-1936/command.yaml
+          && grep -q '^pr_number: 1936$' drift/dod_receipts/OMN-12977/dod-omnibase-infra-pr-1936/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12977/dod-omnibase-infra-pr-1936/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a scripts/test-only change to the workspace-mode build tooling in omnibase_infra.
+      It changes how the workspace image build resolves sibling pins (lock authority + fail-fast preflight)
+      but ships no node contract, topic schema, envelope, or runtime API change. Reaching live effect
+      requires a standard image rebuild via the stability-test deploy procedure; no live deploy is performed
+      by this PR (a separate rebuild agent batches deploys; the demo-day worker is explicitly forbidden
+      from rebuilding/restarting any lane). The ratchet was proved against the live canonical clones with
+      a throwaway preflight run (exit 3 on forward drift) and unit suite; no lane was mutated. The receipt
+      check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12977/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1936$' drift/dod_receipts/OMN-12977/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12977/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >
+      This onex_change_control PR carries the OMN-12977 central contract and receipt evidence; this self-binding
+      receipt makes the OCC PR satisfy its own OCC eligibility check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12977/dod-occ-pr/command.yaml"
+  - id: "dod-omnimarket-pr-1553"
+    description: >
+      omnimarket PR #1553 aligns the consumer workspace sibling pins to omnibase_core 0.46.2 and omnibase_compat
+      0.5.5, regenerates uv.lock, and preserves the OMN-12977 fail-fast sibling-pin ratchet by removing
+      the stale core/compat pin mismatch without using drift overrides.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12977/dod-omnimarket-pr-1553/command.yaml
+          && grep -q '^pr_number: 1553$' drift/dod_receipts/OMN-12977/dod-omnimarket-pr-1553/command.yaml
+          && grep -q 'c22fe5a2e088ef8bf6fd26a40497d1c0a3f9daf0' drift/dod_receipts/OMN-12977/dod-omnimarket-pr-1553/command.yaml"
+  - id: "dod-occ-pr-1553-binding"
+    description: >
+      This onex_change_control follow-up PR carries the OMN-12977 receipt binding for omnimarket PR #1553
+      and a self-binding receipt so the OCC evidence PR satisfies its own OCC eligibility check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12977/dod-occ-pr-1553-binding/command.yaml"

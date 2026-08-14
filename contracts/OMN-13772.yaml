@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13772"
+title: "fix(OMN-13772): !override judge overlay networks/ports (cross-lane isolation) + keepalive census
+  kind"
+summary: >-
+  omnibase_infra PR #2197 lands the SOURCE fix for the judge-lane cross-lane isolation defect. deploy-runtime.sh
+  (resolve_compose_file_args, OMN-13581) layers docker-compose.judge.yml on top of docker-compose.infra.yml
+  on .201; Docker Compose sequence-merges (unions) plain-list networks:/ports: with the base file, so
+  every judge service was attached to BOTH the judge and dev networks (cross-lane isolation hole, ambiguous
+  postgres/valkey/redpanda DNS) and double-published dev+judge host ports (valkey collided on dev 16379).
+  Fix tags every service-level networks:/ports: key !override so the overlay replaces rather than unions,
+  and pins base-only keycloak/infisical behind a never-enabled judge-disabled profile. Also reclassifies
+  migration-gate from oneshot to a new keepalive census kind (a long-running healthcheck sentinel is Running
+  by design, not oneshot_stuck). No node contract/topic changes; compose + lane-manifest + census-script
+  + tests only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-cross-lane-isolation"
+    description: >-
+      The layered base+overlay render (docker compose -f docker-compose.infra.yml -f docker-compose.judge.yml
+      --profile judge config) resolves every judge service to EXACTLY the omnibase-infra-judge-network
+      and only lane-scoped published ports, disjoint from dev/prod ports. Proven by tests/integration/infra/test_judge_compose_render.py::test_layered_render_isolates_every_judge_service_to_judge_network
+      and the plain-list-regression ratchet tests/unit/infra/test_judge_compose_profile.py::test_judge_overlay_networks_and_ports_carry_override_tag.
+      Live .201 EFFECT proof (2026-07-03): docker network inspect shows the judge network holds all 7
+      judge-scoped containers while the dev network (omnibase-infra-network) carries zero judge containers.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13772/dod-cross-lane-isolation/command.yaml
+  - id: "dod-local-gates-green"
+    description: >-
+      Local gates green on omnibase_infra branch head 3b42d0e4eb8a58359a941f7a82ada25033a13f46: ruff format
+      + ruff check --fix (all checks passed), mypy clean on all changed files, and pre-commit run --all-files
+      green including the lane-boundary attestation gate (OMN-13034), ONEX Architecture Validation, and
+      AI-Slop Pattern Check. Targeted suite 25 unit + 7 integration tests pass; full pytest -m unit reports
+      21706 pass with 6 pre-existing/environmental failures (infisical provisioning needs INFISICAL_ADDR;
+      one flaky timed contention test) confirmed failing/flaky on the base branch, none in changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13772/dod-local-gates-green/command.yaml
+  - id: "dod-infra-pr-2197-binding"
+    description: >-
+      omnibase_infra PR #2197 (branch jonah/omn-13772-judge-overlay-override) head SHA matches the evidence
+      binding for this OCC receipt.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13772/dod-infra-pr-2197-binding/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13772 contract plus the dod-cross-lane-isolation,
+      dod-local-gates-green, and dod-infra-pr-2197-binding receipts required by downstream Receipt Gate
+      and occ-preflight resolution on omnibase_infra PR #2197.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13772/dod-occ-self/command.yaml

@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13473"
+title: "test(OMN-13473): reconcile delegation orchestrator imperative FSM against contract.yaml"
+summary: >-
+  OCC evidence for omnimarket PR #1342. Audits node_delegation_orchestrator's imperative FSM (HandlerDelegationWorkflow._transition,
+  15 call sites, _VALID_TRANSITIONS guard table) against the declared contract.yaml fsm.transitions table
+  and resolves the divergences into the contract as the single source of truth. Three reachable ROUTED-origin
+  edges the handler drives were undeclared: ROUTED -> ESCALATING (retryable inference infra-error escalation,
+  OMN-13140), ROUTED -> FAILED (terminal inference failure / remote lifecycle FAILED before EXECUTING),
+  and ROUTED -> COMPLETED (remote lifecycle COMPLETED before any PROGRESS reached EXECUTING). All three
+  are real, reachable transitions, so they are added to contract.yaml rather than removed from the handler.
+  No behavior change. Adds tests/unit/delegation/test_delegation_fsm_reconciliation.py with a documented
+  1:1 mapping of every _transition call site (HANDLER_TRANSITION_CALLSITES) plus assertions that the handler
+  _VALID_TRANSITIONS table is a subset of contract fsm.transitions, every documented call-site edge is
+  declared, every documented edge is permitted by the handler table, the mapping covers every handler
+  edge, and no contract edge is unreachable (no dead transitions).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-fsm-reconciliation-tests"
+    description: >-
+      23 new tests in test_delegation_fsm_reconciliation.py pass green, asserting the handler-driven FSM
+      is a subset of the declared contract.yaml fsm.transitions and that the documented 1:1 call-site
+      mapping stays in sync with both the contract and the in-code _VALID_TRANSITIONS guard table. Full
+      delegation suite: 332 passed. Full non-kafka suite: 7941 passed, 64 skipped. mypy --strict: 0 issues.
+      pre-commit: all hooks passed (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'PASS' drift/dod_receipts/OMN-13473/dod-fsm-reconciliation-tests/command.yaml
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13473.yaml consumed
+      by the omnimarket PR #1342 Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13473\"$' contracts/OMN-13473.yaml"
+  - id: "dod-deploy-gate"
+    description: >-
+      Deploy-gate evidence: no live deploy, restart, docker exec, rpk topic produce, or runtime lane mutation
+      was performed. This PR adds reconciliation tests plus three declared contract FSM transitions only
+      — no deployment surface is touched and there is no behavior change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'deploy-gate evidence' contracts/OMN-13473.yaml"

@@ -1,0 +1,110 @@
+PHASE 4 — PROJECTION API READBACK + generation_events binding check (2026-06-08)
+================================================================================
+Contractor seat (WSL2 over Tailscale), read-only.
+Lane note: this evidence uses the stability-test projection API on :13002
+intentionally. OMN-12760's contract/API surface is :3002; :13002 is the
+stability-test lane surface used for this contractor verification pass.
+
+--- Health ---
+$ curl -fsS http://100.109.203.94:13002/health
+{"status":"ok","postgres":"ok"}
+
+--- Plan's named topic (Phase 4 step 2) ---
+GET /projection/onex.snapshot.projection.hackathon_pipeline_events.v1
+-> 404 unknown_topic  (topic not present on this lane)
+
+--- Projection index: the generation_events projection descriptor ---
+GET /projections  (excerpt)
+{
+  "topic": "onex.evt.omnimarket.node-generation-completed.v1",
+  "table": "generation_events",
+  "status": "ok",
+  "columns": ["id","correlation_id","task_description","provider","model_id",
+              "endpoint_class","attempt_count","total_latency_e2e_ms",
+              "contract_passed","cost_inference_usd","contract_yaml",
+              "handler_source","timestamp","created_at"]
+}
+
+--- Binding check: does our Phase 2b proof (correlation 0cdc2410) have a row? ---
+GET /projection/onex.evt.omnimarket.node-generation-completed.v1?correlation_id=0cdc2410-3fa5-4da6-b561-52d4a7075352
+{
+  "topic": "onex.evt.omnimarket.node-generation-completed.v1",
+  "projection_version": "1.0.0",
+  "data_freshness": "degraded",
+  "latest_event_at": null,
+  "row_count": 0,
+  "rows": []
+}
+
+=> No projection row for our --agent generation.
+
+--- WHY (root cause, code-confirmed) ---
+This is BY DESIGN, not a projection defect:
+
+  src/__main__.py:819-839 — after the agent loop completes, --agent builds the
+  node-generation-requested/completed envelopes and records them to a LOCAL
+  event-chain capture file via EventChainCapture.record()/.save():
+      capture = EventChainCapture(output_dir=Path(".onex_state/hackathon/event_chains"))
+      capture.record(REQUESTED_TOPIC, request_envelope)
+      capture.record(COMPLETED_TOPIC, completion_envelope)
+      capture.save(correlation_id)
+  EventChainCapture writes a local JSON file; it does NOT publish to the bus.
+
+  Source snippet captured from the SEA dev worktree:
+
+      capture = EventChainCapture(output_dir=Path(".onex_state/hackathon/event_chains"))
+      request_envelope = build_envelope(
+          source_node="onex_agent_runner",
+          correlation_id=correlation_id,
+          causation_id=None,
+          payload={"task_description": task_desc, "session_id": session_id},
+      )
+      capture.record(REQUESTED_TOPIC, request_envelope)
+      completion_envelope = build_envelope(
+          source_node="onex_agent_runner",
+          correlation_id=correlation_id,
+          causation_id=request_envelope["envelope_id"],
+          payload={
+              "summary": final_text,
+              "session_id": session_id,
+              "contract_passed": _contract_passed,
+              **latest_scaffold_artifact,
+          },
+      )
+      capture.record(COMPLETED_TOPIC, completion_envelope)
+      chain_path = capture.save(correlation_id)
+
+  grep confirms there is no bus.publish() of the generation-completed topic
+  anywhere in the --agent path. The only publisher of GENERATION_REQUESTED is the
+  server-side ingress node (node_kafka_ingress_effect/handlers/handler_kafka_ingress.py).
+  The generation_events projection is fed by the server-side omnimarket generation
+  node, reached via the runtime/dashboard/API path — NOT by the contractor CLI.
+
+  Verification command:
+      rg -n "bus\.publish\(|publish_envelope\(|GENERATION_COMPLETED|node-generation-completed|COMPLETED_TOPIC" src/__main__.py src -g "*.py"
+
+  Relevant stdout:
+      src/__main__.py:158:COMPLETED_TOPIC = _PIPELINE_TOPICS["generation_completed"]
+      src/__main__.py:826:    capture.record(REQUESTED_TOPIC, request_envelope)
+      src/__main__.py:838:    capture.record(COMPLETED_TOPIC, completion_envelope)
+      src/pipeline/topics.py:1:GENERATION_COMPLETED_TOPIC = "onex.evt.omnimarket.node-generation-completed.v1"
+      src/pipeline/consumer.py:394:        topic = COMPLETED_TOPIC if result.contract_passed else FAILED_TOPIC
+
+  The command output contains capture.record() and consumer/server-side topic
+  references, but no bus.publish() or publish_envelope() call for the
+  node-generation-completed topic in the --agent path.
+
+  Corroboration: local capture file exists for our run —
+  .onex_state/hackathon/event_chains/0cdc2410-3fa5-4da6-b561-52d4a7075352.json
+  with both events captured_at 2026-06-08T20:20:45Z (same second; built back-to-back
+  at end of run, not emitted across the 64s generation).
+  That capture file is local runtime output and is not committed in this PR;
+  the committed evidence is the terminal transcript plus the projection readback
+  above showing row_count 0 for the same correlation.
+
+--- Conclusion ---
+The Phase 2b generation is runtime-observed (terminal output + local event chain),
+bus-backed for delegated inference, but NOT projection-backed. A projection row
+requires the server-side runtime path, which the contractor seat cannot trigger
+(no raw bus publish / runtime trigger per plan rules). Projection confirmation
+needs operator-side capture. This is a scope/architecture boundary, not a defect.

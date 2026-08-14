@@ -1,0 +1,331 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-6571: Automatically enable auto-merge (squash) on every PR opened
+# by jonahgabriel. Ensures PRs do not sit idle in the merge queue waiting
+# for manual enrollment.
+#
+# OMN-7786: Re-trigger on review and check_suite events so the workflow
+# re-attempts auto-merge after CodeRabbit review finishes and branch
+# protection gates clear. Silent continue-on-error removed; "already
+# enqueued" races are tolerated but real failures surface.
+#
+# OMN-10485: OCC eligibility preflight gate added. Auto-merge CANNOT arm
+# until the PR's ticket has passing OCC receipts. The `occ-check` job
+# queries the latest `occ-preflight / eligibility` status check result for
+# the PR via the GitHub Checks API. If the check is missing or not SUCCESS,
+# auto-merge arming is deferred (exit 0 to avoid noise) and the workflow
+# re-triggers on the next `check_suite` completion event when the preflight
+# check finishes. On merge_group events the gate re-evaluates against the
+# current OCC main SHA (no cached PR-pass accepted).
+#
+# OMN-13214: Arming auto-merge is NOT the same as enqueuing. During the
+# 2026-06-17 dev wave, CLEAN + all-required-green + armed PRs sat OUTSIDE the
+# merge queue for hours and each needed a manual enqueuePullRequest to land.
+# This workflow now (a) arms bare --auto — the explicit --squash that was here
+# is REJECTED on the queue-controlled dev branch ("The merge strategy for dev is
+# set by the merge queue"), leaving PRs armed-but-never-enqueued, (b) runs
+# gh pr update-branch first on strict-update repos (OCC dev IS strict-update)
+# when the PR is BEHIND, (c) explicitly calls enqueuePullRequest, and (d)
+# VERIFIES the PR actually entered the queue — failing loudly if a green+armed
+# PR is not enqueued, so the gap surfaces instead of stalling silently. The
+# classify/verify decision logic is unit-tested in
+# scripts/ci/merge_queue_enqueue.py.
+#
+# OMN-14777 (F-24): DROP `reopened` and `ready_for_review` from the
+# pull_request trigger, mirroring OMN-14763 (seed fix landed in
+# omninode_infra). Marking a draft ready-for-review used to force-arm
+# auto-merge, forcing manual draft-holds on evidence-stamped PRs during the
+# 2026-07-16 sweep. This aligns with OMN-14151 (default = do NOT auto-arm on
+# open/ready). An actually-ready green PR is still armed by the
+# pull_request_review / check_suite re-attempt paths below and by
+# workflow_dispatch -- just not by the draft->ready transition itself. This
+# workflow is NOT a required status check on dev, so narrowing it cannot
+# wedge branch protection (verified live via required_status_checks readback
+# before landing).
+name: Auto-Merge
+
+on:
+  pull_request:
+    types: [opened]
+  pull_request_review:
+    types: [submitted, dismissed]
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to enable auto-merge on"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    name: Enable Auto-Merge
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Resolve PR and author
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_FROM_PAYLOAD: ${{ github.event.pull_request.number }}
+          PR_FROM_DISPATCH: ${{ github.event.inputs.pr_number }}
+          CHECK_SUITE_PRS: ${{ toJson(github.event.check_suite.pull_requests) }}
+          PR_AUTHOR_FROM_PAYLOAD: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request|pull_request_review)
+              PR="$PR_FROM_PAYLOAD"
+              ACTOR="$PR_AUTHOR_FROM_PAYLOAD"
+              ;;
+            workflow_dispatch)
+              PR="$PR_FROM_DISPATCH"
+              ACTOR="$(gh pr view "$PR" --json author --jq '.author.login')"
+              ;;
+            check_suite)
+              PR="$(echo "$CHECK_SUITE_PRS" | jq -r 'if type == "array" and length > 0 then .[0].number else empty end')"
+              if [ -z "$PR" ]; then
+                echo "check_suite had no associated PRs; nothing to do"
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ACTOR="$(gh pr view "$PR" --json author --jq '.author.login')"
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "actor=$ACTOR" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+
+      # OMN-10485: OCC eligibility gate.
+      # Query the `occ-preflight / eligibility` check result for the PR's head SHA.
+      # - SUCCESS → proceed to arm auto-merge.
+      # - PENDING / missing → defer silently; re-triggered when occ-preflight completes.
+      # - FAILURE → hard fail; log reason and exit 1 to surface the block.
+      # merge_group events skip this step; branch protection enforces occ-preflight
+      # as a required status check for the merge group itself.
+      - name: Check OCC eligibility preflight status
+        id: occ_gate
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.actor == 'jonahgabriel' && github.event_name != 'merge_group'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+
+          head_sha="$(gh pr view "$PR" --repo "$GH_REPO" --json headRefOid --jq '.headRefOid')"
+          if [ -z "$head_sha" ]; then
+            echo "::warning::Could not resolve head SHA for PR #${PR}; deferring auto-merge"
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Query the Checks API for the occ-preflight / eligibility check on this SHA.
+          # The check_run name is "eligibility" (job key in occ-preflight.yml) nested
+          # under the "OCC Preflight" workflow. GitHub exposes it as "occ-preflight / eligibility".
+          check_result="$(gh api \
+            "repos/${GH_REPO}/commits/${head_sha}/check-runs" \
+            --jq '[.check_runs[] | select(.name == "eligibility" or .name == "occ-preflight / eligibility")] | sort_by(.started_at) | last | {conclusion: .conclusion, status: .status}' \
+            2>/dev/null || echo '{}')"
+
+          conclusion="$(printf '%s' "$check_result" | jq -r '.conclusion // "missing"')"
+          status="$(printf '%s' "$check_result" | jq -r '.status // "missing"')"
+
+          echo "occ-preflight status=${status} conclusion=${conclusion}"
+
+          if [ "$conclusion" = "success" ]; then
+            echo "OCC eligibility: PASS — proceeding to arm auto-merge"
+            echo "defer=false" >> "$GITHUB_OUTPUT"
+          elif [ "$conclusion" = "failure" ] || [ "$conclusion" = "action_required" ]; then
+            echo "::error::OCC PREFLIGHT FAILED for PR #${PR} (head ${head_sha}). Auto-merge will not arm until OCC eligibility is satisfied."
+            echo "::error::Add a passing receipt to drift/dod_receipts/ in onex_change_control for all dod_evidence items cited in this PR's ticket contract."
+            exit 1
+          else
+            # PENDING or missing: defer. Auto-merge workflow re-fires on check_suite completion.
+            echo "::notice::OCC preflight ${status}/${conclusion} for PR #${PR} — deferring auto-merge arming until eligibility check completes"
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Enable auto-merge
+        if: >-
+          steps.resolve.outputs.skip != 'true' &&
+          steps.resolve.outputs.actor == 'jonahgabriel' &&
+          steps.occ_gate.outputs.defer != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # OMN-13138/13214: dev is queue-controlled — the merge method is set by
+          # the merge queue, so passing an explicit --squash is rejected ("The merge
+          # strategy for dev is set by the merge queue") and the PR is NEVER enqueued
+          # (sits CLEAN + auto-merge armed forever). Use bare --auto and let the queue
+          # pick the method. OMN-13214: arming alone does not enqueue — the explicit
+          # enqueue + verify step below closes that gap. Do NOT exit here on success.
+          if output=$(gh pr merge "$PR" --repo "$GH_REPO" --auto 2>&1); then
+            echo "auto-merge enabled: $output"
+          elif echo "$output" | grep -qiE "already enqueued|already queued|auto-merge already enabled"; then
+            echo "auto-merge not newly enabled (expected): $output"
+          else
+            echo "auto-merge failed: $output"
+            exit 1
+          fi
+
+      - name: Enqueue armed PR and verify it entered the queue
+        if: >-
+          steps.resolve.outputs.skip != 'true' &&
+          steps.resolve.outputs.actor == 'jonahgabriel' &&
+          steps.occ_gate.outputs.defer != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          OWNER="${GH_REPO%/*}"
+          NAME="${GH_REPO#*/}"
+
+          classify() {
+            python3 scripts/ci/merge_queue_enqueue.py classify \
+              --pr-json "$1" --strict-update "$2"
+          }
+
+          # Is the target (default) branch strict-update? On strict repos a BEHIND
+          # PR cannot enqueue until its branch is updated. OCC dev IS strict-update.
+          DEFAULT_BRANCH="$(gh repo view "$GH_REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+          STRICT="$(gh api "repos/${GH_REPO}/branches/${DEFAULT_BRANCH}/protection/required_status_checks" \
+            --jq '.strict' 2>/dev/null || echo "false")"
+          [ "$STRICT" = "true" ] || STRICT="false"
+          echo "strict-update on '${DEFAULT_BRANCH}': ${STRICT}"
+
+          fetch_pr() {
+            # isInMergeQueue is only on the GraphQL PullRequest object, NOT a
+            # `gh pr view --json` field, so fetch PR state via GraphQL.
+            # shellcheck disable=SC2016  # $owner/$name/$number are GraphQL vars, not shell vars
+            gh api graphql \
+              -f owner="$OWNER" \
+              -f name="$NAME" \
+              -F number="$PR" \
+              -f query='
+                query($owner:String!, $name:String!, $number:Int!) {
+                  repository(owner: $owner, name: $name) {
+                    pullRequest(number: $number) {
+                      isInMergeQueue
+                      mergeStateStatus
+                      mergeable
+                      autoMergeRequest {
+                        enabledAt
+                      }
+                    }
+                  }
+                }' \
+              --jq '.data.repository.pullRequest'
+          }
+
+          PR_JSON="$(fetch_pr)"
+          ACTION="$(classify "$PR_JSON" "$STRICT")"
+          echo "classified action: ${ACTION}"
+
+          case "$ACTION" in
+            already_queued)
+              echo "PR #${PR} already in the merge queue — nothing to do."
+              exit 0
+              ;;
+            wait)
+              echo "PR #${PR} is not enqueueable yet (BLOCKED/DIRTY/DRAFT/UNKNOWN); will re-fire on next event."
+              exit 0
+              ;;
+            blocked)
+              echo "::warning::PR #${PR} in an unrecognised merge state: $(printf '%s' "$PR_JSON" | jq -r '.mergeStateStatus'). Not enqueuing."
+              exit 0
+              ;;
+            update_branch_then_enqueue)
+              echo "PR #${PR} is BEHIND on a strict-update repo — updating branch before enqueue (OMN-13214)."
+              # Do NOT treat every non-zero update-branch result as benign: a real
+              # failure here silently leaves a strict-update PR stuck BEHIND with no
+              # enqueue and no failure signal. Tolerate only known no-op/race
+              # messages; surface everything else as a hard failure.
+              if ! ub_out="$(gh pr update-branch "$PR" --repo "$GH_REPO" 2>&1)"; then
+                if echo "$ub_out" | grep -qiE "already up to date|not behind|no update needed|already merged"; then
+                  echo "update-branch no-op: $ub_out"
+                else
+                  echo "::error::update-branch failed for PR #${PR}: $ub_out"
+                  exit 1
+                fi
+              else
+                echo "update-branch succeeded: $ub_out"
+              fi
+              echo "update-branch issued; the resulting check run re-fires this workflow when CI is green."
+              exit 0
+              ;;
+            enqueue)
+              : # fall through to enqueue below
+              ;;
+            *)
+              echo "::error::unexpected action '${ACTION}' from classifier"
+              exit 1
+              ;;
+          esac
+
+          PR_ID="$(gh api graphql -f query='{repository(owner:"'"$OWNER"'",name:"'"$NAME"'"){pullRequest(number:'"$PR"'){id}}}' --jq '.data.repository.pullRequest.id')"
+          if [ -z "$PR_ID" ] || [ "$PR_ID" = "null" ]; then
+            echo "::error::could not resolve PR node id for #${PR}"
+            exit 1
+          fi
+
+          # shellcheck disable=SC2016  # $prId is a GraphQL variable, not a shell var
+          if enq_out=$(gh api graphql -f query='mutation($prId:ID!){enqueuePullRequest(input:{pullRequestId:$prId}){mergeQueueEntry{position}}}' -f prId="$PR_ID" 2>&1); then
+            echo "enqueue issued: ${enq_out}"
+          else
+            if echo "$enq_out" | grep -qiE "merge queue (is )?not enabled|does not have a merge queue|merge_queue_not_enabled"; then
+              echo "repo has no merge queue — arming auto-merge is sufficient: ${enq_out}"
+              exit 0
+            fi
+            if echo "$enq_out" | grep -qiE "already (in|enqueued|queued)|in the merge queue"; then
+              echo "benign enqueue race (already queued): ${enq_out}"
+            else
+              echo "::error::enqueuePullRequest failed for #${PR}: ${enq_out}"
+              exit 1
+            fi
+          fi
+
+          # OMN-13214 ENFORCEMENT: verify the PR actually entered the queue.
+          # Poll briefly — GitHub may take a few seconds to reflect the entry.
+          for attempt in 1 2 3 4 5; do
+            sleep 6
+            PR_AFTER="$(fetch_pr)"
+            if python3 scripts/ci/merge_queue_enqueue.py verify --pr-json "$PR_AFTER"; then
+              echo "VERIFIED: PR #${PR} is in the merge queue."
+              exit 0
+            fi
+            echo "not yet in queue (attempt ${attempt}/5); state=$(printf '%s' "$PR_AFTER" | jq -r '.mergeStateStatus')"
+          done
+
+          echo "::error::PR #${PR} is green + armed but did NOT enter the merge queue after enqueue (OMN-13214 armed-but-not-enqueued). Manual intervention required."
+          exit 1

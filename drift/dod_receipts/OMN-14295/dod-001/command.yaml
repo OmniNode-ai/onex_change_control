@@ -1,0 +1,48 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14295"
+evidence_item_id: "dod-001"
+check_type: "command"
+check_value: >-
+  live raw-Cypher ground-truth readback + timed populate_all + populate/analysis/regression tests + mypy
+  --strict at product head 05e35de650d96033aa8646707114c4a96ebd764d
+status: PASS
+run_timestamp: "2026-07-10T19:37:27Z"
+commit_sha: "05e35de650d96033aa8646707114c4a96ebd764d"
+runner: "arch-graph-wirer"
+verifier: "build-verifier-2"
+pr_number: 1701
+probe_command: >-
+  env -u PYTHONPATH uv run python <raw-Cypher readback + handler populate_all(omnimarket) driver against
+  bolt://100.109.203.94:7687>; env -u PYTHONPATH uv run pytest tests/nodes/node_architecture_graph_populate_effect/
+  tests/analysis/ -v; env -u PYTHONPATH uv run pytest tests/nodes/test_dep_health_ast_scanner.py tests/nodes/test_dep_health_models.py
+  tests/nodes/test_dep_health_cross_reference.py tests/test_golden_chain_dep_health_sweep.py -q; env -u
+  PYTHONPATH uv run mypy src/omnimarket/nodes/node_architecture_graph_populate_effect/ src/omnimarket/analysis/
+  src/omnimarket/models/model_import_graph.py --strict
+probe_stdout: |
+  [BEFORE readback] PythonModule(omnimarket)=2713  IMPORTS(from omnimarket)=271  cross_repo_imports rows=265  old-slash-scheme=0
+    sample: omnimarket::omnimarket.adapters.adk.adapter_adk_invoke -[IMPORTS]-> omnibase_core
+  [POPULATE] status=success wall=24.3s exec_ms=24308 nodes_written=4248 edges_written=2185 PythonModule_nodes=2713 IMPORTS_edges=341
+  IMPORTS edge-specs total=341  distinct (source,target) pairs=341  (341 self-report vs 271 persisted = cross-repo edges whose target Repository node is absent in a single-repo populate; MERGE requires both endpoints)
+  populate + analysis suites: 35 passed  (incl test_import_edges_create_matching_python_module_nodes, test_import_edges_do_not_collide_on_bare_filename, test_write_to_graph_batches_by_label_and_edge_type)
+  dep-health regression (scanner/model relocation shim): 40 passed
+  mypy --strict: Success, no issues found in 9 source files
+actual_output: >-
+  PASS: independent verification at product head 05e35de650d96033aa8646707114c4a96ebd764d by build-verifier-2
+  (distinct from the implementer arch-graph-wirer). (a) Raw-Cypher ground-truth readback against the live
+  .201 dev Memgraph — independent of the handler's own self-report — confirms 2713 PythonModule nodes
+  with repo=omnimarket, 271 IMPORTS edges, 265 cross_repo_imports rows (the exact query-node Cypher),
+  0 old-slash-scheme nodes, and clean dotted module identities; the fix for Repository.repo (Cypher NULL
+  comparison silently dropped cross-repo rows) is proven by the 265 non-empty cross_repo rows. (b) UNWIND
+  batching is real: _write_to_graph groups by label/edge_type and sends batch_size rows per single session.run
+  UNWIND MERGE (not one round trip per item); the discriminating test asserts await_count == group-count
+  not item-count; the live populate_all wrote 4248 nodes + 2185 edges in ~24s, where a per-item round-trip
+  projection at ~300ms/call would be ~1900s (~80x). (c) 35 populate + analysis tests pass incl the 3 named
+  new tests (all mutation-discriminating), 40 dep-health regression tests pass (scanner relocation re-export
+  shim intact), mypy --strict clean. Observation (not a defect): edges_written self-report (341) exceeds
+  persisted IMPORTS (271) because cross-repo edges only MERGE when the target Repository node pre-exists;
+  a single-repo populate does not create other repos' nodes. The PR correctly reports the 271 raw-Cypher
+  ground truth, not the 341 self-report.
+exit_code: 0
+branch: "jonah/omn-14295-arch-graph-populate-batch-imports"
+contract_sha256: "sha256:075fd647dc20b080b41503e1c85e5e8bd27aa245600673514ec1480eb2bfc5be"

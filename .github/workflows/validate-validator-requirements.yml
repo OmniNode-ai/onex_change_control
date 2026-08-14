@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+# OMN-13299: Enforce validator-requirements.yaml fleet gate for onex_change_control.
+# Reports ALL missing gates in a single pass (never fail-on-first).
+name: Validate Validator Requirements
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  merge_group:
+  workflow_dispatch:
+
+env:
+  UV_HTTP_TIMEOUT: "600"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-validator-requirements:
+    name: Enforce validator-requirements.yaml (OMN-13299)
+    # OMNI_RUNNER_SELECTOR_V1 — runners are resolved from centralized selector variables.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      - name: Resolve omnibase_core validator ref
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
+            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref (validate-validator-requirements) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+
+      - name: Checkout omnibase_core
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          ref: ${{ steps.validator_ref.outputs.ref }}
+          path: omnibase_core
+          token: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Enforce validator-requirements.yaml
+        run: |
+          cd omnibase_core
+          for attempt in 1 2 3; do
+            if uv sync --all-extras; then
+              break
+            fi
+            status=$?
+            if [ "$attempt" -eq 3 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 10))
+          done
+          uv run python -m omnibase_core.validation.validator_requirements_consumer \
+            --repo onex_change_control \
+            --repo-root .. \
+            --spec architecture-handshakes/validator-requirements.yaml \
+            --baseline ../architecture-handshakes/validator-requirements-baseline.yaml

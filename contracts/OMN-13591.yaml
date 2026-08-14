@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13591"
+title: "fix(onex skill): run-identity injection missing on input-file dispatch path — merge_sweep and
+  all args-taking skills fail 100%"
+summary: >-
+  RuntimeLocal._build_initial_payload had a branch asymmetry: the no-input-file path auto-filled required
+  uuid.UUID/str/datetime fields, but the input-file path called cls(**raw) directly and crashed with ValidationError
+  when correlation_id/run_id were absent. This made onex skill merge_sweep (and any args-taking skill
+  whose node requires correlation_id/run_id) fail 100% since cli_skill.py writes an input file but never
+  injects run-identity. The fix adds RuntimeLocal._inject_missing_run_identity() which, for dict payloads
+  on the input-file branch, injects runtime-owned defaults for any required fields absent from the caller-supplied
+  dict before strict validation. Caller-supplied values are never overwritten. uuid.UUID fields get uuid4(),
+  str fields get a YYYYMMDD-HHMMSS-<6hex> slug satisfying min_length=1 and [A-Za-z0-9._-]+. Three regression
+  tests lock the input-file injection path, caller-supplied preservation, and selective injection. All
+  258 runtime tests green.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Regression tests for the input-file dispatch path injecting run-identity: test_build_initial_payload_input_file_injects_correlation_id_and_run_id,
+      test_build_initial_payload_input_file_preserves_caller_provided_correlation_id, test_build_initial_payload_input_file_injects_only_missing_required_fields.
+      All 258 runtime unit tests green.
+    command: "uv run pytest tests/unit/runtime/test_runtime_local.py -q"
+  - kind: "ci"
+    description: >-
+      mypy --strict on runtime_local.py clean; ruff format + check clean; pre-commit hooks on changed
+      files all passed.
+    command: "uv run mypy src/omnibase_core/runtime/runtime_local.py --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-pr"
+    description: >-
+      omnibase_core PR #1340 carries _inject_missing_run_identity() static method + injection call in
+      _build_initial_payload input-file branch + 3 regression tests. Branch jonah/omn-13591-fix-run-identity-injection-input-file-dispatch.
+      Evidence-Source: this OCC contract (post-merge OCC-main SHA). Tests: 258 runtime unit tests green
+      locally.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13591/dod-core-pr/command.yaml
+  - id: "dod-regression-tests"
+    description: >-
+      Three regression tests in tests/unit/runtime/test_runtime_local.py: (1) input-file path injects
+      uuid4 correlation_id and YYYYMMDD slug run_id for absent required fields; (2) caller-supplied correlation_id
+      and run_id are preserved unchanged; (3) only absent required fields are injected. Proven failing
+      before fix (ModelOnexError VALIDATION_ERROR), green after fix. All 258 runtime tests: 258 passed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13591/dod-regression-tests/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR edits RuntimeLocal._build_initial_payload (a local runtime code path,
+      not a deployed service contract/topic/migration). The fix adds a static helper method and a call
+      in the input-file branch. No runtime contract YAML, no Kafka topic, no DB migration, no image rebuild
+      is required. The deploy-gate triggers because runtime_local.py is in a monitored runtime path. This
+      dod_evidence item satisfies the gate: no deploy action needed for a pure code fix to a local dispatch
+      helper.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13591/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the Receipt-Gate Evidence-Source for OMN-13591. The omnibase_core PR #1340
+      cites Evidence-Source pointing at this OCC PR's merge-commit SHA on main.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13591/dod-occ-evidence-source/command.yaml

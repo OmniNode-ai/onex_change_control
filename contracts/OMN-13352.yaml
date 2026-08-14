@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13352"
+title: "fix(omnimarket): widen node_gap_compute _TOPIC_RE to canonical (cmd|evt|dlq|snapshot|intent)"
+summary: >-
+  node_gap_compute's topic-name probe (handler_gap_compute.py:27-29, _TOPIC_RE) only accepted the topic
+  kinds cmd|evt|intent and lowercase-only segments [a-z0-9_-]. The canonical ONEX bus pattern (omnibase_core/src/omnibase_core/topics.py:28-30,
+  _CANONICAL_TOPIC_PATTERN) accepts cmd|evt|dlq|snapshot|intent with [a-zA-Z0-9_-] segments. Because the
+  probe was stricter than canonical, every contract declaring a valid onex.snapshot.* or onex.dlq.* topic
+  was flagged as a CRITICAL topic_name_mismatch drift finding, producing 17 of 18 false-positive CRITICAL
+  topic-drift findings. This change widens _TOPIC_RE to match _CANONICAL_TOPIC_PATTERN exactly and adds
+  tests/test_gap_compute_topic_regex.py, which imports _CANONICAL_TOPIC_PATTERN from omnibase_core.topics
+  and asserts the probe and canonical agree on accept/reject across a representative topic corpus (all
+  5 canonical kinds, including the previously rejected snapshot/dlq, plus malformed rejects) and a gap-detect
+  regression proving onex.snapshot.* / onex.dlq.* contracts now yield zero findings. The parity test fails
+  loudly if the two patterns ever diverge again. Detection-tooling-only change in omnimarket node_gap_compute;
+  no runtime node, no contract topic change, no image build input change, no .201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1289"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1289 (jonah/omn-13352-gap-probe-topic-regex-drift,
+      base=dev). Widens _TOPIC_RE in src/omnimarket/nodes/node_gap_compute/handlers/handler_gap_compute.py
+      to match omnibase_core.topics._CANONICAL_TOPIC_PATTERN (cmd|evt|dlq|snapshot|intent, [a-zA-Z0-9_-]
+      segments) and adds tests/test_gap_compute_topic_regex.py with parity + snapshot/dlq regression coverage.
+      36 tests pass; mypy --strict clean; ruff + pre-commit over changed files pass. Binds OMN-13352 to
+      omnimarket PR #1289 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13352/dod-omnimarket-pr-1289/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13352. The change is a detection-tooling-only fix to the node_gap_compute
+      topic probe regex plus a parity/regression test in omnimarket. It adds no runtime node, changes
+      no contract topic, and alters no image build inputs. The running stability-test image predates the
+      change, so the widened probe reaches any runtime only on the next normal dev -> promotion -> image
+      rebuild — this PR gates no separate redeploy and performs no .201 mutation. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13352/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13352 contract, the omnimarket
+      code-PR binding receipt, and the deploy no-runtime-impact receipt. Binds the OCC PR itself by pr_number
+      so the OCC receipt-gate eligibility check can resolve a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13352/dod-occ-pr-self/command.yaml

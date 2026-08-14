@@ -1,0 +1,130 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14548"
+title: "OCC companion for omnibase_infra#2288 — auto-wired consume boundary DLQ fix (boundary-loudness)"
+summary: >
+  Non-implementer-style DoD companion for omnibase_infra#2288 (OMN-14548, child of epic OMN-14507). #2288
+  fixes the root silent-death mechanism traced this session: `_make_event_bus_callback` (the auto-wired
+  Kafka consume boundary) caught every handler exception, logged it once, and returned normally — no DLQ,
+  no redelivery, no metric. The message vanished, ACKed by omission. Staged behind `ONEX_BOUNDARY_DLQ_ENABLED`
+  (DEFAULT OFF, warn-first): flag off preserves the exact historical swallow-and-ACK semantics plus a
+  new observable metric log line; flag on adds a bounded retry (3 attempts, 0.1/0.4s backoff) then durable
+  best-effort DLQ preservation via the EXISTING duck-typed `_publish_raw_to_dlq` contract `EventBusSubcontractWiring._publish_to_dlq`
+  already depends on (`EventBusKafka`/`MixinKafkaDlq`) — no new DLQ machinery, no changes to `event_bus_subcontract_wiring.py`
+  or `event_bus_kafka.py`. SUPERSESSION NOTE: this ticket originally companioned omnibase_infra#2287,
+  which was reissued as #2288 at the SAME product-fix commit (identical seam/markers) on a correctly-named
+  branch to satisfy the branch↔ticket identity-binding gate (branch must reference OMN-14548, not the
+  epic OMN-14507) — see reference_branch_ticket_identity_samesha_rename. #2288 also carries two follow-up
+  commits: one removing a redundant `cast("UUID", ...)` mypy --strict flagged, and one sanitizing two
+  raw exception interpolations CodeRabbit flagged as Major security findings (both logging-only, no behavior
+  change) — final head e43e7b3c035568d96759e49ae13ff22c5106ba04. HONESTY NOTE ON THE PROOF STANDARD. This
+  companion documents TWO independent verification events, neither self-authored by #2288's implementer:
+  (1) `forbid-verify` (a separate teammate with the deepest context on the §7 `extra="forbid"` wire-model
+  constraint this fix unblocks) independently re-ran all tests and matched the DLQ call signature against
+  the REAL production code at `event_bus/mixin_kafka_dlq.py:560-570` — refuting the sharpest risk (a silent
+  signature mismatch) and finding the core mechanism correct while enumerating six gaps (G1-G6); (2) this
+  companion's static gh-api markers independently confirm the G1/G2/G3 fixes forbid-verify requested are
+  actually present in the shipped code at #2288's head `e43e7b3c035568d96759e49ae13ff22c5106ba04`, not
+  merely claimed in prose. G4/G5 (idempotency note, wording precision) are documentation-only fixes, verified
+  by the same markers. G6 (a live DLQ readback on .201 stability-test, upgrading proof_class from code-only
+  to deployed) is explicitly NOT claimed here — the flip-on decision and live proof are tracked separately
+  as OMN-14551 (child of OMN-14507), which also gates OMN-14546 (the `extra=forbid` wire-model teeth pause)
+  — landing this default-OFF fix does NOT by itself unblock OMN-14546.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2288 head e43e7b3c035568d96759e49ae13ff22c5106ba04 fixes the auto-wired
+      consume boundary's silent handler-exception swallow behind a default-OFF flag, independently reviewed
+      by forbid-verify (seam match confirmed against real production code) and by static gh-api markers
+      confirming the review's G1-G3 gap fixes shipped."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2288-static-markers"
+    description: >-
+      Product-observing check against omnibase_infra#2288 head e43e7b3c035568d96759e49ae13ff22c5106ba04.
+      Asserts, via gh-api content reads (no local checkout required, hermetically reproducible by anyone
+      with gh access): (1) G2 — the bounded-retry loop classifies `PydanticValidationError` and `ProtocolConfigurationError`
+      as non-retryable (breaks out on first occurrence instead of burning the full retry budget on a guaranteed-repeat
+      content/config error — the exact §7 forbid-mode death signal); (2) G3 — the metric log lines are
+      split into `boundary_swallow_observed` (nothing prevented) vs. `boundary_swallow_prevented` (only
+      when `dlq_routed=true`, real prevention), so an operator alerting on the "prevented" counter cannot
+      be misled by a lost message; (3) G1 — the docstrings carry the explicit "BEST-EFFORT DLQ" honesty
+      caveat and `message_lost=true` marker instead of the earlier over-claiming "durably preserved...
+      instead of vanishing" language.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          v="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=e43e7b3c035568d96759e49ae13ff22c5106ba04"
+          --jq .content | base64 -d > "$v" && grep -F -- 'except (PydanticValidationError, ProtocolConfigurationError)
+          as exc:' "$v" && grep -F -- 'metric_name=boundary_swallow_observed dlq_routed=false' "$v" &&
+          grep -F -- 'metric_name=boundary_swallow_prevented dlq_routed=true' "$v" && grep -F -- 'BEST-EFFORT
+          DLQ' "$v" && grep -F -- 'message_lost=true' "$v"
+  - id: "dod-forbid-verify-independent-review"
+    description: >-
+      Cross-agent independent review event: `forbid-verify` (a separate teammate, not #2288's implementer)
+      read the diff, matched the `_publish_raw_to_dlq` call seam against the real production signature
+      at `event_bus/mixin_kafka_dlq.py:560-570`, and independently re-ran all tests (not the implementer's
+      self-report). Verdict transcript (verbatim from the review message): "the CORE MECHANISM IS CORRECT
+      and the sharpest thing I went after — a silent signature mismatch on the DLQ call — is REFUTED...
+      Ran all 7 tests → PASS... Your call `_publish_raw_to_dlq(original_topic=, raw_msg=, error=, correlation_id=,
+      failure_type=, *, consumer_group=, dlq_topic=)` matches the real signature at mixin_kafka_dlq.py:560-570
+      field-for-field, and mirrors the proven sibling EventBusSubcontractWiring._publish_to_dlq:568 exactly...
+      Not a silent-TypeError degrade." This receipt does not claim the review found zero issues — six
+      gaps (G1-G6) were raised; G1-G5 are closed by this companion's other dod_evidence item, G6 (live
+      proof) is explicitly deferred to OMN-14551. The seam-match check below pins omnibase_infra dev at
+      1379fbb452204e788db8c48c0612abe63f1f70a0 (the SHA current when this receipt was minted) rather than
+      a moving `dev` ref, so the check stays reproducible even after `mixin_kafka_dlq.py` changes later.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          v="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/mixin_kafka_dlq.py?ref=1379fbb452204e788db8c48c0612abe63f1f70a0"
+          --jq .content | base64 -d > "$v" && grep -F -- 'async def _publish_raw_to_dlq(' "$v" && grep
+          -F -- 'original_topic: str,' "$v" && grep -F -- 'raw_msg: object,' "$v" && grep -F -- 'error:
+          Exception,' "$v" && grep -F -- 'correlation_id: UUID,' "$v" && grep -F -- 'failure_type: str,'
+          "$v" && grep -F -- 'consumer_group: str,' "$v" && grep -F -- 'dlq_topic: str | None = None,'
+          "$v"
+  - id: "dod-no-deploy-required-flag-unwired"
+    description: >-
+      Deploy-gate evidence (OMN-8912): #2288 touches a runtime path (src/omnibase_infra/runtime/auto_wiring/handler_wiring.py),
+      which the deploy-gate CI check flags as requiring a cited ticket with deploy DoD evidence. This
+      PR requires NO live deploy action: the new behavior is gated entirely behind `ONEX_BOUNDARY_DLQ_ENABLED`,
+      which is not referenced by any docker-compose file or service catalog manifest in the repo at #2288's
+      head — the flag has no wiring path to ever become true in any deployed environment via existing
+      config, so it stays OFF regardless of whether this commit is deployed. The check below proves the
+      negative claim (no docker/ config references the flag) rather than asserting it in prose only. A
+      live deploy readback belongs to OMN-14551 (the flip-on ticket), where the flag will actually be
+      set to true and requires real deploy verification.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          d="$(mktemp -d)" && cd "$d" && gh api repos/OmniNode-ai/omnibase_infra/tarball/e43e7b3c035568d96759e49ae13ff22c5106ba04
+          > repo.tar.gz && tar xzf repo.tar.gz && ! grep -rl 'ONEX_BOUNDARY_DLQ_ENABLED' */docker 2>/dev/null
+          && echo 'deploy: ONEX_BOUNDARY_DLQ_ENABLED is not wired into any docker/ deploy config at this
+          SHA -- the flag stays unset/OFF in every deployed environment regardless of this merge, so no
+          live deploy action is required for this default-off landing'
+  - id: "occ-self-bind-pr-4093"
+    description: >-
+      Self-bind for this OCC companion PR (#4093), required by the occ-preflight eligibility gate: at
+      OCC's own PR, ticket-token extraction picks up OMN-14548 from THIS PR's title (no `Closes` line
+      in the body, only for the product PR), so eligibility requires a PASS receipt bound to PR #4093
+      itself, not only to the product PR (#2288, formerly #2287).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          B=$(gh api repos/OmniNode-ai/onex_change_control/pulls/4093 --jq .body); N=$(printf '%s' "$B"
+          | grep -c 'Evidence-Ticket: OMN-14548'); R=$(gh api repos/OmniNode-ai/onex_change_control/pulls/4093
+          --jq .head.ref); test "$N" -ge 1 && test "$R" = "jonah/omn-14548-occ-boundary-dlq"

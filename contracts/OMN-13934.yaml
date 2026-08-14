@@ -1,0 +1,40 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13934"
+title: "reject-deploy-gate-skip cold-runner timeout: drop fetch-depth:0 checkout"
+summary: >-
+  The org-wide required reusable workflow omniclaude/.github/workflows/reject-deploy-gate-skip.yml (job
+  scan / reject-skip-gate-token) ran actions/checkout with fetch-depth:0 (full history + all tags) under
+  a 5-minute timeout. On a cold self-hosted runner the git fetch alone exceeds 5min, so the job cancels
+  (~5:11) and wedges content-innocent PRs; it wedged omnidash #253 for ~5h and can hit any repo's PR.
+  omniclaude PR #1854 drops the checkout entirely and sources every scan surface from the GitHub API (event
+  payload, gh pr view, gh pr diff): surfaces 4/5 switch from local git diff to gh pr diff + awk pathspec
+  filters that reproduce the prior behavior exactly, and GH_REPO gives gh its repo context without a local
+  remote. The token detection / rejection logic is unchanged. Verified live on PR #1854's own scan: the
+  pre-cleanup body (carrying a literal bypass token) was REJECTED in ~5s and the cleaned body PASSED in
+  ~4s — fast, no cold-runner timeout.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1854"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1854 removes the fetch-depth:0 actions/checkout from reject-deploy-gate-skip.yml
+      and sources scan surfaces 4/5 from gh pr diff (added-line, file-type scoped, self-workflow excluded).
+      CI config only; no runtime path, deploy-gate not applicable.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13934/dod-omniclaude-pr-1854/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: onex_change_control PR carrying the OMN-13934 contract and receipt consumed
+      by omniclaude PR #1854.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13934/dod-occ-self/command.yaml"

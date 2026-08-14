@@ -1,0 +1,192 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15571"
+title: "Restore Core CI capacity so the full matrix completes inside its budgets"
+summary: >-
+  Central append-only evidence for the Core CI capacity repair that unblocks the omnibase_core 0.46.8
+  promotion. This slice binds the workflow concurrency, cache, guard-profile and execution-contract changes
+  to omnibase_core head 626d6e062a574882ebd3d969bf392782bfa4d202 through immutable public content probes.
+  It claims no runtime deployment and no hosted acceptance; hosted merge-group green is asserted by the
+  product PR's own required checks, not by this package.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: tests
+    description: >-
+      The workflow-shape suite proves the execution contracts, guard profiles and worker budgets hold
+      against the committed workflow.
+    command: >-
+      uv run pytest tests/unit/validation/test_ci_workflow_shape.py -q
+  - kind: tests
+    description: >-
+      The governed pre-push suite passes on the mandatory gate host at the exact product head before publication.
+    command: "uv run pytest tests/ -q"
+  - kind: manual
+    description: >-
+      Immutable GitHub content probes bind each claimed workflow surface to omnibase_core head 626d6e062a574882ebd3d969bf392782bfa4d202.
+    command: "See drift/dod_receipts/OMN-15571/dod-core15571-*/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core15571-xdist-worker-budget"
+    description: >-
+      The trusted full matrix defaults to one xdist worker per shard instead of four, and the public-PR
+      (1) and merge-group (2) worker ceilings are preserved, so a 40-way unit matrix can no longer expand
+      into 160 concurrent pytest workers on the shared self-hosted fleet.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ci="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/.github/workflows/ci.yml?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && shape="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/tests/unit/validation/test_ci_workflow_shape.py?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && printf '%s' "$ci" | grep -qF "(vars.OMNI_PYTEST_XDIST_WORKERS
+          || '1')" && ! printf '%s' "$ci" | grep -qF "OMNI_PYTEST_XDIST_WORKERS || '4'" && printf '%s'
+          "$ci" | grep -qF "(vars.OMNI_PUBLIC_PR_PYTEST_XDIST_WORKERS || '1')" && printf '%s' "$ci" |
+          grep -qF "(vars.OMNI_MERGE_GROUP_PYTEST_XDIST_WORKERS || '2')" && printf '%s' "$shape" | grep
+          -q 'def test_trusted_full_matrix_uses_one_xdist_worker_per_shard' && printf '%s' "$shape" |
+          grep -q 'def test_pr_and_merge_queue_use_bounded_xdist_workers' && printf 'core15571 xdist worker
+          budget PASS\n'
+  - id: "dod-core15571-shard-cache-save-race"
+    description: >-
+      Every job that restores the setup-uv cache after Phase 1 populates it declares save-cache: false,
+      so the 40 test shards cannot race to reserve and save an identical cache key during teardown.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ci="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/.github/workflows/ci.yml?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && shape="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/tests/unit/validation/test_ci_workflow_shape.py?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && test "$(printf '%s' "$ci" | grep -cF 'save-cache: false')" -ge
+          15 && printf '%s' "$ci" | grep -qF 'must not race to reserve and save the same key during teardown'
+          && printf '%s' "$shape" | grep -q 'def test_test_shards_restore_uv_cache_without_competing_to_save_it'
+          && printf 'core15571 shard cache save race PASS\n'
+  - id: "dod-core15571-stdlib-guard-profiles"
+    description: >-
+      The five dependency-free guards execute the stdlib interpreter directly with no uv install step
+      at all, and exactly eight jobs remain on the five-minute budget - the dependency-free set the shape
+      suite locks by name and count.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ci="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/.github/workflows/ci.yml?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && shape="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/tests/unit/validation/test_ci_workflow_shape.py?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && printf '%s' "$ci" | grep -qF 'run: python3 scripts/validation/validate-all-exports.py'
+          && printf '%s' "$ci" | grep -qF 'python3 scripts/check_node_purity.py --verbose' && printf '%s'
+          "$ci" | grep -qF 'run: python3 scripts/validate_no_env_fallbacks.py' && printf '%s' "$ci" |
+          grep -qF 'run: python3 scripts/validate_class_naming.py' && printf '%s' "$ci" | grep -qF 'python3
+          scripts/validation/validate-pydantic-patterns.py $files' && printf '%s' "$shape" | grep -q 'def
+          test_stdlib_only_guards_do_not_build_a_project_environment' && printf '%s' "$shape" | grep -q
+          'def test_five_minute_job_set_is_dependency_free_and_count_locked' && test "$(printf '%s' "$ci"
+          | grep -cF 'timeout-minutes: 5')" -eq 8 && printf 'core15571 stdlib guard profiles PASS\n'
+  - id: "dod-core15571-no-dev-direct-venv-execution"
+    description: >-
+      Each of the eleven no-dev guard jobs performs exactly one frozen production-profile sync and then
+      invokes a direct .venv executable, closing the uv run auto-install bypass that silently restored
+      48 dev packages and made the production-profile capacity evidence false.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ci="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/.github/workflows/ci.yml?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && shape="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/tests/unit/validation/test_ci_workflow_shape.py?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && test "$(printf '%s' "$ci" | grep -cF 'uv sync --frozen --no-dev')"
+          -eq 11 && test "$(printf '%s' "$ci" | grep -cF '.venv/bin/')" -eq 11 && printf '%s' "$ci" |
+          grep -qF '.venv/bin/onex-demo-path-topic-gate src/' && printf '%s' "$shape" | grep -q 'NO_DEV_DIRECT_EXECUTABLES
+          = {' && printf '%s' "$shape" | grep -qF 'NO_DEV_WORKFLOW_EXECUTION_CONTRACT = (' && printf '%s'
+          "$shape" | grep -qF 'd7dfb006ec524bc384a900b284fc56cbf2a3d7d00a9e1709906ed4e5aebb0d8e' && printf
+          '%s' "$shape" | grep -q 'def test_no_dev_jobs_sync_once_then_use_direct_environment_executable'
+          && printf '%s' "$shape" | grep -q 'def test_no_dev_execution_surface_matches_declared_contract'
+          && printf 'core15571 no-dev direct venv execution PASS\n'
+  - id: "dod-core15571-whole-job-contract-ratchet"
+    description: >-
+      The workflow-shape suite pins a SHA-256 digest over each complete audited guard job and rejects
+      the reviewer-found evasions - undeclared or renamed no-dev jobs, a later sync, default-shell and
+      inherited-env changes, step reordering, container env injection, and advisory or masked execution.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          shape="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/tests/unit/validation/test_ci_workflow_shape.py?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && printf '%s' "$shape" | grep -q 'AUDITED_GUARD_JOB_EXECUTION_CONTRACTS
+          = {' && printf '%s' "$shape" | grep -qF 'FORBIDDEN_EXECUTION_ENV_KEYS = {"BASH_ENV", "ENV",
+          "PATH"}' && printf '%s' "$shape" | grep -q 'def test_audited_guard_jobs_match_complete_execution_contracts'
+          && printf '%s' "$shape" | grep -q 'def test_no_dev_contract_rejects_undeclared_safe_no_dev_job'
+          && printf '%s' "$shape" | grep -q 'def test_no_dev_contract_rejects_renamed_no_dev_job' && printf
+          '%s' "$shape" | grep -q 'def test_no_dev_contract_rejects_any_later_sync' && printf '%s' "$shape"
+          | grep -q 'def test_no_dev_contract_rejects_default_shell_changes' && printf '%s' "$shape" |
+          grep -q 'def test_no_dev_contract_rejects_step_reordering' && printf '%s' "$shape" | grep -q
+          'def test_no_dev_contract_rejects_job_container_environment_injection' && printf '%s' "$shape"
+          | grep -q 'def test_bare_guard_contract_rejects_advisory_or_masked_execution' && printf 'core15571
+          whole-job contract ratchet PASS\n'
+  - id: "dod-core15571-capacity-audit-record"
+    description: >-
+      The durable audit records the measured cloud failure - run 30612365839 attempt 3, split 21 losing
+      gw0 against the fixed 35m0s limit under 40 shards times xdist 4 - and states the falsifiable hosted
+      acceptance conditions this repair must clear.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          audit="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/docs/audits/2026-07-31-omn-15571-ci-capacity.md?ref=626d6e062a574882ebd3d969bf392782bfa4d202'
+          --jq .content | base64 -d)" && printf '%s' "$audit" | grep -qF '30612365839' && printf '%s'
+          "$audit" | grep -qF '91105554821' && printf '%s' "$audit" | grep -qF '40 shards * xdist 4' &&
+          printf '%s' "$audit" | grep -qF '35m0s' && printf '%s' "$audit" | grep -qF 'all 23 audited guard
+          jobs complete within their recorded budgets' && printf '%s' "$audit" | grep -qF 'no affected
+          job attempts to save an identical setup-uv cache key' && printf 'core15571 capacity audit record
+          PASS\n'
+  - id: "occ-self-bind-pr-5752"
+    description: "Binds OMN-15571 to OCC companion PR #5752 (self-bind)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5752 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1534"
+    description: "Binds OMN-15571 to omnibase_core product PR #1534 at the exact reviewed head."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_core/contents/tests/unit/validation/test_ci_workflow_shape.py?ref=626d6e062a574882ebd3d969bf392782bfa4d202
+          --jq '.content' | base64 -d | grep -c 'def _ci_workflow'
+  - id: "occ-self-bind-pr-5753"
+    description: "Binds OMN-15571 to OCC companion PR #5753 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5753 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: dod-core15571-promotion-pr-1535-head
+    description: 'Binds OMN-15571 to the omnibase_core dev->main promotion PR #1535 at promotion head
+      407bed2d2eacded8760b871dc0224a61bad94aa7. The probe proves that exact head declares release identity
+      0.46.8 and carries the whole-job execution-contract ratchet plus the scanner-native allowlist pragmas
+      that gate the 0.46.8 publication. It is RED at the current main head, which has neither.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'pyproject="$(gh api ''repos/OmniNode-ai/omnibase_core/contents/pyproject.toml?ref=407bed2d2eacded8760b871dc0224a61bad94aa7''
+          --jq .content | base64 -d)" && printf ''%s'' "$pyproject" | grep -qE ''^version = "0\.46\.8"$''
+          && shape="$(gh api ''repos/OmniNode-ai/omnibase_core/contents/tests/unit/validation/test_ci_workflow_shape.py?ref=407bed2d2eacded8760b871dc0224a61bad94aa7''
+          --jq .content | base64 -d)" && printf ''%s'' "$shape" | grep -q ''AUDITED_GUARD_JOB_EXECUTION_CONTRACTS
+          = {'' && printf ''%s'' "$shape" | grep -qF ''pragma: allowlist secret'' && printf ''core15571
+          promotion head 407bed2d declares 0.46.8 and carries the whole-job execution-contract ratchet
+          PASS\n'''
+  - id: occ-self-bind-pr-5775
+    description: 'Binds OMN-15571 to OCC companion PR #5775, the evidence carrier for the omnibase_core
+      0.46.8 dev->main promotion (self-bind).'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: gh pr view 5775 --repo OmniNode-ai/onex_change_control --json number,state,headRefName

@@ -1,0 +1,96 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15379"
+title: "Lane-scoped node-migration fence release for the lab lane (operator ruling 15)"
+summary: >
+  OCC companion for OmniNode-ai/omnibase_infra PR #2540. Operator ruling 15 (2026-07-29) extends node_service_registry
+  FORCE ROW LEVEL SECURITY to the LAB LANE ONLY: the compose dev lane applies node_projection_registration
+  0000/0001/0002 in full as the FORCE proving ground, while every other consumer of the compose migration
+  runner (stability-test, prod, judge, CI, fresh volumes) keeps the FULL operator fence by default. The
+  omninode_infra k8s staging fence is unchanged. The PR also adds registration 0002 to the compose fence,
+  restoring exact cross-repo parity at seven ids and fixing the cold bring-up failure (0000 fenced, 0002
+  unfenced -> ERROR relation "node_service_registry" does not exist -> forward-migration exit 3) that
+  is the blocker OMN-15379 records. HAND-AUTHORED, and why: the machine producer (occ-companion-effect
+  / node_occ_companion_compute) PUBLISHED successfully on this PR, but the command is stranded. Live readback
+  on the .201 dev broker 2026-07-29 shows onex.cmd.omnimarket.occ-companion-effect-requested.v1 at HIGH-WATERMARK
+  25 with ZERO consumer groups — the consuming runtime is down, and it is down because of the very cold-bring-up
+  failure this PR fixes. That circularity is the reason this companion is hand-authored rather than minted;
+  it is an instance of the OMN-15247 orphaned-mint class, not a bypass. DELIBERATELY ABSENT, and this
+  is the honest shape rather than the convenient one: there is NO dod_evidence item for the operator-ruling-15
+  acceptance itself (node_service_registry present on the lab lane with relrowsecurity AND relforcerowsecurity
+  both true). That readback is NOT SATISFIED at authoring time - the lab lane is cold and the table is
+  absent, confirmed live 2026-07-29 - and it cannot become satisfied until #2540 merges and the cold bring-up
+  runs, which is downstream of this contract. Declaring it here would either block the PR forever or invite
+  a receipt that claims a PASS nobody executed. It is therefore recorded as the DECLARED acceptance in
+  prose only, and lands as an APPEND-ONLY dod_evidence item with a real executed receipt once the lab
+  bring-up is done. The probe is already proven admissible in both directions: the exact-match form "node_service_registry|true|true"
+  exits 0 against omnibase-infra-stability-test-postgres, where the table IS forced, and exits 1 against
+  the cold dev lane - so it discriminates exists-but-wrong, not merely absent. The BLAST-RADIUS readback
+  is likewise recorded here as prose rather than as a dod_evidence item, and for a reason worth stating:
+  it is a LIVE probe, so under OMN-14051 it can only enter the contract as a grep of a committed receipt
+  - and the receipt gates (OMN-12791 self-attestation, OMN-13060 tool-generation) correctly refuse a receipt
+  whose runner and verifier are the same single lane. Rather than invent a second identity or hand-forge
+  a contract hash, the measurement stands as an observation: executed 2026-07-29T15:15:21Z against pg_class
+  on all three non-dev compose lanes, order prod / stability-test / judge, result 0 / 6 / 0 forced tables
+  - EXACTLY the pre-change baseline, so #2540 moved nothing outside the lab lane. Stability-test's six
+  (delegation_budget_state, delegation_events, delegation_judge_verdict_events, node_service_registry,
+  projection_delegation_inference_response_text, savings_estimates) are the PRE-EXISTING OMN-15336 breach,
+  whose rollback is an outstanding operator decision (OMN-15088) and is deliberately not done by #2540.
+  Correction on record: an earlier capture in this lane rendered the booleans through `boolean || text`
+  (yielding true/false) while grepping for '|t$', and so reported forced=0 on all three lanes - a FALSE
+  CLEAN. The 0/6/0 above is the re-read.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2540 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2540"
+    description: "PR #2540 on OmniNode-ai/omnibase_infra — Evidence-Source bind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2540 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid,files"
+  - id: "dod-deploy-fence-parity-seven-ids"
+    description: >
+      Falsifiable, hermetic content probe bound to the PR head SHA: the shipped compose runner must carry
+      registration 0002 in FENCED_NODE_MIGRATION_IDS. Goes RED against every commit before this one (origin/dev
+      carried six ids), and reads the product artifact at a pinned SHA — not this contract and not any
+      receipt this PR authors.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/run-forward-migrations.sh?ref=7964da738bc289b43a29583d16c4396b2698e882
+          --jq '.content' | base64 -d | grep -c 'node:node_projection_registration:0002_node_service_registry_tenant_rls.sql'"
+  - id: "dod-deploy-lane-indicator-not-in-base-compose"
+    description: >
+      The fail-closed property, probed at the artifact rather than asserted in prose: the lane indicator
+      must NOT appear in docker-compose.infra.yml, which every non-dev lane overlay merges. A non-zero
+      count here means the release leaks to stability-test, prod, judge and every future lane. Falsifiable
+      in the exists-but-wrong direction, which a mere file-presence check would not be.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "test 0 -eq $(gh api repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.infra.yml?ref=7964da738bc289b43a29583d16c4396b2698e882
+          --jq '.content' | base64 -d | grep -c 'ONEX_MIGRATION_LANE') && printf 'ONEX_MIGRATION_LANE
+          absent from base compose\\n'"
+  - id: "occ-self-bind-pr-5469"
+    description: "OCC companion PR #5469 self-bind for OMN-15379 after dev rebase."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5469 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "occ-self-bind-pr-5469-r2"
+    description: "OCC companion PR #5469 self-bind for OMN-15379 after final dev rebase."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5469 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"

@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-12990
+title: "fix(OMN-12990): pin worker replicas in ledgered config + fail-fast lane overrides (silent-drop
+  ratchet)"
+summary: >-
+  omnibase_infra PR #1948 closes the WORKER_REPLICAS silent-drop hole in the config-drift family. The
+  base compose set runtime-worker deploy replicas to ${WORKER_REPLICAS:-0} (soft-default zero); the stability
+  lane's required state includes a running worker (GATE_ZERO_PROOF.md, 4 runtime containers), so any plain
+  compose up/recreate without the worker replica count silently scaled the worker to zero with no error
+  and no signal. The PR adds a contract-declared `replicas` to ModelRuntimeProcessPolicy, pins replicas:
+  1 in every lane's worker block in runtime_policy.contract.yaml, renders {PROFILE}_WORKER_REPLICAS into
+  the ledgered docker/runtime-policy.env, and switches the stability and prod compose overrides to fail-fast
+  ${..._WORKER_REPLICAS:?...} (no silent default). Recurrence guards: tests asserting the fail-fast override
+  form, a contract replica pin >= 1 per lane, and rendered {PROFILE}_WORKER_REPLICAS=1; plus an expected-container
+  census step in the runbook deploy/verify procedure so a missing worker becomes a failure, not silence.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_infra PR #1948 carries the worker-replicas silent-drop ratchet"
+    command: "gh pr view 1948 --repo OmniNode-ai/omnibase_infra --json number,url,headRefOid,headRefName,baseRefName,title,state"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "omnibase_infra PR #1948 carries the worker-replicas silent-drop ratchet (contract pin
+      + fail-fast overrides + recurrence guards + census)"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,url,headRefOid,headRefName,baseRefName,title,state"
+  - id: "dod-occ-pr-2499"
+    description: "onex_change_control PR #2499 carries the OMN-12990 contract and PASS receipt evidence"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12990/dod-occ-pr-2499/command.yaml
+          && grep -q '^pr_number: 2499$' drift/dod_receipts/OMN-12990/dod-occ-pr-2499/command.yaml"
+  - id: "dod-occ-pr-2502"
+    description: "onex_change_control PR #2502 refreshes the OMN-12990 downstream receipt to bind omnibase_infra
+      PR #1948 at the integration-coverage head"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12990/dod-occ-pr-2502/command.yaml
+          && grep -q '^pr_number: 2502$' drift/dod_receipts/OMN-12990/dod-occ-pr-2502/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: "Deploy assessment for omnibase_infra PR #1948: this PR changes runtime compose policy
+      and requires a post-merge stability-lane recreate/rebuild path, but no live deploy, restart, docker
+      exec, rpk topic produce, or .201 mutation is performed by the evidence PR."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12990/dod-deploy-assessment/command.yaml
+          && grep -q '^ticket_id: \"OMN-12990\"$' drift/dod_receipts/OMN-12990/dod-deploy-assessment/command.yaml
+          && grep -q 'post-merge stability-lane deploy' drift/dod_receipts/OMN-12990/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2509"
+    description: "onex_change_control PR #2509 carries the OMN-12990 deploy-assessment evidence required
+      by downstream runtime-path deploy gates."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12990/dod-occ-pr-2509/command.yaml
+          && grep -q '^pr_number: 2509$' drift/dod_receipts/OMN-12990/dod-occ-pr-2509/command.yaml"

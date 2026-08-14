@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13150"
+evidence_item_id: "dod-deploy-runtime-proof"
+check_type: "command"
+check_value: >-
+  docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -c "SELECT id, selected_agent
+  FROM agent_routing_decisions WHERE id='965b9edd-d06d-4783-be84-70e21c55057b';"
+contract_sha256: "sha256:239a803c894d5f71086d3d7ecb6ff1708912d1c1eb1f9b57b8677ca1ffdced04"
+status: PASS
+run_timestamp: "2026-06-14T17:34:00Z"
+commit_sha: "fd5fc09d9b7e4a201e19e5f2a3503e86c9278efb"
+pr_number: 1218
+runner: "worktree-agent-omn-13150-fix1"
+verifier: "dev-lane-201-postgres-projection-api"
+probe_command: >-
+  Dev lane (.201, mutable + pre-authorized). (1) Apply DDL to live omnidash_analytics: docker exec -i
+  omnibase-infra-postgres psql -d omnidash_analytics -v ON_ERROR_STOP=1 -f 0021_create_agent_routing_decisions.sql.
+  (2) WRITE via the REAL handler inside the live omnimarket-projection-api container: docker exec omnimarket-projection-api
+  python runtime_proof_harness.py. (3) READ-BACK independently: docker exec omnibase-infra-postgres psql
+  -d omnidash_analytics -c "SELECT ... WHERE id='965b9edd...'". (4) PROJECTION-API HTTP: docker exec omnimarket-projection-api
+  python projection_api_proof.py <corr>.
+probe_stdout: |
+  # (1) DDL applied to live omnidash_analytics:
+  $ docker exec -i omnibase-infra-postgres psql -d omnidash_analytics -f 0021_create_agent_routing_decisions.sql
+  CREATE TABLE
+  CREATE INDEX
+  COMMENT
+  $ psql -d omnidash_analytics -tAc "SELECT to_regclass('public.agent_routing_decisions'), count(*), <ncols>"
+  agent_routing_decisions|0|13
+  # (2) WRITE via real handler (DSN resolved by real runtime binding):
+  RESOLVED_DSN=postgresql://****@postgres:5432/omnidash_analytics
+  RUNTIME_BINDING_SOURCE=legacy-settings
+  PROJECT_EVENT_OK=True
+  WROTE_ID=965b9edd-d06d-4783-be84-70e21c55057b
+  # (3) READ-BACK (independent psql, verifier != writer):
+  965b9edd-d06d-4783-be84-70e21c55057b|claude-opus-runtime-proof|OMN-13150-FIX1-RUNTIME-PROOF|0.9876
+  # (4) PROJECTION-API real FastAPI handler over HTTP:
+  TOPIC_EXPOSED=True
+  TOPIC_TABLE=agent_routing_decisions STATUS=ok
+  HTTP_STATUS=200
+  ROW_COUNT=1
+actual_output: >-
+  PASS: 3-part dev-lane runtime triple proven. The real RoutingDecisionProjectionRunner resolved omnidash_analytics
+  (the post-fix contract target), wrote row 965b9edd, the row was read back by an independent psql verifier,
+  and the real projection-API HTTP handler returned it (HTTP 200, row_count=1). docker exec is the deploy-class
+  action; the only durable dev-lane mutation is the new DDL + the single proof row. Container contract
+  swap reverted; projection-api /health = {"status":"ok","postgres":"ok"}. Full evidence (with harnesses):
+  omni_home docs/evidence/2026-06-14-post-closeout/OMN-13150-routing-decision-db-repoint-runtime-proof.md.
+  RE-VERIFIED 2026-06-14T19:3xZ by an independent resume agent: fresh row 63fceb8d-cb22-48c1-b5c8-250aaa5f96f5
+  (corr 60b42810-cd8d-46d3-8896-6bff6e17ca25) written via the real RoutingDecisionProjectionRunner (RESOLVED_DSN=.../omnidash_analytics,
+  BINDING_SOURCE=legacy-settings), read back by independent psql, ABSENT from omnibase_infra (negative
+  control count=0), and returned by the real projection-API (HTTP 200, row_count=1). Reconciliation verdict:
+  omnidash_analytics is empirically correct; PR #1218 corrects the prior MERGED PR #1214 (OMN-13124) omnibase_infra
+  repoint which split writer from reader.

@@ -1,0 +1,166 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+---
+name: Omni* Ecosystem Standards Compliance
+
+on:
+  push:
+    branches: [main, develop, "hotfix/**"]
+  pull_request:
+    branches: [main, develop, dev, "hotfix/**"]
+  merge_group:
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.8.3"
+  UV_HTTP_TIMEOUT: "600"
+  REPO_NAME: "onex_change_control"
+
+# ci-health-ok: blocking mypy already enforced in ci.yml mypy job
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # OMN-14098 OCC evidence-only fast-lane: classify the PR diff and skip the
+  # src/-only PEP-604 lint on pure evidence PRs (docs_only=true). type-union-check
+  # is NOT a required context on dev or main, so skipping it cannot wedge merge.
+  zone-filter:
+    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@dev
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      python-version: "3.12"
+
+  type-union-check:
+    name: PEP 604 Type Union Check (UP007)
+    needs: [zone-filter]
+    if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || (github.base_ref != 'dev' && github.event.pull_request.base.ref != 'dev'))
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install dependencies
+        env:
+          UV_HTTP_TIMEOUT: "600"
+          UV_SYNC_ATTEMPTS: "3"
+          UV_SYNC_RETRY_DELAY_SECONDS: "10"
+        run: |
+          set -euo pipefail
+          git config --global http.version HTTP/1.1
+          attempt=1
+          until uv sync --all-extras; do
+            status=$?
+            if [ "$attempt" -ge "$UV_SYNC_ATTEMPTS" ]; then
+              echo "::error::uv sync failed after ${attempt} attempt(s)"
+              exit "$status"
+            fi
+
+            sleep_seconds=$((UV_SYNC_RETRY_DELAY_SECONDS * attempt))
+            echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed with exit ${status}; retrying in ${sleep_seconds}s"
+            sleep "$sleep_seconds"
+            attempt=$((attempt + 1))
+          done
+
+      - name: Check for Optional/Union usage (PEP 604)
+        run: uv run ruff check src/ --select UP007,UP006
+
+  ci-naming-convention:
+    name: CI Naming Convention
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Verify CI workflow naming convention
+        run: |
+          if [ ! -f .github/workflows/ci.yml ]; then
+            echo "::error::Missing .github/workflows/ci.yml"
+            exit 1
+          fi
+          CI_NAME=$(grep -m1 "^name:" .github/workflows/ci.yml | sed "s/name: *//")
+          if [ "$CI_NAME" != "CI" ]; then
+            echo "::error::ci.yml has name '$CI_NAME' — must be 'CI'"
+            exit 1
+          fi
+          for legacy in test.yml ci.yaml; do
+            if [ -f ".github/workflows/$legacy" ]; then
+              echo "::error::Legacy workflow .github/workflows/$legacy exists"
+              exit 1
+            fi
+          done
+          echo "CI naming convention: PASS"
+
+      - name: Verify centralized runner routing standard
+        env:
+          OMNI_PUBLIC_PR_RUNS_ON_JSON: ${{ vars.OMNI_PUBLIC_PR_RUNS_ON_JSON }}
+          OMNI_TRUSTED_CI_RUNS_ON_JSON: ${{ vars.OMNI_TRUSTED_CI_RUNS_ON_JSON }}
+        run: |
+          if [ -z "${OMNI_PUBLIC_PR_RUNS_ON_JSON:-}" ] || [ -z "${OMNI_TRUSTED_CI_RUNS_ON_JSON:-}" ]; then
+            echo "::error::Missing centralized runner selector variables"
+            exit 1
+          fi
+          if grep -RIn '^    runs-on: [^>$]' .github/workflows; then
+            echo "::error::Workflows must use centralized runner selector variables, not bare runs-on labels"
+            exit 1
+          fi
+          if ! grep -R 'vars.OMNI_TRUSTED_CI_RUNS_ON_JSON' .github/workflows >/dev/null; then
+            echo "::error::Missing trusted centralized runner selector in workflows"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          labels = set(json.loads(os.environ["OMNI_PUBLIC_PR_RUNS_ON_JSON"]))
+          labels.update(json.loads(os.environ["OMNI_TRUSTED_CI_RUNS_ON_JSON"]))
+          failed = False
+          for label in sorted(labels):
+              result = subprocess.run(
+                  ["grep", "-RIn", label, ".github/workflows"],
+                  check=False,
+                  text=True,
+                  capture_output=True,
+              )
+              findings = [
+                  line
+                  for line in result.stdout.splitlines()
+                  if "fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON ||" not in line
+                  and "fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON ||" not in line
+              ]
+              if findings:
+                  print(f"::error::Hard-coded runner label found: {label}")
+                  print("\n".join(findings))
+                  failed = True
+          if failed:
+              sys.exit(1)
+          PY
+          echo "Centralized runner routing standard: PASS"

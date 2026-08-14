@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-14672
+title: "WS7 arch-* CI<->pre-commit byte-match parity gate -> onex_change_control"
+summary: >-
+  Fan-out #4 of the WS7 CI<->pre-commit gate-parity pattern (canary omniclaude#1904 / OMN-14655; models
+  omnimarket#1783, omnibase_infra#2318). Ports two meta-gates over .pre-commit-config.yaml — a fail-loud
+  gate (exit-0-on-missing / WARN-SKIP-degrade + stages-coverage: a skipped gate must be byte-indistinguishable
+  from a failing one) and a pin-parity ratchet (pre-commit rev vs the omnibase_core SHA ci.yml pins for
+  the same validator). Wired as BOTH repo:local pre-commit hooks and an UNCONDITIONAL ci.yml job (no needs/if)
+  folded into the required CI Summary rollup, mirroring no-noncanonical-lifecycle-classes (OMN-14350).
+  Fixes the pre-existing DRIFT-2a false-green: default_install_hook_types omitted commit-msg, so the reject-deploy-gate-skip-token-commit-msg
+  hook never installed locally.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on merge PR"
+    command: "gh pr checks"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "PR opened against dev branch"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --json state -q .state --repo ${REPO}"
+  - id: "dod-002"
+    description: >-
+      Fail-loud meta-gate runs green via the exact CI/pre-commit entrypoint. Substantive: exits 1 on any
+      exit-0-on-missing / WARN-SKIP-degrade shape or any hook stages: value that default_install_hook_types
+      does not install (proven RED by execution against the pre-change [pre-commit, pre-push] config,
+      which fails on the commit-msg stage).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run --no-project --with pyyaml python3 src/onex_change_control/scripts/validate_precommit_fail_loud.py"
+  - id: "dod-003"
+    description: >-
+      Pin-parity ratchet runs green via the exact CI/pre-commit entrypoint. Substantive: exits 1 the moment
+      the no-noncanonical-lifecycle-classes pre-commit rev diverges from the omnibase_core SHA ci.yml
+      pins for the same validator (proven RED by execution when the hook rev is flipped).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run --no-project --with pyyaml python3 src/onex_change_control/scripts/validate_precommit_pin_parity.py"
+  - id: "dod-004"
+    description: >-
+      Enforcement, not detection: the parity job is an UNCONDITIONAL ci.yml job AND is folded into the
+      required CI Summary rollup with a strict success-only check. Asserts both the job definition and
+      the ci-summary needs+strict-check wiring at the PR head — a standalone workflow file (a separate
+      run_id, invisible to the required rollup, the shape OMN-14441 removed) would pass a bare existence
+      probe but fail this wiring assertion.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -qE '^  precommit-parity-gate:' .github/workflows/ci.yml && grep -q 'needs.precommit-parity-gate.result'
+          .github/workflows/ci.yml"
+  - id: "dod-005"
+    description: "Ticket contract artifact validates against ModelTicketContract"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run validate-yaml contracts/OMN-14672.yaml"

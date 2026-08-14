@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13237"
+title: "Per-contract scoped topic provisioning at runtime boot"
+summary: >
+  Replace the global create-all-then-subscribe-all big-bang at runtime boot (the cold-broker crash-loop
+  root cause) with a per-wired-contract interleave: provision -> confirm broker metadata ready -> attach
+  consumer -> next contract. Deterministic readiness (partition count, leaders, RF), bounded parallelism,
+  and not-ready contracts recorded degraded-not-fatal. Topics come only from contract.event_bus declarations.
+
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      The per-contract scoped topic provisioning suite must pass with no live broker: the AC-1 boot interleave
+      order test (W1/W7), the AC-3/AC-4 not-ready-is-degraded-not-fatal liveness test (W5), the deterministic
+      topic readiness semantics suite (§3.7), the readiness knob resolution suite, and the 5 deterministic
+      golden-chain replay fixtures (AC-5/W6).
+    command: "uv run pytest tests/unit/runtime/auto_wiring/test_per_contract_boot_interleave.py tests/unit/event_bus/test_topic_readiness_semantics.py
+      tests/unit/event_bus/test_topic_readiness_config.py tests/replay/test_topic_provisioning_golden_chains.py
+      -q"
+  - kind: "ci"
+    description: "No topic literals introduced; topic-literal baseline unchanged."
+    command: "uv run python scripts/validation/check_topic_literals.py"
+
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+
+dod_evidence:
+  - id: "dod-001"
+    description: >
+      Per-contract scoped topic provisioning suite passes (51 tests): AC-1 boot interleave order (provision
+      -> ready -> attach per WIRED contract, NOT big-bang), AC-3/AC-4 not-ready contract is skipped and
+      runtime is DEGRADED with liveness true, deterministic readiness classification (ready / topic-absent
+      / partition-mismatch / no-leader / replication-mismatch), readiness knob resolution, and 5 deterministic
+      golden-chain replay fixtures. Feature PR: omnibase_infra#2027.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13237/dod-001/command.yaml && grep -q '^evidence_item_id:
+          "dod-001"$' drift/dod_receipts/OMN-13237/dod-001/command.yaml && grep -q '51 passed' drift/dod_receipts/OMN-13237/dod-001/command.yaml
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the central OMN-13237 contract and receipts for omnibase_infra PR
+      #2027."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13237/dod-occ-pr/command.yaml && grep -q '^pr_number:
+          2750$' drift/dod_receipts/OMN-13237/dod-occ-pr/command.yaml
+  - id: "dod-deploy-runtime-readiness"
+    description: >
+      Deploy-readiness attestation (dev lane only). This PR changes the runtime boot wiring (handler_wiring.py
+      per-contract interleave, service_kernel.py universe-pass relegation) but does NOT itself deploy,
+      rebuild the runtime image, restart runtime, mutate stability-test/prod/judge/.201, or publish live
+      traffic. The change is deploy-safe and lane-scoped: the per-contract provision -> ready -> attach
+      interleave is proven by the unit/replay suite (dod-001) and the cold-broker headline (AC-9) + AC-2
+      `rpk topic describe` fidelity are exercised on the next dev-lane redeploy (deploy-runtime.sh --execute
+      --restart) run by the deploy agent. This receipt records deploy-safety.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13237/dod-deploy-runtime-readiness/command.yaml
+          && grep -q 'dev lane only' drift/dod_receipts/OMN-13237/dod-deploy-runtime-readiness/command.yaml

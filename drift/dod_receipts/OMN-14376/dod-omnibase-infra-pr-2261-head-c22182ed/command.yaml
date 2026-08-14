@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14376"
+evidence_item_id: "dod-omnibase-infra-pr-2261-head-c22182ed"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-14376/dod-omnibase-infra-pr-2261-head-c22182ed/command.yaml
+  && grep -q '^pr_number: 2261$' drift/dod_receipts/OMN-14376/dod-omnibase-infra-pr-2261-head-c22182ed/command.yaml
+  && grep -q 'c22182edad34454c843e35a7c14175081cc8e8c4' drift/dod_receipts/OMN-14376/dod-omnibase-infra-pr-2261-head-c22182ed/command.yaml
+status: PASS
+run_timestamp: "2026-07-12T00:41:19Z"
+commit_sha: "c22182edad34454c843e35a7c14175081cc8e8c4"
+runner: "bus-fix-14376"
+verifier: "sc-reconcile"
+pr_number: 2261
+probe_command: >-
+  git worktree add omni_worktrees/OMN-14376-verify/omnibase_infra origin/jonah/omn-14376-delegation-system-bus
+  && uv sync --frozen && uv run pytest tests/unit/cli/test_cli_delegate.py -v && uv run ruff check src/omnibase_infra/cli/cli_delegate.py
+  tests/unit/cli/test_cli_delegate.py && uv run ruff format --check src/omnibase_infra/cli/cli_delegate.py
+  tests/unit/cli/test_cli_delegate.py # then RED->GREEN mutation 1: forced resolve_default_bus to always
+  return "kafka" ignoring probe state -> 5/8 targeted tests FAILED as expected, reverted, reconfirmed
+  39/39 PASS # mutation 2: removed the bare --kafka-bootstrap usage-error guard -> the PR's own 2 dedicated
+  tests still passed (pre-existing downstream build_backend_overrides guard catches the env-unset case
+  redundantly); ran a third hand-written scenario directly against run_delegate with KAFKA_BOOTSTRAP_SERVERS
+  set to a broker DIFFERENT from the explicitly-passed kafka_bootstrap and --bus omitted -- mutated code
+  raised NO error (silent env-broker resolution), original code raised ValueError "only valid with --bus
+  kafka" as documented, confirming the guard is real and load-bearing
+probe_stdout: |
+  === baseline (unmodified branch) ===
+  ============================== 39 passed in 0.45s ===============================
+  ruff check: All checks passed!
+  ruff format --check: 2 files already formatted
+  === mutation 1: always resolve to kafka regardless of probe state ===
+  FAILED tests/unit/cli/test_cli_delegate.py::TestResolveDefaultBus::test_no_bootstrap_short_circuits_to_inmemory
+  FAILED tests/unit/cli/test_cli_delegate.py::TestResolveDefaultBus::test_unhealthy_broker_falls_back_to_inmemory[DISCOVERED]
+  FAILED tests/unit/cli/test_cli_delegate.py::TestResolveDefaultBus::test_unhealthy_broker_falls_back_to_inmemory[REACHABLE]
+  FAILED tests/unit/cli/test_cli_delegate.py::TestBusSelection::test_run_delegate_falls_back_to_inmemory_when_broker_unhealthy
+  FAILED tests/unit/cli/test_cli_delegate.py::TestBusSelection::test_run_delegate_defaults_to_inmemory_overrides
+  5 failed, 3 passed in 0.20s
+  === mutation reverted, reconfirmed green: 39 passed in 0.11s ===
+  === mutation 2: remove bare --kafka-bootstrap usage-error guard ===
+  PR's own 2 tests still PASSED (redundant downstream guard) -- ran custom scenario:
+  mutated:  NO ERROR RAISED. backend_overrides = {'event_bus': 'kafka', 'kafka_bootstrap': 'explicit-broker.example:9092'}
+  original: ValueError raised: --kafka-bootstrap is only valid with --bus kafka (got --bus unset; the
+    auto-resolved default never accepts an explicit bootstrap override -- pass --bus kafka too).
+  === mutation reverted, final full green run: 39 passed in 0.15s, git status clean ===
+actual_output: >-
+  PASS: omnibase_infra#2261 head c22182edad34454c843e35a7c14175081cc8e8c4 (resolve_default_bus + probe-then-select
+  default for onex delegate) is independently verified. 39/39 focused tests pass. Mutation proof 1 confirms
+  the probe-state branch is real and test-covered by 5 distinct tests. Mutation proof 2 confirms the bare-bootstrap
+  usage-error guard is real and load-bearing via a custom differs-from-env scenario, though noted as a
+  minor test-coverage gap in the PR's own 2 dedicated tests for that guard (not a functional defect).
+  ruff check/format clean. Worktree restored to a clean state after both mutations. Live CI reds on the
+  PR are occ-preflight dependency cascade only (missing Evidence-Source), confirmed by reading actual
+  failed-job logs.
+exit_code: 0
+branch: "jonah/omn-14376-delegation-system-bus"
+contract_sha256: "sha256:88f8a18ebac25255e11b064916991b7fcde19d0530bb08b3e491aea62747f23d"

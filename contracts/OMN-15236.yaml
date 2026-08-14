@@ -1,0 +1,133 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15236"
+title: "A3 (omnimarket): nested handler_routing for intent_storage/memory_retrieval + omninode-memory
+  rev-pin bump"
+summary: >
+  OCC companion evidence for omnimarket branch jonah/omn-15236-a3-omnimarket-nested-handler-routing at
+  commit 08e23837c9842c92c49be61229f8eb9c65402dcb. Slice A3 of OMN-15027, clearing 2 of the 4 flat-schema
+  discovery_errors in omnimarket (Group A: node_intent_storage_effect, node_memory_retrieval_effect);
+  the Group B pair stays carved out for the sequential B3 slice. Bumps the omninode-memory rev pin from
+  1cd318d5 to 887dc679 -- the squash commit of omnimemory#416 on dev, not a feature-branch head -- picking
+  up both #415 (OMN-15226, def-B handle() on HandlerIntentStorageAdapter) and #416 (OMN-15227, def-B handle()
+  on HandlerMemoryRetrieval plus the repoint off the three *Mock sub-handlers); uv.lock regenerated, only
+  omninode-memory moved. Both contracts move from the flat handler_key schema -- which parses to ZERO
+  dispatchers and phantom-wires the subscribed topic (OMN-14141) -- to the nested handler {name, module}
+  mapping. All three retrieval operations route to the production HandlerMemoryRetrieval rather than a
+  transliteration of the Mock handler_key values, and each node stays at 3 dispatchable operations (upstream's
+  health_check and the non-dispatchable index -> HandlerQdrant of OMN-15235 are deliberately not mirrored).
+  The pin bump also surfaced a latent cross-repo break filed as OMN-15238: omnimemory#410 (OMN-14618)
+  deleted ModelCrawlStateRecord and ProtocolCrawlStateRepository on an intra-repo-only orphan grep while
+  the live consumer had already moved to omnimarket under OMN-8299, so both symbols are relocated verbatim
+  into the owning node. Source-only lane, no runtime mutation; proof_class caps at receipt-bound.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "Product PR CI green on omnimarket branch jonah/omn-15236-a3-omnimarket-nested-handler-routing."
+    command: "gh pr checks ${PR_NUMBER} --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15236-nested-routing-08e23837"
+    description: >
+      Falsifiable seam probe at product commit 08e23837c9842c92c49be61229f8eb9c65402dcb: both Group A
+      contracts declare the nested handler {name, module} mapping the OMN-14141 loader requires and no
+      longer carry any flat handler_key entry. node_memory_retrieval_effect routes to the production HandlerMemoryRetrieval,
+      NOT the HandlerQdrantMock/HandlerDbMock/HandlerGraphMock values it used to name. Deterministic commit-sha
+      bind, not a branch head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_memory_retrieval_effect/contract.yaml?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -q 'name: "HandlerMemoryRetrieval"'
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_memory_retrieval_effect/contract.yaml?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -qE '^[[:space:]]*handler_key:'
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_intent_storage_effect/contract.yaml?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -qE '^[[:space:]]*handler_key:'
+  - id: "dod-omn15236-pin-bump-08e23837"
+    description: >
+      The omninode-memory rev pin at the same product commit is the post-#416 omnimemory dev squash commit
+      887dc679816b9ca4fe1cf51354ac9d5f2869d4ba, the stale 1cd318d5 pin is gone, and the regenerated uv.lock
+      resolves to the same SHA (so the contract conversion is backed by handlers that actually expose
+      a def-B handle entrypoint, ruling out a stale-cache green).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/pyproject.toml?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -q 'omnimemory.git", rev = "887dc679816b9ca4fe1cf51354ac9d5f2869d4ba"'
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omnimarket/contents/pyproject.toml?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -q '1cd318d5ca3071a24585191592d3a84fafd30cf7'
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/uv.lock?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -q 'omnimemory.git?rev=887dc679816b9ca4fe1cf51354ac9d5f2869d4ba'
+  - id: "dod-omn15236-frozen-baseline-untouched-08e23837"
+    description: >
+      The frozen, shrink-only handler_dispatch_entrypoint baseline (OMN-14617) is byte-identical to its
+      dev state at the product commit -- the two newly-exposed handlers pass the real gate on merit, with
+      ZERO baseline additions. Neither HandlerIntentStorageAdapter nor HandlerMemoryRetrieval appears
+      in the baseline. Any baseline addition would invalidate this slice, so this check is the falsifier.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! gh api 'repos/OmniNode-ai/omnimarket/contents/validation/handler_dispatch_entrypoint_baseline.yaml?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -qE 'HandlerIntentStorageAdapter|HandlerMemoryRetrieval'
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api 'repos/OmniNode-ai/omnimarket/contents/validation/handler_dispatch_entrypoint_baseline.yaml?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .sha)" = "$(gh api 'repos/OmniNode-ai/omnimarket/contents/validation/handler_dispatch_entrypoint_baseline.yaml?ref=dev'
+          --jq .sha)"
+  - id: "dod-omn15236-carveout-shrunk-08e23837"
+    description: >
+      The OMN-15027 carve-out in tests/ci/test_contract_handler_routing_nested_schema.py shrank from 4
+      to the 2 Group B nodes: node_intent_storage_effect and node_memory_retrieval_effect are gone from
+      _KNOWN_OUT_OF_SCOPE_FLAT_SCHEMA_NODES and now carry expected handler counts of 3 each, while B3's
+      node_code_embedding_effect / node_code_enrichment_effect remain carved out. The test asserts still_erroring
+      == _KNOWN_OUT_OF_SCOPE_FLAT_SCHEMA_NODES, so a stale carve-out hard-fails.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/tests/ci/test_contract_handler_routing_nested_schema.py?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -q '"node_intent_storage_effect": 3'
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/tests/ci/test_contract_handler_routing_nested_schema.py?ref=08e23837c9842c92c49be61229f8eb9c65402dcb'
+          --jq .content | base64 -d | grep -q '"node_memory_retrieval_effect": 3'
+  - id: "dod-occ-self"
+    description: >
+      OCC companion self-bind for OMN-15236 (deterministic commit-sha bind, no PR-number prediction).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-15236/dod-occ-self/command.yaml"
+  - id: "occ-self-bind-pr-5112"
+    description: >
+      OCC companion self-bind for pull request #5112 after reconstruction onto current dev; proves this
+      OCC PR head carries the OMN-15236 contract and receipt payload.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 5112 --repo OmniNode-ai/onex_change_control --json commits --jq '.commits[].oid'
+          | grep -q '^e76b3131fc85f78b4461a7d9800e888902fa3ff6$'

@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+---
+name: Doctrine Coverage
+
+on:
+  push:
+    branches: [main, develop, "hotfix/**"]
+  pull_request:
+    branches: [main, develop, dev, "hotfix/**"]
+  merge_group:
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.8.3"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zone-filter:
+    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@dev
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      python-version: "3.12"
+
+  doctrine-coverage:
+    name: Doctrine Coverage Matrix
+    needs: [zone-filter]
+    if: ${{ !cancelled() }}
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install dependencies
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        env:
+          UV_HTTP_TIMEOUT: "600"
+          UV_SYNC_ATTEMPTS: "3"
+          UV_SYNC_RETRY_DELAY_SECONDS: "10"
+        run: |
+          git config --global http.version HTTP/1.1
+          attempt=1
+          until uv sync --all-extras; do
+            status=$?
+            if [ "$attempt" -ge "$UV_SYNC_ATTEMPTS" ]; then
+              echo "::error::uv sync failed after ${attempt} attempt(s)"
+              exit "$status"
+            fi
+
+            sleep_seconds=$((UV_SYNC_RETRY_DELAY_SECONDS * attempt))
+            echo "::warning::uv sync attempt ${attempt}/${UV_SYNC_ATTEMPTS} failed with exit ${status}; retrying in ${sleep_seconds}s"
+            sleep "$sleep_seconds"
+            attempt=$((attempt + 1))
+          done
+
+      - name: Validate doctrine coverage matrix (dry-run, no file write)
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        run: uv run python scripts/generate_doctrine_coverage.py --dry-run
+
+      - name: Check for enforcement regressions
+        if: needs.zone-filter.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        run: >-
+          uv run python scripts/generate_doctrine_coverage.py
+          --check-regression
+          --dry-run
+
+      - name: Evidence-only short-circuit
+        if: needs.zone-filter.outputs.docs_only == 'true' || (github.event_name == 'pull_request' && github.base_ref == 'dev')
+        run: |
+          echo "Evidence-only PR (docs_only=true) - doctrine coverage skipped."
+          echo "Required Doctrine Coverage Matrix context reports success. OMN-14098."

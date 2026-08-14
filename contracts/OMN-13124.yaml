@@ -1,0 +1,144 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13124"
+title: "Add node_projection_pattern_learning (pattern-stored.v1 -> pattern_learning_artifacts)"
+summary: >-
+  The pattern_learning golden chain had no consume-leg: onex.evt.omniintelligence.pattern-stored.v1 had
+  no projection consumer, so the pattern_learning_artifacts tail table was never written and the golden-chain
+  sweep timed out (0/N). This ticket adds node_projection_pattern_learning, a reducer projection node
+  that subscribes to pattern-stored.v1, UPSERTs into pattern_learning_artifacts keyed on pattern_id (latest-state-wins),
+  preserves richer materialized evidence when a later sparse event arrives (mirrors node_projection_delegation._preserve_existing_evidence),
+  and emits onex.evt.omnimarket.projection-pattern-learning-applied.v1. Ships the node (contract.yaml,
+  metadata.yaml, HandlerProjectionPatternLearning projection handler + PatternLearningProjectionRunner
+  Kafka consume-leg), the migration 0000_create_pattern_learning_artifacts.sql (target DB omnidash_analytics),
+  the pyproject.toml entry-point, and golden-chain tests including an OMN-13121-style row-delta proof
+  (test_row_delta_before_zero_after_one: before=0, project one terminal, after=exactly 1 row). The runtime
+  dogfood inventory count is bumped 300 -> 301 for the new addressable node.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR (branch jonah/omn-13124-pattern-learning-projection, base=dev, head 67d9a540f679ddde0775a8f92742f55e844528e1).
+      Adds node_projection_pattern_learning, the missing consume-leg for the pattern_learning golden chain:
+      pattern-stored.v1 -> pattern_learning_artifacts via UPSERT on pattern_id. Row-delta regression test
+      test_row_delta_before_zero_after_one GREEN (before=0, project one terminal, after=exactly 1 row).
+      Node golden-chain suite 10/10 GREEN; runtime dogfood 4/4 GREEN (entry-point inventory 301, no missing/dangling).
+      ruff clean, mypy --strict clean (5 source files). Any Kafka integration failures are env-only (no
+      broker reachable in worktree), not code regressions.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = true. The node is NOT yet live on the dev lane. No live deploy,
+      restart, topic mutation, or .201 mutation was performed. For the golden-chain pattern_learning chain
+      to flip green, the new pattern_learning_artifacts migration must be applied to omnidash_analytics
+      and the PatternLearningProjectionRunner consumer deployed; this PR ships code + migration + wiring
+      only. The change lands on dev via a coordinated dev redeploy folded with OMN-13121 / OMN-13122,
+      and the pattern_learning row-materialization is only observable after that batched dev lane rebuild.
+      Do not claim deployed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13124 contract and the dod-omnimarket-pr / dod-deploy-assessment
+      receipts that the omnimarket PR Receipt-Gate resolves via Evidence-Source: OCC#<pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-occ-pr/command.yaml"
+  - id: "dod-infra-vendor-pr"
+    description: >-
+      DURABILITY FOLLOW-UP (golden-chain run12 Finding #1). The original OMN-13124 PR (#1210) shipped
+      the omnimarket node migration but it was never VENDORED into omnibase_infra docker/migrations/forward/nodes/,
+      so a clean redeploy did NOT recreate pattern_learning_artifacts in omnidash_analytics — the chain
+      only passed via a live hot-fix that reverts on the next redeploy. omnibase_infra PR (branch jonah/omn-13124-vendor-pattern-learning-migration,
+      base=dev) vendors node_projection_pattern_learning/0000_create_pattern_learning_artifacts.sql (+
+      node_omnigate_projection) via sync-node-migrations.sh so the forward-migration runner recreates
+      the table in omnidash_analytics on every clean redeploy. Also hardens the gate: pre-commit hook
+      onex-check-node-migration-sync flipped to always_run (the prior files: scope never fired for omnimarket-only
+      node migrations) and a new .github/workflows/node-migration-sync.yml CI gate fails any un-vendored/drifted
+      node migration. SQL validated against a throwaway postgres 14 (table + idempotent re-apply); --check
+      fails exit 1 when the vendored copy is removed; migration_freeze + migration_sequence exit 0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-vendor-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-vendor-pr/command.yaml"
+  - id: "dod-infra-retire-064-pr"
+    description: >-
+      Follow-up cleanup after the node migration was vendored: omnibase_infra PR #1980 removes the legacy
+      flat 064_create_pattern_learning_artifacts migration and rollback that defined an orphan pattern_learning_artifacts
+      table in the omnibase_infra DB. The canonical table is now the vendored node_projection_pattern_learning
+      migration under docker/migrations/forward/nodes/, applied to omnidash_analytics by the forward-migration
+      runner. Removing the flat migration resolves the cross-repo Migration Conflict Check NAME_CONFLICT
+      caught by OCC CI while preserving the canonical node-owned migration path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-retire-064-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-retire-064-pr/command.yaml"
+          && grep -q '^pr_number: 1980$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-retire-064-pr/command.yaml"
+  - id: "dod-routing-decision-db-repoint"
+    description: >-
+      Companion to OMN-13122. node_projection_routing_decision declared db_io database: omnidash_analytics,
+      but agent_routing_decisions only exists in omnibase_infra (DDL owner: migration 021; node is a NON-OWNER
+      WRITER with forbid_cross_repo_create_table). The omnibase_infra runtime auto-wiring resolves the
+      contract database field to the DSN env var, so the prior value wrote to OMNIDASH_ANALYTICS_DB_URL
+      where the table is absent (UndefinedTable, run12 Finding). omnimarket PR (branch jonah/omn-13122-routing-decision-db-repoint,
+      base=dev) repoints database -> omnibase_infra so writer DSN == reader DSN (the registration golden
+      chain already reads the row from omnibase_infra). Single canonical home, no divergent duplicate
+      (OMN-13127 invariant). Handler INSERT column set matches migration 021 schema exactly (verified
+      against postgres 14). ruff clean, mypy --strict clean (6 files), routing node tests 16/16, dogfood
+      + materialization validation 9/9.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-routing-decision-db-repoint/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-routing-decision-db-repoint/command.yaml"
+          && grep -q 'database: omnibase_infra' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-routing-decision-db-repoint/command.yaml"
+  - id: "dod-infra-vendor-pr-2103"
+    description: >-
+      SECOND vendor-sync follow-up. Two further omnimarket node migrations shipped to omnimarket@dev without
+      their vendored copies under docker/migrations/forward/nodes/, re-tripping the OMN-13124 node-migration-sync
+      gate on EVERY infra dev PR (verified failing on sibling env PR #2098 job 83286659159 and OTEL PR
+      #2104): node_projection_cost_by_repo/0001_create_cost_by_repo_snapshots.sql and node_projection_traces/0001_create_traces.sql.
+      omnibase_infra PR #2103 (branch jonah/omn-13124-vendor-node-migrations-sync, base=dev, head bc5918c270b8ddb4ea210c4cc1ee8cddcf5b82c9)
+      runs scripts/sync-node-migrations.sh to vendor both 1:1 from the omnimarket source tree, byte-identical
+      to omnimarket@origin/dev tip (the ref the CI gate checks against). This unwedges the infra dev PR
+      queue (fleet PRs #2104/#2105 + S-1a #2102, which gate OMN-12546/12547). The node-migration-sync
+      CI gate is GREEN on the PR (run 28138381245, conclusion=success). SCOPE: migration vendoring only
+      — NO live deploy, NO restart, NO .201 mutation, NO runtime-lane touch.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-vendor-pr-2103/command.yaml"
+          && grep -q '^ticket_id: "OMN-13124"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-vendor-pr-2103/command.yaml"
+          && grep -q '^pr_number: 2103$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13124/dod-infra-vendor-pr-2103/command.yaml"

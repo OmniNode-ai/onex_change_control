@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14229"
+title: "feat(OMN-14229): implement documented ModelFSMStateTransition.priority / guard-fallthrough in
+  the FSM engine"
+summary: >-
+  omnibase_core PR #1411 wires the already-documented ModelFSMStateTransition.priority / guard-fallthrough
+  semantics into the FSM execution engine. util_fsm_executor._select_transition (replacing _find_transition)
+  orders the (from_state, trigger) candidate set by priority DESCENDING with declaration order as the
+  stable tiebreak, evaluates guards in that order, and selects the first candidate whose required conditions
+  all pass; an unconditional transition acts as a default/fallthrough edge, exact-state matches still
+  preempt wildcard (from_state == "*") transitions, and when no candidate is eligible the engine fails
+  CLOSED — it returns the existing guard_rejection result (stays in-state, success=False) rather than
+  silently executing a transition whose guard is false. Independently verified: the new TestFSMPriorityGuardFallthrough
+  cases plus the full FSM/reducer/mixin regression suites are green with the worktree source under test
+  (PYTHONPATH cleared), and the change is behavior-invariant for every existing contract (the only single-candidate
+  path is byte-identical).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_core-pr-1411"
+    description: >-
+      Independent verification (a separate verifier, NOT the implementing agent) reproduced the FSM priority/guard-fallthrough
+      behavior end-to-end against omnibase_core PR #1411 head 89b41118 in an isolated worktree with PYTHONPATH
+      cleared (confirmed omnibase_core.__file__ resolved to the worktree src, not the canonical clone).
+      New TestFSMPriorityGuardFallthrough: 7 passed (highest-priority passing guard wins, fallthrough
+      to next-priority guard, fail-closed no-eligible stays in-state, unconditional default-edge fallthrough,
+      passing guard preferred over default edge, multi-branch contract validity, exact-over-wildcard precedence).
+      Full test_fsm_executor.py: 52 passed. FSM/reducer/mixin regression (test_mixin_fsm_execution, test_mixin_contract_state_reducer,
+      test_reducer_integration, test_node_reducer_concurrency, test_node_reducer_determinism, test_node_reducer_build_fsm_context,
+      test_fsm_analysis, test_fsm_handler_drift): 110 passed, 1 xpassed (pre-existing xfail). Independent
+      anti-gaming checks: priority-DESC selection isolated from declaration order (higher-priority edge
+      declared SECOND still wins), guard-truth fallthrough (higher-priority guard rejected, not silently
+      taken), default edge genuinely advances state (not a no-op), fail-closed genuinely stays in-state
+      with guard_rejection. Zero-regression: the ModelFSMSubcontract structural-uniqueness validator forbids
+      duplicate (from_state, trigger, priority) so same-trigger candidate priorities are always distinct
+      (deterministic total order); the single standalone FSM contract YAML has no duplicate (from_state,
+      trigger) group, so its selection is byte-identical; the named production reducers do not use the
+      FSM engine path. mypy clean; ruff check + ruff format --check clean; pre-commit on changed files
+      exit 0. No runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14229/dod-omnibase_core-pr-1411/command.yaml
+          && grep -q '^pr_number: 1411$' drift/dod_receipts/OMN-14229/dod-omnibase_core-pr-1411/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14229 contract and PASS
+      receipt for omnibase_core PR #1411, binding itself to occ-preflight by commit_sha (contract commit
+      C1), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14229/dod-occ-self/command.yaml

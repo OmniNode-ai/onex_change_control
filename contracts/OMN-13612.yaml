@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13612"
+title: "WS-C Phase 2.2: Route SEA tool_registry.py registration onto the canonical omnibase_infra MCP
+  registration path"
+summary: >
+  Wave-1 ROUTE leg of the SEA -> canonical migration (epic OMN-13604, plan docs/tracking/2026-06-24-sea-canonicalization-plan.md
+  Phase 2.2). Routes the registration semantics of the bespoke SEA agent/tool_registry.py (onex-self-extending-agent)
+  onto the canonical omnibase_infra MCP registration path. New ServiceMCPToolRegistry.register_generated_tool(node_name,
+  description, contract_yaml, handler_source, correlation_id) builds a canonical ModelMCPToolDefinition
+  carrying the generated-compute exposure tags required by ServiceMCPToolSync._is_mcp_exposable (mcp-enabled
+  + node-type:compute + generated + mcp-tool:<name>), upserts it into the canonical ServiceMCPToolRegistry
+  (reusing upsert_tool -- no parallel store), derives the registry version key from artifact content hashes
+  (idempotent), and returns a typed frozen ModelMCPGeneratedToolRegistration binding the contract/handler
+  artifact hashes + correlation id + version key. ROUTE-1 gate PASSED: canonical MCP registration service
+  exists, owned by omnibase_infra MCP server (feedback_mcp_server_in_omnibase_infra.md), wired via mcp_server_lifecycle
+  + handler_mcp, already SEA-aware (OMN-12827 B2). In-process exec()/invoke() of the handler is NOT migrated
+  here -- that hot-load sandbox concern is Phase 0 (OMN-13605, Done, omnimarket handler_generated_executor).
+  SEA agent/tool_registry.py deletion is DEFERRED to Phase 8.1 (OMN-13626): the SEA file is the demo backbone
+  (register AND invoke) consumed by node_registration_effect / node_invocation_effect / node_demo_orchestrator
+  / tools.py / __main__.py + 6 test files (the explicit Phase 8.1 deletion scope), and SEA depends only
+  on omnibase-core not omnibase-infra; deleting it in Wave 1 with Phases 1-7 open would break the SEA
+  repo mid-migration, violating TRANSFORM->PROVE->DELETE ordering. No topic schema, envelope, contract-API,
+  migration, or live-lane mutation -- a library service method + typed-model addition under services/mcp.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD: tests/unit/services/mcp/test_service_mcp_tool_registry_generated.py written failing first (6
+      cases), then made to pass. Proves register_generated_tool upserts a generated tool into the canonical
+      registry, the tool is retrievable (get_tool/has_tool/list_tools), the stored tags satisfy ServiceMCPToolSync._is_mcp_exposable,
+      re-registering the same artifact is idempotent, a revised artifact mints a new version, and empty
+      node_name fails fast.
+    command: "uv run pytest tests/unit/services/mcp/test_service_mcp_tool_registry_generated.py tests/unit/services/mcp/test_service_mcp_tool_registry.py
+      tests/unit/services/mcp/test_service_mcp_tool_sync_exposure.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2111"
+    description: >
+      omnibase_infra PR #2111 adds ServiceMCPToolRegistry.register_generated_tool + the typed ModelMCPGeneratedToolRegistration
+      model and the TDD suite, routing SEA tool_registry registration semantics onto the canonical MCP
+      registry. Evidence anchor: omnibase_infra head commit 1bf6df6c1a2aafac4d64fd18aac95a5983a50a43.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13612/dod-omnibase-infra-pr-2111/command.yaml
+          && grep -q '^pr_number: 2111$' drift/dod_receipts/OMN-13612/dod-omnibase-infra-pr-2111/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13612/dod-omnibase-infra-pr-2111/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR adds a library service method (ServiceMCPToolRegistry.register_generated_tool)
+      and a typed frozen model under services/mcp + models/mcp in omnibase_infra. No node contract.yaml,
+      topic schema, event envelope, contract-API, or migration change; no runtime lane mutation. No live
+      deploy is performed by this PR. The MCP registry is an in-memory cache populated at runtime via
+      the existing ServiceMCPToolSync bus path; this method is an additional in-process registration entry
+      point with no new I/O. The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13612/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 2111$' drift/dod_receipts/OMN-13612/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13612/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13612 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13612/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13612/dod-occ-pr-self/command.yaml"

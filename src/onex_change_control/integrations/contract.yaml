@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+---
+# onex_change_control integration contract — endpoint / config / secret-ref seam
+#
+# OMN-13563 / OMN-13556 env→contract+overlay migration.
+#
+# Every external endpoint, connection target, tunable config value, and secret
+# reference the onex_change_control CLI scripts + dod-sweep handler need is
+# declared HERE with the ${env.VAR} / ${env.VAR:default} overlay convention so an
+# operator overlay / the per-lane service env supplies the real value per lane —
+# never a hardcoded host, port, URL, or path in source. Consumers resolve each
+# field through onex_change_control.integrations.contract_descriptor, which
+# expands the ${env.VAR} refs via the sanctioned
+# onex_change_control.overlays.contract_env_ref.expand_contract_env_refs boundary
+# and fails closed: an unset/empty required value raises rather than silently
+# defaulting to localhost or a hardcoded literal.
+#
+# Secrets are NOT inlined here. They carry a *_ref name (api_key_ref convention);
+# the literal value is resolved from the operator environment / Infisical store at
+# the effect boundary, never committed to source.
+
+name: "onex_change_control_integrations"
+contract_version: {major: 1, minor: 0, patch: 0}
+description: >
+  Endpoint, config, and secret-reference declarations for onex_change_control CLI scripts and the dod-sweep
+  handler. The single source of truth for the Linear GraphQL endpoint, the omnidash_analytics Postgres
+  endpoint, the Kafka governance broker, the ONEX state-store root, and the emergency-bypass toggle —
+  all bound per-lane via the ${env.VAR} overlay convention. #magic___^_^___line
+descriptor:
+  # === Linear GraphQL endpoint (4 url-authority literals consolidated here) ===
+  # Was hardcoded as `https://api.linear.app/graphql` (backfill_contracts.py:144,
+  # handler_dod_sweep.py:73, check_plan_vs_live.py:51) and the non-canonical
+  # `https://linear.app/graphql` (check_dod_compliance.py:75 — a pre-existing
+  # typo; corrected here to the canonical Linear GraphQL host). The inline
+  # default preserves the canonical prior behaviour while allowing an overlay to
+  # point all four call sites at a single per-lane endpoint.
+  linear_graphql_url: "${env.LINEAR_API_URL:https://api.linear.app/graphql}"
+  # Linear API key — secret reference only; the literal value is resolved from
+  # the operator environment / Infisical store at the effect boundary.
+  linear_api_key_ref: "LINEAR_API_KEY"
+
+  # === omnidash_analytics Postgres endpoint (check_omnidash_health.py) ===
+  omnidash_db_host: "${env.POSTGRES_HOST}"
+  omnidash_db_port: "${env.POSTGRES_PORT:5436}"
+  omnidash_db_name: "${env.OMNIDASH_DB_NAME}"
+  omnidash_db_user: "${env.POSTGRES_USER}"
+  # Postgres password — secret reference only; resolved at the effect boundary.
+  omnidash_db_password_ref: "POSTGRES_PASSWORD"
+
+  # === Kafka governance broker (governance_emitter.py) ===
+  # Optional: when unset the governance emitter no-ops (best-effort emission).
+  kafka_bootstrap_servers: "${env.KAFKA_BOOTSTRAP_SERVERS}"
+
+  # === ONEX state-store root (dispatch_claims claim_store.py + sweeper.py) ===
+  onex_state_dir: "${env.ONEX_STATE_DIR}"
+
+  # === Emergency-bypass governance toggle (run_contract_compliance_check.py) ===
+  # Audited bypass switch; empty == disabled.
+  emergency_bypass: "${env.EMERGENCY_BYPASS}"

@@ -1,0 +1,114 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14533
+title: "OCC companion for omnimarket#1742 — savings_estimates consumer real producer shape never matched,
+  0 rows ever"
+summary: 'OCC evidence companion for OmniNode-ai/omnimarket#1742 (OMN-14533). onex.evt.omnibase-infra.savings-estimated.v1''s
+  real producer (omnibase_infra node_savings_estimation_compute.models.model_savings_estimate.ModelSavingsEstimate)
+  uses a completely different field vocabulary (actual_model_id, counterfactual_model_id, actual_cost_usd,
+  estimated_total_savings_usd, timestamp_iso) than either of node_projection_savings'' two consumer entrypoints
+  expected (model_local, model_cloud_baseline, local_cost_usd, cloud_cost_usd, savings_usd, event_timestamp).
+  Consequence: SavingsProjectionRunner.project_event() (the deployed Kafka->Postgres runner) routed every
+  real message to the DLQ (0 rows ever, matching the reported 6-event DLQ backlog); HandlerProjectionSavings.handle()
+  (the contract-declared event_model/RuntimeLocal shim) raised a 29-error ValidationError against a representative
+  real payload (matches the reported ~24 ValidationErrors/event). Fix: added _normalize_savings_estimate_payload()
+  in handler_savings.py, detecting the real ModelSavingsEstimate shape and re-keying it onto the canonical
+  shape before existing lookups/validation run (cloud_cost_usd reconstructed as local_cost_usd + savings_usd,
+  matching every other path in the module); wired into both consumer entrypoints. DLQ drain of the 6 backlogged
+  events explicitly NOT attempted (requires live Kafka access, flagged as an operational follow-up). A
+  new cross-boundary test (4 cases) drives a real omnibase_infra ModelSavingsEstimate instance through
+  both consumer entrypoints; RED-verified via file-scoped git checkout of the parent commit (4 failed
+  / 0 passed: DLQ route, ImportError, and two 29-error ValidationError failures) then GREEN restoration.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: "omnimarket#1742 head adds _normalize_savings_estimate_payload() to handler_savings.py
+      and wires it into both SavingsProjectionRunner.project_event()'s generic branch and HandlerProjectionSavings.handle(),
+      so a real ModelSavingsEstimate payload (actual_model_id/counterfactual_model_id/actual_cost_usd/estimated_total_savings_usd/timestamp_iso)
+      is re-keyed onto the canonical shape instead of failing DLQ routing or a 29-error ValidationError
+      — proven by tests/test_omn14533_cross_boundary_savings_seam.py driving a real omnibase_infra ModelSavingsEstimate
+      through both entrypoints, plus an independent RED (checkout the parent commit for the two handler
+      files, keep the new tests: 4 failed / 0 passed, reproducing the DLQ route, ImportError, and 29-error
+      ValidationError failure modes) then GREEN reproduction, not merely the implementer's own claim."
+    command: see dod_evidence check_values
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-verify-1742-normalizer-exists
+    description: Product-observing check against omnimarket#1742 head c3b12bf4c65f0b50f336b6462683bad6525819fb.
+      Reads handler_savings.py and confirms _normalize_savings_estimate_payload() exists, detects the
+      real ModelSavingsEstimate marker keys (actual_model_id, counterfactual_model_id, actual_cost_usd,
+      estimated_total_savings_usd), and is invoked inside project_event()'s generic branch before the
+      existing session_id/model_local lookups run.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_savings/handlers/handler_savings.py?ref=c3b12bf4c65f0b50f336b6462683bad6525819fb"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'def _normalize_savings_estimate_payload(' "$f"
+          && grep -Fq -- 'actual_model_id' "$f" && grep -Fq -- 'estimated_total_savings_usd' "$f" && grep
+          -Fq -- 'data = _normalize_savings_estimate_payload(data)' "$f"
+  - id: dod-verify-1742-handler-shim-wired
+    description: Product-observing check against the PR head. Reads handler_projection_savings.py and
+      confirms it imports _normalize_savings_estimate_payload from handler_savings.py and applies it (plus
+      a canonical-field filter) before constructing the strict, extra=forbid ModelSavingsEstimatedEvent,
+      so the RuntimeLocal shim path is fixed the same way as the deployed runner path.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_savings/handlers/handler_projection_savings.py?ref=c3b12bf4c65f0b50f336b6462683bad6525819fb"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'handler_savings import (' "$f" && grep -Fq
+          -- '_normalize_savings_estimate_payload,' "$f" && grep -Fq -- 'event_data = _normalize_savings_estimate_payload(event_data)'
+          "$f" && grep -Fq -- '_CANONICAL_SAVINGS_FIELDS' "$f"
+  - id: dod-verify-1742-red-green-reproduced
+    description: 'Independent RED-then-GREEN reproduction against a local worktree checked out at the
+      PR head, not trusting the implementer''s commit message. tests/test_omn14533_cross_boundary_savings_seam.py
+      (4 tests) passed 4/4 at head, driving a real omnibase_infra ModelSavingsEstimate instance through
+      both SavingsProjectionRunner.project_event() and HandlerProjectionSavings.handle(). handler_savings.py
+      and handler_projection_savings.py were then checked out at the parent commit (c3b12bf4~1, i.e. origin/dev,
+      keeping the new test file in place) and the identical corpus re-run: all 4 tests failed -- the runner-path
+      test failed because the real payload WAS routed to the DLQ ("savings-estimated event missing model
+      identifiers"), the normalizer-regression-guard test failed with ImportError (_normalize_savings_estimate_payload
+      did not exist pre-fix), and both handler-shim tests failed with the same 29-error pydantic ValidationError
+      for ModelSavingsEstimatedEvent (6 missing-required-field errors + 23 extra_forbidden errors). The
+      fix was then restored (git checkout c3b12bf4) and the corpus re-verified 4/4 passed, plus the full
+      pre-existing savings suite (48 tests) unchanged.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14533/dod-verify-1742-red-green-reproduced/command.yaml
+          && grep -q ''4 failed / 0 passed'' drift/dod_receipts/OMN-14533/dod-verify-1742-red-green-reproduced/command.yaml
+          && grep -q ''29 validation errors'' drift/dod_receipts/OMN-14533/dod-verify-1742-red-green-reproduced/command.yaml
+          && grep -q ''missing model identifiers'' drift/dod_receipts/OMN-14533/dod-verify-1742-red-green-reproduced/command.yaml
+          && grep -q ''ImportError'' drift/dod_receipts/OMN-14533/dod-verify-1742-red-green-reproduced/command.yaml'
+  - id: dod-deploy-assessment-head-c3b12bf4
+    description: 'Deploy assessment for omnimarket PR #1742 at head c3b12bf4c65f0b50f336b6462683bad6525819fb.
+      The PR changes two market node handlers and adds one cross-boundary test file; this evidence package
+      performs no live deploy, runtime restart, docker exec, rpk topic produce, database mutation, or
+      .201/.200 runtime mutation, and does NOT drain/replay the 6 DLQ events (explicitly deferred as an
+      operational follow-up requiring live Kafka access). The fix is deployed as part of the normal runtime
+      rollout; no prod promotion is requested or performed here.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14533/dod-deploy-assessment-head-c3b12bf4/command.yaml
+          && grep -qi ''no live deploy'' drift/dod_receipts/OMN-14533/dod-deploy-assessment-head-c3b12bf4/command.yaml'
+  - id: dod-occ-self-4090
+    description: 'Self-bind item for OCC companion PR #4090. Binds a PASS receipt to the actual companion
+      PR number after PR creation, so OCC merge eligibility can associate OMN-14533 with the onex_change_control
+      PR under check. Product-observing evidence is carried by the entries above; this item is binding
+      only.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' drift/dod_receipts/OMN-14533/dod-occ-self-4090/command.yaml
+          && grep -q ''pr_number: 4090'' drift/dod_receipts/OMN-14533/dod-occ-self-4090/command.yaml &&
+          grep -q ''jonah/omn-14533-occ-companion'' drift/dod_receipts/OMN-14533/dod-occ-self-4090/command.yaml'

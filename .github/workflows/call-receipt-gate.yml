@@ -1,0 +1,853 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# Caller workflow that runs the receipt-gate validator on every PR touching
+# onex_change_control.
+#
+# Receipt-gate enforces "Enforcement by Receipt": every PR must cite a Linear
+# ticket whose dod_evidence items all have PASS ModelDodReceipt artifacts at
+# the canonical path under onex_change_control/drift/dod_receipts/. Missing
+# or failing receipts block merge.
+#
+# In-repo usage: the PR under review IS the onex_change_control repo. This
+# job checks out this PR as the root workspace, so every step below that is
+# guarded by `github.repository != 'OmniNode-ai/onex_change_control'` never
+# fires here — that guard exists for other repos' copies of this pattern.
+# Pass repo-relative paths so this repo's own PRs validate their proposed
+# OCC evidence from the PR checkout directly (invariant I3).
+#
+# OMN-15689 (R3/R3a operator ruling): this job used to delegate to
+# `uses: OmniNode-ai/omnibase_core/.github/workflows/receipt-gate.yml@main`.
+# GitHub's reusable-workflow `uses:` target accepts only a literal ref, so a
+# hardcoded `@main` pin meant a validator fix merged to omnibase_core dev
+# could not affect a dev-targeted PR here until a dev->main promotion — the
+# root cause of onex_change_control#5975 staying red on 2026-08-04 despite
+# both cited validator fixes already being on omnibase_core dev. Per the
+# R3a amendment (no hardcoded ref ANYWHERE — not @main, not @dev, not a
+# per-branch caller variant), the reusable-workflow pattern is abandoned
+# here: this job inlines the same steps the reusable ran, and checks out
+# omnibase_core at the PR's own base branch (`github.base_ref` /
+# `github.event.merge_group.base_ref`), resolved dynamically at runtime.
+# A base ref that does not exist in omnibase_core fails the checkout step
+# hard — there is no fallback ref.
+#
+# Required-status-check name (for branch-protection): `verify / verify`.
+# This job's `name:` field is set to that literal string so the check-run
+# GitHub creates for this job is byte-identical to what the old
+# reusable-workflow call produced (a reusable call surfaces
+# "<caller-job-id> / <called-job-id>"; a plain job's check-run name is
+# whatever string is in `jobs.<id>.name`, which may contain " / ").
+# Branch protection was NOT touched by this change — same context string,
+# same enforcement.
+
+name: Receipt Gate
+
+# OMN-15689 round-1 note (adversarial finding, hotfix behavior change): this
+# trigger still matches `hotfix/**` base branches. Since R3a, the
+# omnibase_core validator ref (and now the omnibase_compat ref) resolve
+# dynamically from `github.event.pull_request.base.ref` with NO fallback —
+# a hotfix base branch name that does not also exist in omnibase_core (this
+# repo's live hotfix bases, e.g. hotfix/omn-13208-..., do not match
+# omnibase_core's, e.g. hotfix/omn-14104-...) now fails the checkout step
+# hard instead of resolving to a stale-but-working default. This is a real
+# behavior change on a still-declared trigger branch, not a regression this
+# ticket silently introduced and hid: hotfix bases carry no branch
+# protection here (nothing is blocked), and non-dev-base-guard already
+# requires a `Stacked-Parent:` declaration on any hotfix-targeted PR. No
+# allowlist/fallback was added — treated as the ruling's intended fail-closed
+# posture for a base ref genuinely absent from omnibase_core.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main, dev, "hotfix/**"]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: "verify / verify"
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 15
+    # OMN-10419 invariant I9: disable GHA cache + artifact reuse so merge_group
+    # entry always re-evaluates fully. No stale PASS from a previous run can
+    # satisfy the gate on a new merge_group event.
+    env:
+      ACTIONS_CACHE_URL: ""
+      ACTIONS_RUNTIME_URL: ""
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      # OMN-15689 (R3a): resolve the omnibase_core validator ref dynamically
+      # from the PR's own base branch / merge_group target — never a literal
+      # @main, @dev, or any other hardcoded value. No fallback ref: if
+      # neither the PR base ref nor the merge_group base ref resolves, the
+      # job fails closed here before any checkout is attempted.
+      - name: Resolve omnibase_core validator ref (PR base branch)
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref or merge_group base ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref resolved dynamically to '${resolved_ref}'."
+
+      - name: Resolve receipt gate branch policy
+        id: branch_policy
+        env:
+          REQUESTED_POLICY_MODE: legacy
+          PR_TARGET_BRANCH: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_TARGET_BRANCH:-}" ]; then
+            target_branch="$(normalize_branch "$PR_TARGET_BRANCH")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            target_branch="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          else
+            target_branch=""
+          fi
+
+          case "${REQUESTED_POLICY_MODE:-legacy}" in
+            legacy|dev-preflight|main-release)
+              policy_mode="${REQUESTED_POLICY_MODE:-legacy}"
+              ;;
+            *)
+              echo "::error::invalid branch-policy-mode '${REQUESTED_POLICY_MODE}'. Expected legacy, dev-preflight, or main-release."
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "target_branch=${target_branch}"
+            echo "policy_mode=${policy_mode}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::receipt-gate target_branch=${target_branch:-unknown} policy_mode=${policy_mode}"
+
+      # OMN-13762: Dependency-bot PRs (Dependabot, Renovate) are authored by bots
+      # that structurally cannot cite a Linear ticket, an Evidence-Source, or an
+      # OCC receipt — the receipt gate's premise (a human-authored, ticket-backed
+      # change) does not apply to an automated dependency bump. Detect a trusted
+      # dependency-bot author up front from GitHub-verified PR metadata (never
+      # from caller-supplied body text, so a human PR cannot spoof it) and skip
+      # the receipt-evidence steps below. The job still concludes `success` (its
+      # remaining steps are skipped, not failed), so the required
+      # `verify / verify` status check passes WITHOUT a skip token. The allowlist
+      # mirrors validator_receipt_gate.DEPENDENCY_BOT_AUTHORS.
+      - name: Detect dependency-bot author (receipt-gate exemption)
+        id: bot_exempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_EVENT_AUTHOR: ${{ github.event.pull_request.user.login }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+
+          # Resolve the PR number for both pull_request and merge_group events.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            resolved_pr_num="$PR_NUMBER"
+          elif [ -n "${MERGE_GROUP_HEAD_REF:-}" ]; then
+            resolved_pr_num="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -E 's@^.*/pr-([0-9]+)-.*$@\1@')"
+            [ "$resolved_pr_num" = "$MERGE_GROUP_HEAD_REF" ] && resolved_pr_num=""
+          else
+            resolved_pr_num=""
+          fi
+
+          # GitHub-verified author identity. Prefer the API login; fall back to
+          # the event-payload login when the API is unavailable. Author identity
+          # is read from trusted GitHub metadata, never from PR body text.
+          author_login=""
+          if [ -n "$resolved_pr_num" ]; then
+            author_login="$(gh pr view "$resolved_pr_num" --repo "${{ github.repository }}" --json author --jq '.author.login' 2>/dev/null || true)"
+          fi
+          if [ -z "$author_login" ]; then
+            author_login="${PR_EVENT_AUTHOR:-}"
+          fi
+
+          # Trusted dependency-bot allowlist. Matches both the gh CLI login form
+          # ("app/dependabot") and the raw API/event login form
+          # ("dependabot[bot]"). Keep in sync with
+          # validator_receipt_gate.DEPENDENCY_BOT_AUTHORS.
+          exempt="false"
+          case "$author_login" in
+            "dependabot[bot]"|"app/dependabot"|"dependabot"|"renovate[bot]"|"app/renovate"|"renovate")
+              exempt="true"
+              ;;
+          esac
+
+          if [ "$exempt" = "true" ]; then
+            echo "::notice::Receipt-gate exemption (OMN-13762): PR authored by trusted dependency bot '${author_login}'. Dependency-bump PRs carry no Linear ticket or OCC receipt; the evidence gate is not applicable. Receipt-evidence steps are skipped; the job still reports success."
+          fi
+          echo "exempt=${exempt}" >> "$GITHUB_OUTPUT"
+
+      # OMN-10419: Resolve Evidence-Source commit-ish to an exact OCC SHA before
+      # checking out onex_change_control. Not exercised by onex_change_control's
+      # own PRs (invariant I3, see the `github.repository !=` guard below) — kept
+      # for step-for-step parity with the omnibase_core-hosted validator this
+      # job replaces.
+      - name: Resolve Evidence-Source
+        id: resolve_evidence_source
+        if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
+        run: |
+          set -euo pipefail
+
+          # Derive the PR number for both pull_request and merge_group events.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            resolved_pr_num="$PR_NUMBER"
+            pr_created_at="${PR_CREATED_AT:-}"
+          elif [ -n "${MERGE_GROUP_HEAD_REF:-}" ]; then
+            resolved_pr_num="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -E 's@^.*/pr-([0-9]+)-.*$@\1@')"
+            if [ -z "$resolved_pr_num" ] || [ "$resolved_pr_num" = "$MERGE_GROUP_HEAD_REF" ]; then
+              resolved_pr_num=""
+            fi
+            if [ -n "$resolved_pr_num" ]; then
+              pr_created_at="$(gh pr view "$resolved_pr_num" --repo "${{ github.repository }}" --json createdAt --jq '.createdAt' 2>/dev/null || true)"
+            else
+              pr_created_at=""
+            fi
+          else
+            resolved_pr_num=""
+            pr_created_at=""
+          fi
+
+          # Fetch PR body (needed to extract Evidence-Source line).
+          if [ -n "$resolved_pr_num" ]; then
+            pr_body="$(gh pr view "$resolved_pr_num" --repo "${{ github.repository }}" --json body --jq '.body' 2>/dev/null || true)"
+          else
+            pr_body=""
+          fi
+
+          # Extract Evidence-Source line.
+          # Accepts: "Evidence-Source: OCC#1234" or "Evidence-Source: <sha>"
+          evidence_source="$(printf '%s' "$pr_body" | grep -iE '^Evidence-Source:[[:space:]]+\S' | head -1 | sed -E 's/^Evidence-Source:[[:space:]]*//; s/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+
+          # Determine the cutoff commit date from OCC using the pinned SHA.
+          # The cutoff SHA is the merge commit for OMN-10419 (merged 2026-05-09).
+          # PRs opened before this commit are grandfathered; PRs after must have
+          # Evidence-Source pinning OCC instead of falling back to main.
+          OCC_CUTOFF_SHA="78710b840f3b08999a95b3e54f92d13ab1806494"
+
+          if [ "$OCC_CUTOFF_SHA" = "PENDING_MERGE" ] && [ -z "$evidence_source" ]; then
+            echo "::notice::Evidence-Source not required: OMN-10419 cutoff SHA is PENDING_MERGE and no Evidence-Source was provided, so this run is treated as pre-cutoff."
+            echo "PENDING_MERGE" > /tmp/occ_sha.txt
+            echo "occ_sha=PENDING_MERGE" >> "$GITHUB_OUTPUT"
+            echo "occ_source_kind=main" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          cutoff_epoch=0
+          # Resolve the cutoff date from OCC without a full checkout — use the
+          # GitHub API's commit endpoint.
+          cutoff_date="$(gh api "repos/OmniNode-ai/onex_change_control/commits/${OCC_CUTOFF_SHA}" --jq '.commit.committer.date' 2>/dev/null || true)"
+          if [ -n "$cutoff_date" ]; then
+            cutoff_epoch="$(date -d "$cutoff_date" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$cutoff_date" +%s 2>/dev/null || echo 0)"
+          fi
+
+          # Check if this PR is before the cutoff (grandfathered).
+          pr_epoch=0
+          if [ -n "$pr_created_at" ]; then
+            pr_epoch="$(date -d "$pr_created_at" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$pr_created_at" +%s 2>/dev/null || echo 0)"
+          fi
+
+          if [ "$cutoff_epoch" -gt 0 ] && [ "$pr_epoch" -gt 0 ] && [ "$pr_epoch" -lt "$cutoff_epoch" ]; then
+            # PR predates cutoff — Evidence-Source not required.
+            echo "::notice::Evidence-Source not required: PR predates OMN-10419 cutoff (pr_epoch=${pr_epoch} < cutoff_epoch=${cutoff_epoch}). Falling back to OCC main."
+            echo "PENDING_MERGE" > /tmp/occ_sha.txt
+            echo "occ_sha=PENDING_MERGE" >> "$GITHUB_OUTPUT"
+            echo "occ_source_kind=main" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If no Evidence-Source line present, hard fail.
+          if [ -z "$evidence_source" ]; then
+            echo "::error::RECEIPT GATE FAILED: PR body is missing required 'Evidence-Source:' line (OMN-10419). Add one of: 'Evidence-Source: OCC#<PR-number>' or 'Evidence-Source: <occ-sha>'"
+            exit 1
+          fi
+
+          # Resolve the commit-ish to an exact OCC SHA.
+          if printf '%s' "$evidence_source" | grep -qiE '^OCC#[0-9]+$'; then
+            # OCC PR form: resolve to the merged commit when merged, otherwise
+            # to the current head SHA of the open PR.
+            occ_pr_num="$(printf '%s' "$evidence_source" | sed -E 's/^OCC#//i')"
+            occ_json="$(gh pr view "$occ_pr_num" --repo "OmniNode-ai/onex_change_control" --json state,headRefOid,mergeCommit 2>/dev/null || true)"
+            occ_state="$(printf '%s' "$occ_json" | jq -r '.state // ""' 2>/dev/null || true)"
+            if [ "$occ_state" = "MERGED" ]; then
+              occ_sha="$(printf '%s' "$occ_json" | jq -r '.mergeCommit.oid // ""' 2>/dev/null || true)"
+              occ_source_kind="merged"
+            else
+              occ_sha="$(printf '%s' "$occ_json" | jq -r '.headRefOid // ""' 2>/dev/null || true)"
+              occ_source_kind="open-pr"
+            fi
+            if [ -z "$occ_sha" ]; then
+              echo "::error::RECEIPT GATE FAILED: OCC PR #${occ_pr_num} could not be resolved — OCC unavailable or PR not found. Cannot verify evidence (OMN-10419 invariant I8)."
+              exit 1
+            fi
+          elif printf '%s' "$evidence_source" | grep -qiE '^[0-9a-f]{7,40}$'; then
+            # SHA form: validate it is an ancestor of OCC main or the head of an open OCC PR.
+            occ_sha="$evidence_source"
+            # First: check if it is an ancestor of OCC main.
+            is_ancestor="$(gh api "repos/OmniNode-ai/onex_change_control/compare/HEAD...${occ_sha}" --jq '.status' 2>/dev/null || true)"
+            if [ "$is_ancestor" = "behind" ] || [ "$is_ancestor" = "identical" ]; then
+              occ_sha="$(gh api "repos/OmniNode-ai/onex_change_control/commits/${occ_sha}" --jq '.sha' 2>/dev/null || true)"
+              if [ -z "$occ_sha" ]; then
+                echo "::error::RECEIPT GATE FAILED: Evidence-Source SHA could not be canonicalized to a full OCC commit SHA (OMN-10419)."
+                exit 1
+              fi
+              occ_source_kind="merged"
+            else
+              # Not an ancestor of main: check if it matches any open OCC PR head.
+              matched_head="$(gh pr list --repo "OmniNode-ai/onex_change_control" --state open --json headRefOid --jq ".[] | select(.headRefOid | startswith(\"${occ_sha}\")) | .headRefOid" 2>/dev/null | head -1 || true)"
+              if [ -z "$matched_head" ]; then
+                echo "::error::RECEIPT GATE FAILED: Evidence-Source SHA '${occ_sha}' is neither an ancestor of OCC main nor the head of an open OCC PR. Provide a valid OCC commit or open-PR head (OMN-10419)."
+                exit 1
+              fi
+              occ_sha="$matched_head"
+              occ_source_kind="open-pr"
+            fi
+          else
+            echo "::error::RECEIPT GATE FAILED: Evidence-Source value '${evidence_source}' is not a valid OCC#<number> or hex SHA. Accepted forms: 'OCC#1234' or '<sha>' (OMN-10419)."
+            exit 1
+          fi
+
+          # Write the resolved exact SHA for subsequent steps.
+          printf '%s' "$occ_sha" > /tmp/occ_sha.txt
+          # Expose as step output for the checkout step's ref field.
+          echo "occ_sha=${occ_sha}" >> "$GITHUB_OUTPUT"
+          echo "occ_source_kind=${occ_source_kind}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Evidence-Source resolved to OCC SHA: ${occ_sha}"
+
+      # We need the onex_change_control repo to find contracts + receipts.
+      # OMN-10419: checkout at the exact SHA resolved above (never at main) for
+      # the normal (Evidence-Source-pinned) path. Not exercised by
+      # onex_change_control's own PRs (invariant I3) — kept for step-for-step
+      # parity with the omnibase_core-hosted validator this job replaces.
+      #
+      # OMN-15689 round-2 fix (D1): the PENDING_MERGE grandfather path used to
+      # fall back to a literal 'main' here — resolving to OCC's current
+      # contracts/receipts state, not to "validator code for the PR's target
+      # branch" (a materially different mechanism from the omnibase_core
+      # validator-ref checkout below, which answers "which branch's validator
+      # governs this PR"). AC(e)'s grep-for-hardcoded-refs check does not
+      # distinguish the two mechanisms, so the literal is resolved dynamically
+      # here too: fetch OCC's own default branch from the API instead of
+      # hardcoding 'main'. This step (like the checkout below) is unreachable
+      # for onex_change_control's own PRs — invariant I3 means the guard
+      # `github.repository != 'OmniNode-ai/onex_change_control'` is always
+      # false in this file, so this path only fires when another repo reuses
+      # this pattern.
+      - name: Resolve onex_change_control default branch (self-checkout fallback)
+        id: resolve_occ_default_branch
+        if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api repos/OmniNode-ai/onex_change_control --jq '.default_branch')"
+          if [ -z "$default_branch" ]; then
+            echo "::error::RECEIPT GATE FAILED: could not resolve onex_change_control's default branch via the GitHub API (OMN-15689 D1)."
+            exit 1
+          fi
+          echo "ref=${default_branch}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: onex_change_control self-checkout fallback ref resolved dynamically to '${default_branch}'."
+
+      - name: Check out onex_change_control (for contracts + receipts)
+        if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/onex_change_control
+          path: .onex_change_control
+          ref: ${{ steps.resolve_evidence_source.outputs.occ_sha == 'PENDING_MERGE' && steps.resolve_occ_default_branch.outputs.ref || steps.resolve_evidence_source.outputs.occ_sha || steps.resolve_occ_default_branch.outputs.ref }}
+          fetch-depth: 1
+
+      # OMN-10419 Finding 2: assert that the contract for the cited ticket exists
+      # at the pinned OCC SHA. Not exercised by onex_change_control's own PRs.
+      - name: Assert contract exists at pinned OCC SHA
+        if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+
+          # Skip if pre-cutoff (occ_sha.txt contains PENDING_MERGE).
+          if [ -f /tmp/occ_sha.txt ]; then
+            occ_sha="$(cat /tmp/occ_sha.txt)"
+            if [ "$occ_sha" = "PENDING_MERGE" ]; then
+              echo "::notice::Pre-cutoff PR — skipping contract existence assertion."
+              exit 0
+            fi
+          fi
+
+          # Derive PR number.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            resolved_pr_num="$PR_NUMBER"
+          elif [ -n "${MERGE_GROUP_HEAD_REF:-}" ]; then
+            resolved_pr_num="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -E 's@^.*/pr-([0-9]+)-.*$@\1@')"
+            [ "$resolved_pr_num" = "$MERGE_GROUP_HEAD_REF" ] && resolved_pr_num=""
+          else
+            resolved_pr_num=""
+          fi
+
+          # Extract ticket IDs from PR title (most direct source).
+          if [ -n "$resolved_pr_num" ]; then
+            pr_title="$(gh pr view "$resolved_pr_num" --repo "${{ github.repository }}" --json title --jq '.title' 2>/dev/null || true)"
+          else
+            pr_title=""
+          fi
+
+          ticket_ids="$(printf '%s' "$pr_title" | grep -oiE 'OMN-[0-9]+' | sort -u || true)"
+          if [ -z "$ticket_ids" ]; then
+            # No ticket in title — receipt_gate_cli will handle the "no ticket" error.
+            exit 0
+          fi
+
+          # Assert each cited ticket has a contract file at the pinned OCC SHA.
+          contracts_dir=".onex_change_control/contracts"
+          fail=0
+          while IFS= read -r ticket_id; do
+            contract_path="${contracts_dir}/${ticket_id}.yaml"
+            if [ ! -f "$contract_path" ]; then
+              echo "::error::RECEIPT GATE FAILED: Evidence-Source predates this ticket's contract — ${contract_path} does not exist at the pinned OCC SHA. The cited OCC commit predates the contract for ${ticket_id} (OMN-10419 Finding 2)."
+              fail=1
+            fi
+          done <<< "$ticket_ids"
+          exit "$fail"
+
+      - name: Set up Python 3.13
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        uses: astral-sh/setup-uv@v7
+
+      # OMN-12565: Runner Python write-contract preflight.
+      #
+      # The merge-group Receipt Gate previously installed omnibase-core into the
+      # system interpreter via `uv pip install --system`, which writes
+      # /usr/local/lib/python3.12/dist-packages. On a freshly recreated
+      # trusted-CI runner that path is owned by root and not writable by the
+      # `runner` user, so the gate failed until each container was manually
+      # chowned — container state, not an image guarantee.
+      #
+      # The durable shape removes `--system` entirely and installs into a
+      # uv-managed virtual environment under $GITHUB_WORKSPACE (always writable
+      # on a fresh runner). This preflight asserts that contract up front and
+      # fails loudly if it is violated, before any install or gate step runs.
+      - name: Preflight runner Python write contract
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        env:
+          RECEIPT_GATE_VENV: ${{ github.workspace }}/.receipt-gate-venv
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITHUB_WORKSPACE:-}" ]; then
+            echo "::error::OMN-12565 write-contract preflight: GITHUB_WORKSPACE is unset; cannot locate the writable venv root."
+            exit 1
+          fi
+
+          # Contract part 1: the workspace-rooted venv parent must be writable.
+          # This is the path the install step uses instead of the system path.
+          venv_parent="$(dirname "$RECEIPT_GATE_VENV")"
+          probe="${venv_parent}/.omn12565-write-probe"
+          if ! ( touch "$probe" && rm -f "$probe" ) 2>/dev/null; then
+            echo "::error::OMN-12565 write-contract preflight FAILED: ${venv_parent} is not writable by the runner user. The Receipt Gate venv cannot be created. A freshly recreated runner must expose a writable workspace; check the runner image and mount permissions."
+            exit 1
+          fi
+
+          # Contract part 2: prove we do NOT depend on writing the system
+          # dist-packages path. If a workflow ever reintroduces `uv pip install
+          # --system`, this preflight is the canary — the venv-only path means
+          # /usr/local/lib/python3.12/dist-packages writability is irrelevant.
+          system_dist="/usr/local/lib/python3.12/dist-packages"
+          if [ -d "$system_dist" ] && [ ! -w "$system_dist" ]; then
+            echo "::notice::OMN-12565: ${system_dist} is not writable — that is fine. The Receipt Gate installs into ${RECEIPT_GATE_VENV} (workspace venv), so the unwritable system path is not part of the contract."
+          fi
+
+          echo "::notice::OMN-12565 write-contract preflight PASSED: ${venv_parent} writable; gate uses workspace venv at ${RECEIPT_GATE_VENV}; no --system / dist-packages write required."
+
+      # Check out omnibase_compat + omnibase_core from source when running in a
+      # caller repo (not omnibase_core itself). This avoids the broken PyPI
+      # fallback where omnibase-core's published package references a git+https
+      # URL for omnibase-compat that no longer resolves.
+      #
+      # OMN-15689 round-1 fix: omnibase_compat now uses the SAME dynamically
+      # resolved PR-base-branch ref as the omnibase_core validator checkout
+      # below (steps.validator_ref.outputs.ref), not a hardcoded literal. The
+      # prior "main here, dev in call-occ-preflight.yml" split was itself a
+      # per-branch caller variant of the same dependency (adversarial finding,
+      # OMN-15689 round 1) — the ticket's AC(e) text is not scoped to the
+      # omnibase_core validator ref alone, so this dependency checkout is
+      # in scope too. Acknowledged consequence: a PR base branch that does not
+      # exist in omnibase_compat now fails this checkout step hard (fail-closed,
+      # same posture as the omnibase_core checkout below), rather than silently
+      # resolving to a fixed branch that may be stale relative to the PR's
+      # actual target.
+      - name: Check out omnibase_compat (transitive dep)
+        if: "steps.bot_exempt.outputs.exempt != 'true' && ! hashFiles('./src/omnibase_compat/__init__.py') && ! hashFiles('./omnibase_compat/pyproject.toml')"
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_compat
+          path: .receipt-gate-deps/omnibase_compat
+          ref: ${{ steps.validator_ref.outputs.ref }}
+          fetch-depth: 1
+
+      # OMN-15689 (R3a): checkout ref is the dynamically-resolved PR base
+      # branch (steps.validator_ref.outputs.ref), never a literal @main.
+      # A base ref that does not exist in omnibase_core fails this checkout
+      # step hard — no fallback ref is provided.
+      - name: Check out omnibase_core (for receipt-gate deps)
+        if: "steps.bot_exempt.outputs.exempt != 'true' && ! hashFiles('./src/omnibase_core/__init__.py') && ! hashFiles('./omnibase_core/pyproject.toml')"
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          path: .receipt-gate-deps/omnibase_core
+          ref: ${{ steps.validator_ref.outputs.ref }}
+          fetch-depth: 1
+
+      - name: Install omnibase_core
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        # Install from the PR's in-tree checkout (omnibase_core repo itself),
+        # or a sibling checkout, or the .receipt-gate-deps source checkouts.
+        # Never fall back to PyPI — the published package has a broken transitive
+        # dep (git+https omnibase-compat URL) that fails in CI.
+        #
+        # OMN-12565: install into a uv-managed virtual environment under
+        # $GITHUB_WORKSPACE instead of the system interpreter. `uv pip install
+        # --system` wrote /usr/local/lib/python3.12/dist-packages, which a
+        # freshly recreated trusted-CI runner cannot write. The workspace venv
+        # is always writable, so the write contract no longer depends on a
+        # mutable, manually-chowned system path. The venv python is exported as
+        # RECEIPT_GATE_PY for the downstream gate steps.
+        env:
+          RECEIPT_GATE_VENV: ${{ github.workspace }}/.receipt-gate-venv
+        run: |
+          set -euo pipefail
+
+          # Create a clean uv venv in the writable workspace. --clear makes the
+          # step idempotent across re-runs on a warm runner.
+          uv venv --clear --python 3.13 "$RECEIPT_GATE_VENV"
+          venv_py="$RECEIPT_GATE_VENV/bin/python"
+
+          if [ -f "./omnibase_compat/pyproject.toml" ]; then
+            compat_path="./omnibase_compat"
+          elif [ -f "./.receipt-gate-deps/omnibase_compat/pyproject.toml" ]; then
+            compat_path="./.receipt-gate-deps/omnibase_compat"
+          else
+            compat_path=""
+          fi
+
+          if [ -n "$compat_path" ]; then
+            uv pip install --python "$venv_py" --refresh -e "$compat_path"
+          fi
+
+          if [ -f "./pyproject.toml" ] && grep -qE '^\s*name\s*=\s*["\x27]omnibase[-_.]core["\x27]' ./pyproject.toml 2>/dev/null; then
+            core_path="."
+          elif [ -f "./omnibase_core/pyproject.toml" ]; then
+            core_path="./omnibase_core"
+          elif [ -f "./.receipt-gate-deps/omnibase_core/pyproject.toml" ]; then
+            core_path="./.receipt-gate-deps/omnibase_core"
+          else
+            echo "::error::omnibase_core not installable — no source checkout available"
+            exit 1
+          fi
+
+          # Seed omnibase_core's transitive deps from PyPI before the --no-deps +
+          # --no-index editable install below. Keep in sync with
+          # omnibase_core/pyproject.toml [dependencies].
+          uv pip install --python "$venv_py" \
+            'hatchling' \
+            'editables' \
+            'pydantic>=2.12.5,<3.0.0' \
+            'pyyaml>=6.0.2,<7.0.0' \
+            'dependency-injector>=4.48.3,<5.0.0' \
+            'deepdiff>=8.0.0,<10.0.0' \
+            'click>=8.3.1,<9.0.0' \
+            'cryptography>=46.0.3,<47.0.0' \
+            'jsonschema>=4.25.1,<5.0.0' \
+            'httpx>=0.27.0,<1.0.0' \
+            'blake3>=1.0.8,<2.0.0' \
+            'ruamel-yaml>=0.18.0'
+
+          # Build a wheel from source and install that exact wheel file, rather
+          # than asking uv to resolve the omnibase-core package name against
+          # the caller repo's own pyproject/uv config (which can pin an older
+          # exact version). Not editable — receipt-gate imports the module once
+          # and exits; editability was never a functional requirement.
+          rm -rf /tmp/receipt-gate-wheels
+          mkdir -p /tmp/receipt-gate-wheels
+          (cd "$core_path" && uv build --wheel --out-dir /tmp/receipt-gate-wheels)
+
+          wheel_path="$(find /tmp/receipt-gate-wheels -maxdepth 1 -type f -name 'omnibase_core-*.whl' -print -quit)"
+          if [ -z "$wheel_path" ]; then
+            echo "::error::omnibase_core wheel build produced no wheel in /tmp/receipt-gate-wheels"
+            find /tmp/receipt-gate-wheels -maxdepth 1 -type f -print || true
+            exit 1
+          fi
+
+          uv pip install --python "$venv_py" --no-config --no-deps --no-index \
+            --reinstall-package omnibase-core \
+            "$wheel_path"
+
+          # Export the venv interpreter for the downstream gate steps so they run
+          # against this install instead of bare `python` (the system interpreter).
+          echo "RECEIPT_GATE_PY=$venv_py" >> "$GITHUB_ENV"
+
+      - name: Verify receipt_gate_cli importable
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        # Fail-fast check: the preceding install step claims success, but if uv
+        # silently substituted a PyPI wheel for omnibase-core (OMN-9198), the
+        # installed package won't contain recent modules. Catch that here so the
+        # actual gate step gets a clear error instead of a stack trace.
+        run: |
+          "$RECEIPT_GATE_PY" -c "from omnibase_core.validation import validator_receipt_gate_cli" || {
+            echo "::error::omnibase_core.validation.validator_receipt_gate_cli not importable — install step silently picked a stale PyPI wheel"
+            "$RECEIPT_GATE_PY" -c "import omnibase_core, os; print('omnibase_core at:', os.path.dirname(omnibase_core.__file__))" || true
+            exit 1
+          }
+
+      - name: Resolve PR snapshot
+        id: resolve_body
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        # Resolve mutable GitHub state exactly once. All eligibility checks below
+        # consume these files plus the pinned OCC SHA; they do not re-fetch PR
+        # metadata or move the evidence ref during validation.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_EVENT_BODY: ${{ github.event.pull_request.body }}
+          PR_EVENT_TITLE: ${{ github.event.pull_request.title }}
+          PR_EVENT_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_EVENT_CREATED_AT: ${{ github.event.pull_request.created_at }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+          : > /tmp/pr_commit_shas.txt
+          : > /tmp/pr_commit_texts.txt
+
+          write_pr_snapshot() {
+            local pr_json="$1"
+            printf '%s' "$pr_json" | jq -r '.body // ""' > /tmp/pr_body.txt
+            printf '%s' "$pr_json" | jq -r '.title // ""' > /tmp/pr_title.txt
+            printf '%s' "$pr_json" | jq -r '.author.login // ""' > /tmp/pr_author.txt
+            printf '%s' "$pr_json" | jq -r '.headRefName // ""' > /tmp/pr_branch.txt
+            printf '%s' "$pr_json" | jq -r '.createdAt // ""' > /tmp/pr_created_at.txt
+            printf '%s' "$pr_json" | jq -r '.commits[]?.oid // empty' > /tmp/pr_commit_shas.txt
+            printf '%s' "$pr_json" | jq -r '.commits[]? | ((.messageHeadline // "") + " " + (.messageBody // "" | gsub("\r?\n"; " ")))' > /tmp/pr_commit_texts.txt
+          }
+
+          if [ -n "$PR_NUMBER" ]; then
+            if pr_json="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json body,title,author,headRefName,createdAt,commits 2>/dev/null)"; then
+              write_pr_snapshot "$pr_json"
+              printf '%s' "$PR_NUMBER" > /tmp/pr_number.txt
+            else
+              # API unavailable — fall back to event payload with a warning.
+              echo "::warning::gh pr view failed for PR #${PR_NUMBER}; using event payload (may be stale)"
+              printf '%s' "$PR_EVENT_BODY" > /tmp/pr_body.txt
+              printf '%s' "$PR_EVENT_TITLE" > /tmp/pr_title.txt
+              printf '%s' "$PR_EVENT_AUTHOR" > /tmp/pr_author.txt
+              printf '%s' "$PR_EVENT_BRANCH" > /tmp/pr_branch.txt
+              printf '%s' "$PR_EVENT_CREATED_AT" > /tmp/pr_created_at.txt
+              printf '%s\n' "$PR_EVENT_SHA" > /tmp/pr_commit_shas.txt
+              printf '%s' "$PR_NUMBER" > /tmp/pr_number.txt
+            fi
+          elif [ -n "$MERGE_GROUP_HEAD_REF" ]; then
+            pr_num="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -E 's@^.*/pr-([0-9]+)-.*$@\1@')"
+            if [ -n "$pr_num" ] && [ "$pr_num" != "$MERGE_GROUP_HEAD_REF" ]; then
+              pr_json="$(gh pr view "$pr_num" --repo "${{ github.repository }}" --json body,title,author,headRefName,createdAt,commits)"
+              write_pr_snapshot "$pr_json"
+              printf '%s' "$pr_num" > /tmp/pr_number.txt
+            else
+              : > /tmp/pr_body.txt
+              : > /tmp/pr_title.txt
+              : > /tmp/pr_author.txt
+              : > /tmp/pr_branch.txt
+              : > /tmp/pr_created_at.txt
+              : > /tmp/pr_number.txt
+            fi
+          else
+            : > /tmp/pr_body.txt
+            : > /tmp/pr_title.txt
+            : > /tmp/pr_author.txt
+            : > /tmp/pr_branch.txt
+            : > /tmp/pr_created_at.txt
+            : > /tmp/pr_number.txt
+          fi
+
+      - name: Resolve evidence snapshot
+        id: evidence
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        run: |
+          set -euo pipefail
+          repo_short="${GITHUB_REPOSITORY##*/}"
+          contracts_input="contracts"
+          receipts_input="drift/dod_receipts"
+          if [ "$repo_short" = "onex_change_control" ]; then
+            sha="$(git rev-parse HEAD)"
+            root="."
+            contracts_dir="${contracts_input#../}"
+            receipts_dir="${receipts_input#../}"
+          else
+            sha="$(git -C .onex_change_control rev-parse HEAD)"
+            root=".onex_change_control"
+            contracts_dir="$root/$contracts_input"
+            receipts_dir="$root/$receipts_input"
+          fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::invalid evidence snapshot SHA: $sha"
+            exit 1
+          fi
+          {
+            echo "sha=$sha"
+            echo "root=$root"
+            echo "contracts_dir=$contracts_dir"
+            echo "receipts_dir=$receipts_dir"
+          } >> "$GITHUB_OUTPUT"
+
+      # OMN-15111: The informal "Evidence-Commit: <sha>" PR-body trailer
+      # (hand-typed/tool-generated fleet-wide since OMN-14494, ~1045
+      # product-repo merged PRs carry it) was never validated by any gate —
+      # it is decorative text a human reviewer trusts but nothing resolves.
+      # Convention: Evidence-Commit cites the onex_change_control commit the
+      # adjacent Evidence-Source line resolves to. Not exercised by
+      # onex_change_control's own PRs (invariant I3).
+      - name: Validate Evidence-Commit binding
+        if: steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          "$RECEIPT_GATE_PY" -m omnibase_core.validation.validator_evidence_commit_binding_cli \
+            --pr-body-file /tmp/pr_body.txt \
+            --occ-sha-file /tmp/occ_sha.txt
+
+      - name: Run OCC Eligibility
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        run: |
+          set -euo pipefail
+          PR_TITLE="$(cat /tmp/pr_title.txt)"
+          PR_BRANCH="$(cat /tmp/pr_branch.txt)"
+          PR_NUMBER_RESOLVED="$(cat /tmp/pr_number.txt 2>/dev/null || true)"
+          REPO_NAME="${{ github.repository }}"
+          REPO_SHORT="${REPO_NAME##*/}"
+
+          if [ -z "$PR_NUMBER_RESOLVED" ]; then
+            echo "::error::could not resolve PR number for OCC eligibility"
+            exit 1
+          fi
+
+          commit_args=()
+          while IFS= read -r sha; do
+            [ -n "$sha" ] && commit_args+=(--pr-commit-sha "$sha")
+          done < /tmp/pr_commit_shas.txt
+          while IFS= read -r text; do
+            [ -n "$text" ] && commit_args+=(--pr-commit-text "$text")
+          done < /tmp/pr_commit_texts.txt
+
+          "$RECEIPT_GATE_PY" -m omnibase_core.validation.validator_occ_merge_eligibility \
+            --repo "$REPO_SHORT" \
+            --pr-number "$PR_NUMBER_RESOLVED" \
+            --pr-title "$PR_TITLE" \
+            --pr-body-file /tmp/pr_body.txt \
+            --pr-branch "$PR_BRANCH" \
+            --occ-commit-sha "${{ steps.evidence.outputs.sha }}" \
+            --contracts-dir "${{ steps.evidence.outputs.contracts_dir }}" \
+            --receipts-dir "${{ steps.evidence.outputs.receipts_dir }}" \
+            "${commit_args[@]}" \
+            | tee /tmp/occ_eligibility.json
+
+      - name: Run Receipt-Gate
+        if: steps.bot_exempt.outputs.exempt != 'true'
+        run: |
+          PR_BODY="$(cat /tmp/pr_body.txt)"
+          PR_TITLE="$(cat /tmp/pr_title.txt)"
+          PR_BRANCH="$(cat /tmp/pr_branch.txt 2>/dev/null || true)"
+          PR_AUTHOR="$(cat /tmp/pr_author.txt 2>/dev/null || true)"
+          PR_NUMBER_RESOLVED="$(cat /tmp/pr_number.txt 2>/dev/null || true)"
+          PR_OPENED_AT="$(cat /tmp/pr_created_at.txt 2>/dev/null || true)"
+          REPO_NAME="${{ github.repository }}"
+          REPO_SHORT="${REPO_NAME##*/}"
+
+          ALLOWLIST_ARG=""
+          EVIDENCE_ROOT="${{ steps.evidence.outputs.root }}"
+          if [ -f "$EVIDENCE_ROOT/allowlists/skip_token_approvals.yaml" ]; then
+            ALLOWLIST_ARG="--allowlist-path $EVIDENCE_ROOT/allowlists/skip_token_approvals.yaml"
+          fi
+
+          PR_AUTHOR_ARG=""
+          if [ -n "$PR_AUTHOR" ]; then
+            PR_AUTHOR_ARG="--pr-author $PR_AUTHOR"
+          fi
+
+          PR_NUMBER_ARG=""
+          if [ -n "$PR_NUMBER_RESOLVED" ]; then
+            PR_NUMBER_ARG="--current-pr-number $PR_NUMBER_RESOLVED"
+          fi
+
+          PR_OPENED_AT_ARG=""
+          if [ -n "$PR_OPENED_AT" ]; then
+            PR_OPENED_AT_ARG="--pr-opened-at $PR_OPENED_AT"
+          fi
+
+          # shellcheck disable=SC2086
+          "$RECEIPT_GATE_PY" -m omnibase_core.validation.validator_receipt_gate_cli \
+            --pr-body "$PR_BODY" \
+            --pr-title "$PR_TITLE" \
+            --contracts-dir "${{ steps.evidence.outputs.contracts_dir }}" \
+            --receipts-dir "${{ steps.evidence.outputs.receipts_dir }}" \
+            --current-repo "$REPO_SHORT" \
+            --branch-name "$PR_BRANCH" \
+            --target-branch "${{ steps.branch_policy.outputs.target_branch }}" \
+            --receipt-gate-policy-mode "${{ steps.branch_policy.outputs.policy_mode }}" \
+            --occ-source-kind "${{ steps.resolve_evidence_source.outputs.occ_source_kind || 'self' }}" \
+            $ALLOWLIST_ARG \
+            $PR_AUTHOR_ARG \
+            $PR_NUMBER_ARG \
+            $PR_OPENED_AT_ARG

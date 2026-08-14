@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13593"
+title: "Pin delegation_events.context_pack_hash migration vendoring guard — close stability-lane projection
+  503 schema drift"
+summary: >-
+  The delegation_events projection returned HTTP 503 degraded on the stability lane for 4 delegation projection
+  topics (onex.snapshot.projection.delegation.v1, projection-delegation-events.v1, delegation.decisions.v1,
+  delegation.correlation-trace.v1) because HandlerProjectionDelegation reads a context_pack_hash column
+  the live stability-lane delegation_events table did not have, DLQ-routing every event with 'column "context_pack_hash"
+  of relation "delegation_events" does not exist'. Root cause was determined to be stability-lane-lag,
+  NOT missing-migration-on-dev-HEAD: the node-owned migration 0020_delegation_context_pack_hash.sql (OMN-13407,
+  vendored under #2065) IS present on dev-HEAD and is verified APPLIED on the dev lane — the omnidash_analytics.delegation_events
+  table HAS the context_pack_hash text column and node:node_projection_delegation:0020_delegation_context_pack_hash.sql
+  is tracked in schema_migrations. The actionable source gap was that, unlike every prior delegation migration
+  (0017/0018/0019), 0020 had NO vendoring regression guard — a future sync-node-migrations.sh re-vendor
+  or renumber could silently drop it from the deployed forward tree and re-introduce exactly this drift
+  on the next fresh deploy. This change adds test_context_pack_hash_migration_vendored to TestVendoredViewMigrations
+  (matching the established 0017/0018/0019 guard pattern), pinning the migration permanently so a fresh
+  deploy always materializes the column. The stability-lane redeploy that clears the live 503 is owned
+  by the redeploy workstream; no prod/stability/judge runtime mutation in this change. Test-only diff
+  (no source, schema, migration, endpoint, or env change).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Root cause is stability-lane-lag, not missing-migration-on-dev-HEAD. The 0020_delegation_context_pack_hash.sql
+      migration is present on dev-HEAD (committed under #2065, OMN-13472) and verified applied on the
+      dev lane: a read-only psql probe of omnibase-infra-postgres (dev lane, no suffix) shows omnidash_analytics.delegation_events
+      HAS the context_pack_hash column (data_type text) and node:node_projection_delegation:0020_delegation_context_pack_hash.sql
+      is recorded in public.schema_migrations. Verifier (read-only probe) != runner (forward-migration
+      service). The migration is ADD COLUMN IF NOT EXISTS so warm volumes reconcile without error.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13593/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      The vendoring guard test_context_pack_hash_migration_vendored is proven by TDD: it FAILS with '0020_delegation_context_pack_hash.sql
+      must be vendored' when the migration file is moved aside (the exact failure mode that produces the
+      stability-lane 503 on a fresh deploy), and PASSES when the migration is vendored. The guard asserts
+      the file exists, the column add is idempotent (ADD COLUMN IF NOT EXISTS context_pack_hash TEXT NOT
+      NULL DEFAULT ''), and the supporting index (idx_delegation_events_context_pack_hash) is present.
+      The vendored 0020 SQL is byte-identical to the omnimarket source so the sync drift guard stays green.
+      Full tests/unit/migrations/ passes (41 passed, 1 skipped) in CI-equivalent env; mypy clean on the
+      changed test file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13593/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      The paired OCC PR carries contracts/OMN-13593.yaml + PASS dod_receipts under drift/dod_receipts/OMN-13593/;
+      the omnibase_infra PR body Evidence-Source pins this OCC PR head (then the merged OCC squash commit
+      SHA). Dev-lane verification only; no prod/stability/judge mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13593/dod-occ-pr/command.yaml"

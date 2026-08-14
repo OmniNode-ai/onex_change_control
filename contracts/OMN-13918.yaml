@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13918"
+title: "fix(OMN-13918): register redeploy as executable onex skill with explicit lane targeting + dry_run"
+summary: >-
+  omnimarket PR #1606 + omnibase_infra PR #2201 fix the redeploy skill executable-path defect. `onex skill
+  redeploy` had no skill_mapping.yaml entry (Unknown skill) and no explicit lane targeting for the .201
+  runtime redeploy path. omnibase_infra PR #2201 adds a `redeploy` entry mapping to node_redeploy_orchestrator
+  with an explicit --lane arg (payload_field: runtime_lane) the mapping never defaults, so the lane can
+  never silently resolve to prod; --scope / --git-ref / --dry-run round out the CLI surface. omnimarket
+  PR #1606 adds ModelRedeployStartCommand.dry_run and threads it through HandlerRedeployOrchestrator._on_start
+  so a dry-run short-circuits BEFORE the grant-resolve / gate-evaluate / deploy-publish / readiness-gate
+  bus round-trip and emits a REAL terminal ModelRedeployCompletedEvent with no live deploy I/O: DONE for
+  dev/stability-test, BLOCKED for prod (a dry-run cannot resolve the out-of-band promotion grant, so it
+  never fabricates a passing gate decision and never silently succeeds as a real deploy). PR #1606 also
+  fixes a state-coverage-gate false negative for TOPIC_GRANT_RESOLVE (already behaviorally tested, just
+  via the imported constant rather than the literal contract string) and adds an honest test pinning that
+  redeploy-phase-transition / readiness-gate-start remain contract-declared future outputs of the separate,
+  unimplemented OMN-12577 readiness-handoff work. Live runtime rebuild/redeploy of the omninode-runtime
+  image is outside this OCC evidence PR and remains operator-gated.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1606"
+    description: >-
+      Consuming-PR binding: omnimarket PR #1606 carries the OMN-13918 dry_run field + orchestrator short-circuit
+      + state-coverage-gate fix. Real probe: gh pr view 1606 --repo OmniNode-ai/omnimarket --json number,state,headRefOid,headRefName,title.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13918/dod-omnimarket-pr-1606/command.yaml"
+  - id: "dod-omnibase_infra-pr-2201"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2201 carries the OMN-13918 redeploy skill_mapping.yaml
+      registration with explicit lane targeting. Real probe: gh pr view 2201 --repo OmniNode-ai/omnibase_infra
+      --json number,state,headRefOid,headRefName,title.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13918/dod-omnibase_infra-pr-2201/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-gate assessment: both PRs touch runtime/CLI dispatch paths (node_redeploy_orchestrator handler
+      + input model; omnibase_infra skill_mapping.yaml), so deploy-gate requires deploy evidence. This
+      is a source-only dry-run-short-circuit + declarative CLI-mapping fix with no schema-breaking change
+      (dry_run is an additive optional field, default False) and no topic change. It performs no live
+      deploy, no docker exec, and no rpk topic produce. --dry-run explicitly never performs live deploy
+      I/O by design; a real prod redeploy still routes through the gated node_redeploy_orchestrator ->
+      prod-promotion-gate path exactly as before. Runtime rebuild/redeploy of the omninode-runtime image
+      remains operator-gated and is outside this evidence PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13918/dod-deploy-assessment/command.yaml
+          && grep -qi 'deploy' drift/dod_receipts/OMN-13918/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: onex_change_control PR carrying this OMN-13918 contract and the consuming-PR
+      evidence for omnimarket PR #1606 and omnibase_infra PR #2201.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13918/dod-occ-self/command.yaml"

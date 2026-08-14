@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12811"
+title: "Converge delegation terminal consumer on one snake_case event schema - drop dual-shape coalescing"
+summary: >-
+  OMN-12811 (Audit F6, epic OMN-12525). The canonical delegation terminal (delegation-completed.v1 / delegation-failed.v1)
+  is a single snake_case ModelDelegationResult schema (ConfigDict extra='forbid', no aliases); the legacy
+  task-delegated.v1 camelCase co-writer was already deleted (OMN-13629). The consumer-side _canonical_result_to_task_delegated_payload
+  converter and _upsert_canonical_delegation_terminal UPSERT in node_projection_delegation/handlers/handler_delegation.py
+  still coalesced data.get("x") or data.get("X") across dead camel/snake reads. omnimarket PR #1487 drops
+  every camelCase alias on this canonical terminal path (119 -> 55 camelCase reads in the file; the 55
+  residual are all in out-of-scope task-delegated e2e-probe, shadow-comparison/node-generation, and shared
+  project_event terminal-emit paths). Snake_case field-name fallbacks within the one schema are retained.
+  _preserve_existing_evidence is retained; it is a load-bearing OMN-13596/13408/13535 terminal-ordering
+  race guard, not a camelCase shim. No runtime node behavior change, no deploy, no .201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      New tests/test_delegation_converge_one_schema_omn12811.py proves snake_case maps correctly and camelCase
+      is now inert (red before, green after). Full omnimarket suite green.
+    command: "uv run pytest tests/test_delegation_converge_one_schema_omn12811.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      omnimarket PR #1487 converges the canonical delegation terminal consumer path on the single snake_case
+      schema: the converter _canonical_result_to_task_delegated_payload and the _upsert_canonical_delegation_terminal
+      UPSERT read snake_case only; all camelCase coalescing aliases are removed. A new test pins the converged
+      contract: test_async_converter_ignores_legacy_camelcase_dual_shape is red-proven (handler reverted
+      -> 1 failed, restored -> pass). Full omnimarket suite: 10292 passed, 47 skipped, 0 failed (-m "not
+      kafka"). mypy --strict and ruff clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-12811/dod-001/command.yaml && grep -q '^pr_number:
+          1487$' drift/dod_receipts/OMN-12811/dod-001/command.yaml
+  - id: "dod-no-deploy"
+    description: >-
+      Consumer-side projection handler refactor only (dead camelCase alias removal on the canonical delegation
+      terminal path). No contract topic change, no runtime node behavior change for the canonical snake_case
+      wire, no live deploy, no .201 mutation. _preserve_existing_evidence and the task-delegated e2e-probe
+      path are intentionally retained.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12811/dod-no-deploy/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-12811 contract and receipts
+      consumed by omnimarket PR #1487 via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12811/dod-occ-self/command.yaml"
