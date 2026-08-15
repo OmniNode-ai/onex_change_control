@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16073"
+title: "Re-enable shared CI env for same-repo dev PRs, right-size 10-min job timeouts"
+summary: >-
+  OCC companion for OmniNode-ai/omnibase_infra#2752. The OMNI_CI_SHARED_ENV_ENABLED expression in ci.yml
+  still disabled the host-local prebuilt dependency environment for same-repo PRs targeting dev -- a leftover
+  from when internal PR CI ran on ubuntu-latest, stale once internal PRs were rerouted onto the trusted
+  self-hosted fleet. Every same-repo dev PR job took the isolated `uv sync --no-cache` path (fleet-measured
+  setup floor median 317s / max 613s per job, n=38), with jobs at timeout-minutes: 10 killed during setup.
+  The fix deletes the stale dev-base clause so trusted same-repo PRs reuse the digest-keyed shared env
+  exactly as push/merge_group events already do (fork PRs keep isolated setup), and right-sizes the 11
+  jobs at job-level timeout-minutes: 10 to 15 to cover the measured 613s worst-case cold setup after a
+  lockfile-change PR. Lineage stays honest by construction: the env digest includes pyproject.toml + uv.lock,
+  so a dependency-pin move produces a new digest and a cold install of the new pin.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2752 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2752"
+    description: >-
+      PR #2752 on OmniNode-ai/omnibase_infra carries the shared-env re-enable and the timeout right-sizing.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2752 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-shared-env-dev-clause-removed"
+    description: >-
+      The stale `base.ref == 'dev'` clause is gone from the OMNI_CI_SHARED_ENV_ENABLED expression: ci.yml
+      at the pinned product head contains zero occurrences of the clause. RED at the pre-fix dev base
+      eff40541f1910170f77ef9a92d6f905b4873a24c, where the clause occurs once and the awk predicate exits
+      non-zero.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=539ec9b4aa153e4e8526083156bce7fc0f21401d --jq '.content' | base64 -d | awk "/base\\.ref == 'dev'/{n++} END{print n+0; exit (n==0 ? 0 : 1)}"
+  - id: "dod-shared-env-rationale-documented"
+    description: >-
+      The deletion carries its provenance in-file: the OMNI_CI_SHARED_ENV_ENABLED block at the pinned
+      product head documents why the dev clause existed, why it is stale, and why lineage is preserved
+      by the digest. RED at the pre-fix dev base, where the rationale comment does not exist (grep count
+      0, exit 1).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=539ec9b4aa153e4e8526083156bce7fc0f21401d --jq '.content' | base64 -d | grep -c 'OMN-16073: the expression previously also disabled the shared env'
+  - id: "dod-11-job-timeouts-right-sized"
+    description: >-
+      Exactly the 11 jobs previously at job-level timeout-minutes: 10 are now 15: ci.yml at the pinned
+      product head contains exactly 19 `timeout-minutes: 15` lines (8 pre-existing + 11 bumped). RED at
+      the pre-fix dev base, where the count is 8 and the exact-match grep on 19 exits non-zero.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=539ec9b4aa153e4e8526083156bce7fc0f21401d --jq '.content' | base64 -d | grep -c 'timeout-minutes: 15' | grep -x 19
+  - id: "occ-self-bind-pr-6520"
+    description: "OCC companion PR #6520 — self-bind for OMN-16073 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6520 --repo OmniNode-ai/onex_change_control --json number,state"
