@@ -1,0 +1,38 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16076"
+title: "Application-database SQL gate: resolve changed-SQL base from push event context"
+summary: >
+  Central OCC evidence for the OMN-16076 fix: the trusted changed-SQL step's base revision now falls back
+  to push event.before instead of a hardcoded SHA that was unreachable from main, and the gate script
+  fail-louds on empty/zero/unreachable bases with remediation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "Fix PR #2754 CI checks green"
+    command: "gh pr checks 2754 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2754"
+    description: >-
+      SHA-agnostic exact-head content probe for omnibase_infra PR #2754 (resolves merge_commit_sha after
+      merge, head.sha before). Asserts all four load-bearing properties of the fix at the probed ref:
+      (1) ci.yml's APPLICATION_SQL_BASE_REVISION falls back to github.event.before, (2) the old unreachable
+      pinned SHA 7228ce0c0934ae096dd6effd0f84ff1913fec6c0 appears nowhere in ci.yml, (3) the gate script
+      carries the fail-loud base validator _assert_base_revision_resolvable, and (4) the committed regression
+      test holding the workflow expression to zero hardcoded 40-hex literals is present. Assertions run
+      as python3 stdin-membership checks: python reads ALL of stdin before exiting, so no writer is ever
+      killed mid-write (the SIGPIPE-under-pipefail failure shape of grep -q pipes), and the identical
+      exit codes hold under both the dod_verify bash -o pipefail runner and this repo's sh -c contract-compliance
+      runner.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          pr_ref="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2754 --jq '.merge_commit_sha // .head.sha')" && gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=$pr_ref" --jq '.content' | base64 -d | python3 -c 'import sys; d = sys.stdin.read(); sys.exit(0 if "github.event.merge_group.base_sha || github.event.before" in d and "7228ce0c0934ae096dd6effd0f84ff1913fec6c0" not in d else 1)' && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/check_application_database_sql.py?ref=$pr_ref" --jq '.content' | base64 -d | python3 -c 'import sys; sys.exit(0 if "def _assert_base_revision_resolvable" in sys.stdin.read() else 1)' && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_application_database_sql_gate.py?ref=$pr_ref" --jq '.content' | base64 -d | python3 -c 'import sys; sys.exit(0 if "test_ci_workflow_base_revision_has_no_hardcoded_pin" in sys.stdin.read() else 1)' && echo "OMN-16076-PUSH-BASE-PASS: head resolves changed-SQL base from event.before with fail-loud validation and zero hardcoded pins"
