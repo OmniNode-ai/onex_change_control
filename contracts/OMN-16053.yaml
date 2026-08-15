@@ -1,0 +1,98 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16053
+title: 'Runner-fleet C2: local git mirrors + Actions tool-cache durability (git-transport egress)'
+summary: 'OCC companion for OmniNode-ai/omnibase_infra PR #2755. Every CI job on the 72-runner self-hosted
+  fleet cold-clones its repository from github.com through one NAT uplink, because the job-started hook
+  correctly destroys the workspace before each job; a full wave is a synchronized clone burst that degrades
+  the git plane for every lane (GnuTLS -9/-54 + early-EOF checkout kills, 2026-08-14). The C2 component
+  removes that burst: bare mirrors on the runner host, a git-daemon bound to the docker bridge gateway
+  only, a flock-serialized 2-minute refresh (one upstream fetch per repo per interval for the whole fleet),
+  a fail-open workspace pre-seed in the bind-mounted job-started hook, and a gated uv git-dependency rewrite
+  that serves the exact pinned SHA from the mirror. The component is deployed and serving on the runner
+  host; this PR lands the same bytes as repo-managed state so the repo is the source of truth again, and
+  this companion binds the evidence that the landed code carries the safety properties the design depends
+  on: lineage honesty (checkout still fetches the exact requested SHA from github.com; the mirror is a
+  delta reducer, never a source of truth), fail-open degradation, push-path pinning back to github.com,
+  and single-fetcher upstream refresh.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: 'PR #2755 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-OmniNode-ai-omnibase_infra-pr-2755
+    description: 'PR #2755 on OmniNode-ai/omnibase_infra lands the C2 git-mirror component (refresh script,
+      job-started pre-seed + uv rewrite, systemd units, tool-cache seed, runbook) as repo-managed state.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 2755 --repo OmniNode-ai/omnibase_infra --json number,state
+  - id: dod-preseed-is-fail-open-delta-reducer
+    description: 'The workspace pre-seed cannot fail a job and cannot substitute for the authenticated
+      checkout. Every degraded outcome (mirror absent, unreachable, stale, corrupt, probe timeout) leaves
+      the workspace cold and the job unaffected, and a successful seed still ends with actions/checkout
+      fetching the exact requested SHA from github.com over its own authenticated remote — the seed only
+      shrinks that fetch to a delta. Asserted positively on the fail-open markers and the delta-not-clone
+      completion line in the landed hook.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/runners/runner-job-started.sh?ref=412f165c694dc575fc346fc90562248e706fc84a
+          --jq '.content' | base64 -d | grep -c 'fail-open'
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/runners/runner-job-started.sh?ref=412f165c694dc575fc346fc90562248e706fc84a
+          --jq '.content' | base64 -d | grep -c 'checkout will fetch a delta, not a full clone'
+  - id: dod-uv-rewrite-gated-on-exact-pin-servability
+    description: 'The uv git-dependency rewrite is emitted only after the hook proves the mirror can serve
+      the exact pinned commit with a filtered fetch; a mirror that does not advertise the pin leaves uv
+      on its direct github.com path. This is the property that makes a stale mirror cost delta bytes instead
+      of failing or mis-resolving a job. Asserted on the probe fetch that gates the rewrite.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/runners/runner-job-started.sh?ref=412f165c694dc575fc346fc90562248e706fc84a
+          --jq '.content' | base64 -d | grep -c 'filter=tree:0'
+  - id: dod-push-pinned-back-to-github
+    description: 'A bare url.insteadOf also rewrites the push URL (documented git behaviour; measured
+      during rollout — the daemon serves no receive-pack, so a rewritten push fails closed). The landed
+      hook emits an identity pushInsteadOf per rewritten repo so pushes resolve back to github.com while
+      the fetch redirect stands. Asserted on the pushInsteadOf emission in the landed hook.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/runners/runner-job-started.sh?ref=412f165c694dc575fc346fc90562248e706fc84a
+          --jq '.content' | base64 -d | grep -c 'pushInsteadOf'
+  - id: dod-single-upstream-fetcher
+    description: 'Mirror refresh cannot itself hammer github.com: the refresh script takes a non-blocking
+      flock and exits when another refresh holds it, and every mirror carries the uploadpack serving config
+      (allowFilter + allowAnySHA1InWant) applied idempotently on each pass so the gated uv rewrite stays
+      servable. Together with the systemd oneshot unit this yields one upstream fetch per repo per interval
+      for all 72 runners.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/runners/git-mirror-refresh.sh?ref=412f165c694dc575fc346fc90562248e706fc84a
+          --jq '.content' | base64 -d | grep -c 'flock -n 9'
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/runners/git-mirror-refresh.sh?ref=412f165c694dc575fc346fc90562248e706fc84a
+          --jq '.content' | base64 -d | grep -c 'allowAnySHA1InWant'
+  - id: dod-host-deployment-parity
+    description: 'The landed repo bytes equal the copies deployed and serving on the runner host — the
+      PR is drift-closure, not a divergent rewrite. Verified by comparing sha256 of the repo files at
+      the PR head against the deployed copies under the runner staging directory on the runner host, read
+      over ssh during the lane run.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/runners/runner-job-started.sh?ref=412f165c694dc575fc346fc90562248e706fc84a
+          --jq '.content' | base64 -d | shasum -a 256
+  - id: occ-self-bind-pr-6521
+    description: 'This OCC companion PR itself, binding the evidence set to the governed change-control
+      record.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6521 --repo OmniNode-ai/onex_change_control --json number,state
