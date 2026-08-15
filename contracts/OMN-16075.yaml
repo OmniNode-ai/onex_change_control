@@ -1,0 +1,103 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16075
+title: onex-api heartbeat edge mirror for the termination_reason contract change (tolerant window)
+summary: 'OCC companion for OmniNode-ai/omninode_infra PR #907. omnibase_infra#2736 replaces ModelGatewayHeartbeatResponse.revoked
+  with a nullable termination_reason enum and adds EXPIRED/QUARANTINED session states and event types.
+  The onex-api edge validates that bus payload with extra=forbid (routers/gateway.py -> ModelGatewayHeartbeatHTTPResponse.model_validate,
+  502 on failure), so with no mirror every heartbeat -- healthy ones included -- becomes an HTTP 502 the
+  moment the new runtime deploys, and the durable gateway_sessions projection silently drops every enforced
+  teardown. This companion binds the evidence that the edge now accepts BOTH payload generations (tolerant
+  window: edge deploys first, runtime second, tighten-to-single-field is a follow-up), that all three
+  terminal triples are driven through both the HTTP model and the projection extractor by a cross-boundary
+  seam test, and that the three gateway-session CHECK constraints were extended with a fail-closed rollback.'
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: 'PR #907 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-OmniNode-ai-omninode_infra-pr-907
+    description: 'PR #907 on OmniNode-ai/omninode_infra carries the tolerant-window heartbeat mirror at
+      the onex-api edge (the extra=forbid seam).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 907 --repo OmniNode-ai/omninode_infra --json number,state
+  - id: dod-tolerant-window-accepts-both-generations
+    description: 'The seam test proves the edge accepts BOTH payload generations: the post-rename healthy
+      shape (termination_reason present-as-null, no revoked) and the pre-rename healthy shape (revoked
+      only). Without the first, every heartbeat 502s when the new runtime deploys; without the second,
+      the edge cannot deploy ahead of the runtime and the rollout order becomes an outage. Greps for both
+      named tests at the pinned PR head; expects exactly 2.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_gateway_heartbeat_termination_seam.py?ref=a1422777416119a70d83c70f7da1920289923007
+          --jq '.content' | base64 -d | grep -c 'def test_edge_accepts_post_rename_healthy_heartbeat\|def
+          test_edge_still_accepts_pre_rename_healthy_heartbeat'
+  - id: dod-terminal-triples-driven-through-http-model
+    description: The three terminal triples the producer handler actually emits -- REVOKED/REVOKED/REVOKED,
+      EXPIRED/EXPIRED/EXPIRED, UNVERIFIED_CEILING/QUARANTINED/QUARANTINED -- are parametrized through
+      the HTTP response model, which also exercises the extended status/event-type enum mirrors. Greps
+      for the UNVERIFIED_CEILING triple row at the pinned head.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_gateway_heartbeat_termination_seam.py?ref=a1422777416119a70d83c70f7da1920289923007
+          --jq '.content' | base64 -d | grep -c 'UNVERIFIED_CEILING'
+  - id: dod-projection-accepts-terminal-shapes
+    description: 'The projection half of the seam: extract_session_projection validates the same wire
+      models before writing public.gateway_sessions, so a mirror that fixed only the HTTP path would silently
+      drop every enforced teardown from the authoritative readback. The seam test drives all three terminal
+      shapes through the extractor.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_gateway_heartbeat_termination_seam.py?ref=a1422777416119a70d83c70f7da1920289923007
+          --jq '.content' | base64 -d | grep -c 'def test_projection_accepts_terminal_shapes'
+  - id: dod-check-constraints-extended
+    description: Migration 20260815_gateway_sessions_terminal_states.sql re-adds all three gateway-session
+      CHECK constraints (gateway_sessions.status, gateway_sessions.last_event_type, gateway_session_events.event_type)
+      with the EXPIRED/QUARANTINED values; without it the projection write violates the CHECK once the
+      Pydantic mirrors accept the new states. Expects exactly 3 ADD CONSTRAINT statements at the pinned
+      head.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/db/migrations/20260815_gateway_sessions_terminal_states.sql?ref=a1422777416119a70d83c70f7da1920289923007
+          --jq '.content' | base64 -d | grep -c 'ADD CONSTRAINT'
+  - id: dod-rollback-fail-closed
+    description: The rollback refuses (raises, inside the transaction) while any row carries an EXPIRED/QUARANTINED
+      value the restored constraints would reject, rather than failing halfway through ADD CONSTRAINT.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/db/migrations/rollback/20260815_gateway_sessions_terminal_states_rollback.sql?ref=a1422777416119a70d83c70f7da1920289923007
+          --jq '.content' | base64 -d | grep -c 'ROLLBACK REFUSED'
+  - id: dod-deploy-assessment
+    description: 'Falsifiable deploy probe (OMN-14443). The deployed surface this ticket changes is onex-api''s
+      heartbeat response validation: an image without the tolerant bridge 502s every heartbeat once the
+      producer''s rename deploys. This reads models_gateway.py back from GitHub at the pinned head and
+      greps for the bridging validator, so it goes RED the moment the bridge is absent or renamed -- it
+      reads a surface outside this repo, never a receipt or contract this PR authors. The live-cluster
+      half (a real heartbeat against deployed onex-api on onex-dev returning 200 with both fields) is
+      the post-deploy acceptance test tracked on the ticket; it cannot run before the image exists.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/models_gateway.py?ref=a1422777416119a70d83c70f7da1920289923007
+          --jq '.content' | base64 -d | grep -c '_bridge_revoked_and_termination_reason'
+  - id: occ-self-bind-pr-6519
+    description: 'Binds OMN-16075 to OCC companion PR #6519 (self-bind).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6519 --repo OmniNode-ai/onex_change_control --json number,state
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
