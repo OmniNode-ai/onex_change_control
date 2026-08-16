@@ -1,0 +1,104 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15713"
+title: "live_events projection ingest stalled since 2026-08-01 while projection API reports healthy"
+summary: >-
+  DoD contract for OMN-15713. This ticket has NO product PR of its own and deliberately so — its AC1 says
+  the redeploy carrying the OMN-15705 fix is already in flight under OMN-15655 and must not be duplicated
+  from here. The three acceptance criteria are in three different states and the contract says so rather
+  than flattening them: AC3 (root cause named with commit SHAs and pod-start evidence) was satisfied on
+  filing and is bound below to the artefacts it cites; AC1 (ingest resumes on onex-dev) is a live readback
+  that the OCC compliance runner cannot reach from a hosted runner and is declared receipt-backed with
+  its blocking condition named; AC2 (a projection-liveness check that classifies live_events STALE/BROKEN
+  while its deployment still reports Running) is NOT BUILT as of omnimarket dev ca90f81d — verified, not
+  assumed: `git grep live_events` over node_database_sweep and node_golden_chain_sweep at that ref returns
+  zero hits. Two of four evidence items are therefore status pending and will be RED until the work they
+  name lands. That is the honest state, not a gap.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "AC1 live readback on onex-dev: max(created_at) in omnidash_analytics.live_events advances
+      past the 2026-08-01T22:03:18Z stall point once a redeploy carrying the OMN-15705 fix completes.
+      Blocked on the OMN-15655 re-pin chain, not on work from this ticket."
+    command: "psql \"${OMNIDASH_ANALYTICS_DSN}\" -tAc \"select max(created_at) from live_events\""
+  - kind: "tests"
+    description: "AC2 liveness mechanism: a check that classifies live_events (and the sibling write-only
+      projection contracts sharing the OMN-15705 pre-read pattern) as STALE/BROKEN when now() - max(created_at)
+      exceeds a bound, with a RED case proving a table whose deployment reports Running while its consumer
+      has stopped writing is caught. Not yet authored."
+    command: "uv run pytest -k projection_liveness -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-15713-ac3-root-cause-omnimarket-2016"
+    description: >-
+      AC3, first cited artefact. The ticket names omnimarket PR #2016 (OMN-15705) as the merged fix for
+      the pre-read that DLQ'd every dispatch to HandlerProjectionLiveEvents. Asserted at its exact merge
+      commit 2520515ea4d516047950ce6cea5b86caa563c13c with the live_events handler in scope, and the second
+      check reads the handler live on dev to confirm the fix is actually present in the source the ticket
+      says it read — the OMN-15705 marker is there and no db.query( pre-read survives. Absence assertion
+      is fail-closed: the positive marker leg proves the read landed first.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2016 --repo OmniNode-ai/omnimarket --json state,mergeCommit,title,files --jq 'if (.state == "MERGED" and .mergeCommit.oid == "2520515ea4d516047950ce6cea5b86caa563c13c" and (.title | test("OMN-15705")) and ([.files[].path] | index("src/omnimarket/nodes/node_projection_live_events/handlers/handler_projection_live_events.py") != null)) then "true" else error("unexpected #2016 state, merge commit, or scope") end'
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_live_events/handlers/handler_projection_live_events.py?ref=dev" --jq '.content' | base64 -d > "$f" && grep -qF 'OMN-15705' "$f" && ! grep -qE 'db\.query\(' "$f" && rm -f "$f"
+  - id: "dod-15713-ac3-root-cause-infra-3863623e"
+    description: >-
+      AC3, second cited artefact. The ticket names omnibase_infra commit 3863623e48 (OMN-15418, feat runtime
+      type database ownership wiring, #2548) as the change that introduced the per-call read enforcement
+      raising PermissionError against a contract-declared access:write table. Asserted by reading _assert_read_declared
+      out of handler_wiring.py at that exact commit. The file is 316KB, so it is buffered to a temp file
+      rather than piped into grep -q: an early-exiting grep on a pipe that large SIGPIPEs its producer,
+      and under the runner's pipefail that 141 becomes a false RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=3863623e4844dc9b0db69ceb4e77942737fbca32" --jq '.content' | base64 -d > "$f" && grep -qF '_assert_read_declared' "$f" && rm -f "$f"
+  - id: "dod-15713-ac1-ingest-resumed"
+    description: >-
+      AC1, PENDING and explicitly blocked. Requires a live readback proving max(created_at) in omnidash_analytics.live_events
+      on onex-dev has advanced past the 2026-08-01T22:03:18Z stall point. BLOCKING CONDITION: satisfied
+      only by the OMN-15655 re-pin chain landing a runtime image built at or after the OMN-15705 fix and
+      that image actually rolling out on onex-dev — the ticket forbids driving a separate deploy from
+      here. The OCC compliance runner is hosted and has no route to onex-dev Postgres, so the probe cannot
+      be a check_value; the probe command is recorded in evidence_requirements and this item binds the
+      receipt that a live run must produce. This check is RED until that receipt exists, which is the
+      correct state — it must not be marked verified on the strength of the fix having merged, because
+      merged is not deployed and this ticket exists precisely because the two were conflated.
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "drift/dod_receipts/OMN-15713/dod-15713-ac1-ingest-resumed/command.yaml"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -qF 'ingest_advanced_past_2026-08-01T22:03:18Z=true' drift/dod_receipts/OMN-15713/dod-15713-ac1-ingest-resumed/command.yaml
+  - id: "dod-15713-ac2-liveness-check"
+    description: >-
+      AC2, PENDING and NOT BUILT. Requires a check that classifies live_events as STALE/BROKEN on a now()
+      - max(created_at) bound even while the owning deployment reports Running, so "pod healthy" stops
+      standing in for "consumer writing". Verified baseline as of omnimarket dev ca90f81d: the table name
+      appears zero times in node_database_sweep and zero times in node_golden_chain_sweep, and node_database_sweep's
+      _check_table only assesses freshness for a table that is Drizzle-defined or carries a per-table
+      threshold — live_events is neither, so today it lands in the "staleness unassessable" UNKNOWN branch,
+      which is not an issue state and therefore alerts nobody. The check below is anchored on node_database_sweep
+      because that is the first home the ticket names. If the implementer instead lands the mechanism
+      in golden_chain_sweep or a dedicated projection-liveness probe, this check_value must be re-pointed
+      at the real path in the same PR that lands it — the contract records the acceptance target, and
+      moving the target is a contract amendment, not a silent pass.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_database_sweep/handlers/handler_database_sweep.py?ref=dev" --jq '.content' | base64 -d > "$f" && grep -qF 'live_events' "$f" && rm -f "$f"
