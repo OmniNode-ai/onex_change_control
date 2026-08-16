@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16090"
+title: "OCC evidence for OMN-16090 — hook-event-capture gateway contract (FENCED)"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #914. Adds the hook-event-capture workflow type to the
+  gateway catalog (landing FENCED) and the array-aware payload validation it depends on, so 1931 hook/skill
+  events stranded in a local emit spool have a contract-governed path to the cloud that adds no new API
+  route and never lets a caller name a topic.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  # A new public workflow_type on POST /v1/workflows (public_api), bound to a new
+  # onex.cmd.* command topic constant (topics), with a new wire payload
+  # passthrough spec on the canonical command envelope (envelopes).
+  - "public_api"
+  - "topics"
+  - "envelopes"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #914 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-914"
+    description: >
+      PR #914 on OmniNode-ai/omninode_infra — the gateway leg of the hook-event-capture path.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 914 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 914 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "dod-catalog-entry-is-declared-and-fenced"
+    description: >
+      The catalog declares hook-event-capture with enabled:false. Fenced is the asserted state, not an
+      accident: the consuming node is not in the deployed runtime image, and the loader refuses a catalog
+      whose entries are ALL fenced, so this proves the entry is present AND non-servable.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "cd docker/onex-api && python -m pytest tests/test_omn_16090_hook_event_capture.py::TestCatalogEntry
+          -q"
+  - id: "dod-array-items-and-bounds-are-enforced"
+    description: >
+      The payload validator recurses `items` and enforces minItems/maxItems. Before this change `type:
+      array` was a bare isinstance(list) check, which made a per-element additionalProperties:false a
+      fiction and made the batch unbounded at ingress. RED-before on this branch was 20 failed / 5 passed;
+      GREEN-after 25 passed.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "cd docker/onex-api && python -m pytest tests/test_omn_16090_hook_event_capture.py::TestArrayElementValidation
+          tests/test_omn_16090_hook_event_capture.py::TestArrayBounds -q"
+  - id: "dod-catalog-wire-spec-drift-gate"
+    description: >
+      Every declared catalog workflow (fenced included) has a wire passthrough spec whose key order follows
+      catalog property order. This gate FAILED on the first push of #914 and is the reason the second
+      commit exists — it is cited here as a caught defect, not as a formality.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "cd docker/onex-api && python -m pytest tests/test_push_validation_tenant_seam.py::TestCatalogTenantOneRegistration::test_every_catalog_workflow_has_a_wire_passthrough_spec
+          -q"
+  - id: "dod-real-corpus-validates-vs-contract"
+    description: >
+      All 1931 real spooled events on the operator machine frame and validate against the shipped contract
+      via the gateway's own validator, in 8 contract-sized batches, with 0 errors, 0 unframeable files
+      and 1931 distinct event_sha values. This is the evidence that the schema fits the actual corpus
+      rather than a hand-written sample.
+    source: "generated"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-914"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
