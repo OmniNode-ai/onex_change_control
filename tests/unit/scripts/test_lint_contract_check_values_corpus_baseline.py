@@ -541,7 +541,13 @@ _RULE_E_RATCHETED_CENSUS: dict[str, tuple[int, int]] = {
     # base64 -d straight into grep -q. The lint skips superseded ids, so the
     # instance leaves the live scan and this shrink-only pin must follow it
     # in the SAME PR.
-    "base64-decoded file body": (159, 176),
+    #
+    # 2026-08-16: 159 -> 158 items / 176 -> 175 checks. This PR's append-only
+    # supersede of contracts/OMN-14498.yaml::dod-omnibase-infra-pr-2436-deploy-scope
+    # replaces the `base64 -d | grep -q` producer with the buffered-read idiom.
+    # The lint skips superseded ids, so the instance leaves the live scan and
+    # this shrink-only pin follows it in the SAME PR.
+    "base64-decoded file body": (158, 175),
     "gh pr diff": (143, 143),
     "paginated REST list": (5, 5),
     "git history walk": (4, 4),
@@ -628,9 +634,9 @@ def test_rule_e_census_totals_agree_with_the_baseline_and_scan() -> None:
     # _RULE_E_GENERATED_BUCKETS above), so it is asserted non-empty rather than
     # equal; a zero would mean the detector stopped seeing the producer's output
     # entirely, which is a detector regression, not a repair.
-    # 312 -> 311 (2026-07-30, OCC#5673): see the shrink note on
-    # _RULE_E_RATCHETED_CENSUS["base64-decoded file body"].
-    assert len(live_t1) == len(baseline) == 311
+    # 312 -> 311 (2026-07-30, OCC#5673), 311 -> 310 (2026-08-16, this PR): see
+    # the shrink notes on _RULE_E_RATCHETED_CENSUS["base64-decoded file body"].
+    assert len(live_t1) == len(baseline) == 310
     assert len(live_gen) >= 58
 
     for label, census, distinct in (
