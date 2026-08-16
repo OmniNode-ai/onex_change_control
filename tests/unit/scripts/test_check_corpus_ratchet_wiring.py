@@ -79,31 +79,49 @@ def test_removing_the_job_fails(tmp_path: Path) -> None:
     assert "is absent" in failures[0]
 
 
-@pytest.mark.unit
-def test_dropping_the_job_from_ci_summary_needs_fails(tmp_path: Path) -> None:
-    """CI Summary must WAIT for the ratchets, or it can report green first."""
-    data = _load()
-    data["jobs"]["ci-summary"]["needs"].remove(wiring._JOB_ID)
-    failures = wiring.check_wiring(_write(tmp_path, data))
-    assert any("needs:" in f for f in failures), failures
+_GATE_MODULE = _REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py"
+
+
+def _write_gate_module(tmp_path: Path, source: str) -> Path:
+    path = tmp_path / "ci_summary_gate.py"
+    path.write_text(source, encoding="utf-8")
+    return path
 
 
 @pytest.mark.unit
-def test_removing_the_strict_success_only_check_fails(tmp_path: Path) -> None:
-    """The generic rollup passes on a SKIPPED need -- this is the real hole.
-
-    ``contains(needs.*.result, 'failure')`` is false for ``skipped``, so a job
-    that is in ``needs:`` but skips still lets CI Summary go green. Only the
-    explicit ``!= "success"`` check fails closed.
+def test_ci_summary_declaring_needs_is_a_regression(tmp_path: Path) -> None:
+    """OMN-15768: ci-summary must be the no-needs poller; a `needs:` here is
+    a REGRESSION to the needs-graph-omission bug class (OCC#6346), not a
+    legitimate wiring shape -- the opposite of what this anchor used to test.
     """
     data = _load()
-    step = data["jobs"]["ci-summary"]["steps"][0]
-    step["run"] = step["run"].replace(
-        f'if [[ "${{{{ needs.{wiring._JOB_ID}.result }}}}" != "success" ]]; then',
-        "if false; then",
-    )
+    data["jobs"]["ci-summary"]["needs"] = [wiring._JOB_ID]
     failures = wiring.check_wiring(_write(tmp_path, data))
-    assert any("strict success-only" in f for f in failures), failures
+    assert any("declares `needs:`" in f for f in failures), failures
+
+
+@pytest.mark.unit
+def test_job_not_registered_in_strict_gate_jobs_fails(tmp_path: Path) -> None:
+    """The job's display name must be registered in ci_summary_gate.py's
+    STRICT_GATE_JOBS -- an unregistered job is invisible to the poller's
+    explicit strict check (the generic default-deny sweep alone is not
+    sufficient proof of intent, per the OMN-15768 design).
+    """
+    mutated_gate = _GATE_MODULE.read_text(encoding="utf-8").replace(
+        '"Contract Corpus Ratchets (OMN-15411)",\n', ""
+    )
+    assert mutated_gate != _GATE_MODULE.read_text(encoding="utf-8")
+    gate_path = _write_gate_module(tmp_path, mutated_gate)
+    failures = wiring.check_wiring(_CI_YAML, gate_module_path=gate_path)
+    assert any("STRICT_GATE_JOBS" in f for f in failures), failures
+
+
+@pytest.mark.unit
+def test_job_registered_in_strict_gate_jobs_passes(tmp_path: Path) -> None:
+    """GREEN-after control for the STRICT_GATE_JOBS registration check."""
+    gate_path = _write_gate_module(tmp_path, _GATE_MODULE.read_text(encoding="utf-8"))
+    failures = wiring.check_wiring(_CI_YAML, gate_module_path=gate_path)
+    assert failures == []
 
 
 @pytest.mark.unit

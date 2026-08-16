@@ -38,6 +38,7 @@ failing one (the OMN-14666/14668 lesson).
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,7 @@ import yaml
 
 _JOB_ID = "contract-corpus-ratchets"
 _SUMMARY_JOB_ID = "ci-summary"
+_GATE_MODULE_RELPATH = Path("scripts") / "ci" / "ci_summary_gate.py"
 _CORPUS_TEST_MODULE = (
     "tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py"
 )
@@ -128,35 +130,105 @@ def _check_ratchet_job(job: dict[str, Any]) -> list[str]:
     return failures
 
 
-def _check_summary_job(summary: dict[str, Any]) -> list[str]:
-    """ci-summary must WAIT for the ratchets and assert success-only."""
+def _extract_strict_gate_jobs(gate_module_path: Path) -> tuple[str, ...] | None:
+    """Statically extract ``STRICT_GATE_JOBS`` from ci_summary_gate.py.
+
+    AST-parsed (not imported) so this never executes the target file and so a
+    test can point it at an isolated mutated copy without any sys.path /
+    sys.modules cache-poisoning risk. Returns ``None`` if the file is
+    missing/unparseable or the tuple assignment cannot be found.
+    """
+    if not gate_module_path.is_file():
+        return None
+    try:
+        tree = ast.parse(gate_module_path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        # STRICT_GATE_JOBS carries a `tuple[str, ...]` type annotation, so the
+        # assignment is an `ast.AnnAssign` (single `.target`), not a plain
+        # `ast.Assign` (`.targets` list).
+        name: str | None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value_node = node.value
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            name = names[0] if names else None
+            value_node = node.value
+        else:
+            continue
+        if name != "STRICT_GATE_JOBS" or value_node is None:
+            continue
+        try:
+            value = ast.literal_eval(value_node)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(value, tuple) and all(isinstance(v, str) for v in value):
+            return value
+    return None
+
+
+def _check_summary_job(
+    job: dict[str, Any], summary: dict[str, Any], gate_module_path: Path
+) -> list[str]:
+    """ci-summary must be the OMN-15768 no-needs poller AND assert the ratchet
+    STRICTLY via ``scripts/ci/ci_summary_gate.py``'s ``STRICT_GATE_JOBS``.
+
+    OMN-15768 replaced the old ``needs:``-gated aggregator (whose two-tier
+    body this anchor used to grep for) with a no-``needs`` poller that reads
+    the run's job list at runtime and checks membership in a Python tuple
+    instead. A ``needs:`` on ``ci-summary`` would be a REGRESSION back to the
+    needs-graph-omission bug class (OCC#6346), not a wiring requirement -- so
+    this now asserts ci-summary carries NO ``needs:`` at all, and that the
+    ratchet job's display name is registered in ``STRICT_GATE_JOBS``.
+    """
     failures: list[str] = []
 
-    needs = summary.get("needs")
-    needs_list = [needs] if isinstance(needs, str) else list(needs or [])
-    if _JOB_ID not in needs_list:
+    if "needs" in summary:
         failures.append(
-            f"`{_SUMMARY_JOB_ID}` does not list `{_JOB_ID}` in `needs:`, so the "
-            "required CI Summary context does not wait for the ratchets and can "
-            "report green before/without them."
+            f"`{_SUMMARY_JOB_ID}` declares `needs:` ({summary['needs']!r}). "
+            "OMN-15768 replaced the needs-gated aggregator with a no-needs "
+            "poller (scripts/ci/ci_summary_gate.py); a `needs:` here is a "
+            "regression to the needs-graph-omission bug class (OCC#6346), "
+            "where a job absent from `needs:` was invisible to the gate."
         )
 
-    # The generic `contains(needs.*.result, 'failure')` rollup passes on a
-    # SKIPPED need, so membership in `needs:` alone is not enforcement.
-    strict_expr = f'needs.{_JOB_ID}.result }}}}" != "success"'
-    if strict_expr not in _collect_run_script(summary):
+    run_blob = _collect_run_script(summary)
+    if "ci_summary_gate.py" not in run_blob:
         failures.append(
-            f"`{_SUMMARY_JOB_ID}` has no strict success-only check for "
-            f"`{_JOB_ID}`. Expected a line containing `{strict_expr}`. The "
-            "generic rollup only tests for 'failure'/'cancelled', so a SKIPPED "
-            "ratchet job would pass CI Summary -- exactly the hole this ticket "
-            "closes."
+            f"`{_SUMMARY_JOB_ID}` does not invoke scripts/ci/ci_summary_gate.py "
+            "-- it no longer looks like the OMN-15768 poller."
+        )
+
+    display_name = job.get("name", _JOB_ID)
+    strict_gate_jobs = _extract_strict_gate_jobs(gate_module_path)
+    if strict_gate_jobs is None:
+        failures.append(
+            f"could not read STRICT_GATE_JOBS from {gate_module_path} to verify "
+            f"`{display_name}` is registered."
+        )
+        return failures
+
+    if display_name not in strict_gate_jobs:
+        failures.append(
+            f"`{display_name}` (ci.yml job `{_JOB_ID}`) is not in "
+            "scripts/ci/ci_summary_gate.py's STRICT_GATE_JOBS. The generic "
+            "default-deny sweep alone is not sufficient proof of intent -- "
+            "register it explicitly so a rename or removal fails this "
+            "anchor instead of silently degrading to the sweep."
         )
     return failures
 
 
-def check_wiring(ci_yaml_path: Path) -> list[str]:
-    """Return a list of wiring failures. Empty list means the wiring is intact."""
+def check_wiring(
+    ci_yaml_path: Path, gate_module_path: Path | None = None
+) -> list[str]:
+    """Return a list of wiring failures. Empty list means the wiring is intact.
+
+    ``gate_module_path`` defaults to ``<repo_root>/scripts/ci/ci_summary_gate.py``;
+    tests override it to point at an isolated mutated copy.
+    """
     jobs: dict[str, Any] = _load_ci_yaml(ci_yaml_path)["jobs"]
 
     job = jobs.get(_JOB_ID)
@@ -178,7 +250,8 @@ def check_wiring(ci_yaml_path: Path) -> list[str]:
         )
         return failures
 
-    return failures + _check_summary_job(summary)
+    resolved_gate_path = gate_module_path or (_repo_root() / _GATE_MODULE_RELPATH)
+    return failures + _check_summary_job(job, summary, resolved_gate_path)
 
 
 _USAGE = f"""\
