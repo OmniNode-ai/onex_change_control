@@ -1,0 +1,49 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14257
+title: 'Runner Routing Audit scheduled run green after CROSS_REPO_PAT org actions-variables regrant'
+summary: 'OCC contract binding the credential-regrant fix for the omnibase_infra "Runner Routing Audit"
+  scheduled workflow. The workflow failed 301 consecutive scheduled runs (2026-08-02 through 2026-08-15)
+  on HTTP 403 at the "Audit GitHub runner variables" step: the step runs gh variable list --org OmniNode-ai
+  under the CROSS_REPO_PAT org secret, and that PAT lacked the org-level "Actions variables: read" fine-grained
+  permission. The fix was an operator credential rotation (2026-08-15 18:57Z), not a repo diff, so the
+  evidence surface is the workflow-run record itself: the ticket DoD requires a subsequent scheduled (not
+  PR, not manually dispatched) run to pass the gh variable list step. Run 31903938904 is that run: event
+  schedule, conclusion success, head branch dev, started 2026-08-15T19:27:02Z at head 50ec8646a262b9b3f59b8fa3e3f178e174a4e6cd
+  — the first scheduled green after the rotation, corroborating the post-rotation manual-dispatch green
+  (run 31902663441). Both probes are anchored to run attempt 1 (OMN-15540 Rule F): a later re-run creates
+  attempt 2 and leaves the attempt-1 record untouched, so both readbacks are frozen point-in-time facts
+  that stay true permanently.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: 'Scheduled Runner Routing Audit run green past the gh variable list step'
+    command: gh api repos/OmniNode-ai/omnibase_infra/actions/runs/31903938904
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-sched-audit-run-green-post-rotation
+    description: 'The DoD event, run-level: a scheduled (event=schedule) run of Runner Routing Audit on
+      dev completed with conclusion success after the 2026-08-15 18:57Z CROSS_REPO_PAT rotation. Falsifiable:
+      the probe reports the literal recorded event/conclusion/head_branch triple of the immutable attempt-1
+      record of run 31903938904; a failed run, a non-schedule trigger, or a non-dev branch fails the check.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/actions/runs/31903938904/attempts/1 --jq
+          '.event + "/" + .conclusion + "/" + .head_branch' | grep -c 'schedule/success/dev'
+  - id: dod-sched-audit-varstep-success
+    description: 'The DoD event, step-level: inside scheduled run 31903938904, the previously 403-failing
+      "Audit GitHub runner variables" step itself concluded success — the org-level gh variable list read
+      executed under the regranted token and passed. Falsifiable: the probe reports the literal recorded
+      step conclusion from the immutable attempt-1 job record; a failed or skipped step fails the check.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/actions/runs/31903938904/attempts/1/jobs
+          --jq '[.jobs[].steps[] | select(.name=="Audit GitHub runner variables")][0].conclusion' | grep
+          -c success
