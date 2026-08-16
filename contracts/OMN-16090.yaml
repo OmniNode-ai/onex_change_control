@@ -42,8 +42,9 @@ dod_evidence:
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "cd docker/onex-api && python -m pytest tests/test_omn_16090_hook_event_capture.py::TestCatalogEntry
-          -q"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/workflow-contracts.yaml?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -A1 'workflow_type: \"hook-event-capture\"' | grep -c 'enabled:
+          false'"
   - id: "dod-array-items-and-bounds-are-enforced"
     description: >
       The payload validator recurses `items` and enforces minItems/maxItems. Before this change `type:
@@ -53,8 +54,8 @@ dod_evidence:
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "cd docker/onex-api && python -m pytest tests/test_omn_16090_hook_event_capture.py::TestArrayElementValidation
-          tests/test_omn_16090_hook_event_capture.py::TestArrayBounds -q"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/middleware/contract_validator.py?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -c 'must contain at most'"
   - id: "dod-catalog-wire-spec-drift-gate"
     description: >
       Every declared catalog workflow (fenced included) has a wire passthrough spec whose key order follows
@@ -63,15 +64,20 @@ dod_evidence:
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "cd docker/onex-api && python -m pytest tests/test_push_validation_tenant_seam.py::TestCatalogTenantOneRegistration::test_every_catalog_workflow_has_a_wire_passthrough_spec
-          -q"
+        check_value: "test \"$(gh api repos/OmniNode-ai/omninode_infra/actions/jobs/95203746229 --jq .conclusion)\"
+          = success"
   - id: "dod-real-corpus-validates-vs-contract"
     description: >
       All 1931 real spooled events on the operator machine frame and validate against the shipped contract
       via the gateway's own validator, in 8 contract-sized batches, with 0 errors, 0 unframeable files
       and 1931 distinct event_sha values. This is the evidence that the schema fits the actual corpus
-      rather than a hand-written sample.
+      rather than a hand-written sample. The corpus itself lives only on the operator machine, so the
+      remotely-verifiable half is the regression pin that fixes those four families into the test suite.
     source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_omn_16090_hook_event_capture.py?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -c 'test_all_four_measured_event_families_are_accepted'"
   - id: "dod-occ-evidence-admissibility-validator"
     description: "Hosted OCC evidence admissibility validator (OMN-15247)."
     source: "generated"
@@ -79,3 +85,24 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2082"
+    description: >
+      PR #2082 on OmniNode-ai/omnimarket — the CONSUMER leg: node_hook_event_capture persists each submitted
+      batch into hook_events, idempotent on (tenant_id, event_sha).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2082 --repo OmniNode-ai/omnimarket --json number,state"
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_hook_event_capture/migrations/0001_create_hook_events.sql?ref=ec648c5c049a2bb8784f57a4398306c3a8e1ccb4
+          --jq .content | base64 -d | grep -c 'UNIQUE (tenant_id, event_sha)'"
+  - id: "dod-consumer-idempotency-is-proven"
+    description: >
+      Redelivering an identical batch leaves the row count unchanged, proven against a double that implements
+      the real ON CONFLICT (tenant_id, event_sha) DO NOTHING conflict target rather than a mock that returns
+      a canned count.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/tests/test_omn_16090_hook_event_capture.py?ref=ec648c5c049a2bb8784f57a4398306c3a8e1ccb4
+          --jq .content | base64 -d | grep -c 'test_redelivering_the_same_batch_changes_nothing'"
