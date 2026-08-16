@@ -109,3 +109,92 @@ dod_evidence:
           gh pr view 6266 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
           'if (.number == 6266 and (.state == "OPEN" or .state == "MERGED") and .headRefName == "mergesweep-0809-occ2672-rebind")
           then "true" else error("unexpected OCC self-bind PR state") end'
+  - id: "dod-infra-pr-2672-merged-bind"
+    description: >-
+      Merged-state rebind of the result-applier publish seam carrier: PR #2672 landed on dev, so the exact-head
+      OPEN bind frozen in dod-OmniNode-ai-omnibase_infra-pr-2672 no longer describes live state and fails
+      closed forever. Asserts the carrier is MERGED from its expected branch at final head 8d8cf119461c5c054f2731c5cc0ff8b96dcf3068
+      with merge commit 6fdbba6d8b6bcd7cc98a3da7dc8eb510f67a0e6a and the merged three-file set (an integration
+      RED seam test joined the file set after the original bind was frozen). Append-only: does not edit
+      the original entry's bytes.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2672"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2672 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid,mergeCommit,files
+          --jq 'if (.number == 2672 and .state == "MERGED" and .headRefName == "jonah/omn-14498-result-applier-dlq-seam"
+          and .headRefOid == "8d8cf119461c5c054f2731c5cc0ff8b96dcf3068" and .mergeCommit.oid == "6fdbba6d8b6bcd7cc98a3da7dc8eb510f67a0e6a"
+          and ([.files[].path] | sort) == ["src/omnibase_infra/runtime/auto_wiring/handler_wiring.py","tests/integration/test_state_io_outbox_seam_red.py","tests/unit/runtime/auto_wiring/test_result_applier_publish_failure_seam_omn14498.py"])
+          then "dod-infra-pr-2672-merged-bind" else error("unexpected merged 2672 state") end'
+  - id: "dod-infra-pr-2672-rebind-retire"
+    description: >-
+      Retires the interim OPEN-head rebind (dod-OmniNode-ai-omnibase_infra-pr-2672-rebind), whose pinned
+      pre-merge head be65d9c4 and two-file set no longer match the merged carrier, so it fails closed
+      forever. Same merged-state assertion as dod-infra-pr-2672-merged-bind but discriminated to this
+      item. Append-only: does not edit the original entry's bytes.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2672-rebind"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2672 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid,mergeCommit
+          --jq 'if (.number == 2672 and .state == "MERGED" and .headRefOid == "8d8cf119461c5c054f2731c5cc0ff8b96dcf3068"
+          and .mergeCommit.oid == "6fdbba6d8b6bcd7cc98a3da7dc8eb510f67a0e6a") then "dod-infra-pr-2672-rebind-retire"
+          else error("unexpected merged 2672 state for rebind retire") end'
+  - id: "dod-infra-pr-2436-deploy-scope-pinned"
+    description: >-
+      Pipe-safe re-execution of the deploy-scope content probe. The original check's 'grep -Fq' closes
+      the pipe on first match while base64 is still writing, so the probe dies of SIGPIPE (observed exit
+      141) even though the asserted content is present; the replacement counts matches inside a command
+      substitution (reads full input, no early pipe close) and pairs the probe with a literal live view
+      of the merged carrier PR so the live-state binding derives from this entry's own check_value. Append-only:
+      does not edit the original entry's bytes.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnibase-infra-pr-2436-deploy-scope"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=d2be06024541bd5fa3dfd1e90ce655570f10a0bd' --jq .content | base64 -d | grep -Fc '_route_sync_publisher_failure')" -ge 1 &&
+          gh pr view 2436 --repo OmniNode-ai/omnibase_infra --json number,state --jq '.number == 2436 and .state == "MERGED"' | grep -qx true &&
+          echo dod-infra-pr-2436-deploy-scope-pinned
+  - id: "dod-infra-pr-2604-ack-dlq-lineage-pinned"
+    description: >-
+      Pipe-safe re-execution of the ACK/DLQ lineage probe at the same frozen head ca599dc74ea3c7fbbe8c47135f54293c5f10e971
+      (now the MERGED carrier's final head). The original check greps large decoded file bodies with early-exit
+      '-q' matchers, which kills the writer with SIGPIPE (observed exit 141); the replacement performs
+      the same content assertions via counting matchers inside command substitutions and adds the carrier's
+      merged live state. Append-only: does not edit the original entry's bytes.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-omnibase-infra-pr-2604-ack-dlq-lineage"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2604 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid,baseRefName --jq '.number == 2604 and .state == "MERGED" and .headRefOid == "ca599dc74ea3c7fbbe8c47135f54293c5f10e971" and .baseRefName == "dev"' | grep -qx true &&
+          files="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2604/files --jq '.[].filename')" &&
+          test "$(printf '%s\n' "$files" | grep -Fxc 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py')" -eq 1 &&
+          test "$(printf '%s\n' "$files" | grep -Fxc 'tests/fixtures/seams/ack_dlq/poisoned_command.json')" -eq 1 &&
+          test "$(printf '%s\n' "$files" | grep -Fxc 'tests/unit/runtime/auto_wiring/test_boundary_dlq_omn14507.py')" -eq 1 &&
+          test "$(printf '%s\n' "$files" | grep -Fxc 'tests/unit/runtime/auto_wiring/test_seam_correlation_survives_ack_and_dlq_roundtrip_omn14498.py')" -eq 1 &&
+          test "$(printf '%s\n' "$files" | grep -c .)" -eq 4 &&
+          handler="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=ca599dc74ea3c7fbbe8c47135f54293c5f10e971' --jq .content | base64 -d)" &&
+          test "$(printf '%s' "$handler" | grep -Fc 'def _ingress_correlation_id')" -ge 1 &&
+          test "$(printf '%s' "$handler" | grep -Fc 'class BoundaryDlqNotPersistedError')" -ge 1 &&
+          test_body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_seam_correlation_survives_ack_and_dlq_roundtrip_omn14498.py?ref=ca599dc74ea3c7fbbe8c47135f54293c5f10e971' --jq .content | base64 -d)" &&
+          test "$(printf '%s' "$test_body" | grep -Fc 'test_seam_correlation_survives_ack_and_dlq_roundtrip')" -ge 1 &&
+          test "$(printf '%s' "$test_body" | grep -Fc 'poisoned_command.json')" -ge 1 &&
+          echo dod-infra-pr-2604-ack-dlq-lineage-pinned
+  - id: "dod-occ-evidence-validator-pr-2672-pinned"
+    description: >-
+      Re-runs the hosted evidence admissibility validator verbatim and pairs it with a literal live view
+      of the subject product PR, so the live-state derivation stops skipping: the base entry's receipt
+      records a carrier pr_number that no receipt field consistently pairs with a repo, and its check_value
+      carries no PR pin of its own. Append-only: does not edit the original entry's bytes.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-evidence-validator-pr-2672"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest tests/test_evidence_admissibility.py -q &&
+          gh pr view 2672 --repo OmniNode-ai/omnibase_infra --json number,state --jq '.number == 2672 and .state == "MERGED"' | grep -qx true &&
+          echo dod-occ-evidence-validator-pr-2672-pinned
