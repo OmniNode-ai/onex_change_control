@@ -450,3 +450,37 @@ suppressions:
     note: "082_swarm_runs.sql targets the flat infra DB (POSTGRES_DB); nodes/node_projection_swarm/0001_create_swarm_runs.sql
       targets the projection DB (NODE_POSTGRES_DB) so the projection API can read swarm_runs without DEGRADED
       status. Identical DDL, different target databases. (OMN-13084)"
+
+  # ── NAME_CONFLICT: Intra-repo producer-schema realignment (omnibase_infra) ──
+  # A node's own 002_realign_* migration DROPs and recreates the table its 001
+  # created, because 001 was shaped against a model that did not match the real
+  # producer event. Migrations are append-only, so both definitions stay in tree
+  # and the checker sees one table with two disjoint column sets. Intentional
+  # forward evolution inside a single node migration directory — not a duplicate
+  # table, not a cross-repo overlap.
+
+  - table: baselines_quality_snapshots
+    conflict_type: name_conflict
+    reason: schema_evolution
+    repos: [omnibase_infra]
+    owner: omnibase_infra
+    reference: OMN-14630
+    note: "docker/migrations/forward/nodes/node_projection_baselines_quality/001_create_baselines_quality_snapshots.sql
+      shaped the table around a model invented independently of the producer contract (patterns_recommended,
+      recommend_rate, string confidence tiers). 002_realign_quality_snapshots_to_producer_schema.sql (OMN-14630)
+      DROPs and recreates it against ModelBaselinesSnapshotEvent (patterns_significant, significant_rate,
+      numeric confidence proxy); the table held zero rows in every environment, so nothing was migrated.
+      Both files remain because node migrations are append-only. Sibling node fix: OMN-14513."
+
+  - table: baselines_roi_snapshots
+    conflict_type: name_conflict
+    reason: schema_evolution
+    repos: [omnibase_infra]
+    owner: omnibase_infra
+    reference: OMN-14630
+    note: "docker/migrations/forward/nodes/node_projection_baselines_roi/001_create_baselines_roi_snapshots.sql
+      shaped the table around fields the producer never emits (confidence, recommendations, retry_delta,
+      time_delta_ms). 002_realign_roi_snapshots_to_producer_schema.sql (OMN-14630) DROPs and recreates
+      it against the real ModelBaselinesSnapshotEvent ROI fields (roi_pct_avg, latency_improvement_pct_avg,
+      cost_improvement_pct_avg, sample_size). Both files remain because node migrations are append-only.
+      Sibling node fix: OMN-14513."
