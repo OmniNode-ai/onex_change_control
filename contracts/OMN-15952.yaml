@@ -1,0 +1,130 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15952
+title: Unattended pairing/renewal contract for persistent runtimes across attach-token expiry
+summary: 'OCC companion for OmniNode-ai/omnibase_infra PR #2746 and OmniNode-ai/omninode_infra PR #904.
+  A persistent/headless runtime attaching to node_gateway_attach_effect was told how often to heartbeat
+  and nothing else: the terms of surviving its own session ceiling were undeclared, and the most natural
+  client assumption (a heartbeat keeps the session alive) is false -- expires_at is stamped once at attach
+  and no path in the node moves it. This companion binds the evidence that the renewal cycle is now a
+  declared contract term (mode RE_ATTACH, a jitter window strictly before an immutable ceiling), that
+  the directive is REQUIRED on the node''s attach response rather than optional, that the ordering invariant
+  is enforced in the model and not merely in the builder, and that the onex-api edge -- which validates
+  the node''s response with extra=forbid and would 502 every attach otherwise -- carries a field-set-equal
+  mirror.'
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: 'PR #2746 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-OmniNode-ai-omnibase_infra-pr-2746
+    description: 'PR #2746 on OmniNode-ai/omnibase_infra declares the renewal cycle in the attach contract.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 2746 --repo OmniNode-ai/omnibase_infra --json number,state
+  - id: dod-OmniNode-ai-omninode_infra-pr-904
+    description: 'PR #904 on OmniNode-ai/omninode_infra mirrors the directive at the onex-api edge (the
+      extra=forbid seam).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 904 --repo OmniNode-ai/omninode_infra --json number,state
+  - id: dod-renewal-cycle-declared-in-contract-yaml
+    description: The renewal cycle is contract-declared config, not client folklore -- renewal_margin_seconds
+      and renewal_jitter_seconds are in the node contract's gateway_attach config block.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/contract.yaml?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq ''.content'' | base64 -d | grep -c ''renewal_margin_seconds: 120'''
+  - id: dod-renewal-directive-required-not-optional
+    description: The attach response's renewal field is REQUIRED. Optionality would let a build ship where
+      unattended runtimes are told nothing about renewal and no test fails.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/models/model_gateway_attach_response.py?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq ''.content'' | base64 -d | grep -c ''renewal: ModelGatewayRenewalDirective$'''
+  - id: dod-no-in-place-renewal-mode-exists
+    description: The renewal mode enum has exactly one member, RE_ATTACH. In-place renewal is refused,
+      not unimplemented -- extending a live ceiling on the strength of a heartbeat would let a credential
+      the IdP has stopped authorizing hold a session open one heartbeat at a time.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/models/enum_gateway_renewal_mode.py?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq '.content' | base64 -d | grep -c 'RE_ATTACH = \"RE_ATTACH\"'
+  - id: dod-renew-before-expiry-invariant-in-the-model
+    description: renew_at < session_expires_at is enforced by a model validator, so every construction
+      path -- handler, test, or a payload deserialized off the wire -- is subject to it. A builder-only
+      check would be bypassed by any second construction path.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/models/model_gateway_renewal_directive.py?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq '.content' | base64 -d | grep -c 'renew_at must be strictly before session_expires_at'
+  - id: dod-expiry-immutability-is-executable
+    description: assert_expiry_not_extended exists as a callable guard, not as prose. Every session revision
+      in this node is a model_copy(update=...) and one added key turns a heartbeat into a lifetime extension.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/services/service_gateway_renewal_policy.py?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq '.content' | base64 -d | grep -c 'def assert_expiry_not_extended'
+  - id: dod-heartbeat-ceiling-boundary-test-present
+    description: 'The boundary the whole contract turns on is tested: heartbeats at and past expires_at,
+      asserted on session-store WRITES so the invariant holds whether the handler returns, revokes, or
+      raises.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_gateway_attach_effect/test_renewal_contract.py?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq '.content' | base64 -d | grep -c 'def test_no_heartbeat_at_or_past_the_ceiling_ever_extends_it'
+  - id: dod-re-attach-mints-a-new-session-test-present
+    description: Re-attach after expiry is proven to mint a NEW session_id with its own later ceiling
+      while leaving its predecessor untouched -- which is what makes the contract compatible with the
+      merged gateway_sessions projection, whose UPSERT is keyed on session_id alone.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_gateway_attach_effect/test_renewal_contract.py?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq '.content' | base64 -d | grep -c 'def test_re_attach_after_expiry_mints_a_new_session_with_a_fresh_grant'
+  - id: dod-edge-mirror-field-set-equality
+    description: The onex-api mirror asserts field-set EQUALITY against the producer model, not containment
+      -- a field added on either side of the extra=forbid seam is caught at the boundary rather than in
+      production.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_gateway_renewal_directive_seam.py?ref=8289023cfffd23b528a11240f16916eadcdc5d68
+          --jq '.content' | base64 -d | grep -c 'def test_wire_mirror_has_exactly_the_producer_fields'
+  - id: occ-self-bind-pr-6496
+    description: 'Binds OMN-15952 to OCC companion PR #6496 (self-bind).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6496 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: dod-deploy-assessment
+    description: 'Falsifiable deploy probe (OMN-14443). The deployed surface this ticket changes is the
+      attach node''s response shape: a runtime image that does not carry the renewal directive serves
+      an attach response with no renewal cycle, which is precisely the pre-OMN-15952 defect. This reads
+      model_gateway_attach_response.py back from GitHub at the pinned omnibase_infra head via gh api and
+      greps for the required field, so it goes RED the moment the field is absent or renamed -- it reads
+      a surface outside this repo, never a receipt or contract this PR authors. The live-cluster half
+      (docker exec against omninode-runtime, then a real attach -> expiry -> re-grant -> re-attach against
+      deployed onex-api) is the post-deploy acceptance test tracked on the ticket; it cannot run before
+      the image exists, and claiming it here would be the vacuous evidence this ratchet exists to reject.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/models/model_gateway_attach_response.py?ref=c8d6d2142b34766c51bf264c96e38978172daff1
+          --jq .content | base64 -d | grep -q ''renewal: ModelGatewayRenewalDirective'''
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
