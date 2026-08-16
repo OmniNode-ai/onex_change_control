@@ -11,6 +11,9 @@ evidence_requirements:
   - kind: "ci"
     description: "PR #1989 CI checks green"
     command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "ci"
+    description: "PR #1993 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -55,3 +58,28 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh api repos/OmniNode-ai/onex_change_control/pulls/6489/files --paginate --jq '.[].filename' | grep -qx 'contracts/OMN-16041.yaml' && gh api repos/OmniNode-ai/onex_change_control/pulls/6489/files --paginate --jq '.[].filename' | grep -qx 'drift/dod_receipts/OMN-16041/dod-promotion-omnibase-infra-pr-2744/command.yaml' && echo "OMN-16041-OCC-SELF-BIND-PASS: OCC PR 6489 carries both the contract and the promotion receipt"
+  - id: "dod-OmniNode-ai-omniclaude-pr-1993"
+    description: "PR #1993 on OmniNode-ai/omniclaude — Evidence-Source binding for the delegate-plugin
+      installability flip. Hand-authored companion: the autobind writer minted no companion for this product
+      PR, so this entry is authored by the OCC prep lane rather than by node_occ_companion_compute."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1993 --repo OmniNode-ai/omniclaude --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 1993 --repo OmniNode-ai/omniclaude --json files"
+      - check_type: "command"
+        check_value: |-
+          H=cedc030dee6c49d74d20a5e9c86ac38ed95bd0fd; B=b8b3e2eea00141f94ce5fe20f0b479e48baa6892; R=OmniNode-ai/omniclaude; D=$(mktemp -d); for f in plugins/onex-delegate/plugin-compat.yaml plugins/.claude-plugin/marketplace.json .claude-plugin/marketplace.json plugins/onex-delegate/.claude-plugin/plugin.json plugins/onex-delegate/tests/test_install_works.py; do n=$(printf %s "$f" | tr / _); gh api "repos/${R}/contents/${f}?ref=${H}" --jq .content | base64 -d > "${D}/head-${n}" || exit 1; gh api "repos/${R}/contents/${f}?ref=${B}" --jq .content | base64 -d > "${D}/base-${n}" || exit 1; done; python3 -c 'import sys,pathlib,re; d=pathlib.Path(sys.argv[1]); rd=lambda p:(d/p).read_text(); flag=re.compile(r"\"?installable_from_pypi\"?\s*:\s*\"?(true|false)"); names=["plugins_onex-delegate_plugin-compat.yaml","plugins_.claude-plugin_marketplace.json",".claude-plugin_marketplace.json","plugins_onex-delegate_.claude-plugin_plugin.json"]; hf=[flag.search(rd("head-"+n)).group(1) for n in names]; bf=[flag.search(rd("base-"+n)).group(1) for n in names]; hb=[n for n in names if "installable_blocker_ticket" in rd("head-"+n)]; bb=[n for n in names if "installable_blocker_ticket" in rd("base-"+n)]; t="plugins_onex-delegate_tests_test_install_works.py"; m="@pytest.mark."+"xfail("; hx=m in rd("head-"+t); bx=m in rd("base-"+t); print("HEAD_FLAGS:",hf); print("BASE_FLAGS:",bf); print("HEAD_BLOCKER_TICKETS:",hb); print("BASE_BLOCKER_TICKETS:",len(bb)); print("HEAD_STRICT_XFAIL:",hx); print("BASE_STRICT_XFAIL:",bx); sys.exit(0 if (hf==["true"]*4 and bf==["false"]*4 and hb==[] and len(bb)==4 and not hx and bx) else 1)' "$D" && echo "OMN-16041-INSTALLABLE-FLIP-PROBE-PASS: all four delegate manifests declare installable_from_pypi true with no blocker ticket at head cedc030de, the strict xfail is gone from test_install_works.py, and the pre-fix base b8b3e2eea is the RED control (four false flags, four blocker tickets, xfail present)" && gh pr view 1993 --repo OmniNode-ai/omniclaude --json number,state
+  - id: "dod-occ-evidence-admissibility-validator-pr-1993"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247), PR #1993. The probe pairs the
+      suite run with a repo-qualified live read of the carrier PR in the same command, so the receipt
+      carries a consistent PR binding rather than a bare pr_number (the NO_CONSISTENT_PR_BINDING defect
+      class, where node_dod_verify refuses the live-state binding because no single receipt field pairs
+      the recorded number with a repo)."
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omniclaude-pr-1993"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest tests/test_evidence_admissibility.py -q && gh pr view 1993 --repo OmniNode-ai/omniclaude --json number,state && echo dod-occ-evidence-admissibility-validator-pr-1993
