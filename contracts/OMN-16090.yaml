@@ -64,8 +64,8 @@ dod_evidence:
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "test \"$(gh api repos/OmniNode-ai/omninode_infra/actions/jobs/95203746229 --jq .conclusion)\"
-          = success"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/models/model_workflow_envelope.py?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -c 'hook-event-capture'"
   - id: "dod-real-corpus-validates-vs-contract"
     description: >
       All 1931 real spooled events on the operator machine frame and validate against the shipped contract
@@ -94,7 +94,7 @@ dod_evidence:
       - check_type: "command"
         check_value: "gh pr view 2082 --repo OmniNode-ai/omnimarket --json number,state"
       - check_type: "command"
-        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_hook_event_capture/migrations/0001_create_hook_events.sql?ref=ec648c5c049a2bb8784f57a4398306c3a8e1ccb4
+        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_hook_event_capture/migrations/0001_create_hook_events.sql?ref=8043d3d9f3de945c30e612a696be0db5e98f6d09
           --jq .content | base64 -d | grep -c 'UNIQUE (tenant_id, event_sha)'"
   - id: "dod-consumer-idempotency-is-proven"
     description: >
@@ -104,5 +104,34 @@ dod_evidence:
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/tests/test_omn_16090_hook_event_capture.py?ref=ec648c5c049a2bb8784f57a4398306c3a8e1ccb4
+        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/tests/test_omn_16090_hook_event_capture.py?ref=8043d3d9f3de945c30e612a696be0db5e98f6d09
           --jq .content | base64 -d | grep -c 'test_redelivering_the_same_batch_changes_nothing'"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2760"
+    description: >
+      PR #2760 on OmniNode-ai/omnibase_infra — vendors both node migrations into the forward-migration
+      tree so the runner can see them, and FENCES the RLS half on arrival.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2760 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-rls-migration-is-fenced-on-arrival"
+    description: >
+      The FORCE-RLS half is in the operator fence manifest at the vendor PR head. The forward runner refuses
+      any new unfenced FORCE-RLS node migration, so an unfenced landing would mean the table never applies
+      on any lane. Fenced on arrival, unlike the delegation_inference_response entry whose own rationale
+      records it applying unattended because nothing named it.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/fenced-node-migrations.yaml?ref=72b1fa89ae780c59e6d54c8d25ec24147f81cb72
+          --jq .content | base64 -d | grep -c 'node:node_hook_event_capture:0002_hook_events_tenant_rls.sql'"
+  - id: "dod-create-migration-applies-unfenced"
+    description: >
+      The CREATE half carries no FORCE/ENABLE RLS at the omnimarket head, so it applies on every lane
+      without a fence entry. A FORCE statement anywhere in the create file would make the whole create
+      refusable and the table would never land.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "! gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_hook_event_capture/migrations/0001_create_hook_events.sql?ref=8043d3d9f3de945c30e612a696be0db5e98f6d09
+          --jq .content | base64 -d | grep -q 'FORCE ROW LEVEL SECURITY'"
