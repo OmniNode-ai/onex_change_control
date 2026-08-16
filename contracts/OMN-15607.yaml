@@ -1,0 +1,114 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15607"
+title: "[steel_onslaught] hermetic-battery-snapshot runbook still says --on-complete-exec fires only on
+  COMPLETED"
+summary: >-
+  DoD contract for OMN-15607, bound to the merged product PR jonahgabriel/steel_onslaught#257 (merge commit
+  10bd9254b0817d8e25cf357c76f0bc7fea16c9c7, reviewed head 4e70b165c449c0004ab3bf8288a4e34efce16160, base
+  main). The defect was a stale operator instruction: the runbook's sequencing prose named COMPLETED as
+  the sole chain-forward gate after OMN-15595 (#253) made at-least-one-delivered-channel a second necessary
+  condition, so an operator reading it would misread a correctly-withheld chain as a hang. All four acceptance
+  criteria are falsifiable-by-grep against the file at the merge commit and are asserted in that form
+  below. Proof class is code-only — the ticket's own Proof class section says so, the PR is docs plus
+  one test with no production behaviour change, and steel_onslaught has no deployed runtime surface, so
+  no deploy or live-probe evidence is declared here.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #257 CI checks green on jonahgabriel/steel_onslaught (evidence-schema, python-test,
+      frontend-test, sanitize-text)"
+    command: "gh pr checks 257 --repo jonahgabriel/steel_onslaught"
+  - kind: "docs"
+    description: "docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md sequencing section states
+      both necessary chain-forward conditions, names the CHAIN WITHHELD observable and chain_withheld_reason,
+      and documents --chain-on-delivery-failure"
+    command: "grep -n 'deliver\\|CHAIN WITHHELD\\|chain-on-delivery-failure' docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md"
+  - kind: "tests"
+    description: "tests/battery/test_watchdog.py reads the runbook by path and now asserts the sequencing
+      section documents the delivery condition, so the drift is catchable rather than merely corrected"
+    command: "uv run pytest tests/battery/test_watchdog.py::test_runbook_no_longer_documents_the_disk_sentinel_bash_watcher
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-jonahgabriel-steel_onslaught-pr-257"
+    description: >-
+      Product PR #257 on jonahgabriel/steel_onslaught is MERGED at merge commit 10bd9254b0817d8e25cf357c76f0bc7fea16c9c7,
+      bound at the exact reviewed head 4e70b165c449c0004ab3bf8288a4e34efce16160, with its complete two-file
+      scope — the runbook and the runbook-reading test, nothing else. The narrow scope is itself evidence
+      for the ticket's "docs + test only, no production behaviour change" claim: a third file would falsify
+      it.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 257 --repo jonahgabriel/steel_onslaught --json state,mergeCommit,headRefOid,files --jq 'if (.state == "MERGED" and .mergeCommit.oid == "10bd9254b0817d8e25cf357c76f0bc7fea16c9c7" and .headRefOid == "4e70b165c449c0004ab3bf8288a4e34efce16160" and ([.files[].path] | sort == ["docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md","tests/battery/test_watchdog.py"])) then "true" else error("unexpected #257 state, head, or file scope") end'
+  - id: "dod-15607-pr-257-ci"
+    description: >-
+      PR #257 CI is green. python-test is the job that actually executes the runbook-reading test, so
+      this is what proves AC2 (the existing test stays green) and AC3 (the new assertion passes against
+      the corrected text) rather than merely proving the assertions were typed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks 257 --repo jonahgabriel/steel_onslaught"
+  - id: "dod-15607-ac1-both-conditions-stated"
+    description: >-
+      AC1. The runbook at the merge commit names the withheld case by its observable surface (CHAIN WITHHELD),
+      names chain_withheld_reason, documents the --chain-on-delivery-failure override, and states delivery
+      as a condition. These are exactly the tokens AC1 declares falsifiable: a rewrite that still names
+      only COMPLETED fails every leg. The file body is read once into a variable and each token asserted
+      against the buffered copy, so a failed fetch goes RED instead of silently passing an empty read.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/jonahgabriel/steel_onslaught/contents/docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md?ref=10bd9254b0817d8e25cf357c76f0bc7fea16c9c7" --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'CHAIN WITHHELD' && printf '%s' "$body" | grep -qF 'chain_withheld_reason' && printf '%s' "$body" | grep -qF -- '--chain-on-delivery-failure' && printf '%s' "$body" | grep -qF 'deliver'
+  - id: "dod-15607-ac4-superseded-claim-gone"
+    description: >-
+      AC4. No section of the runbook repeats the superseded claim at the merge commit — the ticket's own
+      falsifiable form is that grep for the "only ... COMPLETED" pairing returns zero hits. Asserted fail-closed
+      per the OMN-15391 shape: the body is read once, a positive anchor present at BOTH refs (on-complete-exec)
+      proves the read actually landed, and only then is absence asserted with a negated grep. A 404 or
+      auth failure cannot masquerade as absence.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/jonahgabriel/steel_onslaught/contents/docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md?ref=10bd9254b0817d8e25cf357c76f0bc7fea16c9c7" --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'on-complete-exec' && ! printf '%s' "$body" | grep -qE 'only.*COMPLETED'
+  - id: "dod-15607-red-at-ce58e89"
+    description: >-
+      AC3 RED-at-base leg. The ticket requires the new assertion to be proven RED against the text at
+      steel_onslaught@ce58e89df58df909a2800b581d7f06a1f4e3126f. This asserts the converse of the item
+      above at that exact parent ref: the superseded "only ... COMPLETED" pairing IS present there. The
+      two items together are the RED-then-GREEN pair — the drift existed at the parent and does not exist
+      at the merge commit — with the same positive anchor proving the parent read landed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          parent="$(gh api "repos/jonahgabriel/steel_onslaught/contents/docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md?ref=ce58e89df58df909a2800b581d7f06a1f4e3126f" --jq '.content' | base64 -d)" && printf '%s' "$parent" | grep -qF 'on-complete-exec' && printf '%s' "$parent" | grep -qE 'only.*COMPLETED'
+  - id: "dod-15607-ac2-ac3-test-is-the-mechanism"
+    description: >-
+      AC2 and AC3. tests/battery/test_watchdog.py at the merge commit carries the new drift-catching machinery
+      — the _SUPERSEDED_CHAIN_GATE_CLAIM pattern and the _runbook_section helper that scopes the assertion
+      to the sequencing section rather than the whole file, so an unrelated mention elsewhere cannot satisfy
+      it — and asserts the CHAIN WITHHELD observable. AC2's requirement that the pre-existing positive
+      assertion survive unchanged is asserted by the final leg ("so battery-watch"). This is what makes
+      the fix a mechanism rather than a one-time correction.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/jonahgabriel/steel_onslaught/contents/tests/battery/test_watchdog.py?ref=10bd9254b0817d8e25cf357c76f0bc7fea16c9c7" --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF '_SUPERSEDED_CHAIN_GATE_CLAIM' && printf '%s' "$body" | grep -qF '_runbook_section' && printf '%s' "$body" | grep -qF 'CHAIN WITHHELD' && printf '%s' "$body" | grep -qF 'so battery-watch'
