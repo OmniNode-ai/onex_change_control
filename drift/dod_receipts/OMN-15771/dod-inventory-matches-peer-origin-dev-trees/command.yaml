@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15771"
+evidence_item_id: "dod-inventory-matches-peer-origin-dev-trees"
+check_type: "command"
+check_value: >-
+  body="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)" && printf '%s' "$body" | grep
+  -qF '093_add_delegation_workflow_state_outbox_columns.sql' && printf '%s' "$body" | grep -qF '099_create_omninode_internal_live_events.sql'
+  && printf '%s' "$body" | grep -qF '026_create_code_entities.sql' && printf '%s' "$body" | grep -qF '20260814_tenants_acl_state_three_state_reconciliation.sql'
+  && ! printf '%s' "$body" | grep -qF '025_create_code_entities.sql' && ! printf '%s' "$body" | grep -qF
+  '027_code_entity_enrichment_part2.sql'
+status: PASS
+run_timestamp: "2026-08-14T20:10:00Z"
+commit_sha: "aa7412768ad2057cc5f360793ff1cd125b5a1052"
+runner: "fix-6448-failopen"
+verifier: "team-lead"
+probe_command: >-
+  grep -nE 'file: "(093_add_delegation|099_create_omninode_internal_live_events|026_create_code_entities|20260814_tenants_acl_state_three)'
+  src/onex_change_control/boundaries/migration_inventory.yaml
+probe_stdout: |
+  170:          - file: "093_add_delegation_workflow_state_outbox_columns.sql"
+  182:          - file: "099_create_omninode_internal_live_events.sql"
+  247:          - file: "026_create_code_entities.sql"
+  575:          - file: "20260814_tenants_acl_state_three_state_reconciliation.sql"
+exit_code: 0
+actual_output: >-
+  PASS: the OCC boundary inventory now matches each peer repo's origin/dev migration tree for all four
+  drifted sets. Ground truth was pinned by enumerating `git ls-tree --name-only origin/dev:<dir>` per
+  peer rather than a local working tree, because the migration-inventory job clones peers with `git clone
+  --depth=1` and no `--branch`, reading each peer's default branch (`dev` for omnibase_infra, omniintelligence
+  and omninode_infra, verified via `gh api repos/OmniNode-ai/<repo> --jq .default_branch`). Set counts
+  moved to exactly the disk counts at that ref -- omnibase_infra docker/migrations/forward 77 -> 84, omnibase_infra
+  docker/migrations/intelligence 27 -> 28, omniintelligence deployment/database/migrations 31 -> 27, omninode_infra
+  db/migrations 25 -> 37. Red->green proof against a CI-shaped repos-root containing only the peer clones:
+  check-migration-inventory exited 1 with 24 ERROR lines on the pre-fix inventory (git show origin/dev:src/onex_change_control/boundaries/migration_inventory.yaml)
+  and exited 0 with zero ERROR lines on the fixed inventory. Falsifiability of this receipt's own check_value
+  was proven in both directions against the pre-fix inventory: the positive anchor '093_add_delegation_workflow_state_outbox_columns.sql'
+  exits 1 (correctly RED before the fix) and the retired listing '025_create_code_entities.sql' exits
+  0 (it WAS present before the fix and is delisted now). The four delisted omniintelligence entries are
+  files deliberately deleted by omniintelligence#819 when code_entities DDL ownership moved to the applied
+  set; no migration file was renamed, moved or deleted by this change -- only listings were corrected.
+  check-migration-conflicts was run against the same repos-root on both the pre-fix and fixed inventories
+  and produced byte-identical finding sets (81 each), proving the change is conflict-neutral despite moving
+  20 files out of the __uninventoried__ boundary. Unit suites tests/unit/scripts/test_check_migration_inventory.py
+  and test_check_migration_conflicts.py: 22 passed.
+branch: "jonah/omn-15771-migration-inventory-reconcile"
+contract_entry_sha256: "sha256:8185f8c6779df44c0192d418ccbd91b3b92de6a403bd513bbc0c911514116cfb"
