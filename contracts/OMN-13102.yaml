@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13102"
+title: "docs(omnimarket): live materialization proof for pattern_learning golden chain"
+summary: >-
+  The pattern_learning golden chain (head onex.evt.omniintelligence.pattern-stored.v1 -> tail pattern_learning_artifacts)
+  was diagnosed broken on 2026-06-12: no projection consumer subscribed pattern-stored.v1, pattern_learning_artifacts
+  was never materialized, and the omnibase_infra table diverged (missing correlation_id). The structural
+  fix landed via OMN-13124 (PR #1210) on dev: a canonical projection node node_projection_pattern_learning
+  (REDUCER) subscribing pattern-stored.v1 and UPSERTing pattern_learning_artifacts by pattern_id; a per-node
+  migration creating the table WITH correlation_id plus an idempotent ADD COLUMN IF NOT EXISTS backfill
+  ALTER that reconciles any legacy (omnibase_infra 064-era) deployment; a byte-identical infra-vendored
+  copy of that migration; and a golden_chains.yaml entry registering head->tail. This ticket supplies
+  the live, end-to-end materialization proof OMN-13102's DoD requires. On the stability-test proof lane
+  (.201) a real pattern-stored.v1 event was published to the head topic and the live projection_pattern_learning
+  consumer (consumer group Stable) UPSERTed a row into omnidash_analytics.pattern_learning_artifacts with
+  the expected pattern_id, pattern_name, composite_score, and correlation_id; the consumer-group offset
+  advanced (LAG 0), proving end-to-end consumption. Decision-tree reconciliation (consumer exists -> verify/wire;
+  correlation_id gap = schema-version divergence reconciled by migration; chain registered) is recorded
+  in the evidence file. PR #1341 is docs-only (a single evidence file under docs/evidence/); it gates
+  no image rebuild and performs no .201 mutation beyond a read-only synthetic publish to the proof lane
+  to exercise the already-deployed live consumer.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1341"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1341 (jonahgabriel/omn-13102-fixomniintelligenceomnimarket-pattern_learning-golden-chain,
+      base=dev). Records the live materialization proof: a real pattern-stored.v1 event published to the
+      stability-test proof lane was UPSERTed by the live projection_pattern_learning consumer into omnidash_analytics.pattern_learning_artifacts
+      with the expected pattern_id, pattern_name, composite_score, and correlation_id; consumer-group
+      offset advanced (LAG 0). Binds OMN-13102 to omnimarket PR #1341 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13102/dod-omnimarket-pr-1341/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13102. PR #1341 is docs-only -- a single evidence file under docs/evidence/.
+      It adds no runtime node, no contract, no migration, no handler, and no image build input. The projection
+      consumer, its migration, and the golden_chains.yaml entry were already merged and deployed via OMN-13124;
+      this PR records the live proof that the already-deployed chain materializes. No separate redeploy
+      is gated by this PR and no .201 mutation was performed beyond a read-only synthetic publish to the
+      stability-test (proof) lane. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13102/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13102.yaml consumed
+      by omnimarket PR #1341 via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -c '^ticket_id: "OMN-13102"$' contracts/OMN-13102.yaml

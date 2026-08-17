@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14778"
+title: "Retire stale OCC rerun-state generator + guard divergent automation PRs"
+summary: >-
+  Retire the OMN-10487 occ-rerun-downstream generator (and its unwired occ-record-dep-edge feeder), which
+  opened an unmergeable main->dev automation PR on every push to main, and add a fail-closed guard wired
+  into pre-commit and CI that rejects any workflow which cuts a branch off a push-to-main checkout and
+  opens a PR to a divergent base without rebasing onto it.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Guard tests prove RED against the exact defect and GREEN on the corrected/other forms."
+    command: "uv run pytest tests/test_no_divergent_automation_pr.py -q"
+  - kind: "manual"
+    description: "The guard passes on the live workflow set after the generator is retired."
+    command: "uv run python scripts/validation/check_no_divergent_automation_pr.py --all --repo-root ."
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-guard-tests"
+    description: "Focused tests prove the guard flags the exact push-main->divergent-base defect (RED)
+      and does not flag the rebased/same-base/variable-base forms (GREEN)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_no_divergent_automation_pr.py -q"
+  - id: "dod-workflows-retired"
+    description: "Both retired workflows (the generator and its unwired feeder) are absent from the tree."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test ! -f .github/workflows/occ-rerun-downstream.yml && test ! -f .github/workflows/occ-record-dep-edge.yml
+          && echo RETIRED
+  - id: "dod-ci-precommit-wiring"
+    description: "The guard is wired as a pre-commit hook and an unconditional CI job, with its validator
+      entrypoint allowlisted."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'no-divergent-automation-pr' .pre-commit-config.yaml && grep -q 'divergent-automation-pr-guard'
+          .github/workflows/ci.yml && grep -q 'check_no_divergent_automation_pr.py' allowlists/scripts_exceptions.yaml
+  - id: "dod-guard-clean-live"
+    description: "The guard runs clean over the live .github/workflows set now that the generator is retired."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run python scripts/validation/check_no_divergent_automation_pr.py --all --repo-root
+          ."

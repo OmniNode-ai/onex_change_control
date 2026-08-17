@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12842"
+title: "M2: durable scored capsule/exemplar store as a bus-materialized projection"
+summary: >-
+  Adds node_projection_capsule_store (REDUCER) in omnimarket that materializes a durable, queryable, scored
+  capsule table from context-ROI score events, following the established projection-reducer pattern (node_projection_savings).
+  Stable identity: capsule_hash = sha256(canonical(factor, content, source_artifact, source_commit, schema_version))
+  with a surrogate UUIDv5 capsule_id; a changed exemplar is a NEW row, never an in-place effectiveness
+  mutation. Effectiveness is populated FROM the ROI score event (onex.evt.omnimarket.context-roi-score-completed.v1)
+  and is never empty on a scored row (model validator + DB CHECK). Staleness decay (effective_score =
+  raw * max(floor, 0.5**(age_days/half_life_days))) uses contract-declared params (config.decay half_life_days=30.0,
+  floor=0.25) applied at the read boundary; raw values stay immutable. Two idempotent migrations (078
+  base table + ux_capsule_identity unique on capsule_hash + scored-effectiveness CHECK; 079 decay read
+  view ordered after the base table). Publishes onex.evt.omnimarket.capsule-store-applied.v1. CONTRACT/NODE/HANDLER
+  only — no Plugin*/engine/manager/writer class. Node-private models (single-repo importer). No topic
+  schema, envelope, protocol, or public API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1313"
+    description: >-
+      omnimarket PR #1313 adds node_projection_capsule_store (REDUCER). TDD: 5 RED-first test files (capsule_identity,
+      effectiveness_populated_from_roi, no_empty_effectiveness_field, staleness_decay, idempotent_upsert)
+      made GREEN plus a golden chain — all errored pre-impl on the missing module (5 errors during collection)
+      and then 28 passed. Full suite green: uv run pytest tests/ -m "not kafka and not e2e" (no -k) ->
+      7655 passed, 35 skipped, 36 deselected; uv run mypy src/omnimarket/ --strict -> Success (2400 files);
+      ruff format/check clean; pre-commit run --all-files -> 36 hooks Passed, 0 Failed (incl golden-chain-coverage,
+      migration base-before-view, topic-naming, no-hardcoded-topic gates); run_runtime_sweep.py -> 314/314
+      OK; check_node_metadata_dependencies.py -> PASS. Evidence anchor: omnimarket head commit 6559730a447f7afff950ab0ea1a44d21ce88f857.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12842/dod-omnimarket-pr-1313/command.yaml"
+          && grep -q '^ticket_id: "OMN-12842"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12842/dod-omnimarket-pr-1313/command.yaml"
+          && grep -q '^pr_number: 1313$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12842/dod-omnimarket-pr-1313/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: a new omnimarket projection-reducer node plus two idempotent SQL migrations (078
+      table, 079 view) against omnidash_analytics. The node consumes an existing terminal event (context-roi-score-completed.v1)
+      and publishes a new applied event (capsule-store-applied.v1). No contract-interface change, no protocol/envelope
+      change, no public API route (dashboards render the projection). Migrations are idempotent (CREATE
+      TABLE/INDEX/VIEW IF NOT EXISTS / OR REPLACE) and ride a standard omnimarket image rebuild; runtime
+      materialization is a follow-up runtime-verify step on the stability-test lane. No live runtime deploy
+      is performed by this PR; dev/stability/prod lanes are untouched.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12842/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12842"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12842/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the OMN-12842 contract and the dod-omnimarket-pr-1313
+      / dod-deploy-assessment receipts that omnimarket PR #1313's Receipt-Gate resolves via Evidence-Source.
+      Binds by pr_number so the OCC eligibility validator finds a PASS receipt for OMN-12842 on this OCC
+      PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12842/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12842"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12842/dod-occ-pr/command.yaml"

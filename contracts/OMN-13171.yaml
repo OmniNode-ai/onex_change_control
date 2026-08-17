@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13171"
+title: "Delegation evidence projection: sqlite NOT NULL constraint failed on delegation_events.created_at"
+summary: >
+  OMN-13171 fixes a lost-evidence defect on the local delegation projection write. The delegate-skill
+  terminal projection (HandlerProjectionDelegation.project_delegate_skill_terminal) built the delegation_events
+  row without created_at. The deployed Postgres schema declares created_at TIMESTAMPTZ NOT NULL DEFAULT
+  NOW() so the bus runtime path was unaffected, but the local in-process SQLite evidence target (port_local_delegation_dispatch._project_evidence
+  -> SqliteDatabaseAdapter) on a warm volume can have created_at NOT NULL with no DB default, so the INSERT
+  raised sqlite3.IntegrityError: NOT NULL constraint failed: delegation_events.created_at and the local
+  evidence row was silently dropped (the _project_evidence path swallows projection failures). omnimarket
+  PR #1243 (branch jonahgabriel/omn-13171-delegation-evidence-projection-sqlite-not-null-constraint, base=dev,
+  head 53b319f9af4d30fb47c8437f543caf5b2d63418d) injects created_at explicitly at the projection write,
+  mirroring the event timestamp (deterministic, no implicit datetime.now() at the DB layer, consistent
+  with the frozen-schema no-implicit-datetime.now() convention). Source-only change to the projection
+  handler plus a TDD test. No DDL, no migration, no topic/schema change, no live deploy/restart/.201 mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-1243-head"
+    description: >-
+      omnimarket PR #1243 (branch jonahgabriel/omn-13171-delegation-evidence-projection-sqlite-not-null-constraint,
+      base=dev) carries the explicit created_at injection in project_delegate_skill_terminal at head 53b319f9af4d30fb47c8437f543caf5b2d63418d,
+      plus a TDD test (test_terminal_write_to_sqlite_with_not_null_created_at) that reproduced the sqlite3.IntegrityError
+      pre-fix and passes post-fix.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13171/dod-omnimarket-1243-head/command.yaml\""
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: OMN-13171 is a source-only change to node_projection_delegation/handlers/handler_projection_delegation.py
+      (plus its test). It carries NO DDL, NO migration, NO live deploy, NO restart, NO topic mutation,
+      and NO .201 mutation. The fix takes effect on the next package refresh of the consuming runtime;
+      this PR performs no live deploy. deploy_pending = false. Do not claim deployed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13171/dod-deploy-assessment/command.yaml\"
+          && grep -q 'No live deploy' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13171/dod-deploy-assessment/command.yaml\""
+  - id: "dod-occ-pr-self"
+    description: >-
+      This OCC PR carries the central OMN-13171 contract and the dod-omnimarket-1243-head / dod-deploy-assessment
+      receipts that the omnimarket #1243 Receipt Gate resolves via Evidence-Source: OCC#<pr> and Evidence-Ticket:
+      OMN-13171. Contract validates against ModelTicketContract.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13171/dod-occ-pr-self/command.yaml\""

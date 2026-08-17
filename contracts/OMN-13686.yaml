@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13686
+title: "prune-worktrees.sh — batch gh pr list per repo instead of 2 calls per worktree (timeouts at volume)"
+summary: >-
+  omniclaude prune-worktrees.sh issued two `gh pr list` calls per worktree (one for MERGED state, one
+  for the PR number). At 50+ worktrees that is 100+ sequential gh API calls and frequent overnight timeouts.
+  The fix groups discovered worktrees by repo slug and issues ONE `gh pr list --state merged --json number,headRefName
+  --limit 200` per unique repo slug, stored in an associative array keyed by branch name; per-worktree
+  live gh calls are replaced with local map lookups. Staleness classification (MERGED / remote-branch-gone
+  / ACTIVE) is unchanged. The hardcoded macOS-volume defaults for WORKTREES_ROOT and ONEX_REGISTRY_ROOT
+  are replaced with OMNI_HOME-derived values plus existence guards. This OCC PR carries the OMN-13686
+  contract + DoD receipts consumed by the omniclaude code PR via Evidence-Source. It performs no deploy,
+  restart, or cluster mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Stubbed-gh subprocess test proves exactly N_repos merged-state gh calls across >=30 worktrees /
+      >=3 repos, and unchanged MERGED / remote-gone / ACTIVE classification.
+    command: "uv run pytest tests/scripts/test_prune_worktrees_batch.py -q"
+  - kind: ci
+    description: "shellcheck scripts/prune-worktrees.sh exits 0 with no warnings."
+    command: "shellcheck scripts/prune-worktrees.sh"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-batch-one-call-per-repo
+    description: >-
+      A run across >=30 worktrees spanning >=3 repos issues exactly N_repos `gh pr list --state merged`
+      calls (one per unique repo slug), proven by a stubbed-gh subprocess test counting gh invocations
+      and by a bash -x trace.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13686/dod-batch-one-call-per-repo/command.yaml"
+  - id: dod-classification-unchanged
+    description: >-
+      Staleness classification is unchanged: merged-PR branch -> STALE (PR merged), remote-branch-gone
+      -> STALE (remote branch gone), else ACTIVE.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13686/dod-classification-unchanged/command.yaml"
+  - id: dod-shellcheck-clean
+    description: "shellcheck scripts/prune-worktrees.sh exits 0 with no warnings."
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13686/dod-shellcheck-clean/command.yaml"
+  - id: dod-no-volumes-default-paths
+    description: >-
+      Neither WORKTREES_ROOT nor ONEX_REGISTRY_ROOT default to a hardcoded macOS-volume path; the script
+      carries no such literal at all.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13686/dod-no-volumes-default-paths/command.yaml"
+  - id: dod-occ-self
+    description: >-
+      Self-binding OCC receipt — this onex_change_control PR carries the OMN-13686 contract + receipts
+      consumed by the omniclaude code PR via Evidence-Source.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13686/dod-occ-self/command.yaml"

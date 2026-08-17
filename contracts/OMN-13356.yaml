@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13356"
+title: "Node generation: tool-reuse router — route a later similar request to an existing generated tool"
+summary: >
+  Closes the W7 / gap G4 finding from the 2026-06-19 architecture-diagram verification: nothing automatically
+  routed a later, similar request to an already-generated tool, and node_contract_matcher_compute (despite
+  its name) is a DoD evidence validator, not a reuse router. Adds a new canonical COMPUTE node node_tool_reuse_matcher_compute
+  (contract.yaml + HandlerToolReuseMatcher implementing handle(), no Plugin* base) that routes an incoming
+  tool-generation request to an existing generated tool, short-circuiting fresh LLM generation. Matching
+  is explicitly non-LLM: exact input/output contract-signature hash equality is the fast path; deterministic
+  token-set Jaccard similarity over the task description is the fallback. Bus-native: subscribes onex.cmd.omnimarket.tool-reuse-match-requested.v1,
+  publishes onex.evt.omnimarket.tool-reuse-matched.v1 and onex.evt.omnimarket.tool-reuse-no-match.v1 (all
+  declared in the contract; no hardcoded topic strings). Registry access is behind an injected ProtocolGeneratedToolRegistry
+  (in-memory default + protocol for a durable pgvector adapter). Pure deterministic node — no I/O beyond
+  the injected registry query.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      The new node's unit suite and the miss->hit golden chain pass. The golden chain proves the DoD:
+      a first request misses a cold registry (NO_MATCH, generation would run); after the generated tool
+      is registered, a second similar request resolves to it (MATCHED) with no LLM call in the trace.
+      A semantic-only variant proves the hit without relying on identical signatures.
+    command: "uv run pytest src/omnimarket/nodes/node_tool_reuse_matcher_compute/tests/ tests/test_golden_chain_tool_reuse_matcher.py
+      -m 'not kafka' -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1311"
+    description: >
+      omnimarket PR #1311 adds node_tool_reuse_matcher_compute (18 files): contract.yaml, metadata.yaml,
+      HandlerToolReuseMatcher, models, ProtocolGeneratedToolRegistry + InMemoryGeneratedToolRegistry,
+      unit suite (14 tests) and golden chain (3 tests). 17 new tests pass; mypy --strict clean; ruff clean;
+      the runtime sweep reports 314/314 entry points OK (the new node registered). Evidence anchor: omnimarket
+      head commit 6e25724db16be6ae9e129b251d9768d44293816b.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13356/dod-omnimarket-pr-1311/command.yaml
+          && grep -q '^pr_number: 1311$' drift/dod_receipts/OMN-13356/dod-omnimarket-pr-1311/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13356/dod-omnimarket-pr-1311/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: NON-DEPLOYABLE / no-runtime-mutation. This PR adds a new pure COMPUTE node only;
+      it wires no consumer into a running runtime and mutates no lane. The node is purity=pure with validation_contract.llm_allowed=false
+      and performs no I/O beyond an injected registry query. The orchestrator integration (node_generation_consumer
+      calling the matcher as an upstream gate) and the durable registry projection are explicitly scoped
+      as follow-ups, not in this PR. No prod / judge / stability / dev lane was started, restarted, deployed,
+      or otherwise mutated. The runtime sweep (docker-free static contract+entry-point verification) is
+      the deploy-equivalent proof for a node-add: 314/314 entry points OK including node_tool_reuse_matcher_compute.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13356/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1311$' drift/dod_receipts/OMN-13356/dod-deploy-assessment/command.yaml
+          && grep -q 'run_runtime_sweep' drift/dod_receipts/OMN-13356/dod-deploy-assessment/command.yaml"
+  - id: "dod-omnimarket-pr-1323"
+    description: >
+      omnimarket PR #1323 FINISHES OMN-13356: it wires node_tool_reuse_matcher_compute (landed unwired
+      in #1311) into node_generation_consumer — the orchestrator integration the #1311 deploy-assessment
+      explicitly scoped as a follow-up. Bus-native: before generating, the consumer publishes onex.cmd.omnimarket.tool-reuse-match-requested.v1
+      and awaits the matcher's verdict over the bus; onex.evt.omnimarket.tool-reuse-matched.v1 short-circuits
+      generation (returns the existing tool, ZERO LLM calls), onex.evt.omnimarket.tool-reuse-no-match.v1
+      proceeds to fresh generation (fail-open on timeout / no matcher wired). SEMANTIC strategy is used
+      because the contract signature is unknown pre-generation. A real bus-level golden chain (EventBusInmemory
+      + real matcher handler + real generation consumer over bus-backed sync adapters) proves both arms
+      — NOT a handler-isolation call. Also re-exports ModelRoutingDecision from the routing-authority
+      handler module to clear the cross-node model reach-in guard introduced by the OMN-13359 ladder import.
+      Evidence anchor: omnimarket head commit 833a0f9903bd43a7b3617a00de564ce63955bab8.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13356/dod-omnimarket-pr-1323/command.yaml
+          && grep -q '^pr_number: 1323$' drift/dod_receipts/OMN-13356/dod-omnimarket-pr-1323/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13356/dod-omnimarket-pr-1323/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13356 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13356/dod-occ-pr-self/command.yaml"

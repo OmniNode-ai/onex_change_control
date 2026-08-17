@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12361"
+title: "chore(OMN-12361): delete dead dispatch_resolver in node_delegation_orchestrator"
+summary: >-
+  resolve_effect_topic() in omnimarket/src/omnimarket/nodes/node_delegation_orchestrator/dispatch_resolver.py
+  was dormant dead code. The ticket asked to implement its MODEL invocation-kind branch (which raised
+  NotImplementedError), but investigation showed the entire module has zero live callers: grep over src/
+  and tests/ returns only the function definition and its __all__ export, the node package __init__.py
+  does not re-export it, and the real invocation routing path (DispatcherInvocationCommand.handle -> HandlerDelegationWorkflow
+  .handle_invocation_command -> re-emit; effect topics resolved from contract.yaml-declared topics + the
+  dispatch subcontract wiring) never imports or calls it. The MODEL invocation kind already flows through
+  that real path with no NotImplementedError. The module was migrated wholesale from omnibase_infra in
+  OMN-10865 (#607) and never wired up. Per the dead-code / non-canonical-node-deletion doctrine the resolver
+  is deleted (omnimarket PR #1542), not extended: implementing the MODEL branch would have required manufacturing
+  a synthetic caller (ticket DoD item 3) and adding an unconsumed REMOTE_MODEL_INVOKE topic to omnibase_core,
+  both of which create more dead code. No contract.yaml, topic, published_events, or runtime surface changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Full omnimarket suite stays green after the deletion and the runtime import sweep confirms
+      no node loading depends on the deleted module."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-12361/dod-deadcode-verification/command.yaml
+  - kind: "ci"
+    description: "Full omnimarket suite green; ruff, mypy --strict, and pre-commit clean."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-12361/dod-implementation/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-deadcode-verification"
+    description: >-
+      Dead-code proof. grep -rn 'resolve_effect_topic\|dispatch_resolver' over omnimarket src/ and tests/
+      returns only the definition and __all__ in the deleted file — zero live callers, zero tests, no
+      __init__ re-export. The only cross-repo hit was a stale check_value in omnibase_infra/contracts/OMN-9637.yaml
+      referencing the pre-migration path omnibase_infra.nodes.node_delegation_orchestrator.dispatch_resolver,
+      which already no longer exists (the node moved to omnimarket in OMN-10865) and is independent of
+      this change. After deletion the runtime import sweep is clean. Probe: cd omni_worktrees/OMN-12361/omnimarket
+      && uv run python -m omnimarket.nodes.node_runtime_sweep --import-check. Result: status clean, 346
+      entry_points_checked, 0 findings. Evidence-Source SHA: a09b79e9be277083a1433c89e3302e9dc62bcf66
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12361/dod-deadcode-verification/command.yaml"
+  - id: "dod-implementation"
+    description: >-
+      Deletion in omnimarket branch jonahgabriel/omn-12361-delete-dead-dispatch-resolver commit a09b79e9be277083a1433c89e3302e9dc62bcf66
+      removes src/omnimarket/nodes/node_delegation_orchestrator/dispatch_resolver.py in full. The full
+      omnimarket suite is green and static gates are clean. Probe: cd omni_worktrees/OMN-12361/omnimarket
+      && uv run pytest -q -m "not kafka". Result: 11069 passed, 49 skipped, 9 deselected, 0 failures.
+      uv run mypy src/omnimarket/nodes/node_delegation_orchestrator/ --strict -> Success: no issues found
+      in 32 source files; ruff format/check and pre-commit clean on the staged deletion.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12361/dod-implementation/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-readiness assessment. OMN-12361 is a pure deletion of a dormant, never-imported Python module
+      under src/omnimarket/nodes/node_delegation_orchestrator/. No Dockerfile, docker-compose, node contract.yaml,
+      published_events, topic, or infra/runtime-kernel change; no new omnibase_core topic; no prod or
+      stability mutation. The deleted symbol has no producer or consumer, so removing it cannot alter
+      runtime behavior. The change ships to the runtime via the standard post-merge node redeploy path
+      (node_redeploy_orchestrator); no repository-tracked deploy artifact is required.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12361/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-12361 contract and DoD receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"

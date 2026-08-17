@@ -1,0 +1,66 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13024
+title: 'A-2: UI evidence-class gate — Receipt-Gate rejects ui/dashboard DoD evidence without Playwright
+  proxy-origin trace'
+summary: >-
+  The Receipt-Gate now classifies a dod_evidence receipt as ui/dashboard-class when its probe_command
+  uses a direct HTTP client (curl/wget/httpx) without referencing Playwright, or when the receipt declares
+  evidence_class=ui_dashboard. UI/dashboard-class evidence fails the gate unless probe_command references
+  a Playwright run AND probe_stdout carries a network trace whose /api requests share the dashboard proxy
+  origin (not a direct backend port). A new optional evidence_class field on ModelDodReceipt lets a receipt
+  declare the class explicitly (UI_DASHBOARD forces strict validation; BACKEND opts a legitimate HTTP-client
+  probe out of the UI gate). This PR carries the central OMN-13024 contract + DoD receipts consumed by
+  omnibase_core via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      The new UI evidence-class gate test module passes (model field, classifier precedence, and gate
+      accept/reject behavior including the two DoD examples).
+    command: 'uv run pytest tests/unit/validation/test_receipt_gate_ui_evidence_class.py -q'
+  - kind: tests
+    description: >-
+      Existing receipt-gate and dod-receipt model tests remain green (no regression).
+    command: 'uv run pytest tests/unit/validation tests/unit/models/contracts/test_model_dod_receipt.py
+      -q'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >-
+      A receipt with probe_command='curl http://localhost:3001/api/...' and no Playwright reference fails
+      gate validation with 'ui-class evidence requires Playwright proxy-origin trace'; a receipt with
+      probe_command='npx playwright test ...' and a proxy-origin trace in probe_stdout passes.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13024/dod-001/command.yaml"
+  - id: dod-002
+    description: >-
+      ModelDodReceipt carries an optional evidence_class field (EnumEvidenceClass); the new test module
+      passes and the full receipt-gate + dod-receipt model suites remain green.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13024/dod-002/command.yaml"
+  - id: dod-deploy-assessment
+    description: >-
+      Static deploy assessment: OMN-13024 is a library-only change to the omnibase_core Receipt-Gate validator
+      and DoD receipt model. No live deploy, runtime restart, ECR push, or cluster mutation.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13024/dod-deploy-assessment/command.yaml"
+  - id: dod-occ-self
+    description: >-
+      Self-binding OCC receipt — this onex_change_control PR carries the OMN-13024 contract + receipts
+      consumed by the omnibase_core PR via Evidence-Source.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13024/dod-occ-self/command.yaml"

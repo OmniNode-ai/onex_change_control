@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13831"
+title: "fix(OMN-13831): fail-closed merge_sweep --verify for code-file PRs"
+summary: >-
+  omnimarket PR #1561 makes the VERIFYING phase of node_pr_lifecycle_orchestrator fail-CLOSED for code-file
+  PRs. Previously merge_sweep --verify excluded a PR only on VERIFICATION_FAILED; every indeterminate
+  outcome (VERIFICATION_UNAVAILABLE / _TIMEOUT / _TOOL_ERROR / SKIPPED_NO_MAPPING) fell through to cleared.append(pr),
+  merging code PRs unverified. Additionally _pr_changed_files returned [] on any gh error, mapping to
+  a neutral SKIPPED_NO_MAPPING skip. The fix blocks code-file PRs on any indeterminate outcome or un-enumerable
+  changed-files list, retries gh once then raises ChangedFilesUnavailableError, and preserves NEUTRAL
+  pass for genuine docs-only / no-mapping PRs and successful verification. Runtime rebuild/deploy of the
+  orchestrator is operator-gated and declared for post-merge validation; no live redeploy or Kafka mutation
+  was performed pre-merge.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1561"
+    description: >-
+      Consuming-PR binding: omnimarket PR #1561 carries the OMN-13831 fail-closed VERIFYING-phase fix
+      in node_pr_lifecycle_orchestrator plus the DoD unit tests (test_verifying_phase_dispatch.py, test_pr_changed_files_fail_closed.py)
+      covering all four required cases: code-PR indeterminate outcome blocked, docs-only no-mapping neutral
+      pass, gh-error-fetching-changed-files blocks code PR, and successful verification passes. Real probe:
+      gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state,headRefOid,headRefName,title,files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13831/dod-omnimarket-pr-1561/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Declared post-merge deploy verification: after the dev lane is redeployed with this code, drive
+      a code-file PR through merge_sweep --verify with a forced indeterminate verification outcome and
+      confirm the PR is excluded (fail-closed) rather than merged. The runtime rebuild/deploy is operator-gated
+      and declared for post-merge validation; no live runtime redeploy or Kafka mutation was performed
+      pre-merge.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13831/dod-deploy/command.yaml &&
+          grep -q 'deploy omnimarket' drift/dod_receipts/OMN-13831/dod-deploy/command.yaml && grep -q
+          'rpk topic produce' drift/dod_receipts/OMN-13831/dod-deploy/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13831 contract and the dod-omnimarket-pr-1561
+      and dod-deploy receipts consumed by omnimarket PR #1561 through Receipt Gate and OCC eligibility.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13831/dod-occ-self/command.yaml"

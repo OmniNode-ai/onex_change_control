@@ -1,0 +1,88 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14650"
+title: "fix(OMN-14650): register OCC self-bind evidence"
+summary: >-
+  Central OCC evidence for omnimarket PR #1778. The product PR repairs the companion emitter so generated
+  OCC companions declare their self-bind receipt in contract dod_evidence before rebind, and removes the
+  deadlocking source-PR-green gh pr checks receipt in favor of product diff-scope evidence.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1778-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1778 at head 3ea5f225bbf7288712729bc5837dc1d377593782.
+      Verifies the PR targets dev, touches only the OCC companion emitter/receipt renderer and their tests,
+      declares the self-bind dod_evidence item before rebind, and removes the source-PR-green gh pr checks
+      companion gate.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1778; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=3ea5f225bbf7288712729bc5837dc1d377593782;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14650): register OCC self-bind evidence' "$d/pr.txt" && grep -Fxq src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py
+          "$d/pr.txt" && grep -Fxq src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_evidence_stamp.py
+          "$d/pr.txt" && grep -Fxq tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_companion_emitter.py
+          "$d/pr.txt" && grep -Fxq tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_evidence_stamp.py
+          "$d/pr.txt" && test "$(tail -n +4 "$d/pr.txt" | wc -l | tr -d ' ')" = "4" && for p in src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py
+          src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_evidence_stamp.py tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_companion_emitter.py;
+          do mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'def _append_self_bind_evidence('
+          "$d/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py" &&
+          grep -Fq 'render_self_bind_dod_evidence_item(' "$d/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_companion_emitter.py"
+          && grep -Fq 'gh pr diff {pr_number}' "$d/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_evidence_stamp.py"
+          && grep -Fq -- '--name-only | grep -q .' "$d/src/omnimarket/nodes/node_pr_lifecycle_fix_effect/handlers/occ_evidence_stamp.py"
+          && grep -Fq 'test_emitted_companion_is_occ_merge_eligible' "$d/tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_companion_emitter.py"
+          && grep -Fq 'test_absent_self_bind_declaration_is_ineligible_red_case' "$d/tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_companion_emitter.py"
+  - id: "dod-omnimarket-pr-1778-local-verification"
+    description: >-
+      Local verification record for omnimarket PR #1778 at head 3ea5f225bbf7288712729bc5837dc1d377593782.
+      The PR body records ruff format/check and focused pytest over the emitter/renderer tests, including
+      54 passing tests on the rebased final head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1778; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=3ea5f225bbf7288712729bc5837dc1d377593782;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("uv run ruff format --check")) and (.body | contains("uv
+          run ruff check")) and (.body | contains("uv run pytest tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_evidence_stamp.py
+          tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_companion_emitter.py -q")) and (.body
+          | contains("54 passed"))' | grep -qx true
+  - id: "dod-omnimarket-pr-1778-deploy-scope"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1778. The diff is limited to OCC companion emitter/receipt-rendering
+      code and focused unit tests; it does not touch Dockerfiles, compose manifests, deploy scripts, migrations,
+      runtime service definitions, systemd, or infrastructure configuration.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1778; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=3ea5f225bbf7288712729bc5837dc1d377593782;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd|k8s|helm)(/|$)'
+  - id: "dod-occ-self-bind-pr-4232"
+    description: >-
+      Self-binding verification for onex_change_control PR #4232. Verifies the evidence PR is open on
+      the expected OMN-14650 branch and contains the initial evidence commit that carries the product
+      contract and receipt bundle for omnimarket PR #1778.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4232 --jq '.head.ref == "jonah/omn-14650-occ-market-1778"
+          and .state == "open"' | grep -qx true && gh api repos/OmniNode-ai/onex_change_control/pulls/4232/commits
+          --paginate --jq '.[].sha' | grep -Fx 4f5fc3461ea9945687482129ada1be0988cdd47e

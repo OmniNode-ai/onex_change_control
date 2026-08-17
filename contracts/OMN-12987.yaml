@@ -1,0 +1,127 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12987"
+title: "fix(OMN-12987): workspace-build sibling lock-pin preflight (vendored stale infra 0.37.0-dev caused
+  the 06-11 stability bootstrap crash)"
+summary: >-
+  Recurrence ratchet for the 2026-06-11 stability bootstrap crash. The 11:20Z --no-cache stability-test
+  rebuild vendored omnibase_infra 0.37.0-dev (~2c1d672f, 2026-05-29, pre-OMN-12501-guard) + omnibase_core
+  0.42.0 even though omnimarket dev's uv.lock pinned infra 0.38.1 @ e2dbdc95 + core 0.44.0 @ c97c2c9a.
+  The build ignored the consuming repo's lock and shipped a 13-day-stale sibling lacking the OMN-12501
+  Protocol-quarantine guard, turning a latent contract defect into a fatal bootstrap crash that crash-looped
+  the main runtime on demo day. Fix adds a host-side fail-fast preflight (scripts/runtime_build/check_sibling_lock_pins.py)
+  that resolves expected sibling versions/SHAs from the consuming repo's (omnimarket) uv.lock and aborts
+  the build if any vendored tree mismatches the pin; stage_workspace.sh emits a .build-sha marker per
+  staged sibling (rsync drops .git); deploy-runtime.sh runs the preflight after staging and aborts on
+  mismatch; compute_workspace_provenance.py + Dockerfile.runtime fold the expected-vs-actual lock_pin_comparison
+  into build-provenance.json so deploy verifiers can detect a stale-sibling build. No live rebuild performed;
+  local/throwaway proof only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: "dod-infra-pr-1944"
+    description: "omnibase_infra PR #1944 adds the build-vendor lock-pin ratchet: scripts/runtime_build/check_sibling_lock_pins.py
+      (host preflight comparing each vendored sibling's version/SHA against the omnimarket uv.lock pin;
+      aborts on mismatch), stage_workspace.sh .build-sha markers, deploy-runtime.sh preflight wiring,
+      and the lock_pin_comparison fold into build-provenance.json. tests/scripts/test_check_sibling_lock_pins.py
+      (11 tests) proves stale infra 0.37.0/2c1d672f vs lock-pinned 0.38.1/e2dbdc95 FAILS the preflight
+      and matched pins PASS; tests/scripts/test_deploy_runtime_build_context.py statically asserts the
+      deploy/stage wiring. Live proof: the preflight run against the canonical clones correctly exits
+      1 flagging infra 0.38.3@b7c93a8e vs lock 0.38.1@e2dbdc95. ruff/pre-commit clean; full uv run pytest
+      tests/ = 23776 passed (the 13 live-infra/integration/performance failures are pre-existing on origin/dev
+      and untouched by this change). Evidence anchor: omnibase_infra head commit 51ac72847."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-1944/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-1944/command.yaml"
+          && grep -q '^pr_number: 1944$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-1944/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: "Deploy assessment: this PR changes build/deploy preflight scripts only; it performs
+      no dev/prod/stability mutation and no live deploy. The ratchet reaches live effect on the next batched
+      stability rebuild run by the rebuild agent, where the preflight will abort any build that vendors
+      a sibling mismatching the omnimarket dev lock. The receipt carries the deploy keyword for the deploy-gate."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the OMN-12987 central contract and the dod receipts that omnibase_infra
+      PR #1944 Receipt-Gate resolves via Evidence-Source: <this OCC commit SHA>."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-occ-pr/command.yaml"
+  - id: "dod-infra-pr-caller-fix"
+    description: >-
+      Follow-up to OCC#2488: the OMN-12987 preflight wiring in scripts/deploy-runtime.sh called check_sibling_lock_pins.py
+      with the removed --provenance-out flag. The script interface changed under OMN-12977/12987 to require
+      --lock (the omnimarket uv.lock pin authority), repeatable --repo PACKAGE=PATH (the canonical clones
+      the build vendors), and --output (the comparison JSON destination). The stale caller failed EVERY
+      workspace --execute deploy at argparse ("the following arguments are required: --lock") before any
+      build started — it blocked the clean stability-test rebuild; the dev redeploy only worked because
+      it used a different build script. omnibase_infra PR fixes check_sibling_lock_pins() to build guard_args
+      with the current interface (identical behavior: same lock authority, same vendored repo paths, same
+      output destination, same fail-fast abort), honors ALLOW_SIBLING_PIN_DRIFT=1 -> --allow-drift (OMN-12977
+      operator override), and adds the permanent regression test test_deploy_runtime_uses_current_lock_pin_preflight_interface.
+      No bypass; no live deploy/restart/mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-caller-fix/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-caller-fix/command.yaml"
+  - id: "dod-infra-pr-build-context"
+    description: >-
+      Follow-up to OCC#2617: after the caller-fix the OMN-12987 preflight passed, but the workspace --execute
+      build then failed at docker build with "failed to calculate checksum of ref ...:/workspace/sibling-pin-comparison.json:
+      not found". Dockerfile.runtime (~line 278) COPYs workspace/sibling-pin-comparison.json, but deploy-runtime.sh
+      sync_files() only rsynced workspace/sibling-repos/ into the deployed build context — the root-level
+      comparison file (committed placeholder in release mode; the real expected-vs-actual comparison stage_workspace.sh
+      writes in workspace mode, OMN-12977) was never carried over. The dev compose build masked this because
+      docker compose build runs from the repo root where the file exists; deploy-runtime.sh builds from
+      the assembled deployed context, which lacked it. This blocked EVERY deploy-runtime.sh workspace
+      --execute deploy, including the stability-lane clean rebuild after the caller-fix preflight correctly
+      passed. omnibase_infra PR rsyncs workspace/sibling-pin-comparison.json into the deployed context
+      alongside workspace/sibling-repos/, and adds the permanent regression test test_deploy_runtime_stages_every_workspace_copy_source
+      that parses Dockerfile.runtime's COPY-from-workspace paths and asserts deploy-runtime.sh stages
+      each — so a future Dockerfile COPY without a matching rsync fails CI (negative-control verified).
+      No bypass; the live stability rebuild proof is recorded in the receipt.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-build-context/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-build-context/command.yaml"
+  - id: "dod-infra-pr-forward-migration-name"
+    description: >-
+      Follow-up to the build-context re-prove: after workspace-mode docker build succeeded, the clean
+      stability-test deploy stopped at the migration preflight because docker-compose.infra.yml used a
+      lane-blind forward-migration container_name. omnibase_infra PR #1981 project-namespaces the forward-migration
+      container, updates the catalog source of truth and generated compose output, and changes deploy-runtime.sh
+      to wait/probe the lane-scoped compose project containers instead of hard-coded dev-lane names. This
+      removes the cross-lane container collision without force-removing any live container. The receipt
+      binds the PR number and head SHA for Receipt Gate.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-forward-migration-name/command.yaml"
+          && grep -q '^ticket_id: "OMN-12987"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-forward-migration-name/command.yaml"
+          && grep -q '^pr_number: 1981$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12987/dod-infra-pr-forward-migration-name/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

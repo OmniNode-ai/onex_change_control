@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13642"
+title: "feat(OMN-13642): thread LLM-judge verdict into live acceptance decision"
+summary: >
+  The delegation quality gate combined the LLM-judge adequacy SCORE into the verifiable-class verdict
+  as a weighted mean (0.6 deterministic + 0.4 judge, OMN-13470), which made the judge a score nudge rather
+  than a gate. On a task class whose required_bar is low enough (test/validator_generation at 0.8), a
+  perfect deterministic floor (fraction 1.0) lifts a FAIL judge score over the bar (judge 0.55 -> combined
+  0.82 >= 0.80 -> ACCEPTED) even though the judge VERDICT is fail; the reducer returned passed=True on
+  the verifiable path regardless of the verdict, so a judge FAIL was masked by the deterministic floor.
+  Acceptance is now deterministic_gate AND judge_verdict for combinable task types: HandlerQualityGateIntent.handle_async
+  threads the judge VERDICT (not only the score) into the pure reducer delta(), which gains a judge_verdict
+  parameter and VETOES acceptance on a FAIL verdict (passed=False, fail_category=fail_heuristic, fallback_recommended=True
+  -> escalate) even when the combined score clears the bar. The deterministic hard floor still hard-blocks
+  refusals/empties BEFORE any judge consideration; JUDGE_FAILED carries no score and falls open to deterministic
+  (never a silent zero); PASS/BORDERLINE keep the combined-score behavior. The verdict reaches handle_gate_result
+  via the contract-sourced quality-gate-result.v1 (result.passed) and the durable judge verdict on delegation-judge-verdict.v1
+  is still emitted. Canonical CONTRACT + NODE + HANDLER only; no new topics, no Plugin*, no new REST endpoints;
+  gate strengthened, never weakened. No live-lane mutation; redeploy is a separate serialized step.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      A new suite proving acceptance = deterministic_gate AND judge_verdict for the combinable task type
+      test (required_bar 0.8): a control proving the score-only masking (FAIL score clears the bar ->
+      accepted), the veto (det-PASS + judge-FAIL -> NOT accepted with quality_score still >= bar, proving
+      the veto not a score drop), det-PASS + judge-PASS -> accepted, BORDERLINE does not veto, refusal
+      still hard-blocks fail_deterministic before the veto, the judge VERDICT threading through the real
+      HandlerJudgeAdequacy over a recorded GLM replay (handle_async FAIL -> passed=False, PASS -> passed=True),
+      and the full orchestrator -> routing -> inference -> gate -> terminal dispatch chain proving the
+      verdict reaches handle_gate_result (FAIL -> no delegation-completed; PASS -> COMPLETED).
+    command: "uv run pytest tests/unit/delegation/test_judge_verdict_vetoes_acceptance_omn13642.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >
+      omnimarket product PR threads the judge VERDICT into the quality gate: handler_quality_gate.delta
+      gains judge_verdict and vetoes acceptance on a FAIL verdict on the verifiable-acceptance path; handler_quality_gate_intent.handle_async
+      threads the verdict alongside the score; a new 9-test suite (tests/unit/delegation/test_judge_verdict_vetoes_acceptance_omn13642.py)
+      plus a recorded-shape FAIL judge replay fixture. Full local verify passes (delegation suite 434
+      passed/1 skipped; full suite 9812 passed/51 skipped with only 3 pre-existing Kafka-broker integration
+      failures unrelated to the change; mypy --strict clean; ruff clean; pre-commit clean on changed files;
+      runtime import-check clean).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13642/dod-omnimarket-pr/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13642/dod-omnimarket-pr/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13642/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR changes a pure REDUCER reducer (delta) and its Kafka-native intent handler
+      (handle_async) in omnimarket -- no new node, no envelope/contract-API change, no new topic, no live-lane
+      mutation. The judge EFFECT already ran on the canonical inference path (OMN-13470); this change
+      only makes the already-resolved verdict gate acceptance. No live deploy is performed by this PR;
+      the serialized dev redeploy + live det-pass/judge-fail proof is a separate downstream step. The
+      receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13642/dod-deploy-assessment/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13642/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13642/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13642 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13642/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13642/dod-occ-pr-self/command.yaml"

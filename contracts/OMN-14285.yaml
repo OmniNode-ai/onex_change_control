@@ -1,0 +1,472 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14285"
+title: "feat(OMN-14285): RSD-1 -- pure node_occ_companion_compute (COMPUTE core + attestation oracle)"
+summary: >-
+  omnimarket product PR #1706 (branch jonah/omn-14285-rsd1-occ-companion-compute, head bdd0681d54bece5bccd1ff3a322f2131e376b832)
+  adds node_occ_companion_compute, a pure/stateless/deterministic COMPUTE node that renders the exact
+  OCC companion (contract + downstream receipt + self-bind + OMN-14233 two-audiences supersede) from a
+  fully-populated ModelOccCompanionRequest with ZERO I/O, and doubles as the OMN-14055 attestation oracle
+  via deterministic_fingerprint. RSD-1 slice only: the read-EFFECT (node_occ_state_effect, RSD-2), write-EFFECT,
+  orchestrator wiring, and RSD-5 gate integration are explicit follow-slices, not in this PR. Sibling
+  PR #1704 (converge-adapters approach) is parked as a draft under the rev-2 reshape and is not superseded
+  by this contract.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent verification at product head bdd0681d54bece5bccd1ff3a322f2131e376b832, executed by an
+      agent that implemented neither #1706 nor #1704 (no-self-authored-evidence, OMN-14055). Re-ran the
+      claimed evidence rather than trusting the PR body: checked out the branch into a scratch worktree,
+      `uv sync`, then `uv run pytest tests/unit/nodes/node_occ_companion_compute/test_occ_companion_compute_seam.py
+      -v` -> 18 passed in 0.15s, covering T1 determinism, T2 reproducibility/attestation-digest-stability
+      (byte-diff oracle: digest stable across observed-fact-only changes, digest changes on a tampered
+      deterministic field), T3 two-audiences net-new supersede, T6 net-new-only, the ported trivial-infra
+      fast-path + verifier!=runner checks, and TestZeroIoPurity (an AST walk over handler_occ_companion_compute.py
+      that fails on any subprocess/network/filesystem/datetime.now() import or call). Read the 571-line
+      handler directly: compute_companion_plan and HandlerOccCompanionCompute.handle perform genuinely
+      zero I/O; all observed facts (run_timestamp, probe stdout, PR/OCC contract state) are request fields,
+      never fetched. Also independently re-ran `ruff check` (clean), `ruff format --check` (8 files already
+      formatted), `mypy --strict` (clean, 7 source files), `scripts/ci/check_node_metadata_dependencies.py`
+      (PASS), and `python -m omnimarket.nodes.node_runtime_sweep --import-check` (status=clean, entry_points_checked=351);
+      pyproject.toml:228 registers `node_occ_companion_compute` as a package entry point.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-001/command.yaml && grep -q '^pr_number:
+          1706$' drift/dod_receipts/OMN-14285/dod-001/command.yaml && grep -q 'bdd0681d54bece5bccd1ff3a322f2131e376b832'
+          drift/dod_receipts/OMN-14285/dod-001/command.yaml
+  - id: "dod-1706-head-a9fdee76"
+    description: >-
+      Follow-up verification of omnimarket PR #1706 at head a9fdee76c844c7cf0b7a24ce1689e25a2d7c86c7 after
+      the golden-chain coverage repair. The node_occ_companion_compute tests pass and the golden-chain
+      coverage gate recognizes the node-local golden-chain proof for the changed live-path node.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1706-head-a9fdee76/command.yaml &&
+          grep -q '^pr_number: 1706$' drift/dod_receipts/OMN-14285/dod-1706-head-a9fdee76/command.yaml
+          && grep -q 'a9fdee76c844c7cf0b7a24ce1689e25a2d7c86c7' drift/dod_receipts/OMN-14285/dod-1706-head-a9fdee76/command.yaml
+  - id: "dod-1706-head-6c742e8e"
+    description: >-
+      Follow-up verification of omnimarket PR #1706 at head 6c742e8e0e3841d9e7670f498b54411d09df52c9 after
+      the node-drift liveness repair. The RSD-1 node_occ_companion_compute contract is marked experimental
+      because runtime bus wiring is explicitly deferred to later slices, while the pure compute/attestation
+      behavior remains covered by focused node tests and the golden-chain coverage gate.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1706-head-6c742e8e/command.yaml &&
+          grep -q '^pr_number: 1706$' drift/dod_receipts/OMN-14285/dod-1706-head-6c742e8e/command.yaml
+          && grep -q '6c742e8e0e3841d9e7670f498b54411d09df52c9' drift/dod_receipts/OMN-14285/dod-1706-head-6c742e8e/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-surface assessment: product PR #1706 adds a wholly new, unwired node (net-new files only
+      -- contract.yaml, metadata.yaml, handlers/, models/ -- plus one added pyproject.toml entry-point
+      line and its unit test file). It is not registered into any orchestrator, dispatch table, or live
+      gate; RSD-2/RSD-3 wiring is a follow-slice. No live deploy, restart, .201 mutation, topic mutation,
+      or migration was performed by this OCC companion or by #1706 itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14285/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the net-new OMN-14285 central contract
+      and PASS receipts consumed by omnimarket#1706 through its Evidence-Source line. Self-binds via the
+      first commit's SHA for occ-preflight eligibility (no PR-number prediction).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-self/command.yaml
+  - id: "dod-occ-pr-3856"
+    description: >-
+      OCC follow-up self-binding: onex_change_control PR #3856 carries the add-only OMN-14285 evidence
+      refresh for omnimarket#1706 head a9fdee76c844c7cf0b7a24ce1689e25a2d7c86c7 after the golden-chain
+      coverage repair. The receipt binds this OCC PR number and the initial follow-up evidence commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3856/command.yaml && grep -q
+          '^pr_number: 3856$' drift/dod_receipts/OMN-14285/dod-occ-pr-3856/command.yaml
+  - id: "dod-occ-pr-3860"
+    description: >-
+      OCC follow-up self-binding: onex_change_control PR #3860 carries the add-only OMN-14285 evidence
+      refresh for omnimarket#1706 head 6c742e8e0e3841d9e7670f498b54411d09df52c9 after the node-drift liveness
+      repair. The receipt binds this OCC PR number and the initial follow-up evidence commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3860/command.yaml && grep -q
+          '^pr_number: 3860$' drift/dod_receipts/OMN-14285/dod-occ-pr-3860/command.yaml
+  - id: "dod-occ-pr-3861"
+    description: >-
+      OCC follow-up self-binding: onex_change_control PR #3861 carries the add-only supersede receipt
+      that rebinds the stale OMN-14285 dod-1706-head-a9fdee76 receipt to its per-entry contract hash after
+      the contract was append-only extended for omnimarket#1706 head 6c742e8e.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3861/command.yaml && grep -q
+          '^pr_number: 3861$' drift/dod_receipts/OMN-14285/dod-occ-pr-3861/command.yaml
+  - id: "dod-1706-head-00573e05"
+    description: >-
+      Follow-up verification of omnimarket PR #1706 at head 00573e054228eb29de5f6fa98ad2b61e58110d60 after
+      the runtime-gate repair for node_occ_companion_compute. The RSD-1 node remains a pure compute and
+      attestation-oracle slice while its metadata/contract/runtime-profile declarations now satisfy omnimarket's
+      runtime dogfood, metadata schema, node-drift, topic, golden-chain, and changed-file pre-commit gates.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1706-head-00573e05/command.yaml &&
+          grep -q '^pr_number: 1706$' drift/dod_receipts/OMN-14285/dod-1706-head-00573e05/command.yaml
+          && grep -q '00573e054228eb29de5f6fa98ad2b61e58110d60' drift/dod_receipts/OMN-14285/dod-1706-head-00573e05/command.yaml
+  - id: "dod-occ-pr-3862"
+    description: >-
+      OCC follow-up self-binding: onex_change_control PR #3862 carries the add-only OMN-14285 evidence
+      refresh for omnimarket#1706 head 00573e054228eb29de5f6fa98ad2b61e58110d60 after the runtime-gate
+      repair. The receipt binds this OCC PR number and the initial follow-up evidence commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3862/command.yaml && grep -q
+          '^pr_number: 3862$' drift/dod_receipts/OMN-14285/dod-occ-pr-3862/command.yaml
+  - id: "dod-1706-head-55f3c5ae"
+    description: >-
+      Follow-up verification of omnimarket PR #1706 at head 55f3c5aeb29990728d42c5a6d25b0bff6b390758 after
+      merging current dev dogfood ratchets. The conflict repair preserves OMN-14285's node_occ_companion_compute
+      and OMN-14333's two codegen validator nodes, updating the dogfood inventory expectation to 353.
+      Focused dogfood and OCC companion node tests passed 37/37, Ruff check passed, and Ruff format --check
+      passed on the changed surfaces.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1706-head-55f3c5ae/command.yaml &&
+          grep -q '^pr_number: 1706$' drift/dod_receipts/OMN-14285/dod-1706-head-55f3c5ae/command.yaml
+          && grep -q '55f3c5aeb29990728d42c5a6d25b0bff6b390758' drift/dod_receipts/OMN-14285/dod-1706-head-55f3c5ae/command.yaml
+  - id: "dod-occ-pr-1706-head-55f3c5ae"
+    description: >-
+      OCC follow-up self-binding: this onex_change_control PR carries the add-only OMN-14285 evidence
+      refresh for omnimarket#1706 head 55f3c5aeb29990728d42c5a6d25b0bff6b390758 after the dev dogfood
+      conflict repair. The receipt binds the allocated OCC PR number and initial evidence commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-1706-head-55f3c5ae/command.yaml
+  - id: "dod-1706-head-07eea347"
+    description: >-
+      Follow-up verification of omnimarket PR #1706 at head 07eea3471cd12de5322ed12bcfb102d7537f3421 after
+      resolving CodeRabbit review findings for request-boundary validation. The request model now rejects
+      malformed product/OCC SHAs and duplicate OCC contract-state ticket IDs before plan generation. Focused
+      OCC companion seam/golden-chain/dogfood tests passed 41/41, Ruff check/format passed, and product
+      commit hooks passed before push.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1706-head-07eea347/command.yaml &&
+          grep -q '^pr_number: 1706$' drift/dod_receipts/OMN-14285/dod-1706-head-07eea347/command.yaml
+          && grep -q '07eea3471cd12de5322ed12bcfb102d7537f3421' drift/dod_receipts/OMN-14285/dod-1706-head-07eea347/command.yaml
+  - id: "dod-1706-head-feaa48e8"
+    description: >-
+      Follow-up verification of omnimarket PR #1706 at head feaa48e8e6d5f3b4d304392f2f3f2e0f135a5cda after
+      merging current dev into the RSD-1 companion compute branch. The conflict repair preserves OMN-14285's
+      node_occ_companion_compute while incorporating the latest dev dogfood ratchets, including OMN-14325
+      serialization compute nodes and OMN-14336 hybrid codegen nodes. Focused OCC companion seam/golden-chain
+      and runtime dogfood tests passed 41/41, the focused dogfood test passed 4/4, diff-check passed,
+      and product commit hooks passed before push with OMNIBASE_INFRA_PATH set.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1706-head-feaa48e8/command.yaml &&
+          grep -q '^pr_number: 1706$' drift/dod_receipts/OMN-14285/dod-1706-head-feaa48e8/command.yaml
+          && grep -q 'feaa48e8e6d5f3b4d304392f2f3f2e0f135a5cda' drift/dod_receipts/OMN-14285/dod-1706-head-feaa48e8/command.yaml
+  - id: "dod-occ-pr-3901"
+    description: >-
+      OCC supersession self-binding: onex_change_control PR #3901 carries append-only supersession receipts
+      for stale whole-file receipt hashes blocking market receipt gates. This OMN-14285 receipt binds
+      the allocated OCC PR and repair evidence commit for omnimarket#1706.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3901/command.yaml
+  - id: "dod-occ-pr-3902"
+    description: >-
+      OCC supersession self-binding: onex_change_control PR #3902 carries append-only supersession receipts
+      for the next exposed stale whole-file receipt hashes blocking omnimarket#1706 and #1707. This OMN-14285
+      receipt binds the allocated OCC PR and repair evidence commit for omnimarket#1706.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3902/command.yaml
+  - id: "dod-occ-pr-3919"
+    description: >-
+      OCC follow-up self-binding: onex_change_control PR #3919 carries the add-only OMN-14285 evidence
+      refresh for omnimarket#1706 head feaa48e8e6d5f3b4d304392f2f3f2e0f135a5cda after the current-dev
+      dogfood merge repair. The receipt binds the allocated OCC PR number and initial evidence commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3919/command.yaml && grep -q
+          '^pr_number: 3919$' drift/dod_receipts/OMN-14285/dod-occ-pr-3919/command.yaml
+  - id: "dod-1704-head-d46e774a"
+    description: >-
+      Foreground Codex verification of omnimarket PR #1704 at head d46e774a24d5682fee3afbe60c7b7873b107db87
+      after rebasing onto dev 9f4486c652cc57ef14e8ee681adb6423405bc0fe. The one-OCC-producer convergence
+      branch passed local ruff check, ruff format --check, scripts/ci/check_one_occ_producer.py, focused
+      pytest coverage for the OCC evidence stamp/emitter, OCC companion compute seam, attestation oracle,
+      PR lifecycle fix effect, lifecycle orchestrator, and arm activation paths (310 passed), changed-node
+      golden-chain coverage, strict changed-node state coverage, changed-node node-drift gate with best-effort
+      warnings only, and unimported-handler wiring. The repo-wide all-src/tests mypy run remains non-gating
+      on pre-existing strict-test debt, not this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1704-head-d46e774a/command.yaml &&
+          grep -q '^pr_number: 1704$' drift/dod_receipts/OMN-14285/dod-1704-head-d46e774a/command.yaml
+          && grep -q 'd46e774a24d5682fee3afbe60c7b7873b107db87' drift/dod_receipts/OMN-14285/dod-1704-head-d46e774a/command.yaml
+  - id: "dod-deploy-assessment-1704-head-d46e774a"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1704 head d46e774a24d5682fee3afbe60c7b7873b107db87:
+      the diff converges OCC companion authoring inside omnimarket code and CI/pre-commit guard surfaces.
+      It changes no live deployment configuration, performs no deploy or restart, changes no migration,
+      and does not mutate .201. Runtime-impacting behavior remains gated by the existing PR/OCC CI and
+      follow-on deploy validation, not by a live mutation in this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-deploy-assessment-1704-head-d46e774a/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14285/dod-deploy-assessment-1704-head-d46e774a/command.yaml
+  - id: "dod-occ-pr-1704-head-d46e774a"
+    description: >-
+      OCC follow-up self-binding: this onex_change_control PR carries the add-only OMN-14285 evidence
+      refresh for omnimarket#1704 head d46e774a24d5682fee3afbe60c7b7873b107db87 after the current-dev
+      rebase and one-producer seam repair. The receipt binds the allocated OCC PR number and initial evidence
+      commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-1704-head-d46e774a/command.yaml
+  - id: "dod-1704-head-1d32290e"
+    description: >-
+      Follow-up verification of omnimarket PR #1704 at head 1d32290ed98ed0792be140517e65402f7c5eb857 after
+      shrinking the noncanonical lifecycle allowlist for the two OCC adapter classes deleted by this branch.
+      The exact hosted ratchet invocation passed locally with --check-stale and the pinned omnibase_core
+      validator; ruff check src/tests, ruff format --check src/tests, the one-OCC-producer guard, and
+      the focused OCC/lifecycle pytest suite (310 passed) also passed. Product commit hooks passed with
+      OMNIBASE_INFRA_PATH set.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1704-head-1d32290e/command.yaml &&
+          grep -q '^pr_number: 1704$' drift/dod_receipts/OMN-14285/dod-1704-head-1d32290e/command.yaml
+          && grep -q '1d32290ed98ed0792be140517e65402f7c5eb857' drift/dod_receipts/OMN-14285/dod-1704-head-1d32290e/command.yaml
+  - id: "dod-deploy-assessment-1704-head-1d32290e"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1704 head 1d32290ed98ed0792be140517e65402f7c5eb857:
+      the head refresh only shrinks the noncanonical lifecycle allowlist for deleted OCC adapter classes
+      on top of the already-verified one-producer convergence branch. It performs no live deploy, restart,
+      .201 mutation, migration, or production runtime mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-deploy-assessment-1704-head-1d32290e/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14285/dod-deploy-assessment-1704-head-1d32290e/command.yaml
+  - id: "dod-occ-pr-1704-head-1d32290e"
+    description: >-
+      OCC follow-up self-binding: this onex_change_control PR carries the add-only OMN-14285 evidence
+      refresh for omnimarket#1704 head 1d32290ed98ed0792be140517e65402f7c5eb857 after the lifecycle allowlist
+      shrink. The receipt binds the allocated OCC PR number and initial evidence commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-1704-head-1d32290e/command.yaml
+  - id: "dod-1704-head-1d32290e63"
+    description: >-
+      Corrected follow-up verification of omnimarket PR #1704 at actual head 1d32290e63c0eaea58d843474554b5b67aa099ee
+      after shrinking the noncanonical lifecycle allowlist for the two OCC adapter classes deleted by
+      this branch. This corrects the previous truncated-head expansion error in OCC#3961. The exact hosted
+      ratchet invocation passed locally with --check-stale and the pinned omnibase_core validator; ruff
+      check src/tests, ruff format --check src/tests, the one-OCC-producer guard, and the focused OCC/lifecycle
+      pytest suite (310 passed) also passed. Product commit hooks passed with OMNIBASE_INFRA_PATH set.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-1704-head-1d32290e63/command.yaml
+          && grep -q '^pr_number: 1704$' drift/dod_receipts/OMN-14285/dod-1704-head-1d32290e63/command.yaml
+          && grep -q '1d32290e63c0eaea58d843474554b5b67aa099ee' drift/dod_receipts/OMN-14285/dod-1704-head-1d32290e63/command.yaml
+  - id: "dod-deploy-assessment-1704-head-1d32290e63"
+    description: >-
+      Corrected deploy-surface assessment for omnimarket PR #1704 actual head 1d32290e63c0eaea58d843474554b5b67aa099ee:
+      the head refresh only shrinks the noncanonical lifecycle allowlist for deleted OCC adapter classes
+      on top of the already-verified one-producer convergence branch. It performs no live deploy, restart,
+      .201 mutation, migration, or production runtime mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-deploy-assessment-1704-head-1d32290e63/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14285/dod-deploy-assessment-1704-head-1d32290e63/command.yaml
+  - id: "dod-occ-pr-1704-head-1d32290e63"
+    description: >-
+      OCC correction self-binding: this onex_change_control PR carries add-only corrected OMN-14285 evidence
+      for the actual omnimarket#1704 head 1d32290e63c0eaea58d843474554b5b67aa099ee. The receipt binds
+      the allocated OCC PR number and initial correction evidence commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-1704-head-1d32290e63/command.yaml
+  - id: "dod-occ-pr-3965"
+    description: >-
+      OCC supersession self-binding: onex_change_control PR #3965 carries the add-only supersession receipt
+      that rebinds the stale OMN-14285 dod-1704-head-d46e774a receipt to the current contract hash and
+      per-entry contract hash after later append-only OMN-14285 evidence changed the whole-file contract
+      hash.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3965/command.yaml && grep -q
+          '^pr_number: 3965$' drift/dod_receipts/OMN-14285/dod-occ-pr-3965/command.yaml
+  - id: "dod-occ-pr-3966"
+    description: >-
+      OCC supersession self-binding: onex_change_control PR #3966 carries add-only supersession receipts
+      that rebind the remaining stale OMN-14285 d46e774a deploy-assessment and OCC self-bind receipts
+      for omnimarket#1704 after later append-only evidence changed the whole-file contract hash.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3966/command.yaml && grep -q
+          '^pr_number: 3966$' drift/dod_receipts/OMN-14285/dod-occ-pr-3966/command.yaml
+  - id: "dod-occ-pr-3968"
+    description: >-
+      OCC supersession self-binding: onex_change_control PR #3968 carries add-only supersession receipts
+      that rebind stale OMN-14285 1d32290e product, deploy-assessment, and OCC self-bind receipts for
+      omnimarket#1704 after later append-only evidence changed the whole-file contract hash. Corrected
+      actual-head evidence remains carried by the separate 1d32290e63 entries.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3968/command.yaml && grep -q
+          '^pr_number: 3968$' drift/dod_receipts/OMN-14285/dod-occ-pr-3968/command.yaml
+  - id: "dod-occ-pr-3969"
+    description: >-
+      OCC supersession self-binding: onex_change_control PR #3969 carries add-only supersession receipts
+      that rebind stale OMN-14285 corrected actual-head 1d32290e63 product, deploy-assessment, and OCC
+      self-bind receipts for omnimarket#1704 after later append-only evidence changed the whole-file contract
+      hash.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14285/dod-occ-pr-3969/command.yaml && grep -q
+          '^pr_number: 3969$' drift/dod_receipts/OMN-14285/dod-occ-pr-3969/command.yaml
+  - id: "dod-omniclaude-pr-1890-head-c941665e"
+    description: >-
+      omniclaude PR #1890 is bound to rebased OMN-14285 product head c941665ebddf5b2e6f6cd1299e55b9b1b29779e3.
+      The product PR marks scripts/scaffold_occ_receipt.py retired in intent and redirects new work to
+      the canonical node-backed OCC producer while hard deletion remains design-gated.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 1890 --repo OmniNode-ai/omniclaude --json headRefName,baseRefName,headRefOid
+          --jq '.headRefName + " " + .baseRefName + " " + .headRefOid')" = "jonah/omn-14285-retire-scaffold-occ-receipt
+          dev c941665ebddf5b2e6f6cd1299e55b9b1b29779e3"
+  - id: "dod-omniclaude-pr-1890-docstring-scope"
+    description: >-
+      omniclaude PR #1890 is limited to scripts/scaffold_occ_receipt.py, so the interim retirement marker
+      has no runtime deploy, restart, .201 mutation, migration, or production runtime impact.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/omniclaude/pulls/1890/files --jq '.[].filename' | grep -cv
+          '^scripts/scaffold_occ_receipt.py$')" = "0"
+  - id: "dod-omniclaude-pr-1890-retired-banner"
+    description: >-
+      The OMN-14285 retired-in-intent banner exists in scripts/scaffold_occ_receipt.py at the pinned omniclaude
+      PR #1890 product head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omniclaude/contents/scripts/scaffold_occ_receipt.py?ref=c941665ebddf5b2e6f6cd1299e55b9b1b29779e3"
+          --jq .content | base64 -d | grep -c 'RETIRED IN INTENT'
+  - id: "dod-occ-self-pr-4039"
+    description: >-
+      OCC companion PR #4039 carries the append-only OMN-14285 evidence for omniclaude#1890 and is itself
+      bound by PR number.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh pr view 4039 --repo OmniNode-ai/onex_change_control --json headRefName,baseRefName
+          --jq '.headRefName + " " + .baseRefName')" = "jonah/omn-14285-omniclaude-1890-occ dev"

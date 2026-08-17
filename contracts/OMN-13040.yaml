@@ -1,0 +1,66 @@
+---
+# OMN-13040 central OCC contract.
+schema_version: "1.0.0"
+ticket_id: "OMN-13040"
+title: "B-5: Runner-disk preflight job + infra-signature auto-rerun in merge-sweep tick"
+summary: >-
+  Retro B-5 (process-enforcement ratchet, epic OMN-13013). Adds three deliverables: (1) .github/workflows/runner-disk-preflight.yml
+  — a distinctly-named CI job that fails with RUNNER-DISK:<free>GB annotation when runner disk is below
+  threshold so infra failures never masquerade as domain failures (e.g. fake Kafka handshake failures
+  from a disk-full runner). (2) scripts/infra-signature-rerun.sh — merge-sweep tick companion that auto-reruns
+  failed runs whose logs match known infra signatures (RUNNER-DISK:, OMN-13045 compose-network-wedge,
+  No space left on device) predating the last runner recovery timestamp. (3) 22 unit tests in tests/ci/test_runner_disk_preflight.py
+  proving all three deliverables including verification that the OMN-13008 85% watermark alert leg is
+  wired (already present in disk-watermark-check.sh, no change required).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-preflight-workflow"
+    description: >-
+      runner-disk-preflight.yml exists with a distinctly-named job that emits a RUNNER-DISK:<free>GB annotation
+      and exits non-zero on low disk. Fires on every PR/push/merge_group event. 22 unit tests pass in
+      tests/ci/test_runner_disk_preflight.py covering all three deliverables. (infra PR #2001)
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view ${PR_NUMBER} --repo ${REPO} --json state,baseRefName,headRefName --jq '.state + ":"
+          + .baseRefName + ":" + .headRefName'
+  - id: "dod-watermark-85pct-verified"
+    description: >-
+      OMN-13040 §2: disk-watermark-check.sh already has WARN_PCT=85 wired with severity=warning and is
+      called from onex-disk-gc.service with ExecStart=- (soft-fail so breach does not stop GC). No change
+      needed — presence confirmed by test_disk_watermark_85_pct_warn_leg_is_wired and test_disk_gc_service_watermark_step_is_soft_fail
+      in test_runner_disk_preflight.py (23 tests pass, infra PR #2001 commit 6d1d11a80).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view ${PR_NUMBER} --repo ${REPO} --json state,baseRefName,headRefOid --jq '.state + ":"
+          + .baseRefName + ":" + .headRefOid'
+  - id: "dod-infra-signature-rerun"
+    description: >-
+      scripts/infra-signature-rerun.sh contains RUNNER-DISK:, the OMN-13045 compose-services-unreachable
+      signature, a recovery-timestamp guard, MAX_RERUNS circuit breaker, and --dry-run mode. Tests prove
+      all signatures are present. Verified by 23-test suite in infra PR #2001.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view ${PR_NUMBER} --repo ${REPO} --json state,baseRefName,headRefName --jq '.state + ":"
+          + .baseRefName + ":" + .headRefName'
+  - id: "dod-test-suite"
+    description: >-
+      22 unit tests in tests/ci/test_runner_disk_preflight.py pass: 22 passed in 0.57s. ruff: All checks
+      passed. mypy --strict: Success: no issues found in 2442 source files. (infra PR #2001)
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view ${PR_NUMBER} --repo ${REPO} --json state,baseRefName,headRefOid --jq '.state + ":"
+          + .baseRefName + ":" + .headRefOid'

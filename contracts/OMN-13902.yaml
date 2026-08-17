@@ -1,0 +1,745 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13902"
+title: "Cross-repo sibling version-alignment automation — sibling-lock-refresh workflow (canary + fan-out)"
+summary: >-
+  Closes the recurring stale-sibling-lock drift class. Detection existed (sibling-pin guard OMN-12977,
+  orphan-pin gate OMN-13509) but alignment was manual, so drift recurred and blocked work (OMN-13156,
+  OMN-13402, OMN-13814 were one-off repin tickets; the 2026-07-03 R3 stability refresh was blocked by
+  a stale core pin). The fix is a Dependabot-shaped, per-repo scheduled workflow (.github/workflows/sibling-lock-refresh.yml)
+  that runs `uv lock --upgrade-package` for each omninode sibling on a daily schedule (and workflow_dispatch)
+  and opens a bot PR when uv.lock changes. Git/tag-pinned siblings in [tool.uv.sources] are left untouched
+  — `uv lock --upgrade-package` cannot move an immutable rev/tag — so the Dep-Provenance state is preserved
+  automatically with no per-repo tuning. Landed on the omnimemory canary first (PR #400, all gates green
+  incl. Dep Provenance Gate), then fanned out to the other PyPI-range consumers (omniclaude, omniintelligence,
+  omnibase_infra). This is a docs/CI-only change: each PR adds one workflow YAML file, touches no runtime
+  contract, and performs no deploy, restart, image build/push, or live cluster mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimemory-canary-pr-400"
+    description: >-
+      Canary binding: omnimemory PR #400 added .github/workflows/sibling-lock-refresh.yml and merged with
+      all gates green (incl. Dep Provenance Gate), proving the mechanism. The PR body records a local
+      run that refreshed omnibase-core/spi/compat pins in uv.lock while leaving the git-pinned omnibase-infra
+      entry untouched — exactly the stale-lock drift the ticket cites, auto-resolved.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnimemory-canary-pr-400/command.yaml"
+  - id: "dod-fanout-ci-only"
+    description: >-
+      Deploy-gate evidence: the canary and every fan-out PR add a single .github/workflows CI YAML file
+      only. No runtime contract is touched and no deploy, container restart, docker compose against .201,
+      image build/push, rpk produce, or live cluster/runtime mutation was performed — the workflow itself
+      only opens bot PRs on a schedule, gated by CROSS_REPO_PAT, and merges are human-reviewed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-fanout-ci-only/command.yaml"
+  - id: "dod-omniintelligence-pr-755"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #755 adds .github/workflows/sibling-lock-refresh.yml (the
+      fan-out of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-755/command.yaml"
+  - id: "dod-omniintelligence-pr-757"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #757 is the sibling-lock-refresh bot output for the OMN-13902
+      workflow, changing only uv.lock sibling pins on the bot branch. Lockfile-only dependency refresh;
+      no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-757/command.yaml"
+  - id: "dod-omniintelligence-pr-758"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #758 replaces PR #757 on an OMN-13902-named branch so
+      the legacy receipt identity gate can verify the ticket id from the branch ref. It carries the same
+      lockfile-only sibling refresh and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-758/command.yaml"
+  - id: "dod-omniintelligence-pr-759"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #759 is the sibling-lock-refresh bot output for OMN-13902
+      after the replacement PR #758 entered the merge queue. It changes only uv.lock CUDA/NVIDIA dependency
+      marker lock metadata on the bot branch and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-759/command.yaml"
+  - id: "dod-omniintelligence-pr-761"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #761 is the sibling-lock-refresh bot output for OMN-13902
+      after the PR #758/#760 merge queue lane started. It changes only uv.lock sibling dependency lock
+      metadata on the bot branch and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-761/command.yaml"
+  - id: "dod-omniintelligence-pr-773"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #773 replaces superseded PR #765 on an OMN-13902-named
+      branch so receipt-gate identity binding can verify the ticket id from the branch ref. It changes
+      only uv.lock sibling dependency lock metadata on the bot branch, including the omnibase-core registry
+      pin refresh from 0.46.5 to 0.46.6, and performs no runtime contract or deploy work.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-773/command.yaml"
+  - id: "dod-omnibase-infra-pr-2202"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2202 adds .github/workflows/sibling-lock-refresh.yml (the
+      fan-out of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnibase-infra-pr-2202/command.yaml"
+  - id: "dod-omniclaude-pr-1857"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1857 adds .github/workflows/sibling-lock-refresh.yml (the fan-out
+      of the proven omnimemory canary). CI-only workflow file; no runtime contract or deploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniclaude-pr-1857/command.yaml"
+  - id: "dod-occ-pr-3617"
+    description: >-
+      OCC self-binding: onex_change_control PR #3617 carries the OMN-13902 contract and receipts that
+      the canary omnimemory PR #400 and the fan-out PRs (omniintelligence #755, omnibase_infra #2202,
+      omniclaude #1857) cite via Evidence-Source: OCC#3617. Satisfies this PR's own occ-preflight/receipt-gate
+      binding.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3617/command.yaml"
+  - id: "dod-occ-pr-3646"
+    description: >-
+      OCC self-binding: onex_change_control PR #3646 carries the updated OMN-13902 contract and receipts
+      that bind omniintelligence PR #757 and replacement PR #758 to the central evidence set. Satisfies
+      this PR's own occ-preflight/receipt-gate binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3646/command.yaml"
+  - id: "dod-occ-pr-3678"
+    description: >-
+      OCC self-binding: onex_change_control PR #3678 carries the updated OMN-13902 contract and receipt
+      that bind omniintelligence PR #759 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3678/command.yaml"
+  - id: "dod-omnibase-infra-pr-2233"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2233 is the permanent build-infra fix for the recurring
+      OMN-13902 sibling-pin false-block (latest instance OMN-14138). It changes scripts/runtime_build/check_sibling_lock_pins.py
+      (plus deploy-runtime.sh / stage_workspace.sh callers and the sibling-lock-pins regression tests)
+      so the workspace-build sibling-pin guard treats registry-sourced forward version drift — the OMN-13929
+      post-publish disarm-bump steady state — as PASS while still failing backward/stale-clone drift.
+      CI- and build-tooling change only; no runtime contract, deploy, restart, image build/push, or live
+      cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omnibase-infra-pr-2233/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      OCC self-binding: this onex_change_control companion PR carries the OMN-13902 contract entry and
+      receipt that bind omnibase_infra PR #2233 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-self/command.yaml"
+  - id: "dod-occ-pr-3704"
+    description: >-
+      OCC supersession binding: onex_change_control PR #3704 appends supersession receipts that rebind
+      legacy OMN-13902 whole-contract receipts to per-entry contract hashes after OCC#3700 appended the
+      omnibase_infra PR #2233 evidence. This preserves append-only receipt history while allowing the
+      active receipt chain to validate the current contract entries for #2233 and this OCC repair PR.
+      Governance evidence only; no runtime contract, deploy, restart, image build/push, or live cluster
+      mutation.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3704/command.yaml"
+  - id: "dod-occ-pr-3724"
+    description: >-
+      OCC self-binding: onex_change_control PR #3724 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #761 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3724/command.yaml"
+  - id: "dod-occ-pr-3761"
+    description: >-
+      OCC self-binding: onex_change_control PR #3761 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #773 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior canary and fan-out receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3761/command.yaml"
+  - id: "dod-omniintelligence-pr-775"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #775 is the sibling-lock-refresh bot output for OMN-13902
+      after the PR #773 lane. It changes only uv.lock sibling dependency lock metadata on the bot branch
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-775/command.yaml"
+  - id: "dod-occ-pr-3799"
+    description: >-
+      OCC self-binding: onex_change_control PR #3799 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #775 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving the prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3799/command.yaml"
+  - id: "dod-omniintelligence-pr-776"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #776 replaces PR #775 on an OMN-13902-named branch so
+      receipt-gate identity binding can verify the ticket id from the branch ref. It points at the same
+      sibling-lock-refresh commit as PR #775, changes only uv.lock sibling dependency lock metadata, and
+      performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-776/command.yaml"
+  - id: "dod-occ-pr-3806"
+    description: >-
+      OCC self-binding: onex_change_control PR #3806 carries the OMN-13902 contract entry and receipt
+      that bind replacement omniintelligence PR #776 to the central evidence set after PR #775 failed
+      branch identity binding. Satisfies this PR's own occ-preflight/receipt-gate binding while preserving
+      prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3806/command.yaml"
+  - id: "dod-occ-pr-3808"
+    description: >-
+      OCC self-binding: onex_change_control PR #3808 carries append-only supersession receipts that rebind
+      stale OMN-13902 whole-contract hashes after replacement PR #776 and OCC PR #3806 were appended.
+      Satisfies this PR's own occ-preflight/receipt-gate binding without mutating historical receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3808/command.yaml"
+  - id: "dod-omniclaude-pr-1887"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1887 replaces PR #1882 on an OMN-13902-named branch so receipt-gate
+      identity binding can verify the ticket id from the branch ref. It points at the same sibling-lock-refresh
+      commit as PR #1882, changes only uv.lock sibling dependency lock metadata, and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniclaude-pr-1887/command.yaml"
+  - id: "dod-occ-pr-3819"
+    description: >-
+      OCC self-binding: onex_change_control PR #3819 carries the OMN-13902 contract entry and receipt
+      that bind replacement omniclaude PR #1887 to the central evidence set after PR #1882 failed branch
+      identity binding. Satisfies this PR's own occ-preflight/receipt-gate binding while preserving prior
+      sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-occ-pr-3819/command.yaml"
+  - id: "dod-omniintelligence-pr-782"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #782 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #776/#773 lane. It changes only uv.lock sibling dependency lock metadata on the
+      bot branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-occ-pr-4141"
+    description: >-
+      OCC self-binding: onex_change_control PR #4141 carries the OMN-13902 contract entry and receipt
+      that bind omniintelligence PR #782 to the central evidence set. Satisfies this PR's own occ-preflight/receipt-gate
+      binding while preserving prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-omniintelligence-pr-783"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #783 replaces closed PR #782 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit as PR #782, changes only uv.lock sibling dependency lock metadata,
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-occ-pr-4142"
+    description: >-
+      OCC self-binding: onex_change_control PR #4142 carries the OMN-13902 contract entry and receipt
+      that bind replacement omniintelligence PR #783 to the central evidence set after PR #782 was closed
+      by branch identity repair. Satisfies this PR's own occ-preflight/receipt-gate binding while preserving
+      prior sibling-lock receipts.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "dod-omniintelligence-pr-789"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #789 replaces PR #788 on an OMN-13902-named branch so
+      receipt-gate identity binding can verify the ticket id from the branch ref. It points at the same
+      sibling-lock-refresh commit as PR #788, changes only uv.lock sibling dependency lock metadata, and
+      performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4320"
+    description: "OCC PR #4320 exists and binds OMN-13902 evidence for omniintelligence PR #789."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PR_NUMBER=4320; REPO=OmniNode-ai/onex_change_control; gh pr view ${PR_NUMBER} --repo
+          ${REPO} --json number,state,headRefName"
+  - id: "dod-omniintelligence-pr-792"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #792 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #789 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=792; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4371"
+    description: "OCC PR #4371 exists and binds OMN-13902 evidence for omniintelligence PR #792."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PR_NUMBER=4371; REPO=OmniNode-ai/onex_change_control; gh pr view ${PR_NUMBER} --repo
+          ${REPO} --json number,state,headRefName"
+  - id: "occ-self-bind-pr-4320-rebound"
+    description: "Rebound canonical check for OCC PR #4320 after dev hardening rejected inert PR_NUMBER
+      prefix form."
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-4320"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4320 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "occ-self-bind-pr-4371-rebound"
+    description: "Rebound canonical check for OCC PR #4371 after dev hardening rejected inert PR_NUMBER
+      prefix form."
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-4371"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4371 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omniintelligence-pr-800-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #800 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #792 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=800; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4599"
+    description: "OCC PR #4599 carries the OMN-13902 evidence for omniintelligence PR #800."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4599 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-801-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #801 replaces closed PR #800 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It carries the same
+      uv.lock sibling dependency lock metadata refresh, changes only uv.lock, and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=801; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4600"
+    description: "OCC PR #4600 carries the OMN-13902 evidence for replacement omniintelligence PR #801."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4600 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-804-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #804 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #801 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=804; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4636"
+    description: "OCC PR #4636 carries the OMN-13902 evidence for omniintelligence PR #804."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4636 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-806-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #806 replaces bot PR #804 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit as PR #804, changes only uv.lock sibling dependency lock metadata,
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "PRODUCT_PR_NUMBER=806; PRODUCT_REPO=OmniNode-ai/omniintelligence; gh pr view $PRODUCT_PR_NUMBER
+          --repo $PRODUCT_REPO --json number,headRefOid,headRefName,baseRefName,title,changedFiles,additions,deletions"
+  - id: "occ-self-bind-pr-4638"
+    description: "OCC PR #4638 carries the OMN-13902 evidence for replacement omniintelligence PR #806."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4638 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-omniintelligence-pr-814-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #814 is the sibling-lock-refresh bot output for OMN-13902
+      after the prior PR #806 lane. It changes only uv.lock sibling dependency lock metadata on the bot
+      branch and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-814-lock-refresh/command.yaml"
+  - id: "dod-omniintelligence-pr-815-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniintelligence PR #815 replaces closed PR #814 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit, changes only uv.lock sibling dependency lock metadata, and performs
+      no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13902/dod-omniintelligence-pr-815-lock-refresh/command.yaml"
+  - id: "occ-self-bind-pr-4925-omn-13902"
+    description: "OCC PR #4925 carries the OMN-13902 evidence for omniintelligence PR #814."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4925 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "occ-self-bind-pr-4932-omn-13902"
+    description: "OCC PR #4932 carries the OMN-13902 evidence for replacement omniintelligence PR #815."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4932 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "omniintelligence-pr-782-r15481"
+    description: "Append-only replacement for dod-omniintelligence-pr-782. The historical entry is immutable
+      and stays byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders,
+      which the compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR
+      #782 on OmniNode-ai/omniintelligence, and `gh pr view --json` with no assertion exits 0 for any
+      PR that exists (mis-bound AND unfalsifiable). This entry pins the literal PR number and repo and
+      asserts two facts the selector does not determine: the PR is CLOSED (never merged), plus a per-item
+      distinguishing binding. Both checks executed GREEN under `bash -o pipefail -c` at 2026-07-30T09:32:56Z
+      and are RED-proven by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omniintelligence-pr-782"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 782 --repo OmniNode-ai/omniintelligence --json state,mergedAt --jq '.state
+          + \"/\" + (.mergedAt // \"never\")' | grep -cxF 'CLOSED/never' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 782 --repo OmniNode-ai/omniintelligence --json headRefOid --jq '.headRefOid'
+          | grep -cxF '197c86ecc032d4f8a87d167247af1cd4de9f0d82' | grep -qx 1"
+  - id: "occ-pr-4141-r15481"
+    description: "Append-only replacement for dod-occ-pr-4141. The historical entry is immutable and stays
+      byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders, which the
+      compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR #4141 on OmniNode-ai/onex_change_control,
+      and `gh pr view --json` with no assertion exits 0 for any PR that exists (mis-bound AND unfalsifiable).
+      This entry pins the literal PR number and repo and asserts two facts the selector does not determine:
+      the PR is MERGED at bde32831fd8451c92428d450f139cb52ae1f840f, plus a per-item distinguishing binding.
+      Both checks executed GREEN under `bash -o pipefail -c` at 2026-07-30T09:32:56Z and are RED-proven
+      by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-pr-4141"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4141 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF 'bde32831fd8451c92428d450f139cb52ae1f840f' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 4141 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'contracts/OMN-13902.yaml' | grep -qx 1"
+  - id: "omniintelligence-pr-783-r15481"
+    description: "Append-only replacement for dod-omniintelligence-pr-783. The historical entry is immutable
+      and stays byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders,
+      which the compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR
+      #783 on OmniNode-ai/omniintelligence, and `gh pr view --json` with no assertion exits 0 for any
+      PR that exists (mis-bound AND unfalsifiable). This entry pins the literal PR number and repo and
+      asserts two facts the selector does not determine: the PR is MERGED at f5fba3178f820a25eda5c68d68d76cfd1263e88a,
+      plus a per-item distinguishing binding. Both checks executed GREEN under `bash -o pipefail -c` at
+      2026-07-30T09:32:56Z and are RED-proven by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omniintelligence-pr-783"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 783 --repo OmniNode-ai/omniintelligence --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF 'f5fba3178f820a25eda5c68d68d76cfd1263e88a' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 783 --repo OmniNode-ai/omniintelligence --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-pr-4142-r15481"
+    description: "Append-only replacement for dod-occ-pr-4142. The historical entry is immutable and stays
+      byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders, which the
+      compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR #4142 on OmniNode-ai/onex_change_control,
+      and `gh pr view --json` with no assertion exits 0 for any PR that exists (mis-bound AND unfalsifiable).
+      This entry pins the literal PR number and repo and asserts two facts the selector does not determine:
+      the PR is MERGED at cb8602188c9d26127c26b4afa8dc965db423fc6e, plus a per-item distinguishing binding.
+      Both checks executed GREEN under `bash -o pipefail -c` at 2026-07-30T09:32:56Z and are RED-proven
+      by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-pr-4142"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 4142 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF 'cb8602188c9d26127c26b4afa8dc965db423fc6e' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 4142 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'contracts/OMN-13902.yaml' | grep -qx 1"
+  - id: "omniintelligence-pr-789-r15481"
+    description: "Append-only replacement for dod-omniintelligence-pr-789. The historical entry is immutable
+      and stays byte-intact, but its check_value used the bare ${PR_NUMBER}/${REPO} runner placeholders,
+      which the compliance runner pre-substitutes with ITS OWN pr/repo -- so the item never pinned PR
+      #789 on OmniNode-ai/omniintelligence, and `gh pr view --json` with no assertion exits 0 for any
+      PR that exists (mis-bound AND unfalsifiable). This entry pins the literal PR number and repo and
+      asserts two facts the selector does not determine: the PR is MERGED at 031988dcc689420015159b164cde05fdf53f3dae,
+      plus a per-item distinguishing binding. Both checks executed GREEN under `bash -o pipefail -c` at
+      2026-07-30T09:32:56Z and are RED-proven by mutation (OMN-15481 batch 1)."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omniintelligence-pr-789"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 789 --repo OmniNode-ai/omniintelligence --json mergeCommit --jq '.mergeCommit.oid'
+          | grep -cxF '031988dcc689420015159b164cde05fdf53f3dae' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 789 --repo OmniNode-ai/omniintelligence --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "dod-omnimemory-pr-421-lock-refresh"
+    description: >-
+      Consuming-PR binding: omnimemory PR #421 is the sibling-lock-refresh bot output for OMN-13902. It
+      changes only uv.lock sibling dependency lock metadata on the bot branch and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation. This item pins the exact product
+      PR head and base branch and verifies the lockfile-only diff.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 421 --repo OmniNode-ai/omnimemory --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF '8b802a85a9f81208f560bd5afe28fadc6ffae057 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 421 --repo OmniNode-ai/omnimemory --json files --jq '.files[].path' |
+          grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5852"
+    description: "OCC self-binding: onex_change_control PR #5852 carries the OMN-13902 evidence that binds
+      omnimemory PR #421 to the central evidence set."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5852 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number == 5852 and .state == \"OPEN\" and .headRefName == \"codex/omn-13902-memory421-occ\"'
+          | grep -qx true"
+  - id: "occ-self-bind-pr-5852-merged-5854"
+    description: "Append-only supersession for occ-self-bind-pr-5852 after onex_change_control PR #5852
+      merged. The original self-bind correctly proved #5852 was open while authored; this item binds the
+      durable post-merge state and merge commit so later OMN-13902 companions do not re-fail on the intentionally
+      changed PR lifecycle state."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5852"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5852 --repo OmniNode-ai/onex_change_control --json number,state,mergeCommit
+          --jq '.number == 5852 and .state == \"MERGED\" and .mergeCommit.oid == \"3ab2b6b343ccbd8b5182039631359f2afd2fe73c\"'
+          | grep -qx true"
+  - id: "dod-omniclaude-pr-1970-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1970 is the sibling-lock-refresh bot output for OMN-13902.
+      It changes only uv.lock sibling dependency lock metadata on the bot branch and performs no runtime
+      contract, deploy, restart, image push, or live cluster mutation. This item pins the exact product
+      PR head and base branch and verifies the lockfile-only diff.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1970 --repo OmniNode-ai/omniclaude --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF 'a95366ffca470db300fcc3fb7541c8eef1a1b5c7 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 1970 --repo OmniNode-ai/omniclaude --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5854"
+    description: "OCC self-binding: onex_change_control PR #5854 carries the OMN-13902 evidence that binds
+      omniclaude PR #1970 to the central evidence set."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5854 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number == 5854 and .state == \"OPEN\" and .headRefName == \"codex/omn-13902-claude1970-occ\"'
+          | grep -qx true"
+  - id: "occ-self-bind-pr-5854-merged-5857"
+    description: "Append-only supersession for occ-self-bind-pr-5854 after onex_change_control PR #5854
+      merged. The original self-bind correctly proved #5854 was open while authored; this item binds the
+      durable post-merge state and merge commit so later OMN-13902 companions do not re-fail on the intentionally
+      changed PR lifecycle state."
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5854"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5854 --repo OmniNode-ai/onex_change_control --json number,state,mergeCommit
+          --jq '.number == 5854 and .state == \"MERGED\" and .mergeCommit.oid == \"2590298b3801cdeb699a4b1c4e9f2de07a4e238c\"'
+          | grep -qx true"
+  - id: "dod-omniclaude-pr-1972-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1972 replaces bot-branch PR #1970 on an OMN-13902-named branch
+      so receipt-gate identity binding can verify the ticket id from the branch ref. It points at the
+      same sibling-lock-refresh commit as PR #1970, changes only uv.lock sibling dependency lock metadata,
+      and performs no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1972 --repo OmniNode-ai/omniclaude --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF 'a95366ffca470db300fcc3fb7541c8eef1a1b5c7 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 1972 --repo OmniNode-ai/omniclaude --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5857"
+    description: "OCC self-binding: onex_change_control PR #5857 carries the OMN-13902 evidence that binds
+      replacement omniclaude PR #1972 to the central evidence set after PR #1970 failed branch identity
+      binding."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5857 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+          --jq '.number == 5857 and .state == \"OPEN\" and .headRefName == \"codex/omn-13902-claude1972-occ\"'
+          | grep -qx true"
+  - id: "occ-self-bind-pr-5857-merged-5950"
+    description: >-
+      Append-only supersession for occ-self-bind-pr-5857 after onex_change_control PR #5857 merged. The
+      original self-bind correctly proved #5857 was open while authored; this item binds the durable post-merge
+      state and merge commit so later OMN-13902 companions do not re-fail on the intentionally changed
+      PR lifecycle state.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5857"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5857 --repo OmniNode-ai/onex_change_control --json number,state,mergeCommit
+          --jq '.number == 5857 and .state == \"MERGED\" and .mergeCommit.oid == \"f5f5e7a5204fb1cefafd185ac798f202537a0754\"'
+          | grep -qx true"
+  - id: "dod-omnimemory-pr-424-lock-refresh"
+    description: >-
+      Consuming-PR binding: omnimemory PR #424 is the sibling-lock-refresh bot output for OMN-13902, changing
+      only uv.lock sibling dependency lock metadata on the bot branch. Lockfile-only dependency refresh;
+      no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 424 --repo OmniNode-ai/omnimemory --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF '9d1897d06e4053444d0c7ca600c2f048217ae5db dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 424 --repo OmniNode-ai/omnimemory --json files --jq '.files[].path' |
+          grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5950"
+    description: "OCC self-binding: onex_change_control PR #5950 carries the OMN-13902 evidence that binds
+      omnimemory PR #424 to the central evidence set."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5950 --repo OmniNode-ai/onex_change_control --json number,state,isDraft,headRefName,files
+          --jq '.number == 5950 and .state == \"OPEN\" and .isDraft == false and .headRefName == \"codex/omn-13902-omnimemory-424\"
+          and ([.files[].path] | index(\"contracts/OMN-13902.yaml\") and index(\"drift/dod_receipts/OMN-13902/dod-omnimemory-pr-424-lock-refresh/command.yaml\")
+          and index(\"drift/dod_receipts/OMN-13902/occ-self-bind-pr-5857-merged-5950/command.yaml\") and
+          index(\"drift/dod_receipts/OMN-13902/occ-self-bind-pr-5950/command.yaml\"))' | grep -qx true"
+  - id: "dod-omnibase-infra-pr-2625-lock-refresh"
+    description: >-
+      Consuming-PR binding: omnibase_infra PR #2625 is the sibling-lock-refresh bot output for OMN-13902,
+      changing uv.lock sibling dependency metadata plus the runner image identity lock regenerated after
+      the lock refresh changed shared environment inputs. Dependency/build-lane metadata only; no runtime
+      contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2625 --repo OmniNode-ai/omnibase_infra --json headRefOid,baseRefName
+          --jq '.headRefOid + \" \" + .baseRefName' | grep -cxF 'ea73c883b70da55812f090004badfd325956b075
+          dev' | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 2625 --repo OmniNode-ai/omnibase_infra --json files --jq '[.files[].path]
+          | sort | join(\",\")' | grep -cxF 'docker/runners/runner-image.lock.json,uv.lock' | grep -qx
+          1"
+  - id: "dod-omniclaude-pr-1973-lock-refresh"
+    description: >-
+      Consuming-PR binding: omniclaude PR #1973 is the sibling-lock-refresh bot output for OMN-13902,
+      changing only uv.lock sibling dependency lock metadata on the bot branch. Lockfile-only dependency
+      refresh; no runtime contract, deploy, restart, image push, or live cluster mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1973 --repo OmniNode-ai/omniclaude --json headRefOid,baseRefName --jq
+          '.headRefOid + \" \" + .baseRefName' | grep -cxF 'fbc9c8af18eb104d93524abe368543ae604f25c8 dev'
+          | grep -qx 1"
+      - check_type: "command"
+        check_value: "gh pr view 1973 --repo OmniNode-ai/omniclaude --json files --jq '.files[].path'
+          | grep -cxF 'uv.lock' | grep -qx 1"
+  - id: "occ-self-bind-pr-5952"
+    description: >-
+      OCC self-binding: onex_change_control PR #5952 carries the OMN-13902 evidence that binds omnibase_infra
+      PR #2625 and omniclaude PR #1973 to the central evidence set.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5952 --repo OmniNode-ai/onex_change_control --json number,state,isDraft,headRefName,files
+          --jq '.number == 5952 and .state == \"OPEN\" and .isDraft == false and .headRefName == \"codex/omn-13902-infra2625-claude1973-occ\"
+          and ([.files[].path] | index(\"contracts/OMN-13902.yaml\") and index(\"drift/dod_receipts/OMN-13902/dod-omnibase-infra-pr-2625-lock-refresh/command.yaml\")
+          and index(\"drift/dod_receipts/OMN-13902/dod-omniclaude-pr-1973-lock-refresh/command.yaml\")
+          and index(\"drift/dod_receipts/OMN-13902/occ-self-bind-pr-5952/command.yaml\"))' | grep -qx
+          true"
+  - id: "occ-self-bind-pr-5954"
+    description: "Binds OMN-13902 to OCC companion PR #5954 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5954 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5955"
+    description: "Binds OMN-13902 to OCC companion PR #5955 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5955 --repo OmniNode-ai/onex_change_control --json number,state"

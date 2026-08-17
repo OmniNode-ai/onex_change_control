@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12946"
+title: "Unwrap dispatch-engine materialized envelope in evidence-pipeline marker set"
+summary: >
+  Central OCC evidence for omnimarket PR #1157, which fixes the SECOND-SITE evidence-pipeline / readiness-gate
+  defect that kept the golden chain BROKEN even after OMN-12935, OMN-12936, and the infra-side OMN-12940
+  shipped green-but-broken. The dispatch engine always materializes envelopes to outer keys {payload,
+  __bindings, __debug_trace}, but the omnimarket-side _ENVELOPE_MARKER_KEYS had zero intersection with
+  those keys, so _unwrap_envelope was a no-op on live dispatch and every domain field was reported missing
+  (10-validation-error fingerprint, handler never reached, 0 projection rows). Adds the materialization
+  markers __debug_trace and __bindings to the marker set, keeps it in sync with the infra-side twin via
+  a linking comment, and pins the invariant with a consistency test.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Failing-first tests feed the dispatch-engine materialized dict shape ({payload, __bindings, __debug_trace})
+      through coerce_command/coerce_gap/coerce_readiness and the orchestrator handler, plus a marker-set
+      consistency guard; all 16 pass after the marker-set fix and 5 fail with the live 10-error fingerprint
+      before it.
+    command: "uv run pytest tests/test_evidence_readiness_envelope_unwrap.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-product-pr-1157"
+    description: "omnimarket PR #1157 carries the OMN-12946 marker-set materialization fix with failing-first
+      tests through the real dispatch shape."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12946/dod-product-pr-1157/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Source-only fix in omnimarket nodes. No live deploy performed; the marker-set fix applies on the
+      next stability-test effects-image rebuild (pre-approved stability hot-patch path) and on the next
+      normal deploy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12946/dod-deploy-assessment/command.yaml
+          && grep -qi 'deploy' drift/dod_receipts/OMN-12946/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: "onex_change_control PR carries the central OCC evidence (contract + PASS receipts) for
+      OMN-12946."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12946/dod-occ-pr/command.yaml"

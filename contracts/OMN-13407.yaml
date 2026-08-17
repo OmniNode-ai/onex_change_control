@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13407"
+title: "feat(OMN-13407): carry delegation context_pack_hash through wire models and projections"
+summary: >-
+  Phase B SEA dogfood W5 context ON/OFF diagnostic reproduced the missing context propagation defect:
+  ModelDelegationRequest and downstream task-delegated/projection surfaces had no authoritative context_pack_hash
+  field, so the system could not correlate context-enabled delegation output with the input context pack.
+  The fix is a two-PR chain. omnibase_core PR #1299 adds context_pack and context_pack_hash to ModelDelegationRequest
+  and context_pack_hash to ModelTaskDelegatedEvent, with focused wire-model tests proving both default-off
+  and populated-hash behavior. omnimarket PR #1335 consumes the canonical fields through the event-bus
+  workflow, injects context_pack into inference prompts, carries context_pack_hash on task-delegated events,
+  persists it in delegation_events, and exposes it through the projection contract. No bespoke REST endpoint
+  is introduced.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-wire-models"
+    description: >-
+      omnibase_core PR #1299 adds focused unit coverage in tests/unit/models/delegation/wire/test_delegation_wire_models.py
+      proving ModelDelegationRequest defaults context_pack/context_pack_hash to empty strings, accepts
+      populated context_pack_hash, and ModelTaskDelegatedEvent carries context_pack_hash. The focused
+      suite reports 82 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '82 passed' contracts/OMN-13407.yaml"
+  - id: "dod-market-context-injection"
+    description: >-
+      omnimarket PR #1335 adds real delegation workflow coverage proving context_pack content is prepended
+      to the inference prompt before execution, while preserving the canonical event-bus delegation flow.
+      The focused local validation reports 57 passed across projection and delegation context tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'context_pack content is prepended' contracts/OMN-13407.yaml"
+  - id: "dod-market-projection"
+    description: >-
+      omnimarket PR #1335 adds migration 0020_delegation_context_pack_hash.sql and projection coverage
+      proving task-delegated and delegate-skill terminal rows persist context_pack_hash, default it to
+      an empty string when absent, and expose it through the delegation correlation-trace projection.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '0020_delegation_context_pack_hash.sql' contracts/OMN-13407.yaml"
+  - id: "dod-deploy-evidence"
+    description: >-
+      Deploy-gate evidence is required because omnimarket PR #1335 touches runtime delegation workflow,
+      projection handler, contract exposure, and database migration paths. This DoD item records dev-targeted
+      deploy-gate coverage only; it does not authorize any prod deploy or runtime restart.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'Deploy-gate evidence is required' contracts/OMN-13407.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for onex_change_control PR #2897, which carries the central contract and PASS
+      receipts consumed by the omnibase_core and omnimarket product PR Receipt Gates.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13407\"$' drift/dod_receipts/OMN-13407/dod-occ-pr/command.yaml"

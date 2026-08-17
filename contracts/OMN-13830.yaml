@@ -1,0 +1,84 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13830
+title: "feat(OMN-13830): emit skill lifecycle events from receipt-mode CLI"
+summary: >
+  Headless `onex skill/node <name>` invocations run through omnibase_infra/src/omnibase_infra/cli/receipt_mode.py,
+  which previously emitted only artifact.captured and tool.output.captured and never populated the skill_executions
+  projection (migration 048_create_skill_executions.sql), whose consumer subscribes to onex.evt.omniclaude.skill-started.v1
+  / skill-completed.v1. The downstream omnibase_infra PR emits a skill-started event before the node body
+  runs and a skill-completed event after it finishes, through the same emit daemon socket used by the
+  two capture events. Both share one run_id (projection join key) and one correlation_id; payloads are
+  shaped for the migration-048 columns and topic strings resolve from the canonical omnibase_infra.topics
+  registry (never hardcoded, never imported from omniclaude).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >
+      Unit test asserts both skill-started and skill-completed events are emitted with matching run_id
+      + correlation_id, exact topic strings, and migration-048-shaped payloads.
+    command: >
+      uv run pytest tests/unit/cli/test_cli_node_receipt.py -v
+  - kind: ci
+    description: >
+      Full pytest suite green (excluding pre-existing infra-dependent integration tests) and pre-commit
+      clean on the changed files.
+    command: >
+      uv run pytest tests/ -n auto -q
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >
+      Unit test proves both lifecycle events emit with matching invocation id (shared run_id + correlation_id),
+      the exact consumer topic strings, and migration-048-shaped payloads (daemon-available and spooled
+      paths).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13830/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      Full pytest suite passes (24700 passed) except pre-existing infra-dependent integration tests, and
+      pre-commit is clean on the changed files.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13830/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      Downstream PR binding: OmniNode-ai/omnibase_infra PR #2175 carries the OMN-13830 skill-lifecycle
+      emit change at its feature head commit.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13830/dod-003/command.yaml"
+  - id: dod-deploy-assessment
+    description: >
+      Deploy assessment for the runtime path touched by omnibase_infra PR #2175 (src/omnibase_infra/cli/receipt_mode.py).
+      The change emits two additional observability events through the existing emit-daemon socket; it
+      introduces no new topic, migration, or container surface, so no live deploy is performed in this
+      PR. The skill_executions projection is populated by the already-deployed migration-048 consumer
+      once the merged code runs. This item records the deploy disposition required by the omnibase_infra
+      deploy-gate for a runtime-path change.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13830/dod-deploy-assessment/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13830 contract and PASS receipts required by
+      downstream omnibase_infra PR #2175.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13830/dod-occ-self/command.yaml"

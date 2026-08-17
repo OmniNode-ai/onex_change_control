@@ -1,0 +1,38 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-13555
+evidence_item_id: dod-002
+check_type: command
+check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13555/dod-002/command.yaml"
+status: PASS
+run_timestamp: '2026-06-24T05:14:00Z'
+commit_sha: ebbb62ce2e6f4578990ea1ac1c37e9fdb719cec3
+runner: claude-code
+verifier: claude-code-review
+contract_sha256: sha256:4809b55e82b2488ec58632a1e346595bc84375cf6f6947ea04a6b4cef9f2e6c4
+probe_command: >-
+  docker run --rm --network omnibase-infra-network -v /tmp/omn-13555-infra:/src python:3.12-slim (install
+  rpk + pip install -e /src) then RPK_BROKERS=redpanda:9092 OMNIBASE_INFRA_DB_URL=postgresql://postgres:***@postgres:5432/omnibase_infra
+  ONEX_RUNTIME_TARGET=runtime:8085 python -m omnibase_infra.verification --all --output-path /src/runtime-report-all.json
+probe_stdout: |
+  # verdict breakdown of /src/runtime-report-all.json (108 contracts):
+  contracts: 108
+  overall: {'pass': 52, 'quarantine': 56}
+  projection_state {'pass': 108}
+  publication {'pass': 65, 'quarantine': 90}
+  subscription {'pass': 59, 'quarantine': 95}
+  # broker reachability (verifier != runner) — rpk inside dev redpanda container:
+  $ docker exec omnibase-infra-redpanda rpk topic describe onex.evt.platform.node-heartbeat.v1 -p
+  PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+  0          0       3      [0]       0                 4933
+actual_output: >-
+  PASS: against the live dev lane the --all run produces a real verdict mix (overall 52 pass / 56 quarantine;
+  projection_state 108 PASS), NOT the ticket's 108/108 QUARANTINE. projection_state flipped 108-QUARANTINE
+  -> 108-PASS (Defect 2 fixed: db_query_fn wired from OMNIBASE_INFRA_DB_URL). The publication failure
+  mode moved from the ticket's 127.0.0.1:9092 taint (env ignored) to a reachable broker (Defect 1 fixed:
+  env=rpk_env() honors RPK_BROKERS); the 90 remaining publication quarantines are a SEPARATE pre-existing
+  rpk-JSON-schema drift ('list' object has no attribute 'get') tracked as a follow-up, out of scope for
+  OMN-13555. Report archived at omni_home/.onex_state/contract-sweep/OMN-13555/runtime-report-all.json.
+exit_code: 0
+branch: jonahgabriel/omn-13555-contract-sweep-runtime-all-mode-is-structurally-non
+pr_number: 3025

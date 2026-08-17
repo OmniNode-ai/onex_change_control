@@ -1,0 +1,45 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15283
+evidence_item_id: dod-omn15283-check-only-zero-mutation-at-2e2108f4
+check_type: command
+check_value: 'C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+  --jq .content | base64 -d) && printf ''%s'' "$C" | python3 -c ''import ast,sys; t=ast.parse(sys.stdin.read());
+  mut=sorted({f.name for f in ast.walk(t) if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef)) and
+  any(isinstance(n,ast.Attribute) and n.attr in ("create_topics","delete_topics","alter_configs") for
+  n in ast.walk(f))}); assert mut==["create_missing_catalog_topics"], "broker mutation outside the opt-in
+  helper: %r" % (mut,); calls=[c for c in ast.walk(t) if isinstance(c,ast.Call) and isinstance(c.func,ast.Name)
+  and c.func.id=="create_missing_catalog_topics"]; assert len(calls)==1, "expected exactly one create_missing_catalog_topics
+  call site, got %d" % len(calls); guard=[i for i in ast.walk(t) if isinstance(i,ast.If) and "create_missing"
+  in ast.dump(i.test) and any(c.id=="create_missing_catalog_topics" for c in ast.walk(i) if isinstance(c,ast.Name))];
+  assert guard, "create_missing_catalog_topics call site is not guarded by args.create_missing"; flags=[c
+  for c in ast.walk(t) if isinstance(c,ast.Call) and isinstance(c.func,ast.Attribute) and c.func.attr=="add_argument"
+  and any(isinstance(a,ast.Constant) and a.value=="--create-missing" for a in c.args)]; assert len(flags)==1,
+  "--create-missing is not declared exactly once"; kw={k.arg:k.value for k in flags[0].keywords}; assert
+  isinstance(kw.get("default"),ast.Constant) and kw["default"].value is False, "--create-missing default
+  is not False (check-only is not the default)"; assert isinstance(kw.get("action"),ast.Constant) and
+  kw["action"].value=="store_true", "--create-missing is not an opt-in store_true flag"'''
+contract_entry_sha256: sha256:d4d8e8a2b8a99b8591363df4a47326b52739adebcfa9a20edc838875ee646cad
+status: PASS
+run_timestamp: '2026-07-28T10:01:21Z'
+commit_sha: 7a02d6b8bb61d52352aae534db32cd4d6c9fea91
+branch: jonah/omn-15283-occ-content-bound
+runner: fable-overnight-0728-omn15283-occ-content-bound
+verifier: fable-overnight-0728-omn15283-occ-content-bound-readback
+probe_command: |
+  GREEN: the check_value above, executed verbatim as read from the committed contract.
+  RED:   the same check_value with the merged squash SHA replaced by the PR merge-base
+         d85226172b90197f501f5d71bededf4f249cd607, executed identically.
+probe_stdout: |
+  GREEN @ merged squash SHA -> exit=0
+  RED   @ merge-base d8522617 ->
+  gh: Not Found (HTTP 404)
+  base64: stdin: (null): error decoding base64 input stream
+  exit=1
+actual_output: |
+  PASS -- AST over the module at 2e2108f4: the only function containing a create_topics /
+  delete_topics / alter_configs attribute access is create_missing_catalog_topics; it has exactly
+  one call site; that call site is inside "if args.create_missing and diff.missing_topics:";
+  --create-missing is declared once with action='store_true' and default=False. An unflagged
+  invocation is structurally incapable of mutating a broker. exit 0.
+exit_code: 0

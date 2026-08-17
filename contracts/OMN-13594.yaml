@@ -1,0 +1,130 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13594"
+title: "deploy-runtime.sh: bring up + wait for postgres/valkey BEFORE the migration preflight on cold/--restart
+  lanes"
+summary: >-
+  deploy-runtime.sh's --restart path runs warm_broker_topic_provisioning -> run_runtime_migration_preflight
+  -> restart_services, and every step uses `docker compose up -d --no-deps`, which bypasses the compose
+  depends_on chain. On a WARM lane that is fine (postgres/valkey already up). On a fully COLD lane (no
+  prior containers) NOTHING starts postgres/valkey before the preflight, so forward-migration (run with
+  --no-deps) has no database to connect to: its 30x2s Postgres-readiness probe exhausts -> exit 1 -> the
+  deploy auto-rolls back (the exact failure that blocked the OMN-13408/OMN-13335 cold dev-lane proof run).
+  The fix adds ensure_core_infra_ready(), which brings up postgres + valkey with `up -d --no-deps --wait`
+  (idempotent no-op on a warm lane) and is called in main() BEFORE warm_broker_topic_provisioning. A new
+  CORE_INFRA_SERVICES array (postgres, valkey; redpanda intentionally excluded — broker readiness stays
+  owned by warm_broker_topic_provisioning's collision-tolerant probe) drives the wait. Regression tests
+  in tests/scripts/test_deploy_runtime_coldstart.py lock the ordering invariant (core-infra -> broker
+  warmup -> migration preflight -> restart), the array contents, and the --wait + fail-closed behavior.
+  shellcheck clean. This corrected cold bring-up was proven LIVE on the dev lane (compose project omnibase-infra):
+  postgres+valkey up first, forward-migration and intelligence-migration both exited 0, runtime/effects/projection-api
+  healthy on the already-built dev images (omninode-runtime 9976997ca80c, runtime-effects e06473a1cdef,
+  projection-api df3841def184). This OCC contract is the Receipt-Gate Evidence-Source the omnibase_infra
+  product PR cites. The PR was later restamped at head 757300323b9baa93cc3e0731cbcd82fac4aa36c5 after
+  adding a CI-only node-migration-sync workflow hardening: the required gate's infra checkout now uses
+  a shallow fetch because the check only needs the working tree and repeated full-history fetches timed
+  out before the sync script ran. It was restamped again at head fd4dcb2205f4cba80fc7631e900df0a58ea2d773
+  after replacing the artifact-reconciliation PR webhook's unbounded changed-files action with a bounded
+  GitHub API PR-files lookup; repeated webhook reruns were canceling while the third-party action tried
+  to fetch additional history from a shallow checkout. No runtime deploy is performed by this PR itself.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Cold-start regression suite (6 existing OMN-13220 cases + 4 new OMN-13594 cases): CORE_INFRA_SERVICES
+      lists postgres+valkey and excludes redpanda; ensure_core_infra_ready is defined, waits on health,
+      and fails closed; the main() ordering is core-infra -> warmup -> preflight -> restart.
+    command: "uv run pytest tests/scripts/test_deploy_runtime_coldstart.py -q"
+  - kind: "ci"
+    description: >-
+      shellcheck scripts/deploy-runtime.sh exits 0; bash -n syntax clean; full pre-commit run --all-files
+      clean.
+    command: "shellcheck scripts/deploy-runtime.sh"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      The omnibase_infra product PR carries ensure_core_infra_ready() + CORE_INFRA_SERVICES + the main()
+      wiring + the 4 new cold-start regression tests, plus the CI-only shallow checkout repair for the
+      node-migration-sync required gate and the bounded PR webhook changed-files lookup. It cites Evidence-Source:
+      OCC#<this-pr> (post-merge OCC-main SHA).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json state,headRefOid,baseRefName"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13594; the omnibase_infra
+      PR cites Evidence-Source: OCC#<this-pr> so its verify Receipt Gate resolves against an OCC-main
+      ancestor.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13594.yaml"
+  - id: "dod-live-coldstart-proof"
+    description: >-
+      The corrected cold bring-up was proven live on the dev lane (compose project omnibase-infra): core
+      infra (postgres+valkey) brought up first (both Healthy), then forward-migration + intelligence-migration
+      both exited 0, projection-table checks passed (delegation_events, node_service_registry), and runtime/effects/projection-api
+      came up healthy on the pinned already-built dev images. Evidence appended to docs/evidence/2026-06-25-plan-drive/redeploy-prove/results.md
+      in omni_home.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13594.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR edits an operational deploy script, its static regression tests, and
+      CI-only workflow hardening for node-migration-sync and artifact-reconciliation PR webhook file listing.
+      It ships no runtime contract/topic/migration change and requires no image rebuild. No live deploy
+      or runtime restart is performed by merging this PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13594.yaml"
+  - id: "dod-node-migration-sync-checkout"
+    description: >-
+      The node-migration-sync required gate had repeatedly failed before executing its sync logic because
+      actions/checkout attempted a full-history fetch of omnibase_infra and timed out/canceled on the
+      self-hosted runner. The gate only needs the PR working tree plus a sparse omnimarket sibling checkout,
+      so the infra checkout was narrowed to fetch-depth: 1. Local vendor sync still passes, and the fresh
+      CI node-migration-sync job passed on the restamped product head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13594/dod-node-migration-sync-checkout/command.yaml
+          && grep -q 'fetch-depth: 1' drift/dod_receipts/OMN-13594/dod-node-migration-sync-checkout/command.yaml"
+  - id: "dod-pr-webhook-changed-files"
+    description: >-
+      The Artifact Reconciliation Webhook job repeatedly canceled in tj-actions/changed-files while it
+      fetched additional history from a shallow checkout. The product PR now replaces that action with
+      a bounded read-only GitHub API lookup of pull-request files, under explicit contents:read and pull-requests:read
+      permissions. Local pre-commit on the touched workflow file passed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13594/dod-pr-webhook-changed-files/command.yaml
+          && grep -q 'fd4dcb2205f4cba80fc7631e900df0a58ea2d773' drift/dod_receipts/OMN-13594/dod-pr-webhook-changed-files/command.yaml"
+  - id: "dod-occ-pr-3116"
+    description: >-
+      onex_change_control PR #3116 carries the OMN-13594 restamp evidence cited by omnibase_infra PR #2107
+      after the node-migration-sync checkout repair.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13594/dod-occ-pr-3116/command.yaml
+          && grep -q '^pr_number: 3116$' drift/dod_receipts/OMN-13594/dod-occ-pr-3116/command.yaml"
+  - id: "dod-occ-pr-3118"
+    description: >-
+      onex_change_control PR #3118 carries the OMN-13594 restamp evidence cited by omnibase_infra PR #2107
+      after the artifact-reconciliation PR webhook changed-files hardening.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13594/dod-occ-pr-3118/command.yaml
+          && grep -q '^pr_number: 3118$' drift/dod_receipts/OMN-13594/dod-occ-pr-3118/command.yaml"

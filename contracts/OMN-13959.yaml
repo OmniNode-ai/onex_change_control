@@ -1,0 +1,114 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-13959
+title: "fix(delegation): fall back to the deterministic floor when the LLM judge is unavailable"
+summary: >
+  code_generation (required_bar 0.85) combines an LLM-judge adequacy score (0.4 band) with the deterministic
+  graded score (0.6 band). When the cloud judge is throttled/unreachable (429 -> JUDGE_FAILED) the gate
+  falls back to the deterministic-only graded score (~0.733), and the acceptance authority applied the
+  combined-score required_bar to it, rejecting a VALID local artifact and escalating to ladder exhaustion
+  during a cloud-judge outage. Fix: when a verifiable class records score_source=deterministic_acceptance
+  (floor passed, judge NOT combined = unavailable), acceptance falls back to the deterministic FLOOR verdict
+  instead of the un-meetable combined bar, on BOTH the bus-less local port and the bus orchestrator. Does
+  NOT weaken the bar: a reachable judge yields score_source=combined and the full bar applies; empty/refusal
+  still fail_deterministic; a judge FAIL veto still rejects.
+is_seam_ticket: false
+interface_change: false
+evidence_requirements:
+  - kind: "ci"
+    description: "Ruff format + check clean; mypy --strict clean on the four touched omnimarket source
+      files"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-lint-typecheck/command.yaml"
+  - kind: "tests"
+    description: "test_local_dispatch_judge_unavailable_floor_omn13959.py + test_judge_unavailable_deterministic_floor_omn13959.py:
+      judge 429 accepts a valid local code artifact on the deterministic floor (local dispatch completes
+      no escalation; bus handle_gate_result completes on local tier); an empty artifact still fails_deterministic;
+      a reachable low-score judge still rejected; _is_quality_accepted unit matrix. Updated OMN-13849
+      judge-down control test now asserts the superseded accept-on-floor behavior."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-judge-floor-tests/command.yaml"
+  - kind: "tests"
+    description: "Full omnimarket non-kafka suite: 12046 passed, 54 skipped, 9 deselected. 4 failures
+      are pre-existing and unrelated: test_datasource_postgres.py::TestPostgresDataSourceIntegration live-DB
+      integration tests requiring a running Postgres (psycopg2.connect), env-only, not touched by this
+      diff."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-full-suite/command.yaml"
+  - kind: "manual"
+    description: "Deploy assessment: this omnimarket runtime-path change (quality-gate reducer + local
+      dispatch port + bus orchestrator + shared wire model) rides the normal post-merge dev+stability
+      redeploy cadence (pre-authorized per CLAUDE.md); no out-of-band prod deploy in scope. Live probe
+      confirms the .201 stability-test lane is up and healthy and will pick up the change on the next
+      redeploy. Prod promotion always requires a fresh CODEOWNERS-approved grant (OMN-13418) not requested
+      here."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-deploy-scope/command.yaml"
+  - kind: "manual"
+    description: "omnimarket PR #1616 carries the OMN-13959 acceptance-fallback fix (local port + bus
+      orchestrator + shared wire constants) and the new/updated tests"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-omnimarket-pr/command.yaml"
+  - kind: "manual"
+    description: "onex_change_control PR #3615 carries this OMN-13959 contract and receipt set"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-occ-pr-3615/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-lint-typecheck"
+    description: "Ruff format + check clean; mypy --strict clean on the four touched omnimarket source
+      files"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-lint-typecheck/command.yaml
+          && grep -q '^ticket_id: OMN-13959$' drift/dod_receipts/OMN-13959/dod-lint-typecheck/command.yaml
+          && grep -q '^evidence_item_id: dod-lint-typecheck$' drift/dod_receipts/OMN-13959/dod-lint-typecheck/command.yaml"
+  - id: "dod-judge-floor-tests"
+    description: "test_local_dispatch_judge_unavailable_floor_omn13959.py + test_judge_unavailable_deterministic_floor_omn13959.py:
+      judge 429 accepts a valid local code artifact on the deterministic floor (local dispatch completes
+      no escalation; bus handle_gate_result completes on local tier); an empty artifact still fails_deterministic;
+      a reachable low-score judge still rejected; _is_quality_accepted unit matrix. Updated OMN-13849
+      judge-down control test now asserts the superseded accept-on-floor behavior."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-judge-floor-tests/command.yaml
+          && grep -q '^ticket_id: OMN-13959$' drift/dod_receipts/OMN-13959/dod-judge-floor-tests/command.yaml
+          && grep -q '^evidence_item_id: dod-judge-floor-tests$' drift/dod_receipts/OMN-13959/dod-judge-floor-tests/command.yaml"
+  - id: "dod-full-suite"
+    description: "Full omnimarket non-kafka suite: 12046 passed, 54 skipped, 9 deselected. 4 failures
+      are pre-existing and unrelated: test_datasource_postgres.py::TestPostgresDataSourceIntegration live-DB
+      integration tests requiring a running Postgres (psycopg2.connect), env-only, not touched by this
+      diff."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-full-suite/command.yaml
+          && grep -q '^ticket_id: OMN-13959$' drift/dod_receipts/OMN-13959/dod-full-suite/command.yaml
+          && grep -q '^evidence_item_id: dod-full-suite$' drift/dod_receipts/OMN-13959/dod-full-suite/command.yaml"
+  - id: "dod-deploy-scope"
+    description: "Deploy assessment: this omnimarket runtime-path change (quality-gate reducer + local
+      dispatch port + bus orchestrator + shared wire model) rides the normal post-merge dev+stability
+      redeploy cadence (pre-authorized per CLAUDE.md); no out-of-band prod deploy in scope. Live probe
+      confirms the .201 stability-test lane is up and healthy and will pick up the change on the next
+      redeploy. Prod promotion always requires a fresh CODEOWNERS-approved grant (OMN-13418) not requested
+      here."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-deploy-scope/command.yaml
+          && grep -q '^ticket_id: OMN-13959$' drift/dod_receipts/OMN-13959/dod-deploy-scope/command.yaml
+          && grep -q '^evidence_item_id: dod-deploy-scope$' drift/dod_receipts/OMN-13959/dod-deploy-scope/command.yaml"
+  - id: "dod-omnimarket-pr"
+    description: "omnimarket PR #1616 carries the OMN-13959 acceptance-fallback fix (local port + bus
+      orchestrator + shared wire constants) and the new/updated tests"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-omnimarket-pr/command.yaml
+          && grep -q '^pr_number: 1616$' drift/dod_receipts/OMN-13959/dod-omnimarket-pr/command.yaml"
+  - id: "dod-occ-pr-3615"
+    description: "onex_change_control PR #3615 carries this OMN-13959 contract and receipt set"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13959/dod-occ-pr-3615/command.yaml
+          && grep -q '^pr_number: 3615$' drift/dod_receipts/OMN-13959/dod-occ-pr-3615/command.yaml"

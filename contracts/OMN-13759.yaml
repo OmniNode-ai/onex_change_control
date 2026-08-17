@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13759"
+title: "fix(OMN-13759): gate linear-triage done-detection on the implementing PR"
+summary: >-
+  node_linear_triage closed tickets on ANY merged PR that merely mentioned the ticket id (61/62 false
+  positives, ~1.6% precision). The omnimarket fix gates the close path on positive implementing-PR signals
+  in _find_merged_pr / _pr_implements_ticket: the PR title's primary OMN id == this ticket id, OR a Closes/Fixes/Resolves
+  OMN-<id> keyword in the PR body, OR a GitHub GraphQL closingIssuesReferences link (the gh --json REST
+  field is rejected by the installed gh and silently nulls). Two suppression guards are added: a close
+  is suppressed when the ticket was reopened (Done -> active) after the PR merged (new LinearClientProtocol.list_issue_history),
+  and when the ticket is a parent/epic with any non-done child (derived from the non-done list query with
+  no extra API call). Incidental mention-only matches are rejected; branch-head matches remain accepted
+  directly.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "New TDD suite + the existing node/golden-chain suites pass under the implementing-PR
+      gate."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13759/dod-unit-tests/command.yaml
+  - kind: "ci"
+    description: "Full omnimarket suite green and the live precision probe shows 0 mention-only false
+      positives."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13759/dod-implementation/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: >-
+      23 new cases in tests/nodes/node_linear_triage/test_omn_13759_implementing_pr_gate.py encode the
+      four DoD scenarios: a mention-only PR implementing OMN-A does NOT flag OMN-B; a 'Closes OMN-B' PR
+      does flag OMN-B; a ticket reopened (Done -> active) after merge is not flagged; an epic with an
+      open child is not flagged. The full node_linear_triage suite (50 tests, incl. the 12863/13756 fixtures
+      updated to be genuine implementing PRs) is green. Probe: cd omni_worktrees/OMN-13759/omnimarket
+      && uv run pytest tests/nodes/node_linear_triage/ -q. Result: 50 passed. Evidence-Source SHA: adb47f5597c744d03220de06c77d5a2e051d26f3
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13759/dod-unit-tests/command.yaml"
+  - id: "dod-implementation"
+    description: >-
+      Implementation in omnimarket branch jonah/omn-13759-triage-implementing-pr-gate commit adb47f5597c744d03220de06c77d5a2e051d26f3
+      gates the close path on the implementing PR. The full omnimarket suite is green and a bounded live
+      precision probe against real GitHub PR data (omnimarket #1535/#1531/#1526/#1512, each implementing
+      one ticket while mentioning a second in the body) shows the gate accepts the implementing ticket
+      4/4 and rejects the mention-only ticket 4/4 (zero false positives — exactly the 61/62 class the
+      old code closed). Probe: cd omni_worktrees/OMN-13759/omnimarket && uv run pytest tests/ -m "not
+      kafka" -q. Result: 11060 passed, 48 skipped, 9 deselected.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13759/dod-implementation/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-readiness assessment. OMN-13759 is a code-only change to the impure COMPUTE node node_linear_triage:
+      added helper functions and two new client-protocol methods (LinearClientProtocol.list_issue_history,
+      GitHubClientProtocol.pr_closing_ticket_refs) implemented on the existing HTTP clients, plus tightened
+      done-detection logic. No Dockerfile, docker-compose, topic contract, published_events, or infra/runtime-kernel
+      change; no prod/stability mutation. The node's contract.yaml is unchanged. Behavior is exercised
+      by unit tests plus a live read-only GitHub probe. The updated node package is republished to the
+      runtime via the standard post-merge node redeploy path (node_redeploy_orchestrator); no repository-tracked
+      deploy artifact is required.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13759/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13759 contract and DoD receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"

@@ -1,0 +1,205 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "onex-change-control"
+version = "0.5.1"
+description = "ONEX Change Control - Canonical governance + schema distribution + enforcement tooling to prevent cross-repo drift"
+authors = [
+    {name = "OmniNode.ai", email = "contact@omninode.ai"},
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.11.7",
+    "pyyaml>=6.0.2",
+    "colorama>=0.4.6",
+    "tomli_w>=1.0.0",
+    # OMN-13878: pinned to the released 0.45.0 (== former git rev dc69b726, the
+    # v0.45.0 tag commit) so the repin is a zero-behavior-change swap of git
+    # source for the identical PyPI artifact.
+    # OMN-14428: 0.45.0 lacks compute_contract_entry_sha256 /
+    # ContractEntryNotFoundError (validator_receipt_gate) and EnumProofTier
+    # (enums.ticket), which check_receipt_hardening.py and
+    # check_contract_substance_floor.py import directly. Verified by wheel
+    # inspection that the floor with all three symbols present is 0.46.5
+    # (0.46.1/0.46.3/0.46.4 are still missing the two receipt-gate symbols).
+    "omnibase-core>=0.46.5,<0.47.0",
+    # OMN-15669: the canonical contract shape v1 artifact is JSON Schema
+    # (Draft 2020-12) serialized as YAML; the gate and the seam harness both
+    # validate against it. Already present transitively via the test stack —
+    # declared explicitly here because it is now runtime, not test-only.
+    "jsonschema>=4.20.0",
+]
+
+[project.optional-dependencies]
+kafka = [
+    "kafka-python>=2.0.5",
+]
+postgres = [
+    "psycopg2-binary>=2.9.9",
+]
+
+[project.scripts]
+validate-yaml = "onex_change_control.scripts.validate_yaml:main"
+check-schema-purity = "onex_change_control.scripts.check_schema_purity:main"
+check-db-boundary = "onex_change_control.scripts.check_db_boundary:main"
+cosmetic-lint = "onex_change_control.cosmetic.cli:main"
+check-no-untyped-metadata = "onex_change_control.scripts.check_no_untyped_metadata:main"
+check-hardcoded-topics = "onex_change_control.scripts.check_hardcoded_topics:main"
+check-imperative-contracts = "onex_change_control.scripts.check_imperative_contracts:main"
+check-bare-feature-flags = "onex_change_control.scripts.check_bare_feature_flags:main"
+validate-day-close = "onex_change_control.scripts.validate_day_close:main"
+check-omnidash-health = "onex_change_control.scripts.check_omnidash_health:main"
+check-boundary-parity = "onex_change_control.scripts.check_boundary_parity:main"
+check-todo-format = "onex_change_control.scripts.check_todo_format:main"
+check-migration-conflicts = "onex_change_control.scripts.check_migration_conflicts:main"
+check-migration-inventory = "onex_change_control.scripts.check_migration_inventory:main"
+check-drift = "onex_change_control.scripts.check_drift:main"
+check-anthropic-key-guard = "onex_change_control.scripts.check_anthropic_key_guard:main"
+check-env-var-contract = "onex_change_control.scripts.check_env_var_contract:main"
+scan-contract-dependencies = "onex_change_control.scripts.scan_contract_dependencies:main"
+validate-agent-yaml = "onex_change_control.scripts.validate_agent_yaml:main"
+validate-prod-promotion-grants = "onex_change_control.scripts.validate_prod_promotion_grants:main"
+check-platform-leads-review-tripwire = "onex_change_control.scripts.check_platform_leads_review_tripwire:main"
+check-bot-authored-authz-guard = "onex_change_control.scripts.check_bot_authored_authz_guard:main"
+check-contract-shape-v1 = "onex_change_control.validation.contract_shape_v1:main"
+generate-promotion-manifest = "onex_change_control.promotion.manifest:main"
+promotion-workflow-evidence = "onex_change_control.promotion.workflow:main"
+dev-main-cutover = "onex_change_control.promotion.cutover:main"
+promotion-staleness-monitor = "onex_change_control.promotion.staleness:main"
+
+[project.entry-points."onex.nodes"]
+node_contract_drift_compute = "onex_change_control.nodes.node_contract_drift_compute.node:NodeContractDriftCompute"
+node_contract_drift_reducer = "onex_change_control.nodes.node_contract_drift_reducer.node:NodeContractDriftReducer"
+node_contract_drift_orchestrator = "onex_change_control.nodes.node_contract_drift_orchestrator.node:NodeContractDriftOrchestrator"
+node_contract_drift_effect = "onex_change_control.nodes.node_contract_drift_effect.node:NodeContractDriftEffect"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/onex_change_control"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/onex_change_control/cosmetic/spec.yaml" = "onex_change_control/cosmetic/spec.yaml"
+"src/onex_change_control/boundaries/kafka_boundaries.yaml" = "onex_change_control/boundaries/kafka_boundaries.yaml"
+"src/onex_change_control/wire_schemas/occ_nightly_promotion_v1.yaml" = "onex_change_control/wire_schemas/occ_nightly_promotion_v1.yaml"
+
+[dependency-groups]
+dev = [
+    "asyncpg>=0.30.0",
+    "aiokafka>=0.11.0,<0.15.0",
+    "confluent-kafka>=2.12.0,<3.0.0",
+    "pytest>=8.4.0",
+    "pytest-cov>=6.0.0",
+    "pytest-split>=0.9.0",
+    "mypy>=1.13.0",
+    "ruff>=0.15.6",
+    "types-pyyaml>=6.0.12.20250822",
+    "types-colorama>=0.4.15",
+    "types-jsonschema>=4.20.0",
+    "pre-commit>=4.3.0",
+    # Note: omniclaude schema round-trip tests use sys.path injection (OMNI_HOME).
+    # They skip gracefully when omniclaude's deps are not installed.
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+exclude = [
+    "**/__pycache__/**",
+    "**/site-packages/**",
+    "scripts/validation/**",
+    "tests/fixtures/**/src/**",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "ISC", "ICN", "G", "INP", "PIE", "T20", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "NPY", "RUF"]
+ignore = [
+    "S101",      # Allow assert statements in tests
+    "COM812",    # Trailing comma rule conflicts with formatter
+    "UP042",     # str+Enum pattern is ecosystem standard (ruff 0.15.x new rule; migrate via separate ticket)
+    "PLC0414",   # X as X re-export pattern required for explicit public API re-exports (PEP 484)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/onex_change_control/cosmetic/cli.py" = ["PLC0415"]  # Intentional lazy imports for --select filtering
+"src/onex_change_control/__main__.py" = ["T201", "PLC0415"]  # CLI output + lazy import for module-level entry point
+"src/onex_change_control/scripts/**" = ["PLC0415", "T201", "PLR0911"]  # CLI scripts use print for output; lazy imports for optional deps; OMN-14458 moved run_contract_compliance_check.py's multi-branch dispatcher here from scripts/** (which already carried this ignore)
+"src/onex_change_control/kafka/**" = ["PLC0415", "S110", "PLR0913", "RUF002"]  # Lazy kafka-python import for optional dep; S110/PLR0913/RUF002 intentional
+"src/onex_change_control/scanners/**" = ["S603", "S607", "PLC0415", "PLR2004"]  # Scanners intentionally call git/find/grep via subprocess
+"scripts/ci/ci_summary_gate.py" = ["PLR0913"]  # OMN-15768: evaluate()/_report() intentionally carry the reference implementation's full parameter set (ported from omnibase_infra's proven ci_summary_gate.py); T201 already covered by the scripts/** entry below
+"tests/**" = ["S603", "S607", "PLR2004", "PLC0415", "SLF001"]  # subprocess calls (git plumbing), magic values, late imports, private member access in tests
+"scripts/**" = ["T201", "INP001", "PLC0415", "PLR0911"]  # CLI scripts use print; not a package; lazy imports; multi-branch dispatch functions exceed default return-count limit
+"src/onex_change_control/validation/contract_shape_v1.py" = ["T201"]  # OMN-15669: this module is a CLI gate entrypoint (check-contract-shape-v1); findings go to stdout for the CI log
+"tests/fixtures/contract_shape_v1/conformant/tests/*.py" = ["INP001"]  # OMN-15669: conformant GREEN fixture tree is DATA the gate collects, deliberately not an importable package (an __init__.py here would collide with the outer tests package)
+"src/onex_change_control/overseer/model_*.py" = ["TC001", "TC003"]  # Pydantic models require runtime type hints; TYPE_CHECKING blocks break get_type_hints()
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests",
+    "slow: Slow-running tests",
+]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--tb=short",
+    "--cov-fail-under=75",  # Lowered from 80 to reflect actual baseline after CLI-subprocess test exclusion (OMN-4466)
+]
+
+[tool.coverage.run]
+# CLI entrypoint scripts are tested via subprocess — exclude from in-process measurement
+omit = [
+    "src/onex_change_control/scripts/validate_yaml.py",
+    "src/onex_change_control/scripts/check_db_boundary.py",
+    "src/onex_change_control/scripts/check_omnidash_health.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src:standards:scripts"
+namespace_packages = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = "omnibase_core.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "ruamel.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "psycopg2"
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = false
+warn_required_dynamic_aliases = true
+warn_untyped_fields = true
+
+# OMN-13878: [tool.uv.sources] omnibase-core git override removed — core now
+# resolves from PyPI (pinned >=0.45.0,<0.46.0 in [project.dependencies], which
+# reproduces the exact artifact of the former git rev dc69b726 == v0.45.0 tag).

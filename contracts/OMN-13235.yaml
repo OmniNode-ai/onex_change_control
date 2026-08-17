@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13235"
+title: "Per-tenant ceiling budget-state surface (cap + consumption), event-sourced, projection-readable"
+summary: >-
+  A bus-sourced, projection-readable budget state (cap + period consumption) for budgeted ceiling tiers.
+  Migration 0019 adds delegation_budget_state (one row per tenant / cost_tier_name / budget_period: monthly_cap_usd,
+  consumed_usd, overage_usd, headroom_remaining_usd, delegation_count), reusing the foundation migration
+  prefix family (next free after 0018). handler_budget_state.materialize_budget_state event-sources consumption
+  from delegation source events for budgeted tiers, per-tenant and per-period, idempotent per source event
+  via last_correlation_id. Wired into HandlerProjectionDelegation.project(); a no-op for free_local /
+  metered tiers. The contract exposes onex.snapshot.projection.delegation.budget-state.v1 so the surface
+  is readable. Proven by the omnimarket budget-state suite (9 passing): event-sourced consumption, per-tenant
+  + per-period isolation, idempotent replay, non-budgeted tiers produce no row.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market-pr-1320-budget-state"
+    description: >-
+      omnimarket PR #1320 budget-state suite green: budget consumption is event-sourced (consumed_usd
+      accumulates, headroom_remaining_usd decrements) for budgeted tiers; per-tenant and per-period isolation;
+      idempotent replay; non-budgeted tiers (free_local / metered / unknown) produce no row.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_budget_state_surface_omn13235.py -q"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: migration 0019 (delegation_budget_state) is an idempotent CREATE TABLE IF
+      NOT EXISTS reusing the foundation prefix family; the contract exposes onex.snapshot.projection.delegation.budget-state.v1.
+      The probe greps the forward migration file and proves the create is guarded by IF NOT EXISTS (idempotent,
+      re-runnable). The live headroom readback over the surface is deferred until 0019 deploys to dev;
+      proven at reducer + integration level here. No bespoke endpoint, no env-for-model.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -ic 'CREATE TABLE IF NOT EXISTS' src/omnimarket/nodes/node_projection_delegation/migrations/0019_delegation_budget_state.sql"

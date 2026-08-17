@@ -1,0 +1,67 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15283
+evidence_item_id: dod-omn15283-catalog-parity-executable-at-2e2108f4
+check_type: command
+check_value: 'C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/topics/managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+  --jq .content | base64 -d) && T=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/topics/test_managed_staging_topic_checker.py?ref=2e2108f499349c59f851d465185ae90cd08c7980"
+  --jq .content | base64 -d) && printf ''%s'' "$C" | python3 -c ''import ast,sys; t=ast.parse(sys.stdin.read());
+  names={n.id for n in ast.walk(t) if isinstance(n,ast.Name)}; assert "build_canary_catalog_from_candidate"
+  in names, "checker does not build the catalog via build_canary_catalog_from_candidate"; assert "load_canary_namespace"
+  in names, "checker does not load the namespace YAML via load_canary_namespace"; doc={id(n.value) for
+  n in ast.walk(t) if isinstance(n,ast.Expr) and isinstance(n.value,ast.Constant)}; bad=[n.value for n
+  in ast.walk(t) if isinstance(n,ast.Constant) and isinstance(n.value,str) and id(n) not in doc and n.value.startswith("onex.")];
+  assert not bad, "checker hardcodes catalog/topic literals instead of deriving them: %r" % (bad,)'' &&
+  printf ''%s'' "$T" | python3 -c ''import ast,sys; t=ast.parse(sys.stdin.read()); fns=[x for x in ast.walk(t)
+  if isinstance(x,(ast.FunctionDef,ast.AsyncFunctionDef)) and x.name=="test_diff_topic_set_matches_catalog_topic_names"];
+  assert len(fns)==1, "executable catalog-parity test test_diff_topic_set_matches_catalog_topic_names
+  is absent at this SHA"; f=fns[0]; s=lambda n: isinstance(n,ast.Call) and isinstance(n.func,ast.Name)
+  and n.func.id=="set"; eq=[c for c in ast.walk(f) if isinstance(c,ast.Compare) and len(c.ops)==1 and
+  isinstance(c.ops[0],ast.Eq) and s(c.left) and s(c.comparators[0]) and "missing_topics" in ast.dump(c.left)
+  and "topic_names" in ast.dump(c.comparators[0])]; assert eq, "parity test does not assert set(diff.missing_topics)
+  == set(catalog.topic_names)"; calls={c.func.id for c in ast.walk(f) if isinstance(c,ast.Call) and isinstance(c.func,ast.Name)};
+  assert "build_topic_diff" in calls and "build_canary_catalog_from_candidate" in calls, "parity test
+  does not drive the real builder+diff seam: %r" % (sorted(calls),)'''
+contract_entry_sha256: sha256:8b2e1fd751ea3b5c635e6c69beaa79d855098125a04ac7ba309c14bdee0c7a69
+status: PASS
+run_timestamp: '2026-07-28T10:33:07Z'
+commit_sha: b77b10b7abe4b6bf94477bcb402304ea4a998c14
+branch: jonah/omn-15283-occ-remediation
+runner: fable-remediation-0728-omn15283-l11-followup
+verifier: fable-remediation-0728-omn15283-l11-followup-readback
+probe_command: "GREEN: the check_value above, extracted from the stabilized (post-yamlfmt) committed\n
+  \      contract and executed verbatim.\nRED:   the same check_value with the merged squash SHA 2e2108f4
+  replaced by the product PR's\n       merge-base d85226172b90197f501f5d71bededf4f249cd607, executed identically.\nMUTATION:
+  the committed AST assert bodies re-run against 11 exists-but-wrong mutations of the\n       product
+  content at 2e2108f4 (scratchpad harness mutate.py).\nEXECUTION (out of band, .200 / stickybeatz-studio,
+  detached worktree at 2e2108f4):\n       uv run pytest tests/unit/topics/test_managed_staging_topic_checker.py
+  -v\n"
+probe_stdout: "GREEN @ 2e2108f4 -> exit=0\nRED   @ merge-base d8522617 ->\ngh: Not Found (HTTP 404)\nbase64:
+  stdin: (null): error decoding base64 input stream\nexit=1\nMUTATION (4 applied to this leg's assert
+  bodies) -> 4/4 exit=1:\n  subset instead of set-equality  -> 'parity test does not assert set(diff.missing_topics)
+  == set(catalog.topic_names)'\n  parity test stops driving build_topic_diff -> 'does not drive the real
+  builder+diff seam'\n  parity test renamed -> 'executable catalog-parity test ... is absent at this SHA'\n
+  \ checker hardcodes a topic literal -> 'checker hardcodes catalog/topic literals'\nPYTEST @ 2e2108f4
+  on .200 ->\n  test_diff_topic_set_matches_catalog_topic_names PASSED\n  test_diff_present_topics_when_all_exist
+  PASSED\n  test_check_only_run_makes_zero_admin_mutation_calls PASSED\n  test_open_admin_client_passes_msk_iam_auth_kwargs
+  PASSED\n  test_out_of_catalog_name_is_reported_not_touched PASSED\n  test_create_missing_catalog_topics_never_touches_out_of_catalog_name
+  PASSED\n  6 passed in 0.47s\nPYTEST mutation (build_topic_diff drops onex-prefixed names from catalog_topic_set)
+  ->\n  4 failed, 2 passed\n"
+actual_output: 'PASS -- corrects and replaces leg 1. Derivation hygiene holds at omnibase_infra 2e2108f4,
+  AND the executable parity test test_diff_topic_set_matches_catalog_topic_names exists at that SHA asserting
+  set(diff.missing_topics) == set(catalog.topic_names) over the real build_canary_catalog_from_candidate
+  + build_topic_diff seam. Executed: 6/6 pass; a catalog-set corruption inside build_topic_diff kills
+  4 of 6. #magic___^_^___line HONEST LIMITS, carried forward from the superseded entry rather than hidden:
+  leg 1''s claim that it proved catalog IS the YAML was false -- `catalog = catalog[:1]` after the builder
+  call and a post-load namespace.topic_prefix reassignment both keep it GREEN. Neither is caught here
+  either: the parity fixture is a single-topic catalog, and a truncation between the builder call and
+  the diff call in _run is outside both the AST surface and the unit seam. Closing that needs a run over
+  the real catalog -- the excluded live-MSK leg. #magic___^_^___line AUTHORSHIP DISCLOSURE (OMN-15283
+  verifier finding F5): this receipt is lane-authored. #magic___^_^___line The 2026-07-28 adversarial
+  verification pass on OCC#5274 -- an agent distinct from the #magic___^_^___line implementing lane --
+  is what produced the PARTIAL verdict this entry remediates; it did not #magic___^_^___line re-derive
+  THIS entry. Independent machine re-derivation is the OCC Contract Compliance Check #magic___^_^___line
+  runner, which executes this check_value product-bound against public omnibase_infra on every #magic___^_^___line
+  run. check_receipt_hardening._is_denylisted_verifier does not reject a suffixed self-handle, so #magic___^_^___line
+  the verifier field alone is not proof of independence -- do not read it as such. #magic___^_^___line '
+exit_code: 0

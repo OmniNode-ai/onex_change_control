@@ -1,0 +1,50 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13363"
+title: "Gate-Zero blocker: probe-shaped delegation events write zero rows while real traffic projects"
+summary: >
+  The 2026-06-19 Gate-Zero run reported the 4 synthetic probe events were consumed but wrote 0 rows. Investigation
+  drove the EXACT probe wire shape (ModelEventEnvelope[dict].model_dump -> unwrap_envelope -> DelegationProjectionRunner.project_event)
+  through a recording DB adapter and found it executes exactly one INSERT INTO delegation_events with
+  the probe identity fields — there is no zero-row branch for a well-formed probe payload. The 0/4 on
+  stability-test was a lane/broker mismatch (probe -> dev :19092 while stability-test consumes :39092),
+  not a handler defect. Adds a regression guard; no source change needed. Live-proven on the dev lane.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Regression guard asserts the probe envelope unwraps to the payload (not a no-op) and that project_event
+      emits one delegation_events INSERT carrying correlation_id, task_type=e2e_probe_harness, delegated_to=claude-haiku-4-5,
+      quality_gate_passed=True.
+    command: "uv run pytest tests/test_projection_probe_envelope_writes_row.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1304"
+    description: >
+      omnimarket PR #1304 adds tests/test_projection_probe_envelope_writes_row.py proving the probe envelope
+      upserts a delegation_events row. Evidence anchor: omnimarket head commit c55b7bb5a285e6c5cfa4b8c77169132b21551ef6.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13363/dod-omnimarket-pr-1304/command.yaml
+          && grep -q '^pr_number: 1304$' drift/dod_receipts/OMN-13363/dod-omnimarket-pr-1304/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13363/dod-omnimarket-pr-1304/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: live-proven on the .201 dev lane (mutable proof lane). A fresh probe correlation_id
+      bc87fa80-578f-4d76-a399-2ec9d08f03c1 was produced to the dev task-delegated topic via 'rpk topic
+      produce' inside the dev redpanda container; the runtime projection wrote one real row into omnidash_analytics.delegation_events
+      (count 11->12), read back via 'docker exec ... psql' and confirmed via the projection API correlation-trace
+      topic (row_count:1, data_freshness:fresh). No prod/judge/stability mutation. The receipt check_value
+      carries the 'rpk topic produce' / 'docker exec' deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13363/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1304$' drift/dod_receipts/OMN-13363/dod-deploy-assessment/command.yaml
+          && grep -q 'rpk topic produce' drift/dod_receipts/OMN-13363/dod-deploy-assessment/command.yaml"

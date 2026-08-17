@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13365"
+title: "fix(omnimarket): delegation orchestrator terminates cleanly when all tiers fail QG (reconcile
+  token accounting)"
+summary: >-
+  When a delegation escalated through every tier to a reasoning-model ceiling (gemini-2.5-flash) and that
+  ceiling re-dispatch also failed the quality gate, node_delegation_orchestrator crashed the dispatcher
+  with a pydantic ValidationError instead of emitting a terminal onex.evt.omnibase-infra.delegation-failed.v1
+  event. Verified 2026-06-19 reprove on stability-test: the runtime logged "service_kernel: Dispatcher
+  'node_delegation_orchestrator.HandlerDelegationWorkflow.delegation_orchestrate_quality_<hash>' failed:
+  ValidationError" on CID7 (22:27:19) and CID8 (22:32:21); the delegation-failed topic HWMs never moved
+  and those correlation_ids never projected — the terminal outcome was silently lost. Root cause: ModelInferenceResponseData
+  carries prompt/completion/total token counts with no sum constraint, and reasoning-model providers bundle
+  thinking tokens into total_tokens so total != prompt + completion. Every terminal event the orchestrator
+  emits builds the canonical omnibase_core ModelDelegationResult wire DTO, which enforces total_tokens
+  == prompt_tokens + completion_tokens via a model_validator. Building it from the raw ceiling response
+  therefore raised ValidationError on the all-tiers-failed path. Fix (code-only, one line plus a docstring):
+  _record_inference_response now derives inference_total_tokens from prompt_tokens + completion_tokens
+  so the wire invariant always holds; prompt_tokens and completion_tokens are preserved exactly as the
+  provider reported (they drive cost estimation independently). The provider's bundled reasoning-token
+  total is not modeled anywhere downstream and every projection consumer already assumes this invariant,
+  so this fixes the crash on EVERY terminal construction path (completed/failed/ all-tiers-failed/omnidash
+  compat) — fail closed but TERMINATE, never crash the dispatcher. A regression test (TestAllTiersFailMismatchedCeilingTokensTerminatesCleanly)
+  asserts a delegation where every tier fails QG with a non-summing ceiling response emits exactly one
+  terminal delegation-failed event with no ValidationError, terminal_failure_reason set, and the full
+  escalation_history carried; with the fix reverted these tests reproduce the exact reported ValidationError
+  at the terminal construction. Child of OMN-12646 (Delegation, SEA & Model-Routing Quality).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1294"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1294 (jonah/omn-13365-delegation-all-tiers-failed-terminal,
+      base=dev). _record_inference_response derives inference_total_tokens from prompt + completion so
+      the terminal ModelDelegationResult wire invariant holds even when a reasoning-model provider bundles
+      thinking tokens into total_tokens; adds TestAllTiersFailMismatchedCeilingTokensTerminatesCleanly.
+      Binds OMN-13365 to omnimarket PR #1294 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13365/dod-omnimarket-pr-1294/command.yaml
+  - id: "dod-regression-reproduces-crash"
+    description: >-
+      Adversarial proof the regression test catches the bug. With the one-line source fix reverted, the
+      new TestAllTiersFailMismatchedCeilingTokensTerminatesCleanly tests reproduce the exact reported
+      "ValidationError: total_tokens must equal prompt_tokens + completion_tokens" at the terminal ModelDelegationResult
+      construction; with the fix restored all three pass. Verifier (regression run) is independent of
+      the source author.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13365/dod-regression-reproduces-crash/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13365. The change is a code-only fix to the delegation orchestrator
+      handler (token reconciliation + a unit regression test) in omnimarket. It adds no runtime node,
+      changes no contract topic, declares no new image build input, and performs no .201 mutation. The
+      fix reaches the runtime only on the next normal dev->promotion->image rebuild; this PR gates no
+      separate redeploy. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13365/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13365 contract, the omnimarket
+      code-PR binding receipt, the regression-reproduces-crash receipt, and the deploy no-runtime-impact
+      receipt. Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility check can resolve
+      a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13365/dod-occ-pr-self/command.yaml
