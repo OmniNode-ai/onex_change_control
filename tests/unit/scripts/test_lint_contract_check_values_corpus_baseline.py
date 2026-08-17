@@ -46,6 +46,9 @@ _RULE_C_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15391_rule_c_baseli
 _RULE_D_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15391_rule_d_baseline.yaml"
 _RULE_E_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15411_rule_e_baseline.yaml"
 _RULE_F_BASELINE_PATH = _REPO_ROOT / ".onex_ratchets" / "omn_15540_rule_f_baseline.yaml"
+_RULE_G_BASELINE_PATH = (
+    _REPO_ROOT / ".onex_ratchets" / "omn_16007_inert_token_prefix_baseline.yaml"
+)
 
 # OMN-15540 Rule F concurrent-repair exemption.
 #
@@ -115,14 +118,19 @@ def _load_baseline(path: Path) -> frozenset[str]:
 
 @lru_cache(maxsize=1)
 def _scan_corpus() -> tuple[
-    frozenset[str], frozenset[str], frozenset[str], frozenset[str], frozenset[str]
+    frozenset[str],
+    frozenset[str],
+    frozenset[str],
+    frozenset[str],
+    frozenset[str],
+    frozenset[str],
 ]:
-    """Return (rule_a, rule_b, rule_c, rule_d, rule_f) ids for contracts/*.yaml.
+    """Return (rule_a, rule_b, rule_c, rule_d, rule_f, rule_g) ids for contracts/*.yaml.
 
     Cached: the corpus is ~7.5k contracts and five ratchet tests consume the
     same scan. Without the cache each test re-parses the whole corpus.
 
-    Rule F rides THIS walk deliberately rather than adding its own. See
+    Rules F and G ride THIS walk deliberately rather than adding their own. See
     ``test_rule_e_corpus_is_walked_exactly_once_across_all_consumers`` below:
     a second full-corpus walk pushed the contract's own ratchet check past the
     DoD compliance runner's 60s timeout once already.
@@ -137,6 +145,7 @@ def _scan_corpus() -> tuple[
     rule_c: set[str] = set()
     rule_d: set[str] = set()
     rule_f: set[str] = set()
+    rule_g: set[str] = set()
 
     for path in sorted(contracts_dir.glob("*.yaml")):
         rel = f"contracts/{path.name}"
@@ -154,6 +163,8 @@ def _scan_corpus() -> tuple[
                 rule_d.add(f"{rel}::{dod_id}")
             elif "mutable-state-pin" in label:
                 rule_f.add(f"{rel}::{dod_id}")
+            elif "inert-token-prefix" in label:
+                rule_g.add(f"{rel}::{dod_id}")
 
     return (
         frozenset(rule_a),
@@ -161,6 +172,7 @@ def _scan_corpus() -> tuple[
         frozenset(rule_c),
         frozenset(rule_d),
         frozenset(rule_f),
+        frozenset(rule_g),
     )
 
 
@@ -262,7 +274,7 @@ def _scan_corpus_rule_e_buckets() -> tuple[
 @pytest.mark.unit
 def test_rule_a_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_A_BASELINE_PATH)
-    live_a, _live_b, _live_c, _live_d, _live_f = _scan_corpus()
+    live_a, _live_b, _live_c, _live_d, _live_f, _live_g = _scan_corpus()
 
     new_violations = live_a - baseline
     healed = baseline - live_a
@@ -287,7 +299,7 @@ def test_rule_a_corpus_matches_frozen_baseline_exactly() -> None:
 @pytest.mark.unit
 def test_rule_b_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_B_BASELINE_PATH)
-    _live_a, live_b, _live_c, _live_d, _live_f = _scan_corpus()
+    _live_a, live_b, _live_c, _live_d, _live_f, _live_g = _scan_corpus()
 
     new_violations = live_b - baseline
     healed = baseline - live_b
@@ -375,7 +387,7 @@ def test_omn_14968_and_omn_15382_contribute_nothing_to_either_baseline() -> None
 @pytest.mark.unit
 def test_rule_c_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_C_BASELINE_PATH)
-    _a, _b, live_c, _d, _f = _scan_corpus()
+    _a, _b, live_c, _d, _f, _g = _scan_corpus()
 
     new_violations = live_c - baseline
     healed = baseline - live_c
@@ -404,7 +416,7 @@ def test_rule_c_corpus_matches_frozen_baseline_exactly() -> None:
 @pytest.mark.unit
 def test_rule_d_corpus_matches_frozen_baseline_exactly() -> None:
     baseline = _load_baseline(_RULE_D_BASELINE_PATH)
-    _a, _b, _c, live_d, _f = _scan_corpus()
+    _a, _b, _c, live_d, _f, _g = _scan_corpus()
 
     new_violations = live_d - baseline
     healed = baseline - live_d
@@ -719,7 +731,7 @@ def test_rule_e_corpus_is_walked_exactly_once_across_all_consumers(
 @pytest.mark.unit
 def test_rule_f_corpus_matches_frozen_baseline() -> None:
     baseline = _load_baseline(_RULE_F_BASELINE_PATH)
-    _a, _b, _c, _d, live_f = _scan_corpus()
+    _a, _b, _c, _d, live_f, _g = _scan_corpus()
 
     new_violations = live_f - baseline
     healed = (baseline - live_f) - _RULE_F_CONCURRENT_REPAIR_EXEMPT
@@ -761,4 +773,134 @@ def test_rule_f_concurrent_repair_exemptions_are_still_baseline_entries() -> Non
         "assertion for entries that were in the frozen census; it is not a "
         "general-purpose allowlist. Remove the stray entr"
         f"{'y' if len(stray) == 1 else 'ies'}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# OMN-16007 Rule G corpus ratchet: OMN-14431 inert runner-injected token
+# prefixes (`PR_NUMBER=<literal>; ... gh pr view ${PR_NUMBER}`).
+#
+# The class this stops: a check_value that LOOKS pinned to a specific PR but is
+# not. `_substitute_tokens()` in run_contract_compliance_check.py rewrites every
+# ${PR_NUMBER}/${REPO}/${TICKET_ID} occurrence with the RUNNER's own values
+# before `sh -c` is ever invoked -- before the `VAR=literal` prefix in the same
+# string could take effect -- so the literal is dead decoration and the check
+# silently evaluates whatever PR the compliance runner happens to be looking at.
+# It is the same failure shape as Rule C (a check that cannot mean what it
+# reads as), and it fails in the DANGEROUS direction: it goes green against the
+# wrong subject.
+#
+# The detector shipped in OMN-14431 as HARD tier, but its only surface was the
+# changed-files pre-commit hook -- ci.yml's "Run full pre-commit --all-files"
+# step carried a `github.base_ref != 'dev'` carve-out and so never ran on dev,
+# where every real merge lands. OMN-16007 removes that carve-out; this baseline
+# is the 84-instance census its first real execution surfaced, all
+# byte-identical to origin/dev.
+# ---------------------------------------------------------------------------
+
+# The producer's cutover point. Every flagged `occ-self-bind-pr-<n>` id has
+# n <= this; every id above it is clean. Derived from the frozen baseline by
+# the retirement test below rather than restated, so it cannot drift.
+_RULE_G_LAST_INERT_SELF_BIND_PR = 4407
+
+_SELF_BIND_PR_RE = re.compile(r"^occ-self-bind-pr-(\d+)$")
+
+
+@pytest.mark.unit
+def test_rule_g_corpus_matches_frozen_baseline_exactly() -> None:
+    baseline = _load_baseline(_RULE_G_BASELINE_PATH)
+    _a, _b, _c, _d, _f, live_g = _scan_corpus()
+
+    new_violations = live_g - baseline
+    healed = baseline - live_g
+
+    assert not new_violations, (
+        f"{len(new_violations)} NEW Rule G (inert-token-prefix) violation(s) "
+        "found that are not in the frozen shrink-only baseline "
+        f"({_RULE_G_BASELINE_PATH}): {sorted(new_violations)[:20]}. A "
+        "`PR_NUMBER=<literal>` / `REPO=<literal>` / `TICKET_ID=<literal>` "
+        "prefix is silently discarded: the matching ${...} token is "
+        "pre-substituted with the compliance runner's OWN value before the "
+        "shell ever applies the assignment, so the check runs against the "
+        "runner's PR, not the literal one it appears to pin. Write the literal "
+        "directly instead: `gh pr view 6435 --repo OmniNode-ai/"
+        "onex_change_control ...`."
+    )
+    assert not healed, (
+        f"{len(healed)} baseline entr{'y is' if len(healed) == 1 else 'ies are'} "
+        "no longer reproduced by a live corpus scan, but the baseline file "
+        f"({_RULE_G_BASELINE_PATH}) was not updated to remove them: "
+        f"{sorted(healed)[:20]}. Shrink the baseline when you repair a "
+        "contract -- do not leave stale entries."
+    )
+
+
+@pytest.mark.unit
+def test_rule_g_generated_producer_retired_the_inert_shape() -> None:
+    """Rule G may be frozen EXACTLY; Rule E could not. This is why.
+
+    62 of Rule G's 84 baseline entries match the Rule E generated-producer
+    shape, and Rule E had to carve that shape OUT precisely because ratcheting
+    a machine-authored, monotonically-growing set hard-fails every future
+    autobind PR (see _GENERATED_SIGPIPE_ITEM_RE and the OCC#5545 incident
+    recorded on _RULE_E_GENERATED_BUCKETS).
+
+    Freezing Rule G exactly is only safe because the OCC companion producer
+    already STOPPED emitting the inert shape -- it moved from
+    `PR_NUMBER=4312; REPO=...; gh pr view ${PR_NUMBER} --repo ${REPO}` to a
+    literal-pinned `gh pr view 6435 --repo OmniNode-ai/onex_change_control`.
+    That is a claim about a live producer, so it is measured here rather than
+    asserted in a comment: if the producer regresses, this test names the
+    regression directly instead of leaving the next reader to infer it from a
+    generic "NEW violation" failure on the ratchet above.
+
+    Deliberately NOT count-pinned on the clean side -- that set grows by one on
+    most autobind PRs, which is the exact wedge Rule E's carve-out exists to
+    avoid. The floor is asserted instead, so the test cannot pass vacuously.
+    """
+    baseline = _load_baseline(_RULE_G_BASELINE_PATH)
+    flagged_pr_numbers = [
+        int(match.group(1))
+        for entry in baseline
+        if (match := _SELF_BIND_PR_RE.match(entry.split("::", 1)[-1])) is not None
+    ]
+    assert flagged_pr_numbers, "baseline carries no occ-self-bind-pr-<n> ids at all"
+    assert max(flagged_pr_numbers) == _RULE_G_LAST_INERT_SELF_BIND_PR
+
+    _a, _b, _c, _d, _f, live_g = _scan_corpus()
+    live_self_bind_prs = [
+        int(match.group(1))
+        for entry in live_g
+        if (match := _SELF_BIND_PR_RE.match(entry.split("::", 1)[-1])) is not None
+    ]
+    regressions = sorted(
+        pr for pr in live_self_bind_prs if pr > _RULE_G_LAST_INERT_SELF_BIND_PR
+    )
+    assert not regressions, (
+        "The OCC companion producer has REGRESSED to emitting inert "
+        f"runner-injected token prefixes: occ-self-bind-pr-{regressions[:20]} "
+        f"post-date the {_RULE_G_LAST_INERT_SELF_BIND_PR} cutover. Fix it at "
+        "the producer (omnimarket node_occ_companion_compute) -- do NOT widen "
+        "this baseline, or every future autobind PR inherits a check that "
+        "silently evaluates the wrong PR."
+    )
+
+    # The clean-side floor. Without it, `regressions == []` would also be
+    # satisfied by a corpus that stopped containing self-bind items entirely
+    # (a detector or producer outage), which is not evidence of a retirement.
+    clean_self_bind_items = 0
+    for path in sorted((_REPO_ROOT / "contracts").glob("*.yaml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            continue
+        for item in data.get("dod_evidence") or []:
+            if not isinstance(item, dict):
+                continue
+            match = _SELF_BIND_PR_RE.match(str(item.get("id", "")))
+            if match and int(match.group(1)) > _RULE_G_LAST_INERT_SELF_BIND_PR:
+                clean_self_bind_items += 1
+    assert clean_self_bind_items >= 1351, (
+        f"only {clean_self_bind_items} post-cutover occ-self-bind-pr-<n> items "
+        "found (>= 1351 measured 2026-08-14). The retirement assertion above "
+        "has no force without a large clean population to assert it over."
     )
