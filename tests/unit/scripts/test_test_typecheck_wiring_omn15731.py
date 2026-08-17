@@ -28,19 +28,28 @@ skip reasons.
 
 Two things are proven here, and they are different in kind:
 
-* **The strict registration behaves as claimed** — by RENDERING the real
-  ``ci-summary`` shell block out of the shipped ``ci.yml`` and EXECUTING it
-  under bash for each combination of job result and docs_only value.
-* **The anti-removal control fires**: stripping only the new strict block
-  (leaving `test`/`type-check` in `needs:`) restores exactly the bypass —
-  a skipped `test`/`type-check` on a non-docs-only PR still reports
-  "All required jobs passed".
+* **The registration behaves as claimed** — by loading the SHIPPED
+  ``scripts/ci/ci_summary_gate.py`` and EXECUTING its real ``evaluate()``
+  against synthetic job snapshots (OMN-15768: this replaced the needs-based
+  ``ci-summary`` bash block a retired version of this class rendered and
+  executed under bash). ``test``/``type-check`` are SKIPPABLE_GATE_JOBS
+  entries (success OR skipped both pass) rather than STRICT, because they
+  carry a LEGITIMATE skip path (the OMN-14098 docs-only fast lane) -- the
+  design no longer needs the gate to independently re-derive ``docs_only``
+  at evaluate() time, because ``TestJobsHaveNoDevBaseRefCarveOut`` below
+  proves BY SOURCE INSPECTION that the job's own ``if:`` in ci.yml can
+  produce ``skipped`` for no reason other than ``docs_only == 'true'``. A
+  ``failure``/``cancelled`` result, or an ABSENT job, still fails closed.
+* **The anti-removal control fires**: a job dropped from
+  SKIPPABLE_GATE_JOBS entirely becomes invisible to the completeness anchor
+  the moment it is also absent from the run (e.g. renamed) -- this is the
+  control that makes registration non-decorative.
 """
 
 from __future__ import annotations
 
-import re
-import subprocess
+import importlib.util
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -49,125 +58,102 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CI_YAML = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
-_SUMMARY_JOB_ID = "ci-summary"
-
-_NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_\-]+)\.result\s*\}\}")
-_DOCS_ONLY_RE = re.compile(r"\$\{\{\s*needs\.zone-filter\.outputs\.docs_only\s*\}\}")
-_CONTAINS_ROLLUP_RE = re.compile(
-    r"\$\{\{\s*contains\(needs\.\*\.result,\s*'failure'\)\s*\|\|\s*"
-    r"contains\(needs\.\*\.result,\s*'cancelled'\)\s*\}\}"
-)
-# The shipped strict block for test+type-check, matched so the removal
-# control below can strip exactly it and nothing else. Non-greedy up to the
-# generic rollup's own `if [[` (rather than up to the first `fi`) because the
-# block is itself an outer `if` wrapping two nested `if`s -- a naive
-# `.*?\n *fi\n` would stop at the first nested `fi`, not the outer one.
-_STRICT_BLOCK_RE = re.compile(
-    r"\n *if \[\[ \"\$\{\{ needs\.zone-filter\.outputs\.docs_only \}\}\" "
-    r"!= \"true\" \]\]; then"
-    r".*?\n *fi\n(?=\s*if \[\[ \"\$\{\{ contains\(needs\.\*\.result)",
-    re.DOTALL,
-)
+_TEST_NAME = "Tests"  # ci_summary_gate.py SKIPPABLE_GATE_JOBS display name
+_TYPE_CHECK_NAME = "Type Check"
 
 
 def _ci_yaml() -> dict[str, Any]:
     return dict(yaml.safe_load(_CI_YAML.read_text(encoding="utf-8")))
 
 
-def _summary_script() -> str:
-    summary = _ci_yaml()["jobs"][_SUMMARY_JOB_ID]
-    return "\n".join(
-        step["run"] for step in summary["steps"] if isinstance(step.get("run"), str)
-    )
+def _load_gate_module() -> Any:
+    """Load scripts/ci/ci_summary_gate.py by path (mirrors the loader in
+    test_merge_hold_gate_wiring_omn15484.py, including the sys.modules
+    registration Python 3.13's @dataclass needs)."""
+    script_path = _REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py"
+    spec = importlib.util.spec_from_file_location("ci_summary_gate", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _all_needs() -> list[str]:
-    needs = _ci_yaml()["jobs"][_SUMMARY_JOB_ID]["needs"]
-    return [needs] if isinstance(needs, str) else list(needs)
+def _job(name: str, conclusion: str) -> dict[str, object]:
+    return {"name": name, "status": "completed", "conclusion": conclusion}
 
 
-def _render(script: str, results: dict[str, str], docs_only: str) -> str:
-    """Reproduce GitHub's `${{ ... }}` substitution, then hand off to bash."""
-    rollup = "true" if {"failure", "cancelled"} & set(results.values()) else "false"
-    script = _CONTAINS_ROLLUP_RE.sub(rollup, script)
-    script = _DOCS_ONLY_RE.sub(docs_only, script)
-    return _NEEDS_RESULT_RE.sub(lambda m: results.get(m.group(1), ""), script)
-
-
-def _run_summary(
-    test_result: str, type_check_result: str, docs_only: str = "false"
-) -> subprocess.CompletedProcess[str]:
-    """Execute the real ci-summary block with every other gate green."""
-    results = dict.fromkeys(_all_needs(), "success")
-    results["test"] = test_result
-    results["type-check"] = type_check_result
-    rendered = _render(_summary_script(), results, docs_only)
-    return subprocess.run(
-        ["bash", "-c", rendered], capture_output=True, text=True, check=False
-    )
+def _all_green_jobs(gate: Any) -> list[dict[str, object]]:
+    return [
+        _job(n, "success") for n in gate.STRICT_GATE_JOBS + gate.SKIPPABLE_GATE_JOBS
+    ]
 
 
 class TestStrictRegistrationIsExecutable:
     """Registration is the mechanism. Proven by running it, not by grepping."""
 
     def test_both_success_passes(self) -> None:
-        completed = _run_summary("success", "success")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert "All required jobs passed" in completed.stdout
+        gate = _load_gate_module()
+        code, _ = gate.evaluate(_all_green_jobs(gate))
+        assert code == gate.EXIT_SUCCESS
 
-    @pytest.mark.parametrize("result", ["skipped", "failure", "cancelled"])
-    def test_test_job_non_success_fails_closed_off_docs_only(self, result: str) -> None:
-        """``skipped`` is the one that matters: it is what OMN-15731 found live.
+    def test_both_skipped_is_the_legitimate_docs_only_fast_lane(self) -> None:
+        """SKIPPABLE_GATE_JOBS tolerates a skip unconditionally at the
+        evaluate() layer; TestJobsHaveNoDevBaseRefCarveOut below is what
+        proves that skip can only happen for a docs_only PR in the first
+        place, so this remains safe."""
+        gate = _load_gate_module()
+        jobs = [
+            j
+            for j in _all_green_jobs(gate)
+            if j["name"] not in (_TEST_NAME, _TYPE_CHECK_NAME)
+        ]
+        jobs.append(_job(_TEST_NAME, "skipped"))
+        jobs.append(_job(_TYPE_CHECK_NAME, "skipped"))
+        code, _ = gate.evaluate(jobs)
+        assert code == gate.EXIT_SUCCESS
 
-        ``failure``/``cancelled`` are already caught by the generic rollup;
-        ``skipped`` is caught ONLY by the explicit strict block added here.
+    @pytest.mark.parametrize("result", ["failure", "cancelled"])
+    def test_test_job_non_success_fails_closed(self, result: str) -> None:
+        gate = _load_gate_module()
+        jobs = [j for j in _all_green_jobs(gate) if j["name"] != _TEST_NAME]
+        jobs.append(_job(_TEST_NAME, result))
+        code, _ = gate.evaluate(jobs)
+        assert code == gate.EXIT_FAILURE
+
+    @pytest.mark.parametrize("result", ["failure", "cancelled"])
+    def test_type_check_job_non_success_fails_closed(self, result: str) -> None:
+        gate = _load_gate_module()
+        jobs = [j for j in _all_green_jobs(gate) if j["name"] != _TYPE_CHECK_NAME]
+        jobs.append(_job(_TYPE_CHECK_NAME, result))
+        code, _ = gate.evaluate(jobs)
+        assert code == gate.EXIT_FAILURE
+
+    def test_an_absent_unregistered_test_job_is_invisible(self) -> None:
+        """RED-before control: the pre-fix state of this repo.
+
+        A renamed/absent job that is NOT in STRICT_GATE_JOBS/
+        SKIPPABLE_GATE_JOBS is invisible to the completeness anchor -- the
+        default-deny sweep only inspects jobs that actually appear in the
+        run, so a `test` that silently stops running (renamed, deleted, or
+        never wired) reads as SUCCESS rather than PENDING. This is the
+        control that makes registration non-decorative.
         """
-        completed = _run_summary(result, "success", docs_only="false")
-        assert completed.returncode == 1, completed.stdout + completed.stderr
-        assert "OMN-15731" in completed.stdout
-
-    @pytest.mark.parametrize("result", ["skipped", "failure", "cancelled"])
-    def test_type_check_job_non_success_fails_closed_off_docs_only(
-        self, result: str
-    ) -> None:
-        completed = _run_summary("success", result, docs_only="false")
-        assert completed.returncode == 1, completed.stdout + completed.stderr
-        assert "OMN-15731" in completed.stdout
-
-    def test_skip_on_docs_only_true_is_the_legitimate_fast_lane(self) -> None:
-        """The OMN-14098 evidence-only fast lane must still pass CI Summary."""
-        completed = _run_summary("skipped", "skipped", docs_only="true")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert "All required jobs passed" in completed.stdout
-
-    def test_removing_the_strict_block_restores_the_bypass(self) -> None:
-        """RED-before, against the real file: the pre-fix state of this repo.
-
-        Stripping only the new strict block (leaving `test`/`type-check` in
-        `needs:`) means a skip on a non-docs-only PR is reported as passing
-        by the generic rollup alone -- this is the control that makes the
-        assertions above non-vacuous.
-        """
-        script = _summary_script()
-        stripped = _STRICT_BLOCK_RE.sub("\n", script)
-        assert stripped != script, "the strict block was not found to strip"
-
-        results = dict.fromkeys(_all_needs(), "success")
-        results["test"] = "skipped"
-        results["type-check"] = "skipped"
-        rendered = _render(stripped, results, docs_only="false")
-        completed = subprocess.run(
-            ["bash", "-c", rendered], capture_output=True, text=True, check=False
-        )
-        assert completed.returncode == 0, (
-            "expected the UNREGISTERED shape to pass on skipped test/type-check "
-            "outside the docs-only lane -- if it fails, this control proves "
-            "nothing about the registration"
+        gate = _load_gate_module()
+        strict = gate.STRICT_GATE_JOBS
+        skippable = tuple(n for n in gate.SKIPPABLE_GATE_JOBS if n != _TEST_NAME)
+        jobs = [_job(n, "success") for n in strict + skippable]
+        code, _ = gate.evaluate(jobs, strict_gates=strict, skippable_gates=skippable)
+        assert code == gate.EXIT_SUCCESS, (
+            "expected the UNREGISTERED+ABSENT shape to pass -- if it fails, "
+            "this control proves nothing about the registration"
         )
 
-    def test_test_and_type_check_are_in_ci_summary_needs(self) -> None:
-        assert "test" in _all_needs()
-        assert "type-check" in _all_needs()
+    def test_test_and_type_check_are_registered(self) -> None:
+        gate = _load_gate_module()
+        assert _TEST_NAME in gate.SKIPPABLE_GATE_JOBS
+        assert _TYPE_CHECK_NAME in gate.SKIPPABLE_GATE_JOBS
 
 
 class TestJobsHaveNoDevBaseRefCarveOut:

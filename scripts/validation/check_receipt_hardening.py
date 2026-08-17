@@ -231,6 +231,7 @@ Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -1432,8 +1433,49 @@ def write_supersession_baseline(
     return 0
 
 
-def check_supersession_wiring(ci_yaml_path: Path) -> list[str]:
+def _extract_strict_gate_jobs(gate_module_path: Path) -> tuple[str, ...] | None:
+    """Statically extract ``STRICT_GATE_JOBS`` from ci_summary_gate.py.
+
+    AST-parsed (not imported) so this never executes the target file and so a
+    test can point it at an isolated mutated copy. Returns ``None`` if the
+    file is missing/unparseable or the tuple assignment cannot be found.
+    """
+    if not gate_module_path.is_file():
+        return None
+    try:
+        tree = ast.parse(gate_module_path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        name: str | None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value_node = node.value
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            name = names[0] if names else None
+            value_node = node.value
+        else:
+            continue
+        if name != "STRICT_GATE_JOBS" or value_node is None:
+            continue
+        try:
+            value = ast.literal_eval(value_node)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(value, tuple) and all(isinstance(v, str) for v in value):
+            return value
+    return None
+
+
+def check_supersession_wiring(
+    ci_yaml_path: Path, gate_module_path: Path | None = None
+) -> list[str]:
     """Assert the corpus ratchet job exists, is unconditional, and gates CI Summary.
+
+    ``gate_module_path`` defaults to ``<repo_root>/scripts/ci/ci_summary_gate.py``
+    (repo root derived from ``ci_yaml_path``'s ``.github/workflows/`` ancestry);
+    tests override it to point at an isolated mutated copy.
 
     Detection that is not a merge gate gets ignored (root CLAUDE.md rule 5),
     and a gate whose two halves can be deleted in one edit is not a gate.
@@ -1506,12 +1548,37 @@ def check_supersession_wiring(ci_yaml_path: Path) -> list[str]:
             "on OCC dev; without it nothing is enforced."
         )
         return failures
-    needs = summary.get("needs")
-    needs_list = needs if isinstance(needs, list) else [needs]
-    if job_id not in [str(item) for item in needs_list]:
+
+    resolved_gate_path = gate_module_path or (
+        ci_yaml_path.resolve().parents[2] / "scripts" / "ci" / "ci_summary_gate.py"
+    )
+    return failures + _check_supersession_summary_registration(
+        job, job_id, summary, summary_id, resolved_gate_path
+    )
+
+
+def _check_supersession_summary_registration(
+    job: dict[str, object],
+    job_id: str,
+    summary: dict[str, object],
+    summary_id: str,
+    gate_module_path: Path,
+) -> list[str]:
+    """ci-summary must be the OMN-15768 no-needs poller AND assert the
+    supersession ratchet STRICTLY via ci_summary_gate.py's STRICT_GATE_JOBS.
+
+    OMN-15768 replaced the needs-gated aggregator this anchor used to grep
+    for with a no-needs poller that checks membership in a Python tuple at
+    runtime instead. A `needs:` on ci-summary is now a REGRESSION to the
+    needs-graph-omission bug class (OCC#6346), not a wiring requirement.
+    """
+    failures: list[str] = []
+    if "needs" in summary:
         failures.append(
-            f"job `{summary_id}` does not list `{job_id}` in `needs:`, so the "
-            "required context does not wait for the ratchet."
+            f"job `{summary_id}` declares `needs:` ({summary['needs']!r}). "
+            "OMN-15768 replaced the needs-gated aggregator with a no-needs "
+            "poller; a `needs:` here is a regression to the needs-graph-"
+            "omission bug class (OCC#6346)."
         )
     summary_steps = summary.get("steps")
     summary_blob = "\n".join(
@@ -1519,11 +1586,28 @@ def check_supersession_wiring(ci_yaml_path: Path) -> list[str]:
         for step in (summary_steps if isinstance(summary_steps, list) else [])
         if isinstance(step, dict)
     )
-    if f"needs.{job_id}.result" not in summary_blob:
+    if "ci_summary_gate.py" not in summary_blob:
         failures.append(
-            f"job `{summary_id}` has no strict success-only check on "
-            f"`needs.{job_id}.result`. `needs:` alone treats `skipped` as "
-            "non-blocking — the gate must fail closed on any non-success."
+            f"job `{summary_id}` does not invoke scripts/ci/ci_summary_gate.py "
+            "-- it no longer looks like the OMN-15768 poller."
+        )
+
+    display_name = job.get("name", job_id)
+    strict_gate_jobs = _extract_strict_gate_jobs(gate_module_path)
+    if strict_gate_jobs is None:
+        failures.append(
+            f"could not read STRICT_GATE_JOBS from {gate_module_path} to "
+            f"verify `{display_name}` is registered."
+        )
+        return failures
+
+    if display_name not in strict_gate_jobs:
+        failures.append(
+            f"`{display_name}` (ci.yml job `{job_id}`) is not in "
+            "scripts/ci/ci_summary_gate.py's STRICT_GATE_JOBS. `needs:` alone "
+            "treats `skipped` as non-blocking — the gate must fail closed on "
+            "any non-success, which registration in STRICT_GATE_JOBS is what "
+            "now provides."
         )
     return failures
 

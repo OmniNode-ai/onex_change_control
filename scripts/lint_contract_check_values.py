@@ -1301,6 +1301,146 @@ def _scan_value(
 
 
 # ---------------------------------------------------------------------------
+# OMN-16007: frozen shrink-only baselines (the CORPUS RATCHET, applied here at
+# the linter's exit code rather than only in pytest).
+#
+# WHY THIS EXISTS. Every hard rule below (A/B/C/D/F, and G as of this change)
+# already had a frozen census under ``.onex_ratchets/``, but those censuses were
+# only ever read by ``tests/unit/scripts/
+# test_lint_contract_check_values_corpus_baseline.py``. THIS script -- the
+# pre-commit hook -- was unconditionally strict, which was survivable only
+# because ci.yml's "Run full pre-commit --all-files" step carried a
+# ``github.base_ref != 'dev'`` carve-out and therefore never ran on dev, the
+# branch every real merge lands on. OMN-16007 removes that carve-out. Its first
+# real execution surfaced 1175 blocking findings across 7823 contracts, every
+# one of them byte-identical to origin/dev: inherited debt the carve-out had
+# been hiding, not anything OMN-16007 introduced.
+#
+# Two ways to make that green. Re-adding a carve-out puts the hole back. This is
+# the other: read the SAME frozen baselines the corpus ratchet already reads, so
+# the inherited 1175 pass and anything NEW hard-fails -- the repo's own
+# established Rule A-F pattern, now enforced at the surface that actually gates
+# the merge instead of only in a pytest job.
+#
+# WHAT THIS DOES NOT DO: it cannot see the `healed`/stale half of the ratchet.
+# A repaired contract whose baseline entry was not deleted in the same PR is
+# invisible here, because this script only ever sees the files it is handed and
+# a stale entry is by definition a finding that no longer reproduces. Detecting
+# that requires a whole-corpus scan, which is the corpus ratchet test's job and
+# stays there. The two halves are deliberately split: growth is stopped at the
+# hook (fast, changed-files, and now whole-corpus on the --all-files run),
+# staleness is stopped in the ratchet job.
+#
+# NO BOUNDARY CARVE-OUT. Rules A-F are frozen globally, not per-branch, and the
+# `contract-corpus-ratchets` job that consumes them is unconditional. This
+# filter follows that established shape exactly rather than inventing a
+# dev-vs-main policy split that no existing ratchet has.
+# ---------------------------------------------------------------------------
+
+_RATCHETS_DIR = Path(__file__).resolve().parent.parent / ".onex_ratchets"
+
+# rule token (a substring of the detector's own label) -> frozen baseline file.
+#
+# Only HARD-tier rules that have a frozen census appear here. Every other
+# finding this linter can emit -- the ANTI_PATTERNS fail-open family, the
+# legacy ``gh pr`` shapes, ``read-error``, ``yaml-parse-error`` -- is at ZERO
+# across the corpus and therefore stays unconditionally fatal, with no way to
+# baseline it. Adding a key here is adding a debt class; do not do it to make a
+# red build green.
+BASELINE_FILES: dict[str, str] = {
+    # Rule A (OMN-15382)
+    "executable-command-shape": "omn_15382_rule_a_baseline.yaml",
+    # Rule B (OMN-15382)
+    "pr-binding": "omn_15382_rule_b_baseline.yaml",
+    # Rule C (OMN-15391)
+    "tautological-self-comparison": "omn_15391_rule_c_baseline.yaml",
+    # Rule D (OMN-15391)
+    "fail-open-zero-count": "omn_15391_rule_d_baseline.yaml",
+    # Rule F (OMN-15540)
+    "mutable-state-pin": "omn_15540_rule_f_baseline.yaml",
+    # Rule G (OMN-14431 detector, censused by OMN-16007)
+    "inert-token-prefix": "omn_16007_inert_token_prefix_baseline.yaml",
+}
+
+
+def load_baselines(ratchets_dir: Path | None = None) -> dict[str, frozenset[str]]:
+    """Load every frozen baseline keyed by its rule token.
+
+    A MISSING baseline file is a hard error, not an empty set: silently
+    treating an unreadable census as "nothing is baselined" would flip this
+    filter from suppressing 1175 known findings to failing on all of them,
+    which reads as a mass regression and trains the next reader to delete the
+    filter. Fail loudly instead.
+    """
+    directory = _RATCHETS_DIR if ratchets_dir is None else ratchets_dir
+    baselines: dict[str, frozenset[str]] = {}
+    for rule_token, filename in BASELINE_FILES.items():
+        path = directory / filename
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        entries = data.get("baseline", []) or []
+        baselines[rule_token] = frozenset(str(entry) for entry in entries)
+    return baselines
+
+
+def baseline_key(
+    path_str: str, label: str, fragment: str
+) -> tuple[str, str] | tuple[None, None]:
+    """Map a finding to its ``(rule_token, "contracts/X.yaml::<dod_id>")`` key.
+
+    Returns ``(None, None)`` for any finding that is not baselineable -- an
+    unrecognized rule, or a file outside ``contracts/``. Both fall through to
+    the fatal path, which is the safe direction.
+
+    Two label shapes exist and the difference is load-bearing. Rule B's
+    ``_pr_binding_violation`` finding is appended as
+    ``(path, "pr-binding: ...", dod_id)`` -- the dod_id rides in the FRAGMENT
+    slot, not the label. Every other detector appends
+    ``(path, f"{dod_id}: {rule_label}", <source fragment>)``. Keying Rule B off
+    the label would silently produce ``contracts/X.yaml::pr-binding`` for all
+    834 entries, collapsing them onto one key and suppressing every future
+    Rule B violation in the corpus. The frozen baseline files already use the
+    fragment-derived form, so this matches them by construction.
+    """
+    # Only ever key files that genuinely live in contracts/. The frozen
+    # baselines are all "contracts/<name>::<id>", so keying on the bare
+    # basename would let a same-named file anywhere on disk inherit another
+    # contract's suppression.
+    path = Path(path_str)
+    if path.parent.name != "contracts":
+        return (None, None)
+    rel = f"contracts/{path.name}"
+
+    if label.startswith("pr-binding:"):
+        return ("pr-binding", f"{rel}::{fragment}")
+
+    head, _, rest = label.partition(": ")
+    if not rest:
+        # No "<dod_id>: <rule>" structure at all (read-error, yaml-parse-error).
+        return (None, None)
+    for rule_token in BASELINE_FILES:
+        if rule_token in rest:
+            return (rule_token, f"{rel}::{head}")
+    return (None, None)
+
+
+def partition_findings(
+    findings: list[tuple[str, str, str]],
+    baselines: dict[str, frozenset[str]],
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Split findings into ``(blocking, baselined)``."""
+    blocking: list[tuple[str, str, str]] = []
+    baselined: list[tuple[str, str, str]] = []
+    for finding in findings:
+        path_str, label, fragment = finding
+        rule_token, key = baseline_key(path_str, label, fragment)
+        if rule_token is not None and key in baselines.get(rule_token, frozenset()):
+            baselined.append(finding)
+        else:
+            blocking.append(finding)
+    return blocking, baselined
+
+
+# ---------------------------------------------------------------------------
 # CLI entry-point
 # ---------------------------------------------------------------------------
 
@@ -1341,12 +1481,35 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
-    if all_findings:
+    # OMN-16007: suppress findings frozen in the shrink-only baselines. See the
+    # BASELINE_FILES block above for why this lives here and what it cannot do.
+    blocking, baselined = partition_findings(all_findings, load_baselines())
+
+    if baselined:
+        by_rule: dict[str, int] = {}
+        for path_str, label, fragment in baselined:
+            rule_token, _key = baseline_key(path_str, label, fragment)
+            if rule_token is not None:
+                by_rule[rule_token] = by_rule.get(rule_token, 0) + 1
+        census = ", ".join(f"{rule}={n}" for rule, n in sorted(by_rule.items()))
+        print(
+            f"NOTE: {len(baselined)} finding(s) suppressed by the frozen "
+            f"shrink-only baselines under .onex_ratchets/ ({census}). These are "
+            "pre-existing debt, not new violations -- see the Linear corpus "
+            "burn-down ticket. Repairing one requires deleting its entry from "
+            "the baseline file in the SAME commit; the corpus ratchet in "
+            "tests/unit/scripts/"
+            "test_lint_contract_check_values_corpus_baseline.py fails on a "
+            "stale entry.",
+            file=sys.stderr,
+        )
+
+    if blocking:
         print(
             "FAIL: invalid patterns found in contract check_value fields:",
             file=sys.stderr,
         )
-        for path_str, pattern_label, fragment in all_findings:
+        for path_str, pattern_label, fragment in blocking:
             print(f"  {path_str}: {pattern_label}", file=sys.stderr)
             print(f"    ...{fragment}...", file=sys.stderr)
         print(
