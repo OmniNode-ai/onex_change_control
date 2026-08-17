@@ -1,0 +1,126 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16106
+title: Automatic ticket close-out when evidence is proven — companion-merge -> dod_verify -> governed
+  Done flip
+summary: 'OCC companion for OmniNode-ai/omnibase_infra PR #2763. First slice of the automatic-close-out
+  ticket: a node-backed scheduled sweep (node_evidence_autoclose_sweep_effect) that enumerates onex_change_control
+  PRs merged in a lookback window, extracts each merged companion''s Evidence-Ticket binding, re-runs
+  the EXISTING ``uv run onex skill dod_verify <ticket>`` verifier exactly as the controller does for governed
+  flips, and either flips the bound Linear ticket Done (all ACs verified, zero failed) or posts the honest
+  gap as a comment -- never flips on any gap. Fail-closed on missing binding, ambiguous multi-ticket companions,
+  dod_verify non-zero exit, and Linear API errors. DRY-RUN by default; the ONEX_AUTOCLOSE_DISABLED kill
+  switch is checked first, unconditionally. Wired as `onex skill evidence_autoclose_sweep` and a scheduled
+  GitHub Actions workflow running in DRY-RUN only.'
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - protocols
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: 'PR #2763 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-infra-pr-2763-node-handler-exists
+    description: 'PR #2763 on OmniNode-ai/omnibase_infra adds the evidence-autoclose sweep handler. Asserted
+      positively against the pinned merge head: the concrete HandlerEvidenceAutocloseSweep class exists
+      in the handler module GitHub actually serves at that commit.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=e13706ec17f6c99566aa8d8820914bf827328a85 --jq '.content' | base64 -d | grep -c 'class HandlerEvidenceAutocloseSweep:'
+  - id: dod-dod-verify-invoked-verbatim
+    description: 'The sweep re-runs the EXISTING verifier exactly as the controller does -- the ticket''s
+      core requirement. Asserted by reading back the real subprocess argv the handler constructs for the
+      dod_verify call: ["uv", "run", "onex", "skill", "dod_verify", ticket_id], never a reimplementation
+      of dod_verify''s own evidence-checking logic.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=e13706ec17f6c99566aa8d8820914bf827328a85
+          --jq '.content' | base64 -d | grep -c '"uv", "run", "onex", "skill", "dod_verify", ticket_id'
+  - id: dod-fail-closed-ambiguous-binding
+    description: 'A merged companion whose changed-file/title signals name more than one distinct OMN-XXXXX
+      ticket must never be guessed -- the ticket''s explicit fail-closed requirement. Asserted by reading
+      back the real decision enum value the handler emits for this case (SKIPPED_AMBIGUOUS_BINDING) from
+      the pinned contract head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/models/enum_evidence_autoclose_decision.py?ref=e13706ec17f6c99566aa8d8820914bf827328a85
+          --jq '.content' | base64 -d | grep -c 'SKIPPED_AMBIGUOUS_BINDING = "skipped_ambiguous_binding"'
+  - id: dod-fail-closed-dod-verify-nonzero-exit
+    description: 'A dod_verify subprocess that exits non-zero must fail closed (recorded, never flipped)
+      -- another explicit ticket requirement. Asserted by reading back the real decision enum value the
+      handler emits for this case (ERROR_VERIFY_NONZERO_EXIT) from the pinned contract head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/models/enum_evidence_autoclose_decision.py?ref=e13706ec17f6c99566aa8d8820914bf827328a85
+          --jq '.content' | base64 -d | grep -c 'ERROR_VERIFY_NONZERO_EXIT = "error_verify_nonzero_exit"'
+  - id: dod-kill-switch-checked-first-unconditionally
+    description: 'ONEX_AUTOCLOSE_DISABLED must be checked first, unconditionally, before any GitHub/Linear
+      I/O -- the ticket''s explicit kill-switch requirement. Asserted by reading back the exact env-var
+      name the handler gates on from the pinned contract head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=e13706ec17f6c99566aa8d8820914bf827328a85
+          --jq '.content' | base64 -d | grep -c '_KILL_SWITCH_ENV_VAR = "ONEX_AUTOCLOSE_DISABLED"'
+  - id: dod-close-if-done-label-stays-manual
+    description: 'A ticket carrying the close-if-done label must stay on the manual decision-only path
+      -- the ticket''s explicit skip requirement. Asserted by reading back the real decision enum value
+      the handler emits for this case (SKIPPED_LABEL) from the pinned contract head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/models/enum_evidence_autoclose_decision.py?ref=e13706ec17f6c99566aa8d8820914bf827328a85
+          --jq '.content' | base64 -d | grep -c 'SKIPPED_LABEL = "skipped_label"'
+  - id: dod-skill-dispatch-registered
+    description: 'The sweep is dispatchable via `onex skill evidence_autoclose_sweep`, the single-command
+      surface the scheduled workflow and any future caller use. Asserted by reading back the real skill_mapping.yaml
+      registration entry from the pinned contract head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/skill_mapping.yaml?ref=e13706ec17f6c99566aa8d8820914bf827328a85 --jq '.content' | base64 -d | grep -c 'skill_name: evidence_autoclose_sweep'
+  - id: dod-scheduled-workflow-dry-run-cadence
+    description: 'A scheduled workflow runs the sweep in DRY-RUN on a recurring cadence -- the ticket''s
+      explicit "add a scheduled workflow running the sweep in DRY-RUN" requirement. Asserted by reading
+      back the real cron schedule from the workflow file GitHub actually serves at the pinned merge head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/evidence-autoclose-sweep.yml?ref=e13706ec17f6c99566aa8d8820914bf827328a85 --jq '.content' | base64 -d | grep -c "cron: '\*/30 \* \* \* \*'"
+  - id: dod-unit-tests-cover-flip-and-gap-paths
+    description: 'Both terminal decision paths (flip Done, post gap comment) are exercised by real unit
+      tests with fake gh/dod_verify/Linear responses -- the ticket''s explicit test requirement. Asserted
+      by reading back the real test class names from the pinned contract head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_handler_evidence_autoclose_sweep.py?ref=e13706ec17f6c99566aa8d8820914bf827328a85 --jq '.content' | base64 -d | grep -c 'class TestFlipPath:\|class TestGapPath:'
+  - id: dod-deploy-assessment
+    description: 'Falsifiable deploy probe (OMN-14443). The deployed surface this ticket changes is the
+      onex.nodes entry-point catalog: the sweep is only real in an installed omnibase_infra build if that
+      build''s entry-point table actually registers node_evidence_autoclose_sweep_effect, and a build
+      that shipped the node package but never registered the entry point would import cleanly, pass every
+      unit test, and still leave `onex skill evidence_autoclose_sweep` unresolvable at dispatch time --
+      the failure this probe exists to catch. This reads pyproject.toml back from GitHub at the pinned
+      omnibase_infra head via gh api and asserts the registration line inside the onex.nodes entry-point
+      table, so it goes RED the moment the wiring is dropped or renamed; it reads a surface outside this
+      repo and never a receipt or contract this PR authors.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=e13706ec17f6c99566aa8d8820914bf827328a85 --jq '.content' | base64 -d | awk '/^\[project\.entry-points\."onex\.nodes"\]$/{f=1;next} /^\[/{f=0} f' | grep -c '^node_evidence_autoclose_sweep_effect = "omnibase_infra\.nodes\.node_evidence_autoclose_sweep_effect"$'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
