@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16130"
+title: "occ main maintenance: backport security-scan concurrency guard + register missing migration-inventory
+  entries"
+summary: >
+  `.github/workflows/security-scan.yml` on main triggers on both `push: [main, hotfix/**]` and `pull_request:
+  [main, dev, hotfix/**]`, so a hotfix/* PR double-fires two concurrent runs against the same (head_sha,
+  /language:python) SARIF category; the pull_request twin's upload is rejected with "We received a malformed
+  request from your client" (deterministic, 2/2 identical failures observed on occ#6599 and occ#6580,
+  the latter with no push twin at all -- ruling out any race between the two runs and confirming the fix
+  is still correct hygiene regardless). Dev's copy already carries the fix main lacks: a `concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}; cancel-in-progress:
+  true` block, landed via #6190. Backported that block verbatim; left dev's other deltas (checkout@v7,
+  zone-filter wedge-safety) out of scope per operator direction (minimal diff). Separately, main's migration_inventory.yaml
+  was missing two omninode_infra entries that exist on omninode_infra's live dev branch -- 20260815_gateway_sessions_terminal_states.sql
+  and 20260816_tenant_event_outbox.sql -- causing UNLISTED_FILE failures on every main-target PR regardless
+  of that PR's own diff. Verified via a full live diff of every locally-cloneable migration set in the
+  inventory (omnibase_infra x2, omniintelligence, omnimemory, omninode_infra, omniclaude, omniweb) against
+  each peer's origin/dev tree: these two entries were the only gap found anywhere in the inventory. omnidash-archived
+  could not be checked the same way (repo has no `dev` branch -- the checker treats a missing repo root
+  as a WARNING, degraded validation, not a blocking ERROR, identically on main and dev, so this is not
+  new drift). Added both entries verbatim, matching the content already present on onex_change_control's
+  dev branch for the first entry and matching occ#6580's (open, unmerged) content for the second -- the
+  migration file itself already exists and is applied on omninode_infra's dev branch either way.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "security-scan.yml carries the concurrency block, and migration_inventory.yaml lists
+      both missing omninode_infra entries with correct tables."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-security-scan-concurrency-and-inventory-fix"
+    description: >-
+      Falsifiable static assertion over both changed source files. Positive anchor asserts (1) security-scan.yml
+      contains the concurrency group's `cancel-in-progress: true` line, and (2) migration_inventory.yaml
+      lists both `20260815_gateway_sessions_terminal_states.sql` and `20260816_tenant_event_outbox.sql`
+      with the correct `tables:` lines, written fail-closed per the OMN-15391 Rule D sanctioned form:
+      each file is read once into a variable and all greps run against that captured body, so a failed
+      read cannot pass as a false positive. It goes RED if any of the four assertions fails. The complementary
+      red->green proof was run locally: exits 1 against the pre-fix worktree state (concurrency block
+      absent, both inventory entries absent) and exits 0 against the fixed state.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          scan_body="$(cat .github/workflows/security-scan.yml)" && printf '%s' "$scan_body" | grep -qF
+          'cancel-in-progress: true' && inv_body="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)"
+          && printf '%s' "$inv_body" | grep -A1 -F '20260815_gateway_sessions_terminal_states.sql' | grep
+          -qF 'tables: [gateway_session_events, gateway_sessions, migrations_log]' && printf '%s' "$inv_body"
+          | grep -A1 -F '20260816_tenant_event_outbox.sql' | grep -qF 'tables: [tenant_event_outbox]'
