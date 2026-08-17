@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-10318"
+evidence_item_id: "dod-deploy-assessment-live-probe"
+check_type: "command"
+check_value: |-
+  Check 1: kubectl -n onex-dev get job seed-keycloak-clients -o jsonpath='{.status.succeeded}/{.status.failed}' 2>&1
+  Check 2: kubectl -n onex-dev get infisicalsecret keycloak-smtp-infisical-secret -o jsonpath='{.status.conditions[?(@.type=="secrets.infisical.com/ReadyToSyncSecrets")].status}' 2>&1
+contract_entry_sha256: "sha256:a0412192e4dfd654d75eed8f564438d229ed2415a5f3497cdbfd6e2b19323f11"
+status: PASS
+run_timestamp: "2026-08-17T06:51:25Z"
+commit_sha: "24c40a8c32623d2349bde1a3f42ec9ca9ffde24f"
+runner: "occ-6118-close-kubectl-live-probe"
+verifier: "occ-6118-close-adversarial-readback"
+probe_command: |-
+  export KUBECONFIG=<fetched via aws ssm get-parameter --name /omninode/k3s/dev/kubeconfig --with-decryption>
+  aws ssm start-session --region us-east-1 --target i-06169517a92b45f86 --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}'
+  # Check 1
+  kubectl -n onex-dev get job seed-keycloak-clients -o jsonpath='{.status.succeeded}/{.status.failed}' 2>&1
+  # Check 2 (corrected CR name + full API-group-qualified condition type)
+  kubectl -n onex-dev get infisicalsecret keycloak-smtp-infisical-secret -o jsonpath='{.status.conditions[?(@.type=="secrets.infisical.com/ReadyToSyncSecrets")].status}' 2>&1
+probe_stdout: |
+  Check 1 output:
+  1/
+  (job get -o wide: NAME=seed-keycloak-clients STATUS=Complete COMPLETIONS=1/1 DURATION=8s, image=...omninode-runtime@sha256:a1d222a37334e6214ea3235967500156aa956d80fca52808efc27920b2b1481c, startTime=2026-08-17T04:37:34Z, completionTime=2026-08-17T04:37:42Z)
+
+  Check 2 output:
+  True
+  (full condition list confirmed via -o json: type=secrets.infisical.com/LoadedInfisicalToken status=True; type=secrets.infisical.com/ReadyToSyncSecrets status=True lastTransitionTime=2026-08-06T18:31:00Z; type=secrets.infisical.com/AutoRedeployReady status=True)
+actual_output: >-
+  PASS: both live probes against onex-dev succeed. Check 1 — seed-keycloak-clients Job is Complete, 1
+  succeeded / 0 failed, ran against image digest sha256:a1d222a37334e6214ea3235967500156aa956d80fca52808efc27920b2b1481c,
+  the exact digest pinned by omninode_infra#912 (2026-08-16) after omnibase_infra#2739 (merged 2026-08-15)
+  added the Dockerfile COPY for seed-keycloak-clients.py. Check 2 — fixed two live-verified defects in
+  the contract's original check_value (wrong resource name: keycloak-smtp-credentials is the K8s Secret,
+  not the InfisicalSecret CR keycloak-smtp-infisical-secret; wrong condition type: this operator emits
+  API-group-qualified condition types such as secrets.infisical.com/ReadyToSyncSecrets, never a bare "Ready"
+  or bare "ReadyToSyncSecrets") — the corrected command returns status=True live. Both probes run this
+  session via AWS SSM port-forward to i-06169517a92b45f86 (target omninode-k3s-dev-system); tunnel opened,
+  used, and killed cleanly afterward (verified no residual session-manager-plugin/aws ssm processes on
+  port 6443).
+exit_code: 0
+pr_number: 6118
+branch: "jonah/occ10318-falsifiability-fix"

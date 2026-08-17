@@ -92,21 +92,27 @@ dod_evidence:
       Falsifiability fix (OMN-14443) for dod-deploy-assessment: the superseded item's check was `gh pr
       diff ... | grep -ciE ...`, a PR-metadata grep with no live-surface probe in command position. OMN-10318's
       actual deploy target is the digest-pinned onex-dev `seed-keycloak-clients` Job (omninode_infra k8s/onex-dev/jobs/)
-      and the `keycloak-smtp-credentials` InfisicalSecret it depends on — this item reads them back live
-      via kubectl. As of this contract update the Job has not been applied yet: PR #2661's body (2026-08-05
-      adversarial-verify note) documents the required order — merge #2661, CI rebuilds+pushes a fresh
-      omninode-runtime digest, omninode_infra bumps the pinned digest, only then is the Job applied. So
-      this probe is expected to report NotFound/pending today; it becomes a genuine pass/fail readback
-      once the Job is applied. Not fabricated as passing.
+      and the `keycloak-smtp-infisical-secret` InfisicalSecret it depends on — this item reads them back
+      live via kubectl. PR #2661's body (2026-08-05 adversarial-verify note) documented the required order
+      — merge #2661, CI rebuilds+pushes a fresh omninode-runtime digest, omninode_infra bumps the pinned
+      digest, only then is the Job applied. That chain has now completed: omnibase_infra#2739 (merged
+      2026-08-15) added the Dockerfile COPY, omninode_infra#912 (2026-08-16) repinned onex-dev to digest
+      sha256:a1d222a3..., and the Job ran successfully against that exact digest. Check #2's original
+      check_value carried two live-verified defects, found by running it verbatim against the cluster:
+      (1) wrong resource name — `keycloak-smtp-credentials` is the K8s Secret the Job's secretKeyRefs
+      pull from, not the InfisicalSecret custom resource that manages it (the CR is `keycloak-smtp-infisical-secret`);
+      (2) wrong condition type — this InfisicalSecret operator version never emits a bare `Ready` condition;
+      its real conditions carry the full API-group-qualified type string `secrets.infisical.com/{LoadedInfisicalToken,ReadyToSyncSecrets,AutoRedeployReady}`,
+      not a bare `ReadyToSyncSecrets`. Both corrected below and live-verified to return `True`.
     source: "generated"
-    status: "pending"
+    status: "verified"
     evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment"
     checks:
       - check_type: "command"
         check_value: "kubectl -n onex-dev get job seed-keycloak-clients -o jsonpath='{.status.succeeded}/{.status.failed}'
           2>&1"
       - check_type: "command"
-        check_value: "kubectl -n onex-dev get infisicalsecret keycloak-smtp-credentials -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'
+        check_value: "kubectl -n onex-dev get infisicalsecret keycloak-smtp-infisical-secret -o jsonpath='{.status.conditions[?(@.type==\"secrets.infisical.com/ReadyToSyncSecrets\")].status}'
           2>&1"
   - id: "occ-self-bind-pr-6118"
     description: "Binds OMN-10318 to OCC companion PR #6118."
