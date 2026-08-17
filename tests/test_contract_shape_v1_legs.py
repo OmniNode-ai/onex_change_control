@@ -620,21 +620,40 @@ def test_gate_is_wired_at_the_required_path() -> None:
     OCC dev's required contexts are ["CI Summary",
     "required-check-skip-guard / check-skip-vectors", "verify / verify",
     "occ-preflight / eligibility"] (live readback 2026-08-02), so a job is
-    enforced only if ci-summary BOTH needs it and strict-checks its result.
-    A rule is not a mechanism: this asserts the mechanism.
+    enforced only if CI Summary strict-checks its result.
+
+    OMN-16007 replaced the needs-gated aggregator this anchor originally
+    asserted (`needs: [zone-filter, pre-commit, ...]` plus a per-job
+    `needs.contract-shape-v1.result != 'success'` clause) with a no-needs
+    poller. The enforcement path moved, it did not weaken: STRICT_GATE_JOBS
+    membership requires this job present + completed + `success`, so a
+    `skipped`/`cancelled` job fails closed instead of being tolerated. A rule
+    is not a mechanism: this asserts the mechanism in its CURRENT form.
     """
+    from scripts.ci.ci_summary_gate import (
+        SKIPPABLE_GATE_JOBS,
+        SOFT_ALLOWLIST,
+        STRICT_GATE_JOBS,
+    )
+
+    gate_job_name = "Contract Shape v1 (OMN-15669)"
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "\n  contract-shape-v1:\n" in ci, "job missing from ci.yml"
     assert "check-contract-shape-v1" in ci, "gate CLI is never invoked"
-    needs_line = next(
-        line
-        for line in ci.splitlines()
-        if line.strip().startswith("needs: [zone-filter, pre-commit")
+    assert f"name: {gate_job_name}\n" in ci, (
+        f"ci.yml job name no longer matches {gate_job_name!r} — the CI Summary "
+        "poller matches jobs BY NAME, so a rename silently orphans the gate"
     )
-    assert "contract-shape-v1" in needs_line, "ci-summary does not need the gate"
-    assert 'needs.contract-shape-v1.result }}" != "success"' in ci, (
-        "ci-summary has no strict success-only check for the gate — a SKIPPED "
-        "job would pass the generic rollup and the gate would enforce nothing"
+    assert gate_job_name in STRICT_GATE_JOBS, (
+        f"{gate_job_name!r} is absent from CI Summary's STRICT tier — the gate "
+        "would enforce nothing at the required path"
+    )
+    assert gate_job_name not in SKIPPABLE_GATE_JOBS, (
+        "SKIPPABLE tolerates `skipped` unconditionally — that would let a "
+        "cascaded skip pass the gate"
+    )
+    assert gate_job_name not in SOFT_ALLOWLIST, (
+        "SOFT_ALLOWLIST exempts a job from the default-deny sweep entirely"
     )
 
 
