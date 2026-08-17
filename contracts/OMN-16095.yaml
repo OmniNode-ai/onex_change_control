@@ -1,0 +1,102 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16095"
+title: "OCC CI Summary poller — fully paginate check-runs/jobs reads, bounded retry on transient API failures"
+summary: "Fixes two proven poller defects. (1) The check-runs/jobs reads feeding the CI Summary poll loop
+  used `gh api ... --paginate` piped straight to a file; for these OBJECT-rooted endpoints (`{\"total_count\":N,\"check_runs\":[...]}`),
+  `--paginate` alone prints each page as a SEPARATE JSON document instead of merging them (`gh help api`).
+  On a head crossing the 100-per-page boundary (105 observed on OCC PR #6552) the file held two concatenated
+  JSON objects; `json.loads()` raised, and `_load_check_runs()` silently returned `None`, which `evaluate_external_contexts()`
+  reads as \"no context observed\" — the poll never resolves and hangs to its 90-minute deadline. Fixed
+  by combining `--slurp` with a `jq` merge (`map(.check_runs) | add` / `map(.jobs) | add`) that collapses
+  every page into one valid document before ci_summary_gate.py ever sees it; `latest_check_run_by_name()`'s
+  existing per-name \"latest wins\" collapse is untouched — fetch-only fix. (2) A bare `gh api ...` under
+  `set -e` treated one transient failure (observed: \"unexpected EOF\") as fatal, killing the job with
+  every real gate green or still legitimately running. Both fetch call sites now go through a bounded
+  retry (3 attempts, exponential backoff); only once retries are exhausted does the poll fall back to
+  an empty-but-validly-shaped payload, which the gate evaluates as PENDING — a persistent outage still
+  fails closed at the poll loop's deadline, it just never crashes the script on a single blip. Self-authored
+  by the implementer for this ticket's OWN carrier PR (self-bind pattern, per the OMN-16007 precedent
+  this contract follows) — a self-contained, gate-mechanical change confined to .github/workflows/ci.yml's
+  CI Summary poll step and its regression suite."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16095-ci-summary-gate-suite-pass"
+    description: "The full behavioral suite for ci_summary_gate.py (unchanged by this ticket) plus the
+      new OMN-16095 regression tests all pass in one run. Falsifiable: reverting either the ci.yml poll
+      step or the new tests while keeping the other fails this exact command."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py -q"
+  - id: "dod-omn16095-pagination-merge-no-truncation"
+    description: "Direct proof of the truncation fix (AC 2): extracts the real `fetch_paginated` bash
+      function straight out of the live ci.yml (brace-matched, not a hand-copied string) and executes
+      it against a stub `gh` emitting a mocked 105-entry, 2-page check-runs response, proving all 105
+      come through with no truncation at the 100-per-page boundary, then bridges the merged file through
+      the real `_load_check_runs()` / `latest_check_run_by_name()`. Falsifiable: reverting the `--slurp`
+      + jq merge in ci.yml back to bare `--paginate` fails this exact command (the merged file becomes
+      invalid multi-document JSON and `_load_check_runs()` returns `None` instead of 105 rows)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_fetch_paginated_retrieves_all_105_check_runs_no_truncation
+          -q"
+  - id: "dod-omn16095-retry-transient-failure"
+    description: "Direct proof of the retry fix (defect 2): a transient `gh api` failure (\"unexpected
+      EOF\") that resolves within 3 attempts still succeeds, consuming exactly 2 retries + 1 success —
+      never killing the job on a single blip. Falsifiable: reverting `fetch_paginated`'s retry loop back
+      to a bare `gh api` call fails this exact command (the first simulated EOF exits the driver instead
+      of retrying)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_fetch_paginated_retries_transient_failure_then_succeeds
+          -q"
+  - id: "dod-omn16095-retry-exhaustion-fails-closed"
+    description: "Direct proof that fail-closed semantics (AC 6) are preserved: when `gh api` fails on
+      every attempt, `fetch_paginated` does not crash the poll script — it falls through to the fallback
+      payload, which the real `_load_check_runs()` + `evaluate_external_contexts()` then read as every
+      external context unresolved (PENDING), never a spurious SUCCESS and never an exception. Falsifiable:
+      removing the `|| true` guard at either fetch_paginated call site fails this exact command (a persistent
+      outage would then kill the job immediately under `set -euo pipefail` instead of resolving to PENDING
+      and honoring the poll loop's deadline)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_fetch_paginated_retry_exhaustion_fails_closed_not_crashed
+          -q"
+  - id: "dod-omn16095-poll-step-static-pins"
+    description: "Two anti-regression pins parsing the live ci.yml poll step's source text directly: pagination
+      must use `--slurp` plus a jq merge over every page's array (not bare `--paginate`), and both fetch
+      call sites must be bounded-retry and guarded (`|| true`) so retry-exhaustion cannot propagate as
+      an uncaught script exit under `set -euo pipefail`."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_poll_step_paginates_check_runs_and_jobs_with_slurp_merge
+          tests/ci/test_ci_summary_gate.py::test_poll_step_retries_are_bounded_and_guarded -q"
+  - id: "occ-self-bind-pr-6565"
+    description: "Self-bind: OCC PR 6565 is this ticket's own carrier PR, proven by its own file list
+      containing .github/workflows/ci.yml — the workflow this ticket's poll-step fix lives in."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6565 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF '.github/workflows/ci.yml'"
