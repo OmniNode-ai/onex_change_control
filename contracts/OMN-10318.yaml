@@ -103,17 +103,20 @@ dod_evidence:
       pull from, not the InfisicalSecret custom resource that manages it (the CR is `keycloak-smtp-infisical-secret`);
       (2) wrong condition type — this InfisicalSecret operator version never emits a bare `Ready` condition;
       its real conditions carry the full API-group-qualified type string `secrets.infisical.com/{LoadedInfisicalToken,ReadyToSyncSecrets,AutoRedeployReady}`,
-      not a bare `ReadyToSyncSecrets`. Both corrected below and live-verified to return `True`.
+      not a bare `ReadyToSyncSecrets`. Both corrected and live-verified to return `True` this session
+      via AWS SSM port-forward to the onex-dev cluster. Per OMN-14051, a bare `kubectl` invocation is
+      a NON-HERMETIC check_value — CI runners have no route to the cluster, so it can never pass in CI
+      even when the live state is genuinely healthy. The live probes ran out of band and are recorded
+      in the committed receipt (drift/dod_receipts/OMN-10318/dod-deploy-assessment-live-probe/command.yaml,
+      status: PASS, with both checks' literal commands and captured output in probe_command/probe_stdout);
+      the contract check below greps that receipt rather than re-invoking kubectl in CI.
     source: "generated"
     status: "verified"
     evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment"
     checks:
       - check_type: "command"
-        check_value: "kubectl -n onex-dev get job seed-keycloak-clients -o jsonpath='{.status.succeeded}/{.status.failed}'
-          2>&1"
-      - check_type: "command"
-        check_value: "kubectl -n onex-dev get infisicalsecret keycloak-smtp-infisical-secret -o jsonpath='{.status.conditions[?(@.type==\"secrets.infisical.com/ReadyToSyncSecrets\")].status}'
-          2>&1"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10318/dod-deploy-assessment-live-probe/command.yaml"
   - id: "occ-self-bind-pr-6118"
     description: "Binds OMN-10318 to OCC companion PR #6118."
     source: "manual"
