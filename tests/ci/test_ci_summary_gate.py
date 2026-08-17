@@ -25,7 +25,11 @@ tests/ci/test_ci_summary_gate.py) plus OCC-specific pins:
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -41,6 +45,7 @@ from scripts.ci.ci_summary_gate import (
     SKIPPABLE_GATE_JOBS,
     SOFT_ALLOWLIST,
     STRICT_GATE_JOBS,
+    _load_check_runs,
     dedup_latest,
     evaluate,
     evaluate_external_contexts,
@@ -571,3 +576,282 @@ def test_falsification_each_external_context_is_load_bearing(
         f"removing {dropped_context!r} from the asserted set did not flip the "
         "gate to SUCCESS -- it was not actually load-bearing"
     )
+
+
+# ---------------------------------------------------------------------------
+# OMN-16095 -- CI Summary poller hang on a >100-check-run head, and a single
+# transient GitHub API read killing the job instead of retrying.
+#
+# The actual `commits/{sha}/check-runs` and `actions/runs/{id}/jobs` HTTP
+# fetches are NOT in this module -- ci_summary_gate.py only ever sees
+# whatever `--check-runs-file`/`--jobs-file` hand it (this was the whole
+# finding of OMN-16095's filing: source review of this file alone could
+# neither confirm nor rule out unpaginated fetch, because the fetch isn't
+# here). The real fetch + retry logic lives in ci.yml's "Poll job list +
+# PR-head check-runs until a terminal verdict" step, as the
+# `fetch_paginated` bash function. These tests extract that function
+# straight out of the live workflow file (brace-matched, not a hand-copied
+# string) and execute it against a stub `gh`, so a future edit to the real
+# step is what these tests exercise -- not a frozen copy that can silently
+# drift from the source of truth.
+# ---------------------------------------------------------------------------
+
+CI_SUMMARY_JOB_NAME = "ci-summary"
+CI_SUMMARY_POLL_STEP_NAME = (
+    "Poll job list + PR-head check-runs until a terminal verdict"
+)
+
+
+def _ci_summary_poll_script() -> str:
+    doc = yaml.safe_load((WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
+    for step in doc["jobs"][CI_SUMMARY_JOB_NAME]["steps"]:
+        if step.get("name") == CI_SUMMARY_POLL_STEP_NAME:
+            run = step["run"]
+            assert isinstance(run, str)
+            return run
+    msg = (
+        f"{CI_SUMMARY_POLL_STEP_NAME!r} step not found in ci.yml's "
+        f"{CI_SUMMARY_JOB_NAME!r} job"
+    )
+    raise AssertionError(msg)
+
+
+def _extract_fetch_paginated_function() -> str:
+    script = _ci_summary_poll_script()
+    start = script.index("fetch_paginated() {")
+    end_match = re.search(r"\n\}\n", script[start:])
+    assert end_match, "fetch_paginated() closing brace not found in ci.yml"
+    return script[start : start + end_match.end()]
+
+
+def _run_fetch_paginated(
+    tmp_path: Path,
+    gh_stub_script: str,
+    *,
+    merge_expr: str = "{check_runs: (map(.check_runs) | add)}",
+    fallback: str = '{"check_runs": []}',
+    url: str = "repos/x/y/commits/abc/check-runs?per_page=100",
+) -> tuple[int, Path, str]:
+    """Run the real `fetch_paginated` bash function (extracted from ci.yml)
+    against a stub `gh` on PATH, exactly the way the poll loop calls it.
+
+    Returns ``(fetch_exit_code, out_file, stdout+stderr)``.
+    """
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh_path = bin_dir / "gh"
+    gh_path.write_text(gh_stub_script, encoding="utf-8")
+    gh_path.chmod(0o755)
+
+    out_file = tmp_path / "out.json"
+    driver = textwrap.dedent(f"""\
+        set -euo pipefail
+        {_extract_fetch_paginated_function()}
+        sleep() {{ :; }}  # skip real backoff delay in tests
+        set +e
+        fetch_paginated "{url}" '{merge_expr}' "{out_file}" '{fallback}'
+        code=$?
+        set -e
+        echo "FETCH_EXIT=$code"
+        """)
+
+    bash = shutil.which("bash")
+    assert bash is not None, "bash not found on PATH"
+    real_path = shutil.which("jq")
+    assert real_path is not None, "jq not found on PATH (required by fetch_paginated)"
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin:{Path(real_path).parent}",
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        [bash, "-c", driver],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=30,
+        check=False,
+    )
+    combined = proc.stdout + proc.stderr
+    match = re.search(r"FETCH_EXIT=(\d+)", combined)
+    assert match, f"driver did not report FETCH_EXIT; output:\n{combined}"
+    return int(match.group(1)), out_file, combined
+
+
+def test_poll_step_paginates_check_runs_and_jobs_with_slurp_merge() -> None:
+    """Anti-regression pin for the truncation defect: `gh api --paginate`
+    alone, piped straight to a file, prints one JSON document PER PAGE for
+    these OBJECT-rooted endpoints -- concatenating them past 100 entries is
+    invalid JSON that `_load_check_runs` silently swallows as `None`. The
+    fix must combine `--slurp` with a jq merge over every page's array."""
+
+    script = _ci_summary_poll_script()
+    assert "--paginate --slurp" in script, (
+        "poll step must call `gh api --paginate --slurp` (bare --paginate "
+        "on an object-rooted endpoint does not merge pages)"
+    )
+    assert "map(.check_runs) | add" in script, (
+        "poll step must merge every page's check_runs array before it "
+        "reaches ci_summary_gate.py"
+    )
+    assert "map(.jobs) | add" in script, (
+        "poll step must merge every page's jobs array before it reaches "
+        "ci_summary_gate.py"
+    )
+
+
+def test_poll_step_retries_are_bounded_and_guarded() -> None:
+    """Anti-regression pin for the transient-EOF defect: both fetch call
+    sites must be retried (not a bare `gh api` under `set -e`) and must not
+    propagate a retry-exhausted failure as an uncaught script exit."""
+
+    script = _ci_summary_poll_script()
+    assert "max_attempts=3" in script, "retry must be bounded at 3 attempts"
+
+    # Each `fetch_paginated \` CALL SITE (not the `fetch_paginated() {`
+    # function definition) is its own multi-line statement ending in
+    # `|| true`. Isolate each block so the "must be guarded" check pins the
+    # actual call, not just any `|| true` occurring anywhere in the script.
+    call_blocks = re.findall(r"fetch_paginated \\\n(?:.*\n)*?.*\|\| true", script)
+    assert len(call_blocks) == 2, (
+        f"expected exactly 2 guarded fetch_paginated call sites (jobs + "
+        f"check-runs), found {len(call_blocks)}:\n{script}"
+    )
+    assert any("jobs?per_page" in b for b in call_blocks), (
+        "the jobs-list fetch call site must be guarded (`|| true`) so "
+        "retry-exhaustion falls through to the fallback file instead of "
+        "killing the job under `set -euo pipefail`"
+    )
+    assert any("check-runs?per_page" in b for b in call_blocks), (
+        "the check-runs fetch call site must be guarded (`|| true`) for the same reason"
+    )
+
+
+def test_fetch_paginated_retrieves_all_105_check_runs_no_truncation(
+    tmp_path: Path,
+) -> None:
+    """Direct proof of OMN-16095 AC 2: feed the real fetch path a mocked
+    105-entry (2-page) check-runs response and prove all 105 come through,
+    with no truncation at the 100-per-page boundary."""
+
+    gh_stub = textwrap.dedent("""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+        python3 - <<'PY'
+        import json
+        def page(n, offset):
+            return {
+                "total_count": 105,
+                "check_runs": [
+                    {
+                        "name": f"ctx-{i}",
+                        "id": i,
+                        "started_at": "2026-01-01T00:00:00Z",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                    for i in range(offset, offset + n)
+                ],
+            }
+        print(json.dumps([page(100, 0), page(5, 100)]))
+        PY
+        """)
+    exit_code, out_file, output = _run_fetch_paginated(tmp_path, gh_stub)
+    assert exit_code == 0, f"fetch_paginated should succeed on page 1:\n{output}"
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert len(payload["check_runs"]) == 105, (
+        "pagination truncated the merged check-runs list: "
+        f"got {len(payload['check_runs'])}, expected 105"
+    )
+
+    # Bridge back through the real python loader/evaluator to prove the
+    # merged file is usable end-to-end, not just structurally 105-long.
+    loaded = _load_check_runs(str(out_file))
+    assert loaded is not None
+    assert len(loaded) == 105
+    expected = tuple(f"ctx-{i}" for i in (0, 50, 99, 100, 104))
+    latest = latest_check_run_by_name(loaded)
+    for name in expected:
+        assert latest[name].status == "completed"
+        assert latest[name].conclusion == "success"
+
+
+def test_fetch_paginated_retries_transient_failure_then_succeeds(
+    tmp_path: Path,
+) -> None:
+    """Direct proof of OMN-16095 defect 2's fix: a transient `gh api`
+    failure (e.g. "unexpected EOF") must consume a retry, not kill the
+    job -- the 3rd attempt succeeding must still produce a good result."""
+
+    counter_file = tmp_path / "gh_call_count"
+    gh_stub = textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+        n=0
+        [[ -f "{counter_file}" ]] && n=$(cat "{counter_file}")
+        n=$((n + 1))
+        echo "$n" > "{counter_file}"
+        if [[ "$n" -lt 3 ]]; then
+          echo "gh: Get https://api.github.com/...: unexpected EOF" >&2
+          exit 1
+        fi
+        python3 - <<'PY'
+        import json
+        run = {{
+            "name": "ctx-ok",
+            "id": 1,
+            "started_at": "2026-01-01T00:00:00Z",
+            "status": "completed",
+            "conclusion": "success",
+        }}
+        print(json.dumps([{{"total_count": 1, "check_runs": [run]}}]))
+        PY
+        """)
+    exit_code, out_file, output = _run_fetch_paginated(tmp_path, gh_stub)
+    assert exit_code == 0, (
+        f"a failure that resolves within max_attempts must still succeed:\n{output}"
+    )
+    assert counter_file.read_text(encoding="utf-8").strip() == "3", (
+        f"expected exactly 3 gh invocations (2 failures + 1 success), got: {output}"
+    )
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert payload["check_runs"][0]["name"] == "ctx-ok"
+
+
+def test_fetch_paginated_retry_exhaustion_fails_closed_not_crashed(
+    tmp_path: Path,
+) -> None:
+    """Direct proof of AC 6 (fail-closed preserved): when `gh api` fails on
+    every attempt, `fetch_paginated` must NOT crash the poll script -- it
+    must fall through to the fallback payload, which the real
+    ci_summary_gate.py loader/evaluator must then read as PENDING (every
+    context unresolved), never a spurious SUCCESS and never an exception."""
+
+    gh_stub = textwrap.dedent("""\
+        #!/usr/bin/env bash
+        echo "gh: Get https://api.github.com/...: unexpected EOF" >&2
+        exit 1
+        """)
+    exit_code, out_file, output = _run_fetch_paginated(tmp_path, gh_stub)
+    assert exit_code == 1, (
+        f"retry-exhaustion must report failure to the caller:\n{output}"
+    )
+    assert out_file.exists(), (
+        "retry-exhaustion must still write the fallback payload file"
+    )
+    assert "attempt 1/3" in output
+    assert "attempt 2/3" in output
+    assert "attempt 3/3" in output
+    assert "retry-exhausted" in output
+
+    # Bridge into the real python gate: the fallback file must resolve to
+    # "every external context unresolved" (PENDING), matching the documented
+    # None-equivalent contract -- never a crash, never green.
+    loaded = _load_check_runs(str(out_file))
+    assert loaded == []
+    failures, unresolved = evaluate_external_contexts(
+        loaded, EXPECTED_EXTERNAL_CONTEXTS
+    )
+    assert failures == []
+    assert sorted(unresolved) == sorted(EXPECTED_EXTERNAL_CONTEXTS)
