@@ -94,3 +94,23 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6560 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-promotion-omnibase-infra-pr-2745"
+    description: >
+      Content-pinned probe for OmniNode-ai/omnibase_infra PR #2745, the dev-side half of the same OMN-16041
+      promotion (main-side landed as #2744, already covered by dod-promotion-omnibase-infra-pr-2744 above).
+      #2745 backmerges dev's current tip into the main-lineage promotion branch and resolves the resulting
+      conflicts; its own PR body carries a per-file decision table. Independently verified two of its
+      load-bearing claims before authoring this probe: (1) scripts/validate_handler_contracts.py took
+      main's glob-based version (contracts_root.glob over the live handler_contract.yaml descriptor location),
+      not dev's hardcoded seven-handler list against a directory that no longer exists in either branch
+      -- re-ran the validator against the merged tree myself, 5/5 validated, 0 failed, matching the PR's
+      claim exactly; (2) the pyproject.toml/uv.lock version-pin conflict resolved to dev's 0.38.7 (above
+      main's already-released 0.38.6), not main's stale 0.38.5. Also spot-checked three of the "no textual
+      conflict, byte-identical to origin/main" claims (validate_handler_contracts.py, env-parity.yml,
+      util_runtime_packages.py) via a direct git diff against origin/main -- zero diff on all three, confirming
+      the claim. The probe below pins both facts at the PR's exact head SHA via the GitHub contents API.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          HEADSHA=50dc2fccf1fcfad39a57295dacfc8ff42f241ac4; D=$(mktemp -d); gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/validate_handler_contracts.py?ref=${HEADSHA}" --jq .content | base64 -d > "${D}/validate_handler_contracts.py" || exit 1; gh api "repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=${HEADSHA}" --jq .content | base64 -d > "${D}/pyproject.toml" || exit 1; grep -q 'contracts_root.glob' "${D}/validate_handler_contracts.py" && grep -q 'version = "0.38.7"' "${D}/pyproject.toml" && echo "OMN-16041-BACKMERGE-PR-2745-PROBE-PASS: validate_handler_contracts.py uses the glob-based descriptor scan (main's version) and pyproject.toml resolves the version-pin conflict to dev's 0.38.7, both confirmed at head ${HEADSHA}"
