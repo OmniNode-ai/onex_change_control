@@ -485,28 +485,21 @@ def test_wiring_anchor_passes_on_the_live_workflow() -> None:
 
 @pytest.mark.parametrize(
     "mutation",
-    ["drop_job", "drop_needs", "drop_strict_check", "add_if", "drop_corpus_step"],
+    ["drop_job", "declares_needs", "add_if", "drop_corpus_step"],
 )
 def test_wiring_anchor_fires_on_each_removal_vector(
     tmp_path: Path, mutation: str
 ) -> None:
+    """OMN-15768: ``declares_needs`` replaces the retired ``drop_needs``
+    vector -- ci-summary must carry NO ``needs:`` now (a no-needs poller), so
+    ADDING one is the regression, not removing one."""
     data = yaml.safe_load(_CI_YAML.read_text())
     jobs = data["jobs"]
     job_id = "supersession-binding-ratchet"
     if mutation == "drop_job":
         del jobs[job_id]
-    elif mutation == "drop_needs":
-        jobs["ci-summary"]["needs"] = [
-            n for n in jobs["ci-summary"]["needs"] if n != job_id
-        ]
-    elif mutation == "drop_strict_check":
-        for step in jobs["ci-summary"]["steps"]:
-            if "run" in step:
-                step["run"] = "\n".join(
-                    line
-                    for line in str(step["run"]).splitlines()
-                    if f"needs.{job_id}.result" not in line
-                )
+    elif mutation == "declares_needs":
+        jobs["ci-summary"]["needs"] = [job_id]
     elif mutation == "add_if":
         jobs[job_id]["if"] = "github.event_name == 'push'"
     elif mutation == "drop_corpus_step":
@@ -518,3 +511,21 @@ def test_wiring_anchor_fires_on_each_removal_vector(
     mutated = tmp_path / "ci.yml"
     mutated.write_text(yaml.safe_dump(data, sort_keys=False))
     assert gate.check_supersession_wiring(mutated) != []
+
+
+def test_wiring_anchor_fires_when_job_not_registered_in_strict_gate_jobs(
+    tmp_path: Path,
+) -> None:
+    """Replaces the retired ``drop_strict_check`` vector: the strict check is
+    no longer a grep-able bash line in ci.yml -- it is registration in
+    scripts/ci/ci_summary_gate.py's STRICT_GATE_JOBS."""
+    gate_module = _REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py"
+    gate_source = gate_module.read_text(encoding="utf-8")
+    mutated_gate = gate_source.replace(
+        '"Supersession Binding Ratchet (OMN-15459)",\n', ""
+    )
+    assert mutated_gate != gate_source, "the registration line was not found to strip"
+    gate_path = tmp_path / "ci_summary_gate.py"
+    gate_path.write_text(mutated_gate, encoding="utf-8")
+    failures = gate.check_supersession_wiring(_CI_YAML, gate_module_path=gate_path)
+    assert any("STRICT_GATE_JOBS" in f for f in failures), failures

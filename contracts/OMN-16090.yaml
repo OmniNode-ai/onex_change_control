@@ -1,0 +1,143 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16090"
+title: "OCC evidence for OMN-16090 — hook-event-capture gateway contract (FENCED)"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #914. Adds the hook-event-capture workflow type to the
+  gateway catalog (landing FENCED) and the array-aware payload validation it depends on, so 1931 hook/skill
+  events stranded in a local emit spool have a contract-governed path to the cloud that adds no new API
+  route and never lets a caller name a topic.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  # A new public workflow_type on POST /v1/workflows (public_api), bound to a new
+  # onex.cmd.* command topic constant (topics), with a new wire payload
+  # passthrough spec on the canonical command envelope (envelopes).
+  - "public_api"
+  - "topics"
+  - "envelopes"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #914 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-914"
+    description: >
+      PR #914 on OmniNode-ai/omninode_infra — the gateway leg of the hook-event-capture path.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 914 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 914 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "dod-catalog-entry-is-declared-and-fenced"
+    description: >
+      The catalog declares hook-event-capture with enabled:false. Fenced is the asserted state, not an
+      accident: the consuming node is not in the deployed runtime image, and the loader refuses a catalog
+      whose entries are ALL fenced, so this proves the entry is present AND non-servable.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/workflow-contracts.yaml?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -A1 'workflow_type: \"hook-event-capture\"' | grep -c 'enabled:
+          false'"
+  - id: "dod-array-items-and-bounds-are-enforced"
+    description: >
+      The payload validator recurses `items` and enforces minItems/maxItems. Before this change `type:
+      array` was a bare isinstance(list) check, which made a per-element additionalProperties:false a
+      fiction and made the batch unbounded at ingress. RED-before on this branch was 20 failed / 5 passed;
+      GREEN-after 25 passed.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/middleware/contract_validator.py?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -c 'must contain at most'"
+  - id: "dod-catalog-wire-spec-drift-gate"
+    description: >
+      Every declared catalog workflow (fenced included) has a wire passthrough spec whose key order follows
+      catalog property order. This gate FAILED on the first push of #914 and is the reason the second
+      commit exists — it is cited here as a caught defect, not as a formality.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/models/model_workflow_envelope.py?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -c 'hook-event-capture'"
+  - id: "dod-real-corpus-validates-vs-contract"
+    description: >
+      All 1931 real spooled events on the operator machine frame and validate against the shipped contract
+      via the gateway's own validator, in 8 contract-sized batches, with 0 errors, 0 unframeable files
+      and 1931 distinct event_sha values. This is the evidence that the schema fits the actual corpus
+      rather than a hand-written sample. The corpus itself lives only on the operator machine, so the
+      remotely-verifiable half is the regression pin that fixes those four families into the test suite.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tests/test_omn_16090_hook_event_capture.py?ref=b375f606d3141e4c13605d4d8c662c8c1b259b8e
+          --jq .content | base64 -d | grep -c 'test_all_four_measured_event_families_are_accepted'"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-914"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2082"
+    description: >
+      PR #2082 on OmniNode-ai/omnimarket — the CONSUMER leg: node_hook_event_capture persists each submitted
+      batch into hook_events, idempotent on (tenant_id, event_sha).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2082 --repo OmniNode-ai/omnimarket --json number,state"
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_hook_event_capture/migrations/0001_create_hook_events.sql?ref=8043d3d9f3de945c30e612a696be0db5e98f6d09
+          --jq .content | base64 -d | grep -c 'UNIQUE (tenant_id, event_sha)'"
+  - id: "dod-consumer-idempotency-is-proven"
+    description: >
+      Redelivering an identical batch leaves the row count unchanged, proven against a double that implements
+      the real ON CONFLICT (tenant_id, event_sha) DO NOTHING conflict target rather than a mock that returns
+      a canned count.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/tests/test_omn_16090_hook_event_capture.py?ref=8043d3d9f3de945c30e612a696be0db5e98f6d09
+          --jq .content | base64 -d | grep -c 'test_redelivering_the_same_batch_changes_nothing'"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2760"
+    description: >
+      PR #2760 on OmniNode-ai/omnibase_infra — vendors both node migrations into the forward-migration
+      tree so the runner can see them, and FENCES the RLS half on arrival.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2760 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-rls-migration-is-fenced-on-arrival"
+    description: >
+      The FORCE-RLS half is in the operator fence manifest at the vendor PR head. The forward runner refuses
+      any new unfenced FORCE-RLS node migration, so an unfenced landing would mean the table never applies
+      on any lane. Fenced on arrival, unlike the delegation_inference_response entry whose own rationale
+      records it applying unattended because nothing named it.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/fenced-node-migrations.yaml?ref=72b1fa89ae780c59e6d54c8d25ec24147f81cb72
+          --jq .content | base64 -d | grep -c 'node:node_hook_event_capture:0002_hook_events_tenant_rls.sql'"
+  - id: "dod-create-migration-applies-unfenced"
+    description: >
+      The CREATE half carries no FORCE/ENABLE RLS at the omnimarket head, so it applies on every lane
+      without a fence entry. A FORCE statement anywhere in the create file would make the whole create
+      refusable and the table would never land.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "body=\"$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_hook_event_capture/migrations/0001_create_hook_events.sql?ref=8043d3d9f3de945c30e612a696be0db5e98f6d09
+          --jq .content | base64 -d)\" && ! printf '%s' \"$body\" | grep -qF 'FORCE ROW LEVEL SECURITY'"
+  - id: "occ-self-bind-pr-6549"
+    description: "Binds OMN-16090 to OCC companion PR #6549 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6549 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
