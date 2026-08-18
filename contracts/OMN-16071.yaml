@@ -30,6 +30,42 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr diff 2081 --repo OmniNode-ai/omnimarket --name-only | grep -ciE 'nodes/|handlers/|runtime/|services/|docker|monitor_logs|deploy'"
+  - id: "dod-deploy-assessment-falsifiable"
+    description: >-
+      Falsifiable replacement for dod-deploy-assessment, APPENDED under OCC append-only doctrine rather
+      than edited in place: a merged dod_evidence entry is immutable and its receipt pins the entry hash,
+      so an in-place rewrite is rejected by validator_occ_append_only and would invalidate the receipt
+      binding. The superseded item ran gh pr diff 2081 --repo OmniNode-ai/omnimarket --name-only piped
+      into grep -ciE over PR #2081's own changed-path list, matched against a fixed keyword set including
+      the literal substring "deploy" — the PR's diff is immutable once pushed to that exact head, so the
+      check's command-position tokens are just gh + grep, neither of which is a live-surface probe (OMN-14443
+      classify_check_value verdict, reproduced live: commands found ['gh', 'grep'], none in LIVE_PROBE_COMMANDS).
+      It is unfalsifiable by construction — the OMN-14443 class — and a check whose exit status cannot
+      depend on the state of the deployed system proves nothing about deploy scope. Replacement semantics
+      — an immutable-ref CONTENT probe of the deploy-relevant source at PR #2081's current head a5bf9076a9e277e14824b0fe7cf7157b0b7bcaf9,
+      permanently resolvable via GitHub's retained refs/pull/2081/head even after the source branch is
+      deleted post-squash-merge, asserting two symbols the OMN-16071 fix introduces are present: the new
+      OCC_AUTHOR_TIME_LABELS tuple constant in src/omnimarket/events/occ_autoauthor.py (pairing the pre-existing
+      occ:machine-minted marker with the new ci:ready label so a machine-minted OCC companion's CI wave
+      can actually fire), and the runtime handler's import of that constant in handler_occ_companion_effect.py
+      (the exact node_occ_companion_effect handler that IS the runtime surface find_runtime_paths() flagged
+      on this PR). Falsifiability was demonstrated rather than asserted: both probes repointed at PR #2081's
+      base commit ca90f81d9fe6734f00b4fe6a1961ffcb93494e96 exit 1 — neither symbol exists there, since
+      OCC_AUTHOR_TIME_LABELS and the handler's import of it are net-new in this PR. Executor shape — the
+      first shlex token is gh, a resolvable executable on PATH, and the command contains no command substitution
+      at all, so node_dod_verify's pre-execution shlex.split shape guard cannot mis-branch on it (the
+      OMN-15597 caution and the OMN-15535 INVALID_CHECK_VALUE_NOT_A_COMMAND false-RED class). Each leg
+      terminates in a grep -F redirected to /dev/null whose input is fully drained, which avoids both
+      the SIGPIPE exit-141 hazard of grep -q and the grep -c counting idiom that fails in both polarities
+      under pipefail. Mirrors the OCC #5768 precedent on contracts/OMN-15472.yaml (same defect class,
+      same supersession idiom).
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/events/occ_autoauthor.py?ref=a5bf9076a9e277e14824b0fe7cf7157b0b7bcaf9' --jq .content | base64 -d | grep -F 'OCC_AUTHOR_TIME_LABELS = (OCC_MACHINE_MINTED_LABEL, OCC_CI_READY_LABEL)' > /dev/null && gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_occ_companion_effect/handlers/handler_occ_companion_effect.py?ref=a5bf9076a9e277e14824b0fe7cf7157b0b7bcaf9' --jq .content | base64 -d | grep -F 'from omnimarket.events.occ_autoauthor import OCC_AUTHOR_TIME_LABELS' > /dev/null
   - id: "dod-occ-evidence-admissibility-validator"
     description: "Hosted OCC evidence admissibility validator (OMN-15247)."
     source: "generated"
@@ -43,3 +79,35 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6550 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-6590"
+    description: >-
+      Binds OMN-16071 to OCC companion PR #6590 (self-bind). Mirrors occ-self-bind-pr-6509 on contracts/OMN-15922.yaml
+      and exists for the same mechanical reason: validator_occ_merge_eligibility requires at least one
+      PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence (by pr_number or one
+      of the PR's own commit SHAs), otherwise the companion is ineligible with reason pr_ticket_mismatch
+      -- reproduced live on PR #6590 itself (occ-preflight / eligibility job 95333685415: `"eligible":false,"reason":"pr_ticket_mismatch","detail":"no
+      PASS receipt for one or more tickets binds to PR #6590 or one of its commit SHAs: OMN-16071"`),
+      because every existing receipt in this ticket's history binds to PR #6550 (the prior companion)
+      or to product PR #2081, never to #6590 itself. It is a binding record, not the substantive proof
+      -- the falsifiable evidence for this companion is dod-deploy-assessment-falsifiable above, which
+      measures RED at PR #2081's base and GREEN at its head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6590 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-6606"
+    description: >-
+      Binds OMN-16071 to OCC companion PR #6606 (self-bind). Mirrors occ-self-bind-pr-6550/-6590 on this
+      same contract and exists for the same mechanical reason: validator_occ_merge_eligibility requires
+      at least one PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence (by pr_number
+      or one of the PR's own commit SHAs), otherwise the companion is ineligible with reason pr_ticket_mismatch,
+      because every existing receipt in this ticket's history binds to PR #6550, #6590, or to product
+      PR #2081/#2086, never to #6606 itself. It is a binding record, not the substantive proof -- the
+      falsifiable evidence for this companion's product change is the append-only-guard hardening in omnimarket
+      #2086 itself, verified via the RED-first tests in that PR's own suite.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6606 --repo OmniNode-ai/onex_change_control --json number,state"
