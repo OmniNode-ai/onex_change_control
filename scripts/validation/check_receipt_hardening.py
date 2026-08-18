@@ -1205,6 +1205,84 @@ def _repaired_targets(item_dir: Path, contracts_dir: Path) -> frozenset[str]:
     return frozenset(repaired)
 
 
+_SUPERSEDES_DOD_EVIDENCE_PREFIX = "supersedes_dod_evidence:"
+
+
+def _declared_lineage_target(
+    contracts_dir: Path, ticket_id: str, item_id: str
+) -> str | None:
+    """Return the id ``item_id``'s OWN contract entry names via ``evidence_artifact``.
+
+    Reads the CONTRACT-level ``evidence_artifact: "supersedes_dod_evidence:<id>"``
+    declaration via :func:`_contract_entry` — the authoring-time lineage
+    marker, distinct from this file's own receipt-level ``supersedes:`` /
+    ``.supersede.<NNNN>.yaml`` repair chain (:func:`_repaired_targets`).
+    ``None`` when the item is absent, declares no marker, or the marker
+    doesn't match the exact prefix.
+    """
+    entry = _contract_entry(contracts_dir, ticket_id, item_id)
+    if entry is None:
+        return None
+    marker = entry.get("evidence_artifact")
+    if not isinstance(marker, str) or not marker.startswith(
+        _SUPERSEDES_DOD_EVIDENCE_PREFIX
+    ):
+        return None
+    target = marker[len(_SUPERSEDES_DOD_EVIDENCE_PREFIX) :].strip()
+    return target or None
+
+
+def _s1_collisions(  # noqa: PLR0913 - one cohort file's identity IS path+item+check+ticket
+    path: Path,
+    item_id: str,
+    check_value: str,
+    contracts_dir: Path,
+    ticket_id: str,
+    *,
+    follow_repairs: bool,
+) -> set[str]:
+    """Sibling items in ``path``'s cohort that collide on ``check_value``.
+
+    A byte-identical check across DIFFERENT items is a collision unless a
+    declared lineage ties them together (see :func:`_declared_lineage_target`)
+    — OMN-16148's same-bar-relabel exemption — or the sibling is itself a
+    cured wrong-item rebind (:func:`_repaired_targets`).
+    """
+    collisions: set[str] = set()
+    for sibling in _cohort_members(path):
+        if sibling == path:
+            continue
+        sibling_data = _load_mapping(sibling)
+        if sibling_data is None:
+            continue
+        if _supersession_check_value(sibling_data) != check_value:
+            continue
+        sibling_item = _supersession_item_id(sibling, sibling_data)
+        if sibling_item == item_id:
+            continue
+        if follow_repairs and (
+            sibling.as_posix() in _repaired_targets(sibling.parent, contracts_dir)
+        ):
+            continue
+        # OMN-16148: a DECLARED same-lineage relabel — one item's own contract
+        # entry naming the other via evidence_artifact — is not a wrong-item
+        # rebind. It is a deliberate same-bar correction (OMN-15800's
+        # dod-source-presence-probe-pr-2032-rebind-f2958714 fixes only the
+        # evidence_item_id of dod-deploy-live-probe-pr-2032-rebind-f2958714,
+        # keeping the identical check_value on purpose). Symmetric with the
+        # matching producer-side exemption in omnimarket's
+        # assert_supersession_checks_are_item_bound — fixing only one side
+        # would just relocate this refusal, not resolve it.
+        if (
+            _declared_lineage_target(contracts_dir, ticket_id, item_id) == sibling_item
+            or _declared_lineage_target(contracts_dir, ticket_id, sibling_item)
+            == item_id
+        ):
+            continue
+        collisions.add(sibling_item)
+    return collisions
+
+
 def _supersession_violations(
     path: Path,
     contracts_dir: Path,
@@ -1235,23 +1313,14 @@ def _supersession_violations(
     violations: list[tuple[str, str]] = []
 
     # S1 — distinctness across the cohort.
-    collisions: set[str] = set()
-    for sibling in _cohort_members(path):
-        if sibling == path:
-            continue
-        sibling_data = _load_mapping(sibling)
-        if sibling_data is None:
-            continue
-        if _supersession_check_value(sibling_data) != check_value:
-            continue
-        sibling_item = _supersession_item_id(sibling, sibling_data)
-        if sibling_item == item_id:
-            continue
-        if follow_repairs and (
-            sibling.as_posix() in _repaired_targets(sibling.parent, contracts_dir)
-        ):
-            continue
-        collisions.add(sibling_item)
+    collisions = _s1_collisions(
+        path,
+        item_id,
+        check_value,
+        contracts_dir,
+        ticket_id,
+        follow_repairs=follow_repairs,
+    )
     if collisions:
         violations.append(
             (
@@ -1262,7 +1331,9 @@ def _supersession_violations(
                 f"be the authoritative proof of several distinct bars — that is "
                 f"the {SUPERSESSION_TICKET} wrong-item rebind. Give each "
                 "superseded item a check that discriminates it, or supersede "
-                "only the one item this probe actually proves.",
+                "only the one item this probe actually proves. (A declared "
+                "same-lineage relabel — one item's evidence_artifact naming "
+                "the other — is exempt; neither item here declares one.)",
             )
         )
 
