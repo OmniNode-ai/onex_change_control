@@ -16,14 +16,15 @@ unconditionally exactly as before.
 
 Two things are proven here, mirroring `test_merge_hold_gate_wiring_omn15484.py`:
 
-* **The strict registration behaves as claimed** -- by RENDERING the real
-  `ci-summary` shell block out of the shipped `ci.yml` and EXECUTING it under
-  bash for each possible `pre-commit` result. OCC's `ci-summary` generic
-  rollup is `contains(needs.*.result, 'failure') || contains(needs.*.result,
-  'cancelled')`, which passes on a SKIPPED need -- exactly the AC(b) trap
-  named on OMN-15731 (an unlabeled dev PR's `pre-commit` result is
-  `skipped`, and without the new strict block that reads `CI Summary` =
-  SUCCESS with zero lint/type/contract checks run).
+* **The strict registration behaves as claimed** -- by loading the SHIPPED
+  `scripts/ci/ci_summary_gate.py` and EXECUTING its real `evaluate()` against
+  synthetic job snapshots (OMN-15768: this replaced the needs-based
+  `ci-summary` bash block a retired version of this class rendered and
+  executed under bash). An unregistered job is invisible to `evaluate()`'s
+  strict check -- exactly the AC(b) trap named on OMN-15731 (an unlabeled dev
+  PR's `pre-commit` result is `skipped`, and without STRICT_GATE_JOBS
+  registration `CI Summary` would read SUCCESS with zero lint/type/contract
+  checks run).
 * **The workflow-level wiring** (label-trigger events, the job's `if:`
   condition, and the `main`-targeting-PR carve-out) is asserted against the
   live `ci.yml`, not a hand-built fixture.
@@ -31,8 +32,8 @@ Two things are proven here, mirroring `test_merge_hold_gate_wiring_omn15484.py`:
 
 from __future__ import annotations
 
-import re
-import subprocess
+import importlib.util
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -44,60 +45,44 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CI_YAML = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _JOB_ID = "pre-commit"
-_SUMMARY_JOB_ID = "ci-summary"
-
-_NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_\-]+)\.result\s*\}\}")
-_CONTAINS_ROLLUP_RE = re.compile(
-    r"\$\{\{\s*contains\(needs\.\*\.result,\s*'failure'\)\s*\|\|\s*"
-    r"contains\(needs\.\*\.result,\s*'cancelled'\)\s*\}\}"
-)
+_DISPLAY_NAME = "Pre-commit"  # ci_summary_gate.py STRICT_GATE_JOBS entry
 
 
 def _ci_yaml() -> dict[str, Any]:
     return dict(yaml.safe_load(_CI_YAML.read_text(encoding="utf-8")))
 
 
-def _render_ci_summary_script(results: dict[str, str]) -> str:
-    """Render the SHIPPED ci-summary step script with concrete job results.
-
-    Same technique as ``test_merge_hold_gate_wiring_omn15484.py``: GitHub
-    evaluates ``${{ ... }}`` before bash ever sees the script, so
-    reproducing the real behaviour means substituting first and running
-    the result.
-    """
-    summary = _ci_yaml()["jobs"][_SUMMARY_JOB_ID]
-    script = "\n".join(
-        step["run"] for step in summary["steps"] if isinstance(step.get("run"), str)
-    )
-    rollup = "true" if {"failure", "cancelled"} & set(results.values()) else "false"
-    script = _CONTAINS_ROLLUP_RE.sub(rollup, script)
-    return _NEEDS_RESULT_RE.sub(lambda m: results.get(m.group(1), ""), script)
+def _load_gate_module() -> Any:
+    """Load scripts/ci/ci_summary_gate.py by path (mirrors the loader in
+    test_merge_hold_gate_wiring_omn15484.py, including the sys.modules
+    registration Python 3.13's @dataclass needs)."""
+    script_path = _REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py"
+    spec = importlib.util.spec_from_file_location("ci_summary_gate", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _all_needs() -> list[str]:
-    needs = _ci_yaml()["jobs"][_SUMMARY_JOB_ID]["needs"]
-    return [needs] if isinstance(needs, str) else list(needs)
+def _job(name: str, conclusion: str) -> dict[str, object]:
+    return {"name": name, "status": "completed", "conclusion": conclusion}
 
 
-def _run_summary(pre_commit_result: str) -> subprocess.CompletedProcess[str]:
-    """Execute the real ci-summary block with every other gate green."""
-    results = dict.fromkeys(_all_needs(), "success")
-    results[_JOB_ID] = pre_commit_result
-    return subprocess.run(
-        ["bash", "-c", _render_ci_summary_script(results)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def _all_green_jobs(gate: Any) -> list[dict[str, object]]:
+    return [
+        _job(n, "success") for n in gate.STRICT_GATE_JOBS + gate.SKIPPABLE_GATE_JOBS
+    ]
 
 
 class TestPreCommitStrictRegistrationIsExecutable:
     """Registration is the mechanism. Proven by running it, not by grepping."""
 
     def test_success_passes(self) -> None:
-        completed = _run_summary("success")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert "All required jobs passed" in completed.stdout
+        gate = _load_gate_module()
+        code, _ = gate.evaluate(_all_green_jobs(gate))
+        assert code == gate.EXIT_SUCCESS
 
     @pytest.mark.parametrize("result", ["skipped", "failure", "cancelled"])
     def test_every_non_success_result_fails_the_required_context(
@@ -107,56 +92,47 @@ class TestPreCommitStrictRegistrationIsExecutable:
         `pre-commit` result IS `skipped` after this pilot -- and a skipped
         pre-commit is indistinguishable from no pre-commit at all: the PR
         would be required-green while running zero lint/type/contract
-        checks. `failure`/`cancelled` are already caught by the generic
-        rollup; `skipped` is caught ONLY by the new explicit strict check.
+        checks. `failure`/`cancelled` are also caught by the L3 default-deny
+        sweep for an unregistered job; `skipped` is caught ONLY by
+        STRICT_GATE_JOBS registration.
         """
-        completed = _run_summary(result)
-        assert completed.returncode == 1, completed.stdout + completed.stderr
+        gate = _load_gate_module()
+        jobs = [j for j in _all_green_jobs(gate) if j["name"] != _DISPLAY_NAME]
+        jobs.append(_job(_DISPLAY_NAME, result))
+        code, _ = gate.evaluate(jobs)
+        assert code == gate.EXIT_FAILURE
 
     def test_skipped_specifically_names_pre_commit_and_the_ticket(self) -> None:
         """The failure must be diagnosable, not a generic rollup failure."""
-        completed = _run_summary("skipped")
-        assert _JOB_ID in completed.stdout
-        assert "OMN-15731" in completed.stdout
+        gate = _load_gate_module()
+        jobs = [j for j in _all_green_jobs(gate) if j["name"] != _DISPLAY_NAME]
+        jobs.append(_job(_DISPLAY_NAME, "skipped"))
+        _, report = gate.evaluate(jobs)
+        assert _DISPLAY_NAME in report
 
-    def test_removing_the_strict_check_makes_a_skip_pass(self) -> None:
-        """RED-before, against the real file: the pre-pilot state of this repo.
+    def test_unregistered_pre_commit_makes_a_skip_pass(self) -> None:
+        """RED-before control: the pre-pilot state of this repo.
 
-        Deleting only the explicit check -- leaving the job present and in
-        ``needs:`` -- restores exactly the bypass OMN-15731's AC(b)
-        forbids, and the generic rollup still reports success. This is the
-        control that makes the assertions above non-vacuous.
+        A job that is NOT in STRICT_GATE_JOBS/SKIPPABLE_GATE_JOBS and is not
+        otherwise present+failing is invisible to evaluate() -- restores
+        exactly the bypass OMN-15731's AC(b) forbids, and is the control that
+        makes the assertions above non-vacuous.
         """
-        summary = _ci_yaml()["jobs"][_SUMMARY_JOB_ID]
-        script = "\n".join(
-            step["run"] for step in summary["steps"] if isinstance(step.get("run"), str)
-        )
-        strict_block_re = re.compile(
-            r"\n *if \[\[ \"\$\{\{ needs\." + _JOB_ID + r"\.result \}\}\".*?\n *fi",
-            re.DOTALL,
-        )
-        stripped = strict_block_re.sub("", script)
-        assert stripped != script, "the strict check was not found to strip"
-
-        results = dict.fromkeys(_all_needs(), "success")
-        results[_JOB_ID] = "skipped"
-        rollup = "true" if {"failure", "cancelled"} & set(results.values()) else "false"
-        rendered = _NEEDS_RESULT_RE.sub(
-            lambda m: results.get(m.group(1), ""),
-            _CONTAINS_ROLLUP_RE.sub(rollup, stripped),
-        )
-        completed = subprocess.run(
-            ["bash", "-c", rendered], capture_output=True, text=True, check=False
-        )
-        assert completed.returncode == 0, (
+        gate = _load_gate_module()
+        strict = tuple(n for n in gate.STRICT_GATE_JOBS if n != _DISPLAY_NAME)
+        jobs = [_job(n, "success") for n in strict + gate.SKIPPABLE_GATE_JOBS]
+        jobs.append(_job(_DISPLAY_NAME, "skipped"))
+        code, _ = gate.evaluate(jobs, strict_gates=strict)
+        assert code == gate.EXIT_SUCCESS, (
             "expected the UNREGISTERED shape to pass on a skipped pre-commit "
             "result -- if it fails, this control proves nothing about the "
             "registration"
         )
 
-    def test_pre_commit_is_in_ci_summary_needs(self) -> None:
+    def test_pre_commit_is_registered(self) -> None:
         """Without this, ci-summary can report green before pre-commit rules."""
-        assert _JOB_ID in _all_needs()
+        gate = _load_gate_module()
+        assert _DISPLAY_NAME in gate.STRICT_GATE_JOBS
 
 
 class TestLabelGateWorkflowShape:

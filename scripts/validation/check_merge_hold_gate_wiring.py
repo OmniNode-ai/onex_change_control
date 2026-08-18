@@ -65,12 +65,50 @@ one (the OMN-14666/14668 lesson).
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+_GATE_MODULE_RELPATH = Path("scripts") / "ci" / "ci_summary_gate.py"
+
+
+def _extract_strict_gate_jobs(gate_module_path: Path) -> tuple[str, ...] | None:
+    """Statically extract ``STRICT_GATE_JOBS`` from ci_summary_gate.py.
+
+    AST-parsed (not imported) so this never executes the target file and so a
+    test can point it at an isolated mutated copy. Returns ``None`` if the
+    file is missing/unparseable or the tuple assignment cannot be found.
+    """
+    if not gate_module_path.is_file():
+        return None
+    try:
+        tree = ast.parse(gate_module_path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        name: str | None
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value_node = node.value
+        elif isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            name = names[0] if names else None
+            value_node = node.value
+        else:
+            continue
+        if name != "STRICT_GATE_JOBS" or value_node is None:
+            continue
+        try:
+            value = ast.literal_eval(value_node)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(value, tuple) and all(isinstance(v, str) for v in value):
+            return value
+    return None
 
 _JOB_ID = "merge-hold-gate"
 _SUMMARY_JOB_ID = "ci-summary"
@@ -195,34 +233,61 @@ def _check_hold_job(job: dict[str, Any]) -> list[str]:
     return failures
 
 
-def _check_summary_job(summary: dict[str, Any]) -> list[str]:
-    """ci-summary must WAIT for the hold gate AND assert success-only."""
+def _check_summary_job(
+    summary: dict[str, Any], gate_module_path: Path
+) -> list[str]:
+    """ci-summary must be the OMN-15768 no-needs poller AND assert the hold
+    gate STRICTLY via ``scripts/ci/ci_summary_gate.py``'s ``STRICT_GATE_JOBS``.
+
+    OMN-15768 replaced the needs-gated aggregator this anchor used to grep
+    for with a no-needs poller that checks membership in a Python tuple at
+    runtime. A `needs:` on ci-summary is now a REGRESSION to the needs-graph-
+    omission bug class (OCC#6346), not a wiring requirement.
+    """
     failures: list[str] = []
 
-    needs = summary.get("needs")
-    needs_list = [needs] if isinstance(needs, str) else list(needs or [])
-    if _JOB_ID not in needs_list:
+    if "needs" in summary:
         failures.append(
-            f"`{_SUMMARY_JOB_ID}` does not list `{_JOB_ID}` in `needs:`, so the "
-            "required CI Summary context does not wait for the hold gate and "
-            "can report green before it has rendered a verdict — which is "
-            "exactly long enough for the merge sweep to land the PR."
+            f"`{_SUMMARY_JOB_ID}` declares `needs:` ({summary['needs']!r}). "
+            "OMN-15768 replaced the needs-gated aggregator with a no-needs "
+            "poller; a `needs:` here is a regression to the needs-graph-"
+            "omission bug class (OCC#6346), where a job absent from `needs:` "
+            "was invisible to the old gate — which is exactly long enough for "
+            "the merge sweep to land a held PR."
+        )
+    summary_run_blob = _collect_run_script(summary)
+    if "ci_summary_gate.py" not in summary_run_blob:
+        failures.append(
+            f"`{_SUMMARY_JOB_ID}` does not invoke scripts/ci/ci_summary_gate.py "
+            "-- it no longer looks like the OMN-15768 poller."
         )
 
-    strict_expr = f'needs.{_JOB_ID}.result }}}}" != "success"'
-    if strict_expr not in _collect_run_script(summary):
+    strict_gate_jobs = _extract_strict_gate_jobs(gate_module_path)
+    if strict_gate_jobs is None:
         failures.append(
-            f"`{_SUMMARY_JOB_ID}` has no strict success-only check for "
-            f"`{_JOB_ID}`. Expected a line containing `{strict_expr}`. The "
-            "generic rollup only tests for 'failure'/'cancelled', so a SKIPPED "
-            "hold gate passes CI Summary — an unregistered gate looks like "
-            "enforcement and enforces nothing."
+            f"could not read STRICT_GATE_JOBS from {gate_module_path} to "
+            f"verify `{_EXPECTED_CONTEXT}` is registered."
+        )
+        return failures
+
+    if _EXPECTED_CONTEXT not in strict_gate_jobs:
+        failures.append(
+            f"`{_EXPECTED_CONTEXT}` is not in scripts/ci/ci_summary_gate.py's "
+            "STRICT_GATE_JOBS. An unregistered hold gate looks like "
+            "enforcement and enforces nothing — the default-deny sweep alone "
+            "is not sufficient proof of intent."
         )
     return failures
 
 
-def check_wiring(ci_yaml_path: Path) -> list[str]:
-    """Return a list of wiring failures. Empty list means the wiring is intact."""
+def check_wiring(
+    ci_yaml_path: Path, gate_module_path: Path | None = None
+) -> list[str]:
+    """Return a list of wiring failures. Empty list means the wiring is intact.
+
+    ``gate_module_path`` defaults to ``<repo_root>/scripts/ci/ci_summary_gate.py``;
+    tests override it to point at an isolated mutated copy.
+    """
     jobs: dict[str, Any] = _load_ci_yaml(ci_yaml_path)["jobs"]
 
     job = jobs.get(_JOB_ID)
@@ -245,7 +310,8 @@ def check_wiring(ci_yaml_path: Path) -> list[str]:
         )
         return failures
 
-    return failures + _check_summary_job(summary)
+    resolved_gate_path = gate_module_path or (_repo_root() / _GATE_MODULE_RELPATH)
+    return failures + _check_summary_job(summary, resolved_gate_path)
 
 
 _USAGE = f"""\

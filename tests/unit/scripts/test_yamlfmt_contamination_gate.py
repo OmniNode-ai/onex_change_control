@@ -836,36 +836,46 @@ def test_wiring_fails_when_the_corpus_step_is_gutted() -> None:
 
 
 @pytest.mark.unit
-def test_wiring_fails_when_ci_summary_stops_needing_the_job() -> None:
-    def drop(jobs: dict[str, Any]) -> None:
-        jobs["ci-summary"]["needs"] = [
-            n
-            for n in jobs["ci-summary"]["needs"]
-            if n != "yamlfmt-contamination-ratchet"
-        ]
+def test_wiring_fails_when_ci_summary_declares_needs() -> None:
+    """OMN-15768: ci-summary must be the no-needs poller; a `needs:` here is
+    a REGRESSION to the needs-graph-omission bug class (OCC#6346), the
+    opposite of what this anchor used to require."""
 
-    failures = _wiring_failures(drop)
-    assert any("in `needs:`" in f for f in failures)
+    def add_needs(jobs: dict[str, Any]) -> None:
+        jobs["ci-summary"]["needs"] = ["yamlfmt-contamination-ratchet"]
+
+    failures = _wiring_failures(add_needs)
+    assert any("declares `needs:`" in f for f in failures)
+
+
+_GATE_MODULE = _REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py"
 
 
 @pytest.mark.unit
-def test_wiring_fails_when_the_strict_success_only_check_is_removed() -> None:
-    """A plain ``needs:`` entry is not enforcement.
+def test_wiring_fails_when_job_not_registered_in_strict_gate_jobs(
+    tmp_path: Path,
+) -> None:
+    """A skipped ratchet job that is NOT registered in STRICT_GATE_JOBS is
+    invisible to the poller's explicit strict check (the generic default-deny
+    sweep alone is not sufficient proof of intent)."""
+    mutated = _GATE_MODULE.read_text(encoding="utf-8").replace(
+        '"yamlfmt Contamination Ratchet (OMN-15479)",\n', ""
+    )
+    assert mutated != _GATE_MODULE.read_text(encoding="utf-8")
+    gate_path = tmp_path / "ci_summary_gate.py"
+    gate_path.write_text(mutated, encoding="utf-8")
+    failures = gate.check_wiring(_CI_YAML, gate_module_path=gate_path)
+    assert any("STRICT_GATE_JOBS" in f for f in failures)
 
-    ci-summary's generic ``contains(needs.*.result, 'failure')`` rollup passes
-    on a SKIPPED need, so a skipped ratchet job would report green.
-    """
 
-    def strip(jobs: dict[str, Any]) -> None:
-        for step in jobs["ci-summary"]["steps"]:
-            if isinstance(step.get("run"), str):
-                step["run"] = step["run"].replace(
-                    'needs.yamlfmt-contamination-ratchet.result }}" != "success"',
-                    'needs.some-other-job.result }}" != "success"',
-                )
-
-    failures = _wiring_failures(strip)
-    assert any("strict success-only check" in f for f in failures)
+@pytest.mark.unit
+def test_wiring_passes_when_job_registered_in_strict_gate_jobs(
+    tmp_path: Path,
+) -> None:
+    """GREEN-after control for the STRICT_GATE_JOBS registration check."""
+    gate_path = tmp_path / "ci_summary_gate.py"
+    gate_path.write_text(_GATE_MODULE.read_text(encoding="utf-8"), encoding="utf-8")
+    assert gate.check_wiring(_CI_YAML, gate_module_path=gate_path) == []
 
 
 @pytest.mark.unit
