@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16142"
+title: "CI Summary poller silently fails-closed forever — grant checks: read to ci-summary"
+summary: >
+  The ci-summary job's explicit permissions: block (introduced under OMN-15768/OMN-16007) listed only
+  contents: read and actions: read. An explicit permissions: block sets every UNLISTED permission to none,
+  not the default read, so the job's L4 fetch (gh api .../commits/${HEAD_SHA}/check-runs, needed to evaluate
+  EXPECTED_EXTERNAL_CONTEXTS) 403'd on every single poll. The step's own `|| echo '{"check_runs": []}'`
+  fallback silently swallowed the failure, so EXPECTED_EXTERNAL_CONTEXTS always reported all 18 contexts
+  as permanently missing/pending -- indistinguishable from a real gate never completing. Because CI Summary
+  is a required branch-protection context on this repo's dev branch, this blocked every OCC companion
+  PR from merging via the normal auto-merge path. Fix adds checks: read to the job's permissions block.
+  Self-authored by the implementer for this ticket's own carrier PR #6624 (not a companion pattern) --
+  a self-contained, gate-mechanical change, same class as this contract's OMN-16007 precedent.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16142-checks-read-present-at-head"
+    description: >
+      Falsifiable content probe: the ci-summary job's permissions: block in .github/workflows/ci.yml contains
+      `checks: read` at this PR's exact head (8899038755714c487bf4cab2c4192cc93cda5f37) -- 3 occurrences
+      (the added permission line plus two mentions in the explanatory comment) -- and 0 occurrences at
+      the PR's merge-base on dev (4c0e7673aada9d165968605ae73eaeed6fdc05b7), where the permissions block
+      was still contents/actions-only. Genuinely falsifiable: reverting the one-line permissions addition
+      restores the pre-fix 403 behavior this ticket closes.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          head_body="$(gh api "repos/OmniNode-ai/onex_change_control/contents/.github/workflows/ci.yml?ref=8899038755714c487bf4cab2c4192cc93cda5f37"
+          --jq '.content' | base64 -d)" && printf '%s' "$head_body" | grep -qF 'checks: read' && base_body="$(gh
+          api "repos/OmniNode-ai/onex_change_control/contents/.github/workflows/ci.yml?ref=4c0e7673aada9d165968605ae73eaeed6fdc05b7"
+          --jq '.content' | base64 -d)" && printf '%s' "$base_body" | grep -qF 'ci-summary:' && ! printf
+          '%s' "$base_body" | grep -qF 'checks: read'
+  - id: "occ-self-bind-pr-6624"
+    description: "Self-bind: OCC PR 6624 is this ticket's own carrier PR, proven by its own file list
+      containing .github/workflows/ci.yml -- the file this ticket's fix modifies."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6624 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path' | grep
+          -qx '.github/workflows/ci.yml'
+  - id: "occ-self-bind-pr-6626"
+    description: "Self-bind superseding occ-self-bind-pr-6624: PR #6624 was closed and re-opened as #6626
+      from a correctly-named branch (jonah/omn-16142-fix-ci-summary-checks-permission) after the Receipt
+      Gate's identity-binding check rejected the original branch name (jonah/fix-ci-summary-checks-permission)
+      for not referencing OMN-16142. Same commits, same content -- only the PR number and branch name
+      changed. #6626 is this ticket's own carrier PR, proven by its own file list containing .github/workflows/ci.yml."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6626 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path' | grep
+          -qx '.github/workflows/ci.yml'
+  - id: "occ-self-bind-pr-6624-superseded-note"
+    description: "Net-new supersession marker (append-only correction, not an edit of the existing occ-self-bind-pr-6624
+      or occ-self-bind-pr-6626 entries above): PR #6624 was legitimately CLOSED (Receipt Gate rejected
+      its branch name for not referencing OMN-16142) and its content re-landed as #6626, which is independently
+      verified MERGED with all required contexts green. Without this marker, dod_verify re-executes occ-self-bind-pr-6624's
+      live-state check against the closed PR and reports a false failure even though #6626 supplies the
+      real, terminal proof."
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-6624"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6624 --repo OmniNode-ai/onex_change_control --json state --jq '.state' | grep -qx
+          'CLOSED' && gh pr view 6626 --repo OmniNode-ai/onex_change_control --json state --jq '.state'
+          | grep -qx 'MERGED'
