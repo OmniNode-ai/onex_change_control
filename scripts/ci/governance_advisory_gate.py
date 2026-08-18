@@ -73,10 +73,10 @@ from __future__ import annotations
 import argparse
 import sys
 
+from scripts.ci.check_governance_paths import GOVERNANCE_PATHS as GOVERNANCE_PATHS
+from scripts.ci.check_governance_paths import _load_changed_files
 from scripts.ci.check_governance_paths import (
-    GOVERNANCE_PATHS,
-    _load_changed_files,
-    touches_governance_path,
+    touches_governance_path as touches_governance_path,
 )
 
 _EXIT_PASS = 0
