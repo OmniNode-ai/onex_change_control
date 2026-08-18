@@ -101,6 +101,102 @@ dod_evidence:
       - check_type: command
         check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/commands.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
           --jq .content | base64 -d | grep -q ''cli.add_command(auth_group)'''
+  - id: dod-onex-cli-entry-point-group-exposes-auth
+    description: '``onex auth`` resolves through the ``onex.cli`` entry-point group. The sibling dod-deploy-assessment
+      item asserts ``cli.add_command(auth_group)`` in commands.py, which registers the group on the ``omni-infra``
+      console script ONLY; omnibase_core''s ``onex`` CLI does not read that module and loads extensions
+      exclusively from the ``onex.cli`` entry-point group. The two are independent registrations, so dod-deploy-assessment
+      was green at dev HEAD 254c3672471261c596c565245fb51ac9d951c494 while ``onex auth`` was still a phantom
+      callable (``Error: No such command auth``) -- and ``onex``, not ``omni-infra``, is the binary the
+      marketplace skill and every harness shell out to. This probe reads pyproject.toml back from GitHub
+      at the pinned omnibase_infra head via gh api, narrows to the body of the ``[project.entry-points."onex.cli"]``
+      table with awk, and counts the declaration inside it, so a declaration moved to any other entry-point
+      table (the exact defect) does not satisfy it. Section-scoped rather than a bare file grep because
+      the string also appears under the ``omni-infra`` registration path. Falsifiable and measured, not
+      asserted: the identical command emits 1 (exit 0) at head e3a02d96ca2f87ceeb05732db467366ad8c1f7a3
+      and 0 (exit 1) at the merge base 254c3672471261c596c565245fb51ac9d951c494, the RED leg the OCC autobind
+      heuristic could not construct for itself because this PR''s only other regression proof is a test
+      file that does not exist at the merge base.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=e3a02d96ca2f87ceeb05732db467366ad8c1f7a3 --jq '.content' | base64 -d | awk '/^\[project\.entry-points\."onex\.cli"\]$/{f=1;next} /^\[/{f=0} f' | grep -c '^auth = "omnibase_infra\.cli\.cli_auth:auth_group"$'
+  - id: occ-self-bind-pr-6552
+    description: 'Binds OMN-15922 to OCC companion PR #6552 (self-bind). Mirrors occ-self-bind-pr-6509
+      above and exists for the same mechanical reason: validator_occ_merge_eligibility requires at least
+      one PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence, otherwise the
+      companion is ineligible with reason pr_ticket_mismatch. It is a binding record, not the substantive
+      proof -- the falsifiable evidence for this companion is dod-onex-cli-entry-point-group-exposes-auth
+      above, which measures RED at the merge base and GREEN at the fix head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6552 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: occ-self-bind-pr-6593
+    description: 'Binds OMN-15922 to OCC companion PR #6593 (self-bind), the evidence companion for OmniNode-ai/omniintelligence#825
+      (branch-identity-fixed replacement of #824, itself superseded). Mirrors occ-self-bind-pr-6509 and
+      occ-self-bind-pr-6552 above and exists for the same mechanical reason: validator_occ_merge_eligibility
+      requires at least one PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence,
+      otherwise the companion is ineligible with reason pr_ticket_mismatch. It is a binding record, not
+      substantive proof of the omniintelligence deliverable itself.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6593 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: occ-self-bind-pr-6586
+    description: 'Binds OMN-15922 to OCC companion PR #6586 (self-bind), the evidence companion for OmniNode-ai/omninode_infra#925
+      (branch-identity-fixed replacement of #921, itself superseded). Mirrors occ-self-bind-pr-6509 and
+      occ-self-bind-pr-6552 above and exists for the same mechanical reason: validator_occ_merge_eligibility
+      requires at least one PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence,
+      otherwise the companion is ineligible with reason pr_ticket_mismatch. It is a binding record, not
+      substantive proof of the omninode_infra deliverable itself.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6586 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: dod-onex-auth-fails-closed-without-credential
+    description: 'Ticket DoD item 4 (RED-before fail-closed), auth-CLI-layer slice only. ``onex auth status``/``onex
+      auth token`` invoked with no stored credential exit non-zero and name the remediation (``onex auth
+      login``) rather than warning-and-succeeding -- re-run live in this evidence lane against the merged
+      #2758 head: ``uv run pytest tests/unit/gateway/test_cli_auth.py -m unit`` = 10 passed, 0 failed,
+      including both fail-closed cases. NOT the ticket''s full DoD-4 scope: DoD-4''s "zero local execution"
+      clause is about ``onex delegate`` never silently falling back to local execution when a cloud target
+      is configured and no valid token resolves (OMN-15680 AC-e restated at the auth layer). ``cli_delegate.py``
+      has no reference to ``cli_auth``/``auth_group``/gateway credential resolution anywhere in its source
+      at this head -- that integration is unbuilt, so the delegate-level fail-closed property remains
+      unproven and is NOT asserted by this item. This item proves only the auth CLI''s own refusal shape,
+      which is real and re-run live, not merely read back from GitHub content.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/gateway/test_cli_auth.py?ref=a6f1574498e8d028c18fe00f9a26485e15f4bce5"
+          --jq '.content' | base64 -d | grep -c 'def test_token_without_a_credential_fails_closed_before_touching_a_transport\|def
+          test_status_without_a_credential_exits_non_zero_and_names_the_remediation'
+  - id: occ-self-bind-pr-6582
+    description: OCC companion PR  #6582 -- self-bind for OMN-15922 (OMN-14650).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6582 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: "dod-OmniNode-ai-omninode_infra-pr-933"
+    description: "PR #933 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 933 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-933-ci"
+    description: "PR #933 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 933 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-6615"
+    description: "OCC companion PR #6615 — self-bind for OMN-15922 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6615 --repo OmniNode-ai/onex_change_control --json number,state"
 emergency_bypass:
   enabled: false
   justification: ''
