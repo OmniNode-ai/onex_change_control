@@ -58,8 +58,11 @@ Verdict policy — DEFAULT-DENY, FAIL-CLOSED, four layers
    poller itself or an explicit, reason-carrying :data:`SOFT_ALLOWLIST` entry.
 4. **L4 EXPECTED_EXTERNAL_CONTEXTS.** Checks 1-3 only see ``actions/runs/
    {RUN_ID}/jobs`` — this workflow run's own job list. A job living in ANY
-   OTHER workflow file (``dep-provenance-gate.yml``, ``call-receipt-gate.yml``,
-   ``main-target-guard.yml``, ...) is structurally invisible to it. This layer
+   OTHER workflow file (``guards.yml`` (OMN-16260 -- Dep Provenance Gate,
+   main-target-guard, non-dev-base-guard, call-reject-skip-token, Stale TODO
+   Gate, required-check-skip-guard, and the two OCC-autobind publishers all
+   consolidated here), ``call-receipt-gate.yml``, ...) is structurally
+   invisible to it. This layer
    asserts each named context against the PR head's ``commits/{sha}/
    check-runs``: present + completed + ``success`` (``skipped`` fails closed
    here — every listed context was verified to run unconditionally on ordinary
@@ -229,23 +232,23 @@ CLASSIFICATION_ONLY: dict[str, str] = {
 # which is exactly the fail-closed case this layer exists to catch, not
 # evidence the context is unsafe to assert).
 EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
-    "Dep Provenance Gate",  # dep-provenance-gate.yml -- unconditional
+    "Dep Provenance Gate",  # guards.yml (OMN-16260) -- unconditional
     "validate-private-ip",  # validator-g2-ip-family.yml -- unconditional
     "validate-localhost-url",  # validator-g2-ip-family.yml -- unconditional
     "validate-topic-string",  # validator-g2-ip-family.yml -- unconditional
     "validate-todo-marker",  # validator-g2-ip-family.yml -- unconditional
-    "main-target-guard",  # main-target-guard.yml -- unconditional
-    "non-dev-base-guard",  # non-dev-base-guard.yml -- unconditional
+    "main-target-guard",  # guards.yml (OMN-16260) -- unconditional
+    "non-dev-base-guard",  # guards.yml (OMN-16260) -- unconditional
     "occ-preflight / eligibility",  # call-occ-preflight.yml -- already a
     # direct dev-required context; asserted here too so CI Summary does not
     # depend on branch protection staying in sync (belt-and-braces, matches
     # the reference implementation's treatment of `deploy-gate / deploy-gate`).
     "verify / verify",  # call-receipt-gate.yml -- already direct-required;
     # same belt-and-braces rationale as occ-preflight above.
-    "call-reject-skip-token / scan / reject-skip-gate-token",  # call-reject-skip.yml
+    "call-reject-skip-token / scan / reject-skip-gate-token",  # guards.yml (OMN-16260)
     "required-check-skip-guard / check-skip-vectors",  # already direct-required
-    "pr-title / check-title",  # pr-title-check.yml -- no branches: filter
-    "Stale TODO Gate",  # stale-todo-gate.yml -- unconditional
+    "pr-title / check-title",  # guards.yml (OMN-16260) -- no branches: filter
+    "Stale TODO Gate",  # guards.yml (OMN-16260) -- unconditional
     # validate-validator-requirements.yml -- unconditional
     "Enforce validator-requirements.yaml (OMN-13299)",
     "call / validate-docs",  # docs-validate.yml -- unconditional
@@ -279,23 +282,31 @@ EXEMPT_CONTEXTS: dict[str, str] = {
     ),
     "Self-companion guard (OMN-15334)": (
         "Duplicate producer: the identical job name is emitted by BOTH "
-        "call-occ-autobind.yml and call-occ-companion-effect.yml on the same "
-        "PR (confirmed live on OCC#6231 -- two same-named check-runs, both "
-        "success). Same ANY-vs-ALL branch-protection ambiguity class as "
-        "OMN-15112's occ-preflight finding; asserting one name would not "
-        "distinguish which producer is being observed. Excluded pending a "
-        "producer-side rename."
+        "self-companion-guard-autobind and self-companion-guard-companion-"
+        "effect (both now jobs within guards.yml, OMN-16260 -- previously "
+        "call-occ-autobind.yml and call-occ-companion-effect.yml, two "
+        "separate files; the job-id rename that resolved their guards.yml "
+        "collision left the check-run NAME, which is driven by an explicit "
+        "`name:` field on each job, unchanged) on the same PR (confirmed "
+        "live on OCC#6231 -- two same-named check-runs, both success). Same "
+        "ANY-vs-ALL branch-protection ambiguity class as OMN-15112's "
+        "occ-preflight finding; asserting one name would not distinguish "
+        "which producer is being observed. Excluded pending a producer-side "
+        "rename."
     ),
     "occ-autobind / Publish occ-autobind command": (
-        "call-occ-autobind.yml:66-67 self-declares 'ADDITIVE / REJECTS "
-        "NOTHING: this workflow is NOT a required status check. It publishes "
-        "a command; it never fails a PR's merge.' Structurally cannot "
-        "validate anything -- it is a command publisher, not a gate."
+        "guards.yml's self-companion-guard-autobind/occ-autobind pair "
+        "(OMN-16260; formerly call-occ-autobind.yml) self-declares "
+        "'ADDITIVE / REJECTS NOTHING: this workflow is NOT a required "
+        "status check. It publishes a command; it never fails a PR's "
+        "merge.' Structurally cannot validate anything -- it is a command "
+        "publisher, not a gate."
     ),
     "occ-companion-effect / Publish occ-companion-effect command": (
-        "call-occ-companion-effect.yml:60-61 carries the identical "
-        "'ADDITIVE / REJECTS NOTHING' self-declaration as occ-autobind "
-        "above. Same reasoning."
+        "guards.yml's self-companion-guard-companion-effect/occ-companion-"
+        "effect pair (OMN-16260; formerly call-occ-companion-effect.yml) "
+        "carries the identical 'ADDITIVE / REJECTS NOTHING' self-"
+        "declaration as occ-autobind above. Same reasoning."
     ),
     "Enable Auto-Merge": (
         "auto-merge.yml's job arms auto-merge on an already-eligible PR; it "

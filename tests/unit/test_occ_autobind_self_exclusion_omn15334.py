@@ -48,11 +48,21 @@ FIXTURE_PATH = REPO_ROOT / "tests/fixtures/occ_autobind_cascade_omn15334.json"
 PREDICATE_PATH = (
     REPO_ROOT / "src/onex_change_control/scripts/check_occ_autobind_trigger.py"
 )
+# OMN-16260: both callers now live in the same consolidated guards.yml, each
+# under its own renamed job id (self-companion-guard was a collision between
+# the two original files' identical job id; the check-run NAME each produces
+# is unaffected — see guards.yml's own header comment). CALLERS pairs each
+# (path, job_id) so every parametrized seam test below still independently
+# drives both guards, rather than assuming one shared job id.
 CALLER_PATHS = (
-    REPO_ROOT / ".github/workflows/call-occ-autobind.yml",
-    REPO_ROOT / ".github/workflows/call-occ-companion-effect.yml",
+    REPO_ROOT / ".github/workflows/guards.yml",
+    REPO_ROOT / ".github/workflows/guards.yml",
 )
-GUARD_JOB_ID = "self-companion-guard"
+CALLER_JOB_IDS = (
+    "self-companion-guard-autobind",
+    "self-companion-guard-companion-effect",
+)
+CALLERS = tuple(zip(CALLER_PATHS, CALLER_JOB_IDS, strict=True))
 GUARD_STEP_ID = "decide"
 
 # The exact `if:` expression both OCC callers shipped with on `dev` at
@@ -107,19 +117,41 @@ def _load_workflow(path: Path) -> dict[str, Any]:
     return cast("dict[str, Any]", loaded)
 
 
-def _publish_job(workflow: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """The single job that calls the omniclaude reusable."""
+def _publish_job(
+    workflow: dict[str, Any], guard_job_id: str
+) -> tuple[str, dict[str, Any]]:
+    """The single job that `needs:` this specific guard and calls a reusable.
+
+    OMN-16260: guards.yml now hosts several `uses:` jobs side by side (both
+    OCC-autobind publishers plus pr-title/required-check-skip-guard), so
+    "the one uses: job in the file" no longer identifies a single job —
+    filtering by dependency on THIS guard's own job id is what makes the
+    seam test still ask "does this specific guard's own publish job depend
+    on it", not "is there exactly one uses: job anywhere in the file".
+    """
     jobs = workflow["jobs"]
-    calling = {name: job for name, job in jobs.items() if "uses" in job}
+
+    def _needs(job: dict[str, Any]) -> list[str]:
+        needs = job.get("needs")
+        if needs is None:
+            return []
+        return [needs] if isinstance(needs, str) else list(needs)
+
+    calling = {
+        name: job
+        for name, job in jobs.items()
+        if "uses" in job and guard_job_id in _needs(job)
+    }
     assert len(calling) == 1, (
-        f"expected exactly one reusable-calling job, got {sorted(calling)}"
+        f"expected exactly one reusable-calling job depending on {guard_job_id!r}, "
+        f"got {sorted(calling)}"
     )
     name, job = next(iter(calling.items()))
     return name, cast("dict[str, Any]", job)
 
 
-def _guard_step(workflow: dict[str, Any]) -> dict[str, Any]:
-    steps = workflow["jobs"][GUARD_JOB_ID]["steps"]
+def _guard_step(workflow: dict[str, Any], job_id: str) -> dict[str, Any]:
+    steps = workflow["jobs"][job_id]["steps"]
     matches = [step for step in steps if step.get("id") == GUARD_STEP_ID]
     assert len(matches) == 1, f"expected exactly one step id={GUARD_STEP_ID!r}"
     return cast("dict[str, Any]", matches[0])
@@ -354,28 +386,26 @@ def test_green_machine_minted_label_is_an_independent_belt() -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("path", CALLER_PATHS, ids=[p.name for p in CALLER_PATHS])
-def test_seam_publish_job_is_gated_on_the_guard_output(path: Path) -> None:
+@pytest.mark.parametrize(("path", "job_id"), CALLERS, ids=CALLER_JOB_IDS)
+def test_seam_publish_job_is_gated_on_the_guard_output(path: Path, job_id: str) -> None:
     workflow = _load_workflow(path)
 
-    assert GUARD_JOB_ID in workflow["jobs"], f"{path.name} is missing the guard job"
+    assert job_id in workflow["jobs"], f"{path.name} is missing guard job {job_id!r}"
 
-    job_name, publish_job = _publish_job(workflow)
+    job_name, publish_job = _publish_job(workflow, job_id)
     needs = publish_job["needs"]
     needs_list = [needs] if isinstance(needs, str) else list(needs)
-    assert GUARD_JOB_ID in needs_list, (
-        f"{path.name}:{job_name} must depend on the guard job"
-    )
+    assert job_id in needs_list, f"{path.name}:{job_name} must depend on {job_id!r}"
 
     # The exact field the guard writes is the exact field the publish job reads.
-    expected_if = f"needs.{GUARD_JOB_ID}.outputs.{SHOULD_PUBLISH_OUTPUT_NAME} == 'true'"
+    expected_if = f"needs.{job_id}.outputs.{SHOULD_PUBLISH_OUTPUT_NAME} == 'true'"
     assert publish_job["if"].strip() == expected_if, (
         f"{path.name}:{job_name} `if:` is {publish_job['if'].strip()!r}, "
         f"expected {expected_if!r}"
     )
 
     # ... and the job output is wired to the step that actually produces it.
-    guard_outputs = workflow["jobs"][GUARD_JOB_ID]["outputs"]
+    guard_outputs = workflow["jobs"][job_id]["outputs"]
     assert (
         guard_outputs[SHOULD_PUBLISH_OUTPUT_NAME].strip()
         == f"${{{{ steps.{GUARD_STEP_ID}.outputs.{SHOULD_PUBLISH_OUTPUT_NAME} }}}}"
@@ -383,29 +413,31 @@ def test_seam_publish_job_is_gated_on_the_guard_output(path: Path) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("path", CALLER_PATHS, ids=[p.name for p in CALLER_PATHS])
-def test_seam_env_block_matches_module_required_env_field_by_field(path: Path) -> None:
+@pytest.mark.parametrize(("path", "job_id"), CALLERS, ids=CALLER_JOB_IDS)
+def test_seam_env_block_matches_module_required_env_field_by_field(
+    path: Path, job_id: str
+) -> None:
     """The workflow's env keys and the module's required env vars are one set."""
-    step_env = _guard_step(_load_workflow(path))["env"]
+    step_env = _guard_step(_load_workflow(path), job_id)["env"]
     assert set(step_env) == set(REQUIRED_ENV_VARS), (
-        f"{path.name} guard env keys {sorted(step_env)} != module REQUIRED_ENV_VARS "
+        f"{job_id} guard env keys {sorted(step_env)} != module REQUIRED_ENV_VARS "
         f"{sorted(REQUIRED_ENV_VARS)}"
     )
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("path", CALLER_PATHS, ids=[p.name for p in CALLER_PATHS])
-def test_seam_env_expressions_are_all_mapped(path: Path) -> None:
+@pytest.mark.parametrize(("path", "job_id"), CALLERS, ids=CALLER_JOB_IDS)
+def test_seam_env_expressions_are_all_mapped(path: Path, job_id: str) -> None:
     """Every env value is a modelled GitHub expression, so the drive below is real."""
-    step_env = _guard_step(_load_workflow(path))["env"]
+    step_env = _guard_step(_load_workflow(path), job_id)["env"]
     for key, raw in step_env.items():
         expression = _strip_expression(str(raw))
         assert expression in EXPRESSION_TO_FIXTURE_FIELD, (
-            f"{path.name} env {key} reads unmodelled expression {expression!r}"
+            f"{job_id} env {key} reads unmodelled expression {expression!r}"
         )
 
 
-@pytest.mark.parametrize("path", CALLER_PATHS, ids=[p.name for p in CALLER_PATHS])
+@pytest.mark.parametrize(("path", "job_id"), CALLERS, ids=CALLER_JOB_IDS)
 @pytest.mark.parametrize(
     "case",
     [
@@ -417,7 +449,7 @@ def test_seam_env_expressions_are_all_mapped(path: Path) -> None:
 )
 @pytest.mark.integration
 def test_seam_workflow_command_drives_the_predicate_end_to_end(
-    path: Path, case: dict[str, Any], tmp_path: Path
+    path: Path, job_id: str, case: dict[str, Any], tmp_path: Path
 ) -> None:
     """Execute the workflow's OWN ``run:`` command over real cascade metadata.
 
@@ -427,7 +459,7 @@ def test_seam_workflow_command_drives_the_predicate_end_to_end(
     here. A rename on either side fails this test.
     """
     workflow = _load_workflow(path)
-    step = _guard_step(workflow)
+    step = _guard_step(workflow, job_id)
 
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)  # reference_pythonpath_shadows_worktree_source
@@ -484,18 +516,18 @@ def test_seam_workflow_command_drives_the_predicate_end_to_end(
 def test_seam_guard_runs_the_committed_predicate_file() -> None:
     """The command, the sparse-checkout path and the module file agree."""
     relative = PREDICATE_PATH.relative_to(REPO_ROOT).as_posix()
-    for path in CALLER_PATHS:
+    for path, job_id in CALLERS:
         workflow = _load_workflow(path)
-        step = _guard_step(workflow)
+        step = _guard_step(workflow, job_id)
         assert str(step["run"]).strip() == f"python {relative}"
 
         checkout = next(
             s
-            for s in workflow["jobs"][GUARD_JOB_ID]["steps"]
+            for s in workflow["jobs"][job_id]["steps"]
             if "actions/checkout" in str(s.get("uses", ""))
         )
         assert str(checkout["with"]["sparse-checkout"]).strip() == relative, (
-            f"{path.name} sparse-checkout does not fetch the file the guard runs"
+            f"{job_id} sparse-checkout does not fetch the file the guard runs"
         )
 
 
@@ -538,18 +570,19 @@ def test_seam_predicate_is_stdlib_only_and_package_free() -> None:
 @pytest.mark.unit
 def test_seam_both_callers_carry_identical_guard_jobs() -> None:
     """Neither caller may drift from the other; that asymmetry is how #2377 bit."""
-    guards = [_load_workflow(path)["jobs"][GUARD_JOB_ID] for path in CALLER_PATHS]
+    guards = [_load_workflow(path)["jobs"][job_id] for path, job_id in CALLERS]
     first, second = guards
+    first_id, second_id = CALLER_JOB_IDS
 
     assert first["outputs"] == second["outputs"]
     assert first["runs-on"] == second["runs-on"]
     assert (
-        _guard_step({"jobs": {GUARD_JOB_ID: first}})["env"]
-        == _guard_step({"jobs": {GUARD_JOB_ID: second}})["env"]
+        _guard_step({"jobs": {first_id: first}}, first_id)["env"]
+        == _guard_step({"jobs": {second_id: second}}, second_id)["env"]
     )
     assert (
-        _guard_step({"jobs": {GUARD_JOB_ID: first}})["run"]
-        == _guard_step({"jobs": {GUARD_JOB_ID: second}})["run"]
+        _guard_step({"jobs": {first_id: first}}, first_id)["run"]
+        == _guard_step({"jobs": {second_id: second}}, second_id)["run"]
     )
 
 
