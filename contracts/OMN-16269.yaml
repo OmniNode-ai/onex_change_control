@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16269"
+title: "omniweb dev: wire DELEGATION_API_BASE_URL into the dev omniweb overlay"
+summary: >
+  Fixes OmniNode-ai/omninode_infra PR #951: the `api` arm of omniweb's dashboard data source (lib/dashboard/source/api-source.ts,
+  via lib/delegation-client.ts) reads process.env.DELEGATION_API_BASE_URL at request time; without it,
+  getStateful() short-circuits to a "wiring_pending" placeholder before ever calling onex-api, indistinguishable
+  in the UI from a genuinely empty live result. This env var was completely absent from the dev omniweb
+  deployment. The fix adds it to the dev-only Kustomize overlay (k8s/onex-dev-overlay-dev/patches/omniweb-deployment.yaml),
+  pointed at the dev gateway (https://dev.api.omninode.ai), matching the ONEX_API_BASE_URL pattern already
+  set there. Live-verified before merge: with the env var set on the running dev pod, GET /v1/tenants/me/savings
+  and GET /v1/tenants/me/delegations both return HTTP 200 with a real OIDC-issued (aud: onex-api) bearer
+  token.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #951 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-951"
+    description: "PR #951 on OmniNode-ai/omninode_infra — Evidence-Source binding for the OMN-16269 DELEGATION_API_BASE_URL
+      dev-overlay wiring fix."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/pulls/951 --jq '{number,state}'"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-951-ci"
+    description: >
+      Content-pinned proof at PR #951's head commit (9c3a7e9287a6eb2fa360cfb5406ecb3aac7d904b): k8s/onex-dev-overlay-dev/patches/omniweb-deployment.yaml
+      actually contains the new DELEGATION_API_BASE_URL env entry, not merely a PR record claiming it
+      does.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev-overlay-dev/patches/omniweb-deployment.yaml?ref=9c3a7e9287a6eb2fa360cfb5406ecb3aac7d904b
+          --jq .content | base64 -d | grep -q 'name: DELEGATION_API_BASE_URL'
