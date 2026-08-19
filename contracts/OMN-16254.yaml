@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16254"
+title: "kubeconfig_ssm.sh fail-closed instance resolution (VPC-ambiguity near-miss)"
+summary: >
+  Fixes OmniNode-ai/omninode_infra PR #950: scripts/kubeconfig_ssm.sh resolved its SSM target as "first
+  running instance in the VPC" (Reservations[0].Instances[0], filtered only on vpc-id + running-state).
+  A second running k3s node in the VPC made this non-deterministic and connected a live fault-injection
+  session to PROD instead of onex-dev (near-miss, read-only only, no mutation, caught before any write).
+  The fix resolves by Name tag + VPC + running-state, refuses to guess on zero/multiple candidates, adds
+  an explicit --instance-id override, asserts the resolved Name tag contains "dev" before writing any
+  kubeconfig (even under an explicit override), and removes the hardcoded FALLBACK_INSTANCE (confirmed
+  live to no longer exist). Sibling scripts and CI workflows using the same Reservations[0].Instances[0]
+  indexing were swept; all others already filter on an explicit Name tag or take an explicit instance
+  id, so no further fix was needed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #950 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-950"
+    description: "PR #950 on OmniNode-ai/omninode_infra — Evidence-Source binding for the OMN-16254 kubeconfig_ssm.sh
+      fail-closed instance-resolution fix."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 950 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-950-ci"
+    description: >
+      PR #950 diff scope: scripts/kubeconfig_ssm.sh only (1 file, +118/-14) — matches the PR's stated
+      single-purpose scope (fail-closed SSM target-instance resolution), no unrelated files.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 950 --repo OmniNode-ai/omninode_infra --json files"
