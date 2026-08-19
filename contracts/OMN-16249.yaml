@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16249"
+title: "OCC evidence for OMN-16249 — match the projection injected-key seam across the infra/market boundary"
+summary: >
+  OCC companion for OmniNode-ai/omnimarket PR #2109. omnibase_infra's projection dispatch arm (handler_wiring._make_projection_dispatch_callback)
+  injects four bookkeeping keys into the dict it hands handle(): _db (unconditional), _event_type (unconditional),
+  _topic (unconditional), and _envelope_id (conditional — only when an envelope identity is present).
+  omnimarket's canonical stripper (src/omnimarket/projection/handler_shim.py, RUNTIME_INJECTED_KEYS) enumerated
+  only three of those keys; _envelope_id survived into the strict model_payload and failed extra_forbidden
+  against ModelHookEventCaptureRequest — the live onex-dev canary got HTTP 202, the message DLQ'd, zero
+  rows landed. The PR widens RUNTIME_INJECTED_KEYS to the full four-key set, surfaces _envelope_id in
+  injected_meta for idempotency use, and adds a fail-closed drift guard (test_producer_key_assignments_are_statically_discoverable)
+  that harvests the injected-key set by executing inspect.getsource() against the installed omnibase_infra
+  handler_wiring module rather than restating it, so the next upstream key lands as a red test instead
+  of a silent seam drift.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2109 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2109"
+    description: >
+      PR #2109 on OmniNode-ai/omnimarket is bound at exact reviewed head 8b66eaa336a7a0d81323f7bbbb899d15ad8d1d86
+      with its complete two-file scope: the shim fix (src/omnimarket/projection/handler_shim.py) and the
+      new cross-boundary regression suite (tests/test_omn16249_projection_injected_key_seam.py) — no unrelated
+      files.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2109 --repo OmniNode-ai/omnimarket --json headRefOid,files --jq '(.headRefOid == "8b66eaa336a7a0d81323f7bbbb899d15ad8d1d86") and ([.files[].path] | sort == ["src/omnimarket/projection/handler_shim.py", "tests/test_omn16249_projection_injected_key_seam.py"])' | grep -x true
+  - id: "dod-omn16249-producer-injected-keys"
+    description: >
+      Producer-side fact the fix rests on: OmniNode-ai/omnibase_infra's handler_wiring.py, at the exact
+      rev omnimarket pins in [tool.uv.sources] at the PR head (6fdbba6d8b6bcd7cc98a3da7dc8eb510f67a0e6a
+      — the omnibase_infra#2672 merge commit), injects exactly four bookkeeping keys into the projection
+      dispatch dict: input_data["_db"], input_data["_event_type"], input_data["_topic"] (all unconditional),
+      and input_data["_envelope_id"] (conditional on a resolved envelope identity). Verified live via
+      the GitHub contents API against the immutable ref, not restated from memory.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=6fdbba6d8b6bcd7cc98a3da7dc8eb510f67a0e6a' --jq '.content' | base64 -d | grep -cE 'input_data\["_(db|event_type|topic|envelope_id)"\]' | grep -x 4
+  - id: "dod-omn16249-consumer-widened-key-set"
+    description: >
+      Consumer-side fix: omnimarket's src/omnimarket/projection/handler_shim.py at PR #2109's head declares
+      RUNTIME_INJECTED_KEYS as a frozenset of exactly the same four keys the producer injects (_db, _event_type,
+      _topic, _envelope_id) — the seam-1 boundary this ticket closes. Verified live via the GitHub contents
+      API against the PR's immutable head ref.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/handler_shim.py?ref=8b66eaa336a7a0d81323f7bbbb899d15ad8d1d86' --jq '.content' | base64 -d | grep -A8 'RUNTIME_INJECTED_KEYS: Final\[frozenset\[str\]\] = frozenset(' | grep -c '_INJECTED_DB_KEY\|INJECTED_EVENT_TYPE_KEY\|INJECTED_TOPIC_KEY\|INJECTED_ENVELOPE_ID_KEY' | grep -x 4
+  - id: "dod-omn16249-fail-closed-drift-guard-and-tests"
+    description: >
+      Differential proof, captured live rather than asserted. (1) The fail-closed drift guard (tests/test_omn16249_projection_injected_key_seam.py::TestProducerKeyAssignmentsAreStaticallyDiscoverable::test_producer_key_assignments_are_statically_discoverable,
+      confirmed present at PR #2109's head via the GitHub contents API) executes inspect.getsource(handler_wiring)
+      against the installed omnibase_infra module and harvests the injected-key set live rather than restating
+      it — re-run on the .200 gate host in this repo's worktree at commit 8b66eaa336a7a0d81323f7bbbb899d15ad8d1d86
+      via `uv run --quiet python -c "import re,inspect; from omnibase_infra.runtime.auto_wiring import
+      handler_wiring as hw; print(sorted(set(re.findall(r'input_data\[.(_[A-Za-z0-9_]+).\]\s*=', inspect.getsource(hw)))))"`,
+      which returned `['_db', '_envelope_id', '_event_type', '_topic']` — the exact four-key set the widened
+      RUNTIME_INJECTED_KEYS now covers. (2) The full cross-boundary regression suite — `tests/test_omn16249_projection_injected_key_seam.py
+      tests/test_projection_handler_shim_omn13825.py` — was re-run on the same gate host at the same commit
+      via `env -u PYTHONPATH uv run --quiet pytest ... -p no:randomly --no-header -q` and returned `19
+      passed`. Both probes were executed live at receipt-authoring time, not copied from the PR description.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/tests/test_omn16249_projection_injected_key_seam.py?ref=8b66eaa336a7a0d81323f7bbbb899d15ad8d1d86' --jq '.content' | base64 -d | grep -c 'def test_producer_key_assignments_are_statically_discoverable' | grep -x 1
