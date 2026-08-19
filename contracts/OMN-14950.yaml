@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14950"
+title: "OCC evidence for OMN-14950 — omniweb auth secrets NOT optional in onex-dev deployment"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #943. Removes `optional: true` from the AUTH_SECRET
+  and KEYCLOAK_CLIENT_SECRET secretKeyRefs in k8s/onex-dev/omniweb/deployment.yaml, so a stalled Infisical
+  sync fails the pod at schedule time with a nameable error instead of starting Ready with an empty session-signing
+  secret or Keycloak client secret -- the fix for a 72-day silent-auth-failure instance.
+is_seam_ticket: false
+interface_change: false
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #943 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-943"
+    description: >
+      PR #943 on OmniNode-ai/omninode_infra -- no Evidence-Source citation exists on the PR and no OCC
+      contract existed for this ticket, so this is a hand-authored companion. Real RED-before/ GREEN-after
+      differential over k8s/onex-dev/omniweb/deployment.yaml via the GitHub contents API: the AUTH_SECRET
+      env entry's secretKeyRef block carries `optional: true` at the PR's merge-base (8268f61c) and carries
+      no `optional: true` line at head (8e028c8d) -- confirmed against the two raw fetched blobs, not
+      asserted from the PR description. Independently read the PR diff to confirm the same change applies
+      identically to the adjacent KEYCLOAK_CLIENT_SECRET entry.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          base_body="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/omniweb/deployment.yaml?ref=8268f61cdadc042473e43b0d917880e22d575327"
+          --jq .content | base64 -d)"; head_body="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/omniweb/deployment.yaml?ref=8e028c8d2dd4f16d26f4d319ad7097c98904aaac"
+          --jq .content | base64 -d)"; base_auth="$(printf '%s\n' "$base_body" | awk '/- name: AUTH_SECRET$/
+          { f=1; print; next } f==1 && /^ *- name:/ { exit } f==1 { print }')"; head_auth="$(printf '%s\n'
+          "$head_body" | awk '/- name: AUTH_SECRET$/ { f=1; print; next } f==1 && /^ *- name:/ { exit
+          } f==1 { print }')"; base_count="$(echo "$base_auth" | grep -c 'optional: true')"; head_count="$(echo
+          "$head_auth" | grep -c 'optional: true')"; [ "$base_count" -ge 1 ] && [ "$head_count" -eq 0
+          ] && echo "OMN-14950-DIFFERENTIAL-PROBE-PASS: AUTH_SECRET secretKeyRef carries optional:true
+          at merge-base and no optional:true at head"
