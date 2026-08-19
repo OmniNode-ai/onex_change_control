@@ -10,10 +10,12 @@ import hashlib
 from typing import TYPE_CHECKING
 
 import yaml
+from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
 from omnibase_core.validation.validator_receipt_gate import (
     compute_contract_entry_sha256,
 )
 
+from scripts.validation import check_receipt_hardening
 from scripts.validation.check_receipt_hardening import (
     DENYLISTED_VERIFIERS,
     check_contract_file,
@@ -37,6 +39,16 @@ PRE_CUTOFF_TS = "2026-06-11T23:59:59+00:00"
 # run_timestamp with this constant instead.
 POST_OMN15710_CUTOFF_TS = "2026-08-02T00:00:00+00:00"
 PRE_OMN15710_CUTOFF_TS = "2026-07-31T23:59:59+00:00"
+
+# OMN-15461 (COMMIT_SHA_EXISTS) uses its OWN, LATEST cutoff (OMN_15461_CUTOFF,
+# 2026-08-19T12:00Z) — later than both HARDENING_CUTOFF and
+# OMN_15710_CUTOFF. Every fixture above (including POST_OMN15710_CUTOFF_TS)
+# predates it, so none of the ~60 existing tests trip the new rule or need a
+# fake resolver; only these dedicated tests must set run_timestamp to
+# POST_OMN15461_CUTOFF_TS AND inject a fake resolver (never real
+# subprocess/network calls in a unit test).
+POST_OMN15461_CUTOFF_TS = "2026-08-19T13:00:00+00:00"
+PRE_OMN15461_CUTOFF_TS = "2026-08-19T11:00:00+00:00"
 
 # OMN-15459 (S2 family binding): a supersession replacement must reference an
 # anchor the item it supersedes actually declares. The two wrappers below exist
@@ -922,3 +934,210 @@ def test_main_reports_both_rule_violations_exit_1(
     captured = capsys.readouterr()
     assert "[ABS_PATH]" in captured.out
     assert "[STDOUT_EMIT]" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# OMN-15461 — COMMIT_SHA_EXISTS: receipt commit_sha must resolve to a real,
+# remote-reachable commit. All fixtures below use POST_OMN15461_CUTOFF_TS and
+# an injected resolver — never real subprocess/git/gh calls in a unit test.
+# ---------------------------------------------------------------------------
+
+
+def _receipt_model(**overrides: object) -> ModelDodReceipt:
+    data = _receipt_data(run_timestamp=POST_OMN15461_CUTOFF_TS, **overrides)
+    return ModelDodReceipt.model_validate(data)
+
+
+def test_pre_omn15461_cutoff_receipt_with_bad_sha_is_exempt(tmp_path: Path) -> None:
+    """Legacy migration debt: a pre-cutoff receipt is not retro-blocked."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=PRE_OMN15461_CUTOFF_TS,
+            commit_sha="deadbeef00",
+        ),
+    )
+    violations = check_receipt_file(receipt, tmp_path / "contracts")
+    assert not any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
+
+
+def test_commit_sha_local_only_never_pushed_fails() -> None:
+    """RED — a real commit object that exists nowhere on a remote (the .200
+    patch-transfer bug shape: local_reachable and remote_exists both False,
+    no cross-repo hint present)."""
+    receipt = _receipt_model(commit_sha="e658ec5d368fbecfa878c3ca0f427cdb385addb9")
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
+            r,
+            local_reachable=lambda _sha: False,
+            remote_exists=lambda _sha, _repo: False,
+        ),
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+    assert "e658ec5d368fbecfa878c3ca0f427cdb385addb9" in violations[0]
+
+
+def test_commit_sha_prefix_plausible_fabrication_fails() -> None:
+    """RED — OCC#6725 (2026-08-19): a hallucinated SHA sharing a real 10-hex
+    prefix with a genuine commit before diverging. A well-formed-hex regex
+    cannot distinguish this from a real SHA; only resolution can."""
+    fabricated = "3f35bfa939ddb6da0000000000000000000000"
+    real = "3f35bfa939ebf85e0000000000000000000000"
+
+    def fake_remote_exists(sha: str, _repo: str) -> bool:
+        return sha == real  # only the REAL commit resolves, not the prefix-match
+
+    receipt = _receipt_model(commit_sha=fabricated)
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
+            r, local_reachable=lambda _sha: False, remote_exists=fake_remote_exists
+        ),
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+    assert fabricated in violations[0]
+
+
+def test_commit_sha_nonexistent_cross_repo_fails() -> None:
+    """RED — commit_sha does not exist in the hinted cross-repo, either."""
+    receipt = _receipt_model(
+        commit_sha="0000000000000000000000000000000000dead",
+        check_value="gh api repos/OmniNode-ai/omnimarket/commits/HEAD",
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
+            r,
+            local_reachable=lambda _sha: False,
+            remote_exists=lambda _sha, _repo: False,
+        ),
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+
+
+def test_commit_sha_local_reachable_passes() -> None:
+    """GREEN — genuine, pushed commit resolves via the local fast path."""
+    receipt = _receipt_model(commit_sha="c6879b0abc1234567890abcdef1234567890abc")
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
+            r,
+            local_reachable=lambda _sha: True,
+            remote_exists=lambda _sha, _repo: False,
+        ),
+    )
+    assert violations == []
+
+
+def test_commit_sha_cross_repo_hint_resolves_passes() -> None:
+    """GREEN — commit_sha belongs to a product repo, resolved via the embedded hint."""
+    real_omnimarket_sha = "8b66eaa3123456789abcdef1234567890abcdef"
+
+    def fake_remote_exists(sha: str, repo: str) -> bool:
+        return repo == "OmniNode-ai/omnimarket" and sha == real_omnimarket_sha
+
+    receipt = _receipt_model(
+        commit_sha=real_omnimarket_sha,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{real_omnimarket_sha}"
+        ),
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
+            r, local_reachable=lambda _sha: False, remote_exists=fake_remote_exists
+        ),
+    )
+    assert violations == []
+
+
+def test_commit_sha_resolver_defaults_to_module_level_and_is_monkeypatchable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolver default is a fresh lookup (not a bound default arg), so
+    check_receipt_file's full call chain is monkeypatchable end-to-end
+    without threading an explicit override through every intermediate
+    caller."""
+    contract = _write_contract(tmp_path)
+    receipt_path = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha="badc0ffee0000000000000000000000000000000",
+        ),
+    )
+    monkeypatch.setattr(
+        check_receipt_hardening, "_commit_sha_resolves", lambda _receipt: False
+    )
+    violations = check_receipt_file(receipt_path, tmp_path / "contracts")
+    assert any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
+
+    monkeypatch.setattr(
+        check_receipt_hardening, "_commit_sha_resolves", lambda _receipt: True
+    )
+    violations = check_receipt_file(receipt_path, tmp_path / "contracts")
+    assert not any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
+
+
+def test_repo_hint_extracts_owner_repo_from_probe_fields() -> None:
+    receipt = _receipt_model(
+        check_value="gh api repos/OmniNode-ai/omnibase_infra/commits/abc123"
+    )
+    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omnibase_infra"
+
+
+def test_repo_hint_returns_none_when_absent() -> None:
+    receipt = _receipt_model(check_value="uv run pytest tests/ -q")
+    assert check_receipt_hardening._repo_hint(receipt) is None
+
+
+def test_commit_sha_existence_superseded_receipt_is_excused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merged receipt with a bad commit_sha is correctable via the same
+    append-only supersession path every other rule in this file already
+    honors — no new mechanism required."""
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    base_path = receipt_dir / "command.yaml"
+    base_data = _receipt_data(
+        contract_sha256=_contract_sha(contract),
+        run_timestamp=POST_OMN15461_CUTOFF_TS,
+        commit_sha="0000000000000000000000000000000000dead",
+    )
+    base_path.write_text(yaml.safe_dump(base_data))
+
+    replacement_data = _receipt_data(
+        contract_sha256=_contract_sha(contract),
+        run_timestamp=POST_OMN15461_CUTOFF_TS,
+        commit_sha="c6879b0abc1234567890abcdef1234567890abc",
+    )
+    supersede_path = receipt_dir / "command.supersede.0001.yaml"
+    supersede_path.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base_path.as_posix(),
+                "reason": "commit_sha 0000...dead never pushed to any remote",
+                "replacement": replacement_data,
+            }
+        )
+    )
+
+    # Patch the resolver so the REPLACEMENT's commit_sha (a real-looking SHA)
+    # resolves, while anything else (e.g. the base's bad SHA) does not.
+    real_sha = "c6879b0abc1234567890abcdef1234567890abc"
+    monkeypatch.setattr(
+        check_receipt_hardening,
+        "_commit_sha_resolves",
+        lambda r: r.commit_sha == real_sha,
+    )
+    base_violations = check_receipt_file(base_path, tmp_path / "contracts")
+    assert base_violations == [], base_violations
