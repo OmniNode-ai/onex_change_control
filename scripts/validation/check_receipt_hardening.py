@@ -773,13 +773,24 @@ OMN_15461_CUTOFF = datetime(2026, 8, 19, 12, 0, 0, tzinfo=UTC)
 
 _DEFAULT_COMMIT_SHA_REPO = "OmniNode-ai/onex_change_control"
 
-# A cross-repo citation embedded in probe text, e.g. "repos/OmniNode-ai/
-# omnimarket/commits/...". commit_sha itself carries no repo attribution
-# (2026-07-30 ticket finding): for an OCC self-bind receipt it is implicitly
-# this repo; for a receipt documenting a check against a PRODUCT repo, this
-# embedded pattern in check_value/probe_command/actual_output is the only
-# recoverable hint of which repo to resolve it against.
-_REPO_HINT_RE = re.compile(r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/")
+# A cross-repo citation embedded in probe text. Two corpus conventions,
+# both observed in the live 2026-08-19 bounded audit of this-week receipts:
+# the `gh api repos/<owner>/<repo>/...` URL-path form, and the far more
+# common `gh pr view <n> --repo <owner>/<repo> ...` CLI-flag form (the
+# `occ-evidence-source-autobind` verifier's standard probe shape —
+# corroborated live: 109 of 162 audited receipt files matched via
+# `evidence_item_id` alone, and the `--repo` flag form additionally covers
+# their `dod-occ-evidence-admissibility-validator`-shaped cohort siblings,
+# which reuse the SAME probe_command text). commit_sha itself carries no
+# repo attribution (2026-07-30 ticket finding): for an OCC self-bind receipt
+# it is implicitly this repo; for a receipt documenting a check against a
+# PRODUCT repo, this embedded pattern in check_value/probe_command/
+# actual_output is the only recoverable hint of which repo to resolve it
+# against. An initial narrower version of this pattern (URL-path form only)
+# produced a real false-positive class against the audit — see PR body.
+_REPO_HINT_RE = re.compile(
+    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/|--repo[= ]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b"
+)
 
 
 def _after_omn_15461_cutoff(run_timestamp: datetime) -> bool:
@@ -830,12 +841,21 @@ def _commit_exists_via_github_api(sha: str, repo: str) -> bool:
     return result.returncode == 0
 
 
+# The `occ-evidence-source-autobind` verifier's standard item-id shape,
+# e.g. "dod-OmniNode-ai-omnimarket-pr-2087" or its "-ci" cohort sibling.
+# Falls back to this when neither probe-text pattern in _REPO_HINT_RE
+# matches (a receipt whose own check_value carries no repo-identifying
+# text at all — audit found this shape too, alongside the flag-form gap).
+_ITEM_ID_REPO_RE = re.compile(r"^dod-OmniNode-ai-([A-Za-z0-9_.-]+)-pr-\d+")
+
+
 def _repo_hint(receipt: ModelDodReceipt) -> str | None:
     """Best-effort extraction of a cross-repo citation embedded in probe text.
 
     Returns the first ``<owner>/<repo>`` match from ``check_value``,
-    ``probe_command``, or ``actual_output`` (in that order), or ``None`` if
-    none of them embeds one. See :data:`_REPO_HINT_RE`.
+    ``probe_command``, or ``actual_output`` (in that order); if none of them
+    embeds one, falls back to the autobind ``evidence_item_id`` naming
+    convention (see :data:`_ITEM_ID_REPO_RE`). ``None`` if nothing matches.
     """
     for field_name in ("check_value", "probe_command", "actual_output"):
         value = getattr(receipt, field_name, None)
@@ -843,7 +863,10 @@ def _repo_hint(receipt: ModelDodReceipt) -> str | None:
             continue
         match = _REPO_HINT_RE.search(value)
         if match is not None:
-            return match.group(1)
+            return match.group(1) or match.group(2)
+    id_match = _ITEM_ID_REPO_RE.match(receipt.evidence_item_id)
+    if id_match is not None:
+        return f"OmniNode-ai/{id_match.group(1)}"
     return None
 
 

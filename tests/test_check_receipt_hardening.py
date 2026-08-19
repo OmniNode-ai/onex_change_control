@@ -1098,6 +1098,36 @@ def test_repo_hint_returns_none_when_absent() -> None:
     assert check_receipt_hardening._repo_hint(receipt) is None
 
 
+def test_repo_hint_extracts_from_gh_cli_repo_flag() -> None:
+    """The occ-evidence-source-autobind verifier's standard probe shape —
+    found live in the 2026-08-19 bounded audit, initially missed by a
+    narrower URL-path-only version of the hint regex (a real false-positive
+    class against genuine receipts, corrected before this PR landed)."""
+    receipt = _receipt_model(
+        check_value="gh pr view 903 --repo OmniNode-ai/omninode_infra --json number"
+    )
+    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omninode_infra"
+
+
+def test_repo_hint_falls_back_to_autobind_item_id() -> None:
+    """A cohort sibling (e.g. dod-occ-evidence-admissibility-validator) can
+    carry no repo-identifying text of its own; when the item's OWN id
+    follows the autobind naming convention, that is used instead."""
+    receipt = _receipt_model(
+        evidence_item_id="dod-OmniNode-ai-omnimarket-pr-2087",
+        check_value="uv run pytest tests/test_evidence_admissibility.py -q",
+    )
+    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omnimarket"
+
+
+def test_repo_hint_item_id_without_repo_pattern_returns_none() -> None:
+    receipt = _receipt_model(
+        evidence_item_id="dod-occ-evidence-admissibility-validator",
+        check_value="uv run pytest tests/test_evidence_admissibility.py -q",
+    )
+    assert check_receipt_hardening._repo_hint(receipt) is None
+
+
 def test_commit_sha_existence_superseded_receipt_is_excused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
