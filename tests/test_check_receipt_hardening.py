@@ -1128,6 +1128,73 @@ def test_repo_hint_item_id_without_repo_pattern_returns_none() -> None:
     assert check_receipt_hardening._repo_hint(receipt) is None
 
 
+def test_repo_hint_rejects_unrecognized_repo() -> None:
+    """Adversarial (found in independent verification, 2026-08-19): an
+    unrestricted hint match would let free-form probe/narrative text name
+    ANY repo — including one this org has no relationship to — and have a
+    real commit from THAT repo resolve as if it proved something about this
+    receipt. An unrecognized '<owner>/<repo>' must be treated as no hint at
+    all, not trusted."""
+    receipt = _receipt_model(
+        check_value="gh pr view 1 --repo torvalds/linux --json number"
+    )
+    assert check_receipt_hardening._repo_hint(receipt) is None
+
+
+def test_repo_hint_rejects_unrecognized_repo_in_actual_output() -> None:
+    """actual_output is free-form narrative, not machine-generated — an even
+    wider surface for an incidental/adversarial '<owner>/<repo>' mention
+    than check_value/probe_command. Same rejection applies."""
+    receipt = _receipt_model(
+        check_value="uv run pytest tests/ -q",
+        actual_output="See also repos/some-attacker/evilrepo/commits/deadbeef.",
+    )
+    assert check_receipt_hardening._repo_hint(receipt) is None
+
+
+def test_repo_hint_skips_unrecognized_match_to_find_a_recognized_one() -> None:
+    """A candidate repo mentioned earlier in the text that is NOT recognized
+    must not shadow a genuine, recognized hint appearing later — _repo_hint
+    scans every candidate in a field, not just the first."""
+    receipt = _receipt_model(
+        check_value=(
+            "see torvalds/linux for prior art; actual check: "
+            "gh pr view 42 --repo OmniNode-ai/omnimarket --json number"
+        )
+    )
+    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omnimarket"
+
+
+def test_commit_sha_resolver_does_not_bypass_via_unrecognized_repo_hint() -> None:
+    """End-to-end adversarial case: a fabricated commit_sha (never seen
+    locally or in OCC) paired with probe text naming an unrelated real repo
+    must still FAIL — the unrecognized hint must not let remote_exists get
+    called against it at all."""
+    calls: list[str] = []
+
+    def tracking_remote_exists(_sha: str, repo: str) -> bool:
+        calls.append(repo)
+        # Simulate: this SHA genuinely exists in torvalds/linux (it does, in
+        # reality), but that must never be consulted for an unrecognized repo.
+        return repo == "torvalds/linux"
+
+    receipt = _receipt_model(
+        commit_sha="1da177e4c3f41524e886b7f1b8a0c1fc7321cac",
+        check_value="gh pr view 1 --repo torvalds/linux --json number",
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
+            r,
+            local_reachable=lambda _sha: False,
+            remote_exists=tracking_remote_exists,
+        ),
+    )
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+    assert "torvalds/linux" not in calls
+
+
 def test_commit_sha_existence_superseded_receipt_is_excused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

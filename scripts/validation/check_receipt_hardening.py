@@ -792,6 +792,45 @@ _REPO_HINT_RE = re.compile(
     r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/|--repo[= ]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b"
 )
 
+# Fail-open guard (found in adversarial verification of this rule, 2026-08-19,
+# same day as the initial widening above): an unrestricted _REPO_HINT_RE match
+# lets ANY "<owner>/<repo>" string appearing anywhere in free-form probe text
+# — including actual_output narrative, which is not machine-generated —
+# resolve a commit_sha against an attacker-choosable repo. Demonstrated live:
+# probe text mentioning "--repo torvalds/linux" makes any real Linux kernel
+# commit hash resolve as "real", regardless of what the receipt is actually
+# about — the exact class of bypass this gate exists to close, reopened
+# through the hint fallback. A hint is only trustworthy when it names a repo
+# this organization actually owns/uses; an unrecognized "<owner>/<repo>" is
+# not a fallback signal, it is noise (or an attack), and must NOT be resolved
+# against. Mirrors the Repository Registry in CLAUDE.md plus the personal
+# repos observed live in the receipt corpus (steel_onslaught, omnicursor).
+_KNOWN_REPO_HINTS: frozenset[str] = frozenset(
+    f"OmniNode-ai/{name}"
+    for name in (
+        "knowledge-base",
+        "knowledge-base-internal",
+        "omniclaude",
+        "omnibase_core",
+        "omnibase_infra",
+        "omnibase_spi",
+        "omnidash",
+        "omnidash-archived",
+        "omniintelligence",
+        "omnimemory",
+        "omniweb",
+        "onex_change_control",
+        "omnibase_compat",
+        "omnimarket",
+        "omninode_infra",
+        "omnistream",
+        "omnidash-v2-new",
+        "omnicrush",
+        "omninode_bridge",
+        "omnicursor",
+    )
+) | frozenset({"jonahgabriel/steel_onslaught"})
+
 
 def _after_omn_15461_cutoff(run_timestamp: datetime) -> bool:
     ts = run_timestamp if run_timestamp.tzinfo else run_timestamp.replace(tzinfo=UTC)
@@ -853,20 +892,28 @@ def _repo_hint(receipt: ModelDodReceipt) -> str | None:
     """Best-effort extraction of a cross-repo citation embedded in probe text.
 
     Returns the first ``<owner>/<repo>`` match from ``check_value``,
-    ``probe_command``, or ``actual_output`` (in that order); if none of them
-    embeds one, falls back to the autobind ``evidence_item_id`` naming
-    convention (see :data:`_ITEM_ID_REPO_RE`). ``None`` if nothing matches.
+    ``probe_command``, or ``actual_output`` (in that order) that is also a
+    member of :data:`_KNOWN_REPO_HINTS`; if none of them embeds a recognized
+    one, falls back to the autobind ``evidence_item_id`` naming convention
+    (see :data:`_ITEM_ID_REPO_RE`), which is itself checked against the same
+    allowlist. ``None`` if nothing recognized matches. An unrecognized
+    ``<owner>/<repo>`` string is deliberately NOT returned — see
+    :data:`_KNOWN_REPO_HINTS`'s comment for why an unrestricted match is a
+    fail-open hole, not a helpful fallback.
     """
     for field_name in ("check_value", "probe_command", "actual_output"):
         value = getattr(receipt, field_name, None)
         if not isinstance(value, str):
             continue
-        match = _REPO_HINT_RE.search(value)
-        if match is not None:
-            return match.group(1) or match.group(2)
+        for match in _REPO_HINT_RE.finditer(value):
+            candidate = match.group(1) or match.group(2)
+            if candidate in _KNOWN_REPO_HINTS:
+                return candidate
     id_match = _ITEM_ID_REPO_RE.match(receipt.evidence_item_id)
     if id_match is not None:
-        return f"OmniNode-ai/{id_match.group(1)}"
+        candidate = f"OmniNode-ai/{id_match.group(1)}"
+        if candidate in _KNOWN_REPO_HINTS:
+            return candidate
     return None
 
 
