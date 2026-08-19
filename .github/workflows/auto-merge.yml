@@ -43,6 +43,25 @@
 # workflow is NOT a required status check on dev, so narrowing it cannot
 # wedge branch protection (verified live via required_status_checks readback
 # before landing).
+#
+# OMN-16117: Governance-path exclusion. This workflow arms auto-merge for
+# every PR authored by `jonahgabriel`, gated only on `occ-preflight /
+# eligibility`. Agent sessions in this org share that GitHub identity, so an
+# agent-opened PR touching `grants/prod_promotion_grants.yaml` (the
+# OMN-13418 prod-promotion trust anchor) or `allowlists/skip_token_approvals
+# .yaml` could be armed and merged unattended with zero human review
+# (onex_change_control@main has requiresApprovingReviews=false). Live
+# near-miss 2026-08-17 ~05:30Z: a freshly opened grant PR was armed within
+# seconds; containment was manual (convertPullRequestToDraft). This is a
+# DIFFERENT closure from OMN-14919's check_bot_authored_authz_guard in
+# ci.yml, which only rejects BOT-authored (author type == Bot) PRs -- an
+# agent acting as jonahgabriel has author type User, so that guard never
+# fires here. A new "Check governance-path exclusion" step queries the PR's
+# changed-file set and gates the Enable auto-merge / Enqueue steps below on
+# it, independent of occ-preflight outcome or actor identity. Fail-closed:
+# if the changed-file set cannot be determined, it is treated as touching a
+# governance file. The decision logic is unit-tested in
+# scripts/ci/check_governance_paths.py rather than inlined in bash/YAML.
 name: Auto-Merge
 
 on:
@@ -171,11 +190,55 @@ jobs:
             echo "defer=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # OMN-16117: Governance-path exclusion. A PR whose diff touches a
+      # governance file must never be armed for auto-merge or enqueued,
+      # regardless of occ-preflight outcome. Fail-closed: if the
+      # changed-file set cannot be resolved from the GitHub API, this is
+      # treated identically to "touches a governance file" (excluded) --
+      # never as "safe to arm". The pure decision logic (and the
+      # None-vs-empty-list distinction between "undetermined" and
+      # "genuinely touches nothing") lives in
+      # scripts/ci/check_governance_paths.py and is unit-tested there.
+      - name: Check governance-path exclusion
+        id: governance_gate
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.actor == 'jonahgabriel'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # NOTE: --paginate cannot be combined with --jq here (gh emits one
+          # JSON array PER PAGE, so a >100-file PR would silently produce
+          # multiple concatenated JSON documents and --jq would only see the
+          # first page). Fetch raw pages, then `jq -s` (slurp) combines
+          # however many page-documents were emitted into one array before
+          # flattening to filenames -- correct for both the 1-page and
+          # multi-page case.
+          if changed_files_json="$(gh api "repos/${GH_REPO}/pulls/${PR}/files" --paginate 2>/dev/null | jq -c -s '[.[][].filename]')" \
+            && [ -n "$changed_files_json" ]; then
+            :
+          else
+            echo "::warning::Could not resolve the changed-file set for PR #${PR} via the GitHub API; failing closed (OMN-16117)."
+            changed_files_json="null"
+          fi
+
+          result="$(python3 scripts/ci/check_governance_paths.py check --changed-files-json "$changed_files_json")"
+          echo "governance-path check: ${result}"
+
+          if [ "$result" = "exclude" ]; then
+            echo "::warning::PR #${PR} touches a governance file (or its changed-file set could not be determined) — auto-merge will NOT be armed (OMN-16117)."
+            echo "exclude=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exclude=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enable auto-merge
         if: >-
           steps.resolve.outputs.skip != 'true' &&
           steps.resolve.outputs.actor == 'jonahgabriel' &&
-          steps.occ_gate.outputs.defer != 'true'
+          steps.occ_gate.outputs.defer != 'true' &&
+          steps.governance_gate.outputs.exclude != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -201,7 +264,8 @@ jobs:
         if: >-
           steps.resolve.outputs.skip != 'true' &&
           steps.resolve.outputs.actor == 'jonahgabriel' &&
-          steps.occ_gate.outputs.defer != 'true'
+          steps.occ_gate.outputs.defer != 'true' &&
+          steps.governance_gate.outputs.exclude != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
