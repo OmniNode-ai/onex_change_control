@@ -109,3 +109,25 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5842 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2790-verifier"
+    description: >
+      PR #2790 on OmniNode-ai/omnibase_infra -- payload-verdict downgrade fix in `_status_for_terminal_topic`
+      (service_pattern_b_broker.py). Per the adversarial-receipts rule (implementer cannot self-author),
+      this entry is VERIFIER-authored -- not by the build lane that made the change -- per this ticket's
+      history of 3 prior merged-but-not-live-verified cycles, which is why a differential proof rather
+      than a single-head content probe. Fetches the actual file content at BOTH the PR's merge-base (b99e1a9a90)
+      and its head (d255bb7d91) via the GitHub contents API and asserts the new 3rd `payload: object =
+      None` parameter on `_status_for_terminal_topic` is ABSENT at merge-base and PRESENT at head -- a
+      real RED-before/GREEN-after differential on the function signature itself, not a single-point existence
+      check. Independently confirmed by reading the PR diff directly (not asserted from its own description):
+      the change threads `terminal.payload` through to a new payload-aware verdict read (`resolve_terminal_verdict`),
+      backed by a new test file with an explicit backward-compatibility test for the 2-arg call shape.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          base_body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_pattern_b_broker.py?ref=b99e1a9a90dcf889ef4e77d02b52845b85bb3a8c"
+          --jq .content | base64 -d)"; head_body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_pattern_b_broker.py?ref=d255bb7d91026c8ab15b52bc70f71da22d2a5e34"
+          --jq .content | base64 -d)"; ! printf '%s' "$base_body" | grep -qF 'payload: object = None'
+          && printf '%s' "$head_body" | grep -qF 'payload: object = None' && echo "OMN-15468-PR-2790-DIFFERENTIAL-PROBE-PASS:
+          _status_for_terminal_topic's new payload parameter is absent at merge-base and present at head"
