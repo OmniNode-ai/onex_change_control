@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16265"
+title: "OCC evidence for OMN-16265"
+summary: >
+  Manual OCC companion for OmniNode-ai/omnibase_infra PR #2809 (permanent fault-injection fixture node
+  for DLQ offset-withholding proof, OMN-14498 follow-on). Adds node_fault_inject_fixture_compute: a pure
+  COMPUTE handler whose result is sized exactly to the command's inflate_result_bytes field, reproducing
+  the OMN-14498 live-probe amplification technique deterministically, plus a dedicated catalog service
+  (fault-inject-fixture.yaml, opt-in fault-injection bundle) that sets a private, deliberately-unprovisioned
+  KAFKA_DEAD_LETTER_TOPIC override. This is new-capability work (no prior buggy behavior to differential
+  against), so the evidence below is a presence/absence pair across the PR's own merge-base and head:
+  the node package is entirely absent at the merge-base and present with the exact async def handle()
+  dispatch entrypoint at head, backed by a regression test that asserts padding_byte_length equals the
+  requested size. Hand-authored rather than waiting on the live occ_companion_emitter consumer: both the
+  born-path call-occ-autobind run and a manually re-dispatched workflow_dispatch replay for this PR completed
+  their publish steps successfully but the downstream companion PR did not materialize within a ~15min
+  window, consistent with the same-night companion-mint dispatcher congestion already root-caused on sibling
+  PRs this session (see occ#6754 / omnibase_infra#2807 commit message for the same diagnosis).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2809"
+    description: "PR #2809 on OmniNode-ai/omnibase_infra — Evidence-Source (hand-authored: this build
+      lane opened the OCC PR directly rather than waiting on the live occ_companion_emitter consumer,
+      per the operator-authorized hand-authored-companion pattern established on occ#6633/occ#6640/occ#6754;
+      both the born-path autobind publish and a manual workflow_dispatch replay for this PR succeeded
+      but the downstream companion PR did not materialize within a ~15min window)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2809 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2809-before"
+    description: "BEFORE half of the presence/absence pair, pinned to the immutable merge-base commit
+      e3a666db76d85afb18688827bb2a5de70f13212d: the node_fault_inject_fixture_compute package directory
+      does not exist at all in the tree at the merge-base — this is genuinely new capability, not a fix
+      to existing code. Falsifiable: if the directory already existed pre-PR, the GitHub Contents API
+      would return the directory listing instead of a 404 and this probe would return 0."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api \"repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_fault_inject_fixture_compute?ref=e3a666db76d85afb18688827bb2a5de70f13212d\"
+          2>&1 | grep -c 'Not Found'"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2809-after"
+    description: "AFTER half of the presence/absence pair, pinned to the PR's exact head commit 31d8b9b76471d61245678cfb5d9895ba9be6b8df:
+      HandlerFaultInjectFixture.handle() exists as the canonical async def-B dispatch entrypoint (handle(request:
+      ModelX) -> ModelY, no envelope import, no ModelHandlerOutput wrapping — OMN-14355/OMN-14403 canonical
+      shape). Expected exactly 1 occurrence of 'async def handle' in the handler file. Falsifiable: absent
+      or a different signature returns 0."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api \"repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_fault_inject_fixture_compute/handlers/handler_fault_inject_fixture.py?ref=31d8b9b76471d61245678cfb5d9895ba9be6b8df\"
+          --jq '.content' | base64 -d | grep -c 'async def handle'"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2809-regr-test"
+    description: "The regression test exists at the PR head and drives the exact mechanism this fixture
+      is built for: proves the handler's returned padding_byte_length equals the caller-requested size
+      for every parametrized value, including 1_048_600 — deliberately just past the live broker message.max.bytes
+      (~1,048,588) OMN-14498 measured on onex-dev, the exact class of value a deployed run would use to
+      trigger the primary-publish failure this fixture exists to drive. Expected >= 1 occurrence of the
+      byte-length assertion in the new test module."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api \"repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/test_node_fault_inject_fixture_compute/test_handler_fault_inject_fixture.py?ref=31d8b9b76471d61245678cfb5d9895ba9be6b8df\"
+          --jq '.content' | base64 -d | grep -c 'assert result.padding_byte_length == size'"
+  - id: occ-self-bind-pr-6760
+    description: "OCC companion PR #6760 — self-bind for OMN-16265 (OMN-14650). Required by the receipt
+      gate: without a PASS receipt bound to this PR, occ-preflight returns pr_ticket_mismatch."
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/onex_change_control/pulls/6760' --jq '.number' | grep -x
+          '6760'
