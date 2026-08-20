@@ -41,9 +41,14 @@ jobs:
     # allowed to carry -- an EXACT allowlist (scripts/ci/evidence_only_
     # predicate.py), never a substring heuristic: a diff touching scripts/
     # or .github/ is NEVER evidence-only even if it ALSO touches contracts/.
-    # Cheap, hosted-runner, zero self-hosted/LAN dependency (git diff + a
-    # pure-stdlib classifier) -- the same OMN-14127 rationale zone-filter
-    # above already established for a lightweight docs-only classifier.
+    # Cheap and dependency-free (git diff + a pure-stdlib classifier -- no
+    # setup-uv, no package install). Routed through the SAME centralized
+    # public/trusted runner selector as every other job in this file (the
+    # "CI Naming Convention" / OMN-15699 guard rejects a bare `runs-on:`
+    # label) rather than the zone-filter reusable's own unconditional
+    # ubuntu-latest pin -- zone-filter lives in a DIFFERENT repo
+    # (omnibase_core) and its local `runs-on:` is outside this guard's
+    # `.github/workflows` scan.
     #
     # UNCONDITIONAL (no needs/if) so it always runs and can never
     # legitimately be skipped itself. Registered CLASSIFICATION_ONLY (not
@@ -66,13 +71,22 @@ jobs:
     # diff is exactly the diff shape those gates exist to check, so gating
     # them here would be the OMN-16285 "never weaken receipt integrity" hard
     # constraint failing, not succeeding.
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
     outputs:
       evidence_only: ${{ steps.predicate.outputs.evidence_only }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
       - name: Evaluate evidence-only predicate
         id: predicate
         env:
@@ -91,7 +105,7 @@ jobs:
           fi
           echo "Changed files for evidence-only predicate:"
           cat "$changed_file_list"
-          CHANGED_FILES="$(cat "$changed_file_list")" python3 scripts/ci/evidence_only_predicate.py
+          CHANGED_FILES="$(cat "$changed_file_list")" uv run python3 scripts/ci/evidence_only_predicate.py
 
   pre-commit:
     name: Pre-commit
