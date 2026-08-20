@@ -9,10 +9,11 @@ on:
   pull_request:
     branches: [main, dev, "hotfix/**"]
     # OMN-15731: default types (opened/synchronize/reopened) don't retrigger
-    # on a label change. label-gated CI pilot needs `labeled`/`unlabeled` so
-    # applying/removing `ci:ready` fires (or retracts) a heavy CI wave
-    # without requiring a new push; `ready_for_review` is included so a
-    # draft->ready flip also re-evaluates against the label state.
+    # on a label change or a draft->ready flip. `labeled`/`unlabeled` cover
+    # the ci:ready label (transition-window dual-accept path, see the
+    # pre-commit job below); `ready_for_review` covers the now-primary
+    # draft-state admission signal so undrafting a PR fires a full
+    # evaluation on the current head without requiring a new push.
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   merge_group:
   workflow_dispatch:
@@ -36,15 +37,16 @@ jobs:
   pre-commit:
     name: Pre-commit
     needs: [zone-filter]
-    # OMN-15731 label-gated CI pilot: this job is gated here -- and ONLY for
-    # dev-targeting PRs; push/merge_group/main-or-hotfix-targeting PRs are
-    # unaffected (`always()` still holds for them), preserving the
-    # promotion-boundary guarantee exactly as before. Gating `test` and
-    # `type-check` for the `main` promotion boundary would weaken the
-    # unconditional full-suite guarantee root CLAUDE.md rule #4 requires at
-    # that boundary, so they stay ungated there.
+    # OMN-15731 revision 2026-08-18: admission gate migrated from the
+    # `ci:ready` label to native PR draft state -- this job is gated here --
+    # and ONLY for dev-targeting PRs; push/merge_group/main-or-hotfix-
+    # targeting PRs are unaffected (`always()` still holds for them),
+    # preserving the promotion-boundary guarantee exactly as before. Gating
+    # `test` and `type-check` for the `main` promotion boundary would weaken
+    # the unconditional full-suite guarantee root CLAUDE.md rule #4 requires
+    # at that boundary, so they stay ungated there.
     #
-    # Stale-comment correction (same OMN-15731 ticket, later commit): this
+    # Stale-comment correction (same OMN-15731 ticket, earlier commit): this
     # comment previously claimed `test`/`type-check` "already skip on PRs
     # targeting dev by design," so gating them here would add "zero
     # incremental savings." That claim was the exact bug this ticket fixes
@@ -53,11 +55,25 @@ jobs:
     # reading as passing. That carve-out is now removed (see `test`/
     # `type-check` below and their CI-Summary strict block); `test` and
     # `type-check` run unconditionally on non-docs-only PRs, dev included.
-    # This job's own `ci:ready` gate is unaffected by that fix -- it was
-    # never conditioned on the (mis)stated rationale, only on the label --
-    # but the rationale text is corrected here so it does not misdescribe
-    # the file it sits in.
-    if: always() && (github.event_name != 'pull_request' || github.base_ref != 'dev' || contains(github.event.pull_request.labels.*.name, 'ci:ready'))
+    # This job's own admission gate is unaffected by that fix -- it was
+    # never conditioned on the (mis)stated rationale, only on ci:ready/draft
+    # state -- but the rationale text is corrected here so it does not
+    # misdescribe the file it sits in.
+    #
+    # TRANSITION-WINDOW DUAL-ACCEPT: `!draft` is the new primary admission
+    # signal (GitHub-native -- no bot-applied label required, so the
+    # OMN-15888 autobind-companion friction closes structurally: the OCC
+    # companion emitter's PR-creation call carries no `draft` field, so
+    # GitHub defaults every autobind companion to non-draft). The
+    # `contains(...'ci:ready')` arm stays as a fallback so PRs opened before
+    # this migration that already carry the label are not stranded mid-
+    # transition. Do not remove the ci:ready arm in this PR -- it is
+    # retired in a follow-up once open label-gated PRs have drained. Fail-
+    # closed proof is unchanged and structural: `Pre-commit` stays in
+    # STRICT_GATE_JOBS in scripts/ci/ci_summary_gate.py (not
+    # SKIPPABLE_GATE_JOBS), so a `skipped` conclusion -- for either reason --
+    # already fails `CI Summary` closed; no change to that file was needed.
+    if: always() && (github.event_name != 'pull_request' || github.base_ref != 'dev' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci:ready'))
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
