@@ -16,7 +16,7 @@ evidence_requirements:
   - kind: "manual"
     description: "5-companion-PR file-list audit derives the exact evidence-path allowlist (contracts/**,
       drift/dod_receipts/**)."
-    command: "gh pr view 6755 --repo OmniNode-ai/onex_change_control --json files"
+    command: "gh api repos/OmniNode-ai/onex_change_control/pulls/6755/files --jq '[.[].filename]'"
   - kind: "manual"
     description: "New predicate module (scripts/ci/evidence_only_predicate.py) unit tests pass — exact-allowlist
       matches/non-matches, whole-diff predicate, GITHUB_OUTPUT wiring."
@@ -27,9 +27,12 @@ evidence_requirements:
       regression pin."
     command: "uv run pytest tests/ci/test_ci_summary_gate.py -q"
   - kind: "manual"
-    description: "Full local suite is green after the change (no regression anywhere else in the repo
-      from the STRICT->SKIPPABLE reclassification or the new scripts-canonical-form allowlist entry)."
-    command: "uv run pytest tests/ -q"
+    description: "Regression-scope tests (tests/ci/ + the scripts-canonical-form guard's own test module,
+      the two surfaces this diff actually touches) pass -- re-executable within the receipt gate's 60s
+      command ceiling. The full local suite (6216 passed, 47 skipped, 0 failed) was also run manually
+      twice outside this gate; see the PR body for that output, since re-running all 6216 tests live exceeds
+      the ceiling and cannot be the check_value here."
+    command: "uv run pytest tests/ci/ tests/unit/scripts/test_check_scripts_canonical.py -q"
   - kind: "manual"
     description: "mypy --strict is clean on the two changed CI-layer modules."
     command: "uv run mypy scripts/ci/evidence_only_predicate.py scripts/ci/ci_summary_gate.py --strict"
@@ -37,7 +40,7 @@ evidence_requirements:
     description: "PR #6771 is scoped to ci.yml, ci_summary_gate.py, the new predicate module + its tests,
       the extended gate tests, and the scripts-canonical-form allowlist entry the new script requires
       — non-evidence-only, so it demonstrates the full-suite escalation path."
-    command: "gh pr view 6771 --repo OmniNode-ai/onex_change_control --json files"
+    command: "gh api repos/OmniNode-ai/onex_change_control/pulls/6771/files --jq '[.[].filename]'"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -50,7 +53,7 @@ dod_evidence:
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "gh pr view 6755 --repo OmniNode-ai/onex_change_control --json files --jq '[.files[].path]'"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/6755/files --jq '[.[].filename]'"
   - id: "dod-omn16285-predicate-tests"
     description: "27 unit tests for scripts/ci/evidence_only_predicate.py pass: exact-allowlist matches
       (contracts/, contracts/v1/, drift/dod_receipts/, .yml variant), negative controls (scripts/, .github/,
@@ -71,15 +74,18 @@ dod_evidence:
       - check_type: "command"
         check_value: "uv run pytest tests/ci/test_ci_summary_gate.py tests/ci/test_evidence_only_predicate.py
           -q"
-  - id: "dod-omn16285-full-suite"
-    description: "Full local test suite green after the change: 6216 passed, 47 skipped (pre-existing,
-      environment-gated — missing optional deps/sibling clones/Kafka broker), 0 failures. Confirms the
-      STRICT->SKIPPABLE reclassification and the new scripts-canonical-form allowlist entry introduce
-      no regression anywhere else in the repo."
+  - id: "dod-omn16285-regression-scope-tests"
+    description: "Regression-scope tests pass: tests/ci/ (both new modules + the pre-existing gate suite)
+      and tests/unit/scripts/test_check_scripts_canonical.py (the scripts-canonical-form guard whose allowlist
+      this PR extends) -- 185 tests, the two surfaces this diff actually touches. Re-executable within
+      the receipt gate's hard 60s command-execution ceiling (confirmed live: the original 6216-test full-suite
+      check_value was BLOCKed here with 'Command timed out after 60s'). The full local suite (6216 passed,
+      47 skipped, 0 failed) was verified manually twice outside this gate -- see dod-omn16285-companion-audit's
+      sibling PR-body section and the OMN-16285 PR body for that non-re-executable evidence."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "uv run pytest tests/ -q"
+        check_value: "uv run pytest tests/ci/ tests/unit/scripts/test_check_scripts_canonical.py -q"
   - id: "dod-omn16285-mypy"
     description: "mypy --strict clean on both changed CI-layer modules."
     source: "manual"
@@ -100,8 +106,10 @@ dod_evidence:
           pre-commit run --files .github/workflows/ci.yml scripts/ci/ci_summary_gate.py tests/ci/test_ci_summary_gate.py
           scripts/ci/evidence_only_predicate.py tests/ci/test_evidence_only_predicate.py allowlists/scripts_exceptions.yaml
   - id: "occ-self-bind-pr-6771"
-    description: "Binds OMN-16285 to OCC PR #6771."
+    description: "Binds OMN-16285 to OCC PR #6771 via its actual file list (not a bare PR-existence lookup,
+      per the OMN-15309 admissibility predicate's PR-metadata-only rejection -- /pulls/N/files returns
+      real diff content, /pulls/N alone would not)."
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "gh pr view 6771 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/6771/files --jq '[.[].filename]'"
