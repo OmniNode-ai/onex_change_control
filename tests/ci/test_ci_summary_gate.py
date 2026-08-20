@@ -184,20 +184,25 @@ def test_no_job_carries_a_base_ref_dev_exemption() -> None:
 
     Regex-scans every workflow file for the `base_ref != 'dev'` skip-vector
     shape. The ONLY reviewed, still-intentional survivor is `pre-commit`'s
-    ci:ready label gate in ci.yml (which is deliberately STRICT, not
-    SKIPPABLE -- an unlabeled dev PR is meant to fail, not silently pass).
+    admission gate in ci.yml (which is deliberately STRICT, not SKIPPABLE --
+    an unadmitted dev PR is meant to fail, not silently pass).
     """
 
     pattern = re.compile(r"base_ref\s*!=\s*['\"]dev['\"]")
     allowed = {
-        # ci.yml lines 60 and 84: pre-commit's own `if:` (job-level) and its
-        # "Run full pre-commit" step -- the OMN-15731 ci:ready label pilot.
-        # Reviewed and intentional: see STRICT_GATE_JOBS's "Pre-commit" entry
-        # comment in ci_summary_gate.py.
+        # ci.yml: pre-commit's own `if:` (job-level) -- the OMN-15731
+        # admission-gate pilot, revised 2026-08-18 to make draft state
+        # (`!github.event.pull_request.draft`) the primary signal with
+        # `ci:ready` retained as a transition-window fallback. Reviewed and
+        # intentional: see STRICT_GATE_JOBS's "Pre-commit" entry comment in
+        # ci_summary_gate.py and TestDraftStateGateMigrationOmn15731Revision
+        # in test_label_gated_ci_pilot_omn15731.py.
         (
             "ci.yml",
             "if: always() && (github.event_name != 'pull_request' || "
-            "github.base_ref != 'dev' || contains(github.event.pull_request"
+            "github.base_ref != 'dev' || "
+            "!github.event.pull_request.draft || "
+            "contains(github.event.pull_request"
             ".labels.*.name, 'ci:ready'))",
         ),
     }
