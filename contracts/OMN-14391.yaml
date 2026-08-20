@@ -1,0 +1,173 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14391"
+title: "test(OMN-14391): durable dispatch-seam regression for HandlerLedgerAppend.handle()"
+summary: >-
+  omnibase_infra PR #2264 adds a durable, re-runnable integration test that drives a real dict-shaped
+  envelope through the actual dispatch seam (wire_from_manifest -> MessageDispatchEngine.dispatch -> _make_dispatch_callback
+  -> HandlerLedgerAppend.handle()) wired from the real on-disk node_ledger_write_effect/contract.yaml
+  via discover_contracts(). Only HandlerLedgerAppend.append() (the Postgres I/O boundary) is mocked. Independent
+  adversarial verification reproduced the RED-before claim: renaming handle() to handle_disabled() (simulating
+  the pre-OMN-14134 state) made the primary test fail with the exact predicted _missing_handle ModelOnexError;
+  reverting restored GREEN with a clean worktree. This is ask (1) of OMN-14391 only (local/CI dispatch-seam
+  test, no live dependency); ask (2) (live Kafka produce -> consume -> event_ledger readback) remains
+  blocked on OMN-14136 and is not attempted in this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2264-head-a5dfd4e2"
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2264 at head a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a.
+      Reproduced (not merely trusted) the RED-before/GREEN-after claim: baseline run of tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py
+      passed (2 passed); renamed HandlerLedgerAppend.handle to handle_disabled in the worktree to simulate
+      the pre-OMN-14134 state and re-ran -- test_ledger_append_dispatches_through_real_engine_to_handle
+      FAILED with the exact predicted failure (status=handler_error, ModelOnexError "does not expose a
+      callable handle() or handle_async() dispatch entrypoint"); reverted the mutation and re-ran -- 2
+      passed again, git status clean. Confirmed the only mocked boundary is HandlerLedgerAppend.append()
+      (Postgres I/O) by reading the diff and by the mutation result itself (breaking handle() broke the
+      test, proving handle() runs for real). Confirmed via source read of message_dispatch_engine.py that
+      _materialize_envelope_with_bindings ALWAYS converts the envelope to a dict before invoking the dispatch
+      callback, so the test exercises the real dict-shape class of bug OMN-14139/14140 fixed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+          && grep -q '^pr_number: 2264$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+          && grep -q 'a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-a5dfd4e2/command.yaml
+  - id: "dod-deploy-assessment-head-a5dfd4e2"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2264 head a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a:
+      the diff is limited to one net-new integration test file (tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py).
+      It does not change production source, register a new service deployment, mutate runtime configuration,
+      perform a deploy or restart, change topics, add a migration, or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-a5dfd4e2/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-a5dfd4e2/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14391 central contract and PASS
+      receipts for omnibase_infra PR #2264 head a5dfd4e2efcdbcab1a55ec6457119f7c79ab5d5a. The receipt
+      binds the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14391-occ-pr2264' drift/dod_receipts/OMN-14391/dod-occ-self-commit/command.yaml
+  - id: "dod-omnibase-infra-pr-2264-head-35771025"
+    description: >-
+      Follow-up independent verification of omnibase_infra PR #2264 at head 35771025fc8e5eb261395aa080a01b0d6a41dcf2.
+      The follow-up product commit removes the stale auto_merge CLI skill mapping after CI proved skill_mapping.yaml
+      referenced node_auto_merge_effect, which is absent from the canonical omnimarket onex.nodes catalog.
+      Local verification reran the exact failing skill-node-mapping class and the full CLI skill unit
+      file with OMNIMARKET_SRC pointed at the canonical omnimarket checkout; both passed. The branch pre-commit
+      hooks also passed with OMNI_HOME/OMNIMARKET_SRC set so the node-migration sync hook could resolve
+      the canonical source tree.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-35771025/command.yaml
+          && grep -q '^pr_number: 2264$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-35771025/command.yaml
+          && grep -q '35771025fc8e5eb261395aa080a01b0d6a41dcf2' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-35771025/command.yaml
+          && grep -q '31 passed, 15 skipped' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-35771025/command.yaml
+  - id: "dod-deploy-assessment-head-35771025"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2264 head 35771025fc8e5eb261395aa080a01b0d6a41dcf2:
+      compared with the previously verified test-only head, the follow-up diff removes one stale CLI skill
+      mapping and its unit-test expectation. It does not register a service deployment, mutate runtime
+      configuration, perform a deploy or restart, change topics, add a migration, or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-35771025/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-35771025/command.yaml
+          && grep -q 'skill_mapping.yaml' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-35771025/command.yaml
+  - id: "dod-occ-pr3998-self-eligibility"
+    description: >-
+      OCC self-binding for onex_change_control PR #3998: this follow-up evidence PR carries fresh product/deploy
+      PASS receipts for omnibase_infra PR #2264 head 35771025fc8e5eb261395aa080a01b0d6a41dcf2 and is locally
+      eligible under validator_occ_merge_eligibility using the in-tree OMN-14391 contract and receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-occ-pr3998-self-eligibility/command.yaml
+          && grep -q '^pr_number: 3998$' drift/dod_receipts/OMN-14391/dod-occ-pr3998-self-eligibility/command.yaml
+          && grep -q '"eligible": true' drift/dod_receipts/OMN-14391/dod-occ-pr3998-self-eligibility/command.yaml
+  - id: "dod-omnibase-infra-pr-2264-head-26e1c3e9"
+    description: >-
+      Final verification of omnibase_infra PR #2264 at merge-updated head 26e1c3e915a98832519ad9f2a35534915bb6c071.
+      The product branch was merged with current origin/dev, preserving the removal of the stale auto_merge
+      mapping while accepting the dev-side explanatory comments. Local verification after conflict resolution
+      reran the exact skill-node-mapping checks, the full CLI skill unit file, the original dispatch-seam
+      integration test, and the changed-file pre-commit set with OMNI_HOME/OMNIMARKET_SRC supplied; all
+      passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-26e1c3e9/command.yaml
+          && grep -q '^pr_number: 2264$' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-26e1c3e9/command.yaml
+          && grep -q '26e1c3e915a98832519ad9f2a35534915bb6c071' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-26e1c3e9/command.yaml
+          && grep -q 'tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py::test_ledger_append_dispatches_through_real_engine_to_handle
+          PASSED' drift/dod_receipts/OMN-14391/dod-omnibase-infra-pr-2264-head-26e1c3e9/command.yaml
+  - id: "dod-deploy-assessment-head-26e1c3e9"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2264 head 26e1c3e915a98832519ad9f2a35534915bb6c071:
+      after merging current origin/dev, the PR diff against dev is exactly one net-new integration test
+      file under tests/integration/runtime/. It does not change production source, register a service
+      deployment, mutate runtime configuration, perform a deploy or restart, change topics, add a migration,
+      or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-26e1c3e9/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-26e1c3e9/command.yaml
+          && grep -q 'tests/integration/runtime/test_ledger_write_effect_dispatch_seam.py' drift/dod_receipts/OMN-14391/dod-deploy-assessment-head-26e1c3e9/command.yaml
+  - id: "dod-occ-pr4002-self-eligibility"
+    description: >-
+      OCC self-binding for onex_change_control PR #4002: this final evidence PR carries fresh product/deploy
+      PASS receipts for omnibase_infra PR #2264 head 26e1c3e915a98832519ad9f2a35534915bb6c071 and is locally
+      eligible under validator_occ_merge_eligibility using the in-tree OMN-14391 contract and receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-occ-pr4002-self-eligibility/command.yaml
+          && grep -q '^pr_number: 4002$' drift/dod_receipts/OMN-14391/dod-occ-pr4002-self-eligibility/command.yaml
+          && grep -q '"eligible": true' drift/dod_receipts/OMN-14391/dod-occ-pr4002-self-eligibility/command.yaml
+  - id: "dod-occ-pr4003-self-eligibility"
+    description: >-
+      OCC self-binding for onex_change_control PR #4003: this repair PR adds append-stable per-entry contract
+      hashes to the legacy OMN-14391 receipts whose whole-file contract_sha256 values became stale after
+      later append-only evidence. The PR is locally eligible under validator_occ_merge_eligibility using
+      the in-tree OMN-14391 contract and receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14391/dod-occ-pr4003-self-eligibility/command.yaml
+          && grep -q '^pr_number: 4003$' drift/dod_receipts/OMN-14391/dod-occ-pr4003-self-eligibility/command.yaml
+          && grep -q '"eligible": true' drift/dod_receipts/OMN-14391/dod-occ-pr4003-self-eligibility/command.yaml

@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14110"
+evidence_item_id: "dod-omninode_infra-pr-581"
+check_type: "command"
+check_value: "cd docker/onex-api && env -u PYTHONPATH .venv/bin/python -m pytest tests/test_acl_provisioner_conformance.py
+  tests/test_msk_acl_manager.py tests/test_kafka_acl_manager.py tests/test_validation_utils.py -q"
+status: PASS
+run_timestamp: "2026-07-11T01:50:00Z"
+commit_sha: 1d2f6d476a35e9157d40698ed1dc4e65aa8cb6c9
+runner: "omn-14110-independent-verifier"
+verifier: "occ-evidence-lane"
+pr_number: 581
+probe_command: >-
+  cd /Users/jonah/Code/omni_home/omni_worktrees/OMN-14110-verify/omninode_infra/docker/onex-api && env
+  -u PYTHONPATH .venv/bin/python -m pytest tests/test_acl_provisioner_conformance.py -v; # grep: validate_tenant_slug
+  call sites (kafka_acl_manager:309 first-stmt, msk_acl_manager:243 first-stmt + # :112 in build_tenant_resource_arns;
+  only non-test caller main.py:1267 routes through the validated fn); # independent adversarial probe:
+  20 malicious inputs rejected (Cyrillic/fullwidth look-alikes, null byte, # newline/tab/space, wildcards,
+  path-traversal, leading-digit, hyphens, case, length) + fail-closed # build_tenant_resource_arns('*');
+  # regression: 4 ACL/MSK/identity suites; # gh pr checks 581
+probe_stdout: |
+  27 passed in 0.13s
+  conformance: test_rejects_wildcard_and_path_chars_before_any_call PASSED for all 16 = {*, ?, /, tenant-*, a/../b, '   ', 'a b', 'a\tb'} x {redpanda, msk}; each asserts provisioned_state_is_empty() (zero broker/AWS calls), not merely ValueError raised
+  grep: tenant_identity.validate_tenant_slug called first-statement in ensure_tenant_kafka_acls (kafka_acl_manager.py:309) and MSKACLProvisioner.ensure_tenant_acls (msk_acl_manager.py:243), and inside build_tenant_resource_arns (msk_acl_manager.py:112) before any ARN format; no unguarded caller of build_tenant_resource_arns/_role_name
+  adversarial probe: 20 malicious inputs rejected incl Cyrillic 'a' U+0430, fullwidth 'a' U+FF41, null byte, internal newline, internal tab, internal space, leading digit, leading/trailing hyphen, consecutive hyphens, uppercase, 2-char, 64-char; valid slugs accepted+stripped; build_tenant_resource_arns(cluster,'acme') -> topic ARN '.../tenant-acme.*' (correctly scoped, no 'tenant-*'); build_tenant_resource_arns(cluster,'*') raised ValueError (fail-closed, no ARN)
+  regression: 268 passed, 0 failed (test_acl_provisioner_conformance + test_msk_acl_manager + test_kafka_acl_manager + test_validation_utils)
+  gh pr checks 581: real gates GREEN (Python Tests, pytest, pre-commit, Bandit, Trivy, Scan for secrets, Contract Compliance, deploy-gate, CodeRabbit Thread Check); only reds = OCC gate (verify / verify, occ-preflight/eligibility) this companion satisfies
+actual_output: >-
+  PASS: at head 1d2f6d476a35e9157d40698ed1dc4e65aa8cb6c9 the ARN-wildcard-injection fix is real, complete,
+  and defense-in-depth. The shared fail-closed validator tenant_identity.validate_tenant_slug (charset
+  ^[a-z][a-z0-9-]{1,61}[a-z0-9]$ plus a separate consecutive-hyphen reject) is invoked as the FIRST executable
+  statement of BOTH ProtocolBrokerACLProvisioner entry points and again inside build_tenant_resource_arns,
+  so a malicious slug ('*', '?', '/', path-traversal, whitespace, non-ASCII look-alike, null byte) can
+  never reach an IAM Resource ARN or a Kafka ACL prefix or any broker/AWS call. The conformance suite
+  proves rejection via zero-broker/AWS-call state-emptiness across BOTH providers x 8 malicious slugs,
+  not merely that an exception raised; an independent adversarial probe of 20 further edge cases confirmed
+  the same, and build_tenant_resource_arns('*') fails closed with no ARN minted. 268 ACL/MSK/identity
+  regression tests pass. On #581 every real CI gate is green; the only reds are the OCC evidence gate
+  this companion closes. No runtime node, contract, or deploy scope was touched.
+exit_code: 0
+branch: "jonah/omn-14110-msk-per-tenant-iam-acl-adapter"
+contract_sha256: "sha256:3bbd405db0b9bee6983ab3ea91bfa4fe34822cbc4c8400196d8e35666e62ef9a"

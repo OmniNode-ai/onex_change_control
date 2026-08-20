@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13661"
+title: "Add per-day tier-mix percentages (local/cheap/prem) to the delegation savings-series projection"
+summary: >-
+  Extends the bus-fed delegation savings-over-time series projection (OMN-13648 migration 078) with a
+  per-UTC-day tier mix so the delegation dashboard depth view can render how each day's spend split across
+  routing tiers. omnimarket PR #1463 adds node-owned migration 079, which CREATE-OR-REPLACEs the projection_delegation_savings_series
+  view to append three additive columns -- local_pct, cheap_pct, prem_pct -- alongside the existing bucket
+  / actual_cost_usd / baseline_cost_usd / savings_usd / task_count. The tier mix is computed in the projection
+  itself from the now-authoritative delegation_events.cost_tier_name (populated on the common path by
+  OMN-13649 migration 0018 + write-path #1458), collapsed to three display buckets by the canonical projection
+  rule: cost_tier_name 'local'/'free_local' -> local, 'cheap_cloud' / 'cheap_frontier' -> cheap, 'claude'
+  -> premium. savings_estimates-sourced rows carry NO cost_tier_name, so they are not_tier_routed: EXCLUDED
+  from the tier-percentage denominator (per the T3/OMN-13662 rule) yet still counted in task_count. Each
+  percentage is count(bucket rows) / count(tier-routed rows) per day, NULLIF-guarded. The append is non-breaking
+  (CREATE OR REPLACE column add; existing consumers unaffected) and the projection_api exposure onex.snapshot.projection.delegation.savings-series.v1
+  now lists the three new columns. omnibase_infra PR #2118 vendors the byte-identical migration 079 into
+  docker/migrations/forward/nodes/node_projection_savings so a clean redeploy materializes the extended
+  view. No wire DTO change, no new node, no new REST route, and no client-side bucketing; the projection
+  API remains the serving surface and the tier mapping lives in the projection rule, not a UI regex.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1463"
+    description: >-
+      omnimarket PR #1463 adds migration 079, which appends local_pct / cheap_pct / prem_pct to the projection_delegation_savings_series
+      view via CREATE OR REPLACE, computes the per-day tier mix from the authoritative delegation_events.cost_tier_name
+      (not_tier_routed rows excluded from the denominator but counted in task_count), and extends the
+      savings-series.v1 projection_api exposure with the three columns. The new TestSavingsSeriesTierMix
+      cases plus the extended _SERIES_COLUMNS golden-chain coverage prove the bucketed daily tier mix
+      and the additive exposure. CI on the product PR is green except the expected OCC/deploy evidence
+      gates that resolve when this contract lands.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13661/dod-omnimarket-pr-1463/command.yaml &&
+          grep -q '^pr_number: 1463$' drift/dod_receipts/OMN-13661/dod-omnimarket-pr-1463/command.yaml
+  - id: "dod-infra-pr-2118"
+    description: >-
+      omnibase_infra PR #2118 vendors the byte-identical omnimarket node migration 079 under docker/migrations/forward/nodes/node_projection_savings
+      (sha256 df0c36e2ff9c78ee22c06e9afebeeb28857f108d6792310da74355ceb522fd34 on both copies) so the
+      clean redeploy forward-migration runner materializes the extended view. The infra node-migration-sync
+      gate is expected to go green after omnimarket #1463 merges to dev, because the gate compares the
+      vendored migration tree against the omnimarket dev tip.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13661/dod-infra-pr-2118/command.yaml && grep
+          -q '^pr_number: 2118$' drift/dod_receipts/OMN-13661/dod-infra-pr-2118/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for OMN-13661. These PRs add a CREATE OR REPLACE view DDL (additive columns) and
+      the vendored byte-identical migration plus a projection_api exposure column add; they do not perform
+      a live deploy, runtime restart, topic mutation, or .201 mutation. Static diff inspection confirms
+      this OCC evidence covers merge eligibility only; runtime proof is not claimed by this receipt. The
+      live psql render of local_pct/cheap_pct/prem_pct on a clean projection-api redeploy is a separate
+      serialized step coordinated with T1/OMN-13660.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13661/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-13661/dod-deploy-assessment/command.yaml &&
+          grep -qi 'runtime proof is not claimed' drift/dod_receipts/OMN-13661/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR. Carries the OMN-13661 contract
+      and PASS receipts onto dev so omnimarket #1463 and omnibase_infra #2118 can reference Evidence-Source
+      the OCC merge commit, satisfying validator_occ_merge_eligibility with a PASS receipt whose pr_number
+      is this PR's own number and whose runner differs from its verifier.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13661/dod-occ-self/command.yaml

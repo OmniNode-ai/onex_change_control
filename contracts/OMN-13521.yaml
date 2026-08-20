@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13521"
+title: "fix(OMN-13521): doc_freshness_sweep resolver O(refs x repos) serial grep — non-terminating; also
+  scans nested worktrees"
+summary: >-
+  Dogfooding /onex:doc_freshness_sweep never completed: a background run was still grepping at >70 min
+  wall time (~28s CPU) with no terminal result. Root cause is doc_reference_resolver._resolve_class_or_function:
+  for every class/function reference in every markdown file across the repo set it ran one subprocess
+  `grep -r -l` per reference per repo-root — O(total_refs x repo_roots) serial subprocess spawns, each
+  scanning entire src/ trees. A secondary defect amplified it: the omnimarket handler _collect_md_files
+  did not exclude nested git worktrees (.claude/worktrees, omni_worktrees), so ~50% (omniclaude) to ~89%
+  (omnimarket) of scanned docs were duplicate worktree copies. Fix (two repos): (1) onex_change_control
+  — batch class/function resolution by building an in-memory symbol index ONCE per repo-root (single os.walk
+  over each src/ tree, nested-worktree/.venv dirs pruned in place) and resolving every reference in pure
+  Python against the prebuilt index; no subprocess is spawned during resolution. Add a wall-clock time_budget_seconds
+  guard (default 120s) that returns remaining references as exists=None (fail-loud, bounded) instead of
+  running unbounded. Backward-compatible signature resolve_references(references, repo_roots, env_file=None,
+  time_budget_seconds=120.0). (2) omnimarket — add a path-segment-scoped exclusion set to _collect_md_files
+  covering .claude / worktrees / omni_worktrees plus generated trees, so nested worktree copies are skipped
+  while legitimately-named docs survive. This OCC PR carries the central contract; the omnimarket PR cites
+  OMN-13521 via Evidence-Ticket.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The resolver is batched and subprocess-free. tests/unit/test_doc_reference_resolver.py passes 10/10,
+      including test_no_subprocess_spawned_during_resolution (patches stdlib subprocess.run to raise;
+      passes, proving resolution shells out zero times), test_index_built_once_per_root_not_per_ref (the
+      per-root symbol index is built exactly once for 50 references over 1 root), and the time-budget
+      guard (test_budget_exceeded_returns_partial_with_unknown returns every ref exists=None at a 0s budget).
+      The other reference-type branches (FILE_PATH, URL, ENV_VAR, COMMAND) are unchanged and still pass.
+      ruff format + ruff check + mypy --strict clean on the changed resolver. The pre-existing tests/unit/test_doc_freshness.py
+      suite still passes 42/42, and the full unit suite passes 910/910.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13521/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Benchmark proving the full real repo-set sweep terminates fast. Against the real canonical clones
+      (10 repos present), the batched resolver resolves 22,062 references (3,588 class/function) in 4.1s;
+      collect+extract+resolve total 12.0s — versus the pre-fix run that was still grepping at >70 min
+      with no terminal result. 3,045/3,588 class/function references resolve exists=True via the index,
+      confirming correct resolution. The worktree-exclusion change drops md-file counts to the non-worktree
+      count: omniclaude 690 -> 340 (350 worktree dupes removed), omnimarket 359 -> 92 (267 removed), omnibase_core
+      ~unchanged (already-excluded docs/history only).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13521/dod-002/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      doc_freshness_sweep is a COMPUTE-only skill node executed in-process via `onex skill`; the omnimarket
+      handler change (worktree exclusion) and the OCC resolver change are pure-Python and require no live
+      deploy, runtime restart, docker exec, or rpk topic produce before merge. Proven by PR CI + receipt
+      gates + the in-process benchmark (dod-002).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"drift/dod_receipts/OMN-13521/dod-deploy-assessment/command.yaml\"
+          && grep -q 'deploy gate' \"drift/dod_receipts/OMN-13521/dod-deploy-assessment/command.yaml\""
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries contracts/OMN-13521.yaml + PASS dod_receipts under drift/dod_receipts/OMN-13521/.
+      The paired omnimarket PR (handler worktree-exclusion) cites OMN-13521 as its Evidence-Ticket.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13521\"$' contracts/OMN-13521.yaml"

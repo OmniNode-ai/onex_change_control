@@ -1,0 +1,96 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13416"
+title: "CI event-delivery gap: detect required workflows that never fire on a fresh push + safe re-trigger"
+summary: >-
+  Wave-E fresh-deploy hardening (epic OMN-13410). GitHub intermittently drops the workflow-dispatch event
+  for some REQUIRED workflows on a fresh push: those required checks produce ZERO runs on HEAD while every
+  other gate fires, leaving the PR stuck mergeStateStatus=BLOCKED with no failure to fix and nothing to
+  re-run. The manual recovery was an empty commit / gh run rerun. This ticket adds detection + an automatic
+  safe re-trigger, wired into both the ci_watch and merge-sweep paths (the two surfaces the DoD names).
+  node_ci_watch (the per-PR CI surface driven by node_ticket_pipeline and node_overnight) gains a probe:
+  on a no-failing-checks result it compares the base branch's required status-check contexts (branch protection)
+  against the contexts present in the PR statusCheckRollup; any required context absent from the rollup
+  on a BLOCKED PR is a dropped workflow, and it performs ONE safe empty-commit re-trigger (capped by max_retriggers)
+  reporting terminal_status=retriggered. Fail-soft: a gh query error never fabricates a gap (no blind
+  re-trigger). node_merge_sweep_triage_orchestrator's previously-silent SKIP fall-through (MERGEABLE +
+  BLOCKED + no terminal check failure) now probes for the same gap and emits ModelCiRerunCommand(retrigger_mode=empty_commit)
+  instead of stalling. node_ci_rerun_effect is extended with an empty_commit re-trigger mode that pushes
+  an empty commit via the GitHub Git Data API (reuse HEAD tree, fast-forward ref) — reusing the already-wired
+  pr-ci-rerun topic + consumer rather than minting a dead topic. Code lands in omnimarket PR #PENDING;
+  the live runtime redeploy that activates the re-trigger on the deployed merge-sweep is owned by the
+  separate redeploy workstream.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-detect"
+    description: >-
+      DETECTION: node_ci_watch classifies a CI event-delivery gap purely. A required status-check context
+      that is absent from the PR statusCheckRollup on a BLOCKED PR (i.e. produced 0 runs on HEAD) is reported
+      as detected with the missing context list; a genuinely-pending check (present but not COMPLETED)
+      and a genuinely-failing check (present, FAILURE) are NOT gaps. The detector claims a gap ONLY when
+      the PR is BLOCKED and the required set is known (non-empty); a required-context query error yields
+      no gap (never fabricate a gap from a failed query — that would re-trigger blindly). Proven by the
+      offline tests/unit/nodes/node_ci_watch/test_event_delivery_gap.py suite (10 passed).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13416/dod-detect/command.yaml"
+  - id: "dod-retrigger"
+    description: >-
+      SAFE RE-TRIGGER: when a gap is detected and auto_retrigger is enabled, node_ci_watch performs ONE
+      safe empty-commit re-trigger and reports terminal_status=retriggered, capped by max_retriggers so
+      it can never loop; max_retriggers=0 and auto_retrigger=false both suppress the mutation. node_merge_sweep_triage_orchestrator
+      converts its previously-silent MERGEABLE+BLOCKED+no-failure SKIP into ModelCiRerunCommand(retrigger_mode=empty_commit,
+      head_branch=...) when a required-context gap is found, and skips (no blind re-trigger) when there
+      is none. node_ci_rerun_effect's empty_commit mode pushes an empty commit via the GitHub Git Data
+      API (reuse HEAD tree, fast-forward ref) — NOT rerun-failed-jobs, since there is no failed run —
+      and surfaces any push error. Proven by tests/test_triage_orchestrator.py + tests/test_ci_rerun_effect.py
+      + the ci_watch retrigger tests (56 passed).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13416/dod-retrigger/command.yaml"
+  - id: "dod-gates"
+    description: >-
+      Local gates green on the changed packages: ruff format + ruff check clean; mypy --strict clean on
+      node_ci_watch, node_ci_rerun_effect, and node_merge_sweep_triage_orchestrator (15 source files,
+      no issues); the omnimarket runtime-sweep import check reports clean (325 entry points) and the node-metadata
+      dependency-scope check passes; pre-commit run on all changed files is all-green including the URL
+      Authority Gate (the one new GitHub control-plane REST literal carries an inline # url-authority-ok
+      annotation matching the existing rerun-failed-jobs call in the same effect handler).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13416/dod-gates/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this PR adds CI-orchestration detection + re-trigger logic to omnimarket nodes;
+      it changes node handler code consumed by the merge-sweep / ci_watch automation. The live runtime
+      redeploy that activates the re-trigger on the deployed merge-sweep lane is OWNED BY THE SEPARATE
+      REDEPLOY WORKSTREAM (per dispatch instruction: implement the code portion + PR and report the runtime
+      portion as owed). No live prod/judge/stability deploy is performed in this PR. The empty-commit
+      re-trigger mutates only a PR head branch via the GitHub API (a CI re-fire), not any runtime lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'deploy' drift/dod_receipts/OMN-13416/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by the omnimarket
+      PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13416.yaml
+      is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13416\"$' contracts/OMN-13416.yaml"

@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13585"
+title: "RH-3: Extend pr_lifecycle reducer state with additive repo_health sub-record"
+summary: >-
+  Part of the merge-sweep repo-health repair lane. Adds a frozen ModelRepoHealthLaneState sub-record to
+  ModelPrLifecycleState in omnimarket with 6 int counters (classified_count, pr_scoped_count, repo_baseline_count,
+  external_dependency_count, unknown_count, repair_tasks_emitted) and a repair_task_refs tuple[str, ...]
+  (deduplicated). Wires two pure module-level fold functions: fold_repo_health_classified (subscribes
+  to onex.evt.omnimarket.repo-health-classified.v1) and fold_repo_health_repair_emitted (subscribes to
+  onex.evt.omnimarket.repo-health-repair-emitted.v1). Both folds update only the repo_health sub-record;
+  all existing PR-lane FSM fields are byte-identical. handle_dict dispatches repo-health event topics
+  to these fold functions; all other events fall through to the existing delta() FSM path. contract.yaml
+  updated to declare the two new subscribe topics. 24 new fold tests assert additive isolation. No runtime
+  deploy in scope; this is a pure model + handler extension with zero I/O. This OCC contract is the Receipt-Gate
+  Evidence-Source the omnimarket product PR cites.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      24 new fold tests in tests/test_pr_lifecycle_repo_health_fold.py assert additive isolation (byte-identical
+      PR-lane fields before/after repo_health folds), counter accumulation, deduplication, frozen/extra=forbid
+      retention, and handle_dict dispatch. Existing golden chain tests in test_golden_chain_pr_lifecycle_state_reducer.py
+      (31 tests) remain green. CI topic gate (test_check_no_hardcoded_topics) passes.
+    command: "uv run pytest tests/test_pr_lifecycle_repo_health_fold.py tests/test_golden_chain_pr_lifecycle_state_reducer.py
+      tests/ci/test_check_no_hardcoded_topics.py -q"
+  - kind: "ci"
+    description: >-
+      Full unit suite green (5806 passed, 0 failed); mypy --strict on the changed module (7 source files,
+      0 issues); ruff format + check clean; all pre-commit hooks pass (stub gate, topic gate, purity gate,
+      ruff).
+    command: "uv run mypy src/omnimarket/nodes/node_pr_lifecycle_state_reducer/ --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1413"
+    description: >-
+      The omnimarket product PR #1413 carries ModelRepoHealthLaneState + the two fold functions + handle_dict
+      dispatch + contract.yaml topic declarations + 24 new fold tests. It cites Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json state,headRefOid,baseRefName"
+  - id: "dod-occ-evidence-source"
+    description: >-
+      This OCC contract is the central Receipt-Gate Evidence-Source for OMN-13585. The omnimarket PR cites
+      Evidence-Source: OCC#<this-pr> so its verify/verify Receipt Gate resolves against an OCC-main ancestor.
+      Build/PR scope only; no runtime deploy, no env-for-model, no bespoke endpoint.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test -f contracts/OMN-13585.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: the omnimarket PR is a pure model + handler extension. It ships no runtime contract/topic/migration
+      change and requires no image rebuild. No live deploy or runtime restart is performed by merging
+      this PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13585/dod-deploy-assessment/command.yaml"

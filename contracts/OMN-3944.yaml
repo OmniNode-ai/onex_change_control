@@ -1,0 +1,101 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-3944
+title: "Task 7: Reconciliation ORCHESTRATOR node — HandlerPlanToPRComment + HandlerPlanToYaml with full
+  pipeline integration test"
+summary: "Task 7: Reconciliation ORCHESTRATOR node — HandlerPlanToPRComment + HandlerPlanToYaml with full
+  pipeline integration test"
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - events
+  - topics
+  - public_api
+
+evidence_requirements:
+  - kind: tests
+    description: >
+      Unit tests for HandlerPlanToPRComment: verify markdown table formatting, idempotent anchor matching
+      (<!-- onex-artifact-plan:{plan_id} -->), and conditional PR-triggered-only guard.
+    command: "uv run pytest tests/unit/nodes/node_artifact_reconciliation_orchestrator/test_plan_to_pr_comment.py
+      -v"
+
+  - kind: tests
+    description: >
+      Unit tests for HandlerPlanToYaml: verify ModelUpdatePlan is serialized to YAML and emitted as a
+      Kafka event payload on onex.evt.artifact.update-plan-emitted.v1 (no filesystem write).
+    command: "uv run pytest tests/unit/nodes/node_artifact_reconciliation_orchestrator/test_plan_to_yaml.py
+      -v"
+
+  - kind: tests
+    description: >
+      Integration test wiring all 4 nodes (trigger → impact → reducer → orchestrator) via in-memory event
+      bus: fire trigger event → assert ModelImpactResult → assert ModelUpdatePlan → assert PR comment
+      event + YAML emission event both produced with correct payloads.
+    command: "uv run pytest tests/integration/test_artifact_reconciliation_pipeline.py -v"
+
+  - kind: ci
+    description: >
+      mypy --strict passes on the new node_artifact_reconciliation_orchestrator/ directory with zero type
+      errors.
+    command: "uv run mypy src/omnibase_infra/nodes/node_artifact_reconciliation_orchestrator/ --strict"
+
+  - kind: ci
+    description: >
+      Full unit test suite passes with no regressions after adding the orchestrator node.
+    command: "uv run pytest tests/unit/ -m unit -v"
+
+golden_path:
+  input:
+    topic: "onex.cmd.artifact.reconciliation-requested.v1"
+    fixture: "tests/fixtures/artifact_reconciliation_trigger.json"
+    input_correlation_id_field: "correlation_id"
+  output:
+    topic: "onex.evt.artifact.update-plan-emitted.v1"
+    output_correlation_id_field: "correlation_id"
+    schema_name: "ModelUpdatePlan"
+    assertions:
+      - field: "status"
+        op: "eq"
+        value: "emitted"
+  timeout_ms: 30000
+  infra: "mock"
+  test_file: "tests/integration/test_artifact_reconciliation_pipeline.py"
+
+dod_evidence:
+  - id: "dod-001"
+    description: "HandlerPlanToPRComment unit tests pass"
+    source: "manual"
+    linear_dod_text: "Unit tests for HandlerPlanToPRComment verify formatting, anchor matching, and PR
+      guard"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/nodes/node_artifact_reconciliation_orchestrator/test_plan_to_pr_comment.py
+          -v"
+  - id: "dod-002"
+    description: "HandlerPlanToYaml unit tests pass"
+    source: "manual"
+    linear_dod_text: "Unit tests for HandlerPlanToYaml verify YAML serialization and Kafka event emission"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/nodes/node_artifact_reconciliation_orchestrator/test_plan_to_yaml.py
+          -v"
+  - id: "dod-003"
+    description: "Integration test wiring all 4 nodes passes"
+    source: "manual"
+    linear_dod_text: "Integration test fires trigger -> asserts impact, plan, PR comment, and YAML emission"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/test_artifact_reconciliation_pipeline.py -v"
+  - id: "dod-004"
+    description: "mypy strict passes on orchestrator node"
+    source: "manual"
+    linear_dod_text: "mypy --strict passes on node_artifact_reconciliation_orchestrator/"
+    checks:
+      - check_type: "command"
+        check_value: "uv run mypy src/omnibase_infra/nodes/node_artifact_reconciliation_orchestrator/
+          --strict"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

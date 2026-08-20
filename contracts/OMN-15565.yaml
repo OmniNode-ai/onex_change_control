@@ -1,0 +1,127 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15565"
+title: "Bind e2e compose lane isolation evidence"
+summary: >
+  Manual OCC companion for OmniNode-ai/omnibase_infra PR #2591. The product change isolates the nightly
+  e2e compose project from the live lab/dev compose lane by namespacing the project, containers, volumes,
+  network, workflow invocations, and regression tests at the immutable product head.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2591 CI checks green"
+    command: "gh pr checks 2591 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra2591-e2e-compose-lane-isolation"
+    description: >-
+      Binds OMN-15565 to omnibase_infra PR #2591 at exact head d203ed0bb29035636674f5d051a109c2b055bff2.
+      The probe reads immutable GitHub content for the workflow, compose file, and regression test, and
+      fails closed if the PR head moves or the lane-isolation namespace/ratcher artifacts disappear.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          head="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2591 --jq .head.sha)" && test "$head"
+          = "d203ed0bb29035636674f5d051a109c2b055bff2" && tree="$(gh api "repos/OmniNode-ai/omnibase_infra/git/trees/$head?recursive=1")"
+          && printf '%s' "$tree" | jq -e '.tree[] | select(.path==".github/workflows/nightly-integration.yml"
+          and .sha=="d4f154215eefad1c3372287bedecfe6bb856e9f6")' >/dev/null && printf '%s' "$tree" | jq
+          -e '.tree[] | select(.path=="docker/docker-compose.e2e.yml" and .sha=="85f0a0d8ea0636d1304faa83769be7740925ef7b")'
+          >/dev/null && printf '%s' "$tree" | jq -e '.tree[] | select(.path=="tests/unit/docker/test_e2e_compose_lane_isolation.py"
+          and .sha=="4dd56e2e488e3bcbcbcfb1a8262bd19bf80c5caa")' >/dev/null && workflow="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/nightly-integration.yml?ref=$head"
+          --jq .content | base64 -d)" && compose="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.e2e.yml?ref=$head"
+          --jq .content | base64 -d)" && tests="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/docker/test_e2e_compose_lane_isolation.py?ref=$head"
+          --jq .content | base64 -d)" && printf '%s' "$workflow" | grep -q 'Derive isolated e2e namespace'
+          && printf '%s' "$workflow" | grep -q -- 'docker compose -p "${OMNIBASE_INFRA_COMPOSE_PROJECT}"'
+          && printf '%s' "$workflow" | grep -q -- 'docker compose -p "$project" -f docker/docker-compose.e2e.yml
+          down -v --remove-orphans' && printf '%s' "$workflow" | grep -q 'Assert e2e project is not a
+          live lane' && printf '%s' "$compose" | grep -q 'OMNIBASE_INFRA_COMPOSE_PROJECT:-omnibase-infra-e2e'
+          && printf '%s' "$compose" | grep -q 'OMNIBASE_INFRA_POSTGRES_CONTAINER:-omnibase-infra-e2e-postgres'
+          && printf '%s' "$compose" | grep -q 'OMNIBASE_INFRA_NETWORK:-omnibase-infra-e2e-network' &&
+          printf '%s' "$tests" | grep -q 'test_e2e_project_default_is_not_a_censused_lane' && printf '%s'
+          "$tests" | grep -q 'test_every_workflow_e2e_compose_invocation_names_its_project' && printf
+          'infra2591 e2e compose lane isolation PASS\n'
+  - id: "occ-self-bind-pr-5731"
+    description: >-
+      Binds the OMN-15565 central evidence to OCC companion PR #5731 and its immutable payload commit
+      abc36b15814e97f9531328c47caec821eb9e4cc0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/commits/abc36b15814e97f9531328c47caec821eb9e4cc0
+          --jq .sha | grep -qx 'abc36b15814e97f9531328c47caec821eb9e4cc0'
+  - id: "dod-infra2599-teardown-protected-guard"
+    description: >-
+      Binds the OMN-15565 follow-up teardown guard to omnibase_infra PR #2599 at exact head 1c359264609123fadf93d416dcfb2ba57122d6d1.
+      The immutable GitHub probe binds the workflow and regression-test blobs, then fails closed unless
+      the always-run teardown independently re-derives the run project, rejects unexpected or manifest-censused
+      projects, scopes the destructive down, and retains executable non-mutating stub coverage for the
+      rejection and success paths.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          head="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2599 --jq .head.sha)" && branch="$(gh
+          api repos/OmniNode-ai/omnibase_infra/pulls/2599 --jq .head.ref)" && test "$head" = "1c359264609123fadf93d416dcfb2ba57122d6d1"
+          && test "$branch" = "jonah/omn-15565-teardown-protected-guard" && tree="$(gh api "repos/OmniNode-ai/omnibase_infra/git/trees/$head?recursive=1")"
+          && printf '%s' "$tree" | jq -e '.tree[] | select(.path==".github/workflows/nightly-integration.yml"
+          and .sha=="d7e5888df247b72f872cf20a3c91deab0531911c")' >/dev/null && printf '%s' "$tree" | jq
+          -e '.tree[] | select(.path=="tests/unit/docker/test_e2e_compose_lane_isolation.py" and .sha=="184a033c4eee4d3002b04453af738f785fb97fec")'
+          >/dev/null && workflow="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/nightly-integration.yml?ref=$head"
+          --jq .content | base64 -d)" && tests="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/docker/test_e2e_compose_lane_isolation.py?ref=$head"
+          --jq .content | base64 -d)" && printf '%s' "$workflow" | grep -Fq 'if: always()' && printf '%s'
+          "$workflow" | grep -Fq 'if [[ "$project" != "$expected_project" ]]; then' && printf '%s' "$workflow"
+          | grep -Fq 'open("deploy/lane-census/lane-manifest.yaml", encoding="utf-8")' && printf '%s'
+          "$workflow" | grep -Fq 'if project in protected:' && printf '%s' "$workflow" | grep -Fq 'docker
+          compose -p "$project" -f docker/docker-compose.e2e.yml down -v --remove-orphans' && printf '%s'
+          "$tests" | grep -Fq 'def _run_teardown_with_stubs(' && printf '%s' "$tests" | grep -Fq 'subprocess.run('
+          && printf '%s' "$tests" | grep -Fq 'def test_nightly_teardown_rejects_every_non_run_project_without_docker('
+          && printf '%s' "$tests" | grep -Fq 'def test_nightly_teardown_downs_exact_run_project_once('
+          && printf '%s' "$tests" | grep -Fq 'assert teardown["if"] == "always()"' && printf '%s' "$tests"
+          | grep -Fq 'manifest_load = '\''open("deploy/lane-census/lane-manifest.yaml", encoding="utf-8")'\'''
+          && printf 'head=%s\nbranch=%s\nworkflow_blob=%s\ntest_blob=%s\ninfra2599 teardown exact-head
+          guard PASS\n' "$head" "$branch" d7e5888df247b72f872cf20a3c91deab0531911c 184a033c4eee4d3002b04453af738f785fb97fec
+  - id: "occ-self-bind-pr-5766"
+    description: >-
+      Binds the OMN-15565 supplemental central evidence to OCC companion PR #5766 and its immutable payload
+      commit e9d3036cbf0e6d2273c3fe8b51cca20239fb7df1.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/commits/e9d3036cbf0e6d2273c3fe8b51cca20239fb7df1
+          --jq .sha | grep -qx 'e9d3036cbf0e6d2273c3fe8b51cca20239fb7df1'
+  - id: "dod-infra2600-ephemeral-db-url"
+    description: >-
+      Binds the OMN-15565 database-isolation follow-up to omnibase_infra PR #2600 at exact head 7e9d93cacd7ef69220417c1c7811db7b47141652.
+      The committed receipt records the independently executed GitHub probe that binds the workflow and
+      regression-test blobs, then fails closed unless the nightly derives OMNIBASE_INFRA_DB_URL exclusively
+      from its run-scoped ephemeral PostgreSQL port and the executable regression test proves an opaque
+      protected-lane URL cannot override that derived value.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-15565/dod-infra2600-ephemeral-db-url/command.yaml"
+  - id: "occ-self-bind-pr-5787"
+    description: >-
+      Binds the OMN-15565 supplemental central evidence for omnibase_infra PR #2600 to OCC companion PR
+      #5787 and its immutable payload commit e529bbc30cf10cf117c26f85c30d8eaa1e40a2f4.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/commits/e529bbc30cf10cf117c26f85c30d8eaa1e40a2f4
+          --jq .sha | grep -qx 'e529bbc30cf10cf117c26f85c30d8eaa1e40a2f4'

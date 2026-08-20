@@ -1,0 +1,120 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14470"
+title: "RT-5 mirror — omnimarket deploy trigger fails closed on zero output (omnimarket #1729)"
+summary: >-
+  Central OCC evidence for OmniNode-ai/omnimarket#1729 (OMN-14470, RT-5 market mirror; sibling OMN-14467
+  / omnibase_infra #2271; epic OMN-13674). Mirrors the RT-5 effect-assertion gate into omnimarket via
+  a co-located copy of the pure fail-closed assertion (omnimarket pins omnibase_infra to a frozen git
+  rev, so the canonical util is not importable and infra's PR-branch head must not be pinned — never_pin_a_feature_branch_head).
+  scripts/trigger_rebuild_on_merge.py no longer prints "skipping publish" then sys.exit(0) on a real runtime
+  change with the broker/creds absent; a missing precondition or a zero-delivery emit now fails closed
+  (exit 1); no-op / --dry-run still exit 0. Authored by the independent verifier (rt5mirror-verifier),
+  not the implementer, per no-self-authored-evidence. Each product entry is a workspace-independent gh-api
+  content read at #1729's head, proven RED against omnimarket dev (dea272ac — trigger exists but never
+  calls require_producer_preconditions; the co-located module does not exist) and against a bogus SHA,
+  and the A/B was reproduced live by the verifier.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      omnimarket #1729 CI is green once its OCC companion (this PR) merges; the fail-closed behavior is
+      exercised by tests/unit/scripts/ which the change-aware selector DOES select in-PR (selected_paths
+      resolves to tests/unit/ for this PR's changed files).
+    command: "gh pr checks 1729 --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-1729-silent-skip-deleted-failclosed-wired"
+    description: >-
+      Asserts scripts/trigger_rebuild_on_merge.py at #1729's head both (a) routes the producer through
+      require_producer_preconditions (the fail-closed precondition gate, N>=1) AND (b) no longer contains
+      the silent-skip CODE PATH — a click.echo(...) call printing "skipping publish" (N==0). The deletion
+      clause matches the click.echo( CALL, not a bare "skipping publish" substring, because the new fail-closed
+      block carries an explanatory COMMENT quoting the old phrase, so a naive substring check would false-RED
+      at #1729's head. The two clauses combine so the check is not vacuous on absence. RED PROVEN against
+      exists-but-WRONG: omnimarket dev (dea272ac) HAS trigger_rebuild_on_merge.py but calls require_producer_preconditions
+      zero times -> clause (a) fails -> exit 1. Exit 1 at a bogus SHA (empty content). Identical CLI input
+      (real runtime change, broker unset, not --dry-run) exits 0 GREEN at dev and exits 1 RED at #1729's
+      head — reproduced live by the verifier.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          C=$(gh api "repos/OmniNode-ai/omnimarket/contents/scripts/trigger_rebuild_on_merge.py?ref=3c6baef160863cbe54304c8d8c85b3f936765701"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'require_producer_preconditions')"
+          -ge 1 && test "$(printf '%s' "$C" | grep -cE 'click\.echo\([^)]*skipping publish')" -eq 0
+  - id: "dod-1729-emit-count-assertion-wired"
+    description: >-
+      Asserts scripts/trigger_rebuild_on_merge.py at #1729's head calls assert_producer_emitted after
+      the publish, so a completed publish that delivered zero commands fails closed rather than reporting
+      success ("produced N>0, and here it is" is the only completion signal for a producer). RED PROVEN
+      at omnimarket dev, where the file EXISTS but never calls assert_producer_emitted (symbol absent
+      pre-#1729) -> grep count 0 -> exit 1; exit 1 at a bogus SHA. A positive presence check (>=1), which
+      cannot pass on empty/absent content.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/scripts/trigger_rebuild_on_merge.py?ref=3c6baef160863cbe54304c8d8c85b3f936765701"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null | grep -c 'assert_producer_emitted')" -ge
+          1
+  - id: "dod-1729-colocated-copy-noimport-todo"
+    description: >-
+      Asserts the co-located pure fail-closed module scripts/producer_effect_assertion.py exists at #1729's
+      head and (a) defines all three primitives ProducerZeroOutputError, require_producer_preconditions,
+      assert_producer_emitted (>=3 defining lines), (b) carries the tracked TODO(OMN-14470) de-dup marker,
+      and (c) does NOT import omnibase_infra (0 import/from omnibase_infra lines) — the co-located-copy
+      invariant: market cannot import the canonical infra util (frozen git rev) and must not pin infra's
+      PR-branch head. The three clauses combine so the check is not vacuous on absence — the >=3 primitive
+      presence clause fails on an empty/absent file, so the no-import clause never passes trivially. RED
+      PROVEN at omnimarket dev: the file does NOT exist there -> primitive count 0 -> exit 1; exit 1 at
+      a bogus SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          C=$(gh api "repos/OmniNode-ai/omnimarket/contents/scripts/producer_effect_assertion.py?ref=3c6baef160863cbe54304c8d8c85b3f936765701"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -cE 'class
+          ProducerZeroOutputError|def require_producer_preconditions|def assert_producer_emitted')" -ge
+          3 && test "$(printf '%s' "$C" | grep -c 'TODO(OMN-14470)')" -ge 1 && test "$(printf '%s' "$C"
+          | grep -cE '^(import|from) omnibase_infra')" -eq 0
+  - id: "dod-1729-acceptance-policy-tests-exist"
+    description: >-
+      Asserts tests/unit/scripts/test_trigger_producer_effect_assertion.py at #1729's head carries BOTH
+      the RED-on-zero acceptance test (test_runtime_change_with_broker_unset_fails_closed — the exists-but-WRONG
+      regression: producer ran, emitted zero, must exit 1) AND the Rule-5 anti-regression policy gate
+      (test_producer_has_no_silent_skip_path — no producer may reintroduce a print-then-exit-0 silent
+      skip) (>=2 test defs). RED PROVEN at omnimarket dev: the test file does NOT exist there -> grep
+      count 0 -> exit 1; exit 1 at a bogus SHA. SCOPE NOTE (does not weaken this receipt): unlike the
+      infra sibling whose tests live under tests/scripts/ (not selected in-PR), these mirror tests live
+      under tests/unit/scripts/, which the omnimarket change-aware selector DOES select in-PR (selected_paths
+      resolves to tests/unit/ for this PR's changed files, verified by the verifier), so they run on the
+      dev PR, not only at the full-suite boundary.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/scripts/test_trigger_producer_effect_assertion.py?ref=3c6baef160863cbe54304c8d8c85b3f936765701"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null | grep -cE 'def test_runtime_change_with_broker_unset_fails_closed|def
+          test_producer_has_no_silent_skip_path')" -ge 2
+  - id: "dod-occ-self-14470-1729"
+    description: >-
+      Self-bind item for THIS OCC companion PR. occ-preflight requires a PASS receipt bound to the PR
+      under check; this item asserts a fact ABOUT this PR (its branch name) and is a binding item, NOT
+      substantive evidence — the four entries above carry that, each a workspace-independent gh-api content
+      read at #1729's head proven RED at omnimarket dev (exists-but-WRONG / absent) and at a bogus SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14470-occ-rt5mirror-companion' drift/dod_receipts/OMN-14470/dod-occ-self-14470-1729/command.yaml

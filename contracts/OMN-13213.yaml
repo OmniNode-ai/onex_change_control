@@ -1,0 +1,58 @@
+---
+# OMN-13213 contract file for omnimarket deploy-gate / receipt-gate.
+# The canonical ticket contract and PASS receipts live in onex_change_control.
+# This file is the per-repo deploy-evidence carrier only.
+schema_version: "1.0.0"
+ticket_id: "OMN-13213"
+title: "refactor(OMN-13213): D1 re-home EmitClient -> omnimarket.events.emit_client"
+summary: >-
+  Phase D1 of the canonical node migration (epic OMN-13205). The shared EmitClient / default_socket_path
+  primitive is re-homed out of the non-canonical node_emit_daemon (node_type: service) into the shared
+  omnimarket.events package (src/omnimarket/events/emit_client.py), re-exported from omnimarket.events.
+  The cross-node importer node_cross_cli_originator (EFFECT) and the node's own internals (health_probe.py,
+  __main__.py, __init__ __getattr__) plus the golden-chain test are repointed at the shared owner, and
+  the node-private client.py is deleted (no shim). This eliminates a cross-node-package import (Dependency-Elimination
+  criterion) and is the decision-independent, low-runtime-risk step of Phase D. D2-D5 (registry re-home
+  + wired-gate repoint, effect node, dev-lane shadow-mode parity, daemon deletion) are separate steps.
+  Topic strings and runtime wiring are unchanged by this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Focused suites green for the re-home: tests/unit/events/test_emit_client_rehome.py (new TDD guard
+      pinning the omnimarket.events.emit_client owner + the package re-export + default_socket_path resolution
+      + node-private-module-removed + cross-node-import-eliminated), node_cross_cli_originator tests,
+      test_golden_chain_emit_daemon.py, and the emit_daemon health/standalone suites (89 passed; broader
+      emit_daemon + events + cross_cli suites 78 passed).
+    command: "uv run pytest tests/unit/events/test_emit_client_rehome.py tests/test_golden_chain_emit_daemon.py
+      -v"
+  - kind: ci
+    description: >-
+      omnimarket runtime_sweep 302/302 entry points OK; check_node_metadata_dependencies PASS; ruff format
+      + ruff check clean; mypy --strict clean on all 6 touched modules; pre-commit run --all-files all
+      hooks Passed (incl. event-registry-drift, which is a no-op here since the registry/topics.yaml are
+      not moved by D1).
+    command: "uv run python scripts/ci/run_runtime_sweep.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-omnimarket-pr-1246
+    description: >-
+      omnimarket PR #1246 carries the OMN-13213 D1 EmitClient re-home on a ticketed branch (jonahgabriel/omn-13213-d-reclassify-node_emit_daemon-effect-node):
+      the shared owner omnimarket.events.emit_client exists and is re-exported from omnimarket.events,
+      node_cross_cli_originator no longer imports omnimarket.nodes.node_emit_daemon.client, the node-private
+      client.py is deleted, and the new guard test tests/unit/events/test_emit_client_rehome.py proves
+      the owner module + cross-node-import elimination. omnimarket runtime_sweep is green (302/302), pre-commit
+      run --all-files passes, and no runtime topic/wiring changed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: command
+        check_value: >-
+          echo 'deploy-evidence: OMN-13213 D1 EmitClient re-home; pure code re-home, no runtime deploy,
+          runtime wiring and topics unchanged' && grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13213/dod-omnimarket-pr-1246/command.yaml"
+          && grep -q '^commit_sha: "5e5ffec4b5ad2fa418e943f446e1569d341a6275"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13213/dod-omnimarket-pr-1246/command.yaml"

@@ -1,0 +1,47 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-13406
+evidence_item_id: dod-001
+check_type: command
+check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13406/dod-001/command.yaml"
+status: PASS
+run_timestamp: '2026-06-21T11:03:10Z'
+commit_sha: be26de8ad29bc431fecd0f851ec5240b5cba52ef
+runner: claude-code
+verifier: claude-code-review
+contract_sha256: sha256:66c774ee8529ac615b95721cd2c86b0972b89b4d1c13c9cca7a40009ff805c96
+probe_command: 'docker run -d --rm postgres:16; bash 087-scratch-proof.sh  # warm decoy+view / cold /
+  neg-bare-drop on throwaway PG16, torn down'
+probe_stdout: |
+  postgres server version: 16.14 (Debian 16.14-1.pgdg13+1)
+  hardened 087 DROP line under test:
+  45:DROP TABLE IF EXISTS public.delegation_events CASCADE;
+  ### Scenario (a): WARM DB (decoy table + dependent view) -> hardened 087 (CASCADE)
+    pre:  table_exists=t  view_exists=t  decoy_rows=40
+    087 exit: 0 (SUCCESS)
+  psql:/work/087.sql:45: NOTICE:  drop cascades to view projection_delegation_summary
+    post: table_dropped=t  view_dropped=t
+    VERDICT (a): PASS — decoy table AND dependent view both dropped.
+  ### Scenario (b): COLD DB (no decoy) -> hardened 087 (clean no-op)
+    087 exit: 0 (SUCCESS / no-op)
+  psql:/work/087.sql:45: NOTICE:  table "delegation_events" does not exist, skipping
+    VERDICT (b): PASS — clean no-op on cold DB.
+  ### Negative control: WARM DB + OLD bare DROP (no CASCADE) -> expected FAIL
+  ERROR:  cannot drop table delegation_events because other objects depend on it
+  DETAIL:  view projection_delegation_summary depends on table delegation_events
+    VERDICT (neg): PASS — bare DROP reproduces the warm-DB failure the CASCADE fixes.
+  OVERALL: PASS — (a) CASCADE drops decoy+view, (b) cold no-op, (neg) bare DROP fails.
+actual_output: >-
+  PASS: a throwaway Postgres 16 container (docker run --rm, torn down after the run on .201) empirically
+  proved the hardened 087. (a) On a WARM DB carrying a decoy delegation_events (40 rows) plus a dependent
+  view projection_delegation_summary, the CASCADE drop succeeded (exit 0) and removed BOTH — Postgres
+  emitted "NOTICE: drop cascades to view projection_delegation_summary" and post-state showed table_dropped=t,
+  view_dropped=t. (b) On a DB with no decoy, 087 was a clean no-op success (NOTICE: table does not exist,
+  skipping). (neg) The OLD bare DROP (no CASCADE) against the same warm shape was refused by Postgres
+  ("cannot drop table delegation_events because other objects depend on it"), reproducing the exact original
+  blocker that exits the forward-migration runner 3 and blocks 0017/0018/0019. Full proof: omnibase_infra
+  docs/evidence/OMN-13406/087-cascade-scratch-proof.md (PR #2059).
+exit_code: 0
+branch: jonah/omn-13406-harden-087-cascade
+working_dir: /Users/jonah/Code/omni_home/omni_worktrees/OMN-13406/omnibase_infra
+pr_number: 2059

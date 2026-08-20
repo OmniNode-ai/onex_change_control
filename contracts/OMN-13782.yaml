@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13782"
+title: "OMN-13674 child: Wave 3 PR-lifecycle state-coverage suite"
+summary: >-
+  omnimarket PR #1547 delivers full declared-state test coverage for node_pr_lifecycle_orchestrator: every
+  FSM edge, including FAILED reachable from every non-terminal state (INVENTORYING, TRIAGING, VERIFYING,
+  MERGING, POST_MERGE_TAIL, FIXING). While auditing state coverage the PR also fixes a genuine contract/implementation
+  drift: contract.yaml declared a REBASING FSM state (TRIAGING -> REBASING -> MERGING/FAILED) that the
+  handler never implemented (no EnumOrchestratorState.REBASING member, no REBASE reducer intent, enable_auto_rebase
+  never read, HandlerAutoRebase never invoked by the orchestrator). The dead state/transitions were removed
+  from contract.yaml, enable_auto_rebase was annotated as a reserved no-op, a regression test locks fsm.states
+  to EnumOrchestratorState members, and follow-up OMN-13806 was filed to decide wire-it-or-retire-it.
+  node_pr_lifecycle_inventory_compute, node_pr_lifecycle_triage_compute (all 5 verdict classes), node_auto_merge_effect
+  (all boundary outcomes), node_pr_polish, and node_ci_watch were audited and already have comprehensive
+  state coverage from prior work; no new tests were needed there. Tests use EventBusInmemory + constructor-injected
+  mocks only; no live GitHub merge is ever exercised.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      node_pr_lifecycle_orchestrator golden-chain suite passes in-process on EventBusInmemory with no
+      external services, including the 9 new tests covering the FAILED edge from every non-terminal FSM
+      state and the REBASING contract-drift regression lock.
+    command: "uv run pytest tests/test_golden_chain_pr_lifecycle_orchestrator.py -v"
+  - kind: "tests"
+    description: >-
+      Full non-Kafka omnimarket suite passed locally before opening PR #1547.
+    command: "uv run pytest tests/ -m 'not kafka' -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1547"
+    description: >-
+      omnimarket PR #1547 carries the full FSM state-coverage suite and the REBASING contract-drift fix
+      for OMN-13782 at head commit 7d2d5df0439edf9d23500bee931f4542739cbec0. Orchestrator golden-chain
+      suite = 53/53 passed; pr_lifecycle/auto_merge/pr_polish/ci_watch combined suite = 580 passed, 1
+      skipped.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13782/dod-omnimarket-pr-1547/command.yaml
+          && grep -q '^pr_number: 1547$' drift/dod_receipts/OMN-13782/dod-omnimarket-pr-1547/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: PR #1547 changes tests/ and one node's contract.yaml (removing a dead, never-implemented
+      FSM state/transitions and annotating a reserved-no-op field) — no handler/runtime behavior change,
+      no topic, schema, migration, or .201/.200 runtime mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13782/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13782/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR, which carries this contract
+      and receipts onto dev so downstream omnimarket PR #1547 can cite Evidence-Source: OCC#<this-pr-number>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13782/dod-occ-self/command.yaml"

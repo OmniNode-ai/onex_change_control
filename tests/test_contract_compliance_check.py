@@ -1,0 +1,1779 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+"""Tests for onex_change_control.scripts.contract_compliance_check.
+
+OMN-14458: the engine under test moved from the repo-root
+scripts/ci/run_contract_compliance_check.py (excluded from the built wheel,
+so no downstream repo could import it) into the installed package at
+onex_change_control.scripts.contract_compliance_check. The repo-root script
+is now a thin re-exporting wrapper covered separately by
+test_ci_script_exists.py; this file tests the canonical implementation
+directly.
+"""
+
+from __future__ import annotations
+
+import textwrap
+from pathlib import Path
+from typing import TYPE_CHECKING
+from unittest.mock import patch
+
+import pytest
+import yaml
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+from onex_change_control.scripts.contract_compliance_check import (
+    _RESULT_BLOCK,
+    _RESULT_NOT_EVALUATED,
+    _RESULT_PASS,
+    _RESULT_WARN,
+    _check_command,
+    _check_file_exists,
+    _check_grep,
+    _check_test_exists,
+    _check_test_passes,
+    _command_binaries,
+    _contract_digest,
+    _extract_ticket_id,
+    _find_contracts_dir,
+    _load_legacy_allowlist,
+    _non_hermetic_reason,
+    run_compliance_check,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_pr_file_fetch() -> Iterator[None]:
+    """OMN-15309: keep these unit tests hermetic.
+
+    ``run_compliance_check`` resolves the PR's changed-file list (for the
+    OUTSIDE-ITS-OWN-DIFF rule) via ``gh api``. Left unpatched, every test in
+    this module would make a live GitHub call against a real PR number and
+    inherit its rate limits and flakiness. The rule itself is covered by
+    executed, discriminating tests in ``tests/test_evidence_admissibility.py``.
+    """
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._pr_changed_paths",
+        return_value=frozenset(),
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
+# _extract_ticket_id
+# ---------------------------------------------------------------------------
+
+
+def test_extract_ticket_id_from_title() -> None:
+    pr_json = (
+        '{"title": "fix: something [OMN-1234]", "headRefName": "main", "body": ""}'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, pr_json, ""),
+    ):
+        result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
+    assert result == "OMN-1234"
+
+
+def test_extract_ticket_id_from_branch() -> None:
+    pr_json = (
+        '{"title": "no ticket", "headRefName": "jonah/omn-5678-my-fix", "body": ""}'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, pr_json, ""),
+    ):
+        result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
+    assert result == "OMN-5678"
+
+
+def test_extract_ticket_id_none_when_missing() -> None:
+    pr_json = '{"title": "chore: housekeeping", "headRefName": "fix-stuff", "body": ""}'
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, pr_json, ""),
+    ):
+        result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
+    assert result is None
+
+
+def test_extract_ticket_id_gh_failure() -> None:
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(1, "", "auth error"),
+    ):
+        result = _extract_ticket_id(42, "OmniNode-ai/omnimarket")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _find_contracts_dir
+# ---------------------------------------------------------------------------
+
+
+def test_find_contracts_dir_explicit(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    result = _find_contracts_dir(str(contracts), Path(__file__))
+    assert result == contracts.resolve()
+
+
+def test_find_contracts_dir_local_fallback(tmp_path: Path) -> None:
+    # Explicit path resolves correctly regardless of CWD
+    script = tmp_path / "scripts" / "ci" / "contract_compliance_check.py"
+    script.parent.mkdir(parents=True)
+    script.touch()
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    result = _find_contracts_dir(str(contracts), script)
+    assert result == contracts.resolve()
+
+
+# ---------------------------------------------------------------------------
+# Check runners
+# ---------------------------------------------------------------------------
+
+
+def test_check_test_exists_pass(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").touch()
+    result, _ = _check_test_exists("tests/test_*.py", tmp_path)
+    assert result == _RESULT_PASS
+
+
+def test_check_test_exists_block(tmp_path: Path) -> None:
+    result, _ = _check_test_exists("tests/test_nonexistent_*.py", tmp_path)
+    assert result == _RESULT_BLOCK
+
+
+def test_check_test_passes_ignores_own_contract_compliance_context(
+    tmp_path: Path,
+) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"tests+coverage (shadow)","state":"SUCCESS"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_PASS
+    assert "green" in detail
+
+
+def test_check_test_passes_blocks_non_self_failed_context(tmp_path: Path) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"tests+coverage (shadow)","state":"FAILURE"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_BLOCK
+    assert "tests+coverage (shadow)" in detail
+    assert "Contract Compliance Check" not in detail
+
+
+def test_check_file_exists_pass(tmp_path: Path) -> None:
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "output.json").touch()
+    result, _ = _check_file_exists("dist/output.json", tmp_path)
+    assert result == _RESULT_PASS
+
+
+def test_check_file_exists_block(tmp_path: Path) -> None:
+    result, _ = _check_file_exists("dist/missing.json", tmp_path)
+    assert result == _RESULT_BLOCK
+
+
+def test_check_grep_pass(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "handler.py").write_text("def my_handler(): pass\n")
+    result, _ = _check_grep({"pattern": "my_handler", "path": "src"}, tmp_path)
+    assert result == _RESULT_PASS
+
+
+def test_check_grep_block(tmp_path: Path) -> None:
+    result, _ = _check_grep(
+        {"pattern": "definitely_not_here_xyz", "path": "."}, tmp_path
+    )
+    assert result == _RESULT_BLOCK
+
+
+def test_check_grep_bad_value(tmp_path: Path) -> None:
+    result, detail = _check_grep("not-a-dict", tmp_path)
+    assert result == _RESULT_BLOCK
+    assert "dict" in detail
+
+
+def test_check_command_pass(tmp_path: Path) -> None:
+    result, _ = _check_command("exit 0", tmp_path)
+    assert result == _RESULT_PASS
+
+
+def test_check_command_block(tmp_path: Path) -> None:
+    result, _ = _check_command("exit 1", tmp_path)
+    assert result == _RESULT_BLOCK
+
+
+def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
+    """Placeholders {pr} and {repo} must be substituted before sh -c is called."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        captured.append(cmd)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command(
+            "gh pr view {pr} --repo {repo} --json state",
+            tmp_path,
+            pr_number=586,
+            repo="OmniNode-ai/omnidash",
+        )
+
+    assert result == _RESULT_PASS
+    assert captured, "No subprocess call captured — _run was never invoked"
+    # The final sh -c call must contain the substituted shell string
+    shell_cmd = captured[-1]
+    assert shell_cmd[0] == "sh", f"Unexpected command: {shell_cmd}"
+    assert shell_cmd[1] == "-c", f"Unexpected command: {shell_cmd}"
+    shell_str = shell_cmd[2]
+    assert "586" in shell_str, f"PR number not substituted in shell cmd: {shell_str!r}"
+    assert "OmniNode-ai/omnidash" in shell_str, f"repo not substituted: {shell_str!r}"
+    assert "{pr}" not in shell_str, f"Literal {{pr}} not replaced: {shell_str!r}"
+    assert "{repo}" not in shell_str, f"Literal {{repo}} not replaced: {shell_str!r}"
+    expected = "gh pr view 586 --repo OmniNode-ai/omnidash --json state"
+    assert shell_str == expected, f"Unexpected shell cmd: {shell_str!r}"
+
+
+def test_check_command_shell_style_dollar_substitution(tmp_path: Path) -> None:
+    """``${PR_NUMBER}``/``${REPO}``/``${TICKET_ID}`` must also be pre-substituted.
+
+    Authors that prefer shell-style placeholders (so the value also reads
+    correctly in a single-quoted string, where ``sh -c`` would not expand it)
+    rely on this. Regression for OMN-10086 PR #452, where contracts used bare
+    ``gh pr checks`` and the runner had no shell-style placeholder support.
+    """
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        captured.append(cmd)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command(
+            "gh pr checks ${PR_NUMBER} --repo ${REPO} && echo ${TICKET_ID}",
+            tmp_path,
+            pr_number=452,
+            repo="OmniNode-ai/onex_change_control",
+            ticket_id="OMN-10086",
+        )
+
+    assert result == _RESULT_PASS
+    shell_str = captured[-1][2]
+    expected = (
+        "gh pr checks 452 --repo OmniNode-ai/onex_change_control && echo OMN-10086"
+    )
+    assert shell_str == expected, f"Unexpected substitution: {shell_str!r}"
+    assert "${PR_NUMBER}" not in shell_str
+    assert "${REPO}" not in shell_str
+    assert "${TICKET_ID}" not in shell_str
+
+
+def test_check_command_exports_pr_number_repo_ticket_env(tmp_path: Path) -> None:
+    """PR_NUMBER, REPO, and TICKET_ID must be exported into the subprocess env
+    so contract authors can also reference them as bare ``$PR_NUMBER`` in
+    double-quoted shell strings (where ``sh -c`` will expand them).
+    """
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command(
+            "echo hi",
+            tmp_path,
+            pr_number=452,
+            repo="OmniNode-ai/onex_change_control",
+            ticket_id="OMN-10086",
+        )
+
+    assert result == _RESULT_PASS
+    env = captured_envs[-1]
+    assert env is not None
+    assert env.get("PR_NUMBER") == "452"
+    assert env.get("REPO") == "OmniNode-ai/onex_change_control"
+    assert env.get("TICKET_ID") == "OMN-10086"
+
+
+def test_check_command_exports_contract_paths(tmp_path: Path) -> None:
+    """Commands run in the target repo but can address central OCC evidence."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    contracts_dir = tmp_path / "onex_change_control" / "contracts"
+    contracts_dir.mkdir(parents=True)
+    captured_envs: list[dict[str, str] | None] = []
+    captured_cwds: list[Path | None] = []
+
+    def fake_run(
+        *_args: object,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        **_kw: object,
+    ) -> tuple[int, str, str]:
+        captured_cwds.append(cwd)
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command(
+            'grep -q PASS "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-1/command.yaml"',
+            workspace,
+            contracts_dir=contracts_dir,
+        )
+
+    assert result == _RESULT_PASS
+    assert captured_cwds[-1] == workspace
+    env = captured_envs[-1]
+    assert env is not None
+    assert env.get("CONTRACTS_DIR") == str(contracts_dir)
+    assert env.get("CONTRACT_REPO_DIR") == str(contracts_dir.parent)
+
+
+def test_check_command_workspace_passed_as_cwd(tmp_path: Path) -> None:
+    """_check_command must pass workspace as cwd to subprocess."""
+    captured_cwd: list[Path | None] = []
+
+    def fake_run(
+        _cmd: list[str], cwd: Path | None = None, **_kwargs: object
+    ) -> tuple[int, str, str]:
+        captured_cwd.append(cwd)
+        return 0, "", ""
+
+    workspace = tmp_path / "my_workspace"
+    workspace.mkdir()
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command("echo hello", workspace)
+
+    assert result == _RESULT_PASS
+    assert captured_cwd[-1] == workspace, (
+        f"Expected cwd={workspace}, got cwd={captured_cwd[-1]}"
+    )
+
+
+def test_check_command_invalid_repo_blocks(tmp_path: Path) -> None:
+    """Adversarial repo value must be rejected before shell substitution."""
+    result, detail = _check_command(
+        "gh pr view {pr} --repo {repo}",
+        tmp_path,
+        pr_number=1,
+        repo="evil; rm -rf /",
+    )
+    assert result == _RESULT_BLOCK
+    assert "Invalid" in detail
+
+
+def test_check_command_precommit_missing_not_ci_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When pre-commit is absent outside CI, demote to WARN."""
+    monkeypatch.delenv("CI", raising=False)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=[
+            (1, "", "not found"),  # which pre-commit → not installed
+        ],
+    ):
+        result, detail = _check_command("pre-commit run --all-files", tmp_path)
+    assert result == _RESULT_WARN
+    assert detail == "pre-commit check skipped (pre-commit not installed)"
+
+
+def test_check_command_precommit_absent_and_ci_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Binary absent + CI=true demotes to WARN."""
+    monkeypatch.setenv("CI", "true")
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=[
+            (1, "", "not found"),  # which pre-commit → not installed
+        ],
+    ):
+        result, detail = _check_command("pre-commit run --all-files", tmp_path)
+    assert result == _RESULT_WARN
+    assert "skipped" in detail
+
+
+def test_check_command_precommit_present_in_ci_enforces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pre-commit installed + CI=true must still run the check (no blanket demotion)."""
+    monkeypatch.setenv("CI", "true")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        calls.append(cmd)
+        if cmd == ["which", "pre-commit"]:
+            return 0, "/usr/bin/pre-commit", ""
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command("pre-commit run --all-files", tmp_path)
+    assert result == _RESULT_PASS
+    assert calls == [
+        ["which", "pre-commit"],
+        ["sh", "-c", "pre-commit run --all-files"],
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GH_REPO injection — detached-HEAD CI context
+# ---------------------------------------------------------------------------
+
+
+def test_check_command_injects_gh_repo_env_when_repo_set(tmp_path: Path) -> None:
+    """GH_REPO is injected when repo is set and cmd contains 'gh '.
+
+    Regression for OMN-8830: gh cannot infer branch in detached-HEAD CI
+    checkouts; GH_REPO injection provides the repo context it needs.
+    """
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command(
+            "gh pr checks {pr} --repo {repo}",
+            tmp_path,
+            pr_number=42,
+            repo="OmniNode-ai/omnimarket",
+        )
+
+    assert result == _RESULT_PASS
+    assert captured_envs, "No subprocess call captured"
+    env = captured_envs[-1]
+    assert env is not None, "env must be set when repo is provided and gh is in cmd"
+    assert env.get("GH_REPO") == "OmniNode-ai/omnimarket", (
+        f"GH_REPO not injected or wrong value: {env.get('GH_REPO')!r}"
+    )
+
+
+def test_check_command_no_gh_repo_when_no_gh_in_cmd(tmp_path: Path) -> None:
+    """GH_REPO must NOT be injected when the command doesn't contain 'gh '.
+
+    Note: as of OMN-10086, PR_NUMBER and REPO ARE always exported (so contract
+    authors can reference them in any command, gh or not), but the gh-specific
+    GH_REPO override is still gated on a gh invocation.
+    """
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command(
+            "echo hello",
+            tmp_path,
+            pr_number=1,
+            repo="OmniNode-ai/omnimarket",
+        )
+
+    assert result == _RESULT_PASS
+    env = captured_envs[-1]
+    assert env is not None, (
+        "PR_NUMBER/REPO must always be exported when set (even for non-gh cmds)"
+    )
+    assert "GH_REPO" not in env, (
+        f"GH_REPO env was injected unnecessarily for non-gh command: "
+        f"{env.get('GH_REPO')!r}"
+    )
+    assert env.get("PR_NUMBER") == "1"
+    assert env.get("REPO") == "OmniNode-ai/omnimarket"
+
+
+def test_check_command_no_gh_repo_when_no_repo_arg(tmp_path: Path) -> None:
+    """GH_REPO must NOT be injected when repo arg is empty."""
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(
+        *_args: object, env: dict[str, str] | None = None, **_kw: object
+    ) -> tuple[int, str, str]:
+        captured_envs.append(env)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        result, _ = _check_command("gh pr checks 1", tmp_path)
+
+    assert result == _RESULT_PASS
+    env = captured_envs[-1] if captured_envs else None
+    assert env is None, f"GH_REPO env was injected when repo was empty: {env!r}"
+
+
+# ---------------------------------------------------------------------------
+# Emergency bypass
+# ---------------------------------------------------------------------------
+
+
+def test_emergency_bypass_skips_all_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EMERGENCY_BYPASS", "jonah-prod-incident")
+    from onex_change_control.scripts.contract_compliance_check import main
+
+    with patch("sys.argv", ["prog", "--pr", "1", "--repo", "OmniNode-ai/omnimarket"]):
+        rc = main()
+    assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# run_compliance_check integration
+# ---------------------------------------------------------------------------
+
+
+def test_no_ticket_id_returns_pass(tmp_path: Path) -> None:
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value=None,
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/omnimarket", tmp_path / "contracts", tmp_path
+        )
+    assert rc == 0
+
+
+def test_no_contract_file_returns_pass_with_warn(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-9999",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WARN" in out
+
+
+def test_contract_with_no_dod_evidence_returns_pass(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1001"
+        summary: "Test ticket"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+    """)
+    (contracts / "OMN-1001.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1001",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    assert rc == 0
+
+
+def test_contract_with_only_a_file_exists_check_now_blocks(tmp_path: Path) -> None:
+    """OMN-15309: an existence assertion is no longer admissible evidence.
+
+    This test previously asserted rc == 0 for exactly this contract. The
+    2026-07-29 operator ruling adopted the OMN-14505 predicate (EXECUTED,
+    FALSIFIABLE, OUTSIDE ITS OWN DIFF), under which `file_exists` cannot go RED
+    once the change that adds the path is applied. The contract has one check,
+    that check is now INERT, and the ticket is not grandfathered -> BLOCK.
+
+    The assertion is INVERTED rather than deleted so the behaviour change is
+    legible in the diff.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_omn1002.py").touch()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1002"
+        summary: "Test ticket with dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-001
+            description: "Test file must exist"
+            checks:
+              - check_type: file_exists
+                check_value: "tests/test_omn1002.py"
+            status: pending
+    """)
+    (contracts / "OMN-1002.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1002",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    assert rc == 1
+
+
+def test_contract_with_an_admissible_command_check_passes(tmp_path: Path) -> None:
+    """Non-vacuity partner: the runner still passes real evidence.
+
+    Without this, inverting the assertion above would be satisfied by a
+    predicate that refuses everything.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_omn1002.py").write_text(
+        "def test_omn1002():\n    pass\n"
+    )
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1002"
+        summary: "Test ticket with dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-001
+            description: "Behaviour must hold"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'def test_omn1002' tests/test_omn1002.py"
+            status: pending
+    """)
+    (contracts / "OMN-1002.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1002",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    assert rc == 0
+
+
+def test_local_done_gate_item_is_loudly_not_evaluated_in_hosted_compliance(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A private-repo probe is preserved but never executed or counted as PASS."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "private-probe-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Private evidence audience"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-hosted-proof
+            description: "Public proof keeps hosted compliance load-bearing"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-private-runtime-proof
+            description: "Private runtime proof executes only at the local Done gate"
+            execution_scope: local_done_gate
+            checks:
+              - check_type: command
+                check_value: "touch {marker} && false"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert not marker.exists(), "hosted compliance executed a local-only probe"
+    assert "NOT_EVALUATED" in out
+    assert "local_done_gate" in out
+    assert "1/2 PASS, 1 NOT_EVALUATED" in out
+    assert "2/2 PASS" not in out
+    assert f"{_RESULT_NOT_EVALUATED}" in out
+
+
+def test_local_done_gate_item_cannot_satisfy_hosted_effective_check_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """NOT_EVALUATED evidence cannot turn a proof-free hosted contract green."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "local-floor-check-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Private-only evidence is not hosted proof"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-private-runtime-proof
+            description: "Local Done evidence"
+            execution_scope: local_done_gate
+            checks:
+              - check_type: command
+                check_value: >-
+                  touch {marker} && grep -q 'PUBLIC_PROOF' public-proof.txt
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed a local-only floor check"
+    assert "NOT_EVALUATED" in out
+    assert "no hosted-and-local effective check" in out
+
+
+def test_historical_item_without_checks_is_compatible_but_not_hosted_proof(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Omitted checks keeps its legacy default but cannot satisfy the proof floor."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Historical no-check item"
+        dod_evidence:
+          - id: dod-historical-no-checks
+            description: "Legacy item omitted checks"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "INVALID_DOD_EVIDENCE_ITEM" not in out
+    assert "NO_EXECUTABLE_CHECKS" in out
+    assert "no hosted-and-local effective check" in out
+
+
+@pytest.mark.parametrize("execution_scope", ["hosted_and_local", "local_done_gate"])
+def test_no_check_item_blocks_even_with_valid_hosted_sibling(
+    execution_scope: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An empty row cannot disappear behind a sibling PASS or audience skip."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Every evidence row needs an executable observation"
+        dod_evidence:
+          - id: dod-valid-hosted-sibling
+            description: "Executable compatibility control"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-empty-row
+            description: "This row must fail loudly"
+            execution_scope: {execution_scope}
+            checks: []
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NO_EXECUTABLE_CHECKS" in out
+    assert "1/2 PASS" in out
+    assert "1 BLOCK" in out
+
+
+def test_real_omn_13141_content_pin_warns_for_historical_no_check_item(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The exact OMN-13141 corpus bytes remain loud, content-pinned debt."""
+    repo_root = Path(__file__).resolve().parents[1]
+    contracts = repo_root / "contracts"
+    contract_path = contracts / "OMN-13141.yaml"
+    allowlist_path = repo_root / "scripts/ci/dod_runner_legacy_allowlist.txt"
+    legacy = _load_legacy_allowlist(allowlist_path)
+
+    assert legacy["OMN-13141"] == _contract_digest(contract_path)
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-13141",
+    ):
+        rc = run_compliance_check(
+            1,
+            "OmniNode-ai/onex_change_control",
+            contracts,
+            repo_root,
+            legacy_tickets=legacy,
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "NO_EXECUTABLE_CHECKS" in out
+    assert "GRANDFATHERED (OMN-14436 content-pinned ratchet)" in out
+
+
+def test_one_byte_change_revokes_legacy_no_check_exemption(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A touched digest cannot inherit OMN-13141's no-check compatibility."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-13141"
+        summary: "Historical deploy assessment omitted checks"
+        dod_evidence:
+          - id: dod-public-proof
+            description: "Executable compatibility control"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-deploy-assessment
+            description: >-
+              Deploy assessment: deploy_pending = false-by-design. No standalone
+              live deploy is required for this PR.
+            source: manual
+    """)
+    contract_path = contracts / "OMN-13141.yaml"
+    contract_path.write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+    legacy = {"OMN-13141": _contract_digest(contract_path)}
+    contract_path.write_text(contract_yaml + "\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-13141",
+    ):
+        rc = run_compliance_check(
+            1,
+            "OmniNode-ai/onex_change_control",
+            contracts,
+            tmp_path,
+            legacy_tickets=legacy,
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "MODIFIED since the cutoff -- exemption REVOKED" in out
+    assert "NO_EXECUTABLE_CHECKS" in out
+    assert "GRANDFATHERED (OMN-14436 content-pinned ratchet)" not in out
+    assert "1/2 PASS" in out
+    assert "1 BLOCK" in out
+
+
+def test_legacy_behavior_proven_item_is_warned_not_schema_blocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """OMN-10839's historical attestation vocabulary remains parse-compatible."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-10839"
+        summary: "Historical behavior_proven compatibility"
+        dod_evidence:
+          - id: dod-public-proof
+            description: "Executable compatibility control"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-syntax-check
+            description: >-
+              /bin/bash -n scripts/prune-worktrees.sh passes on macOS bash 3.2
+            source: manual
+            checks:
+              - check_type: behavior_proven
+                check_value: >-
+                  Verified: /bin/bash -n scripts/prune-worktrees.sh exits 0 on
+                  macOS bash 3.2.57
+    """)
+    (contracts / "OMN-10839.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-10839",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "INVALID_DOD_EVIDENCE_ITEM" not in out
+    assert "Unknown check_type 'behavior_proven'" in out
+
+
+def test_non_executable_behavior_proven_cannot_satisfy_hosted_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Command-shaped attestation text is not an executable hosted check."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Non-executable vocabulary cannot satisfy the proof floor"
+        dod_evidence:
+          - id: dod-attestation-only
+            description: "Hosted runner has no behavior_proven implementation"
+            checks:
+              - check_type: behavior_proven
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Unknown check_type 'behavior_proven'" in out
+    assert "no hosted-and-local effective check" in out
+
+
+def test_local_done_gate_superseding_hosted_item_cannot_reuse_retired_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A retired hosted check cannot make a local-only replacement look hosted."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "retired-hosted-check-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Cross-scope supersession must preserve the hosted floor"
+        dod_evidence:
+          - id: dod-old-hosted
+            description: "Retired hosted proof"
+            checks:
+              - check_type: command
+                check_value: >-
+                  touch {marker} && grep -q 'PUBLIC_PROOF' public-proof.txt
+          - id: dod-local-replacement
+            description: "Replacement only the local Done gate can execute"
+            execution_scope: local_done_gate
+            evidence_artifact: supersedes_dod_evidence:dod-old-hosted
+            checks:
+              - check_type: command
+                check_value: "false"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed a superseded check"
+    assert "SUPERSEDED" in out
+    assert "NOT-EVALUATED" in out
+    assert "no hosted-and-local effective check" in out
+
+
+def test_hosted_item_superseding_local_done_gate_can_satisfy_hosted_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The crossing-direction control still permits an active hosted successor."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "retired-local-check-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "An active hosted replacement remains executable"
+        dod_evidence:
+          - id: dod-old-local
+            description: "Retired local proof"
+            execution_scope: local_done_gate
+            checks:
+              - check_type: command
+                check_value: "touch {marker} && false"
+          - id: dod-hosted-replacement
+            description: "Hosted replacement proof"
+            evidence_artifact: supersedes_dod_evidence:dod-old-local
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert not marker.exists(), "hosted compliance executed a superseded local check"
+    assert "SUPERSEDED" in out
+    assert "1/2 PASS" in out
+
+
+def test_misspelled_execution_scope_blocks_without_executing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A local audience typo cannot silently default to hosted execution."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "misspelled-scope-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Audience typos fail before execution"
+        dod_evidence:
+          - id: dod-valid-hosted-floor
+            description: "Compatibility control for an omitted execution_scope"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+          - id: dod-misspelled-local-scope
+            description: "Intended local proof with a misspelled key"
+            execution_scpoe: local_done_gate
+            checks:
+              - check_type: command
+                check_value: "touch {marker} && false"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed a misspelled local scope"
+    assert "INVALID_DOD_EVIDENCE_ITEM" in out
+    assert "execution_scpoe" in out
+    assert "1/2 PASS" in out
+
+
+def test_unknown_execution_scope_cannot_hide_behind_supersession(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every raw item is validated even when a later item supersedes it."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "invalid-superseded-scope-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Invalid historical audience remains fail-loud"
+        dod_evidence:
+          - id: dod-invalid-old-scope
+            description: "Invalid scope that a successor tries to retire"
+            execution_scope: hosted_maybe
+            checks:
+              - check_type: command
+                check_value: "touch {marker}"
+          - id: dod-valid-hosted-successor
+            description: "Valid hosted replacement"
+            evidence_artifact: supersedes_dod_evidence:dod-invalid-old-scope
+            checks:
+              - check_type: command
+                check_value: "grep -q 'PUBLIC_PROOF' public-proof.txt"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+    (tmp_path / "public-proof.txt").write_text("PUBLIC_PROOF\n")
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed an invalid old scope"
+    assert "UNKNOWN_EXECUTION_SCOPE" in out
+    assert "hosted_maybe" in out
+    assert "1/2 PASS" in out
+
+
+@pytest.mark.parametrize("execution_scope_yaml", ["local-ish", "[local_done_gate]"])
+def test_unknown_execution_scope_fails_closed_without_executing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    execution_scope_yaml: str,
+) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    marker = tmp_path / "unknown-scope-ran"
+    contract_yaml = textwrap.dedent(f"""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-15392"
+        summary: "Unknown scope"
+        dod_evidence:
+          - id: dod-unknown-scope
+            description: "A typo must not silently skip"
+            execution_scope: {execution_scope_yaml}
+            checks:
+              - check_type: command
+                check_value: "touch {marker}"
+    """)
+    (contracts / "OMN-15392.yaml").write_text(contract_yaml)
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-15392",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/onex_change_control", contracts, tmp_path
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not marker.exists(), "hosted compliance executed an ambiguous scope"
+    assert "UNKNOWN_EXECUTION_SCOPE" in out
+    assert execution_scope_yaml.strip("[]") in out
+
+
+def test_contract_with_failing_check_returns_block(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1003"
+        summary: "Test ticket with failing dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-001
+            description: "Missing file must exist"
+            checks:
+              - check_type: file_exists
+                check_value: "nonexistent/path/missing.py"
+            status: pending
+    """)
+    (contracts / "OMN-1003.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1003",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    assert rc == 1
+
+
+def test_superseded_dod_item_is_warn_not_block(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "final_head.py").write_text("FINAL_HEAD_MARKER = 1\n")
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1004"
+        summary: "Test ticket with superseded dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-old-live-head
+            description: "Old moving-head proof now stale"
+            checks:
+              - check_type: file_exists
+                check_value: "tests/old_head.py"
+            status: verified
+          - id: dod-final-live-head
+            evidence_artifact: supersedes_dod_evidence:dod-old-live-head
+            description: "Final moving-head proof"
+            checks:
+              # OMN-15309: was check_type: file_exists, now inadmissible. This
+              # test is about SUPERSESSION, not admissibility, so the final
+              # item carries an admissible check and the assertion below is
+              # unchanged (rc == 0).
+              - check_type: command
+                check_value: "grep -q 'FINAL_HEAD_MARKER' tests/final_head.py"
+            status: verified
+    """)
+    (contracts / "OMN-1004.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1004",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    assert rc == 0
+
+
+def test_disclosed_skip_supersession_is_warn_not_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """OMN-15664 AC4 / OMN-15413 AC6 regression (OCC#5975).
+
+    A terminal item that explicitly discloses status: skipped with no checks
+    and an evidence_artifact supersedes marker pointing at an earlier item is
+    an intentional, auditable statement -- not an omission. It must WARN, not
+    BLOCK, even for a brand-new (non-legacy) ticket.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_omn1005.py").write_text(
+        "def test_omn1005():\n    pass\n"
+    )
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1005"
+        summary: "Test ticket with disclosed-skip supersession"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-real
+            description: "real, admissible proof"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'def test_omn1005' tests/test_omn1005.py"
+            status: verified
+          - id: dod-always-true
+            description: "later found to be always-true"
+            checks:
+              - check_type: command
+                check_value: "false"
+            status: verified
+          - id: dod-disclosed-skip
+            evidence_artifact: supersedes_dod_evidence:dod-always-true
+            description: "honest disclosure: mechanically unprovable"
+            checks: []
+            status: skipped
+    """)
+    (contracts / "OMN-1005.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1005",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "DISCLOSED-SKIP SUPERSESSION" in out
+    assert "NO_EXECUTABLE_CHECKS" not in out
+
+
+def test_undisclosed_empty_checks_supersession_still_blocks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The disclosed-skip exemption requires an EXPLICIT status: skipped.
+
+    A superseding item with empty checks and no "skipped" status (e.g. left
+    at the schema default) must NOT be exempted -- fail closed, it still
+    BLOCKs as NO_EXECUTABLE_CHECKS. This is the guard against a bare
+    placeholder entry silently laundering an unprovable requirement past the
+    gate.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_omn1006.py").write_text(
+        "def test_omn1006():\n    pass\n"
+    )
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-1006"
+        summary: "Test ticket with undisclosed empty-checks supersession"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-real
+            description: "real, admissible proof"
+            checks:
+              - check_type: command
+                check_value: "grep -q 'def test_omn1006' tests/test_omn1006.py"
+            status: verified
+          - id: dod-always-true
+            description: "later found to be always-true"
+            checks:
+              - check_type: command
+                check_value: "false"
+            status: verified
+          - id: dod-placeholder
+            evidence_artifact: supersedes_dod_evidence:dod-always-true
+            description: "no explicit skipped status"
+            checks: []
+    """)
+    (contracts / "OMN-1006.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-1006",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NO_EXECUTABLE_CHECKS" in out
+
+
+# ---------------------------------------------------------------------------
+# OMN-14051 -- non-hermetic check_value guard
+# ---------------------------------------------------------------------------
+
+
+def _cmd(check_value: str) -> dict[str, str]:
+    return {"check_type": "command", "check_value": check_value}
+
+
+def test_non_hermetic_rejects_ssh() -> None:
+    """An ssh probe (the OMN-14001 / PR #3642 case) is rejected with a message."""
+    reason = _non_hermetic_reason(
+        _cmd('ssh jonah@100.109.203.94 "docker ps" && echo no-out-of-band-deploy')
+    )
+    assert reason is not None
+    assert "NON-HERMETIC" in reason
+    assert "ssh" in reason
+    # Steers the author to the canonical receipt-preservation pattern.
+    assert "drift/dod_receipts/" in reason
+    assert "status: PASS" in reason
+
+
+def test_non_hermetic_rejects_live_docker() -> None:
+    """`docker exec` against a live daemon (absent in CI) is rejected."""
+    reason = _non_hermetic_reason(
+        _cmd("docker exec omninode-runtime python -c 'import omnimarket'")
+    )
+    assert reason is not None
+    assert "docker" in reason
+
+
+def test_non_hermetic_rejects_lan_ip_curl() -> None:
+    """Network egress to a LAN/Tailscale host is rejected."""
+    reason = _non_hermetic_reason(_cmd("curl -fsS http://192.168.86.201:8085/health"))
+    assert reason is not None
+    assert "192.168.86.201" in reason
+
+
+def test_non_hermetic_rejects_scp_and_rsync() -> None:
+    assert _non_hermetic_reason(_cmd("scp host:/tmp/x .")) is not None
+    assert _non_hermetic_reason(_cmd("rsync -a host:/src/ ./dst/")) is not None
+
+
+def test_non_hermetic_rejects_sudo_prefixed_ssh() -> None:
+    """A wrapper (sudo/env) does not hide the non-hermetic binary."""
+    assert _non_hermetic_reason(_cmd("sudo ssh box uptime")) is not None
+    assert _non_hermetic_reason(_cmd("env FOO=bar docker ps")) is not None
+
+
+def test_hermetic_receipt_grep_accepted() -> None:
+    """The canonical receipt-grep pattern is NOT flagged as non-hermetic."""
+    receipt = (
+        "grep -q '^status: PASS$' "
+        '"$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-14051/dod-x/command.yaml"'
+    )
+    assert _non_hermetic_reason(_cmd(receipt)) is None
+
+
+def test_hermetic_local_file_checks_accepted() -> None:
+    assert (
+        _non_hermetic_reason(_cmd("test -f src/onex_change_control/__init__.py"))
+        is None
+    )
+    assert _non_hermetic_reason(_cmd("python -c 'import onex_change_control'")) is None
+
+
+def test_hermetic_loopback_curl_accepted() -> None:
+    """curl to a loopback host is hermetic (the ticket carves out non-loopback)."""
+    assert _non_hermetic_reason(_cmd("curl -fsS http://localhost:8085/health")) is None
+    assert _non_hermetic_reason(_cmd("curl -fsS http://127.0.0.1:9000/ready")) is None
+
+
+def test_hermetic_quoted_docker_word_accepted() -> None:
+    """The word "docker" inside a quoted grep pattern must NOT trip the guard."""
+    check = _cmd("grep -q 'No runtime deploy, docker exec, rpk produce' report.txt")
+    assert _non_hermetic_reason(check) is None
+
+
+def test_non_command_check_types_are_ignored() -> None:
+    """grep/file_exists/test_exists may legitimately contain IPs or "docker"."""
+    assert (
+        _non_hermetic_reason(
+            {"check_type": "grep", "check_value": {"pattern": "192.168.1.1"}}
+        )
+        is None
+    )
+    assert (
+        _non_hermetic_reason(
+            {"check_type": "file_exists", "check_value": "deploy/ssh/config"}
+        )
+        is None
+    )
+
+
+def test_command_binaries_is_quote_aware() -> None:
+    assert _command_binaries("grep -q 'no docker here' f && ssh host") == [
+        "grep",
+        "ssh",
+    ]
+    assert _command_binaries("sudo docker ps") == ["docker"]
+    assert _command_binaries("env FOO=bar docker exec c cmd") == ["docker"]
+    assert _command_binaries("/usr/bin/ssh host") == ["ssh"]
+
+
+def test_non_hermetic_contract_blocks_new_ticket(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A NEW (non-grandfathered) contract with an ssh check_value BLOCKs (rc=1)."""
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-2051"
+        summary: "Non-hermetic ssh probe in dod"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-deploy-scope
+            description: "Prove no out-of-band deploy"
+            checks:
+              - check_type: command
+                check_value: "ssh jonah@100.109.203.94 hostname"
+            status: pending
+    """)
+    (contracts / "OMN-2051.yaml").write_text(contract_yaml)
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-2051",
+    ):
+        rc = run_compliance_check(1, "OmniNode-ai/omnimarket", contracts, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NON-HERMETIC" in out
+
+
+def test_non_hermetic_contract_grandfathered_is_warn_not_block(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A grandfathered (content-pinned) contract demotes the non-hermetic BLOCK to WARN.
+
+    Proves the guard respects the OMN-14436 ratchet: the pre-existing corpus of
+    ssh/docker-exec runtime-proof checks is reported, not wedged.
+    """
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract_yaml = textwrap.dedent("""
+        schema_version: "1.0.0"
+        ticket_id: "OMN-2052"
+        summary: "Legacy non-hermetic probe"
+        is_seam_ticket: false
+        interface_change: false
+        interfaces_touched: []
+        evidence_requirements: []
+        emergency_bypass:
+          enabled: false
+          justification: ""
+          follow_up_ticket_id: ""
+        dod_evidence:
+          - id: dod-legacy-probe
+            description: "Legacy live probe"
+            checks:
+              - check_type: command
+                check_value: "docker exec omninode-runtime true"
+            status: verified
+    """)
+    contract_path = contracts / "OMN-2052.yaml"
+    contract_path.write_text(contract_yaml)
+    legacy = {"OMN-2052": _contract_digest(contract_path)}
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._extract_ticket_id",
+        return_value="OMN-2052",
+    ):
+        rc = run_compliance_check(
+            1, "OmniNode-ai/omnimarket", contracts, tmp_path, legacy_tickets=legacy
+        )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "GRANDFATHERED" in out
+
+
+# ---------------------------------------------------------------------------
+# OMN-14875 -- dod_evidence PR-binding rebind (found during OMN-14431)
+#
+# contracts/OMN-14400.yaml carried 3 dod_evidence check_values (+1
+# evidence_requirements command) using the OMN-14431 "endorsed" workaround:
+# ``PR_NUMBER=<n> REPO=<repo> gh pr view ${PR_NUMBER} --repo ${REPO} ...``.
+# _substitute_tokens() pre-replaces every ${PR_NUMBER}/${REPO} occurrence in
+# the WHOLE check_value string with the RUNNER's own injected values before
+# sh -c ever runs -- before the VAR=literal prefix assignment could take
+# effect. So these checks never actually pinned PR #1721/#3971/#3981; they
+# silently re-checked whatever PR the compliance runner happened to be
+# evaluating for OMN-14400 (any future PR whose title/branch mentions
+# OMN-14400). These tests load the REAL contract file and prove the resolved
+# shell command targets the pinned PR regardless of the runner's own
+# pr_number/repo -- RED against the pre-fix contract (the runner's injected
+# PR/repo leak into the resolved command), GREEN after the standalone
+# hardcoded rebind.
+# ---------------------------------------------------------------------------
+
+_OMN_14400_CONTRACT = (
+    Path(__file__).resolve().parent.parent / "contracts" / "OMN-14400.yaml"
+)
+
+
+def _load_omn_14400_dod_check_value(evidence_item_id: str) -> str:
+    data = yaml.safe_load(_OMN_14400_CONTRACT.read_text())
+    superseding_artifact = f"supersedes_dod_evidence:{evidence_item_id}"
+    for item in data.get("dod_evidence", []):
+        if item.get("evidence_artifact") == superseding_artifact:
+            return str(item["checks"][0]["check_value"])
+    for item in data.get("dod_evidence", []):
+        if item.get("id") == evidence_item_id:
+            return str(item["checks"][0]["check_value"])
+    msg = f"dod_evidence item {evidence_item_id!r} not found in {_OMN_14400_CONTRACT}"
+    raise AssertionError(msg)
+
+
+def _load_omn_14400_evidence_requirement_command(index: int) -> str:
+    data = yaml.safe_load(_OMN_14400_CONTRACT.read_text())
+    return str(data["evidence_requirements"][index]["command"])
+
+
+# A runner PR/repo deliberately different from every PR pinned below, so any
+# leakage of the runner's own context into the resolved command is visible.
+_UNRELATED_RUNNER_PR = 999999
+_UNRELATED_RUNNER_REPO = "OmniNode-ai/some-unrelated-repo"
+
+
+def _resolve_via_check_command(check_value: str, tmp_path: Path) -> str:
+    """Run check_value through the real substitution/exec path and return the
+    resolved shell string actually handed to ``sh -c`` (subprocess mocked)."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        captured.append(cmd)
+        return 0, "", ""
+
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        side_effect=fake_run,
+    ):
+        _check_command(
+            check_value,
+            tmp_path,
+            pr_number=_UNRELATED_RUNNER_PR,
+            repo=_UNRELATED_RUNNER_REPO,
+        )
+    assert captured, "No subprocess call captured -- _run was never invoked"
+    return captured[-1][2]
+
+
+@pytest.mark.parametrize(
+    ("evidence_item_id", "pinned_pr", "pinned_repo"),
+    [
+        ("dod-OmniNode-ai-omnimarket-pr-1721", 1721, "OmniNode-ai/omnimarket"),
+        ("occ-self-bind-pr-3971", 3971, "OmniNode-ai/onex_change_control"),
+        ("occ-self-bind-pr-3981", 3981, "OmniNode-ai/onex_change_control"),
+    ],
+)
+def test_omn_14400_dod_check_values_pin_correct_pr_not_runner_pr(
+    tmp_path: Path,
+    evidence_item_id: str,
+    pinned_pr: int,
+    pinned_repo: str,
+) -> None:
+    check_value = _load_omn_14400_dod_check_value(evidence_item_id)
+    shell_str = _resolve_via_check_command(check_value, tmp_path)
+
+    assert str(pinned_pr) in shell_str, (
+        f"{evidence_item_id}: pinned PR #{pinned_pr} missing from resolved "
+        f"command: {shell_str!r}"
+    )
+    assert pinned_repo in shell_str, (
+        f"{evidence_item_id}: pinned repo {pinned_repo!r} missing from "
+        f"resolved command: {shell_str!r}"
+    )
+    assert str(_UNRELATED_RUNNER_PR) not in shell_str, (
+        f"{evidence_item_id}: check_value silently substituted the "
+        f"compliance runner's OWN pr_number ({_UNRELATED_RUNNER_PR}) instead "
+        f"of the pinned PR #{pinned_pr} -- OMN-14431 inert-token-prefix "
+        f"defect (OMN-14875): {shell_str!r}"
+    )
+    assert _UNRELATED_RUNNER_REPO not in shell_str, (
+        f"{evidence_item_id}: check_value silently substituted the "
+        f"compliance runner's OWN repo ({_UNRELATED_RUNNER_REPO}) instead of "
+        f"the pinned repo {pinned_repo!r} -- OMN-14431 inert-token-prefix "
+        f"defect (OMN-14875): {shell_str!r}"
+    )
+
+
+def test_omn_14400_evidence_requirements_command_pins_correct_pr_not_runner_pr(
+    tmp_path: Path,
+) -> None:
+    """Same defect class in evidence_requirements[0].command (OMN-14875): not
+    scanned by lint-contract-check-values (evidence_requirements is not a
+    dod_evidence field) but functionally identical to the dod_evidence items
+    above -- it must also genuinely pin PR #1721, not the runner's own PR.
+    """
+    command = _load_omn_14400_evidence_requirement_command(0)
+    shell_str = _resolve_via_check_command(command, tmp_path)
+
+    assert "1721" in shell_str
+    assert "OmniNode-ai/omnimarket" in shell_str
+    assert str(_UNRELATED_RUNNER_PR) not in shell_str, (
+        "evidence_requirements[0].command silently substituted the "
+        f"compliance runner's OWN pr_number ({_UNRELATED_RUNNER_PR}) instead "
+        f"of the pinned PR #1721 -- OMN-14431 inert-token-prefix defect "
+        f"(OMN-14875): {shell_str!r}"
+    )
+    assert _UNRELATED_RUNNER_REPO not in shell_str

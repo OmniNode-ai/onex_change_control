@@ -1,0 +1,60 @@
+---
+# OMN-13191 contract file for omnibase_infra deploy-gate.
+# The canonical ticket contract and PASS receipts live in onex_change_control.
+# This file is the per-repo deploy-evidence carrier only.
+schema_version: "1.0.0"
+ticket_id: "OMN-13191"
+title: "feat(OMN-13191): resolve delegation topics via ServiceTopicRegistry in dispatch result applier"
+summary: >-
+  A2 of epic OMN-13188 (Workstream A — all topics from contracts). runtime/service_dispatch_result_applier.py
+  no longer imports TOPIC_* string constants from event_bus/topic_constants.py; it resolves the 4 delegation
+  intent topics (baseline-comparison-request, delegation-inference-request, delegation-quality-gate-request,
+  delegation-routing-request) through ServiceTopicRegistry (the OMN-5839 contract-sourced registry pattern).
+  For registry completeness all 13 TOPIC_DELEGATION_* topics were added as logical keys (topic_keys.py),
+  suffix constants + provisioned ModelTopicSpec entries (platform_topic_suffixes.py), and from_defaults()
+  mappings (service_topic_registry.py), exported via topics/__init__.py. No constant is deleted from topic_constants.py
+  — that is A4. The cross-repo-declared delegation topics are added to the check_contract_topic_parity.py
+  _LEGACY_ALLOWLIST with structured "contract.yaml in omnimarket repo (cross-repo provisioning)" reasons,
+  mirroring the existing omniintelligence cross-repo entries (this parity scanner reads only omnibase_infra/nodes,
+  so omnimarket-owned contracts are invisible to it).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Topic-registry and dispatch-result-applier unit suites pass, including the new no-drift proof TestDelegationTopicRegistryNoDrift.
+      Full unit suite green (24025 passed) with the applier resolving topics via the registry and importing
+      zero TOPIC_* constants; the only failures are pre-existing integration/performance tests that require
+      live PostgreSQL / Kafka / runtime containers / LLM endpoints (environment-dependent, not a regression
+      from this PR).
+    command: "uv run pytest tests/unit/topics/ tests/unit/runtime/test_dispatch_result_applier_topic_routing.py
+      tests/unit/runtime/test_service_dispatch_result_applier.py -q"
+  - kind: ci
+    description: >-
+      Both topic gates green: no-hardcoded-topics pre-commit hook + check_topic_literals.py arch-invariant.
+    command: "uv run python scripts/validation/check_topic_literals.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-infra-pr-2005
+    description: >-
+      omnibase_infra PR #2005 carries the OMN-13191 ServiceTopicRegistry migration on a ticketed branch:
+      runtime/service_dispatch_result_applier.py imports zero TOPIC_* constants and resolves the 4 delegation
+      intent topics via ServiceTopicRegistry. The permanent test TestDelegationTopicRegistryNoDrift proves
+      registry.resolve(key) == TOPIC_DELEGATION_* constant == owning omnimarket node_delegation_orchestrator/contract.yaml
+      string for all 13 delegation keys; both topic gates (check_topic_literals.py arch-invariant + no-hardcoded-topics
+      pre-commit) green; full unit suite 24025 passed. Post-merge deploy validation of the runtime-path
+      touch is recorded in the PR #2005 body (deploy: docker exec omninode-runtime import-and-resolve
+      readiness smoke for the applier + registry).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13191/dod-infra-pr-2005/command.yaml"
+          && grep -q '^pr_number: 2679$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13191/dod-infra-pr-2005/command.yaml"
+          && grep -q '^commit_sha: "4884dfcb3bee448111158b06a4e0e37a91aa962e"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13191/dod-infra-pr-2005/command.yaml"
+          && grep -q 'deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13191/dod-infra-pr-2005/command.yaml"

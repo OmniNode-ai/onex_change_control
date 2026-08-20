@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13220"
+title: "deploy-runtime.sh cold-start crash-loop + missing intelligence-migration"
+summary: >-
+  OMN-13220 fixes two fresh-DB / fully-cold dev-runtime redeploy crash-loops diagnosed during the OMN-13215
+  redeploy. (1) deploy-runtime.sh's migration preflight omitted intelligence-migration; the compose file
+  gates omninode-runtime on it (service_completed_successfully) but the runtime restart uses 'up -d --no-deps',
+  which bypasses depends_on, so on a fresh-DB lane public.db_metadata for omniintelligence was never stamped
+  and the kernel crash-looped. The fix adds intelligence-migration to RUNTIME_MIGRATION_SERVICES and docker-waits
+  on the run-to-completion migrations via RUNTIME_MIGRATION_ONESHOTS (forward-migration, intelligence-migration);
+  the migration-gate keepalive stays excluded from the wait set. (2) On a fully-cold lane the kernel joins
+  a consumer group per subscribed topic; with 1300+ topics on a freshly-provisioned broker the default
+  30s per-consumer KAFKA_TIMEOUT_SECONDS blew on the slow group-coordinator tail and the kernel recycled
+  before reaching healthy. The fix adds warm_broker_topic_provisioning() (bring redpanda healthy + apply
+  redpanda-partition-cap BEFORE the kernel boots, since the --no-deps restart bypasses the compose cap
+  gate) and exports a raised KAFKA_TIMEOUT_SECONDS (default 180s, clamped to the config le=300 bound)
+  wired through a new KAFKA_TIMEOUT_SECONDS:-30 entry in x-runtime-env. Enforcement: a new shellcheck
+  pre-commit hook scoped to the deploy-runtime surface (+ .shellcheckrc) and 7 regression tests in tests/scripts/test_deploy_runtime_coldstart.py.
+  Scope is DEV lane only; this PR does not deploy, restart runtime, or mutate stability-test/prod/judge.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001-local-verification"
+    description: >-
+      omnibase_infra PR #2023 — deploy-runtime.sh adds intelligence-migration to the migration preflight,
+      adds warm_broker_topic_provisioning() (partition-cap before kernel boot), and exports a raised+clamped
+      KAFKA_TIMEOUT_SECONDS for the cold boot. tests/scripts/ (144 tests incl. 7 new cold-start regression
+      tests) pass, shellcheck clean, pre-commit clean. Self-binding PASS receipt for the local verification.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13220/dod-001-local-verification/command.yaml
+          && grep -q '^pr_number: 2023$' drift/dod_receipts/OMN-13220/dod-001-local-verification/command.yaml
+  - id: "dod-002-deploy-readiness"
+    description: >-
+      Deploy-readiness note (dev lane only). This PR changes the deploy ORCHESTRATION script and compose
+      env wiring; it does NOT itself deploy, restart runtime, mutate prod/judge/.201, or publish live
+      traffic. The cold-start fix is exercised on the next dev-lane redeploy (deploy-runtime.sh --execute
+      --restart), run by the deploy agent. This receipt records that the change is deploy-safe and lane-scoped.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13220/dod-002-deploy-readiness/command.yaml
+          && grep -q 'dev lane only' drift/dod_receipts/OMN-13220/dod-002-deploy-readiness/command.yaml
+  - id: "pr-occ-binding"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to the onex_change_control
+      evidence PR so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound
+      to the OCC PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13220/pr-occ-binding/command.yaml

@@ -1,0 +1,151 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14428"
+title: "Independent-verifier OCC companion for the omnibase-core pin bump + shim deletion"
+summary: >
+  OCC companion for OmniNode-ai/onex_change_control#3995 (OMN-14428), authored by the independent verifier
+  (verify-occ-pin), not the implementer, per OMN-14055. #3995 bumps the omnibase-core pin to fix an ImportError
+  that let OMN-14411/#3986 merge broken on dev, deletes a local re-implementation of a security-relevant
+  per-entry hash now that the pin makes the canonical core function importable, and adds a CI self-check
+  step that closes the gap where a validator gate never runs against its own code change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3995 CI checks green (apart from the expected missing_contract self-reference before
+      this companion lands)"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-source-pr-content-at-head"
+    description: >-
+      Primary product-observing evidence: reads the actual pyproject.toml content at #3995's exact head
+      commit SHA (b60544ffe09918055337d4b6248cbe366458897d) via the GitHub contents API, and asserts the
+      specific pin string the PR claims to have written is genuinely present at that ref — not merely
+      that a file with some SHA exists there (the weaker existence-only check_value form that OCC#4002
+      used). Bidirectionally proven: this exact command form returns the pin string at #3995's head SHA,
+      and returns false when run against dev's pre-#3995 HEAD (e1dc544696a0c45695988b8f50487dca1cbeaf34),
+      where the file still carries the old 0.45.0 pin.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/contents/pyproject.toml?ref=b60544ffe09918055337d4b6248cbe366458897d
+          --jq .content | base64 -d | grep -c 'omnibase-core>=0.46.5,<0.47.0')" -ge 1
+  - id: "dod-verify-source-pr-ci-status"
+    description: >-
+      Primary product-observing evidence: reads the actual check-run conclusions recorded by GitHub for
+      #3995's head commit SHA, excluding only the two checks (verify/verify, occ-preflight/eligibility)
+      that are EXPECTED to fail until this very companion lands — that exclusion is the documented, self-fulfilling
+      missing_contract dependency, not an attempt to hide a real defect. No other check on #3995's head
+      SHA carries a failure conclusion. Bidirectionally proven against a real control: the identical check-runs
+      query run against OmniNode-ai/omnibase_infra#2264's head SHA (26e1c3e915a98832519ad9f2a35534915bb6c071,
+      a PR independently reported to have 32 failing checks) correctly returns a failure conclusion and
+      the check_value correctly fails closed. A companion product-observing command — reading #3995's
+      raw merge status via gh api repos/OmniNode-ai/onex_change_control/pulls/3995 --jq .merged — was
+      also run and correctly reports false (#3995 remained unmerged at verification time), with the identical
+      command form correctly reporting true against a merged control, OmniNode-ai/onex_change_control#3994.
+      That merge-status command is recorded here as supplementary discrimination proof rather than as
+      its own dod_evidence entry: an entry whose truth value is "the PR this companion unblocks is already
+      merged" can never hold a PASS receipt before that merge happens, which would make occ-preflight/
+      eligibility (validator_occ_merge_eligibility.py, requiring EnumReceiptStatus.PASS on every bound
+      receipt with no exemption) permanently ineligible on a pre-merge companion — a genuine deadlock
+      confirmed by executing this exact contract before this correction, not a hypothetical.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/commits/b60544ffe09918055337d4b6248cbe366458897d/check-runs
+          --jq '([.check_runs[] | select(.name != "verify / verify" and .name != "occ-preflight / eligibility")
+          | .conclusion] | index("failure")) // "none"')" = "none"
+  - id: "dod-verify-pin-floor-wheel-grep"
+    description: >-
+      Independent re-derivation of the pin floor, not a read of the implementer's claim. Downloaded every
+      published omnibase-core wheel from PyPI directly (0.45.0, 0.46.1, 0.46.3, 0.46.4, 0.46.5, 0.46.6,
+      0.46.7 — 0.46.2 does not exist on PyPI at all, confirmed via pip's candidate list) and grepped the
+      unpacked .py sources of each for actual class/def definitions of the three symbols scripts/validation/check_receipt_hardening.py
+      imports directly: compute_contract_entry_sha256 and ContractEntryNotFoundError in omnibase_core/validation/validator_receipt_gate.py,
+      and EnumProofTier in omnibase_core/enums/ticket/enum_proof_tier.py. Result: 0.46.5 is the first
+      release carrying all three; 0.45.0/0.46.1/0.46.3/0.46.4 each lack at least one of the two validator_receipt_gate
+      symbols. This matches the pin change in #3995 (>=0.45.0,<0.46.0 -> >=0.46.5,<0.47.0) and confirms
+      uv.lock's resolved 0.46.7 genuinely has all three.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14428/dod-verify-pin-floor-wheel-grep/command.yaml
+          && grep -q '0.46.5: compute_contract_entry_sha256=True  ContractEntryNotFoundError=True' drift/dod_receipts/OMN-14428/dod-verify-pin-floor-wheel-grep/command.yaml
+          && grep -q '0.45.0: compute_contract_entry_sha256=False  ContractEntryNotFoundError=False' drift/dod_receipts/OMN-14428/dod-verify-pin-floor-wheel-grep/command.yaml
+  - id: "dod-verify-shim-byte-identical"
+    description: >-
+      Independent reproduction of the shim-vs-core equivalence claim underlying the deletion in #3995
+      — the highest-risk change in the PR, since a divergence would silently corrupt every receipt hash
+      minted while the shim was live. Reimplemented the exact deleted compute_contract_entry_sha256 fallback
+      from the PR diff and ran it against omnibase_core's real implementation over every dod_evidence
+      entry in every contracts/*.yaml file on #3995's branch: 27699 entries, 0 mismatches, 0 errors. The
+      shim never diverged from core; deleting it changes no existing receipt binding.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14428/dod-verify-shim-byte-identical/command.yaml
+          && grep -q 'Total dod_evidence entries checked: 27699' drift/dod_receipts/OMN-14428/dod-verify-shim-byte-identical/command.yaml
+          && grep -q 'Mismatches: 0' drift/dod_receipts/OMN-14428/dod-verify-shim-byte-identical/command.yaml
+  - id: "dod-verify-import-sweep-clean"
+    description: >-
+      Independent confirmation that no other file in the repository is exposed by the pin bump. Imported
+      every .py module under src/onex_change_control/ and scripts/ (212 files) against the pinned 0.46.7
+      wheel installed in a clean env -u PYTHONPATH venv, registering each module in sys.modules before
+      exec so dataclass/pydantic type-hint resolution behaves as it would under a normal import. Result:
+      212/212 import cleanly, matching the count claimed in the PR body.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14428/dod-verify-import-sweep-clean/command.yaml
+          && grep -q 'total files: 212' drift/dod_receipts/OMN-14428/dod-verify-import-sweep-clean/command.yaml
+          && grep -q 'failed: 0' drift/dod_receipts/OMN-14428/dod-verify-import-sweep-clean/command.yaml
+  - id: "dod-verify-ci-selfcheck-two-layer"
+    description: >-
+      Independent, adversarial reproduction that the new "Validator self-check" CI step in #3995 actually
+      catches the bug class that let OMN-14411/#3986 merge broken — not merely that the step exists. Two
+      negative tests were constructed and run in an isolated sandbox git worktree (never touching #3995's
+      branch): (1) planted an import of a nonexistent core symbol in check_receipt_hardening.py and ran
+      the exact bash logic extracted from ci.yml — exits 1 with the ImportError surfaced; (2) went beyond
+      the dispatched ask and planted a runtime-only bug (a raise inside check_receipt_file, which --help
+      alone cannot catch because argparse short-circuits before main() executes) — confirmed --help passes
+      but the corpus-run second layer of the same step correctly reports the crash instead of reporting
+      violations, proving the two-layer design is load-bearing, not redundant. Separately pulled the live
+      CI log for #3995's own Pre-commit job (step "Validator self-check", job 86608910163, conclusion
+      success): it fired for real on the PR's own diff, ran --help clean, then ran the full corpus (9853
+      receipts) and correctly classified the 110 pre-existing violations as legacy corpus debt rather
+      than a gate defect.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14428/dod-verify-ci-selfcheck-two-layer/command.yaml
+          && grep -q "EXIT CODE: 1" drift/dod_receipts/OMN-14428/dod-verify-ci-selfcheck-two-layer/command.yaml
+          && grep -q "RuntimeError: sandbox negative test" drift/dod_receipts/OMN-14428/dod-verify-ci-selfcheck-two-layer/command.yaml
+          && grep -q "Corpus run: gate executed and reported expected violations" drift/dod_receipts/OMN-14428/dod-verify-ci-selfcheck-two-layer/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind receipt for this OCC evidence branch: the first evidence commit carries the four behavioral
+      dod_evidence entries above plus the independent-verifier PASS receipts for OMN-14428.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14428/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14428-occ-behavioral-evidence' drift/dod_receipts/OMN-14428/dod-occ-self-commit/command.yaml

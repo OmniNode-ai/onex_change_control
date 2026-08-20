@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14436"
+evidence_item_id: "dod-verify-14436-allowlist-fully-digest-bound"
+check_type: "command"
+check_value: >-
+  A=$(gh api "repos/OmniNode-ai/onex_change_control/contents/scripts/ci/dod_runner_legacy_allowlist.txt?ref=7266a4f1b2fff2bf5a362a60bb1f099dd94d1835"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); T=$(printf '%s' "$A" | grep -vcE '^[[:space:]]*#|^[[:space:]]*$');
+  B=$(printf '%s' "$A" | grep -cE '^OMN-[0-9]+ [0-9a-f]{64}$'); test "$T" -gt 0 && test "$T" = "$B"
+status: PASS
+run_timestamp: "2026-07-12T08:00:00Z"
+commit_sha: "7266a4f1b2fff2bf5a362a60bb1f099dd94d1835"
+runner: "occ-queue-runner"
+verifier: "occ-queue-verifier"
+probe_command: >-
+  gh api ".../dod_runner_legacy_allowlist.txt?ref=7266a4f1b2fff2bf5a362a60bb1f099dd94d1835" --jq .content
+  | base64 -d | awk 'NF' | grep -cE '^OMN-[0-9]+ [0-9a-f]{64}$'   # then the IDENTICAL command at the
+  pre-fix parent f6088719 (file ABSENT) and at a bogus SHA, as RED controls
+probe_stdout: |
+  # #4022 merge commit 7266a4f1:
+  #   non-comment lines : 6919
+  #   digest-bound lines: 6919   -> every entry is 'OMN-<n> <64-hex>'
+  # RED control -- pre-fix parent f6088719: the allowlist file DOES NOT EXIST (404)
+  #   non-comment lines : 0   -> the naive 'zero digest-less lines' form would PASS here. FALSE GREEN.
+  # bound check_value exit codes:
+  #   ref=7266a4f1 (merge)  -> exit 0   GREEN
+  #   ref=f6088719 (parent) -> exit 1   RED   (total == 0 fails the non-empty requirement)
+  #   ref=000...0  (bogus)  -> exit 1   RED
+exit_code: 0
+actual_output: >-
+  PASS: asserts the grandfather allowlist EXISTS, is NON-EMPTY, and that EVERY non-comment line matches
+  the digest-bound form 'OMN-<n> <64-hex>'. A digest-less line is a ticket-keyed exemption and is exactly
+  how the laundering hole comes back, so a PARTIAL migration is treated as FAILURE rather than progress.
+  THE OBVIOUS FORM OF THIS CHECK IS A FALSE GREEN AND WAS REJECTED HERE: 'count the digest-less lines
+  and require zero' PASSES at the pre-fix parent, because the allowlist file does not exist there at all
+  -- so zero digest-less lines is trivially true and the check greens against the very state it exists
+  to reject. A check that passes because the thing it inspects is ABSENT asserts nothing. This form therefore
+  requires total > 0 AND total == digest-bound-count. RED PROVEN across three refs: exit 0 at the merge
+  commit (6919/6919), exit 1 at the pre-fix parent (file absent), exit 1 at a bogus SHA; it also goes
+  RED against any allowlist carrying even one digest-less line.
+branch: "jonah/omn-14436-assert-ratchet-invariant"
+contract_sha256: "sha256:2384cf3a7e6736bf0f9726a16a6442df12dba012f2e07a302407145e4d415d55"
+contract_entry_sha256: "sha256:c4a83f62b6c8ea5124cd025eee4e35f845e6a5a7cad148733017f110c91bd371"

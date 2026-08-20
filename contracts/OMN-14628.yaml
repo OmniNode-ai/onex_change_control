@@ -1,0 +1,319 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14628"
+title: "OCC companion for omnibase_infra#2312 - RuntimeDelegationDispatchPort tenant_id compatibility"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2312 (OMN-14628). #2312 fixes the live RuntimeDelegationDispatchPort.dispatch()
+  call-shape crash by adding tenant_id to the infra-owned dispatch port protocol and concrete RuntimeDelegationDispatchPort,
+  then threading that tenant_id into the ModelDispatchBusCommand payload. The regression test drives the
+  real handler_wiring auto-wiring path and the real RuntimeDelegationDispatchPort.dispatch() method with
+  the exact omnimarket HandlerDelegateSkill keyword shape that previously raised TypeError. The product
+  PR is blocked by missing central OCC evidence; the checks below bind the exact product head and read
+  the product files directly from GitHub.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - protocols
+  - public_api
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2312 head SHA carries the tenant_id dispatch compatibility fix"
+    command: "see dod_evidence check_values pinned to ca746d9f"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2312-head-ca746d9-pr-head"
+    description: >
+      Product-observing PR-head bind for omnibase_infra#2312. Reads live GitHub PR metadata and asserts
+      the product PR is still open on exact head ca746d9faaac3e29b202f35413b14312cbac4a27 and branch jonah/omn-14628-fix-runtimedelegationdispatchport-tenant-id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/2312 --jq '.number == 2312 and .head.sha == "ca746d9faaac3e29b202f35413b14312cbac4a27"
+          and .head.ref == "jonah/omn-14628-fix-runtimedelegationdispatchport-tenant-id" and .state ==
+          "open"' | grep -qx true
+  - id: "dod-verify-2312-tenant-id-dispatch-signature"
+    description: >
+      Product-observing content read pinned to #2312 head ca746d9f. Fetches the infra dispatch port protocol
+      and concrete service from GitHub and asserts both dispatch signatures accept tenant_id, and the
+      concrete service threads tenant_id into the outgoing ModelDispatchBusCommand payload.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          proto="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && service="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && printf '%s' "$proto" | grep -q 'tenant_id: str | None = None'
+          && printf '%s' "$service" | grep -q 'tenant_id: str | None = None' && printf '%s' "$service"
+          | grep -q '"tenant_id": tenant_id'
+  - id: "dod-verify-2312-real-auto-wiring-regression-test"
+    description: >
+      Product-observing content read pinned to #2312 head ca746d9f. Fetches the regression test and asserts
+      it drives the real auto-wired RuntimeDelegationDispatchPort with the omnimarket call shape, including
+      tenant_id, and verifies tenant_id reaches the captured dispatch payload.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tests="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/test_handler_wiring_resolver_integration.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && printf '%s' "$tests" | grep -q 'test_auto_wired_dispatch_port_accepts_omnimarket_call_shape'
+          && printf '%s' "$tests" | grep -q 'RuntimeDelegationDispatchPort' && printf '%s' "$tests" |
+          grep -q 'tenant_id="omn-14628-regression-tenant"' && printf '%s' "$tests" | grep -q 'captured_payloads\[0\]\["tenant_id"\]'
+  - id: "dod-deploy-assessment-2312"
+    description: >
+      Deploy-gate assessment for omnibase_infra#2312. The PR changes Python runtime protocol/service code
+      and a unit regression test; it does not touch Dockerfiles, compose files, deploy scripts, or runtime
+      deployment manifests. The command fails if the live PR diff grows a deploy-surface file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 2312 --repo OmniNode-ai/omnibase_infra --name-only | grep -qE 'docker-compose|Dockerfile|deploy/')
+  - id: "dod-occ-self-bind-pr-4164"
+    description: >
+      Self-bind receipt for this OMN-14628 OCC evidence companion. Binds onex_change_control#4164 on branch
+      jonah/omn-14628-occ-infra2312-head-ca746d9 to initial evidence commit 44dcdc404ef1bb4c025ecda9acf109d7c8f4f0e7
+      so onex_change_control's own OCC preflight and Receipt Gate can resolve the companion PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'branch: jonah/omn-14628-occ-infra2312-head-ca746d9' drift/dod_receipts/OMN-14628/dod-occ-self-bind-pr-4164/command.yaml
+          && grep -q 'pr_number: 4164' drift/dod_receipts/OMN-14628/dod-occ-self-bind-pr-4164/command.yaml
+          && grep -q '44dcdc404ef1bb4c025ecda9acf109d7c8f4f0e7' drift/dod_receipts/OMN-14628/dod-occ-self-bind-pr-4164/command.yaml
+  - id: "dod-infra2595-exact-product-head"
+    description: >-
+      Append-only evidence for the OMN-14628 recurrence repair in omnibase_infra PR #2595. The product
+      repository is private to the repo-scoped hosted OCC token, so hosted compliance binds this immutable
+      PASS receipt. The receipt was executed with an operator token and pins the exact draft PR metadata,
+      branch, base, head commit, and all five changed blob identities.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          product="/Users/jonah/Code/omni_home/omni_worktrees/OMN-14628-recurrence/omnibase_infra" &&
+          test "$(git -C "$product" rev-parse HEAD)" = 4c3e110904f74a6cb9dba6c1a09ef19362cf2695 && test
+          "$(git -C "$product" rev-parse 'HEAD^{tree}')" = 991679936b2da6b2076a7719ba0c16c138d02f26 &&
+          files="$(git -C "$product" diff --name-only 44177d973e6e9346edfdc46e17cda8dade8bd32d HEAD |
+          LC_ALL=C sort)" && expected="$(printf '%s\n' src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py
+          src/omnibase_infra/runtime/service_delegation_dispatch_port.py tests/integration/runtime/test_delegation_dispatch_port_handler_compat.py
+          tests/unit/runtime/test_handler_wiring_resolver_integration.py tests/unit/runtime/test_service_delegation_dispatch_port.py)"
+          && test "$files" = "$expected" && test "$(git -C "$product" rev-parse 'HEAD:src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py')"
+          = 4bfc3089d5a778ff4939e800b0d9f0b4821a1d01 && test "$(git -C "$product" rev-parse 'HEAD:src/omnibase_infra/runtime/service_delegation_dispatch_port.py')"
+          = 24b586bd2f34c1ca1e1d384c7df378f051078be0 && test "$(git -C "$product" rev-parse 'HEAD:tests/integration/runtime/test_delegation_dispatch_port_handler_compat.py')"
+          = 9c748ed1330e8b35a8dcd882c12c1d7f81334812 && test "$(git -C "$product" rev-parse 'HEAD:tests/unit/runtime/test_handler_wiring_resolver_integration.py')"
+          = 3777c8fb7ba7ef8262fb8de22ecddafb8a7dfa3d && test "$(git -C "$product" rev-parse 'HEAD:tests/unit/runtime/test_service_delegation_dispatch_port.py')"
+          = a3a3a519dfc4ffe16be42b7daec8ba987dcba5d8 && printf 'infra2595 exact local product tree PASS\n'
+  - id: "dod-infra2595-callable-parity-semantics"
+    description: >-
+      Binds the operator-executed immutable product proof that #2595 adds the three exact optional completion-
+      shaping parameters, omits all three from the deployed command when absent, and rejects every non-None
+      value before route or broker work until the canonical request wire carries them end to end.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          product="/Users/jonah/Code/omni_home/omni_worktrees/OMN-14628-recurrence/omnibase_infra" &&
+          test "$(git -C "$product" rev-parse HEAD)" = 4c3e110904f74a6cb9dba6c1a09ef19362cf2695 && test
+          "$(git -C "$product" rev-parse 'HEAD^{tree}')" = 991679936b2da6b2076a7719ba0c16c138d02f26 &&
+          cd "$product" && uv run pytest tests/integration/runtime/test_delegation_dispatch_port_handler_compat.py::test_runtime_port_exposes_consumer_handler_optional_parameters
+          tests/integration/runtime/test_delegation_dispatch_port_handler_compat.py::test_absent_consumer_features_dispatch_through_runtime_bus
+          tests/unit/runtime/test_service_delegation_dispatch_port.py::test_runtime_delegation_dispatch_port_rejects_unsupported_bus_features
+          -q -p no:randomly >/dev/null && printf 'infra2595 executable callable parity PASS\n'
+  - id: "dod-deploy-assessment-infra2595"
+    description: >-
+      Deploy-scope evidence for #2595. The exact five-file diff changes the runtime protocol and concrete
+      service plus focused tests, but no image, compose, workflow, or deploy manifest. No live deploy
+      is claimed; post-merge validation requires a rebuilt image and the governed deployment path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          product="/Users/jonah/Code/omni_home/omni_worktrees/OMN-14628-recurrence/omnibase_infra" &&
+          test "$(git -C "$product" rev-parse HEAD)" = 4c3e110904f74a6cb9dba6c1a09ef19362cf2695 && test
+          "$(git -C "$product" rev-parse 'HEAD^{tree}')" = 991679936b2da6b2076a7719ba0c16c138d02f26 &&
+          files="$(git -C "$product" diff --name-only 44177d973e6e9346edfdc46e17cda8dade8bd32d HEAD |
+          LC_ALL=C sort)" && expected="$(printf '%s\n' src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py
+          src/omnibase_infra/runtime/service_delegation_dispatch_port.py tests/integration/runtime/test_delegation_dispatch_port_handler_compat.py
+          tests/unit/runtime/test_handler_wiring_resolver_integration.py tests/unit/runtime/test_service_delegation_dispatch_port.py)"
+          && test "$files" = "$expected" && printf '%s\ninfra2595 deploy boundary PASS\n' "$files"
+  - id: "dod-occ-hosted-private-token-boundary-infra2595"
+    description: >-
+      Binds the hosted OCC credential boundary: contract compliance executes with the repository-scoped
+      github.token, while CROSS_REPO_PAT is available only to setup/clone wiring. Private omnibase_infra
+      facts therefore come from the immutable operator-token PASS receipts above rather than a hosted
+      cross-repository re-fetch.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          contracts_dir="${CONTRACTS_DIR:-$PWD/contracts}" && workflow="${contracts_dir%/contracts}/.github/workflows/ci.yml"
+          && grep -F 'uv run python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py'
+          "$workflow" >/dev/null && grep -F 'GH_TOKEN: ${{ github.token }}' "$workflow" >/dev/null &&
+          grep -F 'OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}' "$workflow" >/dev/null
+          && printf 'OCC hosted compliance private-token boundary PASS\n'
+  - id: "dod-2312-head-lifecycle-r1"
+    description: >-
+      Append-only successor for the historical #2312 lifecycle check. The original immutable row requires
+      state=open and cannot remain a hosted check after its private product PR merged. This local Done-gate
+      proof binds the durable merged lifecycle, exact historical head, branch, base, and merge commit.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-verify-2312-head-ca746d9-pr-head"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          meta="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2312 --jq '[.number,.state,.merged_at,.head.sha,.head.ref,.base.ref,.merge_commit_sha]
+          | @tsv')" && expected="$(printf '2312\tclosed\t2026-07-14T21:38:05Z\tca746d9faaac3e29b202f35413b14312cbac4a27\tjonah/omn-14628-fix-runtimedelegationdispatchport-tenant-id\tdev\tc0cfa398d0bddc27061fd03979d68dcb31d165e4')"
+          && test "$meta" = "$expected" && printf 'infra2312 durable lifecycle PASS\n'
+  - id: "dod-2312-tenant-wiring-r1"
+    description: >-
+      Append-only successor for the historical private-repository signature check. It retains the exact
+      ca746d9f protocol/service blob identities and tenant_id payload semantics, but assigns execution
+      to the operator-token local Done gate instead of the repo-scoped hosted OCC token.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-verify-2312-tenant-id-dispatch-signature"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          proto="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && service="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && test "$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .sha)" = d5a0f32502669c1ee409e21bfc816b9f77a92d41 && test "$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_delegation_dispatch_port.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .sha)" = 7f122215708a1781258946eb2df2413693d95648 && test "$(printf '%s\n' "$proto" | grep
+          -cF 'tenant_id: str | None = None')" -eq 1 && test "$(printf '%s\n' "$service" | grep -cF 'tenant_id:
+          str | None = None')" -eq 1 && test "$(printf '%s\n' "$service" | grep -cF '"tenant_id": tenant_id')"
+          -eq 1 && printf 'infra2312 tenant wiring PASS\n'
+  - id: "dod-2312-auto-wiring-test-r1"
+    description: >-
+      Append-only successor for the historical private regression-test content check. It binds the exact
+      test blob and the real auto-wired RuntimeDelegationDispatchPort tenant propagation assertions at
+      ca746d9f, executed only by an operator token at the local Done gate.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-verify-2312-real-auto-wiring-regression-test"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tests="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/test_handler_wiring_resolver_integration.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .content | base64 -d)" && test "$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/test_handler_wiring_resolver_integration.py?ref=ca746d9faaac3e29b202f35413b14312cbac4a27'
+          --jq .sha)" = bf97771c48bb38449c78c18408f9c0b7da41e0b7 && test "$(printf '%s\n' "$tests" | grep
+          -cF 'test_auto_wired_dispatch_port_accepts_omnimarket_call_shape')" -eq 1 && test "$(printf
+          '%s\n' "$tests" | grep -cF 'RuntimeDelegationDispatchPort')" -ge 1 && test "$(printf '%s\n'
+          "$tests" | grep -cF 'tenant_id="omn-14628-regression-tenant"')" -eq 1 && test "$(printf '%s\n'
+          "$tests" | grep -cF 'captured_payloads[0]["tenant_id"]')" -eq 1 && printf 'infra2312 auto-wiring
+          regression PASS\n'
+  - id: "dod-2312-deploy-scope-r1"
+    description: >-
+      Append-only successor for the historical private deploy-scope check. It binds #2312's exact three-file
+      runtime/test diff under the operator-token local Done gate and does not claim a live deploy.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment-2312"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          files="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/2312/files --paginate --jq '.[].filename'
+          | LC_ALL=C sort)" && expected="$(printf '%s\n' src/omnibase_infra/runtime/protocols/protocol_delegation_dispatch_port.py
+          src/omnibase_infra/runtime/service_delegation_dispatch_port.py tests/unit/runtime/test_handler_wiring_resolver_integration.py)"
+          && test "$files" = "$expected" && printf 'infra2312 deploy boundary PASS\n'
+  - id: "dod-4164-self-bind-r1"
+    description: >-
+      Durable append-only successor for the historical self-referential #4164 receipt grep. This hosted
+      check binds the public OCC PR's branch/base, open-or-merged lifecycle, and containment of the real
+      initial evidence commit so the predicate remains true after later self-binding and merge.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-self-bind-pr-4164"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/pulls/4164 --jq '(.number == 4164) and
+          (.head.ref == "jonah/omn-14628-occ-infra2312-head-ca746d9") and (.base.ref == "dev") and ((.state
+          == "open") or (.merged_at != null))')" = "true" && test "$(gh api 'repos/OmniNode-ai/onex_change_control/pulls/4164/commits?per_page=100'
+          --paginate --jq 'map(.sha) | index("44dcdc4043bbd8fe8d9818688d2c521f7d83bdf0") != null')" =
+          "true" && printf 'OCC 4164 durable self-bind PASS\n'
+  - id: "occ-self-bind-pr-5747"
+    description: >-
+      Binds this OMN-14628 central evidence update to OCC companion PR #5747 so OCC preflight can prove
+      the evidence change is itself associated with the ticket it satisfies. The predicate reads the public
+      onex_change_control PR metadata and asserts the exact PR number, branch, base, and initial evidence
+      commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api repos/OmniNode-ai/onex_change_control/pulls/5747 --jq '(.number == 5747) and
+          (.head.ref == "jonah/omn-14628-infra2595-occ") and (.base.ref == "dev") and ((.state == "open")
+          or (.merged_at != null))')" = "true" && test "$(gh api "repos/OmniNode-ai/onex_change_control/pulls/5747/commits?per_page=100"
+          --jq 'map(.sha) | index("a3f8e146be864dd866b295d04112e49f11ace19f") != null')" = "true" && printf
+          'OCC 5747 self-bind PASS\n'
+  - id: "dod-infra2595-product-receipt-r1"
+    description: >-
+      Hosted-safe successor for the #2595 exact-product-head evidence. The product repository is private
+      to OCC hosted compliance, so this row binds the immutable operator-token PASS receipt instead of
+      re-executing the local worktree probe in hosted CI.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra2595-exact-product-head"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-14628/dod-infra2595-exact-product-head/command.yaml" && test
+          -f "$receipt" && grep -F 'evidence_item_id: "dod-infra2595-exact-product-head"' "$receipt" >/dev/null
+          && grep -F 'contract_entry_sha256: "sha256:c1762bd9c97953c960af1aa80ec7701c6e1d06592b7d5b65a8835437548e0d28"'
+          "$receipt" >/dev/null && grep -F 'status: PASS' "$receipt" >/dev/null && grep -F 'commit_sha:
+          "4c3e110904f74a6cb9dba6c1a09ef19362cf2695"' "$receipt" >/dev/null && grep -F 'infra2595 exact
+          local product tree PASS' "$receipt" >/dev/null && printf 'infra2595 exact product receipt PASS\n'
+  - id: "dod-infra2595-callable-receipt-r1"
+    description: >-
+      Hosted-safe successor for the #2595 callable-parity semantics evidence. The executable product test
+      receipt remains the local Done-gate proof; this hosted row binds its immutable PASS receipt.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra2595-callable-parity-semantics"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-14628/dod-infra2595-callable-parity-semantics/command.yaml"
+          && test -f "$receipt" && grep -F 'evidence_item_id: "dod-infra2595-callable-parity-semantics"'
+          "$receipt" >/dev/null && grep -F 'contract_entry_sha256: "sha256:4d6b1d3a211005da3babb38cd365fe4497e06a288f8a605617a5025b15b2d118"'
+          "$receipt" >/dev/null && grep -F 'status: PASS' "$receipt" >/dev/null && grep -F 'commit_sha:
+          "4c3e110904f74a6cb9dba6c1a09ef19362cf2695"' "$receipt" >/dev/null && grep -F 'infra2595 executable
+          callable parity PASS' "$receipt" >/dev/null && printf 'infra2595 callable parity receipt PASS\n'
+  - id: "dod-infra2595-deploy-receipt-r1"
+    description: >-
+      Hosted-safe successor for the #2595 deploy-scope evidence. It preserves the no-live-deploy claim
+      by binding the immutable PASS receipt for the exact runtime/test-only product diff.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-deploy-assessment-infra2595"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-14628/dod-deploy-assessment-infra2595/command.yaml" && test
+          -f "$receipt" && grep -F 'evidence_item_id: "dod-deploy-assessment-infra2595"' "$receipt" >/dev/null
+          && grep -F 'contract_entry_sha256: "sha256:53df6235d700fad5209e840ec9957556f78fb5798cda0f82ccddac73b6ec271a"'
+          "$receipt" >/dev/null && grep -F 'status: PASS' "$receipt" >/dev/null && grep -F 'commit_sha:
+          "4c3e110904f74a6cb9dba6c1a09ef19362cf2695"' "$receipt" >/dev/null && grep -F 'infra2595 deploy
+          boundary PASS' "$receipt" >/dev/null && printf 'infra2595 deploy boundary receipt PASS\n'
+  - id: "occ-self-bind-pr-5820"
+    description: "Binds OMN-14628 to OCC companion PR #5820 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5820 --repo OmniNode-ai/onex_change_control --json number,state"

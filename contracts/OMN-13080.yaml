@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13080"
+title: >-
+  feat(omnimarket): projection contract for mcp-tools (NC-07) — node_projection_mcp_tools reducer + mcp_tools
+  snapshot table
+summary: >-
+  Adds node_projection_mcp_tools, a reducer node that subscribes to onex.evt.platform.node-registration.v1
+  events from node_contract_registry, filters for mcp_eligible nodes, and UPSERTs into a dedicated mcp_tools
+  snapshot table. The node provides the canonical backend for the omnidash mcp-tools widget (onex.snapshot.projection.mcp-tools.v1,
+  palette-hidden). Replaces the bespoke :8765 SEA server removed per OMN-12822. No runtime deploy is performed
+  by this PR — dev-lane only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      33 golden-chain unit tests covering mcp_eligible projection, non-MCP pass-through, idempotent UPSERT,
+      batch projection, freshness state computation, rejected status, contract wiring assertions, and
+      model immutability all pass.
+    command: "uv run pytest tests/test_golden_chain_projection_mcp_tools.py -q"
+  - kind: "ci"
+    description: "CI pipeline green on omnimarket PR"
+    command: "env -u GITHUB_TOKEN gh pr checks <PR> --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: >-
+      33 golden-chain unit tests for node_projection_mcp_tools pass locally. Tests cover: mcp_eligible
+      UPSERT, non-MCP acknowledged (rows_upserted=0), idempotent UPSERT on tool_name, batch projection,
+      freshness SLA (FRESH/ STALE/DEGRADED), rejected status → inactive, handle() dict interface, contract
+      wiring (subscribe/publish topics, terminal_event, freshness_sla, node_type=reducer, db_io table=mcp_tools,
+      projection_api topic+table), and ModelMcpToolProjection frozen immutability.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13080/dod-unit-tests/command.yaml
+  - id: "dod-dogfood-count"
+    description: >-
+      test_market_node_runtime_dogfood_inventory_classifies_all_entry_points passes with node_dirs=303
+      (was 302) confirming the new entry point is registered and addressable.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13080/dod-dogfood-count/command.yaml
+  - id: "dod-precommit"
+    description: >-
+      All pre-commit hooks pass (ruff format, ruff check, topic naming lint, event registry drift, entry
+      point format, node orphan graph, golden-chain coverage gate, runtime_profiles, topic-literal guardrail,
+      etc.).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13080/dod-precommit/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Static deploy assessment: no live deploy, runtime restart, or cluster mutation performed by OMN-13080.
+      The node_projection_mcp_tools reducer node and mcp_tools table DDL are dev-lane only. Runtime deployment
+      follows separately under standard deploy-gate.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13080/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt — this onex_change_control PR carries the OMN-13080 contract + receipts
+      consumed by omnimarket PR via Evidence-Source. Evidence-Source SHA: bbc8af0fe67734551436458eeae1067c812b3b20
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13080/dod-occ-self/command.yaml

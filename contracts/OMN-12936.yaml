@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12936"
+title: "Unwrap transport envelope in evidence/readiness coerce + ship overnight base-table migration"
+summary: >
+  Fixes two BROKEN defects from the 2026-06-11 full-feature pass: the shared coerce(**payload) envelope-unwrap
+  defect in the evidence/readiness node family (readiness-gate handler + evidence_pipeline_native coerce_*
+  functions), and the missing projection_overnight_readiness materialization (HTTP 503 at projection-api
+  startup). Code change is an envelope-aware _unwrap_envelope helper at the coercion boundary plus a node-owned
+  idempotent base-table migration (0000_create_overnight_sessions_tables.sql) ordered before the existing
+  0001 view. No runtime topology, topic schema, or contract API changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1152"
+    description: >
+      omnimarket PR #1152 routes every coerce_* function and the readiness-gate dispatch decision through
+      an envelope-aware _unwrap_envelope helper, fixing the shared coerce(**payload) defect class. New
+      regression suite tests/test_evidence_readiness_envelope_unwrap.py (11 cases): the 5 envelope-unwrap
+      cases fail on the pre-fix tree (TDD) and pass after the fix.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/pulls/1152/files --jq '.[].filename' | grep
+          -cE 'evidence_pipeline_native|handler_readiness_gate|0000_create_overnight'"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment for the omnimarket runtime handler paths (evidence_pipeline_native.py, handler_readiness_gate_orchestrator.py)
+      plus the new idempotent projection migration. Live materialization on the stability-test lane requires
+      the projection migration runner to apply 0000_create_overnight_sessions_tables.sql then a projection-api
+      restart (docker exec / standard image rebuild + deploy on the post-merge stability redeploy cycle).
+      No new Kafka topic, no contract API change, no prod mutation. Deploy is gated on that redeploy cycle,
+      not performed by this PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/pulls/1152/files --jq '.[].filename' | grep
+          -q 'migrations/0000_create_overnight' && echo 'deploy: gated on post-merge stability redeploy
+          (run-projection-migrations.py applies 0000 migration + docker exec projection-api restart);
+          no prod mutation'"

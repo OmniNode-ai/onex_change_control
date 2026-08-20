@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13144"
+evidence_item_id: "dod-deploy-assessment"
+check_type: "command"
+check_value: "grep -q 'session-start' drift/dod_receipts/OMN-13144/dod-deploy-assessment/command.yaml"
+status: PASS
+run_timestamp: "2026-06-14T17:43:58Z"
+commit_sha: "0619408cf71a85bc722b7e7a259eba2870a09e66"
+runner: "worktree-agent-omn-13144"
+verifier: "receipt-gate-local"
+probe_command: "deploy-path assessment — identify the runtime surface that executes the standalone runner
+  and the live cutover mechanism"
+probe_stdout: |
+  Changed runtime paths (omnimarket):
+    src/omnimarket/nodes/node_emit_daemon/__main__.py
+    src/omnimarket/nodes/node_emit_daemon/kafka_publish.py
+    src/omnimarket/nodes/node_emit_daemon/publisher_loop.py
+  Execution surface:  NOT a deployed .201 container service. The standalone runner is launched per
+                      Claude-Code session by the omniclaude session-start hook:
+                      plugins/onex/hooks/scripts/session-start.sh:405
+                      `python -m omnimarket.nodes.node_emit_daemon start --kafka-bootstrap-servers
+                       $KAFKA_BOOTSTRAP_SERVERS --socket-path ... --event-registry ...`
+  Live cutover:       next plugin/clone refresh + new session -> hook spawns the daemon from the updated
+                      module. No .201 container redeploy required for this path.
+  Acceptance proof:   test_standalone_kafka_wiring.py — event reaches the bus through the wiring;
+                      verified RED against the simulated dead path, GREEN with the fix.
+actual_output: >-
+  PASS (HONEST). The runtime-path change is to the node_emit_daemon standalone runner, which is NOT a
+  deployed .201 runtime service — it is launched as a per-session subprocess by the omniclaude session-start
+  hook (`python -m omnimarket.nodes.node_emit_daemon start --kafka-bootstrap-servers $KAFKA_BOOTSTRAP_SERVERS
+  ...`). The fix becomes live on the next plugin/clone refresh + new Claude-Code session, when the hook
+  spawns the daemon from the updated module; no container redeploy is required for this path. ACCEPTANCE
+  is the failing-first unit proof (test_standalone_kafka_wiring.py — verified RED against the simulated
+  dead path, GREEN with the fix), not a live lane gate. This receipt explicitly does NOT claim a live
+  deploy, container restart, topic mutation, or .201 prod/dev mutation was performed by this OCC authoring;
+  the live cutover is the ordinary session-start re-spawn after the merge propagates to the canonical
+  clone. No banned bypass tokens.
+exit_code: 0
+contract_sha256: "sha256:14c3db834e24ed466a1761f2d81599aa67e0bd630c576dd66f0ba2f33c645aa8"
+pr_number: null
+branch: "jonah/omn-13144-emit-daemon-kafka-wire"

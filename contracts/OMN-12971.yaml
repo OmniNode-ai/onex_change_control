@@ -1,0 +1,119 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12971"
+title: "P2.6: Vertex runtime wiring — Vertex backend in routing overlay + ADC bearer-token delivery to
+  effects container (secret-ref discipline)"
+summary: >-
+  Wire the Vertex-served Gemini path (the Vertex $500-credit / ADC path, proven HTTP 200 from .201) into
+  the routing authority and runtime, ADDITIVE next to the existing Gemini AI-Studio API-key path. Both
+  routes stay selectable so the platform remains provider-agnostic; neither provider is removed or forced.
+  omnimarket adds the cloud-vertex-gemini bifrost backend (secret_ref=llm.vertex.access_token, endpoint_url
+  null in repo default so the runtime policy contract supplies the COMPLETE project+region Vertex OpenAI-compat
+  URL via BIFROST_VERTEX_GEMINI_ENDPOINT_URL), a vertex-gemini-flash routing-tier entry, and a model-registry
+  entry plus a requires_secret_ref field on ModelLlmModelProfile. The Vertex backend reuses the standard
+  api-key/bearer dispatch path (backend.resolved_secret_ref -> intent.api_key_ref -> Authorization: Bearer
+  <token>), so no inference-handler change is required. The bearer token is a short-lived OAuth access
+  token minted from ADC and resolved fail-closed at the effect boundary; the token VALUE is never committed
+  — only the logical ref name lives in config. omnibase_infra delivers ADC to the runtime: runtime_policy.contract.yaml
+  adds a secret-source mapping llm.vertex.access_token (source_type=file, /run/secrets/vertex_access_token)
+  to the dev/stability-test/judge profiles, adds aiplatform.googleapis.com to the cloud host allowlist,
+  owns GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_LOCATION / BIFROST_VERTEX_GEMINI_ENDPOINT_URL in the rendered
+  runtime-policy.env surface, and docker-compose.infra.yml binds the operator-supplied host token file
+  read-only into the main and effects runtimes (default /dev/null so non-Vertex lanes still start and
+  the Gemini key path is unaffected). ENFORCEMENT RATCHET (same PR set): omnimarket scripts/ci/check_backend_secret_discipline.py
+  fails if any literal credential value lands in routing-authority config or if an authenticated cloud
+  backend lacks a logical secret/credential ref; wired as a pre-commit hook AND a CI gate. No topic schema,
+  envelope, or contract API change. Runtime effect arrives only via the standard batched stability/runtime
+  image rebuild — no live deploy is performed by these PRs.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR adds the cloud-vertex-gemini bifrost backend, the vertex-gemini-flash routing-tier
+      and model-registry entries, the requires_secret_ref ModelLlmModelProfile field, and the check_backend_secret_discipline
+      enforcement ratchet (pre-commit hook + CI gate). Secret-ref discipline: only the logical ref llm.vertex.access_token
+      is committed; the bearer-token VALUE resolves fail-closed at the effect boundary. ADDITIVE: the
+      cloud-gemini-flash AI-Studio key path is preserved. Local proof: ruff format/check clean; mypy --strict
+      Success; check_backend_secret_discipline PASS; 41 focused tests pass (backend-secret-discipline
+      gate, vertex registry/contract secret-ref, preserved gemini key path).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12971"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-omnimarket-pr/command.yaml"
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR delivers ADC to the runtime: runtime_policy.contract.yaml adds the llm.vertex.access_token
+      file-source secret mapping (dev/stability-test/judge), aiplatform.googleapis.com host allowlist,
+      and contract-owned Vertex project/location/OpenAI-compatible endpoint env values rendered into runtime-policy.env.
+      docker-compose.infra.yml binds the operator-supplied token file read-only into the main and effects
+      runtimes and requires the non-secret Vertex env values fail-fast. Secret-ref discipline preserved:
+      only the ref name, in-container path, project, region, and endpoint are committed; the token VALUE
+      is never committed. Local proof: focused runtime policy/env parity and compose required-var tests
+      pass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12971"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-infra-pr/command.yaml"
+  - id: "dod-omninode-infra-pr"
+    description: >-
+      omninode_infra PR #497 adds the non-secret Vertex runtime ConfigMap keys for onex-dev so the omnibase_infra
+      docker-compose x-runtime-env surface stays in parity with the k8s runtime ConfigMap. It also extends
+      the non-secret runtime resolver JSON with llm.vertex.access_token mapped to the mounted /run/secrets/vertex_access_token
+      file path. The bearer token value is never committed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-omninode-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12971"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-omninode-infra-pr/command.yaml"
+          && grep -q '^pr_number: 497$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-omninode-infra-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for the omnimarket and omnibase_infra PRs: all changes are config/overlay/contract
+      + an additive CI gate. No live deploy, restart, topic mutation, or .201 mutation is performed by
+      these PRs. The Vertex route reaches a running lane only through the normal batched stability/runtime
+      image rebuild AND requires the operator to mint+mount the ADC bearer-token file and set the overlay
+      endpoint URL — deploy_pending. Dev/stability/prod lanes untouched by these PRs.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12971"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-12971 contract and the dod-omnimarket-pr / dod-infra-pr / dod-deploy-assessment
+      receipts that the two code PRs' Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12971"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-occ-pr/command.yaml"
+  - id: "dod-occ-pr-2510"
+    description: >-
+      onex_change_control PR #2510 refreshes the OMN-12971 omnibase_infra receipt to bind PR #1949 at
+      the contract-owned Vertex runtime env head.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-occ-pr-2510/command.yaml"
+          && grep -q '^pr_number: 2510$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12971/dod-occ-pr-2510/command.yaml"

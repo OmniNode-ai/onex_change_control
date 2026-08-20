@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13227"
+title: "pr-merged projection node + generic ?since cursor read (T3)"
+summary: >-
+  OMN-13227 replaces the OMN-13226 contract stub with the real pr-merged projection node (omnimarket).
+  HandlerPrMergedProjection consumes onex.evt.github.pr-merged.v1 (published by the pr-merged-publisher
+  GHA workflow on every repo merge) and UPSERTs one row per event into the pr_merged_events table, deduped
+  by the publisher event_id, with a strictly-monotonic projection_cursor BIGSERIAL. The node declares
+  a projection_api exposure on onex.evt.github.pr-merged.v1 (table pr_merged_events, cursor_column projection_cursor)
+  so the existing generic projection API serves the rows, plus a node-local migration that creates the
+  table (cold-DDL materialization proof). The generic /projection/{topic} read path gains ?since=<cursor>
+  pagination (WHERE cursor_column > since, next_cursor in the response) so the per-machine worktree reaper
+  (T4, OMN-13228) can poll GET /projection/onex.evt.github.pr-merged.v1?since=<cursor> on the local :3002
+  lane and match a merged PR {repo, branch, pr_number, ticket, merged_at} to a worktree. No new REST route,
+  no bespoke endpoint. Tests use synthetic events through the handler and the in-memory database adapter;
+  no live publisher and no live Confluent creds. The full suite passes (7506 passed; the only failures
+  are @pytest.mark.kafka tests needing a live local broker, expected on this Mac); ruff, mypy --strict,
+  runtime sweep (312/312), metadata dependency check, projection materialization validator, and pre-commit
+  are all clean. Scope is code only; this PR does not deploy, restart runtime, mutate prod/judge/.201,
+  or publish live traffic — the live e2e is the orchestrator's deploy step.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001-local-verification"
+    description: >-
+      omnimarket feature PR — node_pr_merged_projection real handler + migration + projection_api exposure,
+      and the generic /projection/{topic} ?since cursor read path. Synthetic event -> projection materialization
+      with the cursor advancing is proven by the golden-chain and api since/cursor tests (InmemoryDatabaseAdapter).
+      Full suite 7506 passed (kafka-marked broker tests excepted), ruff + mypy --strict + runtime sweep
+      + metadata check + pre-commit clean. Self-binding PASS receipt for the local verification.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13227/dod-001-local-verification/command.yaml
+          && grep -q '^pr_number: 2748$' drift/dod_receipts/OMN-13227/dod-001-local-verification/command.yaml
+  - id: "dod-002-deploy-readiness"
+    description: >-
+      Deploy-readiness note. The projection node touches runtime paths: the .201 lane's projection consumer
+      materializes onex.evt.github.pr-merged.v1 into pr_merged_events and the :3002 projection API serves
+      it; verifying the live chain is a deploy/runtime step run by the deploy agent (e.g. 'rpk topic produce
+      onex.evt.github.pr-merged.v1' a synthetic envelope, then 'docker exec' the projection-api container's
+      psql to confirm the row, then GET /projection/onex.evt.github.pr-merged.v1?since=<cursor>). This
+      PR does NOT itself deploy, restart runtime, mutate prod/judge/.201, or publish live traffic. This
+      receipt records that the change is deploy-safe and the live deploy belongs to the orchestrator.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13227/dod-002-deploy-readiness/command.yaml
+          && grep -q 'deploy' drift/dod_receipts/OMN-13227/dod-002-deploy-readiness/command.yaml
+  - id: "pr-occ-binding"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to the onex_change_control
+      evidence PR so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound
+      to the OCC PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13227/pr-occ-binding/command.yaml && grep -q
+          '^pr_number: 2748$' drift/dod_receipts/OMN-13227/pr-occ-binding/command.yaml

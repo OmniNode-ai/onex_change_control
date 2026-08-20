@@ -1,0 +1,132 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15493"
+title: "CI marker filter silently deselected 13 unmarked tests — receipt contract for the already-merged
+  fail-closed inversion (false-Backlog reconciliation)"
+summary: >-
+  OMN-15493 is a false-Backlog ticket, not unbuilt work. The defect — `.github/workflows/ci.yml` running
+  `pytest -m "unit or integration"`, an ALLOWLIST filter under which any test that simply forgot a marker
+  was silently deselected from CI (13 such tests, all passing when run directly, across tests/cards, tests/cli
+  and tests/contracts) — was fixed on jonahgabriel/steel_onslaught `main` in PR #236, merge commit d2a5d9aaeddbf71039d34820bb568e5c9d4561be,
+  merged 2026-07-31T02:59:03Z, while the Linear ticket held a single Backlog stateHistory entry throughout.
+  The ticket offered two fix directions and the merged work took the fail-closed one: invert to the denylist
+  `-m "not live"` so an unmarked test RUNS by default and only a deliberate exclusion marker removes it.
+  This contract is the receipt surface for the dod_verify path; it makes no status change. Every check
+  is pinned to the immutable merge SHA, is hosted-runnable, and was executed GREEN at authoring time,
+  then RED-proven by repointing the pinned ref at the merge commit's first parent. Disclosed residual,
+  not claimed by this contract: `--strict-markers` was observed to be a silent no-op when supplied via
+  `pyproject` addopts on the pinned pytest 9.0.3, which is why the workflow passes it on the command line.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      steel PR #236 is merged on jonahgabriel/steel_onslaught main at commit d2a5d9aa, and the post-merge
+      main CI on that lineage is green.
+    command: "gh pr view 236 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+  - kind: "manual"
+    description: >-
+      Immutable GitHub content probes bind the acceptance criterion to steel merge SHA d2a5d9aaeddbf71039d34820bb568e5c9d4561be.
+    command: "See drift/dod_receipts/OMN-15493/dod-omn15493-*/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15493-pr-236-merged-at-d2a5d9aa"
+    description: >-
+      Binding item. steel PR #236 is MERGED with merge commit exactly d2a5d9aaeddbf71039d34820bb568e5c9d4561be.
+      State and SHA are asserted together in a single equality so closed-unmerged, still-open, and re-landed-elsewhere
+      each yield a mismatch. Establishes binding, not correctness — the substantive proof is the three
+      items below.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          state="$(gh pr view 236 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")')" && test "$state" = "MERGED d2a5d9aaeddbf71039d34820bb568e5c9d4561be"
+  - id: "dod-omn15493-fail-closed-marker-inversion"
+    description: >-
+      The fix itself, asserted at the exact line the defect lived on. At the merge SHA `.github/workflows/ci.yml`
+      runs `uv run pytest -m "not live" --strict-markers -v`. Two negative legs carry the discrimination,
+      because asserting only the new string would be a vacuous green on a workflow that added a `not live`
+      step while leaving the old allowlist step in place: no EXECUTED `run:` line carries `unit or integration`,
+      and the file contains exactly ONE pytest invocation in total. The negative is deliberately scoped
+      to `run:` lines rather than the whole file — the literal string `-m "unit or integration"` survives
+      at ci.yml:45 inside the explanatory comment that documents the defect being fixed, so a whole-file
+      absence assertion would be permanently RED against correct code. `--strict-markers` is asserted
+      on the same command line because under a denylist a misspelled `@pytest.mark.liv` would otherwise
+      no longer match `live` and would silently re-enter the run.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          w="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/.github/workflows/ci.yml?ref=d2a5d9aaeddbf71039d34820bb568e5c9d4561be' --jq .content | base64 -d > "$w" && grep -qF 'run: uv run pytest -m "not live" --strict-markers -v' "$w" && ! grep -qE '^[[:space:]]*run:.*unit or integration' "$w" && test "$(grep -cE '^[[:space:]]*run:.*pytest' "$w")" = "1" && rm -f "$w"
+  - id: "dod-omn15493-guard-test-zero-unmarked-deselected"
+    description: >-
+      The ticket's stated acceptance, option B — "a guard test asserting zero unmarked-deselected tests".
+      At the merge SHA `tests/test_ci_marker_selection.py` defines `test_ci_marker_filter_deselects_nothing_that_lacks_an_exclusion_marker`,
+      which is that criterion literally, plus `test_ci_marker_filter_still_excludes_every_live_marked_test`
+      (the other polarity — proving the inversion did not simply run everything), `test_ci_pytest_step_passes_strict_markers`
+      and `test_strict_markers_actually_rejects_an_unregistered_marker` (which proves the strict-markers
+      flag is actually armed rather than accepted-and-ignored — the residual disclosed in the summary).
+      This guard reads the committed workflow line itself, so it is the ratchet that keeps the inversion
+      from silently regressing.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          t="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/test_ci_marker_selection.py?ref=d2a5d9aaeddbf71039d34820bb568e5c9d4561be' --jq .content | base64 -d > "$t" && grep -qF 'def test_ci_marker_filter_deselects_nothing_that_lacks_an_exclusion_marker(' "$t" && grep -qF 'def test_ci_marker_filter_still_excludes_every_live_marked_test(' "$t" && grep -qF 'def test_ci_pytest_step_passes_strict_markers() -> None:' "$t" && grep -qF 'def test_strict_markers_actually_rejects_an_unregistered_marker(tmp_path: Path) -> None:' "$t" && rm -f "$t"
+  - id: "dod-omn15493-deselection-census-plugin"
+    description: >-
+      The measurement surface the guard test depends on. At the merge SHA `tests/_ci_marker_census.py`
+      implements the pytest hooks `pytest_deselected` and `pytest_collection_finish`, which is what lets
+      a run report WHICH items were deselected rather than only a count — the missing instrument that
+      allowed 13 tests to be dropped unnoticed in the first place. Asserted by hook signature, so renaming
+      or gutting the plugin fails this check even if the file survives.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          c="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/_ci_marker_census.py?ref=d2a5d9aaeddbf71039d34820bb568e5c9d4561be' --jq .content | base64 -d > "$c" && grep -qF 'def pytest_deselected(items: Sequence[pytest.Item]) -> None:' "$c" && grep -qF 'def pytest_collection_finish(session: pytest.Session) -> None:' "$c" && rm -f "$c"
+  - id: "occ-self-bind-pr-5756"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15493 to its OCC evidence PR #5756 so occ-preflight
+      eligibility can resolve a PASS receipt for this ticket against this PR. It adjudicates nothing about
+      the work and flips no Linear status; the falsifiable evidence is the merge-SHA-pinned items above.
+      Mirrors the occ-self-bind-pr-5544 / occ-self-bind-pr-5752 precedent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5756 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omn15493-pr-236-merged-at-d2a5d9aa-guardcompat"
+    description: >-
+      Executor-compatibility correction of the binding item above, APPENDED under OCC append-only doctrine
+      rather than edited in place: a merged dod_evidence entry is immutable and its receipt pins the entry
+      hash, so an in-place rewrite is rejected by validator_occ_append_only and invalidates the receipt
+      binding. Same assertion, same merge SHA, tokenizer-safe shape. The superseded original embedded
+      the jq program .state + " " + (.mergeCommit.oid // "none") inside a double-quoted command substitution;
+      node_dod_verify shape-guards a check_value BEFORE executing it by tokenizing with shlex.split, which
+      is not $()-aware, so the jq program's inner double quotes closed the outer one and the guard landed
+      on the fragment " + (.mergeCommit.oid // none)')" — that fragment contains a slash, so the guard
+      took its relative-script-path branch, found no executable, and returned INVALID_CHECK_VALUE_NOT_A_COMMAND
+      without ever running the command. That was a FALSE RED against a command that exits 0 in a real
+      shell, not a failed proof; the underlying binding fact never changed. This replacement splits the
+      single two-field query into two single-field queries so each --jq filter is a bare path expression
+      carrying no quote characters, leaving test as the first shlex token. Semantics are preserved exactly:
+      BOTH the state MERGED AND the exact merge SHA d2a5d9aaeddbf71039d34820bb568e5c9d4561be are asserted,
+      so closed-unmerged, still-open, and re-landed-elsewhere each still yield a mismatch. Authorized
+      as a correction (not a peer-evidence edit) by operator ruling 2, ROLLING_WORK_LEDGER 2026-07-31T20:12:22Z.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15493-pr-236-merged-at-d2a5d9aa"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 236 --repo jonahgabriel/steel_onslaught --json mergeCommit --jq .mergeCommit.oid)" = "d2a5d9aaeddbf71039d34820bb568e5c9d4561be" && test "$(gh pr view 236 --repo jonahgabriel/steel_onslaught --json state --jq .state)" = "MERGED"

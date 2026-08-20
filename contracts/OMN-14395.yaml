@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14395"
+title: "fix(OMN-14395): grant resolver evaluates all matching entries, not first-match-wins"
+summary: >-
+  omninode_infra PR #587 fixes resolve_grant_for_digest in scripts/validate_prod_promotion_grant.py, the
+  prod-promotion grant gate for the k3s deploy-onex-prod path. The resolver was first-match-wins over
+  the entries list, so a stale EXPIRED/CONSUMED/SELF_GRANTED entry appearing earlier in the grant file
+  could shadow a genuinely valid re-grant for the same (prod, image_digest) pair and wrongly BLOCK a legitimate
+  promotion. The fix evaluates every matching entry via a new per-entry _resolve_single_entry helper and
+  returns RESOLVED if any matching entry resolves cleanly, ties broken by newest created_at. The per-entry
+  gates (consumed, approved_by != requested_by, absolute expires_at, lane and digest match) are unchanged
+  and still applied per entry, so the fail-closed invariant is preserved: this can only fix a false BLOCK,
+  never introduce a false PASS.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omninode-infra-pr-587-head-76859699"
+    description: >-
+      Independent adversarial verification of omninode_infra PR #587 at head 7685969918a294c75052b5df389e4e02e9e70915
+      by a verifier that did not implement the change. RED-before / GREEN-after was reproduced independently:
+      substituting the origin/dev first-match-wins resolver while keeping the new tests fails all 4 new
+      regression tests; the PR head passes 32/32 in tests/scripts/test_validate_prod_promotion_grant.py
+      and 9/9 in tests/k8s/test_deploy_onex_prod_grant_gate.py. The false-ALLOW surface was probed directly
+      and found closed: the per-entry acceptance predicate in _resolve_single_entry is identical to the
+      prior inline checks, the lane and digest filter still gates which entries are resolved at all, and
+      _decide still maps only RESOLVED to exit 0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14395/dod-omninode-infra-pr-587-head-76859699/command.yaml
+          && grep -q '^pr_number: 587$' drift/dod_receipts/OMN-14395/dod-omninode-infra-pr-587-head-76859699/command.yaml
+          && grep -q '7685969918a294c75052b5df389e4e02e9e70915' drift/dod_receipts/OMN-14395/dod-omninode-infra-pr-587-head-76859699/command.yaml
+  - id: "dod-deploy-assessment-head-76859699"
+    description: >-
+      Deploy-surface assessment for omninode_infra PR #587 head 7685969918a294c75052b5df389e4e02e9e70915:
+      the diff is limited to one CI-time validation script (scripts/validate_prod_promotion_grant.py)
+      and its unit test file. The script runs inside the deploy-onex-prod GitHub Actions job as a gate;
+      the PR itself does not register a new service deployment, mutate runtime configuration, perform
+      a deploy or restart, change topics, add a migration, or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14395/dod-deploy-assessment-head-76859699/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14395/dod-deploy-assessment-head-76859699/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding for onex_change_control PR #3972. This PR carries the OMN-14395 central contract
+      and PASS receipts for omninode_infra PR #587 head 7685969918a294c75052b5df389e4e02e9e70915; the
+      self receipt binds PR #3972 to the initial evidence commit 0b680f45e8625887a3d5e64b91bb9312cf88bf93.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14395/dod-occ-self-commit/command.yaml && grep
+          -q '^pr_number: 3972$' drift/dod_receipts/OMN-14395/dod-occ-self-commit/command.yaml && grep
+          -q '0b680f45e8625887a3d5e64b91bb9312cf88bf93' drift/dod_receipts/OMN-14395/dod-occ-self-commit/command.yaml

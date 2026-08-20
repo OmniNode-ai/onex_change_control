@@ -1,0 +1,91 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14473"
+title: "RT-5 in-PR enforcement gate landed — Effect-Assertion Gate (RT-5) is strict + fail-closed"
+summary: >
+  Supplementary DoD evidence closing OMN-14473, the in-PR enforcement gap found while verifying RT-5 (OMN-14467
+  / omnibase_infra#2271). The gap: the RED-on-zero acceptance test and the Rule-5 anti-regression policy
+  gate live in tests/scripts/, which the change-aware selector does not select for a scripts/ change,
+  so "CI Tests Gate" greened WITHOUT running them — enforcement only at the dev->main full suite, not
+  on the dev PR. rt5-builder closed it (merged in #2271 squash 398cddb1) by adding an `Effect-Assertion
+  Gate (RT-5)` job IN ci.yml — an always-present job whose expensive setup+pytest steps are gated by a
+  changed-files filter on the producer/util/test files, with a green no-op step for unrelated PRs — registered
+  in scripts/ci/ci_summary_gate.py STRICT_GATE_JOBS, so a red result fails the required "CI Summary" context
+  (same-run, fail-closed, in-PR). This is the ONLY viable enforcing path: CI Summary is a required branch-protection
+  context that polls its OWN run's jobs, while compose-config-lint / prod-promotion-lineage / a mirror
+  workflow are NOT required contexts (verified live) and would be enforcement theater. Independently re-verified
+  by rt6-builder (!= implementer rt5-builder): the live gate ran the acceptance + anti-regression tests
+  in-PR on #2271 (job ran 2m0s, not the seconds-long no-op); defeat-tested fail-closed — reintroducing
+  the silent-skip as operative code turns test_producer_has_no_silent_skip_path RED, and removing require_producer_preconditions
+  errors the acceptance tests (both non-zero -> gate red). Each check below is a gh-api CONTENT READ at
+  the merged squash SHA (398cddb17ea3a312d6aef51333695998f828f5ed) — workspace-INDEPENDENT — proven RED
+  at the pre-remediation ref (f304e13b64e011ee3ae081349178c4f7fd4f99a3), where ci.yml / ci_summary_gate.py
+  EXIST but do not carry the gate, and at a bogus SHA so the check is not vacuous.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "an always-present, strict, fail-closed ci.yml job runs the RT-5 acceptance + anti-regression
+      tests in-PR whenever the producer changes, enforced via the required CI Summary context"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-14473-gate-runs-acceptance-in-pr"
+    description: >-
+      Asserts .github/workflows/ci.yml at the merged squash (398cddb1) carries the effect-assertion-gate
+      job AND that job runs tests/scripts/test_trigger_producer_effect_assertion.py (the RED-on-zero acceptance
+      + the anti-regression policy tests). The two clauses combined are non-vacuous: a bare "runs that
+      test path" could match another workflow line. RED PROVEN at a ref where the artifact EXISTS BUT
+      IS WRONG, not merely absent: the pre-remediation ref f304e13b64e011ee3ae081349178c4f7fd4f99a3 HAS
+      a ci.yml, but it has NO effect-assertion-gate job (the change-aware selector never ran those tests
+      on the dev PR — the exact gap this closes) -> the effect-assertion-gate clause fails -> exit 1.
+      Exit 1 at a bogus SHA (empty content). Verified live: the effect-assertion-gate job ran 2m0s on
+      #2271 and its log shows test_runtime_change_with_broker_unset_fails_closed PASSED and test_producer_has_no_silent_skip_path
+      PASSED (it exercised the tests, not the no-op branch).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=398cddb17ea3a312d6aef51333695998f828f5ed"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'effect-assertion-gate')"
+          -ge 1 && test "$(printf '%s' "$C" | grep -c 'tests/scripts/test_trigger_producer_effect_assertion.py')"
+          -ge 1
+  - id: "dod-14473-gate-in-strict-closure"
+    description: >-
+      Asserts scripts/ci/ci_summary_gate.py at the merged squash (398cddb1) declares STRICT_GATE_JOBS
+      AND registers the exact required-context job name "Effect-Assertion Gate (RT-5)". Being in STRICT_GATE_JOBS
+      (verified by reading the file: the name is in the STRICT tuple at line 92, before SKIPPABLE_GATE_JOBS)
+      means CI Summary — the required branch-protection context, a no-needs fail-closed poller over its
+      OWN run's jobs — requires this job present+completed+success; a red result fails CI Summary and
+      blocks the merge. This is why an in-ci.yml job in STRICT_GATE_JOBS is the only viable enforcing
+      path: a separate workflow is not a required context (compose-config-lint / prod-promotion-lineage
+      are not in dev's required_status_checks, verified live) and CI Summary does not poll other runs.
+      RED PROVEN at the pre-remediation ref f304e13b, where ci_summary_gate.py EXISTS but does not register
+      the gate name -> exit 1. Exit 1 at a bogus SHA. A positive presence check, so it cannot pass vacuously.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/ci_summary_gate.py?ref=398cddb17ea3a312d6aef51333695998f828f5ed"
+          --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'STRICT_GATE_JOBS')"
+          -ge 1 && test "$(printf '%s' "$C" | grep -c 'Effect-Assertion Gate (RT-5)')" -ge 1
+  - id: "dod-occ-self-14473"
+    description: >-
+      Self-bind item for THIS OCC PR. occ-preflight requires a PASS receipt bound to the PR under check;
+      this item asserts a fact ABOUT this PR (its branch name) and is a binding item, NOT substantive
+      evidence — the two entries above carry that, each a workspace-independent gh-api content read at
+      the merged squash 398cddb1 proven RED at the pre-remediation ref f304e13b (where ci.yml / ci_summary_gate.py
+      exist but do not carry the gate) and at a bogus SHA. Verifier = rt6-builder, who did NOT implement
+      the RT-5 gate (implementer = rt5-builder).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14473-occ-enforcement-evidence' drift/dod_receipts/OMN-14473/dod-occ-self-14473/command.yaml

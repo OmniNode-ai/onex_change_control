@@ -1,0 +1,78 @@
+---
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-15540 Rule F shrink-only baseline: dod_evidence predicates pinned to a
+# MUTABLE external state.
+#
+# Produced by a full scan of every contracts/*.yaml at Rule F landing,
+# 2026-07-30. FIVE dod_evidence items carrying SIX check_values. Reproduce
+# with:
+#
+#   python3 -c "
+#   import sys; sys.path.insert(0,'scripts')
+#   from pathlib import Path
+#   import lint_contract_check_values as L
+#   for p in sorted(Path('contracts').glob('*.yaml')):
+#       for _ps, label, _f in L.lint_contract(p):
+#           if 'mutable-state-pin' in label:
+#               print('contracts/%s::%s' % (p.name, label.split(':', 1)[0]))
+#   " | sort -u
+#
+# Each entry was verified LIVE against the GitHub API, not inferred from shape:
+#
+#   contracts/OMN-10765.yaml::dod-001 / ::dod-002  -- F2 deletable-branch-ref.
+#     Both pin `?ref=jonah/omn-10765-port-change-aware-test-selection-to-
+#     omniintelligence`. Live: HTTP 404, "No commit found for the ref" -- the
+#     branch was deleted on merge. Both checks are DETERMINISTICALLY RED and
+#     can never pass. This is the only feature-branch ref pin in the corpus.
+#
+#   contracts/OMN-15241.yaml::dod-omn-15241-seeded-red-run-30269831694 -- F1
+#     run-conclusion. `test "$(gh api .../runs/30269831694 --jq .conclusion)"
+#     = "failure"` on the LATEST-attempt view. Green today only because nobody
+#     has re-run that throwaway PR's workflow; the first re-run makes it a
+#     permanent BLOCK. The repair is the attempt-anchored form (see below).
+#
+#   contracts/OMN-15192.yaml::dod-omn-15192-bullet1-first-post-flip-mint --
+#     F3 unanchored-cumulative (`.total_count <= 1`, no window, no is:open).
+#   contracts/OMN-15192.yaml::dod-omn-15192-b3-accepted-deviation-census
+#     (2 checks) -- F3 unanchored-cumulative (`[ "$COUNT" -eq 2 ]`). Both were
+#     green then and falsified permanently by the next routine head-refresh
+#     re-mint (OMN-14941).
+#     REPAIRED AND SHRUNK OUT 2026-07-30 by OCC#5673 (OMN-15192): both entries
+#     are superseded append-only by `-r34` items that ask the identical question
+#     over the CLOSED window created:2026-07-29T03:01:23Z..2026-07-30T08:00:00Z,
+#     with the same required counts (1, 2, 2). Verified by a live corpus rescan:
+#     neither id is reproduced any more. Note that OCC#5665 also listed
+#     dod-omn-15192-b3-accepted-deviation-census in
+#     _RULE_F_CONCURRENT_REPAIR_EXEMPT in the ratchet test, expecting another
+#     lane to own it; that exemption is now INERT (the entry is healed and gone
+#     from this file) and can be deleted by whoever next touches that module.
+#     Rule F was what wedged OCC#5673: it landed 56 minutes after OCC#5664
+#     merged, has no legacy allowlist, and Pre-commit feeds the required
+#     CI Summary context, so every PR touching this contract failed until the
+#     two entries were superseded.
+#
+# WHY contracts/OMN-15484.yaml IS NOT LISTED, though the census that motivated
+# this rule found it. It carried the class' worst instance -- run 30565261108's
+# `occ-preflight / eligibility` asserted `failure` after the job had been
+# re-run to `success`, a deterministic BLOCK. While Rule F was being built, the
+# infra-unwedge-drive-0730/cleanup lane landed the CORRECT repair on dev: it
+# superseded the original item and replaced it with `dod-infra-2570-attempt1-
+# stable`, which reads `?filter=all&per_page=100` + `select(.run_attempt==1)`.
+# Per-attempt job records are IMMUTABLE -- verified live, that run returns
+# attempt 1 = failure alongside attempt 2 = success -- so the repair is
+# genuinely anchored and Rule F exempts it by design. The first draft of Rule F
+# flagged it anyway, and THIS RATCHET caught that on the real corpus: a gate
+# that blocks the fix rather than the defect is a false-RED generator. The
+# exemption and its negative control now live in the linter and its tests.
+#
+# SHRINK-ONLY. A violation not listed here hard-fails the corpus ratchet in
+# tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py. When a
+# contract is repaired, delete its entry in the SAME PR -- except for the entry
+# named in _RULE_F_CONCURRENT_REPAIR_EXEMPT in that module, which is owned by
+# another in-flight lane (see the comment there).
+baseline:
+  - contracts/OMN-10765.yaml::dod-001
+  - contracts/OMN-10765.yaml::dod-002
+  - contracts/OMN-15241.yaml::dod-omn-15241-seeded-red-run-30269831694

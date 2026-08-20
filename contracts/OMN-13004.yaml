@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13004"
+title: "Dashboard live node-generation — thin /api/generate publisher + SEA Control Plane generate form"
+summary: >
+  Make the dashboard able to generate nodes live. A user submits a task description on the SEA Control
+  Plane; the UI POSTs the typed command to /api/generate, a THIN PUBLISHER on the omnimarket projection
+  API wraps it in the canonical ModelEventEnvelope (exactly like the 2026-06-11 gate-zero publisher in
+  docs/evidence/2026-06-11-experiments/exp0/publish_exp0.py) and publishes ONE command to onex.cmd.omnimarket.node-generation-requested.v1
+  via the canonical EventBusKafka (no raw broker client). The existing node_generation_consumer generates
+  / validates / registers and emits the terminal onex.evt.omnimarket.node-generation-completed.v1 event
+  the SEA Control Plane projection already renders. Gap closed per layer: (publisher) /api/generate route
+  was MISSING though the vite proxy already routed it; (UI) SEA Control Plane rendered the completed projection
+  but had NO submit affordance. No bespoke server-side generation, no new HTTP-ingress node, no bus bypass.
+  Topic literal sourced from the canonical omnimarket.events.topics registry. Verified live on the stability-test
+  projection-api: POST returned a correlation id and the round-trip landed a real generated artifact (contract_passed=true,
+  model Qwen3.6-35B-A3B, 1 attempt, 631ms) in the completed projection.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      omnimarket: tests/test_generation_publisher.py + tests/test_projection_api_server.py (47 passed)
+      — envelope shape asserted against the exp0 wire format, route publish/422/503 paths, publish routed
+      through the injected event bus. mypy --strict clean. omnidash: src/pages/SeaGeneratePanel.test.tsx
+      (5 passed) — submitGeneration POST shape, typed Error on non-OK/malformed, panel honest success
+      + failure states.
+    command: "uv run pytest tests/test_generation_publisher.py tests/test_projection_api_server.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1181"
+    description: >
+      omnimarket PR #1181 adds the thin POST /api/generate publisher to the projection API: typed request,
+      canonical ModelEventEnvelope (exp0-identical), publish via EventBusKafka to onex.cmd.omnimarket.node-generation-requested.v1,
+      returns {correlation_id, topic}. Tests: tests/test_generation_publisher.py + tests/test_projection_api_server.py
+      = 47 passed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13004/dod-omnimarket-pr-1181/command.yaml
+          && grep -q '^pr_number: 1181$' drift/dod_receipts/OMN-13004/dod-omnimarket-pr-1181/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13004/dod-omnimarket-pr-1181/command.yaml"
+  - id: "dod-omnidash-pr-211"
+    description: >
+      omnidash PR #211 adds the SEA Control Plane generate form (SeaGeneratePanel) + submitGeneration
+      client that POSTs the typed command to /api/generate, surfaces the returned correlation id, and
+      renders honest pending / failure states. Tests: src/pages/SeaGeneratePanel.test.tsx = 5 passed;
+      tsc + eslint clean.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13004/dod-omnidash-pr-211/command.yaml
+          && grep -q '^pr_number: 211$' drift/dod_receipts/OMN-13004/dod-omnidash-pr-211/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13004/dod-omnidash-pr-211/command.yaml"
+  - id: "dod-deploy-stability-hotpatch"
+    description: >
+      Live deploy assessment: the server half was hot-patched onto the stability-test projection-api container
+      ONLY (pre-approved stability-lane hot-patch for the June 11 demo recording). dev/prod lanes and
+      the runtime/effects/worker containers were untouched. Round-trip verified live: POST /api/generate
+      returned correlation id ui-20260611T192752Z-34792217 and the completed projection rendered a real
+      generated artifact (contract_passed=true). Documented in docs/evidence/2026-06-11-dashboard-visual-audit/HOTPATCH-GENERATE.md
+      with rollback steps.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13004/dod-deploy-stability-hotpatch/command.yaml
+          && grep -q 'stability-test' drift/dod_receipts/OMN-13004/dod-deploy-stability-hotpatch/command.yaml
+          && grep -q 'ui-20260611T192752Z-34792217' drift/dod_receipts/OMN-13004/dod-deploy-stability-hotpatch/command.yaml"
+  - id: "dod-occ-pr"
+    description: >
+      This OCC PR carries the OMN-13004 central contract and the dod receipts that omnimarket PR #1181
+      resolves via Evidence-Source: OCC#2528.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13004/dod-occ-pr/command.yaml &&
+          grep -q '^pr_number: 2528$' drift/dod_receipts/OMN-13004/dod-occ-pr/command.yaml && grep -q
+          '^ticket_id: \"OMN-13004\"$' drift/dod_receipts/OMN-13004/dod-occ-pr/command.yaml"

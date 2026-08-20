@@ -1,0 +1,98 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13540"
+title: "feat(OMN-13540): delegation regression suite — versioned golden-task corpus + Layer-1 CI gate
+  + nightly live runner"
+summary: >-
+  Delegation has only been exercised ad-hoc and regressions are discovered by accident (import break that
+  took the orchestrator down — OMN-13539; metered cost never recorded — OMN-13408/13535; empty terminal
+  data). This adds a fixed, versioned set of delegation tasks with BEHAVIORAL assertions that run repeatably
+  so regressions are caught mechanically. Two layers: (1) a deterministic contract/unit gate (U1-U4) in
+  omnimarket's existing pytest CI on every PR with no live model — catches the import/wiring/config regression
+  class; (2) a versioned YAML corpus (I1-I9) + a runner that publishes each case to the live bus, reads
+  the delegation_events projection, and asserts structure/behavior (routing tier, quality gate, terminal,
+  token/cost, escalation), wired as a nightly GitHub Actions workflow against the stability-test lane.
+  Assertions encode INTENDED behavior; known-broken cases are xfail with the tracking ticket (OMN-13408
+  metered cost, OMN-13535 telemetry, OMN-13140 escalation/exhaust) so the nightly is actionable. Test-only
+  + nightly-CI-workflow change — no runtime node source, migration, schema, endpoint, or env-for-model
+  change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-layer1-suite"
+    description: >-
+      Layer-1 contract/unit gate (U1-U4) hard-passes deterministically with no live model. U1 imports
+      the node_delegate_skill_orchestrator handler + ModelPremiumCounterfactual (regression for the OMN-13539
+      ImportError). U2 resolves every routing tier model to a complete backend (endpoint literal-or-env,
+      model_name, secret_ref for non-local tiers). U3 constructs ModelDelegateSkillRequest for each contract
+      allowed_task_type and rejects an unknown one. U4 asserts the projection event model + response metrics
+      carry model_name + tokens + cost (regression for OMN-13535). Plus corpus-shape + runner pure-logic
+      coverage.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13540/dod-layer1-suite/command.yaml"
+  - id: "dod-corpus"
+    description: >-
+      A versioned declarative corpus exists and is the single source of cases: U1-U4 (unit) and I1-I9
+      (integration), each with acceptance_criteria + a behavioral `expected` block. Known-broken integration
+      cases (I2/I4/I8/I9) carry an xfail block naming the tracking ticket; the assertion text still encodes
+      the CORRECT expectation so the case goes green only when the real fix lands. The corpus loads and
+      validates via the typed loader.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13540/dod-corpus/command.yaml"
+  - id: "dod-nightly-workflow"
+    description: >-
+      A scheduled (nightly cron) GitHub Actions workflow exists (.github/workflows/delegation-regression-nightly.yml):
+      self-hosted runner with .201 lane access, runs the Layer-2 runner against the stability-test lane,
+      fails on hard (non-xfail) assertion breaks, and uploads the scoreboard artifact. The Layer-2 pytest
+      module skips without OMN_ALLOW_LIVE_E2E_PROBE so it never runs against the bus from ordinary PR
+      CI.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13540/dod-nightly-workflow/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: test-only + nightly-CI-workflow change. No runtime node source, migration,
+      schema, endpoint, or env-for-model change. New tests land under tests/ (Layer-1 runs in the existing
+      pytest CI on every PR); the nightly workflow is additive and runs only on schedule/dispatch. No
+      live deploy performed by this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13540/dod-deploy/command.yaml"
+  - id: "dod-reconcile-dogfood-2026-06-24"
+    description: >-
+      Reconcile the corpus xfail markers against the 2026-06-24 redeploy dogfood (docs/evidence/2026-06-24-redeploy-dogfood/results.md,
+      verifier != runner). I9 (cross-cutting: every completed delegation_events row carries non-empty
+      model_name + tokens_input/_output > 0) flips from xfail(OMN-13535) to expected-green — all four
+      completed dogfood rows carried real telemetry, so the empty-terminal-data regression is no longer
+      reproduced on the redeployed dev lane. I8 (all-tiers-exhaust) STAYS xfail: the dogfood proved only
+      the passing research + code_review paths, never an exhaustion scenario; OMN-13543 (exhaustion terminal)
+      is open and OMN-13140 (graceful exhaust) is unproven. I5 (research) + I6 (code_review) were already
+      expected-green and the dogfood confirmed them. omnimarket PR #1375; test-only corpus.yaml data edit;
+      Layer-1/pure-logic suite 21 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13540/dod-reconcile-dogfood-2026-06-24/command.yaml"
+  - id: "dod-occ-pr-self-reconcile"
+    description: "OCC PR #3009 carrying this reconciliation contract item + receipt."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13540/dod-occ-pr-self-reconcile/command.yaml"

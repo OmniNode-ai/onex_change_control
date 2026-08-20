@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13058"
+title: "TerminalConsumerSession leaks worker thread + event loop when open() fails (error-path leak behind
+  the fixed OMN-13010 session.close Major)"
+summary: >-
+  Found by the P3.3 doctrinal review of merged omnibase_infra #1951 (head b9712af9, dev merge 36d98275)
+  and the omnimarket #1184 fold. The CodeRabbit Major on #1184 ("session.close possibly never called after
+  wait()") is FIXED in the merged runner (try/finally around session.wait plus close-order test), but
+  a sibling leak exists one layer down: TerminalConsumerSession.__init__ (omnibase_infra src/omnibase_infra/runtime/service_terminal_event_consumer.py)
+  starts its dedicated worker loop thread immediately, and TerminalEventConsumer.open did 'session = TerminalConsumerSession(...);
+  return session.open()' with no cleanup. Any failure inside session.open() (consumer start timeout, partition-assign
+  TimeoutError at the 30s cap, broker auth error, missing event-bus attributes) propagated out of the
+  raising expression, the session reference was lost, _closed stayed False, and the daemon worker thread
+  plus its never-closed asyncio event loop leaked -- one pair per failed open. The Kafka client itself
+  is not leaked (open_direct_terminal_consumer stops it on BaseException). The motivating caller (HandlerContextRoiRunner)
+  opens one session per trial, so a 160-560-trial battery against a degraded broker accumulates hundreds
+  of leaked threads in the long-lived effects container. Fix (omnibase_infra PR #1957): wrap session.open()
+  in try/except BaseException -> session.close() (idempotent: stops the loop, joins the thread) -> re-raise;
+  covers both the two-phase .open(topic) path and the legacy single-call __call__ path. No topic, envelope,
+  or contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR #1957 closes the session on open() failure. RED-then-GREEN regression test tests/unit/runtime/test_service_terminal_event_consumer_open_failure.py
+      injects a real open failure through the production code path (event bus exposing no _bootstrap_servers
+      -> _direct_terminal_bootstrap_servers raises inside the submitted coroutine; no Kafka required)
+      and asserts no alive terminal-consumer-* thread after the raise, for both the two-phase and single-call
+      forms. Verified RED with the fix stashed (2 failed), GREEN with it (2 passed). Local proof: ruff
+      format/check clean; mypy src/ --strict Success (2418 files); pre-commit on changed files 40 hooks
+      Passed; pytest tests/unit -n auto 20277 passed with 2 machine-local baseline failures that reproduce
+      with the change fully stashed on clean dev tip (ambient KAFKA_BOOTSTRAP_SERVERS breaking a non-isolated
+      mock test; vendored-migrations check comparing against the sibling canonical omnimarket clone).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13058/dod-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13058"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13058/dod-infra-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: PR #1957 is an additive error-path fix in one runtime module plus one new test
+      file. No live deploy, restart, topic mutation, or .201 mutation is performed in this work. The fix
+      is runtime-loaded by the effects/runtime image and reaches lanes only through the normal post-merge
+      batched rebuild. deploy_pending = true. Runtime-loaded file: src/omnibase_infra/runtime/service_terminal_event_consumer.py.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13058/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13058"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13058/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13058/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2542"
+    description: >-
+      onex_change_control PR #2542 carries the central OMN-13058 contract and the dod-infra-pr / dod-deploy-assessment
+      receipts that the omnibase_infra code PR #1957 Receipt-Gate resolves via Evidence-Source: OCC#2542.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13058/dod-occ-pr-2542/command.yaml"
+          && grep -q '^ticket_id: "OMN-13058"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13058/dod-occ-pr-2542/command.yaml"

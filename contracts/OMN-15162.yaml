@@ -1,0 +1,82 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15162"
+title: "steel dispatch_report.py re-exports the omnibase_core port — receipt contract for already-merged
+  work (false-Backlog reconciliation)"
+summary: >-
+  OMN-15162 is a false-Backlog ticket, not unbuilt work. It landed on jonahgabriel/steel_onslaught `main`
+  in PR #219, merge commit d90f869c2517fb5342c2fd8ebeb3a6b562c91ad5, merged 2026-07-26T12:24:46Z, while
+  the Linear ticket held a single Backlog stateHistory entry throughout. This contract is the receipt
+  surface for the dod_verify path; it makes no status change. What landed closes hostile finding #6 (the
+  plan's centerpiece otherwise shipping as a live duplicate): `src/steel_onslaught/contracts/dispatch_report.py`
+  is now a THIN RE-EXPORT over `omnibase_core.models.dispatch.report` (the OMN-15161 core port, merged
+  core#1510 at squash 3f2998b3), with steel's original public names retained as ALIASES of the core classes
+  — so there is exactly ONE model definition per shape, not two, and existing call sites (`scripts/check_report_contract.py`,
+  `tests/scripts/test_check_report_contract.py`) needed no mechanical rename. Per the operator ruling
+  of 2026-07-26, steel does NOT wait for a core PyPI release: `omnibase-core` is pinned to the git SQUASH
+  commit 3f2998b3337e4050b4758e0dd2a0fe1061ce0d98 — never a branch head — with a revert-to-PyPI-registry
+  marker for when the next core release ships. That revert is the only latent follow-up and is a release-triggered
+  chore, not this ticket's work. Every check is pinned to the merge SHA and was executed GREEN at authoring
+  time.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "steel PR #219 is MERGED on jonahgabriel/steel_onslaught main at merge commit d90f869c"
+    command: "gh pr view 219 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-15162-pr-219-merged"
+    description: >-
+      steel PR #219 ("OMN-15162 — re-export core report contract; short-term git pin to core 3f2998b3")
+      is MERGED with merge commit exactly d90f869c2517fb5342c2fd8ebeb3a6b562c91ad5. State and SHA asserted
+      in one line so closed-unmerged, still-open, and re-landed-elsewhere all produce count 0 and fail.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 219 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")' | grep -cFx 'MERGED d90f869c2517fb5342c2fd8ebeb3a6b562c91ad5' | grep -qx 1
+  - id: "dod-omn-15162-imports-core-port"
+    description: >-
+      At the merge SHA, `src/steel_onslaught/contracts/dispatch_report.py` IMPORTS from the core port
+      rather than defining its own models: exactly one `from omnibase_core.models.dispatch.report import
+      (` statement. This is the load-bearing half of "one canonical model per shape" — a file that still
+      declared local `class Model...` definitions would not carry this import and returns count 0.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/contracts/dispatch_report.py?ref=d90f869c2517fb5342c2fd8ebeb3a6b562c91ad5' --jq '.content' | base64 -d | grep -cF 'from omnibase_core.models.dispatch.report import (' | grep -qx 1
+  - id: "dod-omn-15162-alias-not-duplicate"
+    description: >-
+      The retained steel-side public name is bound as an ALIAS to the core class — the literal assignment
+      `ModelSOImplementerReport = ModelDispatchReportImplementer` — which is what proves the migration
+      did not leave a second live definition behind. If the re-export had been faked by re-declaring the
+      model locally, this assignment would be absent (count 0) even though the module would still import
+      cleanly, so this check discriminates alias-over-port from duplicate-shape.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/contracts/dispatch_report.py?ref=d90f869c2517fb5342c2fd8ebeb3a6b562c91ad5' --jq '.content' | base64 -d | grep -cF 'ModelSOImplementerReport = ModelDispatchReportImplementer' | grep -qx 1
+  - id: "dod-omn-15162-core-squash-pin"
+    description: >-
+      `pyproject.toml` at the merge SHA pins `omnibase-core` to the exact git SQUASH commit the operator
+      ruling names — the full `[tool.uv.sources]` line including `rev = "3f2998b3337e4050b4758e0dd2a0fe1061ce0d98"`.
+      Asserting the whole line (repo URL + rev) rather than the bare SHA is what makes this RED against
+      the specific regression the ruling forbids: pinning a branch head (`branch = "dev"`) instead of
+      an immutable squash commit.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/pyproject.toml?ref=d90f869c2517fb5342c2fd8ebeb3a6b562c91ad5' --jq '.content' | base64 -d | grep -cF 'omnibase-core = { git = "https://github.com/OmniNode-ai/omnibase_core", rev = "3f2998b3337e4050b4758e0dd2a0fe1061ce0d98" }' | grep -qx 1

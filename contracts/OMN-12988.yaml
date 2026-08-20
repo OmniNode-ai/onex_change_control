@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12988"
+title: "fix(OMN-12988): pin stability runtime-worker to replicas 1 + silent-drop census ratchet"
+summary: >-
+  The base docker/docker-compose.infra.yml:862 defaults runtime-worker to replicas 0 (${WORKER_REPLICAS:-0}).
+  The stability-test lane's required state includes a running worker (GATE_ZERO_PROOF.md 4-container census:
+  main, effects, worker, projection-api), but the docker-compose.stability-test.yml override pinned the
+  worker via an env-interpolation default (${STABILITY_TEST_WORKER_REPLICAS:-1}) — a silent-drop surface:
+  a stray exported STABILITY_TEST_WORKER_REPLICAS=0 or removal of the :-1 fallback would scale the worker
+  to 0 on a plain compose up/recreate with zero errors and zero signal. Fix pins the override deploy.replicas
+  to the literal 1 (no env indirection). Recurrence ratchet (same PR): a deploy-agent census unit test
+  asserts runtime-worker stays in SCOPE_SERVICES[RUNTIME] so a missing worker (replicas 0 => absent from
+  docker compose ps) is a deploy failure via verify_containers_up, not silence; an integration render
+  test asserts the rendered stability worker resolves deploy.replicas == 1; the existing stability-lane
+  pin assertion is updated to the literal 1. No live lane mutation in this PR; the rebuild agent applies
+  the config.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: "dod-infra-pr-1942"
+    description: "omnibase_infra PR #1942 pins docker-compose.stability-test.yml runtime-worker deploy.replicas
+      to the literal 1 and adds the recurrence ratchets (scripts/deploy-agent/tests/unit/test_runtime_worker_census.py
+      — 2 tests; tests/integration/infra/test_stability_test_runtime_compose_render.py render assertion;
+      tests/unit/infra/test_stability_test_runtime_lane.py pin update). ruff format/check clean, pre-commit
+      on changed files passed, affected suites green (render test confirms replicas 1 end-to-end via docker
+      compose config)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12988/dod-infra-pr-1942/command.yaml"
+          && grep -q '^ticket_id: "OMN-12988"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12988/dod-infra-pr-1942/command.yaml"
+          && grep -q '^pr_number: 1942$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12988/dod-infra-pr-1942/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: "Deploy assessment: this is a docker-compose config pin (no image build, no schema migration).
+      It reaches live effect only via a batched stability rebuild/recreate run by the rebuild agent; no
+      dev/prod mutation and no live deploy is performed by this PR. The pin ensures a stability lane recreate
+      preserves the runtime-worker container instead of silently dropping it. The receipt carries the
+      deploy keyword for the deploy-gate."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12988/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12988"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12988/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: "This OCC PR carries the OMN-12988 central contract and the dod receipts that the omnibase_infra
+      PR #1942 Receipt-Gate resolves via Evidence-Source: <this OCC commit SHA>."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12988/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12988"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12988/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

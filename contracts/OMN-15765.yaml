@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15765"
+title: "check-bot-authored-authz-guard false-fails on human-authored PRs due to job-timeout starvation,
+  not a matcher defect"
+summary: >-
+  The 2026-08-08 D-cluster census found check-bot-authored-authz-guard red on 12 of 17 open onex_change_control
+  PRs, including 5 human-authored (occ#6172/#6175/#6176/#6182/#6188). Pulling the failing job logs for
+  occ#6176 (run 31244470013) and occ#6182 (run 31234031110) showed both jobs dying inside actions/checkout@v7
+  (fetch-depth: 0) / the setup-uv composite step with conclusion=cancelled at the job's timeout-minutes:
+  5 wall - never reaching the guard's own decision-logic step. CI Summary's fail-closed "!= success" comparison
+  then scores that cancellation as an authz-guard REJECT. The guard's identity/path matcher itself (evaluate()
+  in check_bot_authored_authz_guard.py) is unit-tested correct in both directions already (test_acceptance_1_bot_commit_touches_grants_rejects
+  / test_acceptance_2_human_touches_grants_passes) and is unchanged by this fix - the root cause is CI
+  scheduling starvation on the contended self-hosted omnibase-ci fleet (corroborated by OMN-15722/PR #6173,
+  which raised nine sibling ci-summary jobs' timeout-minutes on the same evidence: checkout observed up
+  to 22m38s in a single run). This ticket raises only check-bot-authored-authz-guard's timeout-minutes
+  from 5 to 45 (matching OMN-15722's floor for the other nine members) and adds a regression test pinning
+  that floor. The guard's matched paths (grants/**, allowlists/**), bot-identity set, and fail-closed
+  REJECT/INCONCLUSIVE behavior are untouched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR CI checks reach a terminal state with check-bot-authored-authz-guard not cancelled
+      at its timeout wall, and the existing bot-authored/human-authored matcher unit tests remain green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-authz-guard-timeout-raised"
+    description: >-
+      check-bot-authored-authz-guard's timeout-minutes in .github/workflows/ci.yml is 45, not the under-scoped
+      pre-fix value of 5. Falsifiable - fails if the job still carries 5 or any value below the observed
+      checkout+setup-uv starvation floor, or if the job key was renamed away.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          python3 -c "import sys,yaml; j=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']; t=j['check-bot-authored-authz-guard']['timeout-minutes'];
+          sys.exit('timeout-minutes=%s still below floor' % t) if t < 20 else print('true')"
+  - id: "dod-authz-guard-matcher-unchanged-both-dirs"
+    description: >-
+      The guard's decision logic is untouched by this fix and remains proven correct in both directions:
+      a bot-authored change touching grants/** or allowlists/** still REJECTs, and a human-authored change
+      touching the same paths still PASSes. Falsifiable - fails if either direction regresses.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-authz-guard-timeout-raised"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/unit/scripts/test_check_bot_authored_authz_guard.py::TestEvaluate::test_acceptance_1_bot_commit_touches_grants_rejects
+          tests/unit/scripts/test_check_bot_authored_authz_guard.py::TestEvaluate::test_acceptance_2_human_touches_grants_passes
+          -q
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/unit/scripts/test_bot_authored_authz_guard_timeout_omn15765.py -q

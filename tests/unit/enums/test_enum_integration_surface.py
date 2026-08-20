@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+"""Unit tests for EnumIntegrationSurface."""
+
+import pytest
+
+from onex_change_control.enums.enum_integration_surface import EnumIntegrationSurface
+
+
+@pytest.mark.unit
+class TestEnumIntegrationSurface:
+    """Tests for EnumIntegrationSurface enum."""
+
+    def test_all_values_defined(self) -> None:
+        """All expected values are present."""
+        assert EnumIntegrationSurface.KAFKA is not None
+        assert EnumIntegrationSurface.DB is not None
+        assert EnumIntegrationSurface.CI is not None
+        assert EnumIntegrationSurface.PLUGIN is not None
+        assert EnumIntegrationSurface.GITHUB_CI is not None
+        assert EnumIntegrationSurface.SCRIPT is not None
+        assert EnumIntegrationSurface.CONTAINER_HEALTH is not None
+        assert EnumIntegrationSurface.RUNTIME_HEALTH is not None
+        assert EnumIntegrationSurface.CROSS_REPO_BOUNDARY is not None
+        assert EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL is not None
+        assert EnumIntegrationSurface.SCHEMA_PARITY is not None
+
+    def test_value_count(self) -> None:
+        """Exactly twelve members defined."""
+        assert len(EnumIntegrationSurface) == 12
+
+    def test_cross_repo_boundary_surface_exists(self) -> None:
+        """CROSS_REPO_BOUNDARY member has correct value."""
+        assert hasattr(EnumIntegrationSurface, "CROSS_REPO_BOUNDARY")
+        assert EnumIntegrationSurface.CROSS_REPO_BOUNDARY.value == "cross_repo_boundary"
+        assert str(EnumIntegrationSurface.CROSS_REPO_BOUNDARY) == "cross_repo_boundary"
+
+    def test_container_health_exists(self) -> None:
+        """CONTAINER_HEALTH member has correct value."""
+        assert EnumIntegrationSurface.CONTAINER_HEALTH.value == "container_health"
+
+    def test_runtime_health_exists(self) -> None:
+        """RUNTIME_HEALTH member has correct value."""
+        assert EnumIntegrationSurface.RUNTIME_HEALTH.value == "runtime_health"
+
+    def test_str_returns_value(self) -> None:
+        """__str__ returns the string value."""
+        assert str(EnumIntegrationSurface.KAFKA) == "kafka"
+        assert str(EnumIntegrationSurface.DB) == "db"
+        assert str(EnumIntegrationSurface.CI) == "ci"
+        assert str(EnumIntegrationSurface.PLUGIN) == "plugin"
+        assert str(EnumIntegrationSurface.GITHUB_CI) == "github_ci"
+        assert str(EnumIntegrationSurface.SCRIPT) == "script"
+        assert str(EnumIntegrationSurface.CONTAINER_HEALTH) == "container_health"
+        assert str(EnumIntegrationSurface.RUNTIME_HEALTH) == "runtime_health"
+        assert str(EnumIntegrationSurface.SCHEMA_PARITY) == "schema_parity"
+
+    def test_is_str_subclass(self) -> None:
+        """EnumIntegrationSurface members are str instances."""
+        assert isinstance(EnumIntegrationSurface.KAFKA, str)
+        assert isinstance(EnumIntegrationSurface.DB, str)
+        assert isinstance(EnumIntegrationSurface.CI, str)
+        assert isinstance(EnumIntegrationSurface.PLUGIN, str)
+        assert isinstance(EnumIntegrationSurface.GITHUB_CI, str)
+        assert isinstance(EnumIntegrationSurface.SCRIPT, str)
+        assert isinstance(EnumIntegrationSurface.CONTAINER_HEALTH, str)
+        assert isinstance(EnumIntegrationSurface.RUNTIME_HEALTH, str)
+        assert isinstance(EnumIntegrationSurface.SCHEMA_PARITY, str)
+
+    def test_roundtrip_from_value(self) -> None:
+        """Can construct members from their string values."""
+        assert EnumIntegrationSurface("kafka") is EnumIntegrationSurface.KAFKA
+        assert EnumIntegrationSurface("db") is EnumIntegrationSurface.DB
+        assert EnumIntegrationSurface("ci") is EnumIntegrationSurface.CI
+        assert EnumIntegrationSurface("plugin") is EnumIntegrationSurface.PLUGIN
+        assert EnumIntegrationSurface("github_ci") is EnumIntegrationSurface.GITHUB_CI
+        assert EnumIntegrationSurface("script") is EnumIntegrationSurface.SCRIPT
+        assert (
+            EnumIntegrationSurface("container_health")
+            is EnumIntegrationSurface.CONTAINER_HEALTH
+        )
+        assert (
+            EnumIntegrationSurface("runtime_health")
+            is EnumIntegrationSurface.RUNTIME_HEALTH
+        )
+        assert (
+            EnumIntegrationSurface("schema_parity")
+            is EnumIntegrationSurface.SCHEMA_PARITY
+        )
+
+    def test_playwright_behavioral_surface_exists(self) -> None:
+        """PLAYWRIGHT_BEHAVIORAL member has correct value."""
+        assert hasattr(EnumIntegrationSurface, "PLAYWRIGHT_BEHAVIORAL")
+        assert (
+            EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL.value
+            == "playwright_behavioral"
+        )
+        assert (
+            str(EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL) == "playwright_behavioral"
+        )
+
+    def test_playwright_behavioral_roundtrip(self) -> None:
+        """Can construct PLAYWRIGHT_BEHAVIORAL from its string value."""
+        assert (
+            EnumIntegrationSurface("playwright_behavioral")
+            is EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL
+        )
+
+    def test_playwright_behavioral_is_str(self) -> None:
+        """PLAYWRIGHT_BEHAVIORAL is a str instance."""
+        assert isinstance(EnumIntegrationSurface.PLAYWRIGHT_BEHAVIORAL, str)
+
+    def test_importable_from_enums_package(self) -> None:
+        """EnumIntegrationSurface is accessible via the enums package __init__."""
+        from onex_change_control.enums import EnumIntegrationSurface as ImportedEnum
+
+        assert ImportedEnum is EnumIntegrationSurface

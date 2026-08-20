@@ -1,0 +1,91 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14469"
+title: "OCC companion for omnibase_infra#2273 — RT-6 fail-closed deploy readback"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnibase_infra#2273 (OMN-14469, RT-6, epic OMN-13674). The product
+  PR turns the previously dead scripts/verify_deployed_versions.py (OMN-5608, zero callers) into the deploy's
+  terminal image-revision readback and wires it into scripts/deploy-runtime.sh as a fail-closed Phase-12b
+  step. The exists-but-WRONG defect it closes: verify_deployment() read the running container's org.opencontainers.image.revision
+  label but only log_warn'd on a mismatch and returned 0, so a stale / mis-targeted container (deployed
+  code != intended ref) PASSED. The evidence below reads the PR head directly and asserts the load-bearing
+  properties: (1) verify_deployed_versions.py has the revision-mismatch RED path, (2) deploy-runtime.sh
+  invokes it as a terminal (non-optional) fail-closed step, (3) the unit suite drives the stale-container
+  case and asserts exit 1, not just the happy path. Independently reproduced by the verifier (distinct
+  from the implementer): a fake docker returning a mismatched revision label yields exit 1 (RED), a matching
+  label exit 0 (GREEN), a missing label exit 2 (infra fail-closed), and a no-op readback exit 2.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "omnibase_infra#2273 head wires a fail-closed deploy readback that goes RED on a stale
+      container"
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-2273-stale-revision-goes-red"
+    description: >-
+      Product-observing check against omnibase_infra#2273 head afd754900dd572f7914e15e5611c8f5f7a6e71f1.
+      Reads scripts/verify_deployed_versions.py from the PR head and asserts the revision-mismatch RED
+      path exists: the get_image_revision label reader, the verify_revision assertion, the length-tolerant
+      _revisions_match comparator, and the operator-facing 'deployed code is NOT the intended ref' failure
+      string. Without these, a stale / mis-targeted container keeps passing (the exists-but-WRONG defect
+      RT-6 exists to close).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/verify_deployed_versions.py?ref=afd754900dd572f7914e15e5611c8f5f7a6e71f1"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'def get_image_revision' "$tmp" && grep -F
+          -- 'def verify_revision' "$tmp" && grep -F -- 'def _revisions_match' "$tmp" && grep -F -- 'return
+          a == b or a.startswith(b) or b.startswith(a)' "$tmp" && grep -F -- 'deployed code is NOT the
+          intended ref' "$tmp" && grep -F -- '"--expected-revision"' "$tmp"
+  - id: "dod-verify-2273-readback-wired-terminal"
+    description: >-
+      Product-observing check against the PR head. Reads scripts/deploy-runtime.sh and asserts the readback
+      is wired as a TERMINAL, non-optional deploy step (not an opt-in flag): the readback_deployed_ref()
+      function is defined, it is INVOKED unconditionally with the intended git_sha/version after verify_deployment
+      (Phase 12b), and a mismatch aborts with the fail-closed 'the running container is NOT the intended
+      ref' error. Without the invocation line, the function could exist but never run (a dead gate).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/deploy-runtime.sh?ref=afd754900dd572f7914e15e5611c8f5f7a6e71f1"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'readback_deployed_ref()' "$tmp" && grep -F
+          -- 'readback_deployed_ref "${git_sha}" "${version}" "${compose_project}" "${repo_root}"' "$tmp"
+          && grep -F -- 'Deploy Readback (RT-6, fail-closed)' "$tmp" && grep -F -- 'the running container
+          is NOT the intended ref' "$tmp"
+  - id: "dod-verify-2273-red-test-drives-stale"
+    description: >-
+      Product-observing check against the PR head. Reads tests/unit/test_verify_deployed_versions.py and
+      asserts the suite drives the exists-but-WRONG case: test_stale_container_goes_red (unit) and test_exit_1_on_stale_revision
+      (main() CLI exit contract) prove a stale container yields RED, and test_exit_0_on_revision_match
+      proves the matching case stays GREEN. A suite that only asserted the happy path would not guard
+      the stale-container bug class.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          tmp="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/test_verify_deployed_versions.py?ref=afd754900dd572f7914e15e5611c8f5f7a6e71f1"
+          --jq .content | base64 -d > "$tmp" && grep -F -- 'def test_stale_container_goes_red' "$tmp"
+          && grep -F -- 'def test_exit_1_on_stale_revision' "$tmp" && grep -F -- 'def test_exit_0_on_revision_match'
+          "$tmp"
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. It asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the three entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14469-occ-infra-2273-rt6-readback' drift/dod_receipts/OMN-14469/dod-occ-self-commit/command.yaml
