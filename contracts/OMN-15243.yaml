@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15243"
+title: "Extend the no-raw-prod-bypass CI gate to stability-class raw-mutation recipes"
+summary: >-
+  OCC companion for OMN-15243. The OMN-15218 lane-deploy attribution record and fail-closed live-prod-grant
+  interlock guard only the sanctioned deploy path. A raw `docker tag`/`docker commit` retag, or a direct
+  force-recreate of the `omnibase-infra-stability-test` / `omnibase-infra-judge` compose projects, still
+  mutates the lane with zero attribution and zero interlock. This widens the existing prod-only matcher
+  in OmniNode-ai/omni_home:tests/test_no_raw_prod_bypass_policy.py to the stability-class governed lanes,
+  keeps the single `# raw-prod-bypass-ok:` escape marker, and removes the workflow `paths:` filter that
+  let a corpus-visible recipe skip the job. Net-surface: zero new gates, workflows, scripts, or markers
+  — one existing matcher widened.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      RED proven against exists-but-wrong: the pre-change matcher explicitly asserted stability lanes
+      were out of scope, and passed a seeded stability recipe.
+    command: "python3 -m pytest tests/test_no_raw_prod_bypass_policy.py -q"
+  - kind: "ci"
+    description: "Gate workflow green on the omni_home PR."
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omni-home-gate-red-then-green"
+    description: >-
+      RED→GREEN transcript. Step A: with a seeded un-annotated stability/judge recipe committed, the unmodified
+      prod-only gate reported `5 passed`. Step B: with the matcher extension applied and the same seed
+      present, `test_no_unannotated_raw_lane_bypass_in_corpus` failed listing the seeded retag, the seeded
+      stability force-recreate, and the seeded judge force-recreate. Step C: seed deleted, 8 pre-existing
+      forensic lines annotated, gate `6 passed`.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state,headRefName"
+  - id: "dod-omni-home-gate-green-on-200"
+    description: >-
+      Rule 11a proof run on .200 (stickybeatz-studio) against the patch-transferred worktree, PYTHONPATH
+      empty, patch sha256 verified equal on both hosts before and after transfer.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state,headRefName"
+  - id: "dod-omni-home-nonvacuous-green"
+    description: >-
+      Non-vacuous-green probe. Post-fix, a stability force-recreate appended to the tracked `README.md`
+      — a file OUTSIDE the workflow's former `paths:` filter — is flagged by the scan, which simultaneously
+      proves the extended matcher fires and that the removed `paths:` filter was a real hole.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "dod-omni-home-doctrine-coupling"
+    description: >-
+      Doctrine/mechanism coupling: `test_claude_md_doctrine_declares_mechanical_enforcement` now also
+      asserts CLAUDE.md cites OMN-15243 and names `omnibase-infra-stability-test`, so the written rule
+      cannot silently diverge from the matcher again.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state,headRefName"
+  - id: "occ-self-bind-pr-5186"
+    description: >-
+      OCC companion PR #5186 — self-bind for OMN-15243 (OMN-14650). Proves this contract + its receipts
+      landed on an OCC PR, which is what the downstream receipt gate resolves.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"

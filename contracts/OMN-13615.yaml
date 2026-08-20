@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13615"
+title: "feat(OMN-13615): migrate node_model_eval_orchestrator SEA->omnimarket canonical home"
+summary: >
+  WS-C Phase 3.2 of the SEA->canonical migration (epic OMN-13604). Greenfield ORCHESTRATOR node node_model_eval_orchestrator
+  in omnimarket that absorbs the scoring logic from the SEA eval/eval_runner.py and emits the canonical
+  ModelExperimentResult (OMN-13613, merged via omnibase_core #1346) -- not the SEA-local onex.evt.sea-eval.model-eval-completed.v1
+  schema. The node fans the same generation prompt to N LLM endpoints via an injectable ProtocolLlmEffectHandler
+  (DI fallback to HandlerLlmOpenaiCompatible); the orchestrator handler itself performs no network/disk
+  I/O. Each generation is scored by the deterministic validation gate (schema + syntax + security) ported
+  self-contained from the SEA validator, and the best model is selected by a weighted score quality_weight*schema
+  + cost_efficiency_weight*cost_efficiency. The weights live in THIS node's contract.yaml config (default
+  0.7 / 0.3), NOT the routing contract. The node emits onex.evt.omnimarket.model-eval-completed.v1 carrying
+  a ModelExperimentResult with experiment_type=MODEL_EVAL. All 4 archetype constraints met: ORCHESTRATOR,
+  handler-based, no I/O in handler, topics contract-sourced, boot-resolvable ctor, no Plugin* base. The
+  core pin is bumped to 6e26772 (#1346) so ModelExperimentResult resolves; version stays 0.46.0 within
+  the existing <0.47.0 range. The SEA eval/eval_runner.py deletion ships in the paired SEA PR after parity.
+  No envelope/contract-API change, no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      A failing-first golden-chain + unit suite proving the chain ModelModelEvalStart -> HandlerModelEvalOrchestrator.handle
+      -> ModelExperimentResult: emits the canonical experiment result (experiment_type=MODEL_EVAL, status
+      COMPLETED), weights resolved from contract config (not hardcoded), best model selected by weighted
+      score, endpoint failure -> zero score, and the deterministic validation gate (valid/missing-fields/syntax/hardcoded-path).
+      The onex run-node path resolves the packaged contract + topics + terminal_event.
+    command: "uv run pytest tests/test_golden_chain_model_eval_orchestrator.py tests/unit/nodes/node_model_eval_orchestrator/
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >
+      omnimarket product PR adds the node_model_eval_orchestrator ORCHESTRATOR (contract.yaml + handler
+      + models + golden-chain test + entry-point), absorbs the SEA eval scoring (deterministic validation
+      gate + weighted best-model selection), reads quality_weight/cost_efficiency_weight from this node's
+      contract config, delegates LLM I/O to an injectable effect handler, emits the canonical ModelExperimentResult
+      (OMN-13613), and bumps the core pin to 6e26772 (#1346). Full local verify passes (full omnimarket
+      suite green, mypy --strict clean, ruff clean, pre-commit clean on changed files, runtime import-check
+      clean, golden-chain-coverage gate PASS, boot-resolvable gate PASS).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13615/dod-omnimarket-pr/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13615/dod-omnimarket-pr/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13615/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR adds a new ORCHESTRATOR node + its handler/models/tests and a core pin
+      bump in omnimarket -- no envelope/contract-API change, no live-lane mutation. The orchestrator handler
+      performs zero live I/O (LLM inference delegated to an injectable effect handler; unit/golden paths
+      use a canned handler). No live deploy is performed by this PR. onex run-node resolves the packaged
+      contract + routing and dispatches over the bus (fails locally only at broker connect with no local
+      Kafka). The new node is picked up by a standard stability-test image rebuild when exercised on a
+      live lane later. The receipt check_value carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13615/dod-deploy-assessment/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13615/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13615/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13615 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13615/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13615/dod-occ-pr-self/command.yaml"

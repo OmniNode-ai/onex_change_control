@@ -1,0 +1,328 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13118"
+title: "fix(runtime): terminal-consumer consume-leg wedges under sustained multi-trial battery load (post-OMN-13012)"
+summary: >-
+  SIXTH distinct defect on the context-ROI experiment runtime consume leg, load-dependent and surfacing
+  only AFTER OMN-13012 (omnibase_infra PR #1969) closed the metadata-no-op assign race. OMN-13012 made
+  the narrow K>=2/single-task probe pass, but the full Exp 1 battery (K=10 x 8 tasks = 160 calls) STILL
+  WEDGED on the stability REBUILD-3 image (revision 7aa998bf7dd4): per-trial the COMPLETED-topic terminal
+  consumer never correlated; the runner logged 'wait failed ... topic=node-generation-failed.v1' with
+  an EMPTY exception every ~30s; context-roi-run-completed watermark FROZEN; node-generation-failed HWM
+  0; zero non-degenerate rows. Independently verifier-confirmed HALT_CONFIRMED (HALT_VERIFIER_SIGNOFF.md).
+  Root cause (omnibase_infra runtime, NOT the omnimarket handler — handler confirmed correct by the prior
+  two-strike diagnosis): HandlerContextRoiRunner opens ONE ephemeral group_id=None terminal consumer PER
+  terminal topic BEFORE publishing each generation command (subscribe-before-publish, OMN-13012/13038),
+  serially. The FAILED reply topic (onex.evt.omnimarket.node-generation-failed.v1) is only produced to
+  on contract_passed=False; in a battery where generations pass it has ZERO messages, so Redpanda (auto-create
+  on first produce) never advertises any partition for it. service_pattern_b_broker._assign_direct_terminal_partitions
+  then spins forcing metadata refreshes until the full 30s _DIRECT_TERMINAL_ASSIGN_TIMEOUT_CAP_SECONDS
+  cap and raises a bare TimeoutError (the empty-message 'wait failed'). Because that open is INLINE in
+  the per-trial pre-publish phase, EVERY trial blocks ~30s on the partition-less FAILED open before it
+  can correlate the COMPLETED terminal — a 160-trial battery needs >80 min and never completes in window.
+  Fix: a partition-less reply topic is a VALID steady state, not a 30s error. _assign_direct_terminal_partitions
+  now gives a bounded grace window (_DIRECT_TERMINAL_PARTITIONLESS_GRACE_SECONDS) for a topic that exists
+  but is slow to surface metadata; after it, the broker's answer is taken as authoritative — assign whatever
+  partitions exist (possibly none) and return promptly instead of burning the cap and raising. A consumer
+  with an empty assignment is positioned (seek_to_end is a no-op) and poll_direct_terminal_consumer treats
+  it as 'no terminal will arrive here' (sleeps out its own timeout, returns None) WITHOUT calling getone()
+  on an unassigned consumer (which would raise IllegalStateError). The COMPLETED-topic session, opened
+  separately and assigned its real partition, wins the cross-topic race and correlates fast.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on the omnibase_infra merge PR"
+    command: "gh pr checks"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-full-battery-repro"
+    description: >-
+      A NEW full-battery repro test in omnibase_infra reproduces the wedge RED then proves the fix GREEN.
+      tests/integration/test_terminal_consumer_battery_load_wedge.py drives the REAL TerminalEventConsumer
+      (the object the runtime injects as event_consumer) through the REAL open_direct_terminal_consumer
+      / poll_direct_terminal_consumer code path the way HandlerContextRoiRunner._run_trial does: open
+      BOTH terminal topics per trial, publish, race the COMPLETED wait — across K=10 trials over 2 cells
+      x 2 arms (40 trials). AIOKafkaConsumer is monkeypatched to a fake that faithfully models a never-written
+      FAILED reply topic (broker advertises NO partitions) and a fast generation (correlated COMPLETED
+      terminal published immediately). The assign cap is scaled to 1.5s so the per-trial cap-burn is observable
+      in a fast test. RED (fix reverted): all 40/40 trials each block ~one full assign cap (1.55s scaled
+      == 30s live) on the partition-less FAILED open before the COMPLETED terminal can correlate, proving
+      the >80 min / never-completes battery wedge. GREEN (fix applied): every trial returns the partition-less
+      FAILED open after the bounded grace, correlates its COMPLETED terminal, and the whole 40-trial battery
+      passes in ~9s with zero degenerate rows and both cells/arms advanced. The RED was verified by git-stashing
+      only the source fix and re-running (40/40 slow_trials RED), then restoring (GREEN) — the test is
+      genuinely gated on the source fix, not on test scaling.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-full-battery-repro/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-full-battery-repro/command.yaml"
+  - id: "dod-local-verify"
+    description: >-
+      Full local verification on the changed surfaces. ruff format + ruff check clean on service_pattern_b_broker.py
+      and the new integration test; mypy src/omnibase_infra/runtime/service_pattern_b_broker.py --strict
+      Success (no issues); the new battery repro + the OMN-13012 concurrent-assign-race test + the full
+      tests/unit/runtime/ suite pass (4883 passed, 5 skipped). No existing pattern-b / terminal consumer
+      test regressed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-local-verify/command.yaml" && grep
+          -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-local-verify/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      This onex_change_control OCC PR carries the central OMN-13118 contract and the dod-full-battery-repro
+      / dod-local-verify receipts that the omnibase_infra code PR Receipt-Gate resolves via Evidence-Source:
+      OCC#<this-pr> / Evidence-Ticket: OMN-13118 (self-binding OCC eligibility receipt).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-occ-pr-self/command.yaml" && grep
+          -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-occ-pr-self/command.yaml"
+  - id: "dod-seek-race-repro"
+    description: >-
+      STRIKE-THREE follow-up (omnibase_infra PR #1971): the consume-leg wedge PERSISTED on REBUILD-4 (revision
+      ab9d606d1, which contains PR #1970) because PR #1969 (set_topics no-op) and PR #1970 (partition-less
+      assign-cap) each fixed the ASSIGN phase, not the SEEK timing. Refined root cause, confirmed from
+      the live REBUILD-4 runner log (HALT_K10_WEDGE_PERSISTS.md): the COMPLETED terminal IS published
+      every trial (the cid that 'wait failed' in cycle N is the correlation_id published to COMPLETED
+      in cycle N-1), yet the matrix re-fires cell 1 forever. AIOKafkaConsumer.seek_to_end is LAZY — it
+      calls Fetcher.request_offset_reset(partitions, LATEST), which only marks the partition 'awaiting
+      reset'; the actual LATEST offset is resolved by a ListOffsets round-trip on the FIRST getone(),
+      AFTER the caller has published. With generation completing in ~1s (dispatch loop freed, OMN-13010),
+      the correlated COMPLETED terminal lands in the open()->poll gap, so the lazily-resolved LATEST position
+      is the high-water-mark AFTER the record and the poll reads PAST it — the trial never correlates.
+      Fix (service_pattern_b_broker.py): replace seek_to_end with a synchronous end_offsets() + seek()
+      pin (_pin_direct_terminal_end_offsets) in BOTH open_direct_terminal_consumer and RuntimePatternBBroker._dispatch_and_wait_with_direct_kafka_consumer,
+      so the read position is fixed at open() time, BEFORE the publish — the real subscribe-before-publish
+      guarantee. An empty assignment (partition-less reply topic, #1970) remains a no-op. NEW repro tests/integration/test_terminal_consumer_seek_reset_race.py
+      drives the REAL TerminalEventConsumer.open()/wait() the way HandlerContextRoiRunner._run_trial does
+      — open BOTH terminal topics per trial, publish the correlated COMPLETED terminal in the open->wait
+      gap, race the wait — across K=10 x 2 cells x 2 arms, with a fake that models seek_to_end FAITHFULLY
+      as a deferred LATEST reset (resolved to the live HWM on first poll). RED with the lazy reset (every
+      cell degenerate, COMPLETED terminal skipped); GREEN once the read offset is pinned synchronously.
+      RED verified by git-stashing ONLY src/omnibase_infra/runtime/service_pattern_b_broker.py and re-running.
+      The two prior consume-leg fakes were updated to model end_offsets/seek (they previously masked the
+      bug by making seek_to_end a synchronous exact snapshot).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml" &&
+          grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-seek-race-repro/command.yaml"
+  - id: "dod-subscription-flip-repro"
+    description: >-
+      STRIKE-FIVE follow-up (omnibase_infra PR #1972). The consume-leg wedge PERSISTED on REBUILD-5 (revision
+      cdf53d963f7b, which contains PR #1971) because #1969 (set_topics no-op), #1970 (partition-less assign-cap)
+      and #1971 (synchronous end_offsets+seek pin) each fixed the ASSIGN / SEEK phases, NOT the consumer-subscription
+      structure. Converged diagnosis (strikes 3+4, HALT_K10_WEDGE_PERSISTS.md + CONSUME_LEG_DECISION.md):
+      the runtime waited for each trial's terminal across TWO topics (node-generation-completed.v1 + node-generation-failed.v1)
+      using ONE ephemeral group_id=None AIOKafkaConsumer assigned BOTH topics' partitions. A single aiokafka
+      consumer holds ONE manual subscription; the live log captured the alternating 'Updating subscribed
+      topics' flip and a clean 1:1 cid pairing — the COMPLETED delivery window collapsed before surfacing
+      the correlated record. Fix (service_pattern_b_broker.py): RuntimePatternBBroker._dispatch_and_wait_with_direct_kafka_consumer
+      now opens ONE INDEPENDENT consumer per terminal topic via open_direct_terminal_consumer (each assigned
+      + offset-pinned at open() BEFORE publish) and awaits them CONCURRENTLY via asyncio.wait(FIRST_COMPLETED)
+      in a new _race_correlated_terminals helper; first correlated terminal wins, both torn down. No consumer
+      holds two subscriptions. The #1970 partition-less no-op and #1971 offset pin are preserved. NEW
+      repro tests/integration/test_terminal_consumer_subscription_flip_wedge.py drives the REAL RuntimePatternBBroker.dispatch_request
+      across K=10 x 2 cells x 2 arms, with a fake that models the flip HONESTLY (delivery faithful only
+      for a single-topic assignment; a consumer spanning both topics flips and DROPS the COMPLETED record).
+      RED genuineness: revert ONLY the source to the single-consumer-both-topics shape — the test hangs
+      past its @pytest.mark.timeout; GREEN with the independent-consumer fix in ~2.3s. The prior consume-leg
+      fakes masked this by collapsing both waits onto one fake consumer.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-subscription-flip-repro/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-subscription-flip-repro/command.yaml"
+  - id: "dod-runtime-deploy-strike5"
+    description: >-
+      Runtime-path change (src/omnibase_infra/runtime/service_pattern_b_broker.py) for the strike-5 independent-consumer
+      fix (#1972) — pre-deploy gate. Asserts the PRE-DEPLOY proof that authorizes queueing the fix for
+      a runtime rebuild: the subscription-flip repro is RED-then-GREEN and local verify is clean. It does
+      NOT assert the live acceptance: per the weekend standing orders the consume-leg wedge is declared
+      cleared ONLY by the LIVE K>=10 multi-cell context-ROI re-probe on the stability lane (operator-gated
+      REBUILD-6) — the explicit lesson of four prior RED->GREEN unit fixes that each wedged live. That
+      live reprobe is the deferred acceptance gate, operator-gated and tracked separately, NOT claimed
+      here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-runtime-deploy-strike5/command.yaml"
+          && grep -q 'rpk topic produce' "drift/dod_receipts/OMN-13118/dod-runtime-deploy-strike5/command.yaml"
+  - id: "dod-tierb-longlived-correlator"
+    description: >-
+      TIER B canonical redesign (omnibase_infra PR for OMN-13118, epic OMN-12525). After strike-5 (#1972
+      independent per-terminal-topic consumers) ALSO FAILED the LIVE K>=10 stability-lane battery with
+      the identical wedge signature, the B0 re-examination (CONSUME_LEG_REDESIGN_DESIGN.md) established
+      that the strike-5 fix was applied to the WRONG path (RuntimePatternBBroker._dispatch_and_wait_with_direct_kafka_consumer,
+      which the context-ROI runner does NOT execute — its live consume leg is TerminalConsumerSession.wait
+      via handler_context_roi_runner._await_first_terminal -> ThreadPoolExecutor), and the runner was
+      ALREADY using independent consumers. The true defect class is the PER-TRIAL EPHEMERAL runtime-resource
+      lifecycle: a brand-new OS thread + asyncio loop + AIOKafkaConsumer + AIOKafkaClient (full bootstrap/metadata/coordination)
+      built and torn down for EVERY (trial x terminal-topic) — up to 80/run, 320+/battery — racing a ~1s
+      generation, so the COMPLETED leg silently never delivers while only the empty-set FAILED leg times
+      out at the 30s assign cap. B1 first ran the §5.1 M1-vs-M2 probe (B1_M1_M2_PROBE_RESULT.md): the
+      mechanism is undistinguished offline, but the failure is in the per-trial lifecycle (live ~30s bound
+      = assign/start cap, not the 120s trial timeout). Fix (service_terminal_event_consumer.py): replace
+      the per-trial TerminalConsumerSession with ONE runtime-lifetime LongLivedTerminalCorrelator — one
+      consumer subscribed once to BOTH terminal topics, a single poll loop, demuxing terminals to waiting
+      trials by correlation_id via a correlation_id->Future registry. A trial registers its cid BEFORE
+      publish (subscribe-before-publish at the consumer level), then awaits its future. No per-trial consumer/assign/pin/thread/loop/client
+      to race — the entire timing-bug class is structurally removed rather than re-tuned (mirrors the
+      working long-lived node_generation_consumer; ARCH-002 runtime owns Kafka plumbing). The open(topic)/register(cid)/wait
+      interface is preserved; session.close() is a no-op (closing would reintroduce the teardown-races-fetch
+      class). NEW honest real-dispatch repro tests/integration/test_terminal_consumer_longlived_correlator.py
+      drives the REAL correlator the way HandlerContextRoiRunner._run_trial does across K=10 x 2 cells
+      x 2 arms and asserts exactly ONE consumer is built for the WHOLE battery, every gap-landed COMPLETED
+      terminal is demuxed, both cells/arms advance with zero degenerate rows. RED genuineness verified
+      by git-stashing ONLY src/omnibase_infra/runtime/service_terminal_event_consumer.py and re-running
+      (the old per-trial substrate has no register()/correlator API). The per-trial-substrate repros (battery_load_wedge,
+      seek_reset_race, concurrent_assign_race, subscription_flip_wedge) and the open-failure leak test
+      were DELETED — they model machinery that no longer exists. NOT THE ACCEPTANCE GATE: per the plan
+      the consume-leg wedge is declared cleared ONLY by the LIVE K>=10 multi-cell context-ROI reprobe
+      on the stability lane (operator-gated rebuild) — a green unit test is necessary, not sufficient.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-tierb-longlived-correlator/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-tierb-longlived-correlator/command.yaml"
+  - id: "dod-tierb-local-verify"
+    description: >-
+      Full local verification on the Tier B changed surfaces. mypy src/omnibase_infra/runtime/service_terminal_event_consumer.py
+      --strict Success (no issues); ruff format + check clean on the new module + new test + rewritten
+      injection test; pre-commit all hooks Passed on changed files (incl. ONEX Union Usage, AI-slop, SPDX).
+      811 passed across the terminal/pattern_b/wiring/delegation/invocation surfaces with no regression.
+      Full unit suite 20474 passed; the only two failures (migration vendored-tree drift; verification
+      CLI registration_only) are PRE-EXISTING on clean origin/dev (proven by git-stash), unrelated to
+      this change. The one change-induced failure (non-optional union count 156>154 from two runtime set
+      | operations the AST union validator counted) was fixed by rewriting as set.union()/[*..] — guard
+      back GREEN at 154.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-tierb-local-verify/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-tierb-local-verify/command.yaml"
+  - id: "dod-tierb-occ-pr-self"
+    description: >-
+      This onex_change_control OCC PR carries the central OMN-13118 contract (updated for the Tier B long-lived-correlator
+      redesign) and the dod-tierb-longlived-correlator / dod-tierb-local-verify receipts that the omnibase_infra
+      code PR Receipt-Gate resolves via Evidence-Source: OCC#<this-pr> / Evidence-Ticket: OMN-13118 (self-binding
+      OCC eligibility receipt). Single-ticket identity binding — bound to OMN-13118 under epic OMN-12525,
+      no duplicate ticket spawned.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-tierb-occ-pr-self/command.yaml" &&
+          grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-tierb-occ-pr-self/command.yaml"
+  - id: "dod-omnimarket-runner-pr"
+    description: >-
+      omnimarket PR #1212 (branch jonah/omn-13118-runner-register-order, base=dev, head cc1f658dbff07f20172a95ec5004c353866e09f6).
+      Runner half of the consume-leg closing pair: hoists register(correlation_id) to run on both terminal
+      sessions BEFORE the generation command publish, per the two-phase open -> register -> publish ->
+      wait contract. The always-on poll loop in the injected long-lived correlator reads the correlated
+      COMPLETED terminal during the publish -> generation -> wait window; with register() folded into
+      the post-publish wait() the cid was not in the pending registry when getone() read the terminal,
+      so the terminal was UNMATCHED-dropped. Idempotent (wait() re-registering the same cid is a no-op);
+      duck-typed (TerminalConsumerSessionLike does not declare register(); legacy/None sessions skip it).
+      Files: handler_context_roi_runner.py (hoist register before publish) + new test_register_before_publish.py
+      (register-before-publish ordering invariant). ruff clean; mypy --strict Success (no issues in 1
+      source file); the register-before-publish ordering test PASSES. The unit test guards only the ordering
+      invariant the live trace pinned; ACCEPTANCE is the live K>=10 gate (dod-live-gate), not this unit
+      test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-omnimarket-runner-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-omnimarket-runner-pr/command.yaml"
+  - id: "dod-omnibase-infra-correlator-pr"
+    description: >-
+      omnibase_infra PR #1975 (branch jonah/omn-13118-correlator-handoff-fix, base=dev, head fdc5f35b15d907817837898a7d7b7b16465d0393).
+      Correlator half of the consume-leg closing pair: LongLivedTerminalCorrelator._deliver resolves the
+      matched future IN PLACE (self._pending.get(cid) + future.set_result(body) — no pop on match) and
+      _wait OWNS removal (pops the cid in a finally on BOTH success and timeout). This closes the P_RESOLVE_BEFORE_AWAIT
+      race: the always-on poll loop typically matches the correlated terminal BEFORE the runner's wait()
+      attaches (publish -> generation -> wait latency ~28s observed live); with the old pop-on-match _deliver
+      the resolved future was removed the instant it matched, so the late _wait found nothing, created
+      a fresh unresolved future, and timed out. Idempotent under duplicate delivery via the existing future.done()
+      guard. Two-line load-bearing change in service_terminal_event_consumer.py (pop -> get in _deliver;
+      registry removal moved to _wait's finally). NO DIAG13118 instrumentation in this PR — clean fix
+      only. New regression test test_terminal_correlator_resolve_before_await.py pins the ordering (register
+      -> append terminal -> block until future done() -> THEN wait -> assert body), verified RED->GREEN.
+      ruff clean; mypy --strict Success (no issues in 1 source file); correlator + injection + longlived
+      suite 7 passed. ACCEPTANCE is the live K>=10 gate (dod-live-gate), not this unit test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-omnibase-infra-correlator-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-omnibase-infra-correlator-pr/command.yaml"
+  - id: "dod-live-gate"
+    description: >-
+      THE DECISIVE EVIDENCE — the LIVE K>=10 multi-cell context-ROI re-probe on the stability-test lane,
+      the acceptance gate the standing orders require (six+ prior RED->GREEN unit fixes each wedged live;
+      a green unit test is necessary, not sufficient). reprobe-K10-rebuild10 (2026-06-13T23:39Z, omnibase-infra-stability-test
+      :18085/:18086, projection-api :13002) VERDICT PASS: K=10/cell, tasks bool_flag + address_norm, arms
+      off + golden_exemplar = 4 cells = 40 trials. Both fixes live together (omnimarket cc1f658d runner
+      register-before-publish + omnibase_infra correlator resolve-in-place). All 40 trials' primary wait()
+      logged RESOLVED (rebuild-9 had RESOLVED=0 with 3 'no terminal event received' warnings; rebuild-10
+      had 0 warnings). Terminal context-roi-run-completed.v1 HWM advanced 22 -> 24. Projection total_rows
+      448 -> 488 (+40); rows_for_fresh_run_id = 40 via projection API (20 bool_flag + 20 address_norm,
+      40 distinct cids, sample final_success=True first_pass_success=True attempt_count=1). Aggregate
+      trace MATCHED=80, UNMATCHED=0, RESOLVED=40, trial-terminal TIMEOUT=0. (Residual TIMEOUT=39 / NO_PRE_REGISTER=40
+      are the benign second-redundant-waiter from the runner opening two sessions per trial sharing one
+      cid — reported, not suppressed.) Evidence bundle cited: docs/evidence/2026-06-12-weekend-pass/experiments/probe4-stability/reprobe-K10-rebuild10/FINDINGS.md.
+      HONEST PAIRING NOTE: the live-proven deploy commit 0d958ea45 carried DIAG13118 instrumentation alongside
+      the identical logical correlator fix; PR #1975 ships that same load-bearing change WITHOUT instrumentation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-live-gate/command.yaml" && grep -q
+          '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-live-gate/command.yaml" && grep
+          -q 'rows_for_fresh_run_id' "drift/dod_receipts/OMN-13118/dod-live-gate/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment (HONEST). The fix pair is PROVEN on the stability-test lane by the live K>=10
+      rebuild-10 PASS — that is the strongest possible acceptance proof. It is NOT yet deployed to the
+      dev lane: the stability-test lane (:18085/:18086) and the dev lane are distinct runtime lanes, and
+      the canonical-deploy step is a coordinated dev redeploy that lands both PRs (omnimarket #1212 +
+      omnibase_infra #1975) together. This receipt explicitly does NOT claim the fix is dev-deployed and
+      does NOT claim organic context-ROI rows are materializing on the dev lane. It asserts: (1) both
+      impl PRs are correct and green locally; (2) the pair is live-proven on the stability lane; (3) the
+      coordinated dev redeploy remains a separate operator-gated step. No banned bypass tokens.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "drift/dod_receipts/OMN-13118/dod-deploy-assessment/command.yaml" &&
+          grep -q '^ticket_id: "OMN-13118"$' "drift/dod_receipts/OMN-13118/dod-deploy-assessment/command.yaml"
+          && grep -q 'stability-test lane' "drift/dod_receipts/OMN-13118/dod-deploy-assessment/command.yaml"

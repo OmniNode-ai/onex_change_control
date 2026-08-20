@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13717"
+title: "[Bug] database_sweep discovers 0 tables (wrong/empty target DB)"
+summary: >-
+  Fix handler_database_sweep.py to route psql via docker exec into the lane's Postgres container instead
+  of connecting to a bare local unix socket (/tmp/.s.PGSQL.5432). On .201 runtime lanes there is no local
+  Postgres socket, so every probe failed with a socket error producing table_results=0 and migrations_current/pending/failed
+  all 0. Fix aligns with node_data_flow_sweep: run psql inside the lane's Postgres container via docker
+  exec (over ssh when a remote runtime host is configured). Also classifies ERROR and NO_TABLE migration
+  statuses as failed (previously counted as 0, hiding failures); AHEAD counts as pending. Host/container/pg-user/ssh-user
+  are env-overridable via overlay.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      PASS receipts bind targeted omnimarket unit-test evidence for the psql docker-exec routing fix and
+      migration bucket classification, plus deploy-gate assessment and OCC self-binding receipt.
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13717/dod-unit-tests/command.yaml && grep -q '^status:
+      PASS$' drift/dod_receipts/OMN-13717/dod-deploy-assessment/command.yaml && grep -q '^status: PASS$'
+      drift/dod_receipts/OMN-13717/dod-occ-self/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: >-
+      42 unit + integration + golden-chain tests pass for node_database_sweep after the fix (tests/unit/nodes/node_database_sweep/test_dsn_and_migration_buckets.py):
+      test_remote_lane_uses_ssh_docker_exec, test_local_lane_uses_docker_exec_no_socket, test_default_psql_never_bare_local_socket
+      assert argv is ssh+docker exec or local docker exec, never bare psql against the socket. test_table_discovery_with_injected_runner
+      verifies discovery returns tables with a working runner. test_error_and_no_table_count_as_failed
+      verifies exact live-receipt mix (4xERROR + 1xNO_TABLE) => failed=5. test_full_status_spread verifies
+      CURRENT->current, PENDING/AHEAD->pending, FAILED/NO_TABLE/ERROR->failed. Full suite: 10349 passed,
+      47 skipped. mypy --strict: clean. pre-commit: all hooks pass.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13717/dod-unit-tests/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-gate assessment for the runtime-path touch: handler_database_sweep.py is modified to route
+      psql via docker exec into the lane Postgres container. This is a bug fix (wrong connection target)
+      with proof via injected-runner unit tests. No live deploy, restart, broker topic, or .201 mutation
+      was performed pre-merge; the fix is safe to land and the deploy (docker exec routing) is exercised
+      by the automated tests via the injectable PsqlRunner seam. deploy-gate verdict: test-proven handler
+      fix, no live runtime mutation required before merge.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13717/dod-deploy-assessment/command.yaml &&
+          grep -q 'docker exec' drift/dod_receipts/OMN-13717/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13717 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13717/dod-occ-self/command.yaml"

@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14399"
+title: "fix(OMN-14399): run repo-root Python tests unconditionally in CI"
+summary: >-
+  omninode_infra PR #588 adds a repo_scripts_tests CI job that runs `uv run pytest tests/ -v --tb=short`
+  from the repo root unconditionally (no if: guard, no paths: filter) on every push/pull_request/merge_group.
+  Prior to this fix, the entire repo-root tests/ tree (84 tests, including tests/k8s/ prod-promotion-grant
+  tests and tests/scripts/ grant-validator + selector-regression tests) had never once run in CI: both
+  existing pytest jobs are hardcoded to working-directory docker/onex-api, and the changes job's python
+  path filter only recognizes docker/onex-api/** as "python changed", so a PR touching only repo-root
+  scripts/ or tests/ skipped every Python CI job while quality_gate/tests_gate tolerated the skip as PASS.
+  ci_summary now depends on repo_scripts_tests and rejects any non-"success" result (including skipped)
+  with FAILED=true, fail-closed. The change is additive to CI wiring only; it does not touch detect_test_paths.py
+  or test_selection_adjacency.yaml (the onex-api-scoped selector), which remain intact.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omninode-infra-pr-588-head-7df817c0"
+    description: >-
+      Independent adversarial verification (verifier != implementer) of omninode_infra PR #588 at head
+      7df817c0048cd762da5d9a2e3b0d1b4146c8cead. Confirmed behaviorally, not by existence probe: (1) the
+      new repo_scripts_tests job actually executed in CI and passed, raw job log shows "89 passed in 2.31s"
+      (84 pre-existing + 5 new structural tests); (2) the job carries no if: guard and no paths: filter
+      in the committed ci.yml diff, so it cannot silently skip on a future PR; (3) ci_summary's bash was
+      read directly and evaluates `[ "${REPO_SCRIPTS_TESTS}" = "success" ]` — an equality check, not an
+      inequality against failure — so skipped/cancelled/empty all fall through to FAILED=true, genuinely
+      fail-closed; (4) git diff --stat confirms only ci.yml and the new test file changed — detect_test_paths.py
+      and test_selection_adjacency.yaml are untouched, and tests/scripts/test_smart_test_selection.py
+      (13 tests) is present and green in the same CI run, proving the onex-api selector's narrowing survived;
+      (5) RED->GREEN was independently reproduced (not the implementer's stash claim) by reverting ci.yml
+      alone to its pre-fix origin/dev state in an isolated worktree — all 5 structural assertions in tests/scripts/test_ci_repo_scripts_gate.py
+      failed with real assertion errors (missing job key, KeyError, missing needs entry, missing env var)
+      — then restoring the fix and rerunning the full repo-root suite locally: 89 passed in 7.33s, matching
+      CI.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14399/dod-omninode-infra-pr-588-head-7df817c0/command.yaml
+          && grep -q '^pr_number: 588$' drift/dod_receipts/OMN-14399/dod-omninode-infra-pr-588-head-7df817c0/command.yaml
+          && grep -q '7df817c0048cd762da5d9a2e3b0d1b4146c8cead' drift/dod_receipts/OMN-14399/dod-omninode-infra-pr-588-head-7df817c0/command.yaml
+  - id: "dod-deploy-assessment-head-7df817c0"
+    description: >-
+      Deploy-surface assessment for omninode_infra PR #588 head 7df817c0048cd762da5d9a2e3b0d1b4146c8cead:
+      the diff is limited to .github/workflows/ci.yml (one new CI job plus ci_summary wiring) and a new
+      test file under tests/scripts/. It does not register a new service deployment, mutate runtime configuration,
+      perform a deploy or restart, change topics, add a migration, or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14399/dod-deploy-assessment-head-7df817c0/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14399/dod-deploy-assessment-head-7df817c0/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14399 central contract and PASS
+      receipts for omninode_infra PR #588 head 7df817c0048cd762da5d9a2e3b0d1b4146c8cead. The receipt binds
+      the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14399/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14399-occ-pr588' drift/dod_receipts/OMN-14399/dod-occ-self-commit/command.yaml

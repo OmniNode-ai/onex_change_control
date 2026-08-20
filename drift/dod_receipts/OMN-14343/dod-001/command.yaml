@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14343"
+evidence_item_id: "dod-001"
+check_type: "command"
+check_value: "bash /private/tmp/claude-501/scratchpad/poller_under_test.sh (scripted fake gh harness,
+  6 cases) + gh pr checks 1709 + gh run view --log (live)"
+status: PASS
+run_timestamp: "2026-07-10T22:07:29Z"
+commit_sha: c5a47c5765e6bd21cf7890682a5029d140b43ad1
+runner: "claude-opus-4-8"
+verifier: "occ-independent-verify"
+pr_number: 1709
+probe_command: >-
+  gh pr diff 1709 --repo OmniNode-ai/omnimarket; git show origin/jonah/omn-14343-occ-preflight-poller-backoff:.github/workflows/*.yml
+  (all 33 changed files, pairwise diffed after normalizing the one documented ci.yml wording variant);
+  python3 -c "import yaml; yaml.safe_load(open(f))" on all 33; bash -n on the extracted poller script
+  per file; scripted fake-gh harness driving the exact loop body verbatim for 6 cases (immediate success,
+  rate-limited-twice-then-success, genuine failure, genuine cancelled, non-rate-limit 404, always-empty-conclusion
+  timeout, persistent-rate-limit-until-deadline); gh pr checks 1709 --repo OmniNode-ai/omnimarket; gh
+  run view --log on occ-preflight / eligibility and one OCC Preflight Dependency poller instance.
+probe_stdout: |
+  33/33 files identical after normalizing ci.yml's "heavy CI" vs the other 32's "this workflow"
+  wording (documented in the PR body); zero other divergence. YAML valid on 33/33. bash -n clean
+  on 33/33.
+  Case (a) immediate success: "OCC preflight passed"; exit 0.
+  Case (b) 403 x2 then success: "backing off 5s." then "backing off 10s." then "OCC preflight
+  passed"; exit 0; elapsed 19s.
+  Case (c1) genuine failure: "OCC preflight concluded failure; refusing to start this workflow.";
+  exit 1; elapsed 5s (jitter only, no backoff).
+  Case (c2) genuine cancelled: same pattern; exit 1; elapsed 12s.
+  Case (d) non-rate-limit 404: "gh api call failed (non-rate-limit): gh: Not Found (HTTP 404)";
+  exit 1 on first call, not retried.
+  Case (e) always-empty, deadline=15s: "Timed out waiting for occ-preflight / eligibility"; exit 1;
+  elapsed 32s (never 0).
+  Case (f) always-rate-limited, deadline=20s: backoff 5s -> 10s -> 20s observed (doubling to 60s
+  cap per the ternary formula), then "Timed out"; exit 1; elapsed 43s; no infinite loop.
+  Live gh pr checks 1709: all 33 "OCC Preflight Dependency" checks fail in 11-48s (never the old
+  60-iteration/~10min hang pattern); occ-preflight / eligibility fails in 7s with
+  "OCC PREFLIGHT FAILED: PR body is missing required 'Evidence-Source:' line."
+  Live run log (auto-merge.yml poller, run 29126380733 job 86472763022): "Waiting for occ-preflight
+  / eligibility to post..." then "OCC preflight concluded failure; refusing to start heavy CI." then
+  exit 1 -- confirms the genuine-failure fail-fast path fires correctly in production, no rate-limit
+  misfire.
+actual_output: >-
+  PASS: all 33 workflow files received the identical hardening patch (one documented, intentional wording
+  variant). Enforcement is fully preserved across 6 adversarial cases including two forms of wall-clock
+  timeout (empty-conclusion and persistent-rate-limiting) -- the fix cannot convert a real failure into
+  a false pass and cannot hang indefinitely. Live production behavior on #1709 itself confirms the fail-fast
+  path: its own genuinely-failing occ-preflight (missing Evidence-Source, the exact gap this companion
+  closes) is correctly propagated as a fast failure by all 33 pollers with zero rate-limit misfire.
+exit_code: 0
+branch: "jonah/omn-14343-occ-preflight-poller-backoff"
+contract_sha256: "sha256:4ee37a597e1b906a2f259936d69558215e4c0d1bf730a73fde4301ffc327867a"

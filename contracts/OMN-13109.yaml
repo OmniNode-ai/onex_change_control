@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13109"
+title: "Runner-fleet monitor: silent-wedge + crash-loop detection"
+summary: >
+  Adds silent-wedge and crash-loop-on-restart detection to docker/runners/runner-monitor.sh. The legacy
+  monitor only checked container Up(healthy) + runner online, both of which stay TRUE for a silently-wedged
+  runner (live Runner.Listener, connected long-poll, but not pulling queued jobs). The fix cross-references
+  the GitHub runner busy field against the oldest queued job age for watched self-hosted labels (online
+  + busy=0 while a job has been queued past WEDGE_QUEUE_AGE_SECONDS => wedged) and flags crash-loops via
+  climbing RestartCount or repeated entrypoint re-registration log markers. Both fire Slack alerts with
+  a SAFE remediation recipe (force-recreate of named services only, freshly minted token, detached, hard
+  time limit; NEVER docker restart, NEVER an empty service filter). Auto-bounce is gated OFF by default
+  — the script stays observe-and-alert. Write + test + PR-only: the live .201 fleet was read-only inspected
+  and the new script was NOT deployed to the live monitor.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Behavioral tests drive the real runner-monitor.sh end-to-end against PATH-injected mock
+      docker/curl/gh/date and assert on the JSON state file (no Python re-implementation)."
+    command: "uv run pytest tests/unit/observability/runner_health/test_runner_monitor_wedge_detection.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2084"
+    description: "omnibase_infra PR #2084 adds the silent-wedge + crash-loop detection to runner-monitor.sh
+      and the end-to-end behavioral test suite."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13109/dod-omnibase-infra-pr-2084/command.yaml"
+  - id: "dod-wedge-detection-tests"
+    description: "Behavioral suite drives the real runner-monitor.sh; the core proof test asserts a wedge
+      the legacy logic passed is now flagged, plus busy/young-queue negatives and crash-loop positives."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13109/dod-wedge-detection-tests/command.yaml"
+  - id: "dod-deploy-no-live-fleet-mutation"
+    description: "Live .201 runner fleet was read-only inspected; no docker restart, force-recreate, token-mint,
+      or deploy of the new script was performed before merge."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13109/dod-deploy-no-live-fleet-mutation/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "OCC self-binding receipt for the central evidence PR carrying the OMN-13109 contract
+      and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13109/dod-occ-pr-self/command.yaml"

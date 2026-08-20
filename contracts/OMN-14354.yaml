@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14354"
+title: "feat(OMN-14354): coverage-guided adequacy receipt + fail-closed uncovered-waiver"
+summary: >-
+  omnibase_core PR #1426 lands scripts/ci/adequacy_receipt.py — the coverage-guided compute-golden adequacy
+  receipt (greedy branch-coverage-maximizing input selection, provenance stamping, deny-by-default scrub,
+  and a fail-closed ModelAdequacyReceipt whose model_validator enforces the uncovered-waiver invariant)
+  — plus tests/unit/canary/test_adequacy_receipt.py. This is the load-bearing safety artifact the canonical-shape
+  ratchet-gate (OMN follow-up) consumes so that "canonical" means coverage-measured. The PR also carries
+  the compute-golden primitive + canary (verified under OMN-14353). Scripts + tests only; no runtime node
+  handler, no deploy scope.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_core-pr-1426"
+    description: >-
+      Independent adversarial verification against omnibase_core PR #1426 head 54b7bb3710a84a8b92332fd40f66f3636356118e
+      in an isolated detached worktree with PYTHONPATH cleared. Fail-closed uncovered-waiver invariant
+      (ModelAdequacyReceipt._check) verified on all four canonical cases: below-target + NO waiver ->
+      REJECTED ("meets_target=False requires an explicit uncovered_waiver"); above-target + waiver present
+      -> REJECTED ("uncovered_waiver forbidden when meets_target=True"); above-target + no waiver -> accepted;
+      below-target + waiver -> accepted. The hardening guard also rejects the degenerate meets_target=True
+      with selected_count==0 (coverage cannot be certified over zero inputs). Stale-handler detection:
+      handler_module_sha256 is deterministic and byte-sensitive — a one-byte handler change yields a different
+      hash, so a receipt pinning an old hash is detectably stale (the actual rejection is the consuming
+      ratchet-gate's job; the receipt is the tamper-evident data). Provenance present: recorded_at (UTC
+      iso), per-input canonical sha256 (order-independent), handler_module_sha256. Deny-by-default scrub
+      redacts secret/token/password/api_key/... values at every dict depth (nested + list) while preserving
+      non-sensitive keys. The 9 tests genuinely exercise all of the above (waiver both directions, degenerate-zero,
+      scrub-deep, input-hash-order-independence, handler-hash-file-match, greedy selection drops redundant
+      candidates, and two end-to-end build_receipt fail-closed cases); 9 passed. ruff clean; mypy --strict
+      clean on adequacy_receipt.py. MEDIUM FINDING (adversarial probe beyond the stated criteria; non-blocking,
+      documented for follow-up): _check enforces the waiver<->meets_target consistency but does NOT verify
+      meets_target == (branch_coverage_pct >= coverage_target), so a hand-built/persisted receipt with
+      branch_coverage_pct=10, coverage_target=80, meets_target=True, selected_count=1, uncovered_waiver=None
+      is ACCEPTED — the fail-closed guarantee trusts the meets_target bool rather than deriving it. build_receipt
+      always sets meets_target correctly, so the honest flow is safe, but the consuming ratchet-gate MUST
+      re-derive meets_target from pct/target (or _check should add the one-line cross-check) so a forged
+      receipt cannot certify a below-target node.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14354/dod-omnibase_core-pr-1426/command.yaml
+          && grep -q '^pr_number: 1426$' drift/dod_receipts/OMN-14354/dod-omnibase_core-pr-1426/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14354 contract and PASS
+      receipt for omnibase_core PR #1426, binding itself to occ-preflight by commit_sha (contract commit
+      C1), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14354/dod-occ-self/command.yaml

@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13446"
+title: "Phase 5 — Re-point omnimarket to core RuntimeLocal via git-rev; widen core pin <0.47.0; add core-only-install
+  CI gate"
+summary: >-
+  Phase 5 of the local-first runtime re-convergence (epic OMN-13442). Re-points omnimarket onto the core-resident
+  RuntimeLocal that Phase 1b (OMN-13444 / core #1296, merged SHA db7f341) relocated into omnibase_core.runtime
+  + omnibase_core.protocols.runtime, and that Phase 3a (OMN-13445) deleted from omnibase_infra. The core
+  dependency pin is widened (>=0.45.0,<0.46.0 -> >=0.45.0,<0.47.0) and [tool.uv.sources] / [tool.uv] override-dependencies
+  rev is set to the Phase-1b merged SHA db7f341 so omnibase-core resolves to 0.46.0 in uv.lock for end-to-end
+  proof without a PyPI mint (OMN-13447 PyPI mint is escalated on a credential blocker). The tests/runtime_local_compat.py
+  core fallback is corrected to import LocalRuntimeBusAdapter directly from omnibase_core.runtime.runtime_local_adapter
+  (core exports the canonical class name; the prior HandlerBusAdapter alias never existed in core). omnimarket
+  has ZERO RuntimeLocal-symbol imports of the now-deleted infra runtime paths, so no source repoint of
+  the kind is required; the 123/253 omnibase_infra import lines are explicitly OUT OF SCOPE here (separate
+  B2A/B/C decouple epic, OMN-13449/13450/13451). ADDS a REQUIRED core-only-install CI gate: a clean venv
+  with omnibase-infra UNINSTALLED installs omnibase-core ONLY from the pinned rev, asserts omnibase_infra
+  is genuinely absent, asserts `import omnibase_core.runtime` exposes RuntimeLocal resolving from an omnibase_core.*
+  module, and runs the in-memory RuntimeLocal harness (node_merge_sweep_compute) to COMPLETED with the
+  core-resident EventBusInmemory (zero infra). Wired into the ci-summary aggregator (Rule 5: enforcement,
+  not detection). This OCC PR carries the central contract consumed by the omnimarket PR Receipt Gate
+  via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The new core-only-install guarantee holds with omnibase-infra UNINSTALLED: a clean core-only venv
+      (omnibase-core installed from the pinned rev db7f341, no infra) asserts omnibase_infra is genuinely
+      absent, imports omnibase_core.runtime exposing RuntimeLocal resolving from omnibase_core.runtime.runtime_local,
+      and runs the in-memory RuntimeLocal harness against node_merge_sweep_compute to COMPLETED with the
+      core-resident EventBusInmemory — proving omnimarket's local runtime needs ONLY omnibase_core. Verified
+      by running scripts/ci/core_only_install_harness.py in a core-only venv.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13446/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Static + full-suite quality gates green on the omnimarket worktree with the widened core pin: uv.lock
+      advanced omnibase-core 0.45.0 (8a53a063) -> 0.46.0 (db7f341); uv run ruff check/format src/ tests/
+      clean; uv run mypy src/omnimarket/ --strict succeeds (no issues in 2459 source files); the full
+      pytest suite (uv run pytest tests/ -q -m "not kafka", NO -k filter) passes; the new core-only-install
+      job is wired into the required ci-summary aggregator. In the full env the compat shim still resolves
+      RuntimeLocal via the still-pinned infra (decouple is the separate B2A/B/C epic) while the new gate
+      independently proves the core-only path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13446/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is a dependency-pin widen + uv.lock refresh + a test-only compat
+      fallback fix + a NEW read-only CI gate (a clean-venv import/harness proof). It contains NO runtime
+      deploy, NO migration, NO REST surface, and NO live-lane mutation. It only TIGHTENS the platform
+      (adds a required guarantee that the local runtime installs core-only). Phase 7 (OMN-13448, B3 gateway
+      reconcile) is the explicit STOP gate before any prod/stability deploy; nothing in this PR touches
+      a live lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13446/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13446.yaml consumed
+      by the omnimarket PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves the
+      contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13446\"$' contracts/OMN-13446.yaml"

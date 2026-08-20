@@ -1,0 +1,179 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15535"
+title: "SubprocessDelegationCliRunner drops stdout on CLI failure — receipt contract for the already-merged
+  steel fix (false-Backlog reconciliation)"
+summary: >-
+  OMN-15535 is a false-Backlog ticket, not unbuilt work. The defect — `SubprocessDelegationCliRunner.run()`
+  never reading `completed.stdout` on a non-zero `onex` CLI exit, so `--output receipt` mode's `ModelSkillResult`
+  diagnostic (the delegation quality gate's `SCHEMA_VIOLATION` detail) was silently DROPPED rather than
+  merely truncated — was fixed on jonahgabriel/steel_onslaught `main` in PR #239, squash merge commit
+  4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5, merged 2026-07-30T19:59:14Z, while the Linear ticket held
+  a single Backlog stateHistory entry throughout. The PR is titled for OMN-15522 and carries no `Closes`
+  line, which is exactly why every "In Review + merged PR" closeout sweep is structurally blind to it
+  (0 Linear attachments). This contract is the receipt surface for the dod_verify path; it makes no status
+  change and adjudicates nothing beyond the four acceptance criteria named below. Distinct from OMN-15240,
+  which fixed the STDERR masking (double truncation) and never touched stdout. Every check is pinned to
+  the immutable merge SHA, is hosted-runnable, and was executed GREEN at authoring time, then RED-proven
+  by repointing the pinned ref at the merge commit's first parent.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      steel PR #239 is merged on jonahgabriel/steel_onslaught main at squash commit 4bae73ea, and the
+      post-merge main CI run on that lineage is green.
+    command: "gh pr view 239 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+  - kind: "manual"
+    description: >-
+      Immutable GitHub content probes bind each acceptance criterion to steel merge SHA 4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5.
+    command: "See drift/dod_receipts/OMN-15535/dod-omn15535-*/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15535-pr-239-merged-at-4bae73ea"
+    description: >-
+      Binding item. steel PR #239 is MERGED with merge commit exactly 4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5.
+      State and SHA are asserted together in a single equality so closed-unmerged, still-open, and re-landed-elsewhere
+      each yield a mismatch. This establishes binding, not correctness — the substantive proof is the
+      four AC items below.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          state="$(gh pr view 239 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")')" && test "$state" = "MERGED 4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5"
+  - id: "dod-omn15535-bounded-stdout-tail-in-message"
+    description: >-
+      AC1 — a non-zero CLI exit with a nonempty stdout surfaces a BOUNDED stdout tail in the raised error's
+      message. Asserted at the exact raise site in `src/steel_onslaught/llm/client_delegation.py` at the
+      merge SHA: the message is built as the pre-existing stderr-tail f-string PLUS a conditional stdout
+      suffix `+ (f" | stdout: {completed.stdout[-2000:]}" if completed.stdout else "")`. The conditional
+      is load-bearing and asserted verbatim rather than merely grepping for the word stdout: it is what
+      preserves the OMN-15240 message shape for a stderr-only failure (AC3) while adding the stdout channel.
+      A regression that drops the suffix, or that appends an UNBOUNDED `completed.stdout`, fails this
+      check.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5' --jq .content | base64 -d > "$f" && grep -qF '+ (f" | stdout: {completed.stdout[-2000:]}" if completed.stdout else ""),' "$f" && grep -qF 'f"onex delegation CLI exited {completed.returncode}: "' "$f" && rm -f "$f"
+  - id: "dod-omn15535-full-unsliced-stdout-field"
+    description: >-
+      AC2 — the COMPLETE, unsliced stdout is available as a structured field on `LlmTransportError`, mirroring
+      the existing stderr field's unsliced-preservation guarantee. Three legs, all at the merge SHA: the
+      raise site passes `stdout=completed.stdout,` (and NOT a `[-2000:]`-sliced value — the negative leg
+      is the precise discriminator between "the message reads nicely" and "the persisted record retains
+      the diagnosis"); `src/steel_onslaught/llm/schemas.py` declares the keyword-only parameter `stdout:
+      str | None = None,` on `LlmTransportError.__init__`; and that constructor assigns `self.stdout =
+      stdout`. Declaring the parameter without assigning it would leave the field permanently None, so
+      both source legs are required.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && g="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5' --jq .content | base64 -d > "$f" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/schemas.py?ref=4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5' --jq .content | base64 -d > "$g" && grep -qF 'stdout=completed.stdout,' "$f" && ! grep -qF 'stdout=completed.stdout[-2000:],' "$f" && grep -qF 'stdout: str | None = None,' "$g" && grep -qF 'self.stdout = stdout' "$g" && rm -f "$f" "$g"
+  - id: "dod-omn15535-omn15240-stderr-contract-unchanged"
+    description: >-
+      AC3 — the OMN-15240 behaviour (full unsliced `stderr`, `argv`, `exit_code`) is unchanged by this
+      fix. Asserted structurally at the raise site (all three keyword arguments still passed unsliced)
+      AND behaviourally by the continued presence of OMN-15240's own regression test `test_nonzero_exit_attaches_full_argv_exit_code_and_stderr`,
+      plus the new empty-stdout test that proves a stderr-only failure keeps its prior message shape (no
+      dangling `| stdout:` suffix). Together these are what make "additive, not a rewrite" falsifiable
+      rather than asserted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && t="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/client_delegation.py?ref=4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5' --jq .content | base64 -d > "$f" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/llm/test_client_delegation_omn15159.py?ref=4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5' --jq .content | base64 -d > "$t" && grep -qF 'argv=argv,' "$f" && grep -qF 'exit_code=completed.returncode,' "$f" && grep -qF 'stderr=completed.stderr,' "$f" && grep -qF 'def test_nonzero_exit_attaches_full_argv_exit_code_and_stderr() -> None:' "$t" && grep -qF 'def test_nonzero_exit_with_empty_stdout_omits_the_stdout_message_suffix_omn15535() -> None:' "$t" && rm -f "$f" "$t"
+  - id: "dod-omn15535-truncation-budget-test"
+    description: >-
+      AC4 — a test proves the stdout tail survives a downstream display-truncation budget, the same way
+      OMN-15240's test proves it for stderr. Both new tests are asserted by full signature at the merge
+      SHA: `test_nonzero_exit_stdout_tail_survives_a_downstream_truncation_budget_omn15535` (the budget
+      leg) and `test_nonzero_exit_attaches_full_stdout_alongside_stderr_omn15535` (the unsliced-field
+      leg). These tests are inside the whole-suite `python-test` job that runs `uv run pytest -m "not
+      live" --strict-markers -v` on this lineage, so their presence is a presence-AND-execution claim,
+      not a file-exists claim.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          t="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/llm/test_client_delegation_omn15159.py?ref=4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5' --jq .content | base64 -d > "$t" && grep -qF 'def test_nonzero_exit_stdout_tail_survives_a_downstream_truncation_budget_omn15535() -> None:' "$t" && grep -qF 'def test_nonzero_exit_attaches_full_stdout_alongside_stderr_omn15535() -> None:' "$t" && rm -f "$t"
+  - id: "occ-self-bind-pr-5756"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15535 to its OCC evidence PR #5756 so occ-preflight
+      eligibility can resolve a PASS receipt for this ticket against this PR. It adjudicates nothing about
+      the work and flips no Linear status; the falsifiable evidence is the merge-SHA-pinned items above.
+      Mirrors the occ-self-bind-pr-5544 / occ-self-bind-pr-5752 precedent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5756 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omn15535-pr-239-merged-at-4bae73ea-guardcompat"
+    description: >-
+      Executor-compatibility correction of the binding item above, APPENDED under OCC append-only doctrine
+      rather than edited in place: a merged dod_evidence entry is immutable and its receipt pins the entry
+      hash, so an in-place rewrite is rejected by validator_occ_append_only and invalidates the receipt
+      binding. Same assertion, same merge SHA, tokenizer-safe shape. The superseded original embedded
+      the jq program .state + " " + (.mergeCommit.oid // "none") inside a double-quoted command substitution;
+      node_dod_verify shape-guards a check_value BEFORE executing it by tokenizing with shlex.split, which
+      is not $()-aware, so the jq program's inner double quotes closed the outer one and the guard landed
+      on the fragment " + (.mergeCommit.oid // none)')" — that fragment contains a slash, so the guard
+      took its relative-script-path branch, found no executable, and returned INVALID_CHECK_VALUE_NOT_A_COMMAND
+      without ever running the command. That was a FALSE RED against a command that exits 0 in a real
+      shell, not a failed proof; the underlying binding fact never changed. This replacement splits the
+      single two-field query into two single-field queries so each --jq filter is a bare path expression
+      carrying no quote characters, leaving test as the first shlex token. Semantics are preserved exactly:
+      BOTH the state MERGED AND the exact merge SHA 4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5 are asserted,
+      so closed-unmerged, still-open, and re-landed-elsewhere each still yield a mismatch. Authorized
+      as a correction (not a peer-evidence edit) by operator ruling 2, ROLLING_WORK_LEDGER 2026-07-31T20:12:22Z.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15535-pr-239-merged-at-4bae73ea"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 239 --repo jonahgabriel/steel_onslaught --json mergeCommit --jq .mergeCommit.oid)" = "4bae73ea51a4f3d42d24ccdcaf68d9ab61d1a9a5" && test "$(gh pr view 239 --repo jonahgabriel/steel_onslaught --json state --jq .state)" = "MERGED"
+  - id: "occ-self-bind-pr-5760"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15535 to OCC evidence PR #5760 — the append-only
+      supersession PR that corrects the executor-incompatible binding check_value — so occ-preflight eligibility
+      can resolve a PASS receipt for this ticket against THIS PR. The pre-existing occ-self-bind-pr-5756
+      stamp binds the earlier PR and is left untouched; both stand, since a ticket may be bound by more
+      than one OCC PR over its life. It adjudicates nothing about the work and flips no Linear status;
+      the falsifiable evidence is the merge-SHA-pinned items above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5760 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "occ-self-bind-pr-5761"
+    description: "Binding stamp: binds OMN-15535 to OCC companion PR #5761."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5761 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "occ-self-bind-pr-5779"
+    description: >-
+      Binding stamp: binds OMN-15535 to OCC companion PR #5779, which carries the nine net-new *.supersede.0001.yaml
+      receipt-supersession records that repair the dead OCC#5763 bindings and the OMN-15535 stale merge-SHA
+      citation. Falsifiable, not a bare existence probe: the check asserts that PR #5779 carries exactly
+      nine files whose names end in command.supersede.0001.yaml, so a PR that dropped or padded that set
+      fails.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 5779 --repo OmniNode-ai/onex_change_control --json files --jq .files[].path | grep -c command.supersede.0001.yaml)" = 9

@@ -1,0 +1,153 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14490"
+title: "OCC companion for omnimarket#1732 — node_projection_registration consumes the canonical ModelNodeIntrospectionEvent
+  instead of a slim extra=ignore copy"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket#1732 (OMN-14490, landed together with its sibling
+  OMN-14506 — same file, same handler, same defect class). node_projection_registration declared its input_model
+  / handler event_model as a LOCALLY-REDEFINED ModelNodeIntrospectionEvent embedded in handler_projection_registration.py
+  — extra="ignore", all-optional — while the producer (omnibase_infra MixinNodeIntrospection) publishes
+  the canonical, extra="forbid" omnibase_infra.models.registration.ModelNodeIntrospectionEvent on the
+  same live topic onex.evt.platform.node-introspection.v1. Because the consumer copy was extra="ignore",
+  every producer field it did not declare — endpoints, declared_capabilities, discovered_capabilities,
+  contract_capabilities, current_state — was SILENTLY DROPPED on every message: no error, no DLQ, green
+  tests, and a node_service_registry projection durably missing capability/endpoint/FSM-state data for
+  every node in the cluster. This is the OMN-14208 disease: a declared seam (event_model) never matched
+  field-by-field against the real payload. The fix imports the canonical producer model (market is the
+  TOP layer — compat < core < spi < infra < market — so importing infra is legal), deletes the slim copy,
+  repoints contract.yaml input_model/event_model at the canonical module, and persists the full model_dump()
+  into the metadata JSONB. Both consumer paths are fixed: HandlerProjectionRegistration AND the sibling
+  RegistrationProjectionRunner (the live Kafka->Postgres projector, which dropped the same fields via
+  raw dict .get() chains). The evidence below is product-observing (reads the omnimarket PR head directly)
+  plus an independent RED-then-GREEN reproduction of the new cross-boundary seam suite.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket#1732 head consumes the canonical omnibase_infra ModelNodeIntrospectionEvent,
+      deletes the slim extra=ignore copy, and persists the previously-dropped rich fields — proven by
+      a cross-boundary seam test that drives the producer's real ModelEventEnvelope wire dump through
+      the consumer's real unwrap_envelope decode seam into BOTH consumer paths, reproduced RED (pre-fix)
+      then GREEN (post-fix)."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1732-slim-introspection-copy-deleted"
+    description: >-
+      Product-observing check against omnimarket#1732 head 96438e9531b6da07e16852cf45a5aaab443e2c0e. Reads
+      handler_projection_registration.py from the PR head and asserts the locally-redefined slim ModelNodeIntrospectionEvent
+      class is GONE and the module now imports the canonical producer model from omnibase_infra.models.registration.model_node_introspection_event.
+      Also asserts the module strips the transport-injected `_`-prefixed keys before validation — load-bearing,
+      because the canonical model is extra="forbid" while unwrap_envelope attaches `_envelope` to every
+      decoded payload, so without the strip the consumer would raise on every single message.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_projection_registration.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$f" && ! grep -Eq '^class ModelNodeIntrospectionEvent\(BaseModel\):'
+          "$f" && grep -Fq -- 'from omnibase_infra.models.registration.model_node_introspection_event
+          import' "$f" && grep -Fq -- 'def _strip_transport_keys(' "$f"
+  - id: "dod-verify-1732-contract-seam-repointed"
+    description: >-
+      Product-observing check against the PR head. Asserts the node contract's input_model AND the handler_routing
+      event_model both point at the CANONICAL producer module (omnibase_infra.models.registration.model_node_introspection_event.ModelNodeIntrospectionEvent)
+      rather than the retired omnimarket-local handler class, so the declared seam and the real payload
+      now name the same shape. Also asserts metadata.yaml declares the omnibase-infra dependency the node
+      newly took on (enforced by the repo's node-metadata dependency-scope gate).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          c="$(mktemp)" && m="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/contract.yaml?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$c" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/metadata.yaml?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$m" && grep -Fq -- 'input_model: omnibase_infra.models.registration.model_node_introspection_event.ModelNodeIntrospectionEvent'
+          "$c" && grep -Fq -- 'event_model: omnibase_infra.models.registration.model_node_introspection_event.ModelNodeIntrospectionEvent'
+          "$c" && ! grep -Fq -- 'handler_projection_registration.ModelNodeIntrospectionEvent' "$c" &&
+          grep -Fq -- 'omnibase-infra' "$m"
+  - id: "dod-verify-1732-both-consumer-paths-fixed"
+    description: >-
+      Product-observing check against the PR head. The node has TWO consumer paths and fixing only one
+      leaves the bug alive in production: HandlerProjectionRegistration (the RuntimeLocal handler shim)
+      and RegistrationProjectionRunner (handler_registration.py — the live Kafka->Postgres projector,
+      which dropped the same producer fields via raw dict .get() chains and persisted only node_name/node_id
+      into the metadata JSONB). Asserts the runner now preserves the full wire payload (minus `_`-prefixed
+      transport keys) into metadata.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_registration/handlers/handler_registration.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'startswith("_")' "$f" && grep -Fq -- 'OMN-14490'
+          "$f" && grep -Fq -- 'OMN-14506' "$f"
+  - id: "dod-verify-1732-cross-boundary-seam-test"
+    description: >-
+      Product-observing check against the PR head. Asserts the new regression test is a REAL cross-boundary
+      seam test, not two independent unit suites: it constructs the PRODUCER's canonical model, wraps
+      and serializes it exactly as the producer does (ModelEventEnvelope -> JSON bytes), decodes it through
+      the consumer's REAL unwrap_envelope seam, and drives that dict through BOTH consumer paths (HandlerProjectionRegistration
+      and RegistrationProjectionRunner), asserting the previously-dropped fields survive to the persisted
+      row / SQL bind.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          f="$(mktemp)" && gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn14490_omn14506_registration_seam.py?ref=96438e9531b6da07e16852cf45a5aaab443e2c0e"
+          --jq .content | base64 -d > "$f" && grep -Fq -- 'from omnimarket.projection.envelope import
+          unwrap_envelope' "$f" && grep -Fq -- 'ModelEventEnvelope' "$f" && grep -Fq -- 'class TestHandlerPathSeam'
+          "$f" && grep -Fq -- 'class TestRunnerPathSeam' "$f" && grep -Fq -- 'declared_capabilities' "$f"
+          && grep -Fq -- 'endpoints' "$f"
+  - id: "dod-verify-1732-red-green-reproduced"
+    description: >-
+      Independent RED-then-GREEN reproduction, not trusting the implementer's commit message. The two
+      handler source files were reverted to their origin/dev state (restoring BOTH slim extra="ignore"
+      copies) and the identical new seam test was re-run: all 4 tests FAILED with failures that are precisely
+      "the field was dropped" — KeyError: 'endpoints' (introspection, both consumer paths), KeyError:
+      'metadata' (the heartbeat row carried no metadata column at all), and IndexError (the runner's heartbeat
+      UPDATE bound only 2 SQL params, so the metrics bind did not exist). That is a real EXISTS-but-WRONG
+      RED against the live defect, not a vacuous absence-of-code RED. The same tests then PASSED against
+      the fix. Full omnimarket suite: 12881 passed, 61 skipped, 0 failed; mypy --strict clean on the node;
+      ruff format/check and the full pre-commit hook set clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14490/dod-verify-1732-red-green-reproduced/command.yaml
+          && grep -q '4 failed' drift/dod_receipts/OMN-14490/dod-verify-1732-red-green-reproduced/command.yaml
+          && grep -q "KeyError: 'endpoints'" drift/dod_receipts/OMN-14490/dod-verify-1732-red-green-reproduced/command.yaml
+          && grep -q '12881 passed' drift/dod_receipts/OMN-14490/dod-verify-1732-red-green-reproduced/command.yaml
+  - id: "dod-deploy-assessment-head-96438e95"
+    description: >-
+      Deploy assessment for omnimarket PR #1732 at head 96438e9531b6da07e16852cf45a5aaab443e2c0e. The
+      PR changes a projection consumer (node_projection_registration) and its tests; this evidence package
+      performs no live deploy, runtime restart, docker exec, rpk topic produce, database mutation, or
+      .201/.200 runtime mutation. The projection consumer is deployed as part of the normal runtime rollout;
+      no prod promotion is requested or performed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14490/dod-deploy-assessment-head-96438e95/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14490/dod-deploy-assessment-head-96438e95/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      Self-bind item for this OCC companion PR. Asserts a fact about this companion branch so validator_occ_merge_eligibility
+      can bind a PASS receipt to the OCC PR under check via commit_sha before a PR number exists. Product-observing
+      evidence is carried by the entries above; this item is binding only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'jonah/omn-14490-occ-companion-registration-seam' drift/dod_receipts/OMN-14490/dod-occ-self-commit/command.yaml

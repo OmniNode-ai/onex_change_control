@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13319"
+title: "fix(OMN-13319): count only PR-associated pull_request runs toward required contexts (not workflow_dispatch)"
+summary: >-
+  OCC evidence for the omnimarket fix PR that hardens merge-sweep arm logic (Enforcement Map F3 / handoff
+  #4). For omnibase_core#1280 a manual workflow_dispatch run completed with a green "CI Summary" but did
+  NOT satisfy branch protection — the required context had to come from the PR-associated pull_request
+  run. The inventory producer (node_pr_lifecycle_inventory_compute) that feeds ci_status/ci_passing to
+  node_pr_lifecycle_triage_compute previously trusted the green statusCheckRollup row regardless of which
+  run produced it, so a manual-dispatch green made the PR appear arm-ready. The fix collects each check
+  run's trigger event (gh pr checks --json name,state,bucket,event) and counts only PR-associated runs
+  (pull_request, pull_request_target) toward ci_passing; a green workflow_dispatch or merge_group CI Summary
+  is dropped, so a PR whose only green is a manual dispatch stays not-green and arm refuses. Eventless
+  legacy status contexts remain PR-associated. The node trusts the PR-associated run conclusion, not the
+  (possibly stale) statusCheckRollup row. Compute-only change; no topic schema, envelope, or contract
+  API change; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-pr-associated-runs-only"
+    description: >-
+      A green workflow_dispatch CI Summary no longer satisfies arm. The golden-chain tests assert: a manual-dispatch
+      green with no PR-associated green leaves ci_passing not True; a PR-associated failure with a dispatch
+      green leaves ci_passing False (trusts the PR-associated run, not the rollup); a PR-associated green
+      makes the PR green; an eventless legacy status context still counts; a merge_group green alone does
+      not arm. tests/test_golden_chain_pr_lifecycle_inventory_compute.py passes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13319/dod-pr-associated-runs-only/command.yaml"
+  - id: "dod-deploy-gate"
+    description: >-
+      Deploy assessment: this is a compute-only change in node_pr_lifecycle_inventory_compute with no
+      topic schema, envelope, or contract API change and no live-lane mutation. The PR-associated-runs-only
+      arm rule is effective on merge wherever the merge_sweep skill/node runs. No live prod deploy or
+      runtime restart was performed as part of this pre-merge evidence update. Pre-merge proof is covered
+      by tests/test_golden_chain_pr_lifecycle_inventory_compute.py.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13319/dod-deploy-gate/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13319/dod-deploy-gate/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13319.yaml consumed
+      by the omnimarket fix PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13319\"$' contracts/OMN-13319.yaml"

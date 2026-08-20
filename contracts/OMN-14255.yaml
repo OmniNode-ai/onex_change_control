@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14255"
+title: "fix(OMN-14255): verify receipt commit_sha by PR-commit membership, not squash-identity"
+summary: >-
+  omnimarket product PR #1684 (branch jonah/omn-14255-receipt-sha-ancestry, head 057fa39f2de3b088cb3414fb0425d8b2d4bece6d)
+  fixes the systemic receipt-SHA defect that made DurableEvidenceGate Check 2 (CONTRACT_CITES_MERGE_COMMIT)
+  structurally un-passable. These repos are squash-merge-only, so a receipt citing the pre-merge headRefOid
+  has no ancestry to the synthetic squash mergeCommit.oid and identity can never hold. The gate leg (durable_evidence_gate.py)
+  now PASSES Check 2 when the cited SHA matches the squash mergeCommit.oid OR is a member of the PR's
+  commit set, and fails closed on state != MERGED or an empty/unresolvable PR-commits set. The writer
+  leg (adapter_occ_autobind.py OccAutobindAdapter) stamps the actual squash mergeCommit.oid once the PR
+  is merged, falling back to the reviewed head SHA pre-merge.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent verification at product head 057fa39f2de3b088cb3414fb0425d8b2d4bece6d. Gate: Check 2
+      hard-fails first on state != MERGED, then PASSES on either _sha_prefix_match(mergeCommit.oid, cited_sha)
+      (identity leg) or _cited_sha_in_pr_commits (PR-commits membership leg), else fails; an empty PrCommitsProbe
+      tuple yields False so a non-identity citation never upgrades to PASS (fail-closed). Writer: _receipt_commit_sha
+      returns merge_commit_sha only when merged/merged_at is truthy AND the value is hex, else the reviewed
+      head_sha; the downstream receipt now stamps commit_sha=receipt_commit_sha. Tests: the gate + writer
+      unit trees pass 70/70; the full node_dod_verify + node_pr_lifecycle_fix_effect trees run 360 passed
+      with exactly one failure - test_omn_14207_live_pr_state_check.py::test_static_pass_receipt_no_longer_masks_unmerged_pr
+      - which reproduces IDENTICALLY on pristine origin/dev (a live gh pr view test whose referenced PR
+      is now merged; pre-existing, not caused by #1684).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14255/dod-001/command.yaml && grep -q '^pr_number:
+          1684$' drift/dod_receipts/OMN-14255/dod-001/command.yaml && grep -q '057fa39f2de3b088cb3414fb0425d8b2d4bece6d'
+          drift/dod_receipts/OMN-14255/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-surface assessment: product PR #1684 changes pure-logic gate/writer node source plus their
+      unit tests. No live deploy, restart, .201 mutation, topic mutation, or migration was performed by
+      this OCC companion; product PR merge relies on normal CI gates and downstream deploy validation
+      instead of a bypass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14255/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14255/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the net-new OMN-14255 central contract
+      and PASS receipts consumed by omnimarket#1684 through its Evidence-Source line. Self-binds via the
+      first commit's SHA for occ-preflight eligibility (no PR-number prediction).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14255/dod-occ-self/command.yaml

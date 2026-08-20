@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12966"
+title: "P1.2b-A: Infisical availability verification on .201 (probe-first) + community-edition readiness
+  gate fix"
+summary: >
+  Probe-first verification per standing policy: the in-lane Infisical service is disabled by the stability-test/prod
+  overlays via infisical.profiles: !override ["...-disabled"], so the de-facto store had been container
+  env. Deployed Infisical as an ADDITIVE compose project (own project name omnibase-infra-infisical-stability)
+  on the existing stability-test network — no lane container rebuilt or restarted. Verified reachability
+  FROM the stability runtime/effect containers and proved a known secret (OMN_12966_PROBE) seeds and resolves
+  end-to-end via the machine-identity universal-auth path, including from inside the effects container.
+  Fixed a latent bug in the availability tooling: the fresh-provision readiness gate in scripts/provision-infisical.py
+  accepted only the enterprise {"status": "ok"} /api/status payload and rejected the community edition's
+  {"message": "Ok"}, returning 1 before bootstrap could run; routed it through the existing _is_infisical_ready
+  helper (single source of truth) and added a regression suite. No runtime topology, topic schema, or
+  contract API changes; no prod mutation; additive-only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      TDD regression suite TestMainFreshProvisionReadinessGate locks the fresh-provision readiness gate
+      to accept both community ({"message": "Ok"}) and enterprise ({"status": "ok"}) /api/status payloads
+      and to return rc=1 when not ready. Reverting the source fix fails the community-edition case.
+    command: "uv run pytest tests/unit/scripts/test_provision_infisical.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-1939"
+    description: >
+      omnibase_infra PR #1939 fixes the fresh-provision readiness gate in scripts/provision-infisical.py
+      to accept both the enterprise {"status": "ok"} and community {"message": "Ok"} /api/status payloads
+      via the _is_infisical_ready helper, adds TestMainFreshProvisionReadinessGate (community/enterprise/not-ready),
+      and adds the additive docker/docker-compose.infisical-stability.yml for the stability-test lane.
+      Evidence anchor: omnibase_infra head commit 6092f5fb155e6f905aa11ea2a0321d93711762e2.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12966/dod-omnibase-infra-pr-1939/command.yaml
+          && grep -q '^pr_number: 1939$' drift/dod_receipts/OMN-12966/dod-omnibase-infra-pr-1939/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-12966/dod-omnibase-infra-pr-1939/command.yaml"
+  - id: "dod-availability-evidence"
+    description: >
+      Live availability + end-to-end seed/resolve evidence: container omnibase-infra-infisical-stability
+      running/healthy on :8880; in-network 200 from omninode-stability-test-runtime-worker to http://omnibase-infra-infisical-stability:8080/api/status;
+      universal-auth seed+resolve of OMN_12966_PROBE byte-exact MATCHES True via the runtime path. Documented
+      in omni_home/docs/evidence/2026-06-11-OMN-12966-infisical-availability.md. Additive compose project
+      on the stability-test network only; folding Infisical into the lanes as a first-class always-on
+      service is deferred to P1.2b-B/C. No prod mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12966/dod-availability-evidence/command.yaml
+          && grep -q '^pr_number: 1939$' drift/dod_receipts/OMN-12966/dod-availability-evidence/command.yaml
+          && grep -q 'MATCHES True' drift/dod_receipts/OMN-12966/dod-availability-evidence/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: the compose/provision changes ship via omnibase_infra PR #1939. The Infisical
+      service itself was deployed ADDITIVELY on the stability-test network as its own compose project
+      — no lane container (dev/stability/prod) was rebuilt or restarted, and prod was untouched. Live
+      effect of the compose file landing on dev requires a standard stability image/compose rebuild, which
+      is batched behind the in-flight P0.1/P0.1c verifications by the orchestrator (no live deploy performed
+      by this PR). The receipt carries the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12966/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1939$' drift/dod_receipts/OMN-12966/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-12966/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2478"
+    description: "onex_change_control PR #2478 (dev) carries the OMN-12966 central contract and receipt
+      evidence; this self-binding receipt makes the OCC PR satisfy its own OCC eligibility check."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12966/dod-occ-pr-2478/command.yaml
+          && grep -q '^pr_number: 2478$' drift/dod_receipts/OMN-12966/dod-occ-pr-2478/command.yaml"

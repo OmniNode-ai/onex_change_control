@@ -1,0 +1,322 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-15383
+title: "Fail closed on omniweb schema-CREATE and scope the managed-Postgres ownership repair"
+summary: >
+  omninode_infra PR #758 replaces the fail-open CREATE-on-public probe in the omniweb migration runner
+  with a pre-mutation precondition gate, adds --only scoping plus a peer-owner guard to repair-managed-postgres-ownership.sh
+  so a guest role cannot be repaired into stealing the host role's corpus, and makes the migration-order-1
+  self-heal GRANT read back its own effect instead of trusting an exit code that PostgreSQL returns as
+  0 even when nothing was granted.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: manual
+    description: "omninode_infra#758 is bound to its exact reviewed PR head"
+    command: "gh pr view 758 --repo OmniNode-ai/omninode_infra --json headRefOid,files"
+  - kind: manual
+    description: "The RED/GREEN privilege proof executes against a real PostgreSQL in CI"
+    command: "uv run pytest tests/scripts/test_omniweb_migration_schema_privilege.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-OmniNode-ai-omninode_infra-pr-758
+    description: >
+      omninode_infra PR #758 closes the OMN-15383 fail-open probe and scopes the ownership repair, bound
+      to reviewed head 60e34de558f382852ef2b30c85f2d6eba3123fe0.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          test "$(gh pr view 758 --repo OmniNode-ai/omninode_infra --json state,headRefOid --jq '.state
+          + " " + .headRefOid')" = "OPEN 60e34de558f382852ef2b30c85f2d6eba3123fe0"
+  - id: dod-OmniNode-ai-omninode_infra-pr-758-scope
+    description: >
+      omninode_infra PR #758 touches only the two migration runners, the ownership repair script, its
+      RED/GREEN proof module, and the RDS cutover runbook. No migration SQL, manifest topology, or credential
+      wiring is changed.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 758 --repo OmniNode-ai/omninode_infra --json files --jq '[.files[].path] | sort ==
+          ["docs/rds-postgres-cutover.md","k8s/migrations/omnibase-infra-migrate.yaml","k8s/migrations/omniweb-migrate.yaml","scripts/repair-managed-postgres-ownership.sh","tests/scripts/test_omniweb_migration_schema_privilege.py"]'
+          | grep -qx true
+  - id: dod-omn-15383-red-green-privilege-proof
+    description: >
+      The OMN-15383 proof drives the SHIPPED artifacts (runner extracted from the manifest, the real ConfigMap
+      corpus, the repair script) against a real PostgreSQL. RED baselines are derived mechanically by
+      excising the gate block, so GREEN cannot be vacuous. CI runs it fail-closed under REQUIRE_MIGRATION_LOCK_DB=1,
+      so an unreachable database fails the job rather than skipping.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/scripts/test_omniweb_migration_schema_privilege.py -q"
+  - id: occ-self-bind-pr-5437
+    description: "OCC companion self-bind receipt for OMN-15383."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5437 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5437 and .state == "OPEN" and .headRefName == "jonah/omn-15383-occ-companion"' |
+          grep -qx true
+  - id: dod-infra758-head-hosted-token-supersession
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #758 exact-head probe. The authoritative
+      live product-head result remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring cross-repository token
+      access.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-758"
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: dod-infra758-scope-hosted-token-supersession
+    description: >
+      Append-only hosted replacement for the private omninode_infra PR #758 file-scope probe. The authoritative
+      live product-scope result remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring cross-repository token
+      access.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-758-scope"
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: dod-omn-15383-red-green-hosted-token-supersession
+    description: >
+      Append-only hosted replacement for the private omninode_infra RED/GREEN proof command. The authoritative
+      live proof result remains bound by its immutable receipt and entry hash, while OCC CI exercises
+      the hosted-accessible evidence-admissibility validator without requiring the product repository
+      checkout.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:dod-omn-15383-red-green-privilege-proof"
+    checks:
+      - check_type: command
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: occ-self-bind-pr-5438
+    description: "OCC follow-up PR #5438 contains append-only supersession receipts rebinding OMN-15383
+      product evidence to omninode_infra#758."
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5438 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5438 and .state == "OPEN" and .headRefName == "codex-a/omn-15383-infra758-occ-bind-fix"'
+          | grep -qx true
+  - id: occ-self-bind-pr-5437-merged-supersession
+    description: >
+      Append-only replacement for the OCC #5437 self-bind after the original companion merged. The prior
+      receipt was true at issuance time while #5437 was open; this durable successor proves #5437 landed
+      on the expected OMN-15383 companion branch.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5437"
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5437 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5437 and .state == "MERGED" and .headRefName == "jonah/omn-15383-occ-companion"'
+          | grep -qx true
+  - id: occ-self-bind-pr-5440
+    description: "OCC follow-up PR #5440 contains append-only supersession receipts rebinding OMN-15383
+      product evidence to the current omninode_infra#758 head."
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5440 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5440 and .state == "OPEN" and .headRefName == "codex-a/omn-15383-infra758-a565-occ-bind"'
+          | grep -qx true
+  - id: occ-self-bind-pr-5438-merged-supersession
+    description: >
+      Append-only replacement for the OCC #5438 self-bind after that follow-up companion merged. The prior
+      receipt was true at issuance time while #5438 was open; this durable successor proves #5438 landed
+      on the expected OMN-15383 rebind branch.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5438"
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5438 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5438 and .state == "MERGED" and .headRefName == "codex-a/omn-15383-infra758-occ-bind-fix"'
+          | grep -qx true
+  - id: occ-self-bind-pr-5440-merged-supersession
+    description: >
+      Append-only replacement for the OCC #5440 self-bind after that current-head companion merged. The
+      prior receipt was true at issuance time while #5440 was open; this durable successor proves #5440
+      landed on the expected OMN-15383 current-head rebind branch.
+    source: manual
+    status: verified
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5440"
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5440 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5440 and .state == "MERGED" and .headRefName == "codex-a/omn-15383-infra758-a565-occ-bind"'
+          | grep -qx true
+  - id: occ-self-bind-pr-5444
+    description: >
+      OCC follow-up PR #5444 contains append-only supersession receipts rebinding OMN-15383 product evidence
+      to the current omninode_infra#758 head after GitHub required a base-branch update. This self-bind
+      remains valid after merge so downstream contract compliance does not require another stale-OPEN
+      supersession.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          gh pr view 5444 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number == 5444 and (.state == "OPEN" or .state == "MERGED") and .headRefName == "codex-a/omn-15383-infra758-6156-occ-bind"'
+          | grep -qx true
+  - id: dod-15383-infra758-guard-rb15391
+    description: 'Append-only replacement for dod-infra758-head-hosted-token-supersession (OMN-15391),
+      whose prose keeps the ''authoritative live product-head result'' bound to a receipt while its command
+      runs OCC''s predicate suite. The superseded entry''s only check was ''uv run pytest tests/test_evidence_admissibility.py
+      -q''. node_dod_verify''s EvidenceCollector._infer_occ_cwd resolves that command into the OCC checkout,
+      where it runs OCC''s own OMN-15309 admissibility-predicate suite (76 tests, ~0.1s) and passes identically
+      whether or not the product fact it is filed under is true. This entry binds the OMN-15383 product
+      fact instead of the PR head: the peer-owner guard the ticket adds is present in scripts/repair-managed-postgres-ownership.sh
+      at omninode_infra#758''s merge commit 3246e28ee14af41af8b844ddfa3b254e094d890b and absent at its
+      first parent a0639ce48e12b0c0be069d4053299e1b29e1121e. Scope limit stated plainly: OmniNode-ai/omninode_infra
+      is a PRIVATE repository. This check was EXECUTED here on 2026-07-29 with a cross-repo-capable token
+      and returned rc=0; under the OCC hosted Contract Compliance runner, whose GH_TOKEN is the repo-scoped
+      github.token, the same endpoint returns HTTP 404 and the check goes RED. That RED is fail-closed
+      ''cannot evaluate on this runner'', not a false claim about the product, and it is preferred over
+      the surrogate''s vacuous GREEN (OMN-15391). node_dod_verify, which runs with an operator token,
+      evaluates it for real.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-infra758-head-hosted-token-supersession
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/scripts/repair-managed-postgres-ownership.sh?ref=3246e28ee14af41af8b844ddfa3b254e094d890b''
+          | grep -q ''INCLUDE_PEER_OWNED'''
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/scripts/repair-managed-postgres-ownership.sh?ref=a0639ce48e12b0c0be069d4053299e1b29e1121e''
+          | grep -c ''INCLUDE_PEER_OWNED'' | grep -qx 0'
+  - id: dod-15383-infra758-scope-rb15391
+    description: 'Append-only replacement for dod-infra758-scope-hosted-token-supersession (OMN-15391).
+      The superseded entry''s only check was ''uv run pytest tests/test_evidence_admissibility.py -q''.
+      node_dod_verify''s EvidenceCollector._infer_occ_cwd resolves that command into the OCC checkout,
+      where it runs OCC''s own OMN-15309 admissibility-predicate suite (76 tests, ~0.1s) and passes identically
+      whether or not the product fact it is filed under is true. This entry re-asserts the file scope
+      directly against the live PR: omninode_infra#758 touches exactly the two migration runners, the
+      ownership repair script, its red/green proof module, and the RDS cutover runbook -- adding or dropping
+      a file goes RED. Scope limit stated plainly: OmniNode-ai/omninode_infra is a PRIVATE repository.
+      This check was EXECUTED here on 2026-07-29 with a cross-repo-capable token and returned rc=0; under
+      the OCC hosted Contract Compliance runner, whose GH_TOKEN is the repo-scoped github.token, the same
+      endpoint returns HTTP 404 and the check goes RED. That RED is fail-closed ''cannot evaluate on this
+      runner'', not a false claim about the product, and it is preferred over the surrogate''s vacuous
+      GREEN (OMN-15391). node_dod_verify, which runs with an operator token, evaluates it for real.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-infra758-scope-hosted-token-supersession
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omninode_infra/pulls/758/files --paginate --jq '.[].filename'
+          | sort | tr '\n' ',' | grep -qx 'docs/rds-postgres-cutover.md,k8s/migrations/omnibase-infra-migrate.yaml,k8s/migrations/omniweb-migrate.yaml,scripts/repair-managed-postgres-ownership.sh,tests/scripts/test_omniweb_migration_schema_privilege.py,'
+  - id: dod-15383-infra758-redgreen-rb15391
+    description: 'Append-only replacement for dod-omn-15383-red-green-hosted-token-supersession (OMN-15391),
+      which narrates a RED/GREEN privilege proof against a real PostgreSQL while executing OCC''s predicate
+      suite. The superseded entry''s only check was ''uv run pytest tests/test_evidence_admissibility.py
+      -q''. node_dod_verify''s EvidenceCollector._infer_occ_cwd resolves that command into the OCC checkout,
+      where it runs OCC''s own OMN-15309 admissibility-predicate suite (76 tests, ~0.1s) and passes identically
+      whether or not the product fact it is filed under is true. This entry binds the discriminating case
+      of that proof -- the assertion that the fail-open CREATE-on-public probe is gone -- in the merged
+      product tree at omninode_infra#758''s merge commit 3246e28ee14af41af8b844ddfa3b254e094d890b, absent
+      at its first parent a0639ce48e12b0c0be069d4053299e1b29e1121e. Honest limit: presence of the proof
+      module, not its execution; the run is omninode_infra#758''s own CI. Scope limit stated plainly:
+      OmniNode-ai/omninode_infra is a PRIVATE repository. This check was EXECUTED here on 2026-07-29 with
+      a cross-repo-capable token and returned rc=0; under the OCC hosted Contract Compliance runner, whose
+      GH_TOKEN is the repo-scoped github.token, the same endpoint returns HTTP 404 and the check goes
+      RED. That RED is fail-closed ''cannot evaluate on this runner'', not a false claim about the product,
+      and it is preferred over the surrogate''s vacuous GREEN (OMN-15391). node_dod_verify, which runs
+      with an operator token, evaluates it for real.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-omn-15383-red-green-hosted-token-supersession
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_omniweb_migration_schema_privilege.py?ref=3246e28ee14af41af8b844ddfa3b254e094d890b''
+          | grep -q ''def test_the_fail_open_probe_is_gone'''
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_omniweb_migration_schema_privilege.py?ref=a0639ce48e12b0c0be069d4053299e1b29e1121e''
+          | grep -c ''def test_the_fail_open_probe_is_gone'' | grep -qx 0'
+  - id: dod-15383-infra758-guard-rb2
+    description: 'Append-only replacement for dod-15383-infra758-guard-rb15391 (OMN-15391 round 2, Rule
+      D). The superseded item''s GREEN leg is correct and is carried forward here unchanged; its ABSENCE
+      leg was ''... | grep -c ''INCLUDE_PEER_OWNED'' | grep -qx 0'', which FAILS OPEN. check_values are
+      handed to `sh -c` without pipefail, so a producer that 404s, is denied, or hits a network error
+      emits nothing, `grep -c` prints 0, and `grep -qx 0` exits 0 -- GREEN, having read nothing. Executed
+      proof of the defect at authoring time: the superseded shape returns rc=0 against OmniNode-ai/no_such_repo_xyz,
+      a repository that does not exist. The replacement absence leg reads the parent revision ONCE into
+      a variable, PROVES the read landed by requiring the structural anchor ''Repair per-service table
+      ownership in a managed PostgreSQL database'' (present in this file at both a0639ce48e12 and 3246e28ee14a,
+      so it tracks the read rather than the fix), and only then asserts the marker is absent. A failed
+      fetch now yields an empty body, the anchor leg fails, and the check goes RED. Claim bound, unchanged:
+      the INCLUDE_PEER_OWNED guard exists at omninode_infra#758''s merge commit 3246e28ee14af41af8b844ddfa3b254e094d890b,
+      and was absent at its first parent a0639ce48e12b0c0be069d4053299e1b29e1121e. Executed at authoring
+      time: green leg rc=0, absence leg rc=0; and the absence leg goes RED under all four mutations --
+      invalid token, nonexistent repo, pointed at the merge commit instead of the parent, and anchor mutated.
+      Scope limit restated: OmniNode-ai/omninode_infra is a PRIVATE repository, so under the OCC hosted
+      runner''s repo-scoped github.token both legs return HTTP 404 and go RED. That RED now means ''cannot
+      evaluate here'', and -- unlike the superseded leg -- it is reached by a real failure rather than
+      by a vacuous pass. node_dod_verify, which runs with an operator token, evaluates both for real.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-15383-infra758-guard-rb15391
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/scripts/repair-managed-postgres-ownership.sh?ref=3246e28ee14af41af8b844ddfa3b254e094d890b''
+          | grep -q ''INCLUDE_PEER_OWNED'''
+      - check_type: command
+        check_value: 'body=$(gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/scripts/repair-managed-postgres-ownership.sh?ref=a0639ce48e12b0c0be069d4053299e1b29e1121e'')
+          && printf ''%s'' "$body" | grep -qF ''Repair per-service table ownership in a managed PostgreSQL
+          database'' && ! printf ''%s'' "$body" | grep -qF ''INCLUDE_PEER_OWNED'''
+  - id: dod-15383-infra758-redgreen-rb2
+    description: 'Append-only replacement for dod-15383-infra758-redgreen-rb15391 (OMN-15391 round 2,
+      Rule D). The superseded item''s GREEN leg is correct and is carried forward here unchanged; its
+      ABSENCE leg was ''... | grep -c ''def test_the_fail_open_probe_is_gone'' | grep -qx 0'', which FAILS
+      OPEN. check_values are handed to `sh -c` without pipefail, so a producer that 404s, is denied, or
+      hits a network error emits nothing, `grep -c` prints 0, and `grep -qx 0` exits 0 -- GREEN, having
+      read nothing. Executed proof of the defect at authoring time: the superseded shape returns rc=0
+      against OmniNode-ai/no_such_repo_xyz, a repository that does not exist. This file did not exist
+      AT ALL at the parent a0639ce48e12b0c0be069d4053299e1b29e1121e, so the superseded leg passed on a
+      404 -- it never read anything, and would have passed identically had the repo been deleted. The
+      replacement pairs a REACHABILITY CONTROL with the absence assertion: it first proves the token can
+      resolve a0639ce48e12 in this repo (`gh api .../commits/a0639ce48e12 --jq .sha` must echo the sha
+      back), and only then requires the contents fetch for the path to FAIL. A 404 is therefore admissible
+      as evidence of absence only after the same token has demonstrably read the same ref -- an auth or
+      network failure fails the control leg first and the check goes RED. Claim bound, unchanged: the
+      fail-open-probe-is-gone regression test exists at omninode_infra#758''s merge commit 3246e28ee14af41af8b844ddfa3b254e094d890b,
+      and the path did not exist at its first parent a0639ce48e12b0c0be069d4053299e1b29e1121e. Executed
+      at authoring time: green leg rc=0, absence leg rc=0; and the absence leg goes RED under all three
+      mutations -- invalid token, nonexistent repo, and pointed at the merge commit where the path does
+      exist. Scope limit restated: OmniNode-ai/omninode_infra is a PRIVATE repository, so under the OCC
+      hosted runner''s repo-scoped github.token both legs return HTTP 404 and go RED. That RED now means
+      ''cannot evaluate here'', and -- unlike the superseded leg -- it is reached by a real failure rather
+      than by a vacuous pass. node_dod_verify, which runs with an operator token, evaluates both for real.'
+    source: manual
+    status: verified
+    evidence_artifact: supersedes_dod_evidence:dod-15383-infra758-redgreen-rb15391
+    checks:
+      - check_type: command
+        check_value: 'gh api -H ''Accept: application/vnd.github.raw'' ''repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_omniweb_migration_schema_privilege.py?ref=3246e28ee14af41af8b844ddfa3b254e094d890b''
+          | grep -q ''def test_the_fail_open_probe_is_gone'''
+      - check_type: command
+        check_value: gh api 'repos/OmniNode-ai/omninode_infra/commits/a0639ce48e12b0c0be069d4053299e1b29e1121e'
+          --jq '.sha' | grep -qx 'a0639ce48e12b0c0be069d4053299e1b29e1121e' && ! gh api 'repos/OmniNode-ai/omninode_infra/contents/tests/scripts/test_omniweb_migration_schema_privilege.py?ref=a0639ce48e12b0c0be069d4053299e1b29e1121e'
+          --silent

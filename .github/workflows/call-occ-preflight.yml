@@ -1,0 +1,630 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OCC Preflight caller — gates auto-merge and merge_group on OCC eligibility.
+# (OMN-10485 / OMN-10482)
+#
+# In-repo usage: the PR under review IS the onex_change_control repo. This
+# job checks out this PR as the root workspace, so every step below that is
+# guarded by `github.repository != 'OmniNode-ai/onex_change_control'` never
+# fires here — that guard exists for other repos' copies of this pattern.
+#
+# Design invariants (unchanged from the workflow this job replaces):
+#   I1. PR metadata and OCC evidence SHA are resolved exactly once (in `resolve`).
+#       All eligibility steps consume the snapshot; they do not re-fetch mutable state.
+#   I2. `merge_group` events re-run eligibility fully (cache disabled below).
+#   I3. OCC's own PRs validate evidence from the PR diff (in-tree checkout).
+#   I4. OCC fetch failure is a hard FAIL — no fallback to stale/cached evidence.
+#   I5. Auto-merge cannot arm until this job completes with exit 0.
+#
+# OMN-15689 (R3/R3a operator ruling): this job used to delegate to
+# `uses: OmniNode-ai/omnibase_core/.github/workflows/occ-preflight.yml@main`.
+# GitHub's reusable-workflow `uses:` target accepts only a literal ref, so a
+# hardcoded `@main` pin meant a validator fix merged to omnibase_core dev
+# could not affect a dev-targeted PR here until a dev->main promotion. That
+# reusable workflow also carried a `core-ref` input defaulting to the literal
+# string `dev` — itself a hardcoded, non-target-branch-aware value the R3a
+# amendment explicitly rejects ("not @main, not @dev, not a per-branch
+# variant"). Per R3a, the reusable-workflow pattern is abandoned here: this
+# job inlines the same steps the reusable ran, and checks out omnibase_core
+# at the PR's own base branch (`github.event.pull_request.base.ref` /
+# `github.event.merge_group.base_ref`), resolved dynamically at runtime. A
+# base ref that does not exist in omnibase_core fails the checkout step
+# hard — there is no fallback ref.
+#
+# Required status check name: "occ-preflight / eligibility". This job's
+# `name:` field is set to that literal string so the check-run GitHub
+# creates for this job is byte-identical to what the old reusable-workflow
+# call produced (a reusable call surfaces "<caller-job-id> / <called-job-id>";
+# a plain job's check-run name is whatever string is in `jobs.<id>.name`,
+# which may contain " / "). Branch protection was NOT touched by this
+# change — same context string, same enforcement.
+
+name: OCC Preflight
+
+# OMN-15689 round-1 note (adversarial finding, hotfix behavior change): this
+# trigger still matches `hotfix/**` base branches. Since R3a, the
+# omnibase_core validator ref (and now the omnibase_compat ref) resolve
+# dynamically from `github.event.pull_request.base.ref` with NO fallback —
+# a hotfix base branch name that does not also exist in omnibase_core (this
+# repo's live hotfix bases, e.g. hotfix/omn-13208-..., do not match
+# omnibase_core's, e.g. hotfix/omn-14104-...) now fails the checkout step
+# hard instead of resolving to a stale-but-working default. hotfix bases
+# carry no branch protection here (nothing is blocked), and non-dev-base-guard
+# already requires a `Stacked-Parent:` declaration on any hotfix-targeted PR.
+#
+# OMN-15698 (Option A, operator propose-and-proceed): a scoped fallback now
+# covers exactly this hotfix case. When the resolved ref matches `hotfix/**`
+# AND does not exist as a branch in omnibase_core/omnibase_compat, the
+# `validator_ref` step falls back to that dependency repo's own default
+# branch (resolved dynamically via the GitHub API, never a hardcoded
+# `@main`/`@dev` literal) instead of failing the checkout. The dev/main
+# paths are untouched and remain byte-identical fail-closed — no fallback is
+# consulted unless the resolved ref is hotfix-shaped. Option B (accept the
+# fail-closed posture permanently, won't-fix) was the documented alternative;
+# the operator selected Option A as the scoped, fail-closed-preserving fix.
+on:
+  pull_request:
+    branches: [main, dev, "hotfix/**"]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  occ-preflight:
+    name: "occ-preflight / eligibility"
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    # I2: Disable GHA cache so merge_group re-fires fully.
+    # A stale PASS from a prior PR-open run cannot satisfy the gate on a new merge_group event.
+    env:
+      ACTIONS_CACHE_URL: ""
+      ACTIONS_RUNTIME_URL: ""
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # OMN-15689 (R3a): resolve the omnibase_core validator ref dynamically
+      # from the PR's own base branch / merge_group target — never a literal
+      # @main, @dev, or any other hardcoded value. No fallback ref: if
+      # neither the PR base ref nor the merge_group base ref resolves, the
+      # job fails closed here before any checkout is attempted.
+      - name: Resolve omnibase_core validator ref (PR base branch)
+        id: validator_ref
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          normalize_branch() {
+            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
+          }
+
+          if [ -n "${PR_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
+          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
+            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
+          else
+            echo "::error::OMN-15689: cannot resolve a PR base ref or merge_group base ref — refusing to fall back to any hardcoded omnibase_core ref."
+            exit 1
+          fi
+
+          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-15689: omnibase_core validator ref resolved dynamically to '${resolved_ref}'."
+
+          # OMN-15698 (Option A): hotfix-targeted PRs may name a base branch
+          # that exists in onex_change_control but not in omnibase_core /
+          # omnibase_compat (hotfix branches are per-repo and not mirrored).
+          # Only in that case, fall back to each dependency repo's own
+          # default branch (resolved dynamically via the API — never a
+          # hardcoded literal). dev/main targets never hit this branch:
+          # resolved_ref never matches hotfix/** there, so core_ref/compat_ref
+          # stay identical to resolved_ref and the checkout below fails
+          # closed exactly as before if the ref doesn't exist.
+          core_ref="${resolved_ref}"
+          compat_ref="${resolved_ref}"
+          case "${resolved_ref}" in
+            hotfix/*)
+              if ! gh api "repos/OmniNode-ai/omnibase_core/branches/${resolved_ref}" >/dev/null 2>&1; then
+                core_ref="$(gh api repos/OmniNode-ai/omnibase_core --jq '.default_branch')"
+                echo "::notice::OMN-15698: hotfix base '${resolved_ref}' not found in omnibase_core — falling back to its default branch '${core_ref}'."
+              fi
+              if ! gh api "repos/OmniNode-ai/omnibase_compat/branches/${resolved_ref}" >/dev/null 2>&1; then
+                compat_ref="$(gh api repos/OmniNode-ai/omnibase_compat --jq '.default_branch')"
+                echo "::notice::OMN-15698: hotfix base '${resolved_ref}' not found in omnibase_compat — falling back to its default branch '${compat_ref}'."
+              fi
+              ;;
+          esac
+
+          echo "core_ref=${core_ref}" >> "$GITHUB_OUTPUT"
+          echo "compat_ref=${compat_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve OCC preflight event scope
+        id: event_scope
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request|merge_group)
+              echo "required=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::notice::OCC preflight is not required for ${GITHUB_EVENT_NAME}; continuing without eligibility validation."
+              echo "required=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      # OMN-13762: Dependency-bot PRs (Dependabot, Renovate) are authored by bots
+      # that structurally cannot cite a Linear ticket, an Evidence-Source, or an
+      # OCC receipt. Detect a trusted dependency-bot author up front from
+      # GitHub-verified PR metadata (never from caller-supplied body text) and
+      # skip the eligibility steps below. The job still concludes `success` (its
+      # remaining steps are skipped, not failed), so the
+      # `occ-preflight / eligibility` status check passes WITHOUT a skip token.
+      # The allowlist mirrors validator_receipt_gate.DEPENDENCY_BOT_AUTHORS.
+      - name: Detect dependency-bot author (occ-preflight exemption)
+        id: bot_exempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_EVENT_AUTHOR: ${{ github.event.pull_request.user.login }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+
+          # Resolve the PR number for both pull_request and merge_group events.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            resolved_pr_num="$PR_NUMBER"
+          elif [ -n "${MERGE_GROUP_HEAD_REF:-}" ]; then
+            resolved_pr_num="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -E 's@^.*/pr-([0-9]+)-.*$@\1@')"
+            [ "$resolved_pr_num" = "$MERGE_GROUP_HEAD_REF" ] && resolved_pr_num=""
+          else
+            resolved_pr_num=""
+          fi
+
+          # GitHub-verified author identity. Prefer the API login; fall back to
+          # the event-payload login when the API is unavailable.
+          author_login=""
+          if [ -n "$resolved_pr_num" ]; then
+            author_login="$(gh pr view "$resolved_pr_num" --repo "${{ github.repository }}" --json author --jq '.author.login' 2>/dev/null || true)"
+          fi
+          if [ -z "$author_login" ]; then
+            author_login="${PR_EVENT_AUTHOR:-}"
+          fi
+
+          # Trusted dependency-bot allowlist. Matches the gh CLI login form
+          # ("app/dependabot") and the raw API/event login form
+          # ("dependabot[bot]"). Keep in sync with
+          # validator_receipt_gate.DEPENDENCY_BOT_AUTHORS.
+          exempt="false"
+          case "$author_login" in
+            "dependabot[bot]"|"app/dependabot"|"dependabot"|"renovate[bot]"|"app/renovate"|"renovate")
+              exempt="true"
+              ;;
+          esac
+
+          if [ "$exempt" = "true" ]; then
+            echo "::notice::OCC-preflight exemption (OMN-13762): PR authored by trusted dependency bot '${author_login}'. Dependency-bump PRs carry no Linear ticket or OCC receipt; the eligibility gate is not applicable. Eligibility steps are skipped; the job still reports success."
+          fi
+          echo "exempt=${exempt}" >> "$GITHUB_OUTPUT"
+
+      # I1: Resolve all mutable GitHub state exactly once.
+      # Writes /tmp/pr_{body,title,author,branch,number}.txt and
+      # /tmp/pr_commit_{shas,texts}.txt for downstream steps.
+      - name: Resolve PR snapshot
+        id: resolve
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_EVENT_BODY: ${{ github.event.pull_request.body }}
+          PR_EVENT_TITLE: ${{ github.event.pull_request.title }}
+          PR_EVENT_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_EVENT_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -euo pipefail
+          : > /tmp/pr_commit_shas.txt
+          : > /tmp/pr_commit_texts.txt
+
+          write_pr_snapshot() {
+            local pr_json="$1"
+            printf '%s' "$pr_json" | jq -r '.body // ""' > /tmp/pr_body.txt
+            printf '%s' "$pr_json" | jq -r '.title // ""' > /tmp/pr_title.txt
+            printf '%s' "$pr_json" | jq -r '.author.login // ""' > /tmp/pr_author.txt
+            printf '%s' "$pr_json" | jq -r '.headRefName // ""' > /tmp/pr_branch.txt
+            printf '%s' "$pr_json" | jq -r '.commits[]?.oid // empty' > /tmp/pr_commit_shas.txt
+            printf '%s' "$pr_json" | jq -r \
+              '.commits[]? | ((.messageHeadline // "") + " " + (.messageBody // "" | gsub("\r?\n"; " ")))' \
+              > /tmp/pr_commit_texts.txt
+          }
+
+          if [ -n "${PR_NUMBER:-}" ]; then
+            if pr_json="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
+                --json body,title,author,headRefName,commits 2>/dev/null)"; then
+              write_pr_snapshot "$pr_json"
+              printf '%s' "$PR_NUMBER" > /tmp/pr_number.txt
+            else
+              echo "::warning::gh pr view failed for PR #${PR_NUMBER}; using event payload"
+              printf '%s' "${PR_EVENT_BODY:-}" > /tmp/pr_body.txt
+              printf '%s' "${PR_EVENT_TITLE:-}" > /tmp/pr_title.txt
+              printf '%s' "${PR_EVENT_AUTHOR:-}" > /tmp/pr_author.txt
+              printf '%s' "${PR_EVENT_BRANCH:-}" > /tmp/pr_branch.txt
+              printf '%s\n' "${PR_EVENT_SHA:-}" > /tmp/pr_commit_shas.txt
+              printf '%s' "$PR_NUMBER" > /tmp/pr_number.txt
+            fi
+          elif [ -n "${MERGE_GROUP_HEAD_REF:-}" ]; then
+            pr_num="$(printf '%s' "$MERGE_GROUP_HEAD_REF" \
+              | sed -E 's@^.*/pr-([0-9]+)-.*$@\1@')"
+            if [ -n "$pr_num" ] && [ "$pr_num" != "$MERGE_GROUP_HEAD_REF" ]; then
+              pr_json="$(gh pr view "$pr_num" --repo "${{ github.repository }}" \
+                --json body,title,author,headRefName,commits)"
+              write_pr_snapshot "$pr_json"
+              printf '%s' "$pr_num" > /tmp/pr_number.txt
+            else
+              : > /tmp/pr_body.txt
+              : > /tmp/pr_title.txt
+              : > /tmp/pr_author.txt
+              : > /tmp/pr_branch.txt
+              : > /tmp/pr_number.txt
+            fi
+          else
+            : > /tmp/pr_body.txt
+            : > /tmp/pr_title.txt
+            : > /tmp/pr_author.txt
+            : > /tmp/pr_branch.txt
+            : > /tmp/pr_number.txt
+          fi
+
+      # I1: Resolve Evidence-Source to an exact OCC SHA before checkout.
+      # I4: OCC fetch failure is a hard FAIL. Not exercised by
+      # onex_change_control's own PRs (invariant I3) — kept for step-for-step
+      # parity with the omnibase_core-hosted validator this job replaces.
+      - name: Resolve Evidence-Source
+        id: resolve_evidence_source
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          pr_body="$(cat /tmp/pr_body.txt 2>/dev/null || true)"
+          evidence_source="$(printf '%s' "$pr_body" | grep -iE '^Evidence-Source:[[:space:]]+\S' | head -1 | sed -E 's/^Evidence-Source:[[:space:]]*//; s/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
+
+          if [ -z "$evidence_source" ]; then
+            echo "::error::OCC PREFLIGHT FAILED: PR body is missing required 'Evidence-Source:' line. Add one of: 'Evidence-Source: OCC#<PR-number>' or 'Evidence-Source: <occ-sha>'"
+            exit 1
+          fi
+
+          if printf '%s' "$evidence_source" | grep -qiE '^OCC#[0-9]+$'; then
+            occ_pr_num="$(printf '%s' "$evidence_source" | sed -E 's/^OCC#//i')"
+            occ_json="$(gh pr view "$occ_pr_num" --repo "OmniNode-ai/onex_change_control" --json state,headRefOid,mergeCommit 2>/dev/null || true)"
+            occ_state="$(printf '%s' "$occ_json" | jq -r '.state // ""' 2>/dev/null || true)"
+            if [ "$occ_state" = "MERGED" ]; then
+              occ_sha="$(printf '%s' "$occ_json" | jq -r '.mergeCommit.oid // ""' 2>/dev/null || true)"
+            else
+              occ_sha="$(printf '%s' "$occ_json" | jq -r '.headRefOid // ""' 2>/dev/null || true)"
+            fi
+            if [ -z "$occ_sha" ]; then
+              echo "::error::OCC PREFLIGHT FAILED: OCC PR #${occ_pr_num} could not be resolved — OCC unavailable or PR not found."
+              exit 1
+            fi
+          elif printf '%s' "$evidence_source" | grep -qiE '^[0-9a-f]{7,40}$'; then
+            occ_sha="$(gh api "repos/OmniNode-ai/onex_change_control/commits/${evidence_source}" --jq '.sha' 2>/dev/null || true)"
+            if [ -z "$occ_sha" ]; then
+              echo "::error::OCC PREFLIGHT FAILED: Evidence-Source SHA could not be canonicalized to a full OCC commit SHA."
+              exit 1
+            fi
+          else
+            echo "::error::OCC PREFLIGHT FAILED: Evidence-Source value '${evidence_source}' is not a valid OCC#<number> or hex SHA."
+            exit 1
+          fi
+
+          echo "sha=${occ_sha}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Evidence-Source resolved to OCC SHA: ${occ_sha}"
+
+      # I3: OCC's own PRs use in-tree checkout; other repos check out pinned OCC evidence.
+      # I4: OCC fetch failure is a hard FAIL. Not exercised by onex_change_control's
+      # own PRs — kept for step-for-step parity with the workflow this job replaces.
+      - name: Check out onex_change_control (for contracts + receipts)
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true' && github.repository != 'OmniNode-ai/onex_change_control'
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/onex_change_control
+          path: .onex_change_control
+          ref: ${{ steps.resolve_evidence_source.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Pin the OCC SHA used for eligibility evaluation. Once resolved here, all
+      # subsequent steps use this exact SHA — never re-fetching. (I1, I2)
+      - name: Resolve OCC evidence SHA
+        id: occ_sha
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        run: |
+          set -euo pipefail
+          repo_short="${GITHUB_REPOSITORY##*/}"
+          if [ "$repo_short" = "onex_change_control" ]; then
+            sha="$(git rev-parse HEAD)"
+            root="."
+            contracts_dir="contracts"
+            receipts_dir="drift/dod_receipts"
+          else
+            sha="$(git -C .onex_change_control rev-parse HEAD)"
+            root=".onex_change_control"
+            contracts_dir="$root/contracts"
+            receipts_dir="$root/drift/dod_receipts"
+          fi
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::OCC SHA resolution failed: '$sha'"
+            exit 1
+          fi
+          {
+            echo "sha=$sha"
+            echo "root=$root"
+            echo "contracts_dir=$contracts_dir"
+            echo "receipts_dir=$receipts_dir"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python 3.13
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        uses: astral-sh/setup-uv@v7
+
+      # OMN-12565: Runner Python write-contract preflight.
+      #
+      # The merge-group eligibility check previously installed omnibase-core into
+      # the system interpreter via `uv pip install --system`, which writes
+      # /usr/local/lib/python3.12/dist-packages. On a freshly recreated
+      # trusted-CI runner that path is not writable by the `runner` user, so the
+      # gate failed until each container was manually chowned — container state,
+      # not an image guarantee.
+      #
+      # The durable shape removes `--system` entirely and installs into a
+      # uv-managed virtual environment under $GITHUB_WORKSPACE (always writable
+      # on a fresh runner). This preflight asserts that contract up front and
+      # fails loudly if it is violated, before any install or gate step runs.
+      - name: Preflight runner Python write contract
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        env:
+          OCC_PREFLIGHT_VENV: ${{ github.workspace }}/.occ-preflight-venv
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GITHUB_WORKSPACE:-}" ]; then
+            echo "::error::OMN-12565 write-contract preflight: GITHUB_WORKSPACE is unset; cannot locate the writable venv root."
+            exit 1
+          fi
+
+          # Contract part 1: the workspace-rooted venv parent must be writable.
+          # This is the path the install step uses instead of the system path.
+          venv_parent="$(dirname "$OCC_PREFLIGHT_VENV")"
+          probe="${venv_parent}/.omn12565-write-probe"
+          if ! ( touch "$probe" && rm -f "$probe" ) 2>/dev/null; then
+            echo "::error::OMN-12565 write-contract preflight FAILED: ${venv_parent} is not writable by the runner user. The OCC preflight venv cannot be created. A freshly recreated runner must expose a writable workspace; check the runner image and mount permissions."
+            exit 1
+          fi
+
+          # Contract part 2: prove we do NOT depend on writing the system
+          # dist-packages path. If a workflow ever reintroduces `uv pip install
+          # --system`, this preflight is the canary — the venv-only path means
+          # /usr/local/lib/python3.12/dist-packages writability is irrelevant.
+          system_dist="/usr/local/lib/python3.12/dist-packages"
+          if [ -d "$system_dist" ] && [ ! -w "$system_dist" ]; then
+            echo "::notice::OMN-12565: ${system_dist} is not writable — that is fine. The OCC preflight installs into ${OCC_PREFLIGHT_VENV} (workspace venv), so the unwritable system path is not part of the contract."
+          fi
+
+          echo "::notice::OMN-12565 write-contract preflight PASSED: ${venv_parent} writable; gate uses workspace venv at ${OCC_PREFLIGHT_VENV}; no --system / dist-packages write required."
+
+      # Install omnibase_compat and omnibase_core from source so the validator
+      # module is available. Pattern mirrors call-receipt-gate.yml's install
+      # block.
+      #
+      # OMN-15689 round-1 fix: omnibase_compat uses the SAME dynamically
+      # resolved PR-base-branch ref as the omnibase_core validator checkout
+      # below, not a hardcoded literal. The prior "dev here, main in
+      # call-receipt-gate.yml" split was itself a per-branch caller variant
+      # of the same dependency (adversarial finding, OMN-15689 round 1) — the
+      # ticket's AC(e) text is not scoped to the omnibase_core validator ref
+      # alone, so this dependency checkout is in scope too.
+      #
+      # OMN-15698 (Option A): ref is steps.validator_ref.outputs.compat_ref,
+      # which equals the resolved PR base ref for dev/main targets (fail-closed
+      # unchanged) and falls back to omnibase_compat's own default branch ONLY
+      # when the resolved ref is hotfix-shaped and absent from omnibase_compat.
+      - name: Check out omnibase_compat (transitive dep)
+        if: "steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true' && ! hashFiles('./src/omnibase_compat/__init__.py') && ! hashFiles('./omnibase_compat/pyproject.toml')"
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_compat
+          path: .occ-preflight-deps/omnibase_compat
+          ref: ${{ steps.validator_ref.outputs.compat_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      # OMN-15689 (R3a): checkout ref is the dynamically-resolved PR base
+      # branch, never a literal @main, @dev, or the old `core-ref` input's
+      # hardcoded "dev" default.
+      #
+      # OMN-15698 (Option A): ref is steps.validator_ref.outputs.core_ref,
+      # which equals the resolved PR base ref for dev/main targets (fail-closed
+      # unchanged — a dev/main base ref absent from omnibase_core still fails
+      # this checkout step hard) and falls back to omnibase_core's own default
+      # branch ONLY when the resolved ref is hotfix-shaped and absent from
+      # omnibase_core.
+      - name: Check out omnibase_core (for eligibility validator)
+        if: "steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true' && ! hashFiles('./src/omnibase_core/__init__.py') && ! hashFiles('./omnibase_core/pyproject.toml')"
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/omnibase_core
+          path: .occ-preflight-deps/omnibase_core
+          ref: ${{ steps.validator_ref.outputs.core_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install omnibase_core
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        # OMN-12565: install into a uv-managed virtual environment under
+        # $GITHUB_WORKSPACE instead of the system interpreter. `uv pip install
+        # --system` wrote /usr/local/lib/python3.12/dist-packages, which a
+        # freshly recreated trusted-CI runner cannot write. The workspace venv
+        # is always writable, so the write contract no longer depends on a
+        # mutable, manually-chowned system path. The venv python is exported as
+        # OCC_PREFLIGHT_PY for the downstream eligibility step.
+        env:
+          OCC_PREFLIGHT_VENV: ${{ github.workspace }}/.occ-preflight-venv
+        run: |
+          set -euo pipefail
+
+          # Create a clean uv venv in the writable workspace. --clear makes the
+          # step idempotent across re-runs on a warm runner.
+          uv venv --clear --python 3.13 "$OCC_PREFLIGHT_VENV"
+          venv_py="$OCC_PREFLIGHT_VENV/bin/python"
+
+          if [ -f "./omnibase_compat/pyproject.toml" ]; then
+            compat_path="./omnibase_compat"
+          elif [ -f "./.occ-preflight-deps/omnibase_compat/pyproject.toml" ]; then
+            compat_path="./.occ-preflight-deps/omnibase_compat"
+          else
+            compat_path=""
+          fi
+
+          if [ -n "$compat_path" ]; then
+            uv pip install --python "$venv_py" --refresh -e "$compat_path"
+          fi
+
+          if [ -f "./pyproject.toml" ] && grep -qE '^\s*name\s*=\s*["\x27]omnibase[-_.]core["\x27]' ./pyproject.toml 2>/dev/null; then
+            core_path="."
+          elif [ -f "./omnibase_core/pyproject.toml" ]; then
+            core_path="./omnibase_core"
+          elif [ -f "./.occ-preflight-deps/omnibase_core/pyproject.toml" ]; then
+            core_path="./.occ-preflight-deps/omnibase_core"
+          else
+            echo "::error::omnibase_core not installable — no source checkout available"
+            exit 1
+          fi
+
+          uv pip install --python "$venv_py" \
+            'hatchling' \
+            'editables' \
+            'pydantic>=2.12.5,<3.0.0' \
+            'pyyaml>=6.0.2,<7.0.0' \
+            'dependency-injector>=4.48.3,<5.0.0' \
+            'deepdiff>=8.0.0,<10.0.0' \
+            'click>=8.3.1,<9.0.0' \
+            'cryptography>=46.0.3,<47.0.0' \
+            'jsonschema>=4.25.1,<5.0.0' \
+            'httpx>=0.27.0,<1.0.0' \
+            'blake3>=1.0.8,<2.0.0' \
+            'ruamel-yaml>=0.18.0'
+
+          wheel_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/occ-preflight-wheels.XXXXXX")"
+          (cd "$core_path" && uv build --wheel --out-dir "$wheel_dir")
+
+          core_wheel="$(find "$wheel_dir" -maxdepth 1 -type f -name 'omnibase_core-*.whl' -print -quit)"
+          if [ -z "$core_wheel" ]; then
+            echo "::error::omnibase_core wheel was not produced"
+            exit 1
+          fi
+
+          uv pip install --python "$venv_py" --no-deps --no-config --no-index --reinstall-package omnibase-core "$core_wheel"
+
+          # Export the venv interpreter for the downstream gate steps so they run
+          # against this install instead of bare `python` (the system interpreter).
+          echo "OCC_PREFLIGHT_PY=$venv_py" >> "$GITHUB_ENV"
+
+      - name: Verify eligibility validator importable
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        run: |
+          "$OCC_PREFLIGHT_PY" - <<'PY' || {
+          import inspect
+          import omnibase_core
+          from omnibase_core.validation import validator_occ_merge_eligibility as validator
+
+          source = inspect.getsource(validator)
+          print("omnibase_core at:", omnibase_core.__file__)
+          print("validator at:", validator.__file__)
+          if "resolve_supersession" not in source:
+              raise RuntimeError(
+                  "validator_occ_merge_eligibility is missing resolve_supersession support"
+              )
+          PY
+            echo "::error::validator_occ_merge_eligibility not importable after install"
+            "$OCC_PREFLIGHT_PY" -c "import omnibase_core, os; print('omnibase_core at:', os.path.dirname(omnibase_core.__file__))" || true
+            exit 1
+          }
+
+      # Run the eligibility validator. Exit code propagates: 0 = eligible, 1 = ineligible.
+      # Auto-merge MUST NOT arm when this step exits non-zero.
+      - name: Run OCC eligibility check
+        id: occ_eligibility
+        if: steps.event_scope.outputs.required == 'true' && steps.bot_exempt.outputs.exempt != 'true'
+        run: |
+          set -euo pipefail
+
+          PR_TITLE="$(cat /tmp/pr_title.txt)"
+          PR_BRANCH="$(cat /tmp/pr_branch.txt)"
+          PR_NUMBER_RESOLVED="$(cat /tmp/pr_number.txt 2>/dev/null || true)"
+          REPO_NAME="${{ github.repository }}"
+          REPO_SHORT="${REPO_NAME##*/}"
+
+          if [ -z "$PR_NUMBER_RESOLVED" ]; then
+            echo "::error::Could not resolve PR number for OCC eligibility check"
+            exit 1
+          fi
+
+          commit_args=()
+          while IFS= read -r sha; do
+            [ -n "$sha" ] && commit_args+=(--pr-commit-sha "$sha")
+          done < /tmp/pr_commit_shas.txt
+          while IFS= read -r text; do
+            [ -n "$text" ] && commit_args+=(--pr-commit-text "$text")
+          done < /tmp/pr_commit_texts.txt
+
+          "$OCC_PREFLIGHT_PY" -m omnibase_core.validation.validator_occ_merge_eligibility \
+            --repo "$REPO_SHORT" \
+            --pr-number "$PR_NUMBER_RESOLVED" \
+            --pr-title "$PR_TITLE" \
+            --pr-body-file /tmp/pr_body.txt \
+            --pr-branch "$PR_BRANCH" \
+            --occ-commit-sha "${{ steps.occ_sha.outputs.sha }}" \
+            --contracts-dir "${{ steps.occ_sha.outputs.contracts_dir }}" \
+            --receipts-dir "${{ steps.occ_sha.outputs.receipts_dir }}" \
+            "${commit_args[@]}" \
+            | tee /tmp/occ_preflight_result.json
+
+          result_eligible="$("$OCC_PREFLIGHT_PY" -c "import json,sys; d=json.load(open('/tmp/occ_preflight_result.json')); sys.exit(0 if d.get('eligible') else 1)" 2>/dev/null; echo $?)"
+          if [ "$result_eligible" != "0" ]; then
+            detail="$("$OCC_PREFLIGHT_PY" -c "import json; d=json.load(open('/tmp/occ_preflight_result.json')); print(d.get('detail','(no detail)'))" 2>/dev/null || true)"
+            reason="$("$OCC_PREFLIGHT_PY" -c "import json; d=json.load(open('/tmp/occ_preflight_result.json')); print(d.get('reason','(no reason)'))" 2>/dev/null || true)"
+            echo "::error::OCC PREFLIGHT FAILED: reason=${reason} — ${detail}"
+            echo "::error::Auto-merge cannot arm until OCC eligibility is satisfied."
+            echo "::error::Add a passing receipt to drift/dod_receipts/ in onex_change_control for all dod_evidence items cited in this PR's ticket contract."
+            exit 1
+          fi
+
+          echo "OCC eligibility: PASS (occ_sha=${{ steps.occ_sha.outputs.sha }})"

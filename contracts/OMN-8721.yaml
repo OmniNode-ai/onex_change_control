@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-8721"
+title: "fix(OMN-8721): surface standing-orders load failures structurally in handler_session_orchestrator"
+summary: >-
+  HandlerSessionOrchestrator._load_standing_orders had a bare `except Exception: logger.warning(...);
+  return {}` that silently swallowed JSON-decode / IO / parse errors, making a genuine load failure indistinguishable
+  from "no standing orders configured" (the same silent-swallow failure class as OMN-9561 in _fetch_linear_active_tickets).
+  This change keeps the absent-file path as the legitimate empty-result case (returns {} after a structured
+  warning log citing the path) and replaces the swallow with a typed SessionStandingOrdersError that the
+  Phase 2 caller converts into a structured ERROR result, so real load/parse failures surface in the node
+  envelope instead of vanishing. Code-only change; no deploy, no runtime mutation, no new REST endpoint,
+  no event-bus topic change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Four integration tests prove the contract (absent -> {} + structured log; empty-list
+      -> {}; malformed JSON -> raises SessionStandingOrdersError; IO error -> raises) and the full omnimarket
+      suite stays green."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-8721/dod-tests-green/command.yaml
+  - kind: "manual"
+    description: "grep confirms no silent `return {}` remains in the _load_standing_orders except handler."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-8721/dod-no-silent-return/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-tests-green"
+    description: >-
+      tests/integration/node_session_orchestrator/test_standing_orders_error_propagation.py (4 tests)
+      passes and the full `uv run pytest tests/ -m "not kafka"` omnimarket suite is green (11029 passed,
+      48 skipped) on the feature commit.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-8721/dod-tests-green/command.yaml"
+  - id: "dod-no-silent-return"
+    description: >-
+      The bare `except Exception: ...; return {}` is gone from _load_standing_orders; the except handler
+      logs structured and raises SessionStandingOrdersError. The only remaining `return {}` is the legitimate
+      absent-file path, which now emits a structured warning.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-8721/dod-no-silent-return/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-8721 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-8721/dod-occ-self/command.yaml"
+  - id: "dod-deploy-gate"
+    description: >-
+      Deploy-gate evidence for the dev runtime path this fix touches (src/omnimarket/nodes/node_session_orchestrator).
+      The change is code-only handler logic; activating it in the deployed dev runtime is the standard
+      dev redeploy (pre-authorized for the dev lane). After merge, redeploy the omnimarket/omnibase_infra
+      dev runtime and confirm the host process loads the node_session_orchestrator contract and HandlerSessionOrchestrator
+      without error. No live prod deploy, no runtime restart, and no .201 mutation were performed as part
+      of this pre-merge evidence update.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-8721/dod-deploy-gate/command.yaml
+          && grep -q 'deploy omnimarket' drift/dod_receipts/OMN-8721/dod-deploy-gate/command.yaml"

@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13769"
+evidence_item_id: "dod-003"
+check_type: "command"
+check_value: "grep -q 'sha256:d0314bc9adab725d284784c2488c919475db57f43e383c538fccc8344c7578c2' k8s/onex-dev/runtime/kustomization.yaml"
+contract_sha256: "sha256:d0314bc9adab725d284784c2488c919475db57f43e383c538fccc8344c7578c2"
+status: PASS
+run_timestamp: "2026-07-01T20:30:00Z"
+commit_sha: "242f8bcd4d5cf0fc771c6be8c79c9ddd67b5ede9"
+branch: "jonah/omn-13769-manifest-reconcile"
+pr_number: 538
+runner: "claude-code-omn-13769-manifest-reconcile"
+verifier: "codex-receipt-review-omn-13769"
+probe_command: "kubectl diff -k k8s/onex-dev/runtime  # via SSM on i-0e596e8b557e27785, KUBECONFIG=/etc/rancher/k3s/k3s.yaml"
+probe_stdout: |
+  BEFORE (pre-fix, commit prior to 242f8bc):
+    441-line diff, includes:
+      -image: .../omninode-runtime@sha256:13c96028...   (LIVE)
+      +image: .../omninode-runtime@sha256:481b774f...   (repo, stale)
+      hunks for OMNIINTELLIGENCE_DB_URL secretKeyRef vs blank value on all 3 core deploys
+
+  AFTER (post-fix, commit 242f8bc):
+    363-line diff, image-digest and OMNIINTELLIGENCE_DB_URL hunks are gone.
+    Residual diff is pre-existing and unrelated to this incident (ConfigMap keys
+    the repo carries but onex-dev has not been redeployed with, USE_EVENT_ROUTING/OMNICLAUDE_CONTRACTS_ROOT
+    ordering, a run-onex volume, livenessProbe initialDelaySeconds) — additive,
+    non-breaking, and explicitly out of scope for this narrowly-scoped reconcile.
+
+  onex-prod (read-only, no mutation):
+    kubectl diff -k k8s/onex-prod/runtime against live onex-prod initially returned
+    an admission error ("readinessProbe.tcpSocket: Forbidden: may not specify more
+    than 1 handler type") because live onex-prod's omnibase-intelligence-api
+    readinessProbe is currently tcpSocket-only (a prior prod recovery workaround),
+    not the repo's httpGet. Confirmed via `kubectl get deployment ... -o
+    jsonpath={.spec.template.spec.containers[0].readinessProbe}`: all 7 core
+    onex-prod runtime deployments carry readinessProbe=tcpSocket, a tcpSocket
+    startupProbe (600s window), and memory limits raised 512Mi->768Mi vs repo.
+    None of this reflects the 2026-07-01 wave-1 recovery (onex-prod was not
+    mutated this session) — flagged as a separate, prod-gated, pre-existing
+    drift for a sibling follow-up ticket, not touched here.
+actual_output: "PASS: live kubectl diff (read-only, SSM) confirms the onex-dev image-digest and OMNIINTELLIGENCE_DB_URL
+  drift is resolved by omninode_infra PR #538; onex-prod drift dispositioned as pre-existing/prod-gated,
+  not applied."
+exit_code: 0

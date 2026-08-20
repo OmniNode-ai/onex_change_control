@@ -1,0 +1,92 @@
+---
+# prod_promotion_grants.yaml — un-forgeable trust anchor for prod-promotion approvals
+#
+# OMN-13418 Phase 2a: This file is the canonical grant registry for production
+# promotion approvals. `.github/CODEOWNERS` names @OmniNode-ai/platform-leads
+# as the reviewer of any PR touching this file. A grant only enters the
+# registry through a human-authored PR that lands via CODEOWNERS review — an
+# AI agent cannot self-mint a grant. The `validate-prod-promotion-grants`
+# CI job (OMN-14441) enforces the schema + integrity invariants below.
+#
+# OMN-14814 — DUAL-CONTROL REMOVED: the former `approved_by != PR-author`
+# requirement is gone. @OmniNode-ai/platform-leads has exactly one member
+# (the sole CODEOWNER), so demanding a *second, different* approver would
+# wedge every prod-promotion grant permanently — the sole owner could never
+# satisfy `approved_by != requested_by`. A grant may now be self-approved by
+# that sole owner; it remains un-forgeable because a human must author it in a
+# CODEOWNERS-reviewed PR and every other schema/integrity/freshness check
+# below still holds. (Stability-proven digest, OCC receipt, declared rollback
+# target, gated-path routing, and the health-conditional waiver are enforced
+# downstream by the prod-promotion gate node — not by this file's validator.)
+#
+# Schema per entry:
+#   grant_id:           unique UUID identifying this grant (format: "grant-<uuid4>")
+#   runtime_lane:       target runtime lane being promoted to (e.g. "prod")
+#   image_digest:       sha256 digest of the image being promoted (format: "sha256:<hex>")
+#   promotion_batch_id: batch identifier grouping related promotions (format: "batch-<uuid4>")
+#   approved_by:        GitHub login of the approver (may equal the requester
+#                        under a sole CODEOWNER — OMN-14814)
+#   expires_at:         ISO-8601 UTC datetime after which the grant is invalid
+#   created_at:         ISO-8601 UTC datetime when the grant was created
+#   reason:             human-readable justification for the promotion
+#
+# Optional single-use lifecycle markers (OMN-13424; absent == not consumed):
+#   consumed:                    bool — once a promotion using this grant reaches a
+#                                terminal deploy state, mark true (or remove the entry)
+#   consumed_at:                 ISO-8601 UTC datetime the grant was consumed
+#   consumed_by_correlation_id:  UUID of the redeploy run that consumed it
+#   The resolver treats a consumed grant as ABSENT — no replay of a spent grant.
+#
+# Invariants enforced by `validate-prod-promotion-grants`
+# (src/onex_change_control/scripts/validate_prod_promotion_grants.py, run as an
+# unconditional job in ci.yml, wired into the required CI Summary rollup —
+# OMN-14441; previously a standalone workflow that ran but could not block a
+# merge, OMN-14415 instance #1):
+#   - File must parse as valid YAML
+#   - Top-level key must be "entries" (list)
+#   - Each entry must have all required fields present; only the OMN-13424
+#     consumed* lifecycle markers are tolerated as extra fields
+#   - grant_id must match pattern: grant-[0-9a-f-]{36}; no two entries may
+#     share a grant_id (OMN-14441)
+#   - image_digest must match pattern: sha256:[0-9a-f]{64}
+#   - expires_at and created_at must be ISO-8601 UTC datetimes
+#   - expires_at must be after created_at
+#   - NO EXPIRED ENTRY may remain (OMN-13424): a grant whose expires_at is in the
+#     past FAILs the check — it must be pruned so at rest the file is entries: []
+#
+# To add a grant:
+#   1. Open a PR against onex_change_control with a new entry below.
+#   2. A platform lead reviews and lands it via CODEOWNERS review.
+#   3. The approver's GitHub login becomes the approved_by value (which, under
+#      the current sole CODEOWNER, may equal the requester — OMN-14814).
+#
+# This file intentionally starts empty. Entries are added only through a
+# human-authored, CODEOWNERS-reviewed PR — never self-minted by an agent.
+
+# ---------------------------------------------------------------------------
+# GRANT REQUEST (OMN-13418) — opened by requester `jonahgabriel` on 2026-07-19.
+#
+# The entry below is now approved and time-bounded for this promotion window:
+#   * `approved_by` records the platform-lead approver. OMN-14814 removed the
+#     former self-approval rejection because `jonahgabriel` is the sole member
+#     of @OmniNode-ai/platform-leads.
+#   * `expires_at` must be an absolute ISO-8601 UTC expiry.
+#
+# No prod mutation happens until this PR holds real approver-set values, CI is
+# green, and the entry is merged. The
+# resolver reads this file at @main, so after merge to dev the grant must also
+# reach `main` (dev->main cutover) before the prod-promotion gate resolves it.
+# The gate binds the grant to its target by (runtime_lane==prod, image_digest,
+# promotion_batch_id): the staged `redeploy-start` command MUST reuse the exact
+# `promotion_batch_id` and `image_digest` recorded here.
+# ---------------------------------------------------------------------------
+#
+# GRANT REQUEST (OMN-13418) — PREP ONLY, opened by requester `jonahgabriel` on
+# 2026-07-25 as background-lane prep. This PR is NOT to be merged by any agent.
+# It becomes effective ONLY when a human operator lands it on
+# `onex_change_control@main` on explicit operator word — that merge event is
+# the anti-self-issue anchor (an agent cannot complete a CODEOWNERS-gated
+# merge to `main`). `expires_at` below is a PROPOSAL; the human approver may
+# shorten it at merge time.
+# ---------------------------------------------------------------------------
+entries: []

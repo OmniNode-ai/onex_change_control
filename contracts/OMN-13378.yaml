@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13378"
+title: "GEN-01 probe topic mismatch: publish declared-fields-only to terminal-event topic, read exposed
+  projection"
+summary: >
+  The GEN-01 leg of tests/integration/e2e_probe/test_leg_probe.py diverged from the proven SEA generation
+  path in two ways. (1) The projection read targeted onex.snapshot.projection.generation.events.v1, a
+  topic declared by no producer or reducer anywhere in omnimarket; the projection API serves reads keyed
+  by the EVENT topic (node_projection_delegation materializes onex.evt.omnimarket.node-generation-completed.v1
+  into the generation_events table). Repointed _PROJECTION_API_TOPIC_GENERATION to the exposed terminal-event
+  topic. (2) _build_generation_payload emitted node_name_hint / requested_by / timestamp / probe / ticket,
+  none declared on ModelNodeGenerationRequest (frozen, extra=forbid); the consumer rejects such a command
+  on strict validation before any terminal event or projection row. Stripped to declared-fields-only (correlation_id
+  + task_description); probe provenance already rides the envelope source_tool. Test-only change; no source/runtime
+  change. Live-proven on the dev lane: the terminal-event projection serves HTTP 200 while the snapshot
+  topic returns 404.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      The GEN-01 projection-API read test passes against the live dev projection at the exposed terminal-event
+      topic, and the declared-fields-only payload validates against ModelNodeGenerationRequest while the
+      old undeclared-field payload is rejected by extra=forbid.
+    command: "uv run pytest tests/integration/e2e_probe/test_leg_probe.py::TestE2EGEN01GenerationLeg::test_gen01_projection_api_read
+      tests/integration/e2e_probe/test_leg_probe.py::TestE2EGEN01GenerationLeg::test_gen01_status_report
+      -m e2e -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1306"
+    description: >
+      omnimarket PR #1306 repoints the GEN-01 projection read to onex.evt.omnimarket.node-generation-completed.v1
+      and strips undeclared fields from _build_generation_payload. Evidence anchor: omnimarket head commit
+      68266ffb282c9ad229ef454c18e55b6b930baa18.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13378/dod-omnimarket-pr-1306/command.yaml
+          && grep -q '^pr_number: 1306$' drift/dod_receipts/OMN-13378/dod-omnimarket-pr-1306/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13378/dod-omnimarket-pr-1306/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: live-proven read-only on the .201 dev lane (mutable proof lane). The fixed read
+      path (GET /projection/onex.evt.omnimarket.node-generation-completed.v1) returns HTTP 200 with a
+      populated row (correlation_id 896f24d7-bd34-4b95-bbc4-7a2fa43cb4b4, contract_passed=t), while the
+      previously-referenced snapshot topic (GET /projection/onex.snapshot.projection.generation.events.v1)
+      returns HTTP 404 — proving it was never exposed. A declared-fields-only command produced into the
+      dev redpanda via 'rpk topic produce' was consumed (consumer group lag 0) but DLQ-routed by the running
+      dev runtime ('No dispatcher found for message type omnimarket.node-generation-requested' — OMN-12525
+      routing-divergence class, independent of this test fix). No prod/judge/stability lane mutation.
+      The receipt check_value carries the 'rpk topic produce' / 'docker exec' deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13378/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1306$' drift/dod_receipts/OMN-13378/dod-deploy-assessment/command.yaml
+          && grep -q 'rpk topic produce' drift/dod_receipts/OMN-13378/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13378 contract and receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13378/dod-occ-pr-self/command.yaml
+          && grep -q '^pr_number: 2842$' drift/dod_receipts/OMN-13378/dod-occ-pr-self/command.yaml"

@@ -1,0 +1,38 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14466"
+evidence_item_id: "dod-monitor-lib-pure-and-fail-loud"
+check_type: "command"
+check_value: >-
+  L=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/release_drift_monitor_lib.py?ref=cfe726f88e91c350164e71a3af13823187f38ea9"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); DEF=$(printf '%s' "$L" | grep -cE '^def (evaluate_repo|exit_code_for)\(');
+  IO=$(printf '%s' "$L" | grep -cE '^(import|from) (subprocess|urllib|os|requests|httpx)([ .]|$)'); B=$(printf
+  '%s' "$L" | grep -c 'return 2'); test "$DEF" -ge 2 && test "$IO" -eq 0 && test "$B" -ge 1
+status: PASS
+run_timestamp: "2026-07-12T18:32:00Z"
+commit_sha: "cfe726f88e91c350164e71a3af13823187f38ea9"
+runner: "occ-dod-runner"
+verifier: "rt1-builder"
+pr_number: 2272
+probe_command: >-
+  # verbatim check_value re-run at #2272 head cfe726f8 and branch-point parent e811995d by the RT-7 #
+  independent verifier. DEF counts evaluate_repo+exit_code_for defs; IO counts I/O imports; B counts #
+  the blind -> `return 2` mapping.
+probe_stdout: |
+  # bound check_value exit codes, run verbatim by rt1-builder (RT-7 independent verifier):
+  #   ref=cfe726f8 (#2272 head) -> def=2 io=0 ret2=1 -> exit 0  GREEN
+  #   ref=e811995d (parent)     -> def=0 io=0 ret2=0 -> exit 1  RED  <- lib absent, non-vacuous boundary
+exit_code: 0
+actual_output: >-
+  PASS: release_drift_monitor_lib.py at #2272's head is the REAL pure fail-loud evaluator -- it defines
+  both evaluate_repo and exit_code_for, imports zero I/O modules (subprocess/urllib/os/requests/httpx),
+  and carries the blind -> `return 2` mapping so a monitor that could not gather facts exits 2 (BLIND),
+  never a false green. The independent verifier confirmed this behaviourally too: an invalid-token run
+  produced diverged:false / blind:true / 0 findings / 36 probe_errors -> exit 2. THE NAIVE PURITY CHECK
+  ("no subprocess import") IS A VACUOUS GREEN -- it passes on an empty/absent file; this form requires
+  the two evaluator defs to EXIST (DEF >= 2) plus the blind exit code, so a green means the evaluator
+  is really present and fail-loud. RED PROVEN at parent e811995d where the lib is absent (DEF == 0 ->
+  exit 1).
+branch: "jonah/omn-14466-rt7-occ-companion"
+contract_sha256: "sha256:8b89b26e876e26a10b11d24a15ebb24185cc0da30be84b01c2cc94eb0a9b7003"
+contract_entry_sha256: "sha256:4ee5f7c837a2582496bfc2c08ec275371c7aa94997afb9143b805f9e0aabdce4"

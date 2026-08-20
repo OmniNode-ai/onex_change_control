@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14661"
+title: "scripts_exceptions registry docstring honesty — approved_by is advisory, not code-enforced"
+summary: >-
+  Doc-honesty fix. The scripts_exceptions registry docstrings/comments claimed approved_by "must NOT be
+  the PR author — enforced by the registry workflow / review", implying a code-level approved_by != author
+  gate for scripts exceptions. Verified against the repo there is NO such check: the only approved_by
+  != author comparison is validate_prod_promotion_grants.py:309, which applies ONLY to prod-promotion
+  grants. ModelScriptException.approved_by defaults to "" (blank) and no validator reads it. The misleading
+  docs caused agents to invent a governance gate that does not exist. Corrects six surfaces (allowlists/scripts_exceptions.yaml
+  header, model_script_exception.py module + Field docstrings, enum_script_canonical_verdict.py, scanners/script_canonical_form.py,
+  scripts/check_imperative_contracts.py comment, validators/arch_handler_contract_compliance.py) to state
+  that approved_by RECORDS the CODEOWNERS reviewer's login but is advisory/unenforced; the real gate is
+  CODEOWNERS review on a separate PR against onex_change_control@main. No new enforcement is added (operator
+  policy: no PR-approval gates for a solo dev). Docstring/comment-only; no behavior change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "CI passes on the PR"
+    command: "gh pr checks"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "PR opened against the dev branch."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --json state -q .state --repo ${REPO}"
+  - id: "dod-002"
+    description: >-
+      The false enforcement claim is removed from every scripts_exceptions surface. Substantive/falsifiable:
+      exits non-zero (FAIL) if any of the pre-change phrases asserting a code-enforced approved_by !=
+      author gate for scripts exceptions still appears in src/ or the allowlist. Proven RED against the
+      pre-change tree, which contained "enforced by the registry workflow / review" and "must NOT be the
+      PR author".
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! grep -rn -e 'enforced by the registry workflow / review' -e 'must NOT be the PR author' -e
+          'MUST differ from the PR author' src/onex_change_control allowlists/scripts_exceptions.yaml
+  - id: "dod-003"
+    description: >-
+      The corrected docs name the sole real enforcement site. Substantive: model_script_exception.py now
+      states approved_by is NOT code-enforced and points to validate_prod_promotion_grants.py as the only
+      approved_by != author check. Falsifiable: fails if either the "not code-enforced" wording or the
+      validate_prod_promotion_grants reference is missing.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -qi 'not code-enforced' src/onex_change_control/models/model_script_exception.py && grep
+          -q 'validate_prod_promotion_grants' src/onex_change_control/models/model_script_exception.py
+  - id: "dod-004"
+    description: >-
+      Code ground truth the docs now match: validate_prod_promotion_grants.py is the ONLY approved_by
+      == PR-author rejection in the repo, and it lives in the prod-promotion path (not the scripts-exceptions
+      path). Falsifiable: fails if the self-approval rejection is absent from that script.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'approved_by.strip().casefold() == pr_author.strip().casefold()' src/onex_change_control/scripts/validate_prod_promotion_grants.py
+  - id: "dod-005"
+    description: "Ticket contract artifact validates against ModelTicketContract."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run validate-yaml contracts/OMN-14661.yaml"

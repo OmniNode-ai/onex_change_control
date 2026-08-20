@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12965"
+title: "Runtime image identity labels — stamp org.opencontainers version/revision in workspace-mode builds"
+summary: >
+  The deep dive found the main runtime image stamped org.opencontainers.image.version=0.1.0 with a blank
+  org.opencontainers.image.revision after workspace rebuilds. A blank identity degrades every proof packet,
+  because the runtime SHA + image digest are required citations in accepted evidence. Three build paths
+  under-stamped identity: onex up --build (cmd_up) passed only GIT_SHA, leaving VCS_REF (-> blank revision)
+  and RUNTIME_VERSION (-> placeholder 0.1.0) unset; deploy-runtime.sh passed VCS_REF but not RUNTIME_VERSION/GIT_SHA;
+  and Dockerfile.runtime silently allowed blank/placeholder identity in workspace mode. Fix: cli._image_identity_build_args()
+  stamps the full GIT_SHA / VCS_REF / RUNTIME_VERSION / BUILD_DATE quad and fails fast on an unresolved
+  git revision; deploy-runtime.sh stamps RUNTIME_VERSION + GIT_SHA and verifies the version label is non-placeholder
+  post-deploy; Dockerfile.runtime fails workspace builds with a blank VCS_REF or placeholder RUNTIME_VERSION=0.1.0
+  (release mode unaffected). Enforcement ratchet ships in the same PR: scripts/check_runtime_image_identity.py
+  wired as a pre-commit hook + CI gate, plus tests/unit/infra/test_runtime_image_identity_labels.py and
+  an extended deploy-agent build-arg test. No topic schema, envelope wire, or contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr"
+    description: >
+      omnibase_infra PR adds the image-identity stamping fix across all three build paths plus the enforcement
+      ratchet. Evidence anchor: omnibase_infra branch jonah/omn-12965-runtime-image-identity-labels head
+      commit 3d1ee7c6699a4a0caca3a95f1ed6ab735663ef23. Proven locally via throwaway docker builds: workspace+args
+      -> populated org.opencontainers.image.version (0.38.3) + revision; workspace without args -> guard
+      fails (exit 64); release without args -> 0.1.0 placeholder allowed (no regression). 6 new unit tests
+      + the extended deploy-agent test pass; the new check_runtime_image_identity.py pre-commit hook passes.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12965/dod-omnibase-infra-pr/command.yaml
+          && grep -q 'check_runtime_image_identity' drift/dod_receipts/OMN-12965/dod-omnibase-infra-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: >
+      Self-binding OCC eligibility receipt: this onex_change_control PR carries the OMN-12965 contract
+      and the dod receipts on branch jonah/omn-12965-occ-receipt, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12965/dod-occ-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR changes build-arg wiring (cli.py, deploy-runtime.sh), a Dockerfile guard,
+      a static enforcement script, a pre-commit hook, CI wiring, and tests. No runtime topology, Kafka
+      topic, envelope wire, or contract API change. Live effect (a runtime image carrying the corrected
+      version/revision labels) reaches a lane only on the standard batched stability image rebuild; this
+      PR performs no live deploy and no dev/prod mutation. deploy_pending=true for live-image verification
+      in the batch rebuild.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/pulls/1943/files --jq '.[].filename' | grep
+          -qx 'docker/Dockerfile.runtime' && gh api repos/OmniNode-ai/omnibase_infra/pulls/1943/files
+          --jq '.[].filename' | grep -qx 'scripts/deploy-runtime.sh'"

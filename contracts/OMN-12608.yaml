@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12608"
+title: "Enforce SEA runtime-generation architecture invariant as a guard"
+summary: >
+  Wire the SEA runtime-generation inference architecture invariant as a BLOCKING static guard (pre-commit
+  hook + named CI step + unit test), not advisory detection. SEA runtime generation must route inference
+  through the bus-backed InferenceClient (src/pipeline/inference.py) and omnimarket delegation; the guard
+  fails CI red on any re-introduced raw httpx/requests/aiohttp LLM chat-completions path or hardcoded
+  max_tokens literal. max_tokens stays contract-owned via resolve_max_context_tokens(model) from routing_tiers.yaml.
+  Non-LLM HTTP (the contract-declared MCP transport in node_mcp_transport_effect) is correctly not flagged.
+  The fail-closed-on-truncation clause is conditional on the omnimarket ModelInferenceResponseData wire
+  model surfacing finish_reason, which it does not yet expose; that facet is documented as a follow-up
+  boundary rather than a speculative SEA-side guard. PARTIAL extension of the OMN-12468 family; relates
+  to OMN-12472 and OMN-12480.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-sea-pr-196"
+    description: >
+      onex-self-extending-agent PR #196 adds the SEA inference architecture guard at commit 5304ec603e976f2cd79eb215fcdb6127c93b72af:
+      src/guards/sea_inference_architecture.py (AST scan shared by the test and the pre-commit hook),
+      tests/unit/test_sea_inference_architecture_guardrail.py (asserts the live tree is clean AND that
+      the guard fires on planted raw httpx/requests/aiohttp LLM posts and hardcoded max_tokens), scripts/check_sea_inference_architecture.py
+      + .pre-commit-config.yaml (local blocking hook reusing the same scan), and a named CI step in .github/workflows/ci.yml.
+      Validation passed: uv run python -m pytest tests/unit/ (1254 passed, 1 skipped), uv run mypy src/
+      --strict (185 source files, no issues), and pre-commit run --all-files (all hooks passed including
+      the new guard). A planted raw httpx.post chat-completions call with max_tokens=2048 in src/pipeline/consumer.py
+      made the live-tree guard FAIL with raw_httpx_llm_call + hardcoded_max_tokens; reverting restored
+      green.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12608/dod-sea-pr-196/command.yaml
+          && grep -q '^pr_number: 196$' drift/dod_receipts/OMN-12608/dod-sea-pr-196/command.yaml && grep
+          -q '^commit_sha: \"5304ec603e976f2cd79eb215fcdb6127c93b72af\"$' drift/dod_receipts/OMN-12608/dod-sea-pr-196/command.yaml"
+  - id: "dod-occ-pr-self-binding"
+    description: >
+      onex_change_control evidence PR binds this central OMN-12608 contract to the OCC evidence PR itself,
+      so the OCC eligibility gate can prove the evidence PR is about the same ticket before it merges
+      and becomes the downstream Evidence-Source for SEA PR #196.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12608/dod-occ-pr-self-binding/command.yaml
+          && grep -q '^ticket_id: \"OMN-12608\"$' drift/dod_receipts/OMN-12608/dod-occ-pr-self-binding/command.yaml"

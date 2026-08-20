@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14295"
+title: "fix(OMN-14295): batch Memgraph writes + create PythonModule nodes for IMPORTS edges"
+summary: >-
+  omnimarket product PR #1701 (branch jonah/omn-14295-arch-graph-populate-batch-imports, head 05e35de650d96033aa8646707114c4a96ebd764d)
+  unblocks the architecture-graph populate handler (node_architecture_graph_populate_effect). Two fixes
+  plus an operator-directed harvest: (1) IMPORTS edges never landed because the edge MERGE referenced
+  PythonModule node_ids that nothing created — the handler now creates a PythonModule node for every file
+  the shared ASTImportScanner discovers, using the SAME _module_name id-builder for both node and edge
+  source_id, and adds a `repo` property to Repository nodes so cross_repo_imports' `b.repo <> $repo` filter
+  stops silently dropping every row on a NULL comparison; (2) one-round-trip-per-item writes are replaced
+  with UNWIND-batched MERGEs grouped by label / edge_type (batch_size rows per call), with a harvested
+  transient-error retry decorator. Handler + shared-analysis relocation + tests only; no contract topic/model
+  or container-deploy change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Independent verification at product head 05e35de650d96033aa8646707114c4a96ebd764d (PR #1701), run
+      by build-verifier-2 (distinct from the implementer arch-graph-wirer; verifier != runner). Confirmed
+      via raw Cypher against the live .201 dev Memgraph that the full omnimarket populate produces real,
+      ground-truth data (2713 PythonModule nodes, 271 IMPORTS edges, 265 cross_repo_imports rows, 0 old-slash-scheme
+      nodes) independent of the handler self-report; re-ran populate_all(omnimarket) to success in ~24s
+      for 4248 nodes / 2185 edges, which is real UNWIND batching (a per-item projection would be ~1900s).
+      35 populate + analysis tests pass incl the 3 named new tests, all mutation-discriminating; 40 dep-health
+      regression tests pass; mypy --strict on the changed source is clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14295/dod-001/command.yaml && grep -q '05e35de650d96033aa8646707114c4a96ebd764d'
+          drift/dod_receipts/OMN-14295/dod-001/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Honest deploy-surface assessment: the product PR changes the populate handler, relocates the shared
+      ASTImportScanner / ModelImportGraph into omnimarket.analysis / omnimarket.models (with a re-export
+      shim), and adds tests. Verification exercised the handler live against the .201 dev Memgraph (idempotent
+      MERGE writes of the architecture graph — non-destructive), but this PR performs no container deploy,
+      restart, topic mutation, or migration. No live deploy required or performed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14295/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-14295/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the central OMN-14295 contract and
+      PASS receipts consumed by product PR #1701 through its Evidence-Source line. Self-binds via the
+      first commit's SHA (commit_sha), so no OCC PR number prediction is required under concurrent lanes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14295/dod-occ-self/command.yaml

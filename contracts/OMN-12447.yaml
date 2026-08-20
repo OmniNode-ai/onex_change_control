@@ -1,0 +1,116 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-12447
+title: "Harden reusable deploy-gate OCC contract checkout against transport timeouts"
+summary: >
+  The omniclaude reusable deploy-gate workflow is the canonical deploy gate for downstream repos. During
+  the 2026-05-30 integration sweep, omnibase_infra PRs repeatedly failed deploy-gate while actions/checkout
+  attempted to materialize onex_change_control contracts and hit GitHub transport timeouts. The fix in
+  omniclaude PR #1710 replaces the single OCC checkout with a bounded, retrying, process-authenticated
+  sparse git fetch for the contracts directory. Because downstream repositories import the reusable deploy-gate
+  workflow from omniclaude@main, omniclaude PR #1711 carries the matching main hotfix. omniclaude PR #1712
+  follows up by using the inherited cross-repo checkout credential and Git-compatible basic auth for the
+  retrying fetch after downstream proof showed the bearer header could not authenticate private OCC fetches.
+  PR #1712 also authenticates the CI DoD evidence checkout so the same private OCC source can materialize
+  receipts during omniclaude's hard DoD evidence gate.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omniclaude PR #1710 carries the reusable deploy-gate checkout hardening"
+    command: "gh pr view 1710 --repo OmniNode-ai/omniclaude --json number,state,headRefOid"
+  - kind: "ci"
+    description: "omniclaude PR #1711 carries the main hotfix for downstream reusable workflow imports"
+    command: "gh pr view 1711 --repo OmniNode-ai/omniclaude --json number,state,headRefOid"
+  - kind: "ci"
+    description: "omniclaude PR #1712 carries the authenticated OCC fetch follow-up for downstream deploy-gate
+      workflows"
+    command: "gh pr view 1712 --repo OmniNode-ai/omniclaude --json number,state,headRefOid"
+  - kind: "tests"
+    description: "Reusable deploy-gate validator and workflow-shape tests passed locally"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12447/dod-local-tests/command.yaml"
+  - kind: "manual"
+    description: "Reusable workflow uses retrying sparse OCC contracts fetch with process-scoped auth"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12447/dod-workflow-retry-shape/command.yaml"
+  - kind: "manual"
+    description: "omniclaude CI DoD evidence checkout uses inherited cross-repo auth"
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12447/dod-dod-evidence-checkout-auth/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1710"
+    description: "omniclaude PR #1710 exists for the reusable deploy-gate checkout hardening"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1710 --repo OmniNode-ai/omniclaude --json number --jq .number)\"
+          = 1710"
+  - id: "dod-omniclaude-main-pr-1711"
+    description: "omniclaude PR #1711 exists for the main hotfix consumed by downstream deploy-gate workflows"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1711 --repo OmniNode-ai/omniclaude --json number --jq .number)\"
+          = 1711"
+  - id: "dod-omniclaude-main-pr-1712"
+    description: "omniclaude PR #1712 exists for the authenticated main hotfix consumed by downstream
+      deploy-gate workflows"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1712 --repo OmniNode-ai/omniclaude --json number --jq .number)\"
+          = 1712"
+  - id: "dod-local-tests"
+    description: "Deploy-gate validator and reusable workflow regression tests passed"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12447/dod-local-tests/command.yaml
+          && grep -q '27 passed' drift/dod_receipts/OMN-12447/dod-local-tests/command.yaml"
+  - id: "dod-workflow-retry-shape"
+    description: "Reusable deploy-gate workflow materializes OCC contracts with a retrying sparse fetch"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12447/dod-workflow-retry-shape/command.yaml
+          && grep -q 'retry_delays=(0 10 20 30 45)' drift/dod_receipts/OMN-12447/dod-workflow-retry-shape/command.yaml
+          && grep -q 'extraheader' drift/dod_receipts/OMN-12447/dod-workflow-retry-shape/command.yaml"
+  - id: "dod-dod-evidence-checkout-auth"
+    description: "omniclaude CI materializes central DoD evidence with the inherited cross-repo token"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12447/dod-dod-evidence-checkout-auth/command.yaml
+          && grep -q 'Checkout central DoD evidence' drift/dod_receipts/OMN-12447/dod-dod-evidence-checkout-auth/command.yaml
+          && grep -q 'CROSS_REPO_PAT' drift/dod_receipts/OMN-12447/dod-dod-evidence-checkout-auth/command.yaml"
+  - id: "dod-occ-pr-1894"
+    description: "OCC PR #1894 carries the central OMN-12447 contract and receipts"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1894 --repo OmniNode-ai/onex_change_control --json number --jq
+          .number)\" = 1894 && grep -q '^pr_number: 1894$' drift/dod_receipts/OMN-12447/dod-occ-pr-1894/command.yaml"
+  - id: "dod-occ-pr-1895"
+    description: "OCC PR #1895 carries the central OMN-12447 main hotfix receipt"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1895 --repo OmniNode-ai/onex_change_control --json number --jq
+          .number)\" = 1895 && grep -q '^pr_number: 1895$' drift/dod_receipts/OMN-12447/dod-occ-pr-1895/command.yaml"
+  - id: "dod-occ-pr-1896"
+    description: "OCC PR #1896 carries the central OMN-12447 authenticated main hotfix receipt"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1896 --repo OmniNode-ai/onex_change_control --json number --jq
+          .number)\" = 1896 && grep -q '^pr_number: 1896$' drift/dod_receipts/OMN-12447/dod-occ-pr-1896/command.yaml"
+  - id: "dod-occ-pr-1897"
+    description: "OCC PR #1897 carries the central OMN-12447 DoD evidence checkout auth receipt"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "test \"$(gh pr view 1897 --repo OmniNode-ai/onex_change_control --json number --jq
+          .number)\" = 1897 && grep -q '^pr_number: 1897$' drift/dod_receipts/OMN-12447/dod-occ-pr-1897/command.yaml"

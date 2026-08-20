@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13216"
+title: "Delegation routing feedback reducer crashes on empty payload"
+summary: >-
+  OMN-13216 fixes node_delegation_routing_feedback_reducer, whose handle() shim expected a hand-crafted
+  {"event": ..., "state": ...} wrapper that the live runtime auto-wiring dispatcher never produces. Because
+  the node contract declares a nested input_model (not event_model), omnibase_infra auto_wiring resolves
+  entry.event_model to None and passes the raw envelope/payload straight to handle(); the shim then read
+  input_data["event"] -> {} -> ModelDelegationFeedbackEvent(**{}) -> a 7-field ValidationError that crashed
+  the dispatcher and swallowed the terminal for escalated delegation requests (request HWM advanced, terminal
+  HWM did not). The fix makes handle() extract and normalize the real payload from whatever the dispatcher
+  delivers (ModelEventEnvelope, transport-envelope dict, or flattened payload dict), maps the three raw
+  terminal events to ModelDelegationFeedbackEvent by source topic, and treats empty/unidentifiable payloads
+  as an explicit no-op instead of crashing, so escalated terminals are never swallowed. Adds real-dispatch-path
+  and golden-chain tests.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001-local-verification"
+    description: >-
+      omnimarket PR #1255 — focused reducer tests (23 passed), mypy --strict clean, ruff clean, runtime
+      sweep 301/301 OK, metadata-dependency check PASS, and the golden-chain coverage gate passes for
+      the changed node. Self-binding PASS receipt for the local verification of the fix.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13216/dod-001-local-verification/command.yaml
+          && grep -q '^pr_number: 1255$' drift/dod_receipts/OMN-13216/dod-001-local-verification/command.yaml
+  - id: "dod-002-deploy-readiness-smoke"
+    description: >-
+      Post-merge deploy/readiness smoke (dev lane only): the runtime container can import the fixed reducer
+      handler so the dispatch path resolves without the empty-dict crash. This PR has NOT deployed, restarted
+      runtime, mutated prod/judge/.201, or published live traffic — the docker exec smoke is the readiness
+      probe the deploy agent runs against the dev omninode-runtime after rollout.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13216/dod-002-deploy-readiness-smoke/command.yaml
+          && grep -q 'deploy readiness smoke ok' drift/dod_receipts/OMN-13216/dod-002-deploy-readiness-smoke/command.yaml
+  - id: "pr-occ-2728"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to onex_change_control
+      PR #2728 so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound to
+      PR #2728.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13216/pr-occ-2728/command.yaml && grep -q '^pr_number:
+          2728$' drift/dod_receipts/OMN-13216/pr-occ-2728/command.yaml

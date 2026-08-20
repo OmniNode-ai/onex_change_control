@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13151"
+title: "feat(OMN-13151): Phase 0 registry unification — extend ModelContentDiscoveredEvent + duty-critical
+  capture-topic metadata"
+summary: >-
+  OCC evidence for omnimarket PR (Phase 0 of the emit/hook-registry unification, epic OMN-13129 wave I).
+  (1) Extends ModelContentDiscoveredEvent (omnimarket node_filesystem_crawler_effect) with durable-ingestion
+  fields content_blob_ref, source_type (new EnumContentSourceType StrEnum), scope_ref, source_version,
+  tags, priority_hint, artifact_kind — all optional/defaulted so pre-OMN-13151 payloads still parse and
+  round-trip (migration-compat). (2) Adds per-topic metadata (transform, max_payload, schema_ref) to the
+  two duty-critical durable-capture topics (artifact.captured, tool.output.captured) in the tiered registry
+  topics.yaml and extends the EventRegistry loader (FanOutRule) to carry max_payload_bytes/schema_ref/transform_name.
+  (3) Adds contract tests proving both capture topics are duty_critical, declare a schema_ref, and declare
+  a max_payload bounded strictly below the daemon stream cap (1_048_576), plus a ratchet rejecting any
+  new duty-critical topic not on the explicit allowlist. (4) Adds a synthetic-divergence test proving
+  the existing cross-registry drift check (omnimarket.validators.event_registry_drift — already a pre-commit
+  + CI gate) fires on a duty-critical capture-topic divergence. omniclaude hook registry + topics.py already
+  align (topic names + passthrough transforms match; existing test_registry_consistency.test_registry_consistency_capture_topics_duty_critical
+  passes against the modified registry) — no omniclaude source change required. Epic OMN-13129.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-content-discovered-migration-compat"
+    description: >-
+      ModelContentDiscoveredEvent round-trips with old (no new keys) AND new payloads; old payloads default
+      source_type=filesystem, blob_ref=None, tags=(). Verified by tests/test_content_discovered_event_migration_compat.py
+      (4 tests: old parse, old round-trip, new round-trip, all source-type members accept) — all pass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13151\"$' contracts/OMN-13151.yaml"
+  - id: "dod-capture-topic-duty-critical-metadata"
+    description: >-
+      Both capture topics (artifact.captured, tool.output.captured) load as tier=duty_critical with schema_ref
+      present and max_payload (524288) set and < daemon cap (1_048_576). Ratchet rejects unallowlisted
+      duty-critical topics. Verified by tests/test_capture_topic_registry_contract.py — all pass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13151\"$' contracts/OMN-13151.yaml"
+  - id: "dod-registry-drift-fires-on-synthetic-divergence"
+    description: >-
+      The cross-registry drift check (event_registry_drift.compare_registrations) reports no drift when
+      the capture-topic shapes agree, and FIRES (has_drift True) on a synthetic divergence — missing topic,
+      dropped required field, or missing event type — on each duty-critical capture topic. Verified by
+      tests/validators/test_capture_topic_drift_divergence.py. The live drift validator exits 0 against
+      the modified registry; it is wired as a pre-commit hook and a required CI gate on the changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13151\"$' contracts/OMN-13151.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13151.yaml consumed
+      by the omnimarket product PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13151\"$' contracts/OMN-13151.yaml"
+  - id: "dod-deploy-gate"
+    description: >-
+      Deploy-gate evidence for the omnimarket registry/model changes. No live deploy, restart, docker
+      exec, rpk topic produce, or runtime lane mutation was performed; this is a contract/model/test-only
+      change. Post-merge deploy validation remains the downstream runtime lane responsibility. deploy-gate
+      evidence.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'deploy-gate evidence' contracts/OMN-13151.yaml"

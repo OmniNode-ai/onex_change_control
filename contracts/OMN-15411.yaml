@@ -1,0 +1,247 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15411"
+title: "SIGPIPE-safe OMN-15170 content check in contracts/OMN-15170.yaml"
+summary: >-
+  contracts/OMN-15170.yaml's dod-steel220-omn15170-live-driver-content check piped `gh api ... | base64
+  -d | grep -q '<marker>'`. `grep -q` exits at the first match and closes its stdin, so the upstream `base64
+  -d` (and transitively `gh api`'s curl) is killed by SIGPIPE once the pipe closes; under `pipefail` (the
+  dod_verify runner's shell mode) that SIGPIPE exit propagates as the pipeline's exit code (128+13=141)
+  even though the substantive grep matched -- a reproducible false RED inside the runner, while the same
+  command exits 0 when run directly outside pipefail. This PR supersedes that entry (append-only, per
+  the OMN-14875/OMN-15382 supersedes_dod_evidence idiom) in contracts/OMN-15170.yaml with a SIGPIPE-safe,
+  still-falsifiable form: the short-circuiting `grep -q` is replaced with a fully-draining `grep -c '<marker>'
+  | grep -qxv 0` -- `grep -c` reads its entire stdin before reporting a match count, so it never SIGPIPEs
+  its writer. Verified 10/10 consecutive runs under `bash -o pipefail -c` exit 0 against the real marker;
+  the same form against a mutated, absent marker exits 1 (RED), proving falsifiability is preserved. No
+  code paths change outside contracts/OMN-15170.yaml.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "New OMN-15170 supersede entry present and SIGPIPE-safe form drains stdin"
+    command: "grep -q 'dod-steel220-omn15170-sigpipe-safe' contracts/OMN-15170.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-onex_change_control-pr-5496"
+    description: "PR #5496 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-onex_change_control-pr-5496"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-5498"
+    description: "Binds OMN-15411 to OCC companion PR #5498 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5498 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn-15411-contract-supersede"
+    description: >-
+      contracts/OMN-15170.yaml carries the new append-only entry dod-steel220-omn15170-sigpipe-safe with
+      an evidence_artifact supersedes_dod_evidence marker pointing at the original SIGPIPE-prone entry.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'dod-steel220-omn15170-sigpipe-safe' contracts/OMN-15170.yaml && grep -q
+          'supersedes_dod_evidence:dod-steel220-omn15170-live-driver-content' contracts/OMN-15170.yaml"
+  - id: "dod-omn-15411-sigpipe-safe-proof"
+    description: >-
+      The SIGPIPE-safe replacement command itself, executed live: buffered read plus `grep -qF` against
+      the real steel_onslaught#220 marker exits 0.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api repos/jonahgabriel/steel_onslaught/contents/tests/live/test_omn15170_live_driver.py?ref=24f3f5174ee47d26e0c9abe564c6da58e23497f2 --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'def test_live_match_produces_real_kafka_terminal_event_via_delegation_pin'
+  - id: "occ-self-bind-pr-5496"
+    description: "Binds OMN-15411 to its own OCC/product PR (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5496 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5524"
+    description: "Binds OMN-15411 to OCC companion PR #5524 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5524 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5523"
+    description: >-
+      Binds OMN-15411 to OCC companion PR #5523 (self-bind). PR #5523 is a second, corpus-instance use
+      of OMN-15411 -- it applies the same SIGPIPE-safe `grep -q` supersede idiom this ticket introduced
+      (via the merged dod-steel220-omn15170-sigpipe-safe entry on contracts/OMN-15170.yaml) to the three
+      analogous SIGPIPE-prone content checks on contracts/OMN-15172.yaml. PR #5523's title cites OMN-15411
+      alongside OMN-15172, so the occ-preflight eligibility gate's title-fallback ticket extractor requires
+      a PASS receipt binding OMN-15411 to this PR as well.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5523 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn15411-rule-e-lint-warns-not-blocks"
+    description: >-
+      scripts/lint_contract_check_values.py carries OMN-15411 Rule E (sigpipe-fragile early-exit consumer)
+      as a WARNING-tier check on a separate code path (lint_contract_warnings) from the hard-finding path
+      (lint_contract), so a Rule E hit never changes the linter's exit code. This is the ticket's item-3
+      lint assist. It is warning tier on purpose: a SIGPIPE false RED fails CLOSED -- it blocks a Done
+      flip, it never passes something that should fail -- so it does not warrant failing a pre-commit
+      hook on an unrelated edit to a legacy contract.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'sigpipe-fragile' scripts/lint_contract_check_values.py && grep -q 'def
+          lint_contract_warnings' scripts/lint_contract_check_values.py"
+  - id: "dod-omn15411-rule-e-unit-controls"
+    description: >-
+      Rule E's unit controls pass: four measured-exposed positive controls (base64-decoded body, gh pr
+      diff, git history walk, --paginate list) and six measured-safe negative controls, including the
+      sanctioned OCC#5496/#5523 buffered repair itself and the machine-authored self-bind boolean probe.
+      The buffered-repair control is load-bearing -- a first draft of Rule E flagged its own sanctioned
+      fix, because a naive split on `|` treated the pipe INSIDE `body="$(producer | base64 -d)"` as a
+      pipeline separator. A rule that fires on its own repair can never be cleared by repairing anything.
+      The shipped detector splits shell-aware (quote and $() nesting aware) and examines only the writer
+      immediately adjacent to the grep. Also asserts the warning path leaves main()'s exit code at 0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values.py -q -k rule_e"
+  - id: "dod-omn15411-rule-e-corpus-ratchet"
+    description: >-
+      The shrink-only corpus ratchet that actually stops the class growing (a warning alone does not).
+      .onex_ratchets/omn_15411_rule_e_baseline.yaml freezes the 312 pre-existing non-generated tier-1
+      instances; a new one hard-fails set equality on CI. Mutation-proven RED-before/GREEN-after: appending
+      one fragile item (`gh api ... --jq .content | base64 -d | grep -q 'MARKER'`) to contracts/OMN-10041.yaml
+      failed the ratchet with "1 NEW Rule E ... instance(s) found ... ['contracts/OMN-10041.yaml::dod-ratchet-mutation-probe']";
+      reverting the mutation returned it to GREEN. Two companion tests pin the ratchet's two deliberate
+      exclusions so neither silently inverts: the generated-producer carve-out must stay OUT of the baseline
+      (ratcheting a machine-authored shape would wedge every future autobind PR), and the tier-2 volume-dependent
+      advisory set must not leak IN (its 84 `find <one-receipt-dir> | grep -q .` instances measured 0/5
+      exits -- they are not debt).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py
+          -q -k rule_e"
+      - check_type: "command"
+        check_value: "test \"$(grep -c '^  - ' .onex_ratchets/omn_15411_rule_e_baseline.yaml)\" = \"312\""
+  - id: "occ-self-bind-pr-5541"
+    description: >-
+      Binds OMN-15411 to OCC PR #5541 (self-bind). #5541 is the ticket's item-3 lint assist: OMN-15411
+      Rule E in scripts/lint_contract_check_values.py (warning tier, separate code path so the exit code
+      is unchanged) plus the frozen shrink-only corpus ratchet that actually stops the class growing.
+      OCC PRs validate their own in-tree contract and receipts (invariant I3), so the occ-preflight eligibility
+      gate needs a PASS receipt binding OMN-15411 to this PR.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5541 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn15411-r2-corpus-ratchet-is-required-context"
+    description: >-
+      ROUND-2 ENFORCEMENT REPAIR. The Rule A/B/C/D/E corpus ratchets shipped in OCC#5458 and OCC#5541
+      had NO merge-blocking force on the dev path -- the central claim of #5541 did not hold. Three facts,
+      all read live: (1) ci.yml's `test` job carries `if: ... (github.event_name != 'pull_request' ||
+      github.base_ref != 'dev')`, so it is SKIPPED on every PR targeting dev, and ci-summary's generic
+      `contains(needs.*.result, 'failure')` rollup passes on a SKIPPED need; (2) the only other runner
+      was `tests+coverage (shadow)` in product-readiness-shadow.yml, which that file's own comment describes
+      as "deliberately kept OUT of required_status_checks"; (3) OCC dev's required contexts are exactly
+      ["CI Summary", "required-check-skip-guard / check-skip-vectors"]. Rule E is warning tier by design,
+      so the required Pre-commit job was not a backstop either. This item proves the repair: an unconditional
+      `contract-corpus-ratchets` job in ci.yml that runs the corpus module, listed in ci-summary's needs
+      AND covered by a strict success-only check there (a plain needs entry is not enough -- the generic
+      rollup tolerates `skipped`). scripts/validation/check_corpus_ratchet_wiring.py asserts all five
+      properties and is mutation-proven RED on each removal vector.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run python scripts/validation/check_corpus_ratchet_wiring.py .github/workflows/ci.yml"
+  - id: "dod-omn15411-r2-wiring-anchor-mutation-proven"
+    description: >-
+      The anti-removal anchor is proven by mutation, not asserted. tests/unit/scripts/test_check_corpus_ratchet_wiring.py
+      drives seven independent removal vectors against a copy of the live ci.yml and requires each to
+      be caught -- job deleted, job dropped from ci-summary's needs, strict success-only check removed,
+      job given an `if:` (the exact shape that makes `test` skip on dev PRs), job given a `needs:` chain,
+      job no longer running the corpus module, job no longer re-running its own wiring check -- plus a
+      GREEN control on the unmodified file, a missing-file case, and an unparseable-file case that must
+      both exit non-zero. The missing-file test found a real defect in the first draft: main() filtered
+      argv on `endswith("ci.yml")` and fell back to the canonical path when nothing matched, so a missing
+      or renamed target printed PASSED and exited 0 -- the exit-0-on-missing shape the fail-loud pre-commit
+      meta-gate forbids (OMN-14666/14668). Fixed to check every supplied path as given.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_check_corpus_ratchet_wiring.py -q -p no:randomly"
+  - id: "dod-omn15411-r2-per-bucket-census-corrected"
+    description: >-
+      NUMERIC CORRECTION. PR #5541's body stated "the `gh pr diff ${PR_NUMBER}` bucket (283 checks)".
+      That is wrong and it contradicted the builder's own OMN-15411 comment, which said 143. An independent
+      scan with the shipped detector measures the `gh pr diff` bucket at 143 items / 143 check_values.
+      Full live census, ratcheted (non-generated) tier 1: base64-decoded file body 160 items/177 checks,
+      gh pr diff 143/143, paginated REST list 5/5, git history walk 4/4 -- 312 distinct items (matching
+      the frozen baseline exactly), 329 check_values. Generated/carved-out tier 1: gh pr diff 47/47, paginated
+      REST list 5/5, iterating jq projection 4/4, base64-decoded body 2/3 -- 58 distinct items (NOT 59
+      as previously reported; 59 was the check_value count), 59 check_values. Tier-2 advisory: 87 items.
+      The census is now DERIVED from the detector by a pinned test rather than restated in prose, and
+      a cross-foot assertion pins the relations (per-bucket item counts sum >= distinct total because
+      an item can hit two buckets; check_values >= items per bucket) so the arithmetic error class cannot
+      recur silently.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_lint_contract_check_values_corpus_baseline.py
+          -q -p no:randomly -k census"
+  - id: "dod-omn15411-r2-wiring-hook-registered-and-scoped"
+    description: >-
+      A validator nobody invokes is not a mechanism. The check-corpus-ratchet-wiring pre-commit hook is
+      registered exactly once in .pre-commit-config.yaml, at stages [pre-commit], with a `files:` regex
+      that matches .github/workflows/ci.yml and does NOT match product-readiness-shadow.yml. Scoping to
+      ci.yml is what makes the anchor non-self-referential: on a dev PR the required CI `Pre-commit` job
+      runs `pre-commit run --files <changed>`, so any PR that edits ci.yml re-asserts the wiring in a
+      required context even if the ratchet job itself was deleted in that same PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_check_corpus_ratchet_wiring.py -q -p no:randomly
+          -k hook_is_registered"
+  - id: "occ-self-bind-pr-5557"
+    description: >-
+      Binds OMN-15411 to OCC PR #5557 (self-bind). #5557 is the round-2 enforcement repair: it wires the
+      Rule A/B/C/D/E corpus ratchets into the REQUIRED CI Summary context, which #5541 claimed but did
+      not achieve (ci.yml's `test` job is skipped on every PR targeting dev, and the only other runner
+      is the deliberately-non-required shadow workflow). OCC PRs validate their own in-tree contract and
+      receipts (invariant I3), so the occ-preflight eligibility gate needs a PASS receipt binding OMN-15411
+      to this PR.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5557 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5542"
+    description: "Binds OMN-15411 to OCC companion PR #5542 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5542 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5558"
+    description: "Binds OMN-15411 to OCC companion PR #5558 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5558 --repo OmniNode-ai/onex_change_control --json number,state"

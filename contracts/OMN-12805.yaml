@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12805"
+title: "Resolve provider endpoint URLs via routing authority, fail-closed (no hardcoded defaults)"
+summary: >-
+  Wave C of epic OMN-12803 (all URLs from the routing authority only). Replaces hardcoded provider base-URL
+  literals and silent env-default fallbacks at the named omnimarket call sites with routing-authority
+  resolution that fails closed when the URL is unconfigured. The node_swarm_fleet_discovery_effect handler
+  drops the _OPENROUTER_BASE_URL literal and resolves the OpenRouter base URL from the OPENROUTER_BASE_URL
+  routing-config value, raising ValueError when unset. node_build_loop_orchestrator/assemble_live resolves
+  the local coder endpoint+served-model through ModelPolicyLoader (model_policy.yaml 'coder' policy) rather
+  than raw LLM_CODER_URL / LLM_CODER_MODEL_NAME env reads; a resolve_model_id_optional method preserves
+  the tiered-fallback skip semantics. config/settings drops the hardcoded https://api.z.ai example from
+  the GLM URL field description. bridge_config_loader already resolves the OpenRouter base URL from config
+  and fails closed (OMN-12824); its remaining LLM_CODER_URL references are env-var-NAME routing declarations
+  in _MODEL_KEY_REGISTRY (the indirection layer this epic keeps), not provider-URL literals. A golden-chain
+  test for node_swarm_fleet_discovery_effect is added because the coverage gate fires on the changed live-path
+  node; it pins the config-resolved base URL and the fail-closed path. This OCC PR carries the central
+  contract consumed by the omnimarket PR (OmniNode-ai/omnimarket#1345) Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      The four named code-literal sites no longer carry a hardcoded provider base URL: the DoD regex rg
+      '_OPENROUTER_BASE_URL|GLM.*base.*URL|LLM_CODER_URL' returns ZERO hits across src/omnimarket/config/settings.py,
+      src/omnimarket/nodes/node_swarm_fleet_discovery_effect/handlers/handler_swarm_fleet_discovery.py,
+      and src/omnimarket/nodes/node_build_loop_orchestrator/assemble_live.py. Each affected call site
+      resolves its URL through the routing authority (OPENROUTER_BASE_URL config / ModelPolicyLoader)
+      and fails closed (ValueError / RuntimeRuntimeError-equivalent) when the URL is unconfigured — proven
+      by the new fail-closed tests. Verified on the omnimarket OMN-12805 worktree.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12805/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Static + focused quality gates green on the omnimarket worktree: uv run ruff check/format src clean;
+      uv run mypy --strict on all changed modules succeeds (no issues); affected-area pytest green (tests/inference
+      + node_build_loop_orchestrator/tests + node_swarm_fleet_discovery_effect/tests: 48 + 9 passed including
+      the new golden-chain and fail-closed tests); env -u GITHUB_TOKEN pre-commit run --files <changed>
+      EXIT 0 with the golden-chain-coverage-gate and the no-silent-env-fallbacks gate both PASS.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12805/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is a source-only refactor of endpoint-URL resolution (routing-authority
+      lookups + fail-closed) plus added tests. It contains NO runtime deploy, NO migration, NO new REST
+      surface, and NO live-lane mutation. It only TIGHTENS the platform (removes hardcoded provider URL
+      defaults and silent env fallbacks). Nothing in this PR touches a live (dev/stability/prod) lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12805/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-12805.yaml consumed
+      by the omnimarket PR (#1345) Receipt Gate via Evidence-Source. The probe greps the OCC tree and
+      proves the contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-12805\"$' contracts/OMN-12805.yaml"

@@ -1,0 +1,50 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14335"
+evidence_item_id: "dod-omnibase_core-pr-1421"
+check_type: "command"
+check_value: "cd omnibase_core && env -u PYTHONPATH uv run lint-imports"
+status: PASS
+run_timestamp: "2026-07-10T21:36:00Z"
+commit_sha: b37ed93acfb205ff5f2aee5fd656949b1181c5c5
+runner: "omn-14335-independent-verifier"
+verifier: "occ-evidence-lane"
+pr_number: 1421
+probe_command: >-
+  cd /Users/jonah/Code/omni_home/omni_worktrees/OMN-14335/omnibase_core && env -u PYTHONPATH uv run lint-imports;
+  # negative control: add errors/_negctl.py importing omnibase_core.models.common.model_onex_warning,
+  re-run, # then remove; # identity: env -u PYTHONPATH uv run python (assert shim symbols `is` relocated
+  classes + # construct + model_dump); # grep: no omnibase_core.models import under src/omnibase_core/errors/;
+  # tests: # env -u PYTHONPATH uv run pytest tests/unit/errors/ tests/unit/test_no_circular_imports.py
+  # tests/unit/validation/test_circular_import_validator.py tests/unit/mixins/test_mixin_fail_fast.py
+  -q; # mypy diff-scope on changed files; # ruff check + format
+probe_stdout: |
+  Analyzed 4076 files, 10334 dependencies.
+  Foundation primitives must not import higher layers (direct) KEPT
+  Models must not import behavioral/orchestration layers (direct) KEPT
+  Services and validation must not import nodes (direct) KEPT
+  Protocols (seam) must not import domain/behavioral layers (direct) KEPT
+  Contracts: 4 kept, 0 broken.
+  negative-control (throwaway errors/ imports models.common.model_onex_warning): Foundation primitives must not import higher layers BROKEN; 3 kept, 1 broken; restored 4 kept/0 broken after removal
+  object-identity: models.errors.model_onex_error / models.errors.model_fail_fast_details / models.common.model_onex_error_data / errors.ModelOnexError / OnexError alias all `is` the relocated classes; ModelOnexError("boom", error_code=...) constructs, str()="[ONEX_TEST] boom", model_dump keys={context,correlation_id,error_code,message,status,timestamp}
+  pruned re-exports: omnibase_core.errors.{ModelOnexWarning,ModelRegistryError,ModelCLIAdapter} -> AttributeError; canonical models.* paths resolve; no other consumer via errors package (repo-wide + infra/market/spi)
+  grep: zero real omnibase_core.models import under src/omnibase_core/errors/ (docstring only)
+  targeted tests: tests/unit/errors/ 132 passed; circular-import + fail-fast 80 passed
+  mypy diff-scope: the 4 errors in tests/unit/errors/test_error_codes.py (lines 65/66/249/274) are PRE-EXISTING (identical at base b37ed93a^; test diff is a single import-repoint line) — 0 NEW errors introduced
+  ruff check src/omnibase_core/errors + models/errors + models/common + tests/unit/errors: All checks passed!  ruff format --check: 6 files already formatted
+actual_output: >-
+  PASS: omnibase_core PR #1421 retires the frozen errors->models import-layering back-edge (~11 edges)
+  by relocating ModelOnexError, ModelFailFastDetails, and the internal _ModelOnexErrorData DOWN into the
+  foundation errors package, with thin identity-preserving re-export shims at the historical models.*
+  paths. Independent reproduction (PYTHONPATH cleared; ambient PYTHONPATH pointed at the canonical omnibase_core/src)
+  kept all 4 contracts (4 kept, 0 broken) with both errors->models ignore lines removed. Negative control:
+  a throwaway errors/ module importing omnibase_core.models broke "Foundation primitives must not import
+  higher layers" (3 kept, 1 broken), proving the edges are genuinely gone, not wildcard-masked; removal
+  restored 4 kept/0 broken. All shim/alias symbols `is` the relocated classes (identity preserved); construction
+  + model_dump work; the pruned ModelOnexWarning/ModelRegistryError/ModelCLIAdapter re-exports raise AttributeError
+  via the errors package but resolve via canonical models.* paths with no remaining consumer. 212 targeted
+  tests pass (132 error + 80 circular/fail-fast); mypy introduces 0 new errors (the 4 test-file errors
+  are pre-existing at base); ruff clean. No runtime or deploy scope.
+exit_code: 0
+branch: "jonah/omn-14335-retire-errors-models-back-edge"
+contract_sha256: "sha256:202b0676209662db9277e033dc461f3084e5297b9b21257fa77d89fce0a992dd"

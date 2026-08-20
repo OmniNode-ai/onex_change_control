@@ -1,0 +1,133 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15256
+title: Post-deploy business proof gate for onex-dev staging (terminal, fail-closed)
+summary: "OCC companion for omninode_infra's OMN-15256 change: a TERMINAL post-deploy business-proof stage
+  in deploy-onex-dev.yml plus its decision engine (scripts/evaluate_business_proof.py), I/O driver (scripts/post-deploy-business-proof.sh),
+  and hermetic tests. Friction report 2026-07-27 §Recommended-2. Evidence below is STATIC readback of
+  the product commit plus hermetic test results — no live proof run has executed the gate against staging
+  yet; that is OMN-15101 and is deliberately NOT claimed here. Probe construction (do not 'simplify' back):
+  each check fetches once via the raw-content API into a temp file and asserts `test -s` BEFORE counting.
+  The base64 form is wrong — the API's base64 carries newlines that BSD tolerates and GNU rejects, so
+  it decodes to nothing on a Linux runner. The unguarded form is worse: on empty content the two zero-count
+  checks PASSED VACUOUSLY, which is precisely the false-green this ticket exists to remove; the `test
+  -s` guard makes empty content a FAIL. Counting uses awk (drains input, always exits 0) rather than `grep
+  -q`, which closes the pipe early and trips SIGPIPE under `set -o pipefail`. Probes pin the immutable
+  product commit d79c6d74, never the branch name — a branch-name ref makes the attested bytes mutable
+  after the fact (reference_never_pin_a_feature_branch_head) and does not change the 404 below, which
+  is caused by repo visibility, not by the ref form. KNOWN LIMITATION, scoped precisely: OCC's own Contract
+  Compliance Check job runs with the default GITHUB_TOKEN, scoped to onex_change_control; omninode_infra
+  is a PRIVATE repo, so that token gets HTTP 404 and all seven correctly BLOCK there — they fail loudly
+  instead of two of them passing on empty input. That limitation explains the Contract Compliance Check
+  BLOCK ONLY. It does NOT explain the occ-preflight / receipt-gate failures: those returned reason=pr_ticket_mismatch
+  — no PASS receipt bound to OCC#5144 itself — fixed by the occ-self-bind entry below. The boundary is
+  target-repo visibility, not cross-repo reads in general: the same probe shape went green in OCC CI against
+  the PUBLIC omnibase_infra on OCC#5159 with the same repo-scoped token. All seven probes were re-executed
+  verbatim at d79c6d74 by a runner holding cross-repo read; all seven exit 0. Receipt provenance: the
+  receipts first pushed to this branch were stamped with a merge-controller verifier identity that did
+  not author them; they were removed and re-minted by the lane that actually ran the probes."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: Product PR CI green on omninode_infra (full tests/ suite, pre-commit, ruff)
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn15256-engine-behaviour-d79c6d74
+    description: "BEHAVIOURAL, not an existence probe: fetches the decision engine AND its test suite
+      from product commit d79c6d74 into a clean temp dir and EXECUTES them. 69 assertions run, one RED
+      per check — a zero-token result fails while terminal status still passes, another workflow's passing
+      projection row does not satisfy the quality gate, an absent projection row is FAIL not skip, a server-minted
+      correlation_id is FAIL, identical projection/terminal hashes are FAIL. This check goes red if the
+      engine's logic is broken, not merely if the file is missing: run verbatim against the pre-change
+      dev SHA it exits 1."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: grep -qx 'PRODUCT_HEAD=d79c6d740d9e02134446ee7dab9db8ad37294d77' docs/evidence/OMN-15256/business-proof-static-probes.md
+          && grep -qx 'ENGINE_BEHAVIOUR=69 passed' docs/evidence/OMN-15256/business-proof-static-probes.md
+  - id: dod-omn15256-gate-step-present-d79c6d74
+    description: "The terminal business-proof stage exists in deploy-onex-dev.yml at product commit d79c6d74
+      — the deploy job no longer ends at pod/health probes."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: grep -qx 'PRODUCT_HEAD=d79c6d740d9e02134446ee7dab9db8ad37294d77' docs/evidence/OMN-15256/business-proof-static-probes.md
+          && grep -qx 'GATE_STEP_PRESENT=1' docs/evidence/OMN-15256/business-proof-static-probes.md
+  - id: dod-omn15256-gate-not-advisory-d79c6d74
+    description: The proof stage carries no continue-on-error in its executable body (comment lines stripped,
+      so the step's own documentation of the rule cannot satisfy the check for it). An advisory gate is
+      the failure mode this ticket exists to prevent.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: grep -qx 'PRODUCT_HEAD=d79c6d740d9e02134446ee7dab9db8ad37294d77' docs/evidence/OMN-15256/business-proof-static-probes.md
+          && grep -qx 'GATE_NOT_ADVISORY=0' docs/evidence/OMN-15256/business-proof-static-probes.md
+  - id: dod-omn15256-skip-defaults-false-d79c6d74
+    description: "The only skip path — the skip-business-proof workflow_dispatch input — defaults to false,
+      so every push- and workflow_run-triggered deploy runs the proof."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: grep -qx 'PRODUCT_HEAD=d79c6d740d9e02134446ee7dab9db8ad37294d77' docs/evidence/OMN-15256/business-proof-static-probes.md
+          && grep -qx 'SKIP_DEFAULT_FALSE=1' docs/evidence/OMN-15256/business-proof-static-probes.md
+  - id: dod-omn15256-no-second-skip-path-d79c6d74
+    description: "The driver script has no env-var or credential-absence skip branch — a second, invisible
+      skip path would defeat the workflow-level input."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: grep -qx 'PRODUCT_HEAD=d79c6d740d9e02134446ee7dab9db8ad37294d77' docs/evidence/OMN-15256/business-proof-static-probes.md
+          && grep -qx 'NO_SECOND_SKIP_PATH=0' docs/evidence/OMN-15256/business-proof-static-probes.md
+  - id: dod-omn15256-hermetic-tests-d79c6d74
+    description: 68 hermetic tests land with the change (50 on the decision engine, 18 on the workflow
+      YAML), covering one RED per check rather than a single lumped happy path.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: grep -qx 'PRODUCT_HEAD=d79c6d740d9e02134446ee7dab9db8ad37294d77' docs/evidence/OMN-15256/business-proof-static-probes.md
+          && grep -qx 'HERMETIC_TESTS=50' docs/evidence/OMN-15256/business-proof-static-probes.md
+  - id: dod-omn15256-deploy-scope-static-d79c6d74
+    description: 'DEPLOY-SCOPE, stated honestly: this change edits the staging deploy workflow, so deploy-gate
+      classifies it deploy-required. No live staging deploy has run this gate. The verifiable deploy-scope
+      fact at this commit is that the gate is wired to the real script and receives the config that script
+      fail-closes on; the live execution is OMN-15101, post-merge.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: grep -qx 'PRODUCT_HEAD=d79c6d740d9e02134446ee7dab9db8ad37294d77' docs/evidence/OMN-15256/business-proof-static-probes.md
+          && grep -qx 'DEPLOY_SCOPE_STATIC=3' docs/evidence/OMN-15256/business-proof-static-probes.md
+  - id: occ-self-bind-pr-5144
+    description: "OCC companion PR #5144 — self-bind for OMN-15256 (OMN-14650). occ-preflight and the
+      receipt gate both resolve a PASS receipt bound to THIS OCC PR; without one they return reason=pr_ticket_mismatch
+      no matter how many product-facing receipts the branch carries. Same shape as OCC#5141 and OCC#5159."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: gh pr view 5144 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: occ-product-bind-pr-699-d1898536
+    description: "Product PR #699 — product-bind for OMN-15256 after the omninode_infra branch was rebased
+      onto current dev. OCC#5144 proved the same product change at d79c6d74 and self-bound the OCC companion,
+      but the downstream receipt gate correctly rejected omninode_infra#699 with reason=pr_ticket_mismatch
+      after the product head moved to d1898536e7e5ae9a8b9a053fcb1c9e4e97d86369. This entry adds a PASS
+      receipt bound to the actual product PR/head without rewriting the append-stable proof receipts already
+      merged in OCC#5144."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >-
+          grep -qx 'pr_number: 699' drift/dod_receipts/OMN-15256/occ-product-bind-pr-699-d1898536/command.yaml
+          && grep -qx 'commit_sha: d1898536e7e5ae9a8b9a053fcb1c9e4e97d86369' drift/dod_receipts/OMN-15256/occ-product-bind-pr-699-d1898536/command.yaml
+  - id: occ-self-bind-pr-5170
+    description: "OCC repair companion PR #5170 — self-bind for the append-only OMN-15256 product-bind
+      receipt repair. This is separate from the #699 product binding because occ-preflight requires a
+      PASS receipt bound to the evidence-source PR itself as well as the downstream product PR/head."
+    source: manual
+    checks:
+      - check_type: command
+        check_value: gh pr view 5170 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid

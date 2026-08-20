@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12995"
+title: "DEV-ENV: omnidash local-dev hygiene — /api/settings/feature-flags SPA-fallback (missing proxy)
+  + /_layouts 404 console noise"
+summary: >-
+  Two local-dev hygiene defects in omnidash (plain `npm run dev` = vite only, no Express server, no projection
+  backend), surfaced by the 2026-06-11 dashboard visual audit. (a) The Feature Flags panel hit the SPA
+  history fallback (index.html) for GET /api/settings/feature-flags because vite.proxy-config.ts had no
+  /api/settings/* entry — that endpoint is served only by the omnidash Express server (server/index.ts,
+  npm run dev:server, :3002). Fix: add a VITE_OMNIDASH_SERVER_URL-gated proxy for /api/settings and /api/runtime-config
+  so dev hits the Express server when it is running, and make the panel fallback explicit that the client-env
+  state is a CONFIG state (server not running this session), not an error, with the run-it-locally path
+  documented in .env.example. (b) The /_layouts/<name> Vite middleware returned 404 when no saved layout
+  existed, logging 4 console 404s per load even though the client already treated 404 as a normal empty
+  default. Fix: middleware GET returns empty 204 when the file is missing; the client treats 204 (and
+  404 for back-compat) as "no saved layout" without parsing the empty body. Frontend-only, additive; no
+  topic schema, envelope, contract API, or runtime change; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnidash-pr-209"
+    description: >-
+      omnidash PR #209 adds the VITE_OMNIDASH_SERVER_URL-gated /api/settings + /api/runtime-config proxy
+      entries (vite.proxy-config.ts), changes the /_layouts middleware GET to return empty 204 when no
+      saved layout exists (vite.config.ts), updates HttpLayoutPersistence.read to treat 204 (and 404 back-compat)
+      as no-layout (src/layout/layout-persistence.ts), rewrites the Feature Flags panel fallback to an
+      honest CONFIG-state surface with the run-it-locally path (src/pages/FeatureFlagDashboard.tsx), and
+      documents VITE_OMNIDASH_SERVER_URL in .env.example. Tests: layouts-middleware (204), layout-persistence
+      (204 with no body-parse + 404 back-compat), proxy-config (settings/runtime-config entries). Full
+      suite (no -k): 132 files, 1265 tests passed; tsc clean; eslint clean; pre-commit run --all-files
+      all hooks Passed (OMNIBASE_CORE_PATH set). Live proof on an isolated free-port dev server: Playwright
+      network capture shows /_layouts/default -> 204 on every request (zero _layouts 404s in console)
+      and the Feature Flags panel resolving to the honest config-state; screenshot at docs/evidence/2026-06-11-dashboard-visual-audit/11-dev-env-fixed.png
+      (omni_home). Evidence anchor: omnidash head commit 8f06958954e8d319bcccac366069173e956bec4e.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-omnidash-pr-209/command.yaml"
+          && grep -q '^ticket_id: "OMN-12995"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-omnidash-pr-209/command.yaml"
+          && grep -q '^pr_number: 209$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-omnidash-pr-209/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for omnidash PR #209: frontend-only local-dev hygiene change to the Vite dev server
+      (proxy + middleware) and a React panel's fallback copy. No live deploy, restart, topic mutation,
+      or .201 mutation is performed by this PR. omnidash is a static SPA served from the Vite/Express
+      dev server; there is no runtime image rebuild or projection-backend deploy in scope. deploy_pending:
+      false.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12995"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-12995 contract and the dod-omnidash-pr-209 / dod-deploy-assessment
+      receipts that the omnidash code PR's Receipt-Gate resolves via Evidence-Source: OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12995"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12995/dod-occ-pr/command.yaml"
