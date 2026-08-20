@@ -1,18 +1,27 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-"""OMN-15731: label-gated CI pilot (ci:ready) on onex_change_control.
+"""OMN-15731: admission-gated CI pilot (draft-state, ci:ready fallback) on
+onex_change_control.
 
-Operator-authorized scoped pilot (2026-08-08): the `pre-commit` job is the one
-CI job that runs unconditionally on every dev-targeting PR today (`if:
-always()`) -- `test` and `type-check` already skip on dev PRs by design
-(smart-test-select is meant to replace them there and is not wired), and
-gating either of those would provide zero incremental savings on the everyday
-path while risking the dev->main promotion boundary's unconditional
-full-suite guarantee (root CLAUDE.md rule #4). `pre-commit` is therefore
-gated behind `ci:ready`, but ONLY for dev-targeting PRs -- push/merge_group/
-main-or-hotfix-targeting PRs are untouched, so the `main` promotion boundary
-(where `Pre-commit` is a REQUIRED branch-protection context) keeps running it
-unconditionally exactly as before.
+Operator-authorized scoped pilot (2026-08-08, revised 2026-08-18): the
+`pre-commit` job is the one CI job that runs unconditionally on every
+dev-targeting PR today (`if: always()`) -- `test` and `type-check` already
+skip on dev PRs by design (smart-test-select is meant to replace them there
+and is not wired), and gating either of those would provide zero incremental
+savings on the everyday path while risking the dev->main promotion
+boundary's unconditional full-suite guarantee (root CLAUDE.md rule #4).
+`pre-commit` is therefore gated behind an admission signal, but ONLY for
+dev-targeting PRs -- push/merge_group/main-or-hotfix-targeting PRs are
+untouched, so the `main` promotion boundary (where `Pre-commit` is a
+REQUIRED branch-protection context) keeps running it unconditionally exactly
+as before.
+
+2026-08-18 revision: the admission signal migrated from the `ci:ready` label
+to native PR draft state (`!draft` is now primary -- GitHub-native, no
+bot-applied label required). The `ci:ready` label arm is retained as a
+transition-window fallback so PRs opened before this migration are not
+stranded; it is removed in a follow-up once open label-gated PRs have
+drained. See `TestDraftStateGateMigrationOmn15731Revision` below.
 
 Two things are proven here, mirroring `test_merge_hold_gate_wiring_omn15484.py`:
 
@@ -145,6 +154,10 @@ class TestLabelGateWorkflowShape:
             assert event_type in pr_trigger["types"]
 
     def test_pre_commit_if_is_gated_on_ci_ready_label_for_dev_only(self) -> None:
+        """Transition-window control: the `ci:ready` fallback arm must still
+        be present. This is the OMN-15888 compat path -- do not remove it
+        until open label-gated PRs have drained (see the follow-up ticket
+        named in the module docstring)."""
         job = _ci_yaml()["jobs"][_JOB_ID]
         condition = str(job["if"])
         assert "always()" in condition
@@ -167,3 +180,71 @@ class TestLabelGateWorkflowShape:
                 f"{job_id} should not reference ci:ready -- this pilot only "
                 "gates pre-commit"
             )
+
+
+class TestDraftStateGateMigrationOmn15731Revision:
+    """2026-08-18 revision: draft state is the primary admission signal,
+    ci:ready is a transition-window fallback. Mirrors the original pilot's
+    string-assertion-against-live-ci.yml style (`TestLabelGateWorkflowShape`
+    above) rather than re-implementing a GHA expression evaluator."""
+
+    def test_draft_state_arm_is_present_and_primary(self) -> None:
+        job = _ci_yaml()["jobs"][_JOB_ID]
+        condition = str(job["if"])
+        assert "!github.event.pull_request.draft" in condition
+
+    def test_both_admission_arms_present_dual_accept(self) -> None:
+        """Dual-accept during the transition window: EITHER arm alone must
+        satisfy the gate (they are OR'd, not AND'd) -- neither arm's
+        presence should be conditioned on the other."""
+        job = _ci_yaml()["jobs"][_JOB_ID]
+        condition = str(job["if"])
+        assert "!github.event.pull_request.draft" in condition
+        assert "contains(github.event.pull_request.labels.*.name, 'ci:ready')" in (
+            condition
+        )
+        # Both arms sit inside the same top-level `||` group, not nested
+        # under an `&&` that would make one a precondition for the other.
+        or_clause_start = condition.index("(github.event_name")
+        or_clause = condition[or_clause_start:]
+        assert or_clause.count("||") >= 3, (
+            "expected a flat OR chain (event_name / base_ref / !draft / "
+            f"ci:ready) -- got: {or_clause}"
+        )
+
+    def test_ready_for_review_still_a_pull_request_trigger_type(self) -> None:
+        """A draft->ready flip must re-evaluate the gate on the current head
+        without requiring a new push (root brief invariant: undrafting a PR
+        always gets a full run before merge, never a stale skip)."""
+        workflow: dict[Any, Any] = _ci_yaml()
+        pr_trigger = workflow[True]["pull_request"]
+        assert "ready_for_review" in pr_trigger["types"]
+
+    def test_main_boundary_carveout_survives_the_migration(self) -> None:
+        """The dev->main promotion-boundary guarantee (root CLAUDE.md rule
+        #4) must be untouched by this revision -- main-targeting PRs still
+        always run pre-commit unconditionally, draft or not."""
+        job = _ci_yaml()["jobs"][_JOB_ID]
+        condition = str(job["if"])
+        assert "github.base_ref != 'dev'" in condition
+
+    def test_red_control_pre_migration_shape_had_no_draft_arm(self) -> None:
+        """RED-before control: the pilot's original (2026-08-08) condition
+        string did not reference draft state at all -- a draft PR carrying
+        no ci:ready label was previously ADMITTED (main/non-dev events
+        aside) purely because `always()` held and the old condition had no
+        draft clause. This is the state this revision replaces; it is not a
+        live assertion against ci.yml (which now has the arm) -- it pins the
+        pre-migration string so a future revert is caught by drift, not by
+        eyeballing history."""
+        pre_migration_condition = (
+            "always() && (github.event_name != 'pull_request' "
+            "|| github.base_ref != 'dev' "
+            "|| contains(github.event.pull_request.labels.*.name, 'ci:ready'))"
+        )
+        assert "!github.event.pull_request.draft" not in pre_migration_condition
+        live_condition = str(_ci_yaml()["jobs"][_JOB_ID]["if"])
+        assert live_condition != pre_migration_condition, (
+            "live ci.yml condition must have moved past the pre-migration "
+            "shape captured above"
+        )
