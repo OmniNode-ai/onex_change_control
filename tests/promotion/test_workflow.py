@@ -76,6 +76,70 @@ def test_compat_audit_scans_runtime_surfaces(tmp_path: Path) -> None:
     assert audit.findings[0].path == "pyproject.toml"
 
 
+def test_compat_audit_excludes_self_repo_matches(tmp_path: Path) -> None:
+    """OMN-16279 step 1: `omnibase_compat`'s own tree/tests/lockfile
+    trivially mention its own package name -- that is a self-reference, not
+    a dependency edge, and must never be flagged. Covers both the
+    dependency_ranges path and the file-scan path in the same repo entry.
+    """
+    repo = tmp_path / "omnibase_compat"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "omnibase_compat"\ndependencies = []\n'
+    )
+    (repo / "uv.lock").write_text('name = "omnibase_compat"\nversion = "0.4.0"\n')
+    manifest = _manifest(
+        ModelPromotionManifestRepo(
+            repo="omnibase_compat",
+            dev_head_sha="a" * 40,
+            main_base_sha="b" * 40,
+            dependency_ranges=("omnibase_compat==0.4.0",),
+        )
+    )
+
+    audit = audit_compat_dependencies(manifest, workspace=tmp_path)
+
+    assert audit.blocker_count == 0
+    assert audit.findings == ()
+
+
+def test_compat_audit_excludes_non_manifest_files(tmp_path: Path) -> None:
+    """OMN-16279 step 2: the narrowed production-surface predicate matches
+    only exact dependency-manifest filenames. A test file or a
+    build/workspace orchestration script that happens to sit under a path
+    containing 'runtime', 'compose', 'deployment', 'kustomization',
+    'manifest', or 'policy' and mentions `omnibase_compat` (e.g. as a
+    sibling-repo name for a multi-repo workspace build, or in an unrelated
+    test fixture) is no longer flagged -- only real dependency-manifest
+    filenames are.
+    """
+    repo = tmp_path / "omnibase_infra"
+    repo.mkdir()
+    scripts_dir = repo / "scripts" / "runtime_build"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "deploy-runtime.sh").write_text(
+        "#!/bin/bash\n# builds omnibase_compat as a sibling-repo workspace dep\n"
+    )
+    tests_dir = repo / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_runtime_deployment_models.py").write_text(
+        '"""Fixture referencing omnibase_compat in a test comment."""\n'
+    )
+    (repo / "kustomization.yaml").write_text("images:\n  - name: omnibase_compat\n")
+    manifest = _manifest(
+        ModelPromotionManifestRepo(
+            repo="omnibase_infra",
+            dev_head_sha="a" * 40,
+            main_base_sha="b" * 40,
+        )
+    )
+
+    audit = audit_compat_dependencies(manifest, workspace=tmp_path)
+
+    assert audit.blocker_count == 0
+    assert audit.findings == ()
+
+
 def test_promotion_pr_plan_preserves_base_head_and_shas() -> None:
     manifest = _manifest(
         ModelPromotionManifestRepo(
@@ -222,12 +286,21 @@ def test_gate_status_demotes_unimplemented_placeholder_findings_to_advisory(
     assert all("OMN-16279" in failure.reason for failure in status.failures)
 
 
-def test_gate_status_compat_blocker_still_blocks_despite_advisory_placeholders(
+def test_gate_status_compat_finding_is_advisory_with_provenance(
     tmp_path: Path,
 ) -> None:
-    """The real, evaluated compat-dependency check is untouched by OMN-16279
-    and must still veto promotion even when both placeholder findings are
-    advisory.
+    """OMN-16279 step 3: the compat-dependency check is a real, evaluated
+    check (unlike the two unimplemented placeholders above) but has never
+    returned 0 in real mode across 25+ nights because most of the fleet
+    legitimately depends on `omnibase_compat` by the sanctioned
+    compat -> core -> spi -> infra layering. What remains after the steps
+    1-2 narrowing is exactly that sanctioned residual, so it is demoted to
+    advisory (`blocking: false`) with an `[OMN-16279: ADVISORY]` provenance
+    note citing the OMN-16283 follow-up (diff-against-last-promoted-main
+    baseline), unconditionally -- not keyed to a placeholder string, because
+    there is no "real" variant of this check to distinguish from a stub.
+    A manifest-file compat hit is still recorded as a finding; it just no
+    longer vetoes the verdict.
     """
     manifest = _manifest(
         ModelPromotionManifestRepo(
@@ -262,9 +335,14 @@ def test_gate_status_compat_blocker_still_blocks_despite_advisory_placeholders(
         dry_run=False,
     )
 
-    assert status.verdict == EnumPromotionVerdict.BLOCKED
-    assert status.promotable is False
-    assert status.blocking_failure_class == EnumPromotionFailureClass.CODE
+    assert status.verdict == EnumPromotionVerdict.PASSED
+    assert status.promotable is True
+    assert status.blocking_failure_class is None
+    failures_by_class = {failure.failure_class: failure for failure in status.failures}
+    code_failure = failures_by_class[EnumPromotionFailureClass.CODE]
+    assert code_failure.blocking is False
+    assert "OMN-16279: ADVISORY" in code_failure.reason
+    assert "OMN-16283" in code_failure.reason
 
 
 def test_per_repo_results_use_wire_contract_shape() -> None:
