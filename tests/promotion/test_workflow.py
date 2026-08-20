@@ -114,6 +114,12 @@ def test_promotion_pr_plan_records_dependency_waves() -> None:
 def test_gate_status_classifies_runtime_and_integration_blockers(
     tmp_path: Path,
 ) -> None:
+    """A cross-repo status OTHER than the "not_run_in_mvp" placeholder string
+    (i.e. a real, evaluated integration failure once OMN-15067 lands) still
+    blocks. Runtime stays advisory here because the placeholder producer
+    always writes "not_collected" (OMN-16279) — see the dedicated advisory
+    test below for that half of the behavior.
+    """
     manifest = _manifest(
         ModelPromotionManifestRepo(
             repo="omnibase_core",
@@ -150,11 +156,115 @@ def test_gate_status_classifies_runtime_and_integration_blockers(
 
     assert status.verdict == EnumPromotionVerdict.BLOCKED
     assert status.promotable is False
-    assert status.blocking_failure_class == EnumPromotionFailureClass.RUNTIME
+    assert status.blocking_failure_class == EnumPromotionFailureClass.INTEGRATION
     assert {failure.failure_class for failure in status.failures} == {
         EnumPromotionFailureClass.RUNTIME,
         EnumPromotionFailureClass.INTEGRATION,
     }
+    failures_by_class = {failure.failure_class: failure for failure in status.failures}
+    assert failures_by_class[EnumPromotionFailureClass.RUNTIME].blocking is False
+    assert failures_by_class[EnumPromotionFailureClass.INTEGRATION].blocking is True
+
+
+def test_gate_status_demotes_unimplemented_placeholder_findings_to_advisory(
+    tmp_path: Path,
+) -> None:
+    """OMN-16279: the exact placeholder statuses nightly-promote.yml actually
+    emits ("not_collected" for the runtime capture, "not_run_in_mvp" for the
+    cross-repo suite) must not block an otherwise-clean promotion — they are
+    unimplemented stubs, not real gate evaluations, and blocked 4/6 nightly
+    runs by construction. Findings stay visible in the evidence bundle
+    (non-blocking), they just stop vetoing the verdict.
+    """
+    manifest = _manifest(
+        ModelPromotionManifestRepo(
+            repo="omnibase_core",
+            dev_head_sha="a" * 40,
+            main_base_sha="b" * 40,
+        )
+    )
+    compat_path = tmp_path / "compat.json"
+    runtime_path = tmp_path / "runtime.json"
+    cross_repo_path = tmp_path / "cross_repo.json"
+    write_json(compat_path, audit_compat_dependencies(manifest, workspace=tmp_path))
+    write_json(
+        runtime_path,
+        make_runtime_topology_placeholder(
+            manifest=manifest,
+            reason="not_collected_by_github_runner",
+        ),
+    )
+    write_json(
+        cross_repo_path,
+        make_cross_repo_placeholder(
+            manifest=manifest,
+            status="not_run_in_mvp",
+            reason="MVP workflow records manifest and per-repo state first",
+        ),
+    )
+
+    status = classify_promotion_gates(
+        manifest,
+        compat_audit_path=compat_path,
+        runtime_topology_path=runtime_path,
+        cross_repo_path=cross_repo_path,
+        dry_run=False,
+    )
+
+    assert status.verdict == EnumPromotionVerdict.PASSED
+    assert status.promotable is True
+    assert status.blocking_failure_class is None
+    assert {failure.failure_class for failure in status.failures} == {
+        EnumPromotionFailureClass.RUNTIME,
+        EnumPromotionFailureClass.INTEGRATION,
+    }
+    assert all(failure.blocking is False for failure in status.failures)
+    assert all("OMN-16279" in failure.reason for failure in status.failures)
+
+
+def test_gate_status_compat_blocker_still_blocks_despite_advisory_placeholders(
+    tmp_path: Path,
+) -> None:
+    """The real, evaluated compat-dependency check is untouched by OMN-16279
+    and must still veto promotion even when both placeholder findings are
+    advisory.
+    """
+    manifest = _manifest(
+        ModelPromotionManifestRepo(
+            repo="omniweb",
+            dev_head_sha="a" * 40,
+            main_base_sha="b" * 40,
+            dependency_ranges=("omnibase-compat>=0.4.0",),
+        )
+    )
+    compat_path = tmp_path / "compat.json"
+    runtime_path = tmp_path / "runtime.json"
+    cross_repo_path = tmp_path / "cross_repo.json"
+    write_json(compat_path, audit_compat_dependencies(manifest, workspace=tmp_path))
+    write_json(
+        runtime_path,
+        make_runtime_topology_placeholder(manifest=manifest, reason="not collected"),
+    )
+    write_json(
+        cross_repo_path,
+        make_cross_repo_placeholder(
+            manifest=manifest,
+            status="not_run_in_mvp",
+            reason="MVP workflow records manifest and per-repo state first",
+        ),
+    )
+
+    status = classify_promotion_gates(
+        manifest,
+        compat_audit_path=compat_path,
+        runtime_topology_path=runtime_path,
+        cross_repo_path=cross_repo_path,
+        dry_run=False,
+    )
+
+    assert status.verdict == EnumPromotionVerdict.BLOCKED
+    assert status.promotable is False
+    assert status.blocking_failure_class == EnumPromotionFailureClass.CODE
 
 
 def test_per_repo_results_use_wire_contract_shape() -> None:
