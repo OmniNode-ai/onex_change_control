@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16254"
+title: "kubeconfig_ssm.sh fail-closed instance resolution (VPC-ambiguity near-miss)"
+summary: >
+  Fixes OmniNode-ai/omninode_infra PR #950: scripts/kubeconfig_ssm.sh resolved its SSM target as "first
+  running instance in the VPC" (Reservations[0].Instances[0], filtered only on vpc-id + running-state).
+  A second running k3s node in the VPC made this non-deterministic and connected a live fault-injection
+  session to PROD instead of onex-dev (near-miss, read-only only, no mutation, caught before any write).
+  The fix resolves by Name tag + VPC + running-state, refuses to guess on zero/multiple candidates, adds
+  an explicit --instance-id override, asserts the resolved Name tag contains "dev" before writing any
+  kubeconfig (even under an explicit override), and removes the hardcoded FALLBACK_INSTANCE (confirmed
+  live to no longer exist). Sibling scripts and CI workflows using the same Reservations[0].Instances[0]
+  indexing were swept; all others already filter on an explicit Name tag or take an explicit instance
+  id, so no further fix was needed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #950 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-950"
+    description: "PR #950 on OmniNode-ai/omninode_infra — Evidence-Source binding for the OMN-16254 kubeconfig_ssm.sh
+      fail-closed instance-resolution fix."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/pulls/950 --jq '{number,state}'"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-950-ci"
+    description: >
+      Content-pinned proof at PR #950's head commit (59b3edd5337cf5b9aa160a33eedbec3ef957f0ed): scripts/kubeconfig_ssm.sh
+      actually contains the new fail-closed Name-tag resolution constant (EXPECTED_NAME_TAG="omninode-k3s-dev-system"),
+      not merely a PR record claiming it does.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omninode_infra/contents/scripts/kubeconfig_ssm.sh?ref=59b3edd5337cf5b9aa160a33eedbec3ef957f0ed
+          --jq .content | base64 -d | grep -q 'EXPECTED_NAME_TAG="omninode-k3s-dev-system"'
+  - id: "occ-self-bind-pr-6730"
+    description: "Binds OMN-16254 to OCC companion PR #6730 (self-bind)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/6730 --jq '{number,state}'"

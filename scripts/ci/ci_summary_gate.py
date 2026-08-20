@@ -176,6 +176,21 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # surface"), enforced instead by the `no-new-os-environ` pre-commit
         # hook.
         "No New os.environ Reads (OMN-13563)",
+        # governance-file-advisory-gate.yml (OMN-16117, second vector) --
+        # DELIBERATELY advisory, by explicit design documented at the top of
+        # that workflow file: it exists to break the "all checks green"
+        # signal an automated merge driver reads, for a PR touching
+        # grants/prod_promotion_grants.yaml or
+        # allowlists/skip_token_approvals.yaml -- not to block a human
+        # merge decision. It is intentionally NOT in STRICT_GATE_JOBS or
+        # SKIPPABLE_GATE_JOBS (the workflow file says so explicitly, twice)
+        # because onex_change_control@main has enforce_admins:true and a
+        # REQUIRED failing check there would permanently wedge every future
+        # prod-promotion grant landing, including emergency prod recovery.
+        # A genuine failure conclusion here (when a governance path really
+        # is touched) must stay visible on the PR's check list -- it must
+        # NOT gate CI Summary, which is exactly what SOFT_ALLOWLIST gives it.
+        "Governance File Advisory Gate",
     }
 )
 
