@@ -73,21 +73,26 @@ jobs:
           OMNIBASE_CORE_REF: ${{ steps.validator_ref.outputs.ref }}
         run: |
           set -euo pipefail
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            echo "::error::OMN-13299: CHECKOUT_TOKEN is empty; cannot clone omnibase_core for validator-requirements."
+            exit 1
+          fi
 
           rm -rf omnibase_core
           for attempt in 1 2 3 4; do
-            if git \
-              -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${CHECKOUT_TOKEN}" \
-              clone \
+            if git clone \
               --depth 1 \
               --branch "${OMNIBASE_CORE_REF}" \
-              https://github.com/OmniNode-ai/omnibase_core.git \
+              "https://x-access-token:${CHECKOUT_TOKEN}@github.com/OmniNode-ai/omnibase_core.git" \
               omnibase_core; then
+              test -d omnibase_core/.git
               exit 0
+            else
+              status=$?
             fi
-            status=$?
             rm -rf omnibase_core
             if [ "$attempt" -eq 4 ]; then
+              echo "::error::OMN-13299: failed to clone omnibase_core@${OMNIBASE_CORE_REF} after ${attempt} attempts."
               exit "$status"
             fi
             sleep $((attempt * 15))
