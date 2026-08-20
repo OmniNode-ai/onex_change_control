@@ -30,7 +30,11 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 10
+    # OMN-13299/OMN-16299: this job depends on a cross-repo omnibase_core
+    # checkout. Incident-window runs have repeatedly exhausted the old 10m
+    # ceiling before the validator executed, leaving the required context red
+    # from transport flakes instead of validator defects.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repo
@@ -64,12 +68,30 @@ jobs:
           echo "::notice::OMN-15689: omnibase_core validator ref (validate-validator-requirements) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
 
       - name: Checkout omnibase_core
-        uses: actions/checkout@v7
-        with:
-          repository: OmniNode-ai/omnibase_core
-          ref: ${{ steps.validator_ref.outputs.ref }}
-          path: omnibase_core
-          token: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
+          OMNIBASE_CORE_REF: ${{ steps.validator_ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+
+          rm -rf omnibase_core
+          for attempt in 1 2 3 4; do
+            if git \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${CHECKOUT_TOKEN}" \
+              clone \
+              --depth 1 \
+              --branch "${OMNIBASE_CORE_REF}" \
+              https://github.com/OmniNode-ai/omnibase_core.git \
+              omnibase_core; then
+              exit 0
+            fi
+            status=$?
+            rm -rf omnibase_core
+            if [ "$attempt" -eq 4 ]; then
+              exit "$status"
+            fi
+            sleep $((attempt * 15))
+          done
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
