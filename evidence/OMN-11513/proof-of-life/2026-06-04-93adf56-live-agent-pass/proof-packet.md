@@ -34,7 +34,7 @@ the silent direct-mode downgrade hazard did not occur (`kafka-readiness-evidence
    records the selected backend or final provider URL. SEA #205 (merged
    2026-06-03) wired the `--agent` scaffold to DelegationExecutor
    **local-first** routing, the local vLLM endpoint
-   (`100.109.203.94:8000`, Qwen3.6-35B) was healthy, and reported cost is
+   (`<onex-host>:8000`, Qwen3.6-35B) was healthy, and reported cost is
    $0.0000 — consistent with the generation being served by the **local
    tier**, not the cloud tier through the runtime's inference effect. The
    Gemini-through-runtime path that OMN-12664 fixed was therefore likely
@@ -58,7 +58,7 @@ the silent direct-mode downgrade hazard did not occur (`kafka-readiness-evidence
 | SEA repo SHA + branch | ✅ dev `93adf56` (main ref `c04a4d8`) |
 | Runtime image digest / hotpatch ID + container identity | ❌ not captured — not observable from contractor environment |
 | Overlay path + hash + lane | ✅ `sea-delegation-bootstrap-stability-test@1.0.0`, lane `stability-test`, `sha256:7ba7c84e…2e78` (`overlay-evidence.json`) |
-| Broker bootstrap | ✅ `100.109.203.94:39092` (warm probe: 1365 topics in 1.9s immediately prior) |
+| Broker bootstrap | ✅ `<onex-host>:39092` (warm probe: 1365 topics in 1.9s immediately prior) |
 | Transport mode = bus-backed, not direct | ✅ `final_transport_mode: bus_backed`, probe `ready` 3269ms (`kafka-readiness-evidence.json`) |
 | Fresh correlation ID | ✅ `d76664cb-1462-4728-8722-80d9dfc02e57` |
 | Final provider URL incl. `/v1beta/openai/chat/completions` | ❌ not captured; cloud tier likely not exercised (local-first routing, $0.00 cost) |
@@ -82,10 +82,10 @@ Per `CONTRACTOR_SAFE_COMMANDS.md` §2, broker warmed immediately prior via
 
 ```bash
 env -u PYTHONPATH \
-  KAFKA_BOOTSTRAP_SERVERS=100.109.203.94:39092 \
+  KAFKA_BOOTSTRAP_SERVERS=<onex-host>:39092 \
   KAFKA_API_VERSION=2.8.0 \
   SEA_DELEGATION_BUS_BOOTSTRAP=src/contracts/delegation_bootstrap_overlay.stability-test.yaml \
-  SEA_LOCAL_INFERENCE_BASE_URL=http://100.109.203.94:8000 \
+  SEA_LOCAL_INFERENCE_BASE_URL=http://<onex-host>:8000 \
   ONEX_TRACK_A_API_KEY="$ONEX_TRACK_A_API_KEY" \
   .venv/bin/python -m src --agent
 ```
