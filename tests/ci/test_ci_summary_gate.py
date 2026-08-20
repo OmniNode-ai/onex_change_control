@@ -25,6 +25,7 @@ tests/ci/test_ci_summary_gate.py) plus OCC-specific pins:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from scripts.ci.ci_summary_gate import (
     SKIPPABLE_GATE_JOBS,
     SOFT_ALLOWLIST,
     STRICT_GATE_JOBS,
+    _load_check_runs,
     dedup_latest,
     evaluate,
     evaluate_external_contexts,
@@ -182,20 +184,25 @@ def test_no_job_carries_a_base_ref_dev_exemption() -> None:
 
     Regex-scans every workflow file for the `base_ref != 'dev'` skip-vector
     shape. The ONLY reviewed, still-intentional survivor is `pre-commit`'s
-    ci:ready label gate in ci.yml (which is deliberately STRICT, not
-    SKIPPABLE -- an unlabeled dev PR is meant to fail, not silently pass).
+    admission gate in ci.yml (which is deliberately STRICT, not SKIPPABLE --
+    an unadmitted dev PR is meant to fail, not silently pass).
     """
 
     pattern = re.compile(r"base_ref\s*!=\s*['\"]dev['\"]")
     allowed = {
-        # ci.yml lines 60 and 84: pre-commit's own `if:` (job-level) and its
-        # "Run full pre-commit" step -- the OMN-15731 ci:ready label pilot.
-        # Reviewed and intentional: see STRICT_GATE_JOBS's "Pre-commit" entry
-        # comment in ci_summary_gate.py.
+        # ci.yml: pre-commit's own `if:` (job-level) -- the OMN-15731
+        # admission-gate pilot, revised 2026-08-18 to make draft state
+        # (`!github.event.pull_request.draft`) the primary signal with
+        # `ci:ready` retained as a transition-window fallback. Reviewed and
+        # intentional: see STRICT_GATE_JOBS's "Pre-commit" entry comment in
+        # ci_summary_gate.py and TestDraftStateGateMigrationOmn15731Revision
+        # in test_label_gated_ci_pilot_omn15731.py.
         (
             "ci.yml",
             "if: always() && (github.event_name != 'pull_request' || "
-            "github.base_ref != 'dev' || contains(github.event.pull_request"
+            "github.base_ref != 'dev' || "
+            "!github.event.pull_request.draft || "
+            "contains(github.event.pull_request"
             ".labels.*.name, 'ci:ready'))",
         ),
     }
@@ -480,6 +487,102 @@ def test_external_context_skipped_fails_closed() -> None:
 
 def test_external_context_none_check_runs_is_every_context_unresolved() -> None:
     failures, unresolved = evaluate_external_contexts(None, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert set(unresolved) == set(EXPECTED_EXTERNAL_CONTEXTS)
+
+
+# ---------------------------------------------------------------------------
+# OMN-16141: commits/{sha}/check-runs pagination -- a context past the first
+# 100 check-runs must resolve as present/terminal, never missing/pending.
+#
+# Live repro: occ#6618 head d5ed3417204bfe73263805532cd3e38a0d343242 carries
+# 135 check-runs (>100, i.e. 2 GitHub API pages at ?per_page=100). ci.yml's
+# `ci-summary` job now fetches that endpoint with `gh api ... --paginate
+# --slurp | jq '[.[].check_runs[]]'`, which merges every page's `check_runs`
+# array into one flat JSON array file -- the shape built and fed through
+# `_load_check_runs` below, unchanged from what the workflow step now writes.
+# ---------------------------------------------------------------------------
+
+
+def test_load_check_runs_flattened_multi_page_array_sees_later_page_context(
+    tmp_path: Path,
+) -> None:
+    """A context that only appears past check-run #100 (i.e. only on the
+    second GitHub API page) must be seen as present + success, not
+    missing/pending, once the pages have been merged into one flat array."""
+
+    page_1 = [
+        {
+            "name": f"filler-check-{i}",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-08-17T00:00:00Z",
+            "id": i,
+        }
+        for i in range(100)
+    ]
+    # The real external contexts land at index >=100 -- exactly where
+    # occ#6618's head placed them on GitHub's second page.
+    page_2 = [
+        {
+            "name": name,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-08-17T00:05:00Z",
+            "id": 100 + i,
+        }
+        for i, name in enumerate(EXPECTED_EXTERNAL_CONTEXTS)
+    ]
+    flattened = page_1 + page_2
+    assert len(flattened) > 100  # sanity: this fixture actually spans 2 pages
+
+    check_runs_file = tmp_path / "check_runs.json"
+    check_runs_file.write_text(json.dumps(flattened), encoding="utf-8")
+
+    loaded = _load_check_runs(str(check_runs_file))
+    assert loaded is not None
+    assert len(loaded) == len(flattened)
+
+    failures, unresolved = evaluate_external_contexts(
+        loaded, EXPECTED_EXTERNAL_CONTEXTS
+    )
+    assert failures == []
+    assert unresolved == [], (
+        "a context that only appears past the first 100 check-runs must "
+        "resolve as present/success, not missing/pending (OMN-16141)"
+    )
+
+
+def test_unmerged_paginate_output_is_the_bug_this_pr_fixes(tmp_path: Path) -> None:
+    """Pin for the pre-fix failure mode itself.
+
+    Per `gh help api`: "In --paginate mode ... Each page is a separate JSON
+    array or object. Pass --slurp to wrap all pages ... into an outer JSON
+    array." `commits/{sha}/check-runs` returns an OBJECT
+    (`{total_count, check_runs: [...]}`), so plain `--paginate` (no
+    `--slurp`) on a >100-check-run head wrote two back-to-back JSON objects
+    -- one per page -- into a single file. `_load_check_runs` cannot parse
+    that (`json.loads` raises `JSONDecodeError: Extra data`), catches it, and
+    returns `None` -- which `evaluate_external_contexts` treats as *every*
+    expected external context being unobserved, forever. This is the exact
+    occ#6618 symptom this PR's workflow fix (`--paginate --slurp | jq
+    '[.[].check_runs[]]'`) eliminates; this test pins the failure mode so it
+    cannot silently regress.
+    """
+
+    page_1_obj = json.dumps({"total_count": 135, "check_runs": _all_green_check_runs()})
+    page_2_obj = json.dumps({"total_count": 135, "check_runs": _all_green_check_runs()})
+    concatenated = page_1_obj + page_2_obj  # what un-slurped --paginate wrote
+
+    check_runs_file = tmp_path / "check_runs_unmerged.json"
+    check_runs_file.write_text(concatenated, encoding="utf-8")
+
+    loaded = _load_check_runs(str(check_runs_file))
+    assert loaded is None  # fail-closed: concatenated multi-page output is unparseable
+
+    failures, unresolved = evaluate_external_contexts(
+        loaded, EXPECTED_EXTERNAL_CONTEXTS
+    )
     assert failures == []
     assert set(unresolved) == set(EXPECTED_EXTERNAL_CONTEXTS)
 
