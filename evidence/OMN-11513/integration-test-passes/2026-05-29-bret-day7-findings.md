@@ -74,7 +74,7 @@ Projection-mode testing of any surface remains impossible today (no projection b
 
 | Endpoint | Expected interpretation | Result |
 |---|---|---|
-| `<onex-host>:18085/v1/introspection/manifest` (via Tailscale `100.109.203.94`) | Runtime manifest | Alive. 245 contracts registered, 0 errors. omnimarket 0.4.2. 8 delegation-related nodes present (delegate-skill orchestrator, delegation orchestrator, quality-gate reducer, routing-feedback reducer, routing reducer, llm-delegation projection, llm-delegation routing compute, projection_delegation). |
+| `<onex-host>:18085/v1/introspection/manifest` (via Tailscale `<onex-host>`) | Runtime manifest | Alive. 245 contracts registered, 0 errors. omnimarket 0.4.2. 8 delegation-related nodes present (delegate-skill orchestrator, delegation orchestrator, quality-gate reducer, routing-feedback reducer, routing reducer, llm-delegation projection, llm-delegation routing compute, projection_delegation). |
 | `localhost:3003/projection/delegation` | Local omnidash bridge | Connection refused. Bridge not running. |
 | `<onex-host-gpu>:3003/projection/delegation` | Per today's plan, not the authoritative bridge | Connection timed out. Unreachable from WSL, as expected. |
 
