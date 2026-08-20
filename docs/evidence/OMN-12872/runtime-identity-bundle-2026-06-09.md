@@ -58,14 +58,14 @@ Observed with strict allowlisted `env` probes. Values containing credentials wer
 
 - Main runtime: `ONEX_ENVIRONMENT=stability-test`, `KAFKA_ENVIRONMENT=stability-test`,
   `KAFKA_BOOTSTRAP_SERVERS=redpanda:9092`, `ONEX_RUNTIME_ID=stability-test-main`,
-  `ONEX_RUNTIME_ADDRESS=runtime://omninode-pc/stability-test/main`,
+  `ONEX_RUNTIME_ADDRESS=runtime://<onex-host>/stability-test/main`,
   `ONEX_GROUP_ID=onex-stability-test-runtime-main`, `RUNTIME_PROFILE=main`,
   `ONEX_ACTIVE_RUNTIME_PACKAGES=omnibase_infra,omnimarket,omniclaude,omniintelligence`,
   `ONEX_CONTRACTS_DIR=/app/contracts`, `ONEX_RUNTIME_CONTRACTS_DIR=/app/contracts/runtime`,
   `ONEX_STATE_DIR=/app/data/.onex_state_stability_test`, `RUNTIME_SOURCE_HASH=unknown`.
 - Effects runtime: `ONEX_ENVIRONMENT=stability-test`, `KAFKA_ENVIRONMENT=stability-test`,
   `KAFKA_BOOTSTRAP_SERVERS=redpanda:9092`, `ONEX_RUNTIME_ID=stability-test-effects`,
-  `ONEX_RUNTIME_ADDRESS=runtime://omninode-pc/stability-test/effects`,
+  `ONEX_RUNTIME_ADDRESS=runtime://<onex-host>/stability-test/effects`,
   `ONEX_GROUP_ID=onex-stability-test-runtime-effects`, `RUNTIME_PROFILE=effects`,
   `ONEX_ACTIVE_RUNTIME_PACKAGES=omnibase_infra,omnimarket,omniclaude,omniintelligence`,
   `ONEX_CONTRACTS_DIR=/app/contracts`, `ONEX_RUNTIME_CONTRACTS_DIR=/app/contracts/runtime`,
@@ -94,7 +94,7 @@ Observed in `omninode-stability-test-runtime:/app/build-provenance.json`.
 Observed with `rpk cluster info --brokers localhost:19092` inside the Redpanda container.
 
 - Cluster: `redpanda.ae26157e-3b35-4b03-a75f-7aa86ce4517f`
-- Broker: id `0`, host `100.109.203.94`, port `39092`
+- Broker: id `0`, host `<onex-host>`, port `39092`
 
 In-scope topics exist with six partitions unless noted:
 
