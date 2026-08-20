@@ -97,7 +97,7 @@ inference request) that only the owner side can capture.
 | SEA repo SHA + branch | ✅ dev `93adf56` |
 | Runtime image digest / hotpatch ID + container identity | ❌ not observable from contractor environment |
 | Overlay path + hash + lane | ✅ `sea-delegation-bootstrap-stability-test@1.0.0`, lane `stability-test`, `sha256:7ba7c84e…2e78` |
-| Broker bootstrap | ✅ `100.109.203.94:39092` (warm probe 2.2s prior) |
+| Broker bootstrap | ✅ `<onex-host>:39092` (warm probe 2.2s prior) |
 | Transport mode = bus-backed | ✅ `final_transport_mode: bus_backed`, probe ready 4808ms (`kafka-readiness-evidence.json`) |
 | Fresh correlation ID | ✅ `fa8daa9e…` (run) / `aab65120…` (executor) |
 | Selected backend + final provider URL | ✅ `cloud_gemini`; registered `…/v1beta/openai/chat/completions`, called `…/v1/chat/completions` (from the typed error) |
