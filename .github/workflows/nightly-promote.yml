@@ -130,13 +130,41 @@ jobs:
 
       - name: Checkout promoted repos
         shell: bash
+        env:
+          # OMN-16279: 2/6 nightly-promote failures (08-17, 08-19) were a
+          # transient GnuTLS/TLS transport error mid `git clone`/fetch of a
+          # large sibling repo, with no retry — any single network blip
+          # failed the entire job. Mirrors the retry/backoff shape already
+          # used one step earlier for `uv sync` (setup-uv/action.yml
+          # UV_SYNC_ATTEMPTS).
+          CLONE_ATTEMPTS: "3"
+          CLONE_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
           gh auth setup-git
+
+          clone_with_retry() {
+            local repo="$1"
+            local dest="$2"
+            local attempt=1
+            until gh repo clone "OmniNode-ai/${repo}" "${dest}" -- --no-tags \
+              && git -C "${dest}" fetch origin main dev --no-tags; do
+              status=$?
+              if [ "$attempt" -ge "$CLONE_ATTEMPTS" ]; then
+                echo "::error::checkout of ${repo} failed after ${attempt} attempt(s)"
+                return "$status"
+              fi
+              sleep_seconds=$((CLONE_RETRY_DELAY_SECONDS * attempt))
+              echo "::warning::checkout of ${repo} attempt ${attempt}/${CLONE_ATTEMPTS} failed with exit ${status}; retrying in ${sleep_seconds}s"
+              rm -rf "${dest}"
+              sleep "$sleep_seconds"
+              attempt=$((attempt + 1))
+            done
+          }
+
           while IFS= read -r repo; do
             [ -n "$repo" ] || continue
-            gh repo clone "OmniNode-ai/${repo}" "${OMNI_REPOS_ROOT}/${repo}" -- --no-tags
-            git -C "${OMNI_REPOS_ROOT}/${repo}" fetch origin main dev --no-tags
+            clone_with_retry "$repo" "${OMNI_REPOS_ROOT}/${repo}"
           done <<< "${{ steps.batch.outputs.repos }}"
 
       - name: Generate intended promotion manifest
