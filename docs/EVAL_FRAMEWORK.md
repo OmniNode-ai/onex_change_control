@@ -168,6 +168,7 @@ Steps:
 ### Programmatically
 
 ```python
+import os
 from pathlib import Path
 from onex_change_control.eval import SuiteManager, compute_eval_report
 from omnibase_infra.services.eval.service_eval_runner import ServiceEvalRunner
@@ -177,7 +178,7 @@ manager = SuiteManager(Path("eval_suites"))
 suite = manager.load_suite("standard_v1.yaml")
 
 # Run A/B eval
-runner = ServiceEvalRunner(workspace_root="/Volumes/PRO-G40/Code/omni_home")
+runner = ServiceEvalRunner(workspace_root=os.environ["OMNI_HOME"])
 on_runs, off_runs = runner.run_ab_suite(suite)
 
 # Generate report
