@@ -1,0 +1,107 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16285"
+title: "Path-scoped CI suite for OCC evidence-only diffs"
+summary: "PR #6771: adds a new, cheap, hosted-runner ci.yml job (evidence-only-predicate) that computes
+  an exact-allowlist predicate over the PR diff — true only when every changed file is under contracts/**
+  or drift/dod_receipts/** — and gates 5 heavy self-hosted jobs (No Divergent Automation PRs, no-noncanonical-lifecycle-classes,
+  Precommit Parity Gate, Evidence Admissibility Predicate Parity, check-bot-authored-authz-guard) on its
+  output, moving them from STRICT_GATE_JOBS to SKIPPABLE_GATE_JOBS in scripts/ci/ci_summary_gate.py. Every
+  gate that validates evidence CONTENT itself stays unconditional. Self-referential OCC PR (invariant
+  I3) — this contract and its receipts live in-tree on the same branch."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "5-companion-PR file-list audit derives the exact evidence-path allowlist (contracts/**,
+      drift/dod_receipts/**)."
+    command: "gh pr view 6755 --repo OmniNode-ai/onex_change_control --json files"
+  - kind: "manual"
+    description: "New predicate module (scripts/ci/evidence_only_predicate.py) unit tests pass — exact-allowlist
+      matches/non-matches, whole-diff predicate, GITHUB_OUTPUT wiring."
+    command: "uv run pytest tests/ci/test_evidence_only_predicate.py -q"
+  - kind: "manual"
+    description: "Extended ci_summary_gate.py test suite passes — includes the OMN-16285 evidence-predicate-tier
+      classification pin, the slim-path-goes-green behavioral test, and the failed-predicate-cascade-is-not-a-vacuous-success
+      regression pin."
+    command: "uv run pytest tests/ci/test_ci_summary_gate.py -q"
+  - kind: "manual"
+    description: "Full local suite is green after the change (no regression anywhere else in the repo
+      from the STRICT->SKIPPABLE reclassification or the new scripts-canonical-form allowlist entry)."
+    command: "uv run pytest tests/ -q"
+  - kind: "manual"
+    description: "mypy --strict is clean on the two changed CI-layer modules."
+    command: "uv run mypy scripts/ci/evidence_only_predicate.py scripts/ci/ci_summary_gate.py --strict"
+  - kind: "ci"
+    description: "PR #6771 is scoped to ci.yml, ci_summary_gate.py, the new predicate module + its tests,
+      the extended gate tests, and the scripts-canonical-form allowlist entry the new script requires
+      — non-evidence-only, so it demonstrates the full-suite escalation path."
+    command: "gh pr view 6771 --repo OmniNode-ai/onex_change_control --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16285-companion-audit"
+    description: "Live audit of 5 recently merged OCC companion PRs (#6685, #6735, #6676, #6757, #6755)
+      — every changed file matched contracts/*.yaml or drift/dod_receipts/**/*.yaml (including *.supersede.<N>.yaml),
+      including one with 15 files. Derives the exact-allowlist predicate's two regex patterns."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6755 --repo OmniNode-ai/onex_change_control --json files --jq '[.files[].path]'"
+  - id: "dod-omn16285-predicate-tests"
+    description: "27 unit tests for scripts/ci/evidence_only_predicate.py pass: exact-allowlist matches
+      (contracts/, contracts/v1/, drift/dod_receipts/, .yml variant), negative controls (scripts/, .github/,
+      nested contracts/v1/subdir, grants/, allowlists/, substring traps), whole-diff predicate (pure/mixed/pure-code/empty),
+      the single-non-evidence-file falsification control, and GITHUB_OUTPUT wiring."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_evidence_only_predicate.py -q"
+  - id: "dod-omn16285-gate-tests"
+    description: "78 tests pass across tests/ci/ (46 pre-existing ci_summary_gate.py tests, unmodified
+      in substance; 6 new OMN-16285 tests: predicate tier is a subset of SKIPPABLE not STRICT, predicate
+      job is CLASSIFICATION_ONLY not a gate, all-skipped-with-predicate-success evaluates SUCCESS, failed-predicate-cascade
+      fails closed via the sweep, a genuine job failure in the tier still fails closed; plus the 27 predicate
+      tests)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py tests/ci/test_evidence_only_predicate.py
+          -q"
+  - id: "dod-omn16285-full-suite"
+    description: "Full local test suite green after the change: 6216 passed, 47 skipped (pre-existing,
+      environment-gated — missing optional deps/sibling clones/Kafka broker), 0 failures. Confirms the
+      STRICT->SKIPPABLE reclassification and the new scripts-canonical-form allowlist entry introduce
+      no regression anywhere else in the repo."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ -q"
+  - id: "dod-omn16285-mypy"
+    description: "mypy --strict clean on both changed CI-layer modules."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run mypy scripts/ci/evidence_only_predicate.py scripts/ci/ci_summary_gate.py
+          --strict"
+  - id: "dod-omn16285-precommit-clean"
+    description: "pre-commit run on the changed-file set is clean, including the scripts-canonical-form
+      guard (OMN-14475) after registering the new script as a permanent CI-layer-glue exception in allowlists/scripts_exceptions.yaml,
+      and the yamlfmt hook after it reflowed that new entry's folded block scalar (verified no contamination-sentinel
+      corruption, benign line-wrap only)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run
+          pre-commit run --files .github/workflows/ci.yml scripts/ci/ci_summary_gate.py tests/ci/test_ci_summary_gate.py
+          scripts/ci/evidence_only_predicate.py tests/ci/test_evidence_only_predicate.py allowlists/scripts_exceptions.yaml
+  - id: "occ-self-bind-pr-6771"
+    description: "Binds OMN-16285 to OCC PR #6771."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6771 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
