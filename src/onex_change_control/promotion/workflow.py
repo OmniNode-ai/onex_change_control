@@ -51,6 +51,24 @@ PROMOTION_WAVES: tuple[tuple[str, ...], ...] = (
 )
 PASS_STATUSES = frozenset({"pass", "passed", "ok", "healthy", "success"})
 
+# OMN-16279: these two status values are emitted ONLY by the literal
+# unimplemented-placeholder producers in this module (`make_runtime_topology_
+# placeholder` hardcodes "not_collected"; the nightly-promote.yml workflow's
+# "Capture cross-repo verification placeholder" step hardcodes
+# `--status "not_run_in_mvp"`). A placeholder can never produce a passing
+# result on a GitHub-hosted runner (runtime) or before the OMN-15067
+# cross-repo integration suite is built (integration) — blocking promotion on
+# them fails every single unattended run by construction, independent of
+# whether dev is actually safe to promote (root cause of 4/6 nightly-promote
+# failures 2026-08-14..08-19). They are demoted to ADVISORY (non-blocking)
+# below so the real, evaluated compat-dependency check remains the sole
+# blocking gate. A DIFFERENT status value on either producer (i.e. once a
+# real runtime capture or the real cross-repo suite lands under OMN-15067
+# items 2/4 and reports something other than these exact placeholder
+# strings) automatically reverts to BLOCKING — no code change required here.
+ADVISORY_RUNTIME_PLACEHOLDER_STATUSES = frozenset({"not_collected"})
+ADVISORY_CROSS_REPO_PLACEHOLDER_STATUSES = frozenset({"not_run_in_mvp"})
+
 
 class EnumPromotionVerdict(StrEnum):
     """Promotion verdicts written into the OCC evidence bundle."""
@@ -391,12 +409,23 @@ def classify_promotion_gates(
         )
 
     runtime_topology = _load_json_object(runtime_topology_path)
-    if not _is_pass_status(runtime_topology.get("status")):
+    runtime_status = runtime_topology.get("status")
+    if not _is_pass_status(runtime_status):
+        runtime_is_placeholder = runtime_status in ADVISORY_RUNTIME_PLACEHOLDER_STATUSES
+        reason = _status_reason(runtime_topology)
+        if runtime_is_placeholder:
+            reason = (
+                f"{reason} [OMN-16279: ADVISORY — unimplemented runtime-topology "
+                "placeholder, cannot pass on a GitHub-hosted runner by design; "
+                "reverts to BLOCKING once a real runtime capture replaces this "
+                "placeholder]"
+            )
         failures.append(
             ModelPromotionFailureEvidence(
                 failure_class=EnumPromotionFailureClass.RUNTIME,
                 source=str(runtime_topology_path),
-                reason=_status_reason(runtime_topology),
+                reason=reason,
+                blocking=not runtime_is_placeholder,
             )
         )
 
@@ -408,20 +437,34 @@ def classify_promotion_gates(
             if cross_repo_status == "flaky_infra"
             else EnumPromotionFailureClass.INTEGRATION
         )
+        cross_repo_is_placeholder = (
+            cross_repo_status in ADVISORY_CROSS_REPO_PLACEHOLDER_STATUSES
+        )
+        reason = _status_reason(cross_repo)
+        if cross_repo_is_placeholder:
+            reason = (
+                f"{reason} [OMN-16279: ADVISORY — unimplemented cross-repo "
+                "integration placeholder (OMN-15067 items 2/4 not yet built); "
+                "reverts to BLOCKING once the real cross-repo suite lands]"
+            )
         failures.append(
             ModelPromotionFailureEvidence(
                 failure_class=failure_class,
                 source=str(cross_repo_path),
-                reason=_status_reason(cross_repo),
+                reason=reason,
+                blocking=not cross_repo_is_placeholder,
             )
         )
 
-    first_failure = failures[0].failure_class if failures else None
+    blocking_failures = [failure for failure in failures if failure.blocking]
+    first_blocking_failure = (
+        blocking_failures[0].failure_class if blocking_failures else None
+    )
     verdict = (
         EnumPromotionVerdict.PLANNED
         if dry_run
         else EnumPromotionVerdict.BLOCKED
-        if failures
+        if blocking_failures
         else EnumPromotionVerdict.PASSED
     )
     return ModelPromotionGateStatus(
@@ -430,7 +473,7 @@ def classify_promotion_gates(
         dry_run=dry_run,
         verdict=verdict,
         promotable=verdict == EnumPromotionVerdict.PASSED,
-        blocking_failure_class=first_failure,
+        blocking_failure_class=first_blocking_failure,
         failures=tuple(failures),
     )
 
