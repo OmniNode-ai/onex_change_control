@@ -143,7 +143,11 @@ dod_evidence:
   #     (LIVE_PROBE_COMMANDS: command position "gh api") and asserts a
   #     symbol this fix introduces (`_pr_binding_asserted_state` does not
   #     exist anywhere on omnimarket dev pre-fix) -- falsifiable: run against
-  #     un-deployed/unfixed code and the grep goes RED.
+  #     un-deployed/unfixed code and the grep goes RED. Uses the established
+  #     sigpipe-safe buffered shape (OMN-15170/OMN-15430, per this repo's own
+  #     Contract Corpus Ratchets Rule E): the producer is captured into a
+  #     shell variable before the early-exit `grep -qF` consumer runs, so a
+  #     first-match exit can never SIGPIPE the `gh api | base64 -d` producer.
   # ---------------------------------------------------------------------------
   - id: "dod-deploy-omn-16087-content-probe"
     description: "Falsifiable deploy/compute-only evidence (OMN-14505/OMN-14443) for PR #2091's runtime-
@@ -157,5 +161,27 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: >-
-          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py?ref=57ad3c72522cbd22194b797f5142e8c0be2a8573
-          --jq '.content' | base64 -d | grep -q '_pr_binding_asserted_state'
+          body="$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py?ref=57ad3c72522cbd22194b797f5142e8c0be2a8573"
+          --jq .content | base64 -d)"; printf '%s' "$body" | grep -qF '_pr_binding_asserted_state' &&
+          echo "OMN-16087-DEPLOY-PROBE-PASS: _pr_binding_asserted_state is present in evidence_collector.py
+          at 57ad3c72522cbd22194b797f5142e8c0be2a8573"
+  # ---------------------------------------------------------------------------
+  # APPEND-ONLY FOLLOW-UP (R5): product PR head moved again (CodeRabbit fix
+  # commit, same R4 note (a) above) after R3's rebind. Does NOT touch R3 or
+  # R4's bytes -- this entry only re-pins the same falsifiable product-diff-
+  # scope probe (OMN-14425) at the new head.
+  # ---------------------------------------------------------------------------
+  - id: "dod-mkt-pr-2091-ci-rebind-57ad3c72"
+    description: "PR #2091 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425), rebound to
+      the post-CodeRabbit-fix head 57ad3c72522cbd22194b797f5142e8c0be2a8573. Same two-file scope as dod-mkt-pr-2091-ci-rebind-91582a18
+      (evidence_collector.py + the regression test, now extended with TestUrlFormBindingAssertionIsNotAutoBoundToMergedGreen
+      for the URL-form binding fix)."
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-mkt-pr-2091-ci-rebind-91582a18"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2091 --repo OmniNode-ai/omnimarket --json headRefOid,files --jq '(.headRefOid ==
+          "57ad3c72522cbd22194b797f5142e8c0be2a8573") and ([.files[].path] | sort == ["src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py",
+          "tests/unit/nodes/node_dod_verify/test_omn_16087_pr_live_state_intentional_state_assertion.py"])'
+          | grep -qx true
