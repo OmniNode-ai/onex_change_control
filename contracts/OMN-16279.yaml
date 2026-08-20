@@ -2,11 +2,14 @@
 schema_version: "1.0.0"
 ticket_id: "OMN-16279"
 title: "Nightly Promotion (dev->main evidence promotion) failed 6 consecutive scheduled runs"
-summary: "Demote the two unimplemented placeholder gate findings (runtime-topology 'not_collected', cross-repo
-  'not_run_in_mvp') to advisory in classify_promotion_gates so they no longer block Nightly Promotion
-  by construction, and add bounded retry/backoff to the sibling-repo git clone step to close the transient-TLS
-  failure mode. Self-referential OCC PR #6756 (invariant I3) — this contract and its receipts live in-tree
-  on the same branch."
+summary: "PR #6756: demote the two unimplemented placeholder gate findings (runtime-topology 'not_collected',
+  cross-repo 'not_run_in_mvp') to advisory in classify_promotion_gates so they no longer block Nightly
+  Promotion by construction, and add bounded retry/backoff to the sibling-repo git clone step to close
+  the transient-TLS failure mode. PR #6762 (follow-on, same ticket): recalibrate the remaining real compat_dependency_audit
+  check per the OMN-16279 audit comment — exclude omnibase_compat self-matches, narrow the production-surface
+  predicate to actual dependency-manifest filenames, and demote the sanctioned-architecture residual to
+  advisory (OMN-16283 tracks the eventual diff-against-baseline replacement). Self-referential OCC PRs
+  (invariant I3) — this contract and its receipts live in-tree on the same branch as each."
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -16,6 +19,13 @@ evidence_requirements:
     command: "gh pr view 6756 --repo OmniNode-ai/onex_change_control --json files"
   - kind: "manual"
     description: "Promotion workflow unit tests pass after the advisory-demotion change."
+    command: "uv run pytest tests/promotion/test_workflow.py -q"
+  - kind: "ci"
+    description: "PR #6762 remains scoped to promotion/workflow.py + its tests (compat-gate recalibration)."
+    command: "gh pr view 6762 --repo OmniNode-ai/onex_change_control --json files"
+  - kind: "manual"
+    description: "Promotion workflow unit tests pass after the compat self-repo exclusion, narrowed production-surface
+      predicate, and compat-finding advisory-demotion changes."
     command: "uv run pytest tests/promotion/test_workflow.py -q"
 emergency_bypass:
   enabled: false
@@ -42,3 +52,30 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6756 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "dod-onex-change-control-pr-6762-workflow-diff"
+    description: "PR #6762 (compat-dependency gate recalibration, follow-on to PR #6756) is scoped to
+      src/onex_change_control/promotion/workflow.py and tests/promotion/test_workflow.py only."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6762 --repo OmniNode-ai/onex_change_control --json files --jq '[.files[].path]'"
+  - id: "dod-onex-change-control-pr-6762-tests"
+    description: "tests/promotion/test_workflow.py passes with the compat self-repo exclusion, narrowed
+      production-surface predicate, and compat-finding advisory-demotion changes, including the 3 new/rewritten
+      OMN-16279 regression tests pinning the classification taxonomy."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/promotion/test_workflow.py -q"
+  - id: "dod-onex-change-control-pr-6762-mypy"
+    description: "mypy --strict is clean on the changed module."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run mypy src/onex_change_control/promotion/workflow.py --strict"
+  - id: "occ-self-bind-pr-6762"
+    description: "Binds OMN-16279 to OCC PR #6762."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6762 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
