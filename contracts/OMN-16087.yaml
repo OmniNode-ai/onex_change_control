@@ -112,3 +112,50 @@ dod_evidence:
           "91582a18ee560618db2eca21fe09a49dbb80ba96") and ([.files[].path] | sort == ["src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py",
           "tests/unit/nodes/node_dod_verify/test_omn_16087_pr_live_state_intentional_state_assertion.py"])'
           | grep -qx true
+  # ---------------------------------------------------------------------------
+  # APPEND-ONLY FOLLOW-UP (R4): two independent, unrelated content-level CI
+  # gate failures on PR #2091 needed fixing after R3 -- neither changes the
+  # ticket's scope, both rebind/extend evidence for the same two-file diff.
+  #
+  # (a) `gate / CodeRabbit Thread Check` (comment 3807974259): the new
+  #     _pr_binding_asserted_state (this ticket's own binder fix) recognized
+  #     only the `gh pr view <N> --repo <repo>` binding shape, not the
+  #     `repos/<owner>/<repo>/pulls/<N>` URL form that its sibling
+  #     _hardcoded_pr_bindings_in_value already understands (OMN-15465) --
+  #     a URL-bound intentional OPEN/CLOSED assertion would resolve its
+  #     binding but fall through to the default merged/green derivation,
+  #     the exact inversion this ticket exists to fix, for a different
+  #     binding-expression shape. Fixed + regression-tested (commit
+  #     57ad3c72522cbd22194b797f5142e8c0be2a8573), thread resolved.
+  #
+  # (b) `deploy-gate / deploy-gate`: this contract declared dod_evidence
+  #     items that satisfy occ-preflight's PR-binding/self-bind machinery
+  #     but NONE of them are a FALSIFIABLE deploy probe under OMN-14505's
+  #     classify_check_value() -- every check_value here is `gh pr view ...`
+  #     (metadata read, not a live-surface probe in command position) or a
+  #     receipt/contract self-reference. OMN-16087 is not in the OMN-14443
+  #     grandfather snapshot (authored well after it was frozen), so the
+  #     ratchet holds it to the real bar unconditionally. This ticket's
+  #     change is compute-only (a pure-function binder inside node_dod_verify,
+  #     no deployed runtime service) -- per DEPLOY_EVIDENCE_GUIDANCE's
+  #     hermetic form for compute-only/no-live-deploy tickets, the new entry
+  #     below reads the actual repo CONTENT at the merge SHA via `gh api`
+  #     (LIVE_PROBE_COMMANDS: command position "gh api") and asserts a
+  #     symbol this fix introduces (`_pr_binding_asserted_state` does not
+  #     exist anywhere on omnimarket dev pre-fix) -- falsifiable: run against
+  #     un-deployed/unfixed code and the grep goes RED.
+  # ---------------------------------------------------------------------------
+  - id: "dod-deploy-omn-16087-content-probe"
+    description: "Falsifiable deploy/compute-only evidence (OMN-14505/OMN-14443) for PR #2091's runtime-
+      flagged path src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py -- reads the file's
+      actual content on OmniNode-ai/omnimarket at the final head 57ad3c72522cbd22194b797f5142e8c0be2a8573
+      via the GitHub content API and asserts the presence of _pr_binding_asserted_state, the function
+      this ticket introduces. This symbol does not exist anywhere in the function pre-fix (unpatched omnimarket
+      dev), so the check is falsifiable: it fails against un-deployed/unfixed code and can only pass against
+      the actual fixed content at the pinned ref."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py?ref=57ad3c72522cbd22194b797f5142e8c0be2a8573
+          --jq '.content' | base64 -d | grep -q '_pr_binding_asserted_state'
