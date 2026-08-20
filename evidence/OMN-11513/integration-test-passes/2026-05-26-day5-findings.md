@@ -88,7 +88,7 @@ Two independent systems tested separately.
 | Ingress routes | 1565 |
 | Active packages | omnibase_infra, omnimarket, omniclaude, omniintelligence |
 
-Tested via Tailscale at `100.109.203.94:18085`. Probe: `curl -fsS http://100.109.203.94:18085/health`.
+Tested via Tailscale at `<onex-host>:18085`. Probe: `curl -fsS http://<onex-host>:18085/health`.
 
 ### Dashboard projection API (<onex-host-gpu>:3003)
 
