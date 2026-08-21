@@ -20,6 +20,10 @@ from onex_change_control.promotion.manifest import (
 )
 
 COMPAT_PACKAGE_NAMES = ("omnibase_compat", "omnibase-compat")
+# OMN-16279: the repo whose own tree/tests/lockfile trivially mention its own
+# package name. That is a self-reference, never a dependency edge, and must
+# never be scanned for compat-token matches (see `audit_compat_dependencies`).
+COMPAT_SELF_REPO = "omnibase_compat"
 PRODUCTION_SURFACE_FILES = {
     "pyproject.toml",
     "uv.lock",
@@ -28,15 +32,16 @@ PRODUCTION_SURFACE_FILES = {
     "pnpm-lock.yaml",
     "yarn.lock",
 }
-PRODUCTION_SURFACE_PARTS = (
-    "runtime",
-    "compose",
-    "docker-compose",
-    "deployment",
-    "kustomization",
-    "manifest",
-    "policy",
-)
+# OMN-16279: narrowed from a broad `runtime|compose|deployment|kustomization|
+# manifest|policy` path-substring heuristic to the literal dependency-manifest
+# filenames above. The substring heuristic caught test files (e.g.
+# `tests/test_runtime_deployment_models.py`), build/workspace orchestration
+# scripts (`Dockerfile.runtime`, `docker-compose.runners.yml`,
+# `deploy-runtime.sh`), and node/k8s metadata (contract yaml,
+# `kustomization.yaml`) that reference a repo name without declaring an
+# actual package-manager dependency edge -- see the OMN-16279 audit comment
+# ("Compat-blocker audit (follow-on, read-only) -- run 32318325475") for the
+# reproduced taxonomy (~85% of the 50 findings were this class of noise).
 PROMOTION_WAVES: tuple[tuple[str, ...], ...] = (
     ("omnibase_compat", "omnibase_core"),
     ("omnibase_spi", "omnibase_infra"),
@@ -68,6 +73,26 @@ PASS_STATUSES = frozenset({"pass", "passed", "ok", "healthy", "success"})
 # strings) automatically reverts to BLOCKING — no code change required here.
 ADVISORY_RUNTIME_PLACEHOLDER_STATUSES = frozenset({"not_collected"})
 ADVISORY_CROSS_REPO_PLACEHOLDER_STATUSES = frozenset({"not_run_in_mvp"})
+
+# OMN-16279: the compat-dependency check (`audit_compat_dependencies`) is, by
+# construction, an ABSOLUTE check -- it flags every production-surface
+# reference to `omnibase_compat`/`omnibase-compat` regardless of whether that
+# reference is the sanctioned `compat -> core -> spi -> infra` layering (root
+# CLAUDE.md rule 7) or a genuine regression. After the OMN-16279 steps-1/2
+# narrowing (self-repo exclusion + dependency-manifest-filename-only
+# predicate), what remains is exactly the sanctioned residual: real
+# `pyproject.toml`/`uv.lock` declarations that ARE the approved architecture,
+# not drift (confirmed by the audit's live taxonomy across 25 real-mode
+# nights, 48-50 findings, never 0). Blocking promotion on accepted
+# architecture is not a useful safety property, so this finding is demoted to
+# ADVISORY here -- unconditionally, not keyed to a literal placeholder string
+# like the two demotions above, because there is no "real" version of an
+# absolute always-flag check to distinguish from a stub. This is a real
+# accepted gap (no automated compat-drift signal in promotion) until
+# OMN-16283 ships the diff-against-last-promoted-main-baseline replacement,
+# which will flag only NEWLY introduced compat dependencies. Re-enable
+# blocking here only by landing OMN-16283, not by reverting this comment.
+COMPAT_DEPENDENCY_CHECK_BLOCKS = False
 
 
 class EnumPromotionVerdict(StrEnum):
@@ -213,10 +238,13 @@ def _contains_compat_token(text: str) -> str | None:
 
 
 def _is_production_surface(path: Path) -> bool:
-    if path.name in PRODUCTION_SURFACE_FILES:
-        return True
-    normalized = "/".join(path.parts).lower()
-    return any(part in normalized for part in PRODUCTION_SURFACE_PARTS)
+    """Return whether ``path`` is an actual dependency-manifest file.
+
+    OMN-16279: this is intentionally an exact-filename check only. See the
+    `PRODUCTION_SURFACE_FILES` comment above for why the prior path-substring
+    heuristic was removed.
+    """
+    return path.name in PRODUCTION_SURFACE_FILES
 
 
 def _scan_repo_for_compat(
@@ -255,6 +283,12 @@ def audit_compat_dependencies(
     """Find production dependency references to ``omnibase_compat``."""
     findings: list[ModelCompatDependencyFinding] = []
     for entry in manifest.repos:
+        if entry.repo == COMPAT_SELF_REPO:
+            # OMN-16279: `omnibase_compat`'s own source tree, tests, and
+            # lockfile necessarily mention its own package name. That is a
+            # self-reference, not a dependency edge -- skip the repo
+            # entirely rather than flag it as a production blocker.
+            continue
         for dependency in entry.dependency_ranges:
             token = _contains_compat_token(dependency)
             if token is not None:
@@ -397,14 +431,27 @@ def classify_promotion_gates(
         _load_json_object(compat_audit_path)
     )
     if compat.has_blockers:
+        reason = (
+            f"{compat.blocker_count} production compatibility dependency "
+            "reference(s) detected"
+        )
+        if not COMPAT_DEPENDENCY_CHECK_BLOCKS:
+            reason = (
+                f"{reason} [OMN-16279: ADVISORY — sanctioned compat -> core -> "
+                "spi -> infra layering (root CLAUDE.md rule 7); self-matches "
+                "and non-manifest paths already excluded upstream (OMN-16279 "
+                "steps 1-2), so what remains is the approved architecture, "
+                "not drift; reverts to BLOCKING only via the diff-against-"
+                "last-promoted-main-baseline replacement tracked in "
+                "OMN-16283, which flags NEWLY introduced compat dependencies "
+                "only]"
+            )
         failures.append(
             ModelPromotionFailureEvidence(
                 failure_class=EnumPromotionFailureClass.CODE,
                 source=str(compat_audit_path),
-                reason=(
-                    f"{compat.blocker_count} production compatibility dependency "
-                    "blocker(s) detected"
-                ),
+                reason=reason,
+                blocking=COMPAT_DEPENDENCY_CHECK_BLOCKS,
             )
         )
 

@@ -304,6 +304,74 @@ def test_same_item_may_keep_its_check_across_cohorts(tmp_path: Path) -> None:
     assert _rules(second, contracts) == set()
 
 
+def test_declared_lineage_relabel_across_items_is_not_a_wrong_item_rebind(
+    tmp_path: Path,
+) -> None:
+    """OMN-16148: item B's OWN contract entry naming item A as superseded.
+
+    Distinct from ``test_same_item_may_keep_its_check_across_cohorts`` (same
+    item id, later round) — here A and B are DIFFERENT declared dod_evidence
+    items, and B's ``evidence_artifact`` marker says it supersedes A. This is
+    OMN-15800's live shape: ``dod-source-presence-probe-pr-2032-rebind-f2958714``
+    corrects only the LABEL of ``dod-deploy-live-probe-pr-2032-rebind-f2958714``,
+    keeping the identical ``check_value`` on purpose because only the
+    ``evidence_item_id`` was wrong, not the probe. S1 must not flag this
+    declared pairing.
+    """
+    contracts_dir = tmp_path / "contracts"
+    contracts_dir.mkdir(parents=True, exist_ok=True)
+    check = "gh api repos/OmniNode-ai/x/contents/runner.py?ref=deadbeef | grep -c thing"
+    (contracts_dir / "OMN-11111.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-11111",
+                "dod_evidence": [
+                    {
+                        "id": "dod-a-mislabeled",
+                        "description": "dod-a-mislabeled evidence",
+                        "checks": [{"check_type": "command", "check_value": check}],
+                    },
+                    {
+                        "id": "dod-b-relabel",
+                        "description": "Label-only correction of dod-a-mislabeled.",
+                        "evidence_artifact": "supersedes_dod_evidence:dod-a-mislabeled",
+                        "checks": [{"check_type": "command", "check_value": check}],
+                    },
+                ],
+            },
+            sort_keys=False,
+        )
+    )
+    a = _supersede(tmp_path, "OMN-11111", "dod-a-mislabeled", "900", check)
+    b = _supersede(tmp_path, "OMN-11111", "dod-b-relabel", "900", check)
+    assert "S1" not in _rules(a, contracts_dir)
+    assert "S1" not in _rules(b, contracts_dir)
+
+
+def test_undeclared_cross_item_collision_is_still_refused(tmp_path: Path) -> None:
+    """No ``evidence_artifact`` linking the two items -> S1 must still fire.
+
+    Same two-item, byte-identical-check shape as the lineage-relabel test
+    above, but with NEITHER item's contract entry naming the other — the
+    actual OCC#5534/#5528 wrong-item-rebind shape. The lineage exemption
+    added for OMN-16148 must not weaken this case.
+    """
+    contracts = _contract(
+        tmp_path,
+        "OMN-22222",
+        {
+            "dod-a": ["gh pr view 101 --json state"],
+            "dod-b": ["gh pr view 202 --json state"],
+        },
+    )
+    shared = "gh api repos/OmniNode-ai/x/contents/unrelated.py | grep -c def"
+    a = _supersede(tmp_path, "OMN-22222", "dod-a", "900", shared)
+    b = _supersede(tmp_path, "OMN-22222", "dod-b", "900", shared)
+    assert "S1" in _rules(a, contracts)
+    assert "S1" in _rules(b, contracts)
+
+
 def test_whitespace_folding_cannot_launder_a_duplicate(tmp_path: Path) -> None:
     """yamlfmt reflows long scalars; the comparison must be whitespace-normal.
 
