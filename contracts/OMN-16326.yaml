@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16326"
+title: "Interpreter-free pre-push load probe restores the OMN-14953 pinned-interpreter gate"
+summary: >
+  OMN-16295 added host_load_ratio() to omnibase_infra's scripts/hooks/prepush_smart_tests.sh with three
+  bare `python3 -c` invocations, which turned both tests in tests/ci/test_prepush_hook_pinned_interpreter.py
+  (the OMN-14953 gate) RED on a clean origin/dev checkout. Because the pre-push impacted-test selector
+  maps .github/workflows/** to tests/ci/, every PR touching a workflow file hit the red gate at push time
+  — OMN-16323 stalled behind exactly that. `uv run` was not an available remedy: two of the three invocations
+  execute remotely over ssh on .200/.201, and .201 has no `uv` binary at all. Rather than carve an ssh-shaped
+  exemption out of a static gate, the fix removes the interpreter from the load probe entirely and replaces
+  it with a POSIX-shell probe, so the OMN-14953 assertion is satisfied as written and the gate's test
+  file is not touched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "RED-before/GREEN-after proof for the OMN-14953 pinned-interpreter gate"
+    command: "uv run pytest tests/ci/test_prepush_hook_pinned_interpreter.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-shell-probe-present"
+    description: >
+      The interpreter-free shell probe _PREPUSH_LOAD_PROBE_SH is present in the shipped hook, i.e. the
+      load probe still exists and was replaced rather than deleted.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/hooks/prepush_smart_tests.sh?ref=673896016722cc04d94307d3ea595d20655d4379'
+          --jq '.content' | base64 -d | grep -c '_PREPUSH_LOAD_PROBE_SH='"
+  - id: "dod-no-python-invocation-in-hook"
+    description: >
+      No non-comment line in the shipped hook invokes python/python3 — the property the OMN-14953 gate
+      asserts, observed directly on the product rather than on the gate's own output.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          sh -c 'b=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/hooks/prepush_smart_tests.sh?ref=673896016722cc04d94307d3ea595d20655d4379" --jq ".content" | base64 -d) && printf "%s" "$b" | grep -qF "_PREPUSH_LOAD_PROBE_SH=" && ! printf "%s" "$b" | grep -v "^[[:space:]]*#" | grep -qF "python3" && echo "anchor _PREPUSH_LOAD_PROBE_SH= present; zero non-comment python3 invocations"'
+  - id: "dod-python-probe-removed"
+    description: >
+      The OMN-16295 python probe variable _PREPUSH_LOAD_PROBE_PY is gone from the shipped hook — the fix
+      replaced it rather than leaving both probes in place behind a branch.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          sh -c 'b=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/hooks/prepush_smart_tests.sh?ref=673896016722cc04d94307d3ea595d20655d4379" --jq ".content" | base64 -d) && printf "%s" "$b" | grep -qF "_PREPUSH_LOAD_PROBE_SH=" && ! printf "%s" "$b" | grep -qF "_PREPUSH_LOAD_PROBE_PY" && echo "anchor present; _PREPUSH_LOAD_PROBE_PY absent"'
+  - id: "dod-gate-test-not-weakened"
+    description: >
+      The OMN-14953 gate was restored, not relaxed. The fix PR's complete changed-file set is exactly
+      scripts/hooks/prepush_smart_tests.sh — tests/ci/test_prepush_hook_pinned_interpreter.py is not modified,
+      deleted, skipped, or allowlisted anywhere in the change.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          sh -c 'f=$(gh api "repos/OmniNode-ai/omnibase_infra/pulls/2824/files" --jq "[.[].filename]|join(\",\")"); echo "changed files: $f"; test "$f" = "scripts/hooks/prepush_smart_tests.sh"'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2824"
+    description: >
+      Binds the omnibase_infra PR carrying the fix, so the eligibility check resolves a PASS receipt naming
+      that PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2824 --repo OmniNode-ai/omnibase_infra --json number,state"
