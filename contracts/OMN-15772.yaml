@@ -1,0 +1,38 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15772"
+title: "migration-inventory clone failures fail closed instead of silently shrinking the checked repo
+  set"
+summary: >-
+  onex_change_control PR #6635 repairs the Migration Inventory Sync workflow so peer repository clone
+  failures cannot be silently swallowed. The migration-inventory clone helper now matches the already-proven
+  migration-conflicts pattern: remove each target before cloning, retry, emit an explicit ::error:: after
+  three failed attempts, return non-zero, and call the helper without `|| true`. The workflow also removes
+  /tmp/repos before use so a persistent self-hosted runner cannot validate stale sibling checkouts from
+  an earlier job.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-onex-change-control-pr-6635-fail-closed"
+    description: >-
+      onex_change_control PR #6635 updates .github/workflows/ci.yml so the migration-inventory peer clone
+      step is fail-closed and freshness-preserving. Content-bound probe: reads ci.yml at the PR head through
+      the GitHub API and checks for the required /tmp/repos cleanup, the per-target cleanup, the explicit
+      failed-clone error, and the non-wrapped helper invocation. This probe reads a surface outside this
+      companion PR's own diff and was checked against the merge-base c3a008a83991a09ceb4e50b55e57425b82698165,
+      where the /tmp/repos cleanup is absent and the clone loop still uses `|| true`.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/onex_change_control/contents/.github/workflows/ci.yml?ref=a1f5325fb9cc1dafcc36fe1b5fc76c8e54eb6453'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'rm -rf /tmp/repos' && printf
+          '%s' "$body" | grep -qF 'rm -rf "${target}"' && printf '%s' "$body" | grep -qF '::error::Failed
+          to clone ${repo} after 3 attempts' && printf '%s' "$body" | grep -qF 'clone_omni_repo "$repo"
+          "/tmp/repos/$repo"'
