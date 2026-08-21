@@ -73,3 +73,42 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6811 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2827"
+    description: >-
+      omnibase_infra PR #2827 closes the release.yml shell-injection sinks: the release tag now reaches
+      every run: block through an env: RELEASE_TAG binding read as "$RELEASE_TAG" instead of being interpolated
+      into shell source, plus a charset guard that rejects a tag containing anything outside [A-Za-z0-9.+_-]
+      before it is written to GITHUB_OUTPUT (closing the newline output-forging that an env: binding alone
+      leaves open). The probe asserts the security property itself rather than the presence of one guard:
+      all three safe shell reads present AND all three pre-fix interpolated sinks absent. The remaining
+      ${{ inputs.tag }} / ${{ steps.tag.outputs.tag }} occurrences at head are YAML-expression positions
+      (version:, ref:, tag_name:, if:, env:), which are not shell sinks and are deliberately untouched.
+      Content-bound: it reads the omnibase_infra blob at the PR head through the GitHub API, so it executes
+      against a surface this OCC PR does not author, and it is falsifiable -- verified GREEN at head fdc8758fefc620dcc9b9c85a1a9d2ffa7d5243ac
+      and RED at merge-base 063cf6ecff69b21d3f2896e404b7d5f2644e2ed8, where TAG="${{ inputs.tag }}" is
+      still interpolated directly into the run: block. Both directions were run before this receipt was
+      written.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/release.yml?ref=fdc8758fefc620dcc9b9c85a1a9d2ffa7d5243ac'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF -- 'TAG="$RELEASE_TAG"' && printf
+          '%s' "$body" | grep -qF -- 'echo "tag=$RELEASE_TAG" >> $GITHUB_OUTPUT' && printf '%s' "$body"
+          | grep -qF -- 'release tag contains unsupported characters' && ! printf '%s' "$body" | grep
+          -qF -- 'TAG="${{ inputs.tag }}"' && ! printf '%s' "$body" | grep -qF -- 'echo "tag=${{ inputs.tag
+          }}" >> $GITHUB_OUTPUT' && ! printf '%s' "$body" | grep -qF -- 'TAG="${{ steps.tag.outputs.tag
+          }}"'
+  - id: "occ-self-bind-pr-6820"
+    description: >-
+      OCC self-binding receipt for PR #6820, the in-repo evidence PR carrying the omnibase_infra#2827
+      entry. Binds OMN-16323 to this OCC PR by pr_number so the receipt-gate eligibility check can resolve
+      a PASS receipt for the evidence PR itself; the sibling self-binds for #6809, #6810 and #6811 do
+      not cover this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6820 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
