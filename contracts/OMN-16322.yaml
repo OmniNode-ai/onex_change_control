@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16322"
+title: "occ-preflight cold-runner timeout lands passing jobs as CANCELLED"
+summary: >-
+  Raises the occ-preflight / eligibility job timeout from 10m to 15m. On a cold trusted-CI runner the
+  job spends ~2m38s in Set up job (image pull) and ~4m05s checking out omnibase_compat before the eligibility
+  check starts, so it reaches ~10m wall and the timeout fires during results upload, after every step
+  including Complete job has already succeeded. GitHub stamps a timed-out job cancelled, and both CI Summary
+  and GitHub's required-check semantics fail closed on cancelled, so a job that logged "OCC eligibility:
+  PASS" still blocks the PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-onex-change-control-pr-6805-timeout"
+    description: >-
+      onex_change_control PR #6805 changes only .github/workflows/call-occ-preflight.yml, raising the
+      occ-preflight / eligibility job timeout from 10 to 15 minutes. Observed against the live PR file
+      list rather than a pinned head commit so a branch refresh from dev cannot stale the evidence, while
+      still failing if the workflow file is absent from the PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6805 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path' | grep
+          -Fx '.github/workflows/call-occ-preflight.yml'
+  - id: "occ-self-bind-pr-6805"
+    description: >-
+      OCC self-binding receipt for PR #6805, the in-repo evidence PR carrying this contract and the workflow
+      repair. Binds OMN-16322 to the OCC PR by pr_number so the OCC receipt-gate eligibility check can
+      resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6805 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1573"
+    description: >-
+      omnibase_core PR #1573 raises the same occ-preflight / eligibility timeout from 10 to 15 minutes
+      in .github/workflows/occ-preflight.yml, the REUSABLE workflow consumed via uses:...occ-preflight.yml@main
+      by omnibase_core, omniclaude, omnidash and omnimarket. This is the sibling of the inlined-copy fix
+      already carried by onex_change_control#6805. Content-bound probe: it reads the omnibase_core blob
+      at the PR head through the GitHub API, so it executes against a surface this OCC PR does not author,
+      and it is falsifiable — verified GREEN at head 632b5350bd717b9d649ffe9dfd154ada05c93885 and RED
+      at merge-base bfc05d136123efa680844ce4a12c3c040cba848f, where the value is still 10.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/.github/workflows/occ-preflight.yml?ref=632b5350bd717b9d649ffe9dfd154ada05c93885'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'timeout-minutes: 15'
+  - id: "occ-self-bind-pr-6838"
+    description: "Binds OMN-16322 to OCC companion PR #6838 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6838 --repo OmniNode-ai/onex_change_control --json number,state"
