@@ -1,0 +1,40 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15749"
+title: "deploy-agent digest-verification fixture errors on real docker timeouts under runner contention"
+summary: >-
+  The OMN-15181 real_container fixture in scripts/deploy-agent/tests/unit/test_executor_digest_verification_image_id_omn15181.py
+  builds a real busybox container to pin actual docker inspect semantics. All four of its docker calls
+  already passed check=False, so a non-zero exit was the fixture's business to interpret -- but subprocess.run
+  raises TimeoutExpired regardless of check=, so the one failure mode the fixture could not absorb is
+  the one that actually fires on the shared self-hosted fleet: docker daemon and registry contention.
+  Observed on three unrelated PRs (infra#2790 docker pull busybox:latest timed out after 90 seconds; infra#2684
+  docker rm -f after 30s at teardown; infra#2685 docker create after 30s at setup). Deploy Agent Tests
+  is a required merge gate, so each occurrence blocks a PR on a condition that says nothing about the
+  code under test. The fix routes all four calls through a helper that collapses a timeout to None, making
+  the timeout a handled outcome rather than an unhandled exception, while any OTHER non-zero exit still
+  raises so a genuine docker semantic is not swallowed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2826"
+    description: >-
+      omnibase_infra PR #2826 introduces the timeout-absorbing _docker() helper and its named budget constants
+      in scripts/deploy-agent/tests/unit/test_executor_digest_verification_image_id_omn15181.py. Content-bound
+      probe: it reads the omnibase_infra blob at the PR head through the GitHub API, so it executes against
+      a surface this OCC PR does not author, and it is falsifiable -- verified GREEN at head cc972ae1a2124a50acdc928cc4401b7455276b95
+      and RED at merge-base 2444b99f135406b793b6620fb9b44605ad76171a, where the fixture still calls subprocess.run
+      directly with no timeout handling and the constant does not exist. Both directions were run before
+      this receipt was written.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/deploy-agent/tests/unit/test_executor_digest_verification_image_id_omn15181.py?ref=cc972ae1a2124a50acdc928cc4401b7455276b95'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF -- '_PULL_TIMEOUT_SECONDS'
