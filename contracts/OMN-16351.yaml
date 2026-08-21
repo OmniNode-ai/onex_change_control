@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16351"
+title: "OCC companion for OMN-16351"
+summary: >
+  Hand-authored OCC Evidence-Source companion for OmniNode-ai/omnibase_infra#2832 (backmerge the main
+  lineage into dev to restore `main` as an ancestor of `dev`, so the OMN-16289 release-synced-main fast-forward
+  can succeed). OCC autobind declined to mint automatically and required hand-authored evidence, correctly:
+  the PR changes zero files, so no changed-file candidate could be proven RED against the merge base and
+  a PR-existence probe alone would be non-falsifiable (OMN-15247). The evidence below is therefore bound
+  to product content and repository topology at the pinned merge commit 05733f296cc78efac53b841e6e114a23dc490102,
+  not to PR metadata.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2832 CI checks green"
+    command: "gh pr checks 2832 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2832"
+    description: "PR #2832 on OmniNode-ai/omnibase_infra — Evidence-Source binding."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2832 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName"
+  - id: "dod-omnibase_infra-pr-2832-ancestry-restored"
+    description: "PR #2832 — content-bound probe of the defect this PR exists to fix: at the pinned merge
+      commit 05733f296cc78efac53b841e6e114a23dc490102, `main` (ecc061c93bfa44e014972af7a99b6a3e73a6237c,
+      = tag v0.38.6) is a STRICT ANCESTOR, i.e. the compare reports behind_by == 0. Falsifiability was
+      measured, not assumed: the identical compare against dev's PRE-merge tip (6d5ea5ba53cfb22137c090c7d4c60231c5078540,
+      = tag v0.38.7) returns behind_by == 19 and so FAILS this check. (19 is the GitHub compare API's
+      count against the merge base; the local `git rev-list --count dev..main` count of that same divergence
+      is 2023. The check asserts only behind_by == 0, which is the fast-forward precondition either way.)
+      That non-zero state is why `Sync main to release tag` failed non-fast-forward on the v0.38.7 cut.
+      This reads repository topology at a pinned ref, not PR/issue metadata (OMN-15309 admissibility).
+      OMN-15411 Rule E SIGPIPE-safe: the producer's output is buffered into a shell variable before the
+      consumer reads it."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "behind=\"$(gh api 'repos/OmniNode-ai/omnibase_infra/compare/ecc061c93bfa44e014972af7a99b6a3e73a6237c...05733f296cc78efac53b841e6e114a23dc490102'
+          --jq .behind_by)\" && [ \"$behind\" = \"0\" ]"
+  - id: "dod-omnibase_infra-pr-2832-no-dead-code-revival"
+    description: "PR #2832 — content-bound negative probe guarding the single largest correctness risk
+      of this backmerge. `main` still carries src/omnibase_infra/runtime/emit_daemon/notification_consumer.py
+      (404 lines), which dev DELETED on purpose in 592fe6029 'fix(OMN-15970): delete dead NotificationConsumer
+      (R8, infra emit-daemon leftovers)' (#2733). A naive content-taking merge would resurrect it. This
+      probe asserts the file is ABSENT at the pinned merge commit. The absence is proven, not inferred
+      from an empty result: the same command shape against the sibling __init__.py in that package returns
+      200 at the same ref, so a 404 here is a real absence and not a broken query."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/emit_daemon/__init__.py?ref=05733f296cc78efac53b841e6e114a23dc490102'
+          >/dev/null && ! gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/emit_daemon/notification_consumer.py?ref=05733f296cc78efac53b841e6e114a23dc490102'
+          >/dev/null 2>&1"
+  - id: "dod-omnibase_infra-pr-2832-ledger-union-preserved"
+    description: "PR #2832 — content-bound probe that the append-only migration-ledger union survived
+      the backmerge. docker/migrations/forward/fenced-node-migrations.yaml carries TEN fenced ids on dev
+      (the tenth, hook_event_capture 0002, added under OMN-16090) but only NINE on main. A merge that
+      let main's older copy win would silently drop a fenced id. This probe asserts the TEN-id form is
+      present AND the superseded NINE-id form is absent at the pinned merge commit. OMN-15411 Rule E SIGPIPE-safe:
+      the file body is buffered into a shell variable before the grep consumers read it."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "body=\"$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/fenced-node-migrations.yaml?ref=05733f296cc78efac53b841e6e114a23dc490102'
+          --jq .content | base64 -d)\" && printf '%s' \"$body\" | grep -qF 'WHY THESE TEN IDS' && ! printf
+          '%s' \"$body\" | grep -qF 'WHY THESE NINE IDS'"
