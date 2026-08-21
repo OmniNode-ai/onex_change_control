@@ -1,0 +1,48 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16373"
+title: "Retire CROSS_REPO_PAT: migrate OCC cross-repo CI reads to the onexbot-occ-writer App token"
+summary: "Migrates onex_change_control's own CI workflows (ci.yml, nightly-promote.yml, staleness-monitor.yml)
+  off the org-wide CROSS_REPO_PAT secret onto a short-lived onexbot-occ-writer GitHub App installation
+  token, minted per job/step via actions/create-github-app-token, mirroring the already-merged pattern
+  from omnibase_infra#2831 / omnibase_spi#273. Sister PRs land the same migration in omnibase_core, omnibase_infra,
+  and omnimemory. check-platform-leads-review-tripwire in ci.yml is deliberately left on CROSS_REPO_PAT:
+  it needs org-membership (read:org) scope the App's permission set (contents:write, metadata:read, pull_requests:write)
+  does not grant. Self-authored by the implementer for this ticket's own carrier PR #6844 (not a companion
+  pattern) — a bounded, mechanical token-source swap, same shape as OMN-16361's contract."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16373-cross-repo-pat-removed-pr-6844"
+    description: "PR #6844's HEAD content of ci.yml, nightly-promote.yml, and staleness-monitor.yml carries
+      exactly 2 live '${{ ... secrets.CROSS_REPO_PAT ... }}' template expressions, both in the check-platform-leads-review-tripwire
+      job (GH_TOKEN fallback + TOKEN_SOURCE diagnostic), which needs read:org scope the onexbot-occ-writer
+      App's permission set (contents:write, metadata:read, pull_requests:write) does not grant. Every
+      other job's secrets.CROSS_REPO_PAT usage was replaced with a minted App token. Falsifiable: asserting
+      any count other than 2 exits non-zero."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: 'curl -s https://raw.githubusercontent.com/OmniNode-ai/onex_change_control/jonah/omn-16373-app-token-migration/.github/workflows/ci.yml
+          https://raw.githubusercontent.com/OmniNode-ai/onex_change_control/jonah/omn-16373-app-token-migration/.github/workflows/nightly-promote.yml
+          https://raw.githubusercontent.com/OmniNode-ai/onex_change_control/jonah/omn-16373-app-token-migration/.github/workflows/staleness-monitor.yml
+          | grep secrets.CROSS_REPO_PAT | grep -vc ''^[[:space:]]*#'''
+  - id: "occ-self-bind-pr-6844"
+    description: "Self-bind: OCC PR 6844 is this ticket's own carrier PR, proven by its own file list
+      containing .github/workflows/ci.yml."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6844 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF '.github/workflows/ci.yml'"
