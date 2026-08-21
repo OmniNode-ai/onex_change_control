@@ -1,0 +1,108 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16373"
+title: "Retire CROSS_REPO_PAT: migrate cross-repo CI reads to the onexbot-occ-writer App token"
+summary: "Migrates OCC and its sibling repos' CI workflows off the org-wide CROSS_REPO_PAT secret onto
+  a short-lived onexbot-occ-writer GitHub App installation token, minted per job/step via actions/create-github-app-token,
+  mirroring the already-merged pattern from omnibase_infra#2831 / omnibase_spi#273. onex_change_control
+  PR #6844 (this repo's own carrier, ci.yml / nightly-promote.yml / staleness-monitor.yml) is the substantive
+  change; sibling PRs land the same migration in omnibase_core, omnibase_infra, and omnimemory#434 (autobound
+  below). Two CROSS_REPO_PAT references stay in ci.yml deliberately: check-platform-leads-review-tripwire
+  needs org-membership (read:org) scope the App's permission set (contents:write, metadata:read, pull_requests:write)
+  does not grant; migration-inventory's peer-repo clone keeps CROSS_REPO_PAT as a fallback after the App
+  token reproducibly dropped the 2 newest files of the private omninode_infra repo on two live CI runs
+  (32522180870) -- an installation-token propagation gap for a repo the App was only granted access to
+  hours earlier, not a real missing-file drift (the files are present on omninode_infra's own dev HEAD)."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "OCC PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "ci"
+    description: "PR #6844 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "ci"
+    description: "PR #2835 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16373-cross-repo-pat-removed-pr-6844"
+    description: "PR #6844's HEAD content of ci.yml, nightly-promote.yml, and staleness-monitor.yml carries
+      exactly 3 live '${{ ... secrets.CROSS_REPO_PAT ... }}' template expressions: 2 in check-platform-leads-review-tripwire
+      (GH_TOKEN fallback + TOKEN_SOURCE diagnostic; needs read:org scope the onexbot-occ-writer App's
+      permission set does not grant), and 1 in migration-inventory's peer-repo clone (kept as a fallback
+      AFTER the App token, since the App token alone reproducibly dropped the 2 newest files of the private
+      omninode_infra repo on two live CI runs). Every other job's secrets.CROSS_REPO_PAT usage was replaced
+      with a minted App token. The live count (verified out-of-band via the GitHub contents API against
+      the pushed branch, since a CI runner has no route to a non-loopback host per OMN-14051) is recorded
+      in the paired receipt; the contract check greps that receipt's PASS status rather than re-fetching
+      over the network."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: "PASS"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16373/dod-omn16373-cross-repo-pat-removed-pr-6844/command.yaml"
+  - id: "occ-self-bind-pr-6844"
+    description: "Self-bind: OCC PR 6844 is this ticket's own carrier PR, proven by its own file list
+      containing .github/workflows/ci.yml."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6844 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF '.github/workflows/ci.yml'"
+  - id: "dod-OmniNode-ai-omnimemory-pr-434"
+    description: "PR #434 on OmniNode-ai/omnimemory — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 434 --repo OmniNode-ai/omnimemory --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 434 --repo OmniNode-ai/omnimemory --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimemory-pr-434"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-6846"
+    description: "Binds OMN-16373 to OCC companion PR #6846 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6846 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-6844"
+    description: "PR #6844 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6844 --repo OmniNode-ai/onex_change_control --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 6844 --repo OmniNode-ai/onex_change_control --json files"
+  - id: "occ-self-bind-pr-6845"
+    description: "Binds OMN-16373 to OCC companion PR #6845 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6845 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2835"
+    description: "PR #2835 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2835 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: "gh pr view 2835 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-6849"
+    description: "Binds OMN-16373 to OCC companion PR #6849 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6849 --repo OmniNode-ai/onex_change_control --json number,state"
