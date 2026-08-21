@@ -77,6 +77,9 @@ _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
 _RESULT_NOT_EVALUATED = "NOT_EVALUATED"
 _SELF_STATUS_CHECK_NAMES = frozenset({"CI Summary", "Contract Compliance Check"})
+_NON_TERMINAL_STATUS_CHECK_STATES = frozenset(
+    {"EXPECTED", "IN_PROGRESS", "PENDING", "QUEUED"}
+)
 _EXECUTION_SCOPE_HOSTED_AND_LOCAL = "hosted_and_local"
 _EXECUTION_SCOPE_LOCAL_DONE_GATE = "local_done_gate"
 _EXECUTION_SCOPES = frozenset(
@@ -601,15 +604,26 @@ def _check_test_passes(
     except json.JSONDecodeError:
         return _RESULT_WARN, "Could not parse PR checks JSON"
 
+    relevant_checks = [
+        c for c in checks if c.get("name") not in _SELF_STATUS_CHECK_NAMES
+    ]
     failures = [
         c
-        for c in checks
-        if c.get("name") not in _SELF_STATUS_CHECK_NAMES
-        and c.get("state") not in ("SUCCESS", "SKIPPED", "NEUTRAL")
+        for c in relevant_checks
+        if c.get("state")
+        not in ("SUCCESS", "SKIPPED", "NEUTRAL", *_NON_TERMINAL_STATUS_CHECK_STATES)
     ]
     if failures:
         names = ", ".join(c.get("name", "?") for c in failures)
         return _RESULT_BLOCK, f"Failing CI checks: {names}"
+    pending = [
+        c
+        for c in relevant_checks
+        if c.get("state") in _NON_TERMINAL_STATUS_CHECK_STATES
+    ]
+    if pending:
+        names = ", ".join(c.get("name", "?") for c in pending)
+        return _RESULT_WARN, f"CI checks still pending: {names}"
     return _RESULT_PASS, f"All {len(checks)} CI checks green"
 
 
