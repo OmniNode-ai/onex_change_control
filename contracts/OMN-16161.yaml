@@ -1,14 +1,29 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-16161"
-title: "Autobind OCC evidence for OMN-16161"
-summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/onex_change_control
-  PR #6655.
+title: "OCC validate-yaml: recognize the contracts/v1 shape-v1 schema namespace"
+summary: >-
+  detect_schema_type in validate_yaml.py classified every path containing 'contract' as the legacy ticket_contract
+  shape, including contracts/v1/OMN-15669.yaml (the OMN-15669 shape-v1 schema, structurally incompatible
+  with ModelTicketContract). Every downstream repo's recursive `find ... -name "OMN-*.yaml"` Contract
+  Compliance Check step feeds that file into this shared CLI and gets a corpus-wide false-positive failure
+  unrelated to the PR under review (confirmed live on omnibase_spi#270, 2026-08-17). Teaches detect_schema_type
+  + validate_file to recognize the contracts slash v1 namespace and skip legacy validation for it, fixing
+  every downstream consumer in one OCC-side change instead of repeating the per-repo -maxdepth 1 patch
+  OMN-16062 applied to omniintelligence alone.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
+  - kind: "tests"
+    description: "Regression tests prove the v1-namespace file validates cleanly and the legacy ticket_contract
+      path is unaffected."
+    command: "uv run pytest tests/test_validate_yaml_cli.py -q"
+  - kind: "manual"
+    description: "The exact recursive find pattern downstream repos use, run against the live contracts
+      corpus, exits 0."
+    command: >-
+      find contracts -name 'OMN-*.yaml' -print0 | xargs -0 uv run validate-yaml
   - kind: "ci"
     description: "PR #6655 CI checks green"
     command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
@@ -17,6 +32,43 @@ emergency_bypass:
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-detect-schema-type-v1-namespace"
+    description: "detect_schema_type classifies contracts/v1/ as a distinct, non-ticket_contract type
+      and validate_file does not run ModelTicketContract on it."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run validate-yaml contracts/v1/OMN-15669.yaml"
+  - id: "dod-regression-test-omn15669-v1-file"
+    description: "tests/test_validate_yaml_cli.py proves contracts/v1/OMN-15669.yaml validates cleanly
+      (exit 0) under the fixed CLI, and a sibling test proves top-level contracts/*.yaml still classifies
+      as ticket_contract."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_validate_yaml_cli.py -k contracts_v1_namespace_is_not_legacy_ticket_contract
+          -q"
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_validate_yaml_cli.py -k top_level_contracts_dir_still_ticket_contract
+          -q"
+  - id: "dod-legacy-contract-unaffected"
+    description: "Existing TestSchemaTypeDetection + TestMalformedContractRegression tests still pass
+      unmodified."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_validate_yaml_cli.py -q"
+  - id: "dod-full-corpus-scan-clean"
+    description: "The exact recursive find pattern every downstream repo's ci.yml uses against the live
+      contracts corpus (including contracts/v1/OMN-15669.yaml) exits 0."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "find contracts -name 'OMN-*.yaml' -print0 | xargs -0 uv run validate-yaml"
   - id: "dod-OmniNode-ai-onex_change_control-pr-6655"
     description: "PR #6655 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
     source: "generated"

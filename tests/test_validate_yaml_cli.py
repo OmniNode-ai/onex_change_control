@@ -262,6 +262,70 @@ baz: 123
         assert result.returncode == 1
         assert "Cannot determine schema type" in result.stderr
 
+    def test_contracts_v1_namespace_is_not_legacy_ticket_contract(
+        self, tmp_path: Path
+    ) -> None:
+        """OMN-16161: contracts/v1/*.yaml is the OMN-15669 occ-contract/v1 shape,
+        not the legacy ModelTicketContract shape. A file that would fail
+        ModelTicketContract (non-SemVer schema_version, extra fields like
+        `interface`/`cases`) must still validate cleanly through this CLI when
+        it lives under a `contracts/v1/` directory, because that namespace has
+        its own dedicated gate (check-contract-shape-v1 / OMN-15669) and must
+        not be fed to the legacy validator.
+        """
+        v1_dir = tmp_path / "contracts" / "v1"
+        v1_dir.mkdir(parents=True)
+        test_file = v1_dir / "OMN-15669.yaml"
+        test_file.write_text(
+            """
+schema_version: occ-contract/v1
+ticket_id: OMN-15669
+title: Canonical contract shape v1
+interface:
+  inputs: []
+  outputs: []
+dependencies: []
+cases: []
+exclusions: []
+""",
+        )
+
+        result = run_cli(str(test_file))
+        assert result.returncode == 0, result.stderr
+        assert "ticket_contract" not in result.stdout
+
+    def test_top_level_contracts_dir_still_ticket_contract(
+        self, tmp_path: Path
+    ) -> None:
+        """Sibling to the v1-namespace test: a top-level contracts/*.yaml file
+        (no /v1/ path segment) must still classify and validate as the legacy
+        ticket_contract shape — the v1-namespace carve-out must not swallow
+        the normal case.
+        """
+        contracts_dir = tmp_path / "contracts"
+        contracts_dir.mkdir()
+        test_file = contracts_dir / "OMN-999.yaml"
+        test_file.write_text(
+            """
+schema_version: "1.0.0"
+ticket_id: "OMN-999"
+title: "Test ticket"
+summary: "Test ticket"
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+""",
+        )
+
+        result = run_cli(str(test_file))
+        assert result.returncode == 0, result.stderr
+        assert "ticket_contract" in result.stdout
+
 
 class TestMalformedContractRegression:
     """Regression tests for OMN-8808: malformed DoD evidence YAML must be blocked.
