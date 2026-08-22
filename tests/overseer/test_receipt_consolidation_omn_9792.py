@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-"""TDD-first tests for OMN-9792: ModelVerifierCheckResult removed; checks re-typed."""
+"""TDD-first tests for OMN-9792: ModelVerifierCheckResult removed; checks re-typed.
+
+OMN-16191: ModelVerifierOutput was an OCC-local duplicate; it is deleted here
+and now lives exclusively in omnibase_core.models.overseer (OMN-11225). These
+tests are re-pointed at the canonical location.
+"""
 
 from __future__ import annotations
 
@@ -15,22 +20,21 @@ class TestVerifierOutputConsolidationOMN9792:
     """
 
     def test_model_verifier_check_result_does_not_exist(self) -> None:
-        import onex_change_control.overseer as pkg
+        import omnibase_core.models.overseer as pkg
 
         assert not hasattr(pkg, "ModelVerifierCheckResult"), (
             "ModelVerifierCheckResult must be deleted (OMN-9792)"
         )
 
     def test_model_verifier_output_checks_accepts_model_dod_receipt(self) -> None:
+        from omnibase_core.enums.overseer.enum_verifier_verdict import (
+            EnumVerifierVerdict,
+        )
         from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
         from omnibase_core.models.contracts.ticket.model_dod_receipt import (
             ModelDodReceipt,
         )
-
-        from onex_change_control.overseer.enum_verifier_verdict import (
-            EnumVerifierVerdict,
-        )
-        from onex_change_control.overseer.model_verifier_output import (
+        from omnibase_core.models.overseer.model_verifier_output import (
             ModelVerifierOutput,
         )
 
@@ -62,7 +66,7 @@ class TestVerifierOutputConsolidationOMN9792:
         assert isinstance(output.checks[0], ModelDodReceipt)
 
     def test_model_verifier_output_checks_type_annotation_is_dod_receipt(self) -> None:
-        from onex_change_control.overseer.model_verifier_output import (
+        from omnibase_core.models.overseer.model_verifier_output import (
             ModelVerifierOutput,
         )
 
@@ -87,7 +91,7 @@ class TestVerifierOutputConsolidationOMN9792:
         )
 
     def test_model_verifier_check_result_not_importable_from_module(self) -> None:
-        mod = import_module("onex_change_control.overseer.model_verifier_output")
+        mod = import_module("omnibase_core.models.overseer.model_verifier_output")
 
         assert not hasattr(mod, "ModelVerifierCheckResult"), (
             "ModelVerifierCheckResult must not exist in model_verifier_output module"
