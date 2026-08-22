@@ -2335,9 +2335,67 @@ jobs:
           set -euo pipefail
           deadline=$(( $(date +%s) + DEADLINE_MINUTES * 60 ))
           poll=0
+
+          # OMN-16095: bounded retry (3 attempts, exponential backoff) around
+          # each paginated GitHub API read, with pages fully merged before
+          # ci_summary_gate.py ever sees them.
+          #
+          # Defect 1 (truncation): `gh api ... --paginate` alone follows the
+          # Link header across pages, but for an OBJECT-rooted endpoint
+          # (check-runs is `{"total_count":N,"check_runs":[...]}`, jobs is
+          # `{"total_count":N,"jobs":[...]}`) it prints EACH PAGE AS A
+          # SEPARATE JSON DOCUMENT rather than merging them (`gh help api`:
+          # "Each page is a separate JSON array or object ... Pass --slurp to
+          # wrap all pages ... into an outer JSON array"). The pre-OMN-16095
+          # shape piped that multi-document stream straight to a file; on any
+          # head whose check-run count crossed the 100-per-page boundary
+          # (105 observed on OCC PR #6552) the file held two concatenated
+          # JSON objects, `json.loads()` raised on the "extra data", and
+          # `_load_check_runs()` silently returned `None` -- read by
+          # `evaluate_external_contexts()` as "no context observed", which
+          # never resolves and hangs the poll to its deadline. `--slurp` +
+          # a `jq` merge collapses every page into one valid document
+          # up front, so `latest_check_run_by_name()`'s existing per-name
+          # "latest wins" collapse still runs over the complete set.
+          #
+          # Defect 2 (single transient failure kills the job): a bare
+          # `gh api ...` under `set -e` treated one flaky read (observed:
+          # "unexpected EOF") as fatal, exiting the whole job even while
+          # every real gate was green or still legitimately running.
+          # `fetch_paginated` below retries up to 3 times with backoff;
+          # only once retries are exhausted does it fall back to an empty
+          # (but validly-shaped) payload, which `ci_summary_gate.py`
+          # evaluates as PENDING -- so a persistent outage still fails
+          # closed at the deadline above, it just never crashes the script.
+          fetch_paginated() {
+            local url="$1" merge_expr="$2" out="$3" fallback="$4"
+            local attempt=1 max_attempts=3 delay=5
+            while (( attempt <= max_attempts )); do
+              if gh api --paginate --slurp "$url" 2>/tmp/ci_summary_fetch_err.log \
+                  | jq -c "$merge_expr" > "${out}.tmp"; then
+                mv "${out}.tmp" "$out"
+                return 0
+              fi
+              echo "::warning::CI Summary: fetch of ${url} failed (attempt ${attempt}/${max_attempts}): $(tail -c 500 /tmp/ci_summary_fetch_err.log 2>/dev/null)"
+              rm -f "${out}.tmp"
+              if (( attempt < max_attempts )); then
+                sleep "$delay"
+                delay=$(( delay * 2 ))
+              fi
+              attempt=$(( attempt + 1 ))
+            done
+            echo "::warning::CI Summary: ${url} retry-exhausted after ${max_attempts} attempts -- this poll evaluates PENDING; the deadline above still governs terminal FAILURE"
+            echo "$fallback" > "$out"
+            return 1
+          }
+
           while true; do
             poll=$((poll + 1))
-            gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" --paginate > /tmp/ci_summary_jobs.json
+            fetch_paginated \
+              "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
+              '{jobs: (map(.jobs) | add)}' \
+              /tmp/ci_summary_jobs.json \
+              '{"jobs": []}' || true
             if [[ "${EVENT_NAME}" == "pull_request" ]]; then
               # OMN-16141: commits/{sha}/check-runs returns an OBJECT
               # (`{total_count, check_runs: [...]}`), not a bare array. Per
@@ -2352,15 +2410,19 @@ jobs:
               # EXPECTED_EXTERNAL_CONTEXTS entry being unobserved, forever,
               # regardless of their real state (live repro: occ#6618, head
               # d5ed3417204bfe73263805532cd3e38a0d343242, 135 check-runs).
-              # `--paginate --slurp` wraps each page's full object into a
-              # single outer JSON array instead of concatenating them, so
-              # this now parses reliably at any check-run count; the
-              # trailing `jq` flattens each page's `check_runs` array into
-              # one combined list matching the plain-array shape
-              # `_load_check_runs()` already accepts.
-              gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" --paginate --slurp \
-                | jq '[.[].check_runs[]]' \
-                > /tmp/ci_summary_check_runs.json || echo '[]' > /tmp/ci_summary_check_runs.json
+              # OMN-16095 folds this same `--paginate --slurp` fix into the
+              # shared `fetch_paginated` helper above (used for the jobs
+              # endpoint already) so check-runs also gets Defect 2's retry
+              # behavior, not just the pagination fix. Keeps the same
+              # object-wrapping merge_expr shape as the jobs fetch above
+              # (`{jobs: (map(.jobs) | add)}`) for consistency; `_load_check_runs()`
+              # unwraps a `{"check_runs": [...]}` dict the same way it accepts
+              # a bare array, so both shapes are equally correct downstream.
+              fetch_paginated \
+                "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+                '{check_runs: (map(.check_runs) | add)}' \
+                /tmp/ci_summary_check_runs.json \
+                '{"check_runs": []}' || true
             else
               echo '{"check_runs": []}' > /tmp/ci_summary_check_runs.json
             fi
