@@ -225,6 +225,58 @@ which is a corpus-wide retro-audit outside this PR's "gate extensions only"
 scope (operator ruling R-c); it is recorded here, not silently, per that
 same scope decision.
 
+COMMIT_SHA_EXISTENCE (OMN-15461), the seventh invariant
+--------------------------------------------------------
+``commit_sha`` is a required ``ModelDodReceipt`` field asserting "the code
+state this check ran against" — nothing has ever validated that it resolves
+to a real commit. Two live incidents, different in kind, both closed by the
+same fix:
+
+* **Local-worktree-only.** The standard ``.200`` patch-transfer workflow
+  (``omni_home/CLAUDE.md`` rule 11a) commits locally, then
+  ``format-patch``/``scp``/``git am`` on the gate host mints a *different*
+  commit object; only the host object is ever pushed, but the receipt keeps
+  citing the local one. 13+ confirmed instances across OCC#5496/#5523/#5541
+  and the OMN-15413 merge-base receipts (ticket comments, 2026-07-30/08-02).
+  Offline ``git cat-file -e`` PASSES on these — the object is real, just
+  never pushed. Local existence is not the property that matters; remote
+  reachability is.
+* **Fabricated with a plausible prefix.** OCC#6725 (2026-08-19): a subagent
+  self-bind receipt cited ``3f35bfa939ddb6da...`` — sharing only the first
+  10 hex characters with the real commit (``3f35bfa939ebf85e...``) before
+  diverging. Not a truncation or typo (a prefix match that precise cannot
+  occur by chance); a hallucinated SHA that a well-formed-hex regex cannot
+  distinguish from a real one. Caught only by manual ``git cat-file -t``.
+
+Both are the same defect at the mechanism level: nothing resolves
+``commit_sha`` against a repository at all. ``_commit_sha_existence_violations``
+closes it with a resolver that tries, in order: (1) local remote-tracking
+reachability in the current checkout (fast, no network — the common case,
+since ``commit_sha`` on an OCC-hosted receipt is implicitly an OCC commit
+unless the receipt documents a check against a product repo); (2) the
+GitHub API against OCC, covering a shallow/incomplete local checkout; (3) a
+cross-repo fallback when a ``repos/<owner>/<repo>/`` citation is recoverable
+from the receipt's own probe text (2026-07-30 finding: ``commit_sha`` itself
+carries no repo attribution, so a product-repo binding is only recoverable
+this way). Unresolvable by all three, or no way to tell which repo to ask,
+is a hard FAIL — this is a proof surface, not a best-effort lookup.
+
+Deliberately **not** a full-corpus shrink-only baseline (the
+``SUPERSESSION_BASELINE_PATH``/``CONTRACT_ABS_PATH_BASELINE_PATH`` pattern):
+that would require a `gh api` call per historical `commit_sha` across the
+~14,000-receipt corpus (finding 3, 2026-07-30 comment: local remote-tracking
+staleness alone overcounts "unresolvable" by orders of magnitude, so only
+`gh api` is a sound oracle, and that is not a cheap corpus-wide sweep to run
+from a gate). Instead this rule uses its own cutoff
+(``OMN_15461_CUTOFF``), the same "ratchet on NEW receipts, not a retro-block"
+shape as ``OMN_15710_CUTOFF`` above — the pre-existing corpus (including the
+13+ known-bad SHAs already named in the ticket) is legacy migration debt
+owned by its own repair/supersession follow-up, not retroactively blocked
+here. A receipt with a merged bad `commit_sha` remains correctable going
+forward via the same append-only supersession path every other rule in this
+file already honors (``_supersession_candidates`` /
+``_valid_supersession_replacement``) — nothing new was required for that.
+
 Exit codes: 0 = all enforced receipts clean; 1 = violations found.
 """
 
@@ -234,6 +286,7 @@ import argparse
 import ast
 import json
 import re
+import subprocess
 import sys
 from datetime import UTC, datetime
 from functools import cache, lru_cache
@@ -711,6 +764,223 @@ def _stdout_emittability_violations(receipt: ModelDodReceipt) -> list[str]:
     return _registry_emit_violations(segment, receipt)
 
 
+# ---------------------------------------------------------------------------
+# OMN-15461 — COMMIT_SHA_EXISTS: receipt commit_sha must resolve to a real,
+# remote-reachable commit, not merely a locally-existing git object.
+# ---------------------------------------------------------------------------
+
+OMN_15461_CUTOFF = datetime(2026, 8, 19, 12, 0, 0, tzinfo=UTC)
+
+_DEFAULT_COMMIT_SHA_REPO = "OmniNode-ai/onex_change_control"
+
+# A cross-repo citation embedded in probe text. Two corpus conventions,
+# both observed in the live 2026-08-19 bounded audit of this-week receipts:
+# the `gh api repos/<owner>/<repo>/...` URL-path form, and the far more
+# common `gh pr view <n> --repo <owner>/<repo> ...` CLI-flag form (the
+# `occ-evidence-source-autobind` verifier's standard probe shape —
+# corroborated live: 109 of 162 audited receipt files matched via
+# `evidence_item_id` alone, and the `--repo` flag form additionally covers
+# their `dod-occ-evidence-admissibility-validator`-shaped cohort siblings,
+# which reuse the SAME probe_command text). commit_sha itself carries no
+# repo attribution (2026-07-30 ticket finding): for an OCC self-bind receipt
+# it is implicitly this repo; for a receipt documenting a check against a
+# PRODUCT repo, this embedded pattern in check_value/probe_command/
+# actual_output is the only recoverable hint of which repo to resolve it
+# against. An initial narrower version of this pattern (URL-path form only)
+# produced a real false-positive class against the audit — see PR body.
+_REPO_HINT_RE = re.compile(
+    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/|--repo[= ]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b"
+)
+
+# Fail-open guard (found in adversarial verification of this rule, 2026-08-19,
+# same day as the initial widening above): an unrestricted _REPO_HINT_RE match
+# lets ANY "<owner>/<repo>" string appearing anywhere in free-form probe text
+# — including actual_output narrative, which is not machine-generated —
+# resolve a commit_sha against an attacker-choosable repo. Demonstrated live:
+# probe text mentioning "--repo torvalds/linux" makes any real Linux kernel
+# commit hash resolve as "real", regardless of what the receipt is actually
+# about — the exact class of bypass this gate exists to close, reopened
+# through the hint fallback. A hint is only trustworthy when it names a repo
+# this organization actually owns/uses; an unrecognized "<owner>/<repo>" is
+# not a fallback signal, it is noise (or an attack), and must NOT be resolved
+# against. Mirrors the Repository Registry in CLAUDE.md plus the personal
+# repos observed live in the receipt corpus (steel_onslaught, omnicursor).
+_KNOWN_REPO_HINTS: frozenset[str] = frozenset(
+    f"OmniNode-ai/{name}"
+    for name in (
+        "knowledge-base",
+        "knowledge-base-internal",
+        "omniclaude",
+        "omnibase_core",
+        "omnibase_infra",
+        "omnibase_spi",
+        "omnidash",
+        "omnidash-archived",
+        "omniintelligence",
+        "omnimemory",
+        "omniweb",
+        "onex_change_control",
+        "omnibase_compat",
+        "omnimarket",
+        "omninode_infra",
+        "omnistream",
+        "omnidash-v2-new",
+        "omnicrush",
+        "omninode_bridge",
+        "omnicursor",
+    )
+) | frozenset({"jonahgabriel/steel_onslaught"})
+
+
+def _after_omn_15461_cutoff(run_timestamp: datetime) -> bool:
+    ts = run_timestamp if run_timestamp.tzinfo else run_timestamp.replace(tzinfo=UTC)
+    return ts >= OMN_15461_CUTOFF
+
+
+def _commit_reachable_from_remote(sha: str) -> bool:
+    """True iff ``sha`` is reachable from a remote-tracking ref in the current
+    working directory's git checkout (assumed to be onex_change_control).
+
+    Local existence is NOT sufficient — a commit can be a real object in the
+    authoring worktree's store (``git cat-file -e`` succeeds) without ever
+    having been pushed (the ``.200`` patch-transfer bug shape: the gate host
+    mints a *different* commit object via ``git am``, only that one is ever
+    pushed, and the receipt keeps citing the local one). ``git branch -r
+    --contains <sha>`` only returns non-empty when the commit is reachable
+    from an actual remote-tracking branch, which requires it to have been
+    fetched from a real push — the property this gate needs, not local
+    object existence.
+    """
+    result = subprocess.run(  # noqa: S603
+        ["git", "branch", "-r", "--contains", sha],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _commit_exists_via_github_api(sha: str, repo: str) -> bool:
+    """True iff ``sha`` resolves via the GitHub API for ``repo``.
+
+    Fallback for :func:`_commit_reachable_from_remote`: a shallow or
+    incomplete local checkout can lack the remote-tracking history to
+    correctly answer that check even for a genuinely pushed commit, so a
+    local-only "not found" is not trustworthy on its own — this asks GitHub
+    directly, the same authoritative oracle
+    ``validator_evidence_commit_binding_cli.py`` already uses for the
+    sibling ``Evidence-Commit`` trailer (OMN-15111).
+    """
+    result = subprocess.run(  # noqa: S603
+        ["gh", "api", f"repos/{repo}/commits/{sha}"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+# The `occ-evidence-source-autobind` verifier's standard item-id shape,
+# e.g. "dod-OmniNode-ai-omnimarket-pr-2087" or its "-ci" cohort sibling.
+# Falls back to this when neither probe-text pattern in _REPO_HINT_RE
+# matches (a receipt whose own check_value carries no repo-identifying
+# text at all — audit found this shape too, alongside the flag-form gap).
+_ITEM_ID_REPO_RE = re.compile(r"^dod-OmniNode-ai-([A-Za-z0-9_.-]+)-pr-\d+")
+
+
+def _repo_hint(receipt: ModelDodReceipt) -> str | None:
+    """Best-effort extraction of a cross-repo citation embedded in probe text.
+
+    Returns the first ``<owner>/<repo>`` match from ``check_value``,
+    ``probe_command``, or ``actual_output`` (in that order) that is also a
+    member of :data:`_KNOWN_REPO_HINTS`; if none of them embeds a recognized
+    one, falls back to the autobind ``evidence_item_id`` naming convention
+    (see :data:`_ITEM_ID_REPO_RE`), which is itself checked against the same
+    allowlist. ``None`` if nothing recognized matches. An unrecognized
+    ``<owner>/<repo>`` string is deliberately NOT returned — see
+    :data:`_KNOWN_REPO_HINTS`'s comment for why an unrestricted match is a
+    fail-open hole, not a helpful fallback.
+    """
+    for field_name in ("check_value", "probe_command", "actual_output"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str):
+            continue
+        for match in _REPO_HINT_RE.finditer(value):
+            candidate = match.group(1) or match.group(2)
+            if candidate in _KNOWN_REPO_HINTS:
+                return candidate
+    id_match = _ITEM_ID_REPO_RE.match(receipt.evidence_item_id)
+    if id_match is not None:
+        candidate = f"OmniNode-ai/{id_match.group(1)}"
+        if candidate in _KNOWN_REPO_HINTS:
+            return candidate
+    return None
+
+
+def _commit_sha_resolves(
+    receipt: ModelDodReceipt,
+    *,
+    local_reachable: Callable[[str], bool] = _commit_reachable_from_remote,
+    remote_exists: Callable[[str, str], bool] = _commit_exists_via_github_api,
+) -> bool:
+    """Default production resolver: same-repo fast path, then cross-repo fallback.
+
+    Order: (1) local remote-tracking reachability against the current OCC
+    checkout — fast, no network, covers the overwhelming common case; (2)
+    GitHub API against OCC directly — covers a shallow/incomplete local
+    checkout; (3) GitHub API against a repo named by an embedded
+    ``repos/<owner>/<repo>/`` hint in the receipt's own probe text, for a
+    receipt that genuinely documents a check against a product repo. No
+    resolution and no usable hint is a hard FAIL.
+    """
+    sha = receipt.commit_sha
+    if local_reachable(sha):
+        return True
+    if remote_exists(sha, _DEFAULT_COMMIT_SHA_REPO):
+        return True
+    hint = _repo_hint(receipt)
+    if hint is not None and hint != _DEFAULT_COMMIT_SHA_REPO:
+        return remote_exists(sha, hint)
+    return False
+
+
+def _commit_sha_existence_violations(
+    receipt: ModelDodReceipt,
+    *,
+    resolver: Callable[[ModelDodReceipt], bool] | None = None,
+) -> list[str]:
+    """Return COMMIT_SHA_EXISTS violation fragments (empty = clean or exempt).
+
+    Gated on ``OMN_15461_CUTOFF``, not ``HARDENING_CUTOFF`` or retroactively
+    baselined — see the module docstring for why a full-corpus baseline was
+    deliberately not built.
+
+    ``resolver`` defaults to the module-level :func:`_commit_sha_resolves`,
+    looked up fresh on every call (not bound as a plain default argument) so
+    tests can ``monkeypatch`` it without threading an explicit override
+    through every caller in the shared ``_receipt_binding_violations`` core.
+    """
+    if not _after_omn_15461_cutoff(receipt.run_timestamp):
+        return []
+    if resolver is None:
+        resolver = _commit_sha_resolves
+    if resolver(receipt):
+        return []
+    return [
+        f"[COMMIT_SHA_EXISTS] commit_sha {receipt.commit_sha!r} does not "
+        "resolve to a real, remote-reachable commit — it is fabricated, "
+        "truncated (including a plausible-prefix fabrication that a "
+        "well-formed-hex check cannot catch — OCC#6725), or local-only/"
+        "never-pushed (local git object existence is not sufficient; see "
+        "OMN-15461). If this receipt documents a check against a different "
+        "repo, embed a 'repos/<owner>/<repo>/...' reference in check_value/"
+        "probe_command so the gate can resolve it there. Rerun probes "
+        "against a pushed commit and regenerate the receipt; a merged "
+        "receipt with an unresolvable commit_sha is immutable and can only "
+        "be corrected via a net-new .supersede.<NNNN>.yaml record."
+    ]
+
+
 def _supersession_candidates(receipt_path: Path) -> list[Path]:
     """Return append-only supersession files that may replace receipt_path."""
     if receipt_path.suffix != ".yaml":
@@ -816,6 +1086,7 @@ def _receipt_binding_violations(
 
     violations.extend(_absolute_path_violations(receipt))
     violations.extend(_stdout_emittability_violations(receipt))
+    violations.extend(_commit_sha_existence_violations(receipt))
 
     return violations
 
@@ -1205,6 +1476,84 @@ def _repaired_targets(item_dir: Path, contracts_dir: Path) -> frozenset[str]:
     return frozenset(repaired)
 
 
+_SUPERSEDES_DOD_EVIDENCE_PREFIX = "supersedes_dod_evidence:"
+
+
+def _declared_lineage_target(
+    contracts_dir: Path, ticket_id: str, item_id: str
+) -> str | None:
+    """Return the id ``item_id``'s OWN contract entry names via ``evidence_artifact``.
+
+    Reads the CONTRACT-level ``evidence_artifact: "supersedes_dod_evidence:<id>"``
+    declaration via :func:`_contract_entry` — the authoring-time lineage
+    marker, distinct from this file's own receipt-level ``supersedes:`` /
+    ``.supersede.<NNNN>.yaml`` repair chain (:func:`_repaired_targets`).
+    ``None`` when the item is absent, declares no marker, or the marker
+    doesn't match the exact prefix.
+    """
+    entry = _contract_entry(contracts_dir, ticket_id, item_id)
+    if entry is None:
+        return None
+    marker = entry.get("evidence_artifact")
+    if not isinstance(marker, str) or not marker.startswith(
+        _SUPERSEDES_DOD_EVIDENCE_PREFIX
+    ):
+        return None
+    target = marker[len(_SUPERSEDES_DOD_EVIDENCE_PREFIX) :].strip()
+    return target or None
+
+
+def _s1_collisions(  # noqa: PLR0913 - one cohort file's identity IS path+item+check+ticket
+    path: Path,
+    item_id: str,
+    check_value: str,
+    contracts_dir: Path,
+    ticket_id: str,
+    *,
+    follow_repairs: bool,
+) -> set[str]:
+    """Sibling items in ``path``'s cohort that collide on ``check_value``.
+
+    A byte-identical check across DIFFERENT items is a collision unless a
+    declared lineage ties them together (see :func:`_declared_lineage_target`)
+    — OMN-16148's same-bar-relabel exemption — or the sibling is itself a
+    cured wrong-item rebind (:func:`_repaired_targets`).
+    """
+    collisions: set[str] = set()
+    for sibling in _cohort_members(path):
+        if sibling == path:
+            continue
+        sibling_data = _load_mapping(sibling)
+        if sibling_data is None:
+            continue
+        if _supersession_check_value(sibling_data) != check_value:
+            continue
+        sibling_item = _supersession_item_id(sibling, sibling_data)
+        if sibling_item == item_id:
+            continue
+        if follow_repairs and (
+            sibling.as_posix() in _repaired_targets(sibling.parent, contracts_dir)
+        ):
+            continue
+        # OMN-16148: a DECLARED same-lineage relabel — one item's own contract
+        # entry naming the other via evidence_artifact — is not a wrong-item
+        # rebind. It is a deliberate same-bar correction (OMN-15800's
+        # dod-source-presence-probe-pr-2032-rebind-f2958714 fixes only the
+        # evidence_item_id of dod-deploy-live-probe-pr-2032-rebind-f2958714,
+        # keeping the identical check_value on purpose). Symmetric with the
+        # matching producer-side exemption in omnimarket's
+        # assert_supersession_checks_are_item_bound — fixing only one side
+        # would just relocate this refusal, not resolve it.
+        if (
+            _declared_lineage_target(contracts_dir, ticket_id, item_id) == sibling_item
+            or _declared_lineage_target(contracts_dir, ticket_id, sibling_item)
+            == item_id
+        ):
+            continue
+        collisions.add(sibling_item)
+    return collisions
+
+
 def _supersession_violations(
     path: Path,
     contracts_dir: Path,
@@ -1235,23 +1584,14 @@ def _supersession_violations(
     violations: list[tuple[str, str]] = []
 
     # S1 — distinctness across the cohort.
-    collisions: set[str] = set()
-    for sibling in _cohort_members(path):
-        if sibling == path:
-            continue
-        sibling_data = _load_mapping(sibling)
-        if sibling_data is None:
-            continue
-        if _supersession_check_value(sibling_data) != check_value:
-            continue
-        sibling_item = _supersession_item_id(sibling, sibling_data)
-        if sibling_item == item_id:
-            continue
-        if follow_repairs and (
-            sibling.as_posix() in _repaired_targets(sibling.parent, contracts_dir)
-        ):
-            continue
-        collisions.add(sibling_item)
+    collisions = _s1_collisions(
+        path,
+        item_id,
+        check_value,
+        contracts_dir,
+        ticket_id,
+        follow_repairs=follow_repairs,
+    )
     if collisions:
         violations.append(
             (
@@ -1262,7 +1602,9 @@ def _supersession_violations(
                 f"be the authoritative proof of several distinct bars — that is "
                 f"the {SUPERSESSION_TICKET} wrong-item rebind. Give each "
                 "superseded item a check that discriminates it, or supersede "
-                "only the one item this probe actually proves.",
+                "only the one item this probe actually proves. (A declared "
+                "same-lineage relabel — one item's evidence_artifact naming "
+                "the other — is exempt; neither item here declares one.)",
             )
         )
 
