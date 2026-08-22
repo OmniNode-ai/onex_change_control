@@ -30,7 +30,11 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 10
+    # OMN-13299/OMN-16299: this job depends on a cross-repo omnibase_core
+    # checkout. Incident-window runs have repeatedly exhausted the old 10m
+    # ceiling before the validator executed, leaving the required context red
+    # from transport flakes instead of validator defects.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repo
@@ -64,12 +68,35 @@ jobs:
           echo "::notice::OMN-15689: omnibase_core validator ref (validate-validator-requirements) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
 
       - name: Checkout omnibase_core
-        uses: actions/checkout@v7
-        with:
-          repository: OmniNode-ai/omnibase_core
-          ref: ${{ steps.validator_ref.outputs.ref }}
-          path: omnibase_core
-          token: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.OMNIBASE_CORE_TOKEN || secrets.GITHUB_TOKEN }}
+          OMNIBASE_CORE_REF: ${{ steps.validator_ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CHECKOUT_TOKEN:-}" ]; then
+            echo "::error::OMN-13299: CHECKOUT_TOKEN is empty; cannot clone omnibase_core for validator-requirements."
+            exit 1
+          fi
+
+          rm -rf omnibase_core
+          for attempt in 1 2 3 4; do
+            if git clone \
+              --depth 1 \
+              --branch "${OMNIBASE_CORE_REF}" \
+              "https://x-access-token:${CHECKOUT_TOKEN}@github.com/OmniNode-ai/omnibase_core.git" \
+              omnibase_core; then
+              test -d omnibase_core/.git
+              exit 0
+            else
+              status=$?
+            fi
+            rm -rf omnibase_core
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::OMN-13299: failed to clone omnibase_core@${OMNIBASE_CORE_REF} after ${attempt} attempts."
+              exit "$status"
+            fi
+            sleep $((attempt * 15))
+          done
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7

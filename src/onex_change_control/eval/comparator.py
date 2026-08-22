@@ -10,19 +10,18 @@ determines verdicts, and generates an eval report with summary statistics.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from onex_change_control.enums.enum_eval_metric_type import EnumEvalMetricType
-from onex_change_control.enums.enum_eval_mode import EnumEvalMode
-from onex_change_control.enums.enum_eval_verdict import EnumEvalVerdict
-from onex_change_control.models.model_eval_report import (
-    ModelEvalReport,
-    ModelEvalSummary,
-)
-from onex_change_control.models.model_eval_run import (
-    ModelEvalRun,
-    ModelEvalRunPair,
-)
+from omnibase_core.enums.governance.enum_eval_metric_type import EnumEvalMetricType
+from omnibase_core.enums.governance.enum_eval_mode import EnumEvalMode
+from omnibase_core.enums.governance.enum_eval_verdict import EnumEvalVerdict
+from omnibase_core.models.governance.model_eval_report import ModelEvalReport
+from omnibase_core.models.governance.model_eval_run_pair import ModelEvalRunPair
+from omnibase_core.models.governance.model_eval_summary import ModelEvalSummary
+
+if TYPE_CHECKING:
+    from omnibase_core.models.governance.model_eval_run import ModelEvalRun
 
 # Threshold constants for verdict determination
 _LATENCY_THRESHOLD_PERCENT = 0.10  # >10% reduction = better

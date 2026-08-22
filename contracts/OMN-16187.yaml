@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16187"
+title: "Local core bring-up must not require credentials only a private vault can supply"
+summary: >-
+  A clean-room self-install proof found that `onex up core` refused to start until eight env vars were
+  set, three of which a self-hosting operator cannot possess before the first bring-up. The Infisical
+  in the core bundle is a container on the operator's own host, so its secrets are theirs to mint; the
+  machine identity (INFISICAL_CLIENT_ID / _CLIENT_SECRET / _PROJECT_ID) is minted by setup-infisical-identity.sh
+  at step 4 of bootstrap-infisical.sh, against the container `onex up core` is what starts. It was an
+  output of bootstrap demanded as an input to it, and nothing in the core stack consumed it. The gate
+  moves to the runtime bundle, where its only consumer (runtime_host_process config prefetch) lives; `.env.example`
+  is completed to match what bring-up enforces; the repo-local `.env` that install.sh creates is now actually
+  read; and scripts/generate-local-env.sh generates the complete working local secret set in one command.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2785 product diff scope present"
+    command: "gh pr view 2785 --repo OmniNode-ai/omnibase_infra --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16187-core-bundle-unblocked"
+    description: >-
+      The core bundle no longer requires the Infisical machine identity, so a self-hosting operator can
+      bring up `onex up core` with locally-generated secrets alone. Goes RED if the chicken-and-egg gate
+      is reintroduced.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          ! gh api repos/OmniNode-ai/omnibase_infra/contents/docker/catalog/bundles.yaml?ref=2e8944b827065a55b0186a6391bd8c83bfbf1de4 --jq '.content' | base64 -d | sed -n '/^core:/,/^runtime-core:/p' | grep -q 'INFISICAL_CLIENT_ID'
+  - id: "dod-omn16187-runtime-bundle-still-gated"
+    description: >-
+      The machine-identity requirement was moved, not deleted: the runtime bundle still requires it, so
+      the runtime lane cannot start with config prefetch silently skipped. Goes RED if the gate is dropped
+      entirely.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/docker/catalog/bundles.yaml?ref=2e8944b827065a55b0186a6391bd8c83bfbf1de4 --jq '.content' | base64 -d | sed -n '/^runtime:/,/^observability:/p' | grep -q 'INFISICAL_CLIENT_ID'
+  - id: "dod-omn16187-repo-local-env-is-read"
+    description: >-
+      The catalog CLI reads the repo-local .env that install.sh and `make setup` create and tell the operator
+      to fill in. Goes RED if the loader reverts to reading only ~/.omnibase/.env.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/docker/catalog/cli.py?ref=2e8944b827065a55b0186a6391bd8c83bfbf1de4 --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF '_load_env_file(_REPO_ENV)'
+  - id: "dod-omn16187-local-secret-generator-complete"
+    description: >-
+      scripts/generate-local-env.sh emits INFISICAL_REDIS_URL, the required var that was absent from .env.example
+      entirely, so one command produces a complete working local secret set. Goes RED if the generator
+      regresses to an incomplete set.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/generate-local-env.sh?ref=2e8944b827065a55b0186a6391bd8c83bfbf1de4 --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'INFISICAL_REDIS_URL'
+  - id: "occ-self-bind-pr-6675"
+    description: >-
+      OCC self-binding receipt for PR #6675, the in-repo evidence PR carrying this contract and its four
+      product-PR receipts. Binds OMN-16187 to the OCC PR by pr_number so the receipt-gate eligibility
+      check can resolve a PASS receipt for the evidence PR itself -- without it the checker reports reason=pr_ticket_mismatch,
+      because every existing receipt on this contract binds to omnibase_infra#2785 rather than to this
+      OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6675 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
