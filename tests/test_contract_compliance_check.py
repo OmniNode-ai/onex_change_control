@@ -171,9 +171,33 @@ def test_check_test_passes_ignores_own_contract_compliance_context(
     assert "green" in detail
 
 
+def test_check_test_passes_ignores_ci_summary_aggregate_context(
+    tmp_path: Path,
+) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"CI Summary","state":"FAILURE"},'
+        '{"name":"tests+coverage (shadow)","state":"SUCCESS"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_PASS
+    assert "green" in detail
+
+
 def test_check_test_passes_blocks_non_self_failed_context(tmp_path: Path) -> None:
     checks_json = (
         '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"CI Summary","state":"FAILURE"},'
         '{"name":"tests+coverage (shadow)","state":"FAILURE"}]'
     )
     with patch(
@@ -190,6 +214,29 @@ def test_check_test_passes_blocks_non_self_failed_context(tmp_path: Path) -> Non
     assert result == _RESULT_BLOCK
     assert "tests+coverage (shadow)" in detail
     assert "Contract Compliance Check" not in detail
+    assert "CI Summary" not in detail
+
+
+def test_check_test_passes_warns_on_pending_non_self_context(tmp_path: Path) -> None:
+    checks_json = (
+        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
+        '{"name":"CI Summary","state":"PENDING"},'
+        '{"name":"tests+coverage (shadow)","state":"IN_PROGRESS"}]'
+    )
+    with patch(
+        "onex_change_control.scripts.contract_compliance_check._run",
+        return_value=(0, checks_json, ""),
+    ):
+        result, detail = _check_test_passes(
+            None,
+            tmp_path,
+            pr_number=5976,
+            repo="OmniNode-ai/onex_change_control",
+        )
+
+    assert result == _RESULT_WARN
+    assert "tests+coverage (shadow)" in detail
+    assert "CI Summary" not in detail
 
 
 def test_check_file_exists_pass(tmp_path: Path) -> None:

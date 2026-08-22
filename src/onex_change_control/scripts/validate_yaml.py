@@ -62,31 +62,41 @@ def print_info(message: str) -> None:
 
 
 def detect_schema_type(file_path: Path, data: dict[str, object]) -> str:
-    """Detect whether the YAML file is a day_close or ticket_contract.
+    """Detect whether the YAML file is a day_close, ticket_contract, or the
+    separate OMN-15669 contract-shape-v1 schema.
 
     Detection logic:
     1. Path-based: If path contains 'day_close' -> day_close
-    2. Path-based: If path contains 'contract' -> ticket_contract
-    3. Content-based: If 'date' and 'invariants_checked' fields exist -> day_close
-    4. Content-based: If 'ticket_id' field exists -> ticket_contract
-    5. Default: Fail with error
+    2. Path-based: If a 'contracts/v1/' (or 'contracts\\v1\\') path segment is
+       present -> contract_shape_v1 (OMN-15669's own `occ-contract/v1`
+       namespace — structurally distinct from the legacy ticket contract and
+       validated by its own dedicated gate, never by this CLI's
+       ModelTicketContract path; checked before the generic 'contract'
+       substring match below so it is not shadowed by it)
+    3. Path-based: If path contains 'contract' -> ticket_contract
+    4. Content-based: If 'date' and 'invariants_checked' fields exist -> day_close
+    5. Content-based: If 'schema_version' == 'occ-contract/v1' -> contract_shape_v1
+    6. Content-based: If 'ticket_id' field exists -> ticket_contract
+    7. Default: Fail with error
 
     Args:
         file_path: Path to the YAML file
         data: Parsed YAML data
 
     Returns:
-        Schema type: 'day_close' or 'ticket_contract'
+        Schema type: 'day_close', 'ticket_contract', or 'contract_shape_v1'
 
     Raises:
         ValueError: If schema type cannot be determined
 
     """
-    path_str = str(file_path).lower()
+    path_str = str(file_path).lower().replace("\\", "/")
 
     # Path-based detection
     if "day_close" in path_str:
         return "day_close"
+    if "contracts/v1/" in path_str:
+        return "contract_shape_v1"
     if "contract" in path_str:
         return "ticket_contract"
 
@@ -94,6 +104,8 @@ def detect_schema_type(file_path: Path, data: dict[str, object]) -> str:
     if isinstance(data, dict):
         if "date" in data and "invariants_checked" in data:
             return "day_close"
+        if data.get("schema_version") == "occ-contract/v1":
+            return "contract_shape_v1"
         if "ticket_id" in data:
             return "ticket_contract"
 
@@ -201,6 +213,19 @@ def validate_file(file_path: Path) -> bool:
     except ValueError as e:
         print_error(str(e))
         return False
+
+    # contracts/v1/ (OMN-15669's `occ-contract/v1` shape) is a distinct
+    # schema from the legacy ticket contract and is not representable as a
+    # ModelTicketContract (non-SemVer schema_version, extra top-level fields
+    # such as `interface`/`dependencies`/`cases`/`exclusions`). Its structural
+    # validation is owned by the dedicated check-contract-shape-v1 gate; this
+    # CLI only confirms the file parses as YAML (already done above) and does
+    # not re-run legacy ticket_contract validation against it.
+    if schema_type == "contract_shape_v1":
+        print_success(
+            f"{file_path} ({schema_type}, validated by check-contract-shape-v1)"
+        )
+        return True
 
     # Select model class
     model_class = ModelDayClose if schema_type == "day_close" else ModelTicketContract
