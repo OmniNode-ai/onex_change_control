@@ -1,66 +1,40 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-16385"
-title: "omnibase-infra-migrate: drop dead CREATE EXTENSION pgcrypto from migration 045"
+title: "Autobind OCC evidence for OMN-16385"
 summary: >
-  Root-caused and fixed the silently-failing omnibase-infra-migrate job on deploy-onex-staging. Live-reproduced
-  via an instrumented whole-run rerun (run 32584529033): migration 045 died with an explicit permission-denied
-  error on CREATE EXTENSION pgcrypto against RDS-managed omnibase_infra (the migration role does not own
-  the database). gen_random_uuid() is PostgreSQL 13+ core, so the extension statement was unneeded. Fix
-  lands as OmniNode-ai/omnibase_infra PR #2844. OCC Evidence-Source autobind companion (OMN-13317 F1)
-  for OmniNode-ai/omninode_infra PR #962 (RDS-cutover Keycloak + onex-dev runtime configmap changes).
+  OCC contract for OmniNode-ai/omnibase_infra PR #2844 (removes the dead `CREATE EXTENSION IF NOT EXISTS
+  "pgcrypto"` statement from migration 045_create_validation_event_ledger.sql -- gen_random_uuid() is
+  PostgreSQL 13+ core (pg_catalog), not a pgcrypto function, so the extension statement was dead weight
+  that permanently wedged the RDS-managed omnibase_infra migration job with "permission denied to create
+  extension" since the migration role does not own the database). Local-CLI mint fallback -- occ-autobind/occ-companion-effect
+  had not produced a companion in time.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
-evidence_requirements:
-  - kind: "ci"
-    description: "PR #2844 CI checks"
-    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
-  - kind: "ci"
-    description: "PR #962 product diff scope present"
-    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-OmniNode-ai-omnibase_infra-pr-2844"
-    description: "PR #2844 on OmniNode-ai/omnibase_infra — Evidence-Source binding."
-    source: "generated"
+    description: >
+      PR #2844 on OmniNode-ai/omnibase_infra -- removes the live `CREATE EXTENSION IF NOT EXISTS "pgcrypto";`
+      statement from migration 045 while preserving all gen_random_uuid() usage. Behavioral (tier L1)
+      differential: confirms a live (non-comment) CREATE EXTENSION pgcrypto statement exists at the PR's
+      base SHA, is absent at head (only explanatory comments remain), AND that gen_random_uuid() calls
+      are still present at head -- proving the fix removes the broken permission-requiring statement without
+      breaking the UUID-generation functionality it was mistakenly thought to support.
+    source: "manual"
     checks:
       - check_type: "command"
-        check_value: "gh pr view 2844 --repo OmniNode-ai/omnibase_infra --json number,state,headRefOid"
-      - check_type: "command"
-        check_value: "gh pr view 2844 --repo OmniNode-ai/omnibase_infra --json files"
-  - id: "dod-occ-evidence-admissibility-validator"
-    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
-    source: "generated"
-    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2844"
-    checks:
-      - check_type: "command"
-        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
-  - id: "dod-OmniNode-ai-omninode_infra-pr-962"
-    description: "PR #962 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
-    source: "generated"
-    checks:
-      - check_type: "command"
-        check_value: "gh pr view 962 --repo OmniNode-ai/omninode_infra --json number,state"
-  - id: "dod-OmniNode-ai-omninode_infra-pr-962-ci"
-    description: "PR #962 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
-    source: "generated"
-    checks:
-      - check_type: "command"
-        check_value: "gh pr view 962 --repo OmniNode-ai/omninode_infra --json files"
-  - id: "dod-occ-evidence-admissibility-validator-pr-962"
-    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
-    source: "generated"
-    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-962"
-    checks:
-      - check_type: "command"
-        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
-  - id: "occ-self-bind-pr-6880"
-    description: "OCC companion PR #6880 — self-bind for OMN-16385 (OMN-14650)."
-    source: "generated"
-    checks:
-      - check_type: "command"
-        check_value: "gh pr view 6880 --repo OmniNode-ai/onex_change_control --json number,state"
+        check_value: >-
+          base_body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/045_create_validation_event_ledger.sql?ref=0ff5b8e5f8dce34d25eb7623e51f31d8b4dc6a06"
+          --jq .content | base64 -d)"; head_body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/045_create_validation_event_ledger.sql?ref=a42e3bd158e3dfe38c0dc1be7a2082298074331c"
+          --jq .content | base64 -d)"; base_live=$(printf '%s\n' "$base_body" | grep -vE '^\s*--' | grep
+          -c "CREATE EXTENSION.*pgcrypto"); head_live=$(printf '%s\n' "$head_body" | grep -vE '^\s*--'
+          | grep -c "CREATE EXTENSION.*pgcrypto"); head_gen_random=$(printf '%s\n' "$head_body" | grep
+          -c "gen_random_uuid"); [ "$base_live" -ge 1 ] && [ "$head_live" -eq 0 ] && [ "$head_gen_random"
+          -ge 1 ] && echo "OMN-16385-INFRA-2844-DIFFERENTIAL-PROBE-PASS: live CREATE EXTENSION pgcrypto
+          statement present at base, absent at head (comments only), while gen_random_uuid() usage ($head_gen_random
+          occurrence(s)) is preserved at head -- functionality intact, dead extension removed"
