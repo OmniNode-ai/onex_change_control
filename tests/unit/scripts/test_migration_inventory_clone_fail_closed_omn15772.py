@@ -12,11 +12,11 @@ Two independently-observed defects motivated this:
    happened to land on disk -- three same-head reruns of the same PR produced
    divergent error counts (14/17/9) off an unchanged file set.
 2. **Stale clone on persistent self-hosted runners** (2026-08-18 comment):
-   all self-hosted runner containers in the fleet carry persistent temp dirs
-   across job runs (unlike GitHub-hosted runners, which are ephemeral). A
-   ``git clone`` into an already-populated target silently fails under the old
-   pattern, so the validator ran against STALE sibling state from an earlier
-   job instead of current ``origin/dev``.
+   all self-hosted runner containers in the fleet carry a persistent
+   ``/tmp/repos`` across job runs (unlike GitHub-hosted runners, which are
+   ephemeral). A ``git clone`` into an already-populated target silently
+   fails under the old pattern, so the validator ran against STALE sibling
+   state from an earlier job instead of current ``origin/dev``.
 
 The fix reuses the retry-with-freshness ``clone_omni_repo`` pattern already
 proven in this same file's sibling job, ``migration-conflicts`` (its
@@ -99,14 +99,14 @@ class TestCloneStepFailsClosed:
 
 
 class TestCloneStepGuaranteesFreshness:
-    """AC: self-hosted runners carry persistent temp dirs across jobs -- the
-    step must not trust whatever is already on disk."""
+    """AC: self-hosted runners carry persistent temp dirs across jobs --
+    the step must not trust whatever is already on disk."""
 
     def test_the_repos_root_is_removed_before_use(self) -> None:
         script = _clone_peer_repos_script()
         assert re.search(r'repo_root="\$\{RUNNER_TEMP:-/tmp\}/', script), (
-            "the repos root must be a per-run path so concurrent and prior "
-            "jobs cannot share the same checkout directory"
+            "the repos root must be scoped to the current workflow run instead "
+            "of hardcoding a shared /tmp/repos directory"
         )
         assert 'rm -rf "$repo_root"' in script, (
             "the repos root must be wiped before cloning so a prior job's "
