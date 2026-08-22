@@ -60,18 +60,23 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 # required-checks.yaml's `job_path` Shape B/C documentation for the same jobs.
 COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     ("ci.yml", "merge-hold-gate"): "merge-hold-gate / evaluate",
+    # OMN-16260: these four jobs' original standalone files (call-occ-
+    # autobind.yml, call-occ-companion-effect.yml, pr-title-check.yml,
+    # required-check-skip-guard-caller.yml) were consolidated into
+    # guards.yml -- same job ids, same `uses:` targets, same composed
+    # check-run names, only the file moved.
     (
-        "call-occ-autobind.yml",
+        "guards.yml",
         "occ-autobind",
     ): "occ-autobind / Publish occ-autobind command",
     (
-        "call-occ-companion-effect.yml",
+        "guards.yml",
         "occ-companion-effect",
     ): "occ-companion-effect / Publish occ-companion-effect command",
-    ("pr-title-check.yml", "pr-title"): "pr-title / check-title",
+    ("guards.yml", "pr-title"): "pr-title / check-title",
     ("docs-validate.yml", "call"): "call / validate-docs",
     (
-        "required-check-skip-guard-caller.yml",
+        "guards.yml",
         "required-check-skip-guard",
     ): "required-check-skip-guard / check-skip-vectors",
 }
