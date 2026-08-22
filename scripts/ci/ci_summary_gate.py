@@ -47,10 +47,13 @@ Verdict policy — DEFAULT-DENY, FAIL-CLOSED, four layers
    unconditional (no legitimate skip path) must be *present*, *completed*, and
    conclude ``success``. ``skipped``/``failure``/``cancelled`` all fail.
 2. **L2 SKIPPABLE_GATE_JOBS.** Jobs that carry a gate-re-derivable skip
-   precondition (the ``docs_only`` evidence-only fast lane, or a legitimate
-   ``push``-only skip) must be *present*, *completed*, and conclude ``success``
-   **or** ``skipped``. The precondition itself is enforced by the job's own
-   ``if:`` in ``ci.yml`` (verified against source at authoring time, pinned by
+   precondition (the ``docs_only`` evidence-only fast lane, the narrower
+   OMN-16285 ``evidence-only-predicate`` fast lane -- exact-allowlisted to
+   ``contracts/**``/``drift/dod_receipts/**``, gating only jobs that scan a
+   surface the predicate proves is unchanged -- or a legitimate ``push``-only
+   skip) must be *present*, *completed*, and conclude ``success`` **or**
+   ``skipped``. The precondition itself is enforced by the job's own ``if:``
+   in ``ci.yml`` (verified against source at authoring time, pinned by
    ``test_every_pr_triggered_job_is_classified`` and the red-replay tests
    below) — this module does not re-parse ``ci.yml`` at runtime.
 3. **L3 default-deny sweep.** Any *other* job present in this run's job list,
@@ -98,23 +101,25 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # Deliberately unconditional (no needs/if) per their own ci.yml headers --
     # a defense that only runs when its own trigger files change is a defense
     # that never runs (OMN-14416 lesson), so both scan the whole tree/corpus
-    # on every PR.
+    # on every PR. These validate EVIDENCE CONTENT (contracts/, drift/
+    # dod_receipts/) at corpus scope, so OMN-16285's evidence-only predicate
+    # never gates them -- an evidence-only diff is exactly the diff shape
+    # they exist to check (OMN-16285 hard constraint: never weaken receipt
+    # integrity).
     "Contract Substance Floor (OMN-14409)",
-    "No Divergent Automation PRs (OMN-14778)",
     "Validate Contract YAML (OMN-8808)",
     "Receipt Honesty Gate",
     "OCC Append-Only Gate",
-    "no-noncanonical-lifecycle-classes",
     "validate-prod-promotion-grants",
     "check-platform-leads-review-tripwire",
-    "check-bot-authored-authz-guard",
-    "Precommit Parity Gate",
-    "Evidence Admissibility Predicate Parity",
     "Contract Corpus Ratchets (OMN-15411)",
     "yamlfmt Contamination Ratchet (OMN-15479)",
     "Supersession Binding Ratchet (OMN-15459)",
     # Reusable-workflow caller; the job's own `name:` is set to this literal
     # composed string (Shape A), matching how GitHub surfaces the check-run.
+    # A hold gate an unrelated upstream failure/predicate can cascade-skip is
+    # not a gate (its own ci.yml comment, AC4) -- never move this to
+    # SKIPPABLE for any precondition.
     "merge-hold-gate / evaluate",
     "Contract Shape v1 (OMN-15669)",
 )
@@ -151,6 +156,25 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     # -- a red Contract Compliance Check could merge with CI Summary green.
     # Same push-only skip precondition as Contract Sync Gate above.
     "Contract Compliance Check",
+    # ------------------------------------------------------------------
+    # OMN-16285 evidence-only-predicate fast lane -- skip legal iff the
+    # `evidence-only-predicate` job (ci.yml) classified the diff as touching
+    # ONLY contracts/** and drift/dod_receipts/** (exact allowlist, computed
+    # by scripts/ci/evidence_only_predicate.py; NOT the broader docs_only
+    # zone above, which also covers allowlists/ and .evidence/). Each entry
+    # below validates a surface (src/, .github/workflows/, .pre-commit-
+    # config.yaml, grants/+allowlists/-touching diffs) that predicate PROVES
+    # is unchanged when it reports evidence_only=true -- a skip here can only
+    # be produced by that exact `if:` condition, so it structurally implies
+    # the predicate ran, succeeded, and asserted evidence-only (mirrors the
+    # docs_only tier's own reasoning above). Never move an evidence-CONTENT
+    # validator into this group -- see the OMN-16285 comments on
+    # STRICT_GATE_JOBS's corpus-ratchet entries above.
+    "No Divergent Automation PRs (OMN-14778)",
+    "no-noncanonical-lifecycle-classes",
+    "Precommit Parity Gate",
+    "Evidence Admissibility Predicate Parity",
+    "check-bot-authored-authz-guard",
 )
 
 # Every job the completeness anchor must observe present+good for SUCCESS.
@@ -209,6 +233,21 @@ CLASSIFICATION_ONLY: dict[str, str] = {
         "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
         "with zero tests and zero type-checks having run. The sweep catching "
         "the zone-filter failure itself closes that fail-open."
+    ),
+    "Evidence-Only Diff Predicate": (
+        "OMN-16285. ci.yml's `evidence-only-predicate` job -- not a "
+        "validator, so not a STRICT/SKIPPABLE gate. NOT soft-allowlisted, by "
+        "the identical zone-filter mechanism directly above: the 5 "
+        "OMN-16285 evidence-only-predicate-tier SKIPPABLE jobs (No "
+        "Divergent Automation PRs, no-noncanonical-lifecycle-classes, "
+        "Precommit Parity Gate, Evidence Admissibility Predicate Parity, "
+        "check-bot-authored-authz-guard) all `needs:` this job, and a FAILED "
+        "predicate cascades every one of them to `skipped` -- which the "
+        "SKIPPABLE tier tolerates unconditionally in isolation. The sweep "
+        "catching THIS job's own failure is what keeps that cascade "
+        "fail-closed (hard constraint: skipped-by-the-predicate is "
+        "acceptable ONLY when the predicate job itself succeeded and "
+        "asserted evidence-only; any other skip stays fail-closed)."
     ),
 }
 

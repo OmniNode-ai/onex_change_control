@@ -34,6 +34,82 @@ jobs:
     with:
       python-version: "3.12"
 
+  evidence-only-predicate:
+    name: Evidence-Only Diff Predicate
+    # OMN-16285: computes whether this diff touches ONLY the evidence
+    # surfaces (contracts/**, drift/dod_receipts/**) an OCC companion PR is
+    # allowed to carry -- an EXACT allowlist (scripts/ci/evidence_only_
+    # predicate.py), never a substring heuristic: a diff touching scripts/
+    # or .github/ is NEVER evidence-only even if it ALSO touches contracts/.
+    # Cheap and dependency-free (git diff + a pure-stdlib classifier -- no
+    # setup-uv, no package install). Routed through the SAME centralized
+    # public/trusted runner selector as every other job in this file (the
+    # "CI Naming Convention" / OMN-15699 guard rejects a bare hosted-label
+    # `runs-on:`) rather than the zone-filter reusable's own unconditional
+    # hosted-only pin above -- zone-filter lives in a DIFFERENT repo
+    # (omnibase_core) and its local `runs-on:` is outside this guard's
+    # `.github/workflows` scan. (Note for future editors: the OMN-15699
+    # guard greps this whole file, comments included, for the literal
+    # hosted-runner label string outside a `fromJSON(vars.OMNI_..._JSON ||`
+    # expression -- do not spell that label out in prose here.)
+    #
+    # UNCONDITIONAL (no needs/if) so it always runs and can never
+    # legitimately be skipped itself. Registered CLASSIFICATION_ONLY (not
+    # soft-allowlisted) in ci_summary_gate.py, mirroring zone-filter: every
+    # job gated on this predicate's output cascades to `skipped` if THIS job
+    # fails, and that cascade is caught by the default-deny sweep rather
+    # than tolerated as a pass (see ci_summary_gate.py's CLASSIFICATION_ONLY
+    # comment for the mechanism, already proven for zone-filter / docs_only).
+    #
+    # ONLY heavy jobs that validate CODE unaffected by an evidence-only diff
+    # are gated on this predicate's output (no-noncanonical-lifecycle-
+    # classes, divergent-automation-pr-guard, precommit-parity-gate,
+    # predicate-parity, check-bot-authored-authz-guard -- each scans a
+    # surface this predicate PROVES is unchanged when it reports
+    # evidence_only=true). Every gate that validates evidence CONTENT itself
+    # (Receipt Honesty, Append-Only, Contract Shape/Compliance, the
+    # corpus-wide ratchets, Contract Substance Floor, Validate Contract
+    # YAML, validate-prod-promotion-grants, check-platform-leads-review-
+    # tripwire, merge-hold-gate) stays unconditional -- an evidence-only
+    # diff is exactly the diff shape those gates exist to check, so gating
+    # them here would be the OMN-16285 "never weaken receipt integrity" hard
+    # constraint failing, not succeeding.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    outputs:
+      evidence_only: ${{ steps.predicate.outputs.evidence_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Evaluate evidence-only predicate
+        id: predicate
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          BEFORE_SHA: ${{ github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          changed_file_list=/tmp/evidence_predicate_changed_files.txt
+          : > "$changed_file_list"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
+            base_ref="${BASE_REF#refs/heads/}"
+            git fetch origin "$base_ref" --no-tags
+            git diff --name-only "origin/${base_ref}"...HEAD > "$changed_file_list" || true
+          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --name-only "$BEFORE_SHA"...HEAD > "$changed_file_list" || true
+          fi
+          echo "Changed files for evidence-only predicate:"
+          cat "$changed_file_list"
+          CHANGED_FILES="$(cat "$changed_file_list")" uv run python3 scripts/ci/evidence_only_predicate.py
+
   pre-commit:
     name: Pre-commit
     needs: [zone-filter]
@@ -380,13 +456,24 @@ jobs:
 
   divergent-automation-pr-guard:
     name: No Divergent Automation PRs (OMN-14778)
-    # Deliberately UNCONDITIONAL — no zone-filter/docs_only gate and no path
-    # filter. The pre-commit hook only fires when a PR touches a workflow or the
-    # checker itself, so a PR that changes neither would never execute it. This
-    # job runs the gate on every PR (the OMN-14416 "defense that never runs"
-    # lesson) so the retired occ-rerun-downstream anti-pattern — a push-to-main
-    # workflow that cuts a branch off main and opens a PR to the divergent `dev`
+    # No zone-filter/docs_only gate and no path filter. The pre-commit hook
+    # only fires when a PR touches a workflow or the checker itself, so a PR
+    # that changes neither would never execute it. This job runs the gate
+    # on every PR (the OMN-14416 "defense that never runs" lesson) so the
+    # retired occ-rerun-downstream anti-pattern — a push-to-main workflow
+    # that cuts a branch off main and opens a PR to the divergent `dev`
     # base — cannot be reintroduced.
+    #
+    # OMN-16285: this job scans `.github/workflows/` at HEAD, a tree an
+    # evidence-only diff (contracts/**, drift/dod_receipts/** only, per the
+    # evidence-only-predicate job above) structurally cannot touch — so its
+    # result on such a diff is identical to what already ran on the last
+    # non-evidence merge to dev. Gated on that predicate rather than left
+    # unconditional; moved from STRICT_GATE_JOBS to SKIPPABLE_GATE_JOBS in
+    # ci_summary_gate.py so a `skipped` conclusion here is fail-closed
+    # unless the predicate itself succeeded and asserted evidence-only.
+    needs: [evidence-only-predicate]
+    if: needs.evidence-only-predicate.outputs.evidence_only != 'true'
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -1287,8 +1374,17 @@ jobs:
 
   no-noncanonical-lifecycle-classes:
     name: no-noncanonical-lifecycle-classes
-    # OMN-14350: non-canonical lifecycle-class ratchet. Unconditional (no needs/if) so
-    # it never skips; wired into required CI Summary via needs: + strict success-only check.
+    # OMN-14350: non-canonical lifecycle-class ratchet over src/onex_change_control.
+    # Wired into required CI Summary via needs: + strict/skippable success-only check.
+    #
+    # OMN-16285: this job scans `src/onex_change_control`, a tree an
+    # evidence-only diff (contracts/**, drift/dod_receipts/** only, per the
+    # evidence-only-predicate job above) structurally cannot touch. Gated on
+    # that predicate; moved from STRICT_GATE_JOBS to SKIPPABLE_GATE_JOBS in
+    # ci_summary_gate.py so a `skipped` conclusion here is fail-closed
+    # unless the predicate itself succeeded and asserted evidence-only.
+    needs: [evidence-only-predicate]
+    if: needs.evidence-only-predicate.outputs.evidence_only != 'true'
     runs-on: >-
       ${{
         (
@@ -1328,15 +1424,20 @@ jobs:
     #   2. pin-parity (pre-commit `rev:` vs the omnibase_core SHA ci.yml pins for the
     #      SAME validator — the no-noncanonical-lifecycle-classes pair).
     #
-    # UNCONDITIONAL BY DESIGN (OMN-14666/14668 lesson). No `needs:`, no `if:`, no
-    # paths filter, so the byte-match proof fires on EVERY PR and passes/fails on its
-    # own evidence — never conditioned on another job's result (the omnimarket#1783
-    # skip-then-vacuous-green window came from a `needs: occ-preflight`). In OCC a
-    # STANDALONE workflow file is the wrong shape: OMN-14441 REMOVED a standalone
-    # workflow precisely because a separate run_id is invisible to the REQUIRED CI
-    # Summary rollup and so cannot block a merge. This job is folded into ci.yml and
-    # wired into ci-summary's needs + a strict success-only check below, mirroring
-    # no-noncanonical-lifecycle-classes (OMN-14350) — unconditional AND enforced.
+    # No `needs:` beyond the OMN-16285 predicate below, no paths filter, so
+    # the byte-match proof fires on every non-evidence-only PR and
+    # passes/fails on its own evidence — never conditioned on another job's
+    # RESULT (the omnimarket#1783 skip-then-vacuous-green window came from a
+    # `needs: occ-preflight` that could legitimately fail for unrelated
+    # reasons; this job's new `needs:` is a governed, exact-allowlist
+    # PREDICATE with its own STRICT semantics — see the evidence-only-
+    # predicate job's comment — categorically different from that footgun).
+    # In OCC a STANDALONE workflow file is the wrong shape: OMN-14441
+    # REMOVED a standalone workflow precisely because a separate run_id is
+    # invisible to the REQUIRED CI Summary rollup and so cannot block a
+    # merge. This job is folded into ci.yml and wired into ci-summary's
+    # needs + a success-only check below, mirroring no-noncanonical-
+    # lifecycle-classes (OMN-14350).
     #
     # OMN-14668: runner is HOSTED-PINNED through the centralized public-PR
     # selector, unconditionally. The prior form routed ONLY public-fork PRs to
@@ -1348,6 +1449,16 @@ jobs:
     # executes. The gate is short and dependency-free (`uv run --no-project
     # --with pyyaml`), matching the already-hosted omnibase_spi / omnibase_compat
     # parity gates.
+    #
+    # OMN-16285: this job validates `.pre-commit-config.yaml` pin parity
+    # against ci.yml's own SHA pins — both files an evidence-only diff
+    # (contracts/**, drift/dod_receipts/** only) structurally cannot touch.
+    # Gated on the evidence-only-predicate job above; moved from
+    # STRICT_GATE_JOBS to SKIPPABLE_GATE_JOBS in ci_summary_gate.py so a
+    # `skipped` conclusion here is fail-closed unless the predicate itself
+    # succeeded and asserted evidence-only.
+    needs: [evidence-only-predicate]
+    if: needs.evidence-only-predicate.outputs.evidence_only != 'true'
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -1386,15 +1497,24 @@ jobs:
     # ticketed parity_divergence. Drift into a second definition of "admissible
     # evidence" fails the merge instead of shipping silently.
     #
-    # UNCONDITIONAL BY DESIGN (same reasoning as precommit-parity-gate above):
-    # no needs:, no if:, no paths filter, hosted-pinned runner. A skip here means
-    # something is wrong, not that the gate legitimately opted out — the strict
-    # success-only check in ci-summary below fails closed on any non-success.
+    # No paths filter, hosted-pinned runner. A skip that is NOT the OMN-16285
+    # evidence-only predicate below means something is wrong — the
+    # success-only check in ci-summary fails closed on any non-success.
     #
     # OMNICLAUDE_PIN: pinned to a MERGED commit on omniclaude@main (the ref the
     # deploy-gate reusable workflow is itself consumed at), never a branch head.
     # Bump it deliberately when the upstream predicate changes; a bump that
     # breaks parity is exactly the signal this job exists to raise.
+    #
+    # OMN-16285: this job validates `src/onex_change_control/validation/
+    # evidence_admissibility.py` against omniclaude's reference predicate —
+    # a src/ file an evidence-only diff (contracts/**, drift/dod_receipts/**
+    # only) structurally cannot touch. Gated on the evidence-only-predicate
+    # job above; moved from STRICT_GATE_JOBS to SKIPPABLE_GATE_JOBS in
+    # ci_summary_gate.py so a `skipped` conclusion here is fail-closed
+    # unless the predicate itself succeeded and asserted evidence-only.
+    needs: [evidence-only-predicate]
+    if: needs.evidence-only-predicate.outputs.evidence_only != 'true'
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -1800,14 +1920,27 @@ jobs:
     # anchor) or allowlists/** (compliance exemptions) and self-authorize. This job
     # REJECTS any bot-authored PR that touches those two authorization surfaces.
     # Evidence surfaces (contracts/, drift/) are intentionally NOT guarded —
-    # machine-minted evidence companions are allowed. Unconditional (no needs/if)
-    # so it never skips; folded into the required CI Summary rollup below with a
-    # strict fail-closed check, mirroring validate-prod-promotion-grants /
-    # check-platform-leads-review-tripwire (a standalone workflow that "runs but
-    # cannot block" is the OMN-14415 anti-pattern). Uses only the default
-    # GITHUB_TOKEN the checkout persists for the base fetch — the changed-file set
-    # and commit identities come from LOCAL git, so NO org-wide CROSS_REPO_PAT is
-    # used or needed (OMN-14919 explicitly rejects it).
+    # machine-minted evidence companions are allowed. Folded into the required
+    # CI Summary rollup below with a fail-closed check, mirroring
+    # validate-prod-promotion-grants / check-platform-leads-review-tripwire (a
+    # standalone workflow that "runs but cannot block" is the OMN-14415
+    # anti-pattern). Uses only the default GITHUB_TOKEN the checkout persists
+    # for the base fetch — the changed-file set and commit identities come
+    # from LOCAL git, so NO org-wide CROSS_REPO_PAT is used or needed
+    # (OMN-14919 explicitly rejects it).
+    #
+    # OMN-16285: this job's own logic is "does the diff touch grants/** or
+    # allowlists/**" — and the evidence-only-predicate job above PROVES, by
+    # exact allowlist, that an evidence-only diff (contracts/**,
+    # drift/dod_receipts/** only) cannot touch either path. Skipping this
+    # guard when evidence_only=true is therefore a provable no-op, not a
+    # coverage loss: every diff that DOES touch grants/allowlists is by
+    # construction non-evidence-only and still runs the guard. Moved from
+    # STRICT_GATE_JOBS to SKIPPABLE_GATE_JOBS in ci_summary_gate.py so a
+    # `skipped` conclusion here is fail-closed unless the predicate itself
+    # succeeded and asserted evidence-only.
+    needs: [evidence-only-predicate]
+    if: needs.evidence-only-predicate.outputs.evidence_only != 'true'
     runs-on: >-
       ${{
         (

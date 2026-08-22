@@ -646,6 +646,118 @@ def test_pr_6346_contract_compliance_red_now_fails() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# OMN-16285: evidence-only-predicate fast lane
+# ---------------------------------------------------------------------------
+
+# The exact 5 jobs OMN-16285 moved from STRICT_GATE_JOBS to
+# SKIPPABLE_GATE_JOBS, gated in ci.yml on `evidence-only-predicate`'s output
+# rather than `zone-filter`'s `docs_only`. Each scans a surface (src/,
+# .github/workflows/, .pre-commit-config.yaml, or a grants/allowlists diff)
+# the exact-allowlist predicate proves is unchanged on an evidence-only diff.
+EVIDENCE_PREDICATE_TIER: frozenset[str] = frozenset(
+    {
+        "No Divergent Automation PRs (OMN-14778)",
+        "no-noncanonical-lifecycle-classes",
+        "Precommit Parity Gate",
+        "Evidence Admissibility Predicate Parity",
+        "check-bot-authored-authz-guard",
+    }
+)
+
+
+def test_evidence_predicate_tier_is_a_subset_of_skippable_not_strict() -> None:
+    """Anti-drift pin: if a future edit moves one of these jobs back to
+    STRICT (or removes it from SKIPPABLE entirely) this must fail loudly
+    rather than silently changing which jobs the predicate governs."""
+
+    assert frozenset(SKIPPABLE_GATE_JOBS) >= EVIDENCE_PREDICATE_TIER
+    assert EVIDENCE_PREDICATE_TIER.isdisjoint(STRICT_GATE_JOBS)
+
+
+def test_evidence_only_predicate_job_is_classification_only_not_a_gate() -> None:
+    """The predicate job itself is a structural classifier, not a validator
+    -- it must never appear in STRICT/SKIPPABLE (a `skipped` predicate run
+    that gated ITSELF would be a self-referential vacuous pass), and must be
+    registered CLASSIFICATION_ONLY so the default-deny sweep, not a gate
+    tier, is what catches its own failure."""
+
+    name = "Evidence-Only Diff Predicate"
+    assert name not in STRICT_GATE_JOBS
+    assert name not in SKIPPABLE_GATE_JOBS
+    assert name not in SOFT_ALLOWLIST
+    assert name in CLASSIFICATION_ONLY
+
+
+def test_evidence_predicate_tier_all_skipped_with_predicate_success_is_success() -> (
+    None
+):
+    """The intended evidence-only-diff shape: the predicate job itself ran
+    and succeeded (asserting evidence_only=true), every job gated on its
+    output reports `skipped`, and every unconditional/content-validating
+    gate still reports `success`. This must evaluate SUCCESS -- proving the
+    slim path actually goes green, not just that the strict tier still
+    fails closed."""
+
+    jobs = [
+        _job(n, "skipped" if n in EVIDENCE_PREDICATE_TIER else "success")
+        for n in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS
+    ]
+    jobs.append(_job("Evidence-Only Diff Predicate", "success"))
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0, f"evidence-only slim path did not go green:\n{report}"
+
+
+def test_failed_evidence_only_predicate_cascade_is_not_a_vacuous_success() -> None:
+    """Regression pin, same class as the zone-filter cascade test above
+    (PR #6435). A FAILED evidence-only-predicate job cascades every job
+    that `needs:` it to `skipped` (the 5-job EVIDENCE_PREDICATE_TIER, all
+    SKIPPABLE, which tolerates `skipped` unconditionally in isolation) --
+    the predicate job's OWN failure, caught by the default-deny sweep
+    because it is CLASSIFICATION_ONLY and not soft-allowlisted, is what
+    keeps this fail-closed instead of a vacuous SUCCESS."""
+
+    jobs = [
+        _job(n, "skipped" if n in EVIDENCE_PREDICATE_TIER else "success")
+        for n in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS
+    ]
+    jobs.append(_job("Evidence-Only Diff Predicate", "failure"))
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1, (
+        f"fail-open: evidence-only-predicate failure yielded exit {code}\n{report}"
+    )
+    assert "Evidence-Only Diff Predicate" in report
+
+
+def test_evidence_predicate_tier_job_failure_still_fails_closed() -> None:
+    """A non-evidence-only diff (predicate succeeded, asserted
+    evidence_only=false) runs the full tier for real -- a genuine failure in
+    one of those 5 jobs must fail the gate exactly like any other
+    SKIPPABLE-tier failure (`success`/`skipped` are good; `failure` is not)."""
+
+    victim = next(iter(EVIDENCE_PREDICATE_TIER))
+    jobs = _all_green_jobs()
+    jobs.append(_job("Evidence-Only Diff Predicate", "success"))
+    for j in jobs:
+        if j["name"] == victim:
+            j["conclusion"] = "failure"
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1
+    assert victim in report
+
+
 @pytest.mark.parametrize("dropped_context", EXPECTED_EXTERNAL_CONTEXTS)
 def test_falsification_each_external_context_is_load_bearing(
     dropped_context: str,
