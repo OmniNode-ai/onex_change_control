@@ -21,9 +21,8 @@ import yaml
 
 if TYPE_CHECKING:
     from pathlib import Path
+from omnibase_core.models.governance.model_eval_suite import ModelEvalSuite
 from pydantic import ValidationError
-
-from onex_change_control.models.model_eval_task import ModelEvalSuite
 
 logger = logging.getLogger(__name__)
 

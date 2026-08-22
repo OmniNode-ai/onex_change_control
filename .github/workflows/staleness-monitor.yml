@@ -66,14 +66,26 @@ jobs:
       # OMN-15052: github.token is scoped to onex_change_control only and
       # cannot resolve private sibling repos (e.g. omniweb) via the GraphQL
       # clone path — every scheduled run failed here for ~2 months.
-      # CROSS_REPO_PAT is the org-wide read token already used for this
-      # exact purpose by nightly-promote.yml (verified live: 15/15 recent
-      # scheduled runs green cloning the same private repo).
-      GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+      # OMN-16373: CROSS_REPO_PAT retired in favor of a short-lived
+      # onexbot-occ-writer App installation token, exported below.
 
     steps:
       - name: Checkout OCC
         uses: actions/checkout@v7
+
+      # OMN-16373: mint the App token and export as GH_TOKEN for every
+      # later `gh` CLI step — job-level `env:` is resolved before any step
+      # runs, so it cannot reference a step output directly. The
+      # `|| github.token` fallback stays for resilience.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+      - name: Export GH_TOKEN for gh CLI steps
+        run: echo "GH_TOKEN=${{ steps.app-token.outputs.token || github.token }}" >> "$GITHUB_ENV"
 
       - name: Set up uv
         uses: ./.github/actions/setup-uv

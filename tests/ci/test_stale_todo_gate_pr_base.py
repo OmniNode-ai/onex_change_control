@@ -7,8 +7,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# OMN-16260: the ACTIVE .github/workflows/stale-todo-gate.yml job was
+# consolidated into guards.yml (content asserted below unchanged, only the
+# file moved). `workflows/stale-todo-gate.yml` (no `.github/` prefix) is a
+# SEPARATE, older distribution template other repos copy from ("Copy this
+# file to .github/workflows/stale-todo-gate.yml in each repo") -- a
+# genuinely different file, untouched by this consolidation.
 WORKFLOWS = (
-    Path(".github/workflows/stale-todo-gate.yml"),
+    Path(".github/workflows/guards.yml"),
     Path("workflows/stale-todo-gate.yml"),
 )
 
