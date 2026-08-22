@@ -99,19 +99,23 @@ class TestCloneStepFailsClosed:
 
 
 class TestCloneStepGuaranteesFreshness:
-    """AC: self-hosted runners carry a persistent /tmp/repos across jobs --
+    """AC: self-hosted runners carry persistent temp dirs across jobs --
     the step must not trust whatever is already on disk."""
 
     def test_the_repos_root_is_removed_before_use(self) -> None:
         script = _clone_peer_repos_script()
-        assert re.search(r"rm -rf /tmp/repos\b", script), (
+        assert re.search(r'repo_root="\$\{RUNNER_TEMP:-/tmp\}/', script), (
+            "the repos root must be scoped to the current workflow run instead "
+            "of hardcoding a shared /tmp/repos directory"
+        )
+        assert 'rm -rf "$repo_root"' in script, (
             "the repos root must be wiped before cloning so a prior job's "
             "checkout on this (persistent, self-hosted) runner container "
             "cannot be validated as if it were fresh"
         )
         # the wipe must precede population, not follow it
-        wipe_idx = script.index("rm -rf /tmp/repos")
-        mkdir_idx = script.index("mkdir -p /tmp/repos")
+        wipe_idx = script.index('rm -rf "$repo_root"')
+        mkdir_idx = script.index('mkdir -p "$repo_root"')
         assert wipe_idx < mkdir_idx
 
     def test_each_clone_target_is_removed_before_its_own_attempt(self) -> None:
@@ -141,6 +145,6 @@ class TestCloneFunctionMatchesProvenSiblingPattern:
 class TestValidateInventoryStepIsUnchanged:
     """Scope guard: this ticket fixes the clone step, not the validator."""
 
-    def test_the_validate_step_still_reads_tmp_repos(self) -> None:
+    def test_the_validate_step_still_reads_configured_repo_root(self) -> None:
         step = _step("migration-inventory", "Validate inventory")
-        assert "--repos-root /tmp/repos" in str(step["run"])
+        assert '--repos-root "$MIGRATION_INVENTORY_REPOS_ROOT"' in str(step["run"])
