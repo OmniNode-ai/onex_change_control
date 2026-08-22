@@ -205,9 +205,22 @@ jobs:
             exit 0
           fi
           SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --files "${changed_files[@]}"
+      # OMN-16373: CROSS_REPO_PAT retirement. Mint a short-lived
+      # onexbot-occ-writer App installation token (org secrets
+      # ONEXBOT_OCC_APP_ID / ONEXBOT_OCC_PRIVATE_KEY) for the sibling-repo
+      # read this step needs; the `|| github.token` fallback stays for
+      # resilience (same-repo reads still work without the App).
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
       - name: Run receipt hardening on changed receipts
         env:
           BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           set -euo pipefail
           base_ref="${BASE_REF#refs/heads/}"
@@ -672,9 +685,17 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
       - name: Clone cross-repo dependencies
         env:
-          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           clone_omni_repo() {
             local repo="$1"
@@ -738,28 +759,63 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+      # OMN-16373 follow-up: two live reruns of this job (32522180870,
+      # rerun 96905923550/96910717591) both dropped the 2 NEWEST files in
+      # private omninode_infra/db/migrations/ from an App-token shallow
+      # clone -- reproducibly the same 2 files both times, present on
+      # omninode_infra's own dev HEAD locally, so this is not a genuine
+      # missing-file drift. It reads as an installation-token propagation
+      # lag for a repo the App was only granted access to hours earlier
+      # (repository_selection=all as of 2026-08-21), not present with
+      # CROSS_REPO_PAT. Keeping CROSS_REPO_PAT as a fallback here until
+      # that's proven stable; App token stays primary.
       - name: Clone peer repos
         env:
-          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || secrets.CROSS_REPO_PAT || github.token }}
         run: |
           clone_omni_repo() {
             local repo="$1"
             local target="$2"
+            local clone_args=()
             if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
               local auth_header
               auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
-              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}" 2>/dev/null
-            else
-              git clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}" 2>/dev/null
+              clone_args=(-c "http.https://github.com/.extraheader=${auth_header}")
             fi
+
+            for attempt in 1 2 3; do
+              rm -rf "${target}"
+              if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"; then
+                return 0
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep_seconds=$((attempt * 10))
+                echo "::warning::Cross-repo clone attempt ${attempt}/3 failed for ${repo}; retrying in ${sleep_seconds}s"
+                sleep "${sleep_seconds}"
+              fi
+            done
+
+            echo "::error::Failed to clone ${repo} after 3 attempts"
+            return 1
           }
-          mkdir -p /tmp/repos
+          repo_root="${RUNNER_TEMP:-/tmp}/migration-inventory-repos-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$repo_root"
+          mkdir -p "$repo_root"
           for repo in omnibase_infra omnidash-archived omniintelligence omnimemory omninode_infra omniclaude omniweb; do
-            clone_omni_repo "$repo" "/tmp/repos/$repo" || true
+            clone_omni_repo "$repo" "$repo_root/$repo"
           done
-          ln -s "$GITHUB_WORKSPACE" /tmp/repos/onex_change_control
+          ln -s "$GITHUB_WORKSPACE" "$repo_root/onex_change_control"
+          echo "MIGRATION_INVENTORY_REPOS_ROOT=$repo_root" >> "$GITHUB_ENV"
       - name: Validate inventory
-        run: uv run check-migration-inventory --repos-root /tmp/repos
+        run: uv run check-migration-inventory --repos-root "$MIGRATION_INVENTORY_REPOS_ROOT"
 
   kafka-boundary-parity:
     name: Kafka Boundary Parity
@@ -780,9 +836,17 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
       - name: Clone cross-repo dependencies
         env:
-          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           clone_omni_repo() {
             local repo="$1"
@@ -849,9 +913,17 @@ jobs:
           python-version: "3.12"
       - name: Install test dependencies
         run: uv sync --frozen --group dev
+      # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
       - name: Clone omnidash for cross-repo schema check
         env:
-          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           clone_omnidash() {
             rm -rf ../omnidash
@@ -993,11 +1065,22 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+      # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App
+      # token once for the job; reused by both this step and the contract
+      # compliance check step below.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
       - name: Set up contracts source
         if: steps.bootstrap_check.outputs.skip != 'true'
         id: contracts_setup
         env:
-          OMNI_REPO_CLONE_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           if [ "${{ github.repository }}" = "OmniNode-ai/onex_change_control" ]; then
             # Running in this repo itself — use checked-out contracts (PR diff version)
@@ -1058,7 +1141,7 @@ jobs:
             --contracts-dir /tmp/onex_change_control/contracts
         env:
           EMERGENCY_BYPASS: ${{ secrets.EMERGENCY_BYPASS || '' }}
-          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
 
   honesty-gate:
     permissions:
