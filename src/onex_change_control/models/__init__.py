@@ -69,19 +69,6 @@ from onex_change_control.models.model_dogfood_scorecard import (
     ModelInfrastructureHealth,
     ModelReadinessDimension,
 )
-from onex_change_control.models.model_eval_report import (
-    ModelEvalReport,
-    ModelEvalSummary,
-)
-from onex_change_control.models.model_eval_run import (
-    ModelEvalMetric,
-    ModelEvalRun,
-    ModelEvalRunPair,
-)
-from onex_change_control.models.model_eval_task import (
-    ModelEvalSuite,
-    ModelEvalTask,
-)
 from onex_change_control.models.model_golden_path import (
     ModelGoldenPath,
     ModelGoldenPathAssertion,
@@ -141,13 +128,6 @@ __all__ = [
     "ModelDogfoodRegression",
     "ModelDogfoodScorecard",
     "ModelEndpointHealth",
-    "ModelEvalMetric",
-    "ModelEvalReport",
-    "ModelEvalRun",
-    "ModelEvalRunPair",
-    "ModelEvalSuite",
-    "ModelEvalSummary",
-    "ModelEvalTask",
     "ModelFieldChange",
     "ModelGoldenChainHealth",
     "ModelGoldenPath",

@@ -6,9 +6,9 @@
 from datetime import UTC, datetime
 
 import pytest
+from omnibase_core.models.governance.model_eval_suite import ModelEvalSuite
+from omnibase_core.models.governance.model_eval_task import ModelEvalTask
 from pydantic import ValidationError
-
-from onex_change_control.models.model_eval_task import ModelEvalSuite, ModelEvalTask
 
 
 def _make_task(task_id: str = "eval-001-fix-import", **kwargs: object) -> ModelEvalTask:
