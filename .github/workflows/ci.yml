@@ -771,12 +771,21 @@ jobs:
       # rerun 96905923550/96910717591) both dropped the 2 NEWEST files in
       # private omninode_infra/db/migrations/ from an App-token shallow
       # clone -- reproducibly the same 2 files both times, present on
-      # omninode_infra's own dev HEAD locally, so this is not a genuine
-      # missing-file drift. It reads as an installation-token propagation
-      # lag for a repo the App was only granted access to hours earlier
-      # (repository_selection=all as of 2026-08-21), not present with
-      # CROSS_REPO_PAT. Keeping CROSS_REPO_PAT as a fallback here until
-      # that's proven stable; App token stays primary.
+      # omninode_infra's own dev HEAD locally. The original "installation
+      # propagation lag" theory does not hold up: the App's own
+      # installation (148180820) was created 2026-07-22 / last updated
+      # 2026-08-19, days before the 2026-08-21 failure, and the 2 missing
+      # files were themselves 5-6 days old (committed 2026-08-16) -- well
+      # outside any plausible access-propagation window. The
+      # better-supported correlate is a generic post-push git-read
+      # consistency lag: the failed clone landed ~24 minutes after an
+      # unrelated push to omninode_infra's dev tip. `git clone --depth=1`
+      # is switched to a full clone below as the shallow-clone-drop fix
+      # direction; this is unproven against the read-consistency-lag
+      # theory but cheap to try and does not regress anything.
+      # CROSS_REPO_PAT is kept as a fallback (App token stays primary) --
+      # remove only after a clean, non-docs_only run proves the App-token
+      # path stable with zero missing files.
       - name: Clone peer repos
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || secrets.CROSS_REPO_PAT || github.token }}
@@ -793,7 +802,7 @@ jobs:
 
             for attempt in 1 2 3; do
               rm -rf "${target}"
-              if git "${clone_args[@]}" clone --depth=1 "https://github.com/OmniNode-ai/${repo}.git" "${target}"; then
+              if git "${clone_args[@]}" clone "https://github.com/OmniNode-ai/${repo}.git" "${target}"; then
                 return 0
               fi
               if [ "${attempt}" -lt 3 ]; then
