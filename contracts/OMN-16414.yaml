@@ -1,0 +1,78 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16414
+title: 'Fork-PR CI: guard onexbot-occ-writer app-token mint steps with continue-on-error'
+summary: 'OCC companion for OmniNode-ai/omnibase_infra PR #2850. Fork-triggered pull_request runs receive
+  no org secrets, so ONEXBOT_OCC_APP_ID/ONEXBOT_OCC_PRIVATE_KEY resolve empty and actions/create-github-app-token
+  hard-fails ("Input required and not supplied: app-id") on any "Mint onexbot-occ-writer app token" step
+  lacking continue-on-error. 4 of 9 such steps in this repo already carried the guard; 5 did not, each
+  killing its job before ever reaching its own already-written `steps.app-token.outputs.token || github.token`
+  fallback (exemplar: omnibase_infra#2772, a real fork PR). PR #2850 adds continue-on-error to the 5 unguarded
+  sites (omni-standards-compliance.yml: type-safety, type-union-check, handler-contract-compliance; ci.yml:
+  contract-compliance, migration-conflict-check -- plus its missing OMNI_REPO_CLONE_TOKEN fallback), diverges
+  env-parity.yml to a job-level fork-skip `if:` (its sibling read target, omninode_infra, is PRIVATE --
+  no token-less fallback is possible there), and updates one pinned test (test_migration_conflict_action_is_blocking)
+  whose exact-match assertion this fix intentionally changes.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: 'PR #2850 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-OmniNode-ai-omnibase_infra-pr-2850
+    description: 'PR #2850 on OmniNode-ai/omnibase_infra lands the fork-PR app-token mint continue-on-error
+      fix.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/pulls/2850/files --jq '.[].filename' | grep
+          -cF '.github/workflows/omni-standards-compliance.yml'"
+  - id: dod-omni-standards-compliance-three-sites-guarded
+    description: 'All 3 unguarded mint steps in omni-standards-compliance.yml (type-safety, type-union-check,
+      handler-contract-compliance) now carry continue-on-error, each with an explanatory OMN-16414 marker
+      comment -- verified at the PR head SHA, not the PR description.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/omni-standards-compliance.yml?ref=8daa6a47a0703f22a732648d433446e1f9b07aee
+          --jq '.content' | base64 -d | grep -cF 'OMN-16414: continue-on-error is REQUIRED here'"
+  - id: dod-ci-yml-two-sites-guarded-and-fallback-restored
+    description: 'ci.yml: both contract-compliance and migration-conflict-check mint steps carry the same
+      continue-on-error guard, and migration-conflict-check''s OMNI_REPO_CLONE_TOKEN env -- previously
+      an exact literal with no fallback -- now falls back to github.token, matching the fallback shape
+      contract-compliance''s checkout step already had.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=8daa6a47a0703f22a732648d433446e1f9b07aee
+          --jq '.content' | base64 -d | grep -cF 'OMN-16414: continue-on-error is REQUIRED here'"
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=8daa6a47a0703f22a732648d433446e1f9b07aee
+          --jq '.content' | base64 -d | grep -cF 'OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token
+          || github.token }}'"
+  - id: dod-env-parity-fork-skip-diverged-fix
+    description: 'env-parity.yml mints a token to read the PRIVATE omninode_infra sibling, so it cannot
+      degrade to a token-less github.token fallback the way the public-sibling jobs above can. It gets
+      a job-level `if:` fork-skip guard instead (neutral/skipped on a fork PR run, not red) -- a deliberately
+      different fix for a structurally different case, asserted here so the divergence is evidenced, not
+      just claimed in prose.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/env-parity.yml?ref=8daa6a47a0703f22a732648d433446e1f9b07aee
+          --jq '.content' | base64 -d | grep -cF 'OMN-16414: this job cannot degrade'"
+  - id: dod-pinned-test-updated-not-weakened
+    description: 'test_migration_conflict_action_is_blocking (OMN-11163) is updated to expect the new
+      github.token fallback literal instead of the old exact-only value -- while its adjacent assertions
+      (warn-only == "false", zero continue-on-error on the validate-boundaries step itself) are untouched,
+      so the "blocking" graduation this test exists to protect is not weakened by this fix.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_ci_workflow_resilience.py?ref=8daa6a47a0703f22a732648d433446e1f9b07aee
+          --jq '.content' | base64 -d | grep -cF 'assert \"continue-on-error\" not in validate_step'"
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_ci_workflow_resilience.py?ref=8daa6a47a0703f22a732648d433446e1f9b07aee
+          --jq '.content' | base64 -d | grep -cF 'steps.app-token.outputs.token || github.token'"
