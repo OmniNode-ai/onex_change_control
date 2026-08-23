@@ -369,3 +369,71 @@ required_field_missing: true
         result = run_cli(str(bad_contract))
         assert result.returncode != 0
         assert result.stderr, "stderr must contain validation error details"
+
+
+class TestV1ContractSkip:
+    """Regression tests for OMN-15669: `contracts/v1/` files must not be validated
+    against the generic ModelTicketContract wrapper.
+
+    ModelTicketContract is extra="forbid" and enforces schema_version as strict
+    SemVer, so a genuinely conformant contract-shape-v1 document (interface/
+    dependencies/cases/exclusions blocks, schema_version="occ-contract/v1") is
+    unrepresentable there by design — see contract_shape_v1.py's V1_DIR comment.
+    Motivated by the live OMN-15669.yaml corpus-validation failure surfaced on
+    omnibase_spi#270: a fully conformant v1 contract (confirmed green under
+    `check-contract-shape-v1`) was rejected corpus-wide by `validate-yaml`.
+    """
+
+    def test_v1_contract_is_skipped_not_rejected(self, tmp_path: Path) -> None:
+        """A conformant contract-shape-v1 document under contracts/v1/ is skipped,
+        not validated (and rejected) against ModelTicketContract.
+        """
+        v1_dir = tmp_path / "contracts" / "v1"
+        v1_dir.mkdir(parents=True)
+        v1_contract = v1_dir / "OMN-99999.yaml"
+        # Fields (`interface`, `dependencies`, `cases`, `exclusions`,
+        # schema_version="occ-contract/v1") that ModelTicketContract forbids.
+        v1_contract.write_text(
+            """
+schema_version: occ-contract/v1
+ticket_id: OMN-99999
+title: Synthetic v1 contract for the skip-routing regression test
+interface:
+  inputs: []
+  outputs: []
+cases:
+  - id: noop
+    class: unit
+    behavior: placeholder
+""",
+        )
+
+        result = run_cli(str(v1_contract))
+        assert result.returncode == 0, (
+            "validate-yaml must not fail a contracts/v1/ file against "
+            f"ModelTicketContract. stderr: {result.stderr}"
+        )
+        assert "skipped" in result.stdout
+        assert "extra_forbidden" not in result.stderr
+        assert "invalid SemVer" not in result.stderr
+
+    def test_non_v1_contract_still_validated(self, tmp_path: Path) -> None:
+        """A top-level contracts/ file (not under v1/) is still validated
+        normally against ModelTicketContract — the skip is v1-scoped only.
+        """
+        contracts_dir = tmp_path / "contracts"
+        contracts_dir.mkdir()
+        bad_contract = contracts_dir / "OMN-99998.yaml"
+        bad_contract.write_text(
+            """
+ticket_id: OMN-99998
+schema_version: "1.0"
+required_field_missing: true
+""",
+        )
+
+        result = run_cli(str(bad_contract))
+        assert result.returncode != 0, (
+            "the v1 skip must not swallow validation for non-v1 contracts"
+        )
+        assert "skipped" not in result.stdout

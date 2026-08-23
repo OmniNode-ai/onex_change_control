@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from onex_change_control.kafka.governance_emitter import emit_governance_check_completed
 from onex_change_control.models import ModelDayClose, ModelTicketContract
+from onex_change_control.validation.contract_shape_v1 import V1_DIR
 
 # CLI version (increment when CLI logic changes)
 CLI_VERSION = "1.0.0"
@@ -202,6 +203,21 @@ def validate_file(file_path: Path) -> bool:
         True if valid, False if invalid
 
     """
+    # `contracts/v1/` files are the dedicated contract-shape-v1 schema
+    # (schemas/occ_contract_v1.schema.yaml, enforced by `check-contract-shape-v1`),
+    # not the generic ModelTicketContract wrapper this script validates against.
+    # ModelTicketContract is extra="forbid" and enforces schema_version as SemVer,
+    # so a v1 contract's interface/dependencies/cases/exclusions blocks and its
+    # schema_version="occ-contract/v1" marker are unrepresentable there by design
+    # (see contract_shape_v1.py's V1_DIR comment — "one shape per path"). Route
+    # corpus-wide scans around this directory instead of failing every v1
+    # contract against the wrong model.
+    if V1_DIR in str(file_path).replace("\\", "/"):
+        print_info(
+            f"{file_path}: skipped (validated by check-contract-shape-v1 instead)"
+        )
+        return True
+
     # Load YAML
     data = _load_yaml_file(file_path)
     if data is None:
