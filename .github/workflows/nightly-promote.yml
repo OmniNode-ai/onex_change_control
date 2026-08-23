@@ -1,8 +1,10 @@
 name: Nightly Promotion
 
 on:
-  schedule:
-    - cron: "0 6 * * *"
+  # Schedule removed 2026-08-20 (OMN-16289): main is now release-synced (fast-forwarded
+  # to each release tag SHA by release.yml on wave-1 repos), so promotion PRs to main are
+  # retired and this workflow no longer runs on a cron. workflow_dispatch stays for manual
+  # use (e.g. OCC's own dev/main reconciliation, which is unaffected by OMN-16289's scope).
   workflow_dispatch:
     inputs:
       dry_run:
@@ -86,13 +88,28 @@ jobs:
       VERIFIER_IDENTITY: ${{ github.event.inputs.verifier_identity || 'nightly-promotion-bot@occ' }}
       OMNI_REPOS_ROOT: ${{ github.workspace }}/../omni-repos
       EVIDENCE_DIR: ${{ github.workspace }}/promotion-evidence
-      GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
 
     steps:
       - name: Checkout OCC
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # OMN-16373: CROSS_REPO_PAT retirement. Mint a short-lived
+      # onexbot-occ-writer App installation token (org secrets
+      # ONEXBOT_OCC_APP_ID / ONEXBOT_OCC_PRIVATE_KEY) and export it as
+      # GH_TOKEN for every later `gh` CLI step in this job — job-level
+      # `env:` is resolved before any step runs, so it cannot reference a
+      # step output directly; exporting to $GITHUB_ENV is the standard
+      # workaround. The `|| github.token` fallback stays for resilience.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+      - name: Export GH_TOKEN for gh CLI steps
+        run: echo "GH_TOKEN=${{ steps.app-token.outputs.token || github.token }}" >> "$GITHUB_ENV"
 
       - name: Set up uv
         uses: ./.github/actions/setup-uv
@@ -130,13 +147,41 @@ jobs:
 
       - name: Checkout promoted repos
         shell: bash
+        env:
+          # OMN-16279: 2/6 nightly-promote failures (08-17, 08-19) were a
+          # transient GnuTLS/TLS transport error mid `git clone`/fetch of a
+          # large sibling repo, with no retry — any single network blip
+          # failed the entire job. Mirrors the retry/backoff shape already
+          # used one step earlier for `uv sync` (setup-uv/action.yml
+          # UV_SYNC_ATTEMPTS).
+          CLONE_ATTEMPTS: "3"
+          CLONE_RETRY_DELAY_SECONDS: "10"
         run: |
           set -euo pipefail
           gh auth setup-git
+
+          clone_with_retry() {
+            local repo="$1"
+            local dest="$2"
+            local attempt=1
+            until gh repo clone "OmniNode-ai/${repo}" "${dest}" -- --no-tags \
+              && git -C "${dest}" fetch origin main dev --no-tags; do
+              status=$?
+              if [ "$attempt" -ge "$CLONE_ATTEMPTS" ]; then
+                echo "::error::checkout of ${repo} failed after ${attempt} attempt(s)"
+                return "$status"
+              fi
+              sleep_seconds=$((CLONE_RETRY_DELAY_SECONDS * attempt))
+              echo "::warning::checkout of ${repo} attempt ${attempt}/${CLONE_ATTEMPTS} failed with exit ${status}; retrying in ${sleep_seconds}s"
+              rm -rf "${dest}"
+              sleep "$sleep_seconds"
+              attempt=$((attempt + 1))
+            done
+          }
+
           while IFS= read -r repo; do
             [ -n "$repo" ] || continue
-            gh repo clone "OmniNode-ai/${repo}" "${OMNI_REPOS_ROOT}/${repo}" -- --no-tags
-            git -C "${OMNI_REPOS_ROOT}/${repo}" fetch origin main dev --no-tags
+            clone_with_retry "$repo" "${OMNI_REPOS_ROOT}/${repo}"
           done <<< "${{ steps.batch.outputs.repos }}"
 
       - name: Generate intended promotion manifest

@@ -6,16 +6,13 @@
 from datetime import UTC, datetime
 
 import pytest
+from omnibase_core.enums.governance.enum_eval_metric_type import EnumEvalMetricType
+from omnibase_core.enums.governance.enum_eval_mode import EnumEvalMode
+from omnibase_core.enums.governance.enum_eval_verdict import EnumEvalVerdict
+from omnibase_core.models.governance.model_eval_metric import ModelEvalMetric
+from omnibase_core.models.governance.model_eval_run import ModelEvalRun
+from omnibase_core.models.governance.model_eval_run_pair import ModelEvalRunPair
 from pydantic import ValidationError
-
-from onex_change_control.enums.enum_eval_metric_type import EnumEvalMetricType
-from onex_change_control.enums.enum_eval_mode import EnumEvalMode
-from onex_change_control.enums.enum_eval_verdict import EnumEvalVerdict
-from onex_change_control.models.model_eval_run import (
-    ModelEvalMetric,
-    ModelEvalRun,
-    ModelEvalRunPair,
-)
 
 
 def _make_metric(

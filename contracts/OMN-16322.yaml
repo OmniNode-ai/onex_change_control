@@ -1,0 +1,85 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16322"
+title: "occ-preflight cold-runner timeout lands passing jobs as CANCELLED"
+summary: >-
+  Raises the occ-preflight / eligibility job timeout from 10m to 15m. On a cold trusted-CI runner the
+  job spends ~2m38s in Set up job (image pull) and ~4m05s checking out omnibase_compat before the eligibility
+  check starts, so it reaches ~10m wall and the timeout fires during results upload, after every step
+  including Complete job has already succeeded. GitHub stamps a timed-out job cancelled, and both CI Summary
+  and GitHub's required-check semantics fail closed on cancelled, so a job that logged "OCC eligibility:
+  PASS" still blocks the PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-onex-change-control-pr-6805-timeout"
+    description: >-
+      onex_change_control PR #6805 changes only .github/workflows/call-occ-preflight.yml, raising the
+      occ-preflight / eligibility job timeout from 10 to 15 minutes. Observed against the live PR file
+      list rather than a pinned head commit so a branch refresh from dev cannot stale the evidence, while
+      still failing if the workflow file is absent from the PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6805 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path' | grep
+          -Fx '.github/workflows/call-occ-preflight.yml'
+  - id: "occ-self-bind-pr-6805"
+    description: >-
+      OCC self-binding receipt for PR #6805, the in-repo evidence PR carrying this contract and the workflow
+      repair. Binds OMN-16322 to the OCC PR by pr_number so the OCC receipt-gate eligibility check can
+      resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 6805 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1573"
+    description: >-
+      omnibase_core PR #1573 raises the same occ-preflight / eligibility timeout from 10 to 15 minutes
+      in .github/workflows/occ-preflight.yml, the REUSABLE workflow consumed via uses:...occ-preflight.yml@main
+      by omnibase_core, omniclaude, omnidash and omnimarket. This is the sibling of the inlined-copy fix
+      already carried by onex_change_control#6805. Content-bound probe: it reads the omnibase_core blob
+      at the PR head through the GitHub API, so it executes against a surface this OCC PR does not author,
+      and it is falsifiable — verified GREEN at head 632b5350bd717b9d649ffe9dfd154ada05c93885 and RED
+      at merge-base bfc05d136123efa680844ce4a12c3c040cba848f, where the value is still 10.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/.github/workflows/occ-preflight.yml?ref=632b5350bd717b9d649ffe9dfd154ada05c93885'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'timeout-minutes: 15'
+  - id: "occ-self-bind-pr-6838"
+    description: "Binds OMN-16322 to OCC companion PR #6838 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6838 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-onex-change-control-pr-6850-corebump"
+    description: >-
+      onex_change_control PR #6850 is OCC's own self-referential dependency-bump PR, bumping the omnibase-core
+      pin in this repo's own uv.lock from 0.46.9 to 0.46.11. The OCC Autobind Publisher declined to mint
+      a companion for it (2026-08-23T07:39:49Z, onexbot-occ-writer[bot]): a pure lockfile-only bump has
+      no changed-file candidate the emitter can prove RED-at-merge-base-then-GREEN- at-head against, and
+      it correctly refused to emit a bare PR-existence probe as non-falsifiable evidence (OMN-15247).
+      This entry is the manually-authored, content-bound replacement the emitter itself named as the required
+      path (tracked structurally as OMN-16410): it reads the PR's own diff rather than asserting mere
+      existence, and it is falsifiable — verified GREEN against PR #6850's diff, which adds the exact
+      line `+version = "0.46.11"` under the `omnibase-core` package block, and RED against origin/dev's
+      uv.lock, which still pins `version = "0.46.9"` for the same package as of this probe. Mirrors the
+      dod-onex-change-control-pr-6805-timeout / occ-self-bind-pr-6805 precedent (source: "manual", genuinely
+      falsifiable file-content check) rather than a bare existence probe.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr diff 6850 --repo OmniNode-ai/onex_change_control | grep -F '+version = "0.46.11"'

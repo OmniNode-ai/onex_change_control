@@ -47,10 +47,13 @@ Verdict policy — DEFAULT-DENY, FAIL-CLOSED, four layers
    unconditional (no legitimate skip path) must be *present*, *completed*, and
    conclude ``success``. ``skipped``/``failure``/``cancelled`` all fail.
 2. **L2 SKIPPABLE_GATE_JOBS.** Jobs that carry a gate-re-derivable skip
-   precondition (the ``docs_only`` evidence-only fast lane, or a legitimate
-   ``push``-only skip) must be *present*, *completed*, and conclude ``success``
-   **or** ``skipped``. The precondition itself is enforced by the job's own
-   ``if:`` in ``ci.yml`` (verified against source at authoring time, pinned by
+   precondition (the ``docs_only`` evidence-only fast lane, the narrower
+   OMN-16285 ``evidence-only-predicate`` fast lane -- exact-allowlisted to
+   ``contracts/**``/``drift/dod_receipts/**``, gating only jobs that scan a
+   surface the predicate proves is unchanged -- or a legitimate ``push``-only
+   skip) must be *present*, *completed*, and conclude ``success`` **or**
+   ``skipped``. The precondition itself is enforced by the job's own ``if:``
+   in ``ci.yml`` (verified against source at authoring time, pinned by
    ``test_every_pr_triggered_job_is_classified`` and the red-replay tests
    below) — this module does not re-parse ``ci.yml`` at runtime.
 3. **L3 default-deny sweep.** Any *other* job present in this run's job list,
@@ -58,8 +61,11 @@ Verdict policy — DEFAULT-DENY, FAIL-CLOSED, four layers
    poller itself or an explicit, reason-carrying :data:`SOFT_ALLOWLIST` entry.
 4. **L4 EXPECTED_EXTERNAL_CONTEXTS.** Checks 1-3 only see ``actions/runs/
    {RUN_ID}/jobs`` — this workflow run's own job list. A job living in ANY
-   OTHER workflow file (``dep-provenance-gate.yml``, ``call-receipt-gate.yml``,
-   ``main-target-guard.yml``, ...) is structurally invisible to it. This layer
+   OTHER workflow file (``guards.yml`` (OMN-16260 -- Dep Provenance Gate,
+   main-target-guard, non-dev-base-guard, call-reject-skip-token, Stale TODO
+   Gate, required-check-skip-guard, and the two OCC-autobind publishers all
+   consolidated here), ``call-receipt-gate.yml``, ...) is structurally
+   invisible to it. This layer
    asserts each named context against the PR head's ``commits/{sha}/
    check-runs``: present + completed + ``success`` (``skipped`` fails closed
    here — every listed context was verified to run unconditionally on ordinary
@@ -98,23 +104,25 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # Deliberately unconditional (no needs/if) per their own ci.yml headers --
     # a defense that only runs when its own trigger files change is a defense
     # that never runs (OMN-14416 lesson), so both scan the whole tree/corpus
-    # on every PR.
+    # on every PR. These validate EVIDENCE CONTENT (contracts/, drift/
+    # dod_receipts/) at corpus scope, so OMN-16285's evidence-only predicate
+    # never gates them -- an evidence-only diff is exactly the diff shape
+    # they exist to check (OMN-16285 hard constraint: never weaken receipt
+    # integrity).
     "Contract Substance Floor (OMN-14409)",
-    "No Divergent Automation PRs (OMN-14778)",
     "Validate Contract YAML (OMN-8808)",
     "Receipt Honesty Gate",
     "OCC Append-Only Gate",
-    "no-noncanonical-lifecycle-classes",
     "validate-prod-promotion-grants",
     "check-platform-leads-review-tripwire",
-    "check-bot-authored-authz-guard",
-    "Precommit Parity Gate",
-    "Evidence Admissibility Predicate Parity",
     "Contract Corpus Ratchets (OMN-15411)",
     "yamlfmt Contamination Ratchet (OMN-15479)",
     "Supersession Binding Ratchet (OMN-15459)",
     # Reusable-workflow caller; the job's own `name:` is set to this literal
     # composed string (Shape A), matching how GitHub surfaces the check-run.
+    # A hold gate an unrelated upstream failure/predicate can cascade-skip is
+    # not a gate (its own ci.yml comment, AC4) -- never move this to
+    # SKIPPABLE for any precondition.
     "merge-hold-gate / evaluate",
     "Contract Shape v1 (OMN-15669)",
 )
@@ -151,6 +159,25 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     # -- a red Contract Compliance Check could merge with CI Summary green.
     # Same push-only skip precondition as Contract Sync Gate above.
     "Contract Compliance Check",
+    # ------------------------------------------------------------------
+    # OMN-16285 evidence-only-predicate fast lane -- skip legal iff the
+    # `evidence-only-predicate` job (ci.yml) classified the diff as touching
+    # ONLY contracts/** and drift/dod_receipts/** (exact allowlist, computed
+    # by scripts/ci/evidence_only_predicate.py; NOT the broader docs_only
+    # zone above, which also covers allowlists/ and .evidence/). Each entry
+    # below validates a surface (src/, .github/workflows/, .pre-commit-
+    # config.yaml, grants/+allowlists/-touching diffs) that predicate PROVES
+    # is unchanged when it reports evidence_only=true -- a skip here can only
+    # be produced by that exact `if:` condition, so it structurally implies
+    # the predicate ran, succeeded, and asserted evidence-only (mirrors the
+    # docs_only tier's own reasoning above). Never move an evidence-CONTENT
+    # validator into this group -- see the OMN-16285 comments on
+    # STRICT_GATE_JOBS's corpus-ratchet entries above.
+    "No Divergent Automation PRs (OMN-14778)",
+    "no-noncanonical-lifecycle-classes",
+    "Precommit Parity Gate",
+    "Evidence Admissibility Predicate Parity",
+    "check-bot-authored-authz-guard",
 )
 
 # Every job the completeness anchor must observe present+good for SUCCESS.
@@ -176,6 +203,21 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # surface"), enforced instead by the `no-new-os-environ` pre-commit
         # hook.
         "No New os.environ Reads (OMN-13563)",
+        # governance-file-advisory-gate.yml (OMN-16117, second vector) --
+        # DELIBERATELY advisory, by explicit design documented at the top of
+        # that workflow file: it exists to break the "all checks green"
+        # signal an automated merge driver reads, for a PR touching
+        # grants/prod_promotion_grants.yaml or
+        # allowlists/skip_token_approvals.yaml -- not to block a human
+        # merge decision. It is intentionally NOT in STRICT_GATE_JOBS or
+        # SKIPPABLE_GATE_JOBS (the workflow file says so explicitly, twice)
+        # because onex_change_control@main has enforce_admins:true and a
+        # REQUIRED failing check there would permanently wedge every future
+        # prod-promotion grant landing, including emergency prod recovery.
+        # A genuine failure conclusion here (when a governance path really
+        # is touched) must stay visible on the PR's check list -- it must
+        # NOT gate CI Summary, which is exactly what SOFT_ALLOWLIST gives it.
+        "Governance File Advisory Gate",
     }
 )
 
@@ -194,6 +236,21 @@ CLASSIFICATION_ONLY: dict[str, str] = {
         "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
         "with zero tests and zero type-checks having run. The sweep catching "
         "the zone-filter failure itself closes that fail-open."
+    ),
+    "Evidence-Only Diff Predicate": (
+        "OMN-16285. ci.yml's `evidence-only-predicate` job -- not a "
+        "validator, so not a STRICT/SKIPPABLE gate. NOT soft-allowlisted, by "
+        "the identical zone-filter mechanism directly above: the 5 "
+        "OMN-16285 evidence-only-predicate-tier SKIPPABLE jobs (No "
+        "Divergent Automation PRs, no-noncanonical-lifecycle-classes, "
+        "Precommit Parity Gate, Evidence Admissibility Predicate Parity, "
+        "check-bot-authored-authz-guard) all `needs:` this job, and a FAILED "
+        "predicate cascades every one of them to `skipped` -- which the "
+        "SKIPPABLE tier tolerates unconditionally in isolation. The sweep "
+        "catching THIS job's own failure is what keeps that cascade "
+        "fail-closed (hard constraint: skipped-by-the-predicate is "
+        "acceptable ONLY when the predicate job itself succeeded and "
+        "asserted evidence-only; any other skip stays fail-closed)."
     ),
 }
 
@@ -214,23 +271,23 @@ CLASSIFICATION_ONLY: dict[str, str] = {
 # which is exactly the fail-closed case this layer exists to catch, not
 # evidence the context is unsafe to assert).
 EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
-    "Dep Provenance Gate",  # dep-provenance-gate.yml -- unconditional
+    "Dep Provenance Gate",  # guards.yml (OMN-16260) -- unconditional
     "validate-private-ip",  # validator-g2-ip-family.yml -- unconditional
     "validate-localhost-url",  # validator-g2-ip-family.yml -- unconditional
     "validate-topic-string",  # validator-g2-ip-family.yml -- unconditional
     "validate-todo-marker",  # validator-g2-ip-family.yml -- unconditional
-    "main-target-guard",  # main-target-guard.yml -- unconditional
-    "non-dev-base-guard",  # non-dev-base-guard.yml -- unconditional
+    "main-target-guard",  # guards.yml (OMN-16260) -- unconditional
+    "non-dev-base-guard",  # guards.yml (OMN-16260) -- unconditional
     "occ-preflight / eligibility",  # call-occ-preflight.yml -- already a
     # direct dev-required context; asserted here too so CI Summary does not
     # depend on branch protection staying in sync (belt-and-braces, matches
     # the reference implementation's treatment of `deploy-gate / deploy-gate`).
     "verify / verify",  # call-receipt-gate.yml -- already direct-required;
     # same belt-and-braces rationale as occ-preflight above.
-    "call-reject-skip-token / scan / reject-skip-gate-token",  # call-reject-skip.yml
+    "call-reject-skip-token / scan / reject-skip-gate-token",  # guards.yml (OMN-16260)
     "required-check-skip-guard / check-skip-vectors",  # already direct-required
-    "pr-title / check-title",  # pr-title-check.yml -- no branches: filter
-    "Stale TODO Gate",  # stale-todo-gate.yml -- unconditional
+    "pr-title / check-title",  # guards.yml (OMN-16260) -- no branches: filter
+    "Stale TODO Gate",  # guards.yml (OMN-16260) -- unconditional
     # validate-validator-requirements.yml -- unconditional
     "Enforce validator-requirements.yaml (OMN-13299)",
     "call / validate-docs",  # docs-validate.yml -- unconditional
@@ -264,23 +321,31 @@ EXEMPT_CONTEXTS: dict[str, str] = {
     ),
     "Self-companion guard (OMN-15334)": (
         "Duplicate producer: the identical job name is emitted by BOTH "
-        "call-occ-autobind.yml and call-occ-companion-effect.yml on the same "
-        "PR (confirmed live on OCC#6231 -- two same-named check-runs, both "
-        "success). Same ANY-vs-ALL branch-protection ambiguity class as "
-        "OMN-15112's occ-preflight finding; asserting one name would not "
-        "distinguish which producer is being observed. Excluded pending a "
-        "producer-side rename."
+        "self-companion-guard-autobind and self-companion-guard-companion-"
+        "effect (both now jobs within guards.yml, OMN-16260 -- previously "
+        "call-occ-autobind.yml and call-occ-companion-effect.yml, two "
+        "separate files; the job-id rename that resolved their guards.yml "
+        "collision left the check-run NAME, which is driven by an explicit "
+        "`name:` field on each job, unchanged) on the same PR (confirmed "
+        "live on OCC#6231 -- two same-named check-runs, both success). Same "
+        "ANY-vs-ALL branch-protection ambiguity class as OMN-15112's "
+        "occ-preflight finding; asserting one name would not distinguish "
+        "which producer is being observed. Excluded pending a producer-side "
+        "rename."
     ),
     "occ-autobind / Publish occ-autobind command": (
-        "call-occ-autobind.yml:66-67 self-declares 'ADDITIVE / REJECTS "
-        "NOTHING: this workflow is NOT a required status check. It publishes "
-        "a command; it never fails a PR's merge.' Structurally cannot "
-        "validate anything -- it is a command publisher, not a gate."
+        "guards.yml's self-companion-guard-autobind/occ-autobind pair "
+        "(OMN-16260; formerly call-occ-autobind.yml) self-declares "
+        "'ADDITIVE / REJECTS NOTHING: this workflow is NOT a required "
+        "status check. It publishes a command; it never fails a PR's "
+        "merge.' Structurally cannot validate anything -- it is a command "
+        "publisher, not a gate."
     ),
     "occ-companion-effect / Publish occ-companion-effect command": (
-        "call-occ-companion-effect.yml:60-61 carries the identical "
-        "'ADDITIVE / REJECTS NOTHING' self-declaration as occ-autobind "
-        "above. Same reasoning."
+        "guards.yml's self-companion-guard-companion-effect/occ-companion-"
+        "effect pair (OMN-16260; formerly call-occ-companion-effect.yml) "
+        "carries the identical 'ADDITIVE / REJECTS NOTHING' self-"
+        "declaration as occ-autobind above. Same reasoning."
     ),
     "Enable Auto-Merge": (
         "auto-merge.yml's job arms auto-merge on an already-eligible PR; it "
