@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16413"
+title: "validate-docs reusable workflow (ubuntu-latest, PR events) cannot reach internal PyPI mirror on
+  lockfile cache-miss"
+summary: >-
+  omnibase_core/.github/workflows/validate-docs.yml routed every pull_request event to ubuntu-latest,
+  which cannot reach the internal-only PyPI mirror omninode-pc.tail75df5e.ts.net:3141. On a uv.lock cache
+  miss (e.g. onex_change_control#6850/#6823, both dependency-bump PRs) every package fetch failed with
+  a DNS error, and the REQUIRED CI Summary check fail-closed on it even with every other gate green. Fixes
+  the runner selector to the existing OMN-15699 fork-aware idiom already used by deploy-gate-reusable.yml
+  / main-target-guard.yml: only an actual fork PR (head.repo != base repo) routes to ubuntu-latest; every
+  same-repo pull_request (including bot-authored dependency-bump branches, which are always same-repo)
+  routes to the tailnet-connected self-hosted omnibase-ci fleet. Does not widen the trust boundary --
+  untrusted fork code still never reaches the self-hosted fleet.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1579"
+    description: >-
+      omnibase_core PR #1579 changes only .github/workflows/validate-docs.yml, replacing the `github.event_name
+      != 'pull_request'` runner condition with the fork-aware `github.event.pull_request.head.repo.full_name
+      != github.repository` condition (the OMNI_RUNNER_SELECTOR_V1 idiom). Content-bound probe: reads
+      the omnibase_core blob at the PR head through the GitHub API, so it executes against a surface this
+      OCC PR does not author, and it is falsifiable -- verified GREEN at head 62158685dd75497b0458fd2bdf54bf5aee14a6d8
+      (contains `head.repo.full_name != github.repository`) and RED at merge-base a06ddd049d76af569f37170dcf69054073be40db
+      (dev tip before the fix, still `github.event_name != 'pull_request'` with no fork check at all).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_core/contents/.github/workflows/validate-docs.yml?ref=62158685dd75497b0458fd2bdf54bf5aee14a6d8'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'head.repo.full_name != github.repository'
+  - id: "occ-self-bind-pr-6913"
+    description: >-
+      Binds OMN-16413 to onex_change_control PR #6913 (self-bind), which repoints this repo's docs-validate.yml
+      caller `uses:` ref from omnibase_core@main to the exact dev merge SHA (d61fdc938a22eec34e6e251746d2ac4cb3e063d5)
+      that carries the OMN-16413 runner-selector fix, since main is release-synced and does not carry
+      it yet.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6913 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-6913-superseded"
+    description: >-
+      Repairs a verifier defect in occ-self-bind-pr-6913: that entry's check_value was a bare `gh pr view
+      6913 ... --json number,state` probe recorded PASS while PR #6913 was still OPEN (a PR-existence
+      probe, INADMISSIBLE per OMN-15309/OMN-15247/OMN-16410 -- it proves the PR exists, not that the repoint
+      it claims to make is actually live). APPEND-ONLY: the original entry is left verbatim above; this
+      is a net-new superseding receipt, not an edit. Content-bound replacement: reads this repo's OWN
+      docs-validate.yml caller at the current dev tip (a surface outside this OCC PR's own diff -- this
+      PR touches only contracts/OMN-16413.yaml + drift/dod_receipts/OMN-16413/) and asserts the `uses:`
+      line pins the exact omnibase_core merge SHA d61fdc938a22eec34e6e251746d2ac4cb3e063d5 that #6913
+      repointed it to. Falsifiable: confirmed RED at f8d8cb05f5ce6615fc3267f528a8a26848f1ba9c (the dev
+      tip immediately before #6913 merged, still pinned to `@main`) and GREEN at 1e6896284a11f1e87d4713b13f7ea1e83c5db414
+      (dev tip at authoring time, post-#6913-merge) via direct execution before this receipt was written.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-6913"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/onex_change_control/contents/.github/workflows/docs-validate.yml?ref=1e6896284a11f1e87d4713b13f7ea1e83c5db414'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -F 'validate-docs.yml@d61fdc938a22eec34e6e251746d2ac4cb3e063d5'
+  - id: "occ-self-bind-pr-6926"
+    description: "Binds OMN-16413 to onex_change_control PR #6926 (self-bind for this append-only supersede
+      repair)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6926 --repo OmniNode-ai/onex_change_control --json number,state"
