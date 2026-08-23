@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16427"
+title: "omninode_infra ci.yml Contract Compliance Check (ubuntu-latest) cannot reach internal PyPI mirror"
+summary: >-
+  omninode_infra/.github/workflows/ci.yml's contract-compliance job (Contract Compliance Check, a STRICT_GATE_JOBS
+  member that CI Summary fails-closed on) was hardcoded runs-on: ubuntu-latest unconditionally. Its uv
+  run executes against a fresh clone of onex_change_control, whose dependency set resolves from the internal-only
+  .201 Tailscale PyPI mirror (omninode-pc.tail75df5e.ts.net:3141), which ubuntu-latest cannot reach --
+  confirmed on omninode_infra#967/#968 (13 consecutive reruns over ~45 minutes, each a fresh DNS error
+  on a different newly-resolved package). Same defect class as OMN-16413 (omnibase_core#1579, merged d61fdc938a)
+  and OMN-16428 (omnimarket#2130, same pattern). Fixes the runner selector to the existing OMN-15699 fork-aware
+  OMNI_RUNNER_SELECTOR_V1 idiom already used by this repo's own deploy-gate.yml / main-target-guard.yml:
+  only an actual fork PR (head.repo != base repo) routes to ubuntu-latest; every same-repo pull_request,
+  push, and merge_group routes to the tailnet-connected self-hosted omnibase-ci fleet. Does not widen
+  the trust boundary -- untrusted fork code still never reaches the self-hosted fleet. Unblocks omninode_infra#967
+  (OMN-10878) and #968 (OMN-16097), both code-complete and auto-merge-armed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-969"
+    description: >-
+      omninode_infra PR #969 changes only .github/workflows/ci.yml's contract-compliance job, replacing
+      the hardcoded `runs-on: ubuntu-latest` with the fork-aware `github.event.pull_request.head.repo.full_name
+      != github.repository` condition (the OMNI_RUNNER_SELECTOR_V1 idiom), identical in shape to deploy-gate.yml
+      / main-target-guard.yml in the same repo. Content-bound probe: reads the omninode_infra blob at
+      the PR head through the GitHub API, so it executes against a surface this OCC PR does not author,
+      and it is falsifiable -- verified GREEN at head 4b879b22d5e5c8048296072d259eb976d073a131 (contains
+      `head.repo.full_name != github.repository`, exit 0) and RED at merge-base 3ee932a75b2d220d611e5b37a7a962f4dffedc3d
+      (dev tip before the fix -- zero occurrences of that string anywhere in the file, still bare `runs-on:
+      ubuntu-latest` in the contract-compliance job block).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/ci.yml?ref=4b879b22d5e5c8048296072d259eb976d073a131'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'head.repo.full_name != github.repository'
