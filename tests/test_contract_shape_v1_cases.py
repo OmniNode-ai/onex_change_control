@@ -318,8 +318,8 @@ def test_evidence_unfalsifiable_overclaim(binding: str) -> None:
                 {
                     "check_type": "command",
                     "check_value": (
-                        "grep -q 'needs.contract-shape-v1.result' "
-                        ".github/workflows/ci.yml"
+                        "grep -q '\"Contract Shape v1 (OMN-15669)\"' "
+                        "scripts/ci/ci_summary_gate.py"
                     ),
                 }
             ],

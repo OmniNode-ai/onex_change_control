@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16429"
+title: "Maintainer-triggered evidence-import workflow for non-writer contributors"
+summary: >
+  Daniyal (integration tester, .201) has no push access to onex_change_control, so evidence has been hand-carried
+  onto org branches instead -- reported as having delayed 3 tickets. Adds a workflow_dispatch-only import
+  path (.github/workflows/evidence-import.yml): a maintainer fires it with a source repo/ref, the workflow
+  cherry-picks those commits onto a new evidence/<ticket_slug> branch off the base branch (default dev),
+  and opens a normal PR through the existing CI gates. It never merges anything itself, and workflow_dispatch
+  is already restricted to identities with write access to this repo, so no standing write access is granted
+  to anyone. The guardrail script (scripts/validation/check_evidence_import_allowed.py) fails closed on
+  two privilege-escalation shapes: any touched .github/workflows/** path, and any mutation/deletion of
+  an already-merged contracts/ or drift/dod_receipts/ file (append-only-gate parity). A scoped standing
+  write-grant for Daniyal remains a separate, operator-gated access decision -- not decided here.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #6959 CI checks green, including the new guardrail's own test suite."
+    command: "gh pr checks 6959 --repo OmniNode-ai/onex_change_control"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-evidence-import-guardrail-tests"
+    description: >-
+      Falsifiable proof of both fail-closed refusal shapes plus the allow-path: the guardrail unit-tests
+      a workflow-file edit (added or modified) is always refused, a mutation/deletion of a pre-existing
+      contracts/ or drift/dod_receipts/ file is always refused across every git rename/copy/modify/delete
+      status letter, and a net-new file under any prefix (including the guarded ones) is allowed. 25 tests
+      total, exercising the pure evaluate_import() function directly and the CLI wrapper against a real
+      git repo (exit 0 clean import, exit 1 workflow-file import, exit 1 receipt-mutation import, exit
+      2 empty diff).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_check_evidence_import_allowed.py -q"
+  - id: "occ-self-bind-pr-6959"
+    description: "Binds OMN-16429 to OCC self-bind PR #6959 (this change lands directly in onex_change_control
+      -- I3 self-bind pattern)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6959 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-6959"
+    description: "PR #6959 on OmniNode-ai/onex_change_control -- Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/contents/scripts/validation/check_evidence_import_allowed.py?ref=ff436673f19cd881a8b2bc8fe50b150eedb7ff16 --jq '.content' | base64 -d | grep -c 'class ChangedFile'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/contents/scripts/validation/check_evidence_import_allowed.py?ref=ff436673f19cd881a8b2bc8fe50b150eedb7ff16 --jq '.content' | base64 -d | grep -c 'class ChangedFile'
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-6962"
+    description: "Binds OMN-16429 to OCC companion PR #6962 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6962 --repo OmniNode-ai/onex_change_control --json number,state"
