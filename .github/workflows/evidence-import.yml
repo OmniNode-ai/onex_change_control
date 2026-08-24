@@ -1,0 +1,151 @@
+name: Evidence Import (maintainer-triggered)
+
+# OMN-16429: safe, non-grant path for pulling evidence commits into
+# onex_change_control on behalf of a contributor with no push access to this
+# repo (e.g. Daniyal, integration tester on .201 — evidence was being
+# hand-carried onto org branches, delaying tickets). This workflow grants no
+# standing write access to anyone: workflow_dispatch is already restricted by
+# GitHub to identities with write access to onex_change_control, so every run
+# is a one-shot, maintainer-fired, fully audited (Actions run log) import.
+# The imported branch lands as a normal PR — this workflow never merges
+# anything itself, so every existing required check still gates the content.
+#
+# A scoped standing write-grant for Daniyal is a separate, operator-gated
+# access decision (queued, not this workflow's call — see OMN-16429).
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "owner/repo carrying the evidence commits (e.g. OmniNode-ai/omniclaude, or this repo's own name if the ref already lives here)"
+        required: true
+        type: string
+      source_ref:
+        description: "branch, tag, or commit SHA in source_repo to import"
+        required: true
+        type: string
+      ticket_slug:
+        description: "OMN-XXXX + short slug, e.g. OMN-16429-daniyal-msk-acl-proof — becomes branch evidence/<ticket_slug>"
+        required: true
+        type: string
+      base_branch:
+        description: "branch in onex_change_control to import onto / PR against"
+        required: false
+        default: "dev"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: evidence-import-${{ github.event.inputs.ticket_slug }}
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Import evidence branch
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 20
+    env:
+      SOURCE_REPO: ${{ github.event.inputs.source_repo }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref }}
+      TICKET_SLUG: ${{ github.event.inputs.ticket_slug }}
+      BASE_BRANCH: ${{ github.event.inputs.base_branch || 'dev' }}
+    steps:
+      - name: Checkout onex_change_control
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.base_branch || 'dev' }}
+
+      # OMN-16373 pattern (CROSS_REPO_PAT retirement) — mint a short-lived
+      # onexbot-occ-writer App token for the cross-repo read of source_repo
+      # and for the push below, so the import is attributed to the bot
+      # identity rather than whichever maintainer happened to click the
+      # button.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
+        with:
+          enable-cache: true
+
+      - name: Sync deps (guardrail script only needs stdlib, but keep parity with repo norms)
+        run: uv sync --frozen --group dev
+
+      - name: Fetch source ref
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "https://x-access-token:${GH_TOKEN}@github.com/${SOURCE_REPO}.git" \
+            "${SOURCE_REF}:refs/remotes/import-source/fetched"
+
+      - name: Create import branch from base
+        run: |
+          set -euo pipefail
+          git fetch origin "${BASE_BRANCH}" --no-tags
+          git checkout -B "evidence/${TICKET_SLUG}" "origin/${BASE_BRANCH}"
+
+      - name: Cherry-pick evidence commits onto the import branch
+        run: |
+          set -euo pipefail
+          mapfile -t commits < <(git rev-list --reverse "origin/${BASE_BRANCH}..import-source/fetched")
+          if [ "${#commits[@]}" -eq 0 ]; then
+            echo "::error::source_ref has no commits ahead of ${BASE_BRANCH} — nothing to import"
+            exit 2
+          fi
+          echo "Cherry-picking ${#commits[@]} commit(s) from ${SOURCE_REPO}@${SOURCE_REF}"
+          # Fails loudly (no --strategy auto-resolve) on any conflict rather
+          # than silently reinterpreting the contributor's diff.
+          git cherry-pick "${commits[@]}"
+
+      - name: Guardrail — refuse workflow-file or pre-existing-receipt changes
+        run: |
+          set -euo pipefail
+          uv run python scripts/validation/check_evidence_import_allowed.py \
+            --base-ref "origin/${BASE_BRANCH}" \
+            --head-ref "evidence/${TICKET_SLUG}"
+
+      - name: Push import branch
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+            "evidence/${TICKET_SLUG}:refs/heads/evidence/${TICKET_SLUG}" --force-with-lease
+
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          gh pr create \
+            --repo "${{ github.repository }}" \
+            --base "${BASE_BRANCH}" \
+            --head "evidence/${TICKET_SLUG}" \
+            --title "evidence: import ${TICKET_SLUG} (workflow_dispatch)" \
+            --body "$(cat <<EOF
+          Imported via the evidence-import workflow_dispatch path (OMN-16429),
+          triggered by @${{ github.actor }}.
+
+          Source: ${SOURCE_REPO}@${SOURCE_REF}
+
+          This is a mechanical import of a named ref — it grants no standing
+          write access and does not merge itself. It goes through the normal
+          PR + CI path like any other change; every existing required check
+          still applies. The evidence-import guardrail
+          (scripts/validation/check_evidence_import_allowed.py) already
+          confirmed this import touches no .github/workflows/ path and
+          mutates no pre-existing contracts/ or drift/dod_receipts/ file.
+
+          Evidence-Ticket: ${TICKET_SLUG}
+          EOF
+          )"
