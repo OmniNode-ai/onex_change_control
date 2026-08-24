@@ -1,0 +1,105 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15956"
+title: "OCC evidence for OMN-15956 -- Monday cohort readiness (manual onboarding path)"
+summary: >-
+  Monday-cohort readiness gate for ~7-8 external users onboarding via the manual path (docs/runbooks/2026-08-12-manual-tenant-onboarding.md,
+  omni_home). Zero product PR -- this ticket's Done-proof is a pure read-only investigation/audit plus
+  a recorded go/no-go ruling, so it declares proof_class receipt-bound (OMN-15817 shape 5, omnimarket
+  services/receipt_bound_evidence.py) rather than the merged-PR class. Three ACs, four evidence entries
+  below: (1) the manual runbook exercised end-to-end live on a real throwaway tenant (2026-08-17); (2)
+  the Keycloak/tenant-slot/DB capacity check for 7-8 concurrent new tenants; (3) the recorded go/no-go
+  ruling (2026-08-17 GO); (4) the 2026-08-24 live-readback refresh re-recording the ruling as conditional
+  GO pending OMN-16455 (credential-mint 503 regression, separately owned).
+proof_class: "receipt-bound"
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "Runbook exercised end-to-end on a live throwaway tenant, morning of 2026-08-17."
+    command: "See dod-runbook-lifecycle-run below."
+  - kind: "manual"
+    description: "Keycloak/tenant-slot/DB capacity check for 7-8 concurrent new tenants."
+    command: "See dod-capacity-check-comment below."
+  - kind: "manual"
+    description: "Go/no-go ruling recorded for the Monday cohort."
+    command: "See dod-go-no-go-ruling below."
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-runbook-lifecycle-run"
+    description: >-
+      AC1 (runbook exercised end-to-end). Live spot-check of the delegation-testing-instructions doc's
+      Path A this morning (2026-08-17, before cohort arrival), authorized as dev-class pre-authorized:
+      minted throwaway tenant delegation-spotcheck-1786977419 (7e7e6e72-1a02-4a66-a98a-dae317e72e00) via
+      POST /v1/tenants/bootstrap plus internal auth_api_keys.create_api_key(), both run inside the live
+      onex-api pod (onex-api-5f84bb69-6rj5f) over SSM exec so secrets never left the pod. Connect, submit,
+      poll, receipt, and revoke all PASS -- 200/202 throughout, submit-to-completed ~9.4s, api-key self-revoke
+      200. Narrated durably at docs/tracking/ROLLING_WORK_LEDGER.md (omni_home, [delegation-instructions]
+      ADDENDUM row, 2026-08-17T14:38:40Z). STATED HONESTLY: that ledger row is local/uncommitted in the
+      shared omni_home working tree as of this contract's authoring, so it cannot be cited as a pinned
+      git ref -- the check below instead binds to the doc the row exercised, which IS durably pushed:
+      docs/tracking/2026-08-17-delegation-testing-instructions.md at commit b6e077b8618fd2c13b795a315fbfa1b0454b45de
+      on OmniNode-ai/omni_home branch jonah/docs-omni-home-refresh-20260630. This proves the exercised
+      runbook is real and durable; it does not itself re-prove the live HTTP round trip, which is not
+      independently hosted-runnable (no route from a GitHub runner to the onex-dev cluster).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omni_home/contents/docs/tracking/2026-08-17-delegation-testing-instructions.md?ref=b6e077b8618fd2c13b795a315fbfa1b0454b45de' --jq '.sha')" = "44c34d0f48eeb81f2eda4f152d25139f976ca748"
+  - id: "dod-capacity-check-comment"
+    description: >-
+      AC2 (capacity check). Read-only live readback via `aws ssm send-command` into onex-dev k3s covering
+      Keycloak client headroom (22 existing clients, no quota mechanism), tenant-slot/plan limits (no
+      max-tenant cap or per-IP rate limit on POST /v1/tenants/bootstrap; the metering middleware fails
+      open on internal error), the OMN-15937 Redpanda-503 class re-check (CLOSED -- ACL provisioning defers
+      gracefully per the 2026-08-12 broker-removal ruling; zero Redpanda pod, Service, or Endpoints anywhere
+      in the cluster), MSK cluster state (ACTIVE), and Postgres safety margins (14/402 connections, 9.8MB/30GB).
+      Posted as Linear comment e3679aee-1a4d-4bf6-bbcc-31245099f472 (2026-08-17T16:51:18.190Z) on this
+      ticket. The check queries the comment live by id via the Linear GraphQL API and asserts the id/createdAt/issue
+      binding as one equality -- genuinely falsifiable: a wrong id or a stale/edited createdAt fails closed
+      (verified during authoring against a deliberately wrong expected string, which failed as expected;
+      positive case re-verified here).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(curl -sS -X POST https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' -d '{"query":"query { comment(id: \"e3679aee-1a4d-4bf6-bbcc-31245099f472\") { id createdAt issue { identifier } } }"}' | jq -r '"\(.data.comment.id)|\(.data.comment.createdAt)|\(.data.comment.issue.identifier)"')" = "e3679aee-1a4d-4bf6-bbcc-31245099f472|2026-08-17T16:51:18.190Z|OMN-15956"
+  - id: "dod-go-no-go-ruling"
+    description: >-
+      AC3 (go/no-go recorded). Controller ruling posted as Linear comment 4ead9c21-aff2-471f-a859-47f03fe4b15d
+      (2026-08-17T16:52:11.776Z) on this ticket: "GO for the 7-8-user cohort via the manual onboarding
+      path," reconciling all three ACs against the runbook-lifecycle and capacity-check evidence above,
+      with two named non-blocking caveats (TENANT_OFFBOARD_ADMIN_SECRET authored in omninode_infra#931
+      / OMN-16124 but unmerged/undeployed; cross-tenant Kafka ACL/quota enforcement inactive platform-wide).
+      Same falsifiable id/createdAt/issue-binding shape as dod-capacity-check-comment above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(curl -sS -X POST https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' -d '{"query":"query { comment(id: \"4ead9c21-aff2-471f-a859-47f03fe4b15d\") { id createdAt issue { identifier } } }"}' | jq -r '"\(.data.comment.id)|\(.data.comment.createdAt)|\(.data.comment.issue.identifier)"')" = "4ead9c21-aff2-471f-a859-47f03fe4b15d|2026-08-17T16:52:11.776Z|OMN-15956"
+  - id: "dod-go-no-go-refresh-0824"
+    description: >-
+      AC3 refresh (2026-08-24). The 2026-08-17 GO predated the cohort date slip (comment 190b8a56, 2026-08-19)
+      and the OMN-16455 credential-mint regression (every POST /v1/tenants/bootstrap 503s at P0B topic
+      verification as of 2026-08-24). A same-day live re-readback (read-only aws ssm send-command into
+      onex-dev i-06169517a92b45f86 + public endpoint probes, no mint attempted, no mutation) re-proved
+      the capacity half GO (Keycloak realm enabled/38 clients/no quota, 18 active tenant rows, 14/402
+      DB connections, 10079 kB DB, /health 200, bootstrap admin gate 401 on wrong secret, TENANT_OFFBOARD_ADMIN_SECRET
+      now wired) and re-recorded the go/no-go as CONDITIONAL GO: GO the moment OMN-16455 is Done (its
+      DoD is exactly the mint-path recovery readback), NO-GO on executing the cohort before that. Posted
+      as Linear comment 8427d80e-f6d6-408e-ae71-530506b818e9 (2026-08-24T15:14:41.755Z) on this ticket.
+      Same falsifiable id/createdAt/issue-binding shape as the entries above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(curl -sS -X POST https://api.linear.app/graphql -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' -d '{"query":"query { comment(id: \"8427d80e-f6d6-408e-ae71-530506b818e9\") { id createdAt issue { identifier } } }"}' | jq -r '"\(.data.comment.id)|\(.data.comment.createdAt)|\(.data.comment.issue.identifier)"')" = "8427d80e-f6d6-408e-ae71-530506b818e9|2026-08-24T15:14:41.755Z|OMN-15956"
