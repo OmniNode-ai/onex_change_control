@@ -73,14 +73,15 @@ All code in this repo follows `omnibase_core` naming conventions:
 
 ### 5. SPDX headers
 
-All source files in `src/`, `tests/`, `scripts/`, `examples/` require MIT SPDX headers.
+All source files in `src/`, `tests/`, `scripts/` require MIT SPDX headers (there is no
+`examples/` directory in this repo — verified live 2026-08-25).
 
 ```bash
 # Stamp missing headers
-uv run onex spdx fix src tests scripts examples
+uv run onex spdx fix src tests scripts
 
 # Check without writing
-uv run onex spdx fix --check src tests scripts examples
+uv run onex spdx fix --check src tests scripts
 ```
 
 ---
