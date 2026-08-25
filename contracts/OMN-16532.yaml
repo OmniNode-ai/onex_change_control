@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16532"
+title: "OCC companion for OmniNode-ai/omnibase_infra#2893 (OMN-16532)"
+summary: >
+  Rehomes the generic per-ledger mutex/append/dedup/exit-75-retry contract from omni_home/scripts/ledger_lock.py
+  into omnibase_infra/scripts/ledger_lock.py as shared tooling, so any team can point it at their own
+  ledger file for claim-before-mutation serialization across multiple agents/processes. Sanitized for
+  a public repo: no /Users/ paths, no internal hostnames, no reference to omni_home's private ledger data.
+  Deliberately does NOT port omni_home's claim-row cost-sentence/quantitative-claim/defer-language enforcement
+  (OMN-15649/15897/15901) -- that logic is bound to that team's own internal ledger row conventions and
+  ticket doctrine, not generic shared tooling. Adds tests/unit/scripts/test_ledger_lock.py (32 cases,
+  direct-module and end-to-end subprocess-driven against the real CLI) and docs/tooling/ledger-lock.md
+  (what it is, the claim/progress/terminal row convention, the exit-75 retry contract, and an employee-facing
+  note that any team can point it at their own ledger file). omni_home's own copy is left untouched (dozens
+  of live lane prompts cite its absolute path mid-flight); the doc notes it as the origin.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2893 CI checks green"
+    command: "gh pr checks 2893 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_infra-pr-2893-exit75"
+    description: "scripts/ledger_lock.py implements the exit-75 lock-timeout retry contract."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/ledger_lock.py?ref=b61770f86f50e62bf431f651c5368c45bd9d4926' --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'return 75'
+  - id: "dod-omnibase_infra-pr-2893-dedup-test"
+    description: "tests/unit/scripts/test_ledger_lock.py covers the dedup-window idempotent-retry contract."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/scripts/test_ledger_lock.py?ref=b61770f86f50e62bf431f651c5368c45bd9d4926' --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'def test_cli_append_retry_is_deduped'
+  - id: "dod-omnibase_infra-pr-2893-doc"
+    description: "docs/tooling/ledger-lock.md documents the exit-75 retry contract for employees pointing
+      the tool at their own ledger."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docs/tooling/ledger-lock.md?ref=b61770f86f50e62bf431f651c5368c45bd9d4926' --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'retry-on-75 contract'
+  - id: "occ-self-bind-pr-7100"
+    description: >-
+      OCC self-binding receipt for PR #7100, the in-repo evidence PR carrying this contract. Binds OMN-16532
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7100 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
