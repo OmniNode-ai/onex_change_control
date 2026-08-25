@@ -37,7 +37,7 @@ New to this repo? Read in this order:
 | Workflow | Command | Doc |
 |----------|---------|-----|
 | Run general drift check | `uv run check-drift` | [Design](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) |
-| Check DB boundary violations | `uv run check-db-boundary` | [DB Boundary Policy](policy/db-boundary-policy.md) |
+| Check DB boundary violations | `uv run check-db-boundary` | [DB Boundary Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/db-boundary-policy.md) |
 | Check hardcoded Kafka topics | `uv run check-hardcoded-topics` | — |
 | Scan contract dependencies | `uv run scan-contract-dependencies` | — |
 | Check for bare feature flags | `uv run check-bare-feature-flags` | — |
@@ -75,9 +75,9 @@ When automation creates Linear tickets from drift findings:
 |-----|---------|
 | [design/DESIGN_DRIFT_CONTROL_SYSTEM.md](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) | Full enforcement model, invariants, staged rollout phases |
 | [design/DECISION_LOG.md](design/DECISION_LOG.md) | Architectural decisions D-001 through D-008+ |
-| [policy/db-boundary-policy.md](policy/db-boundary-policy.md) | Database boundary enforcement policy |
-| [policy/typed-metadata-policy.md](policy/typed-metadata-policy.md) | Typed metadata enforcement policy |
-| [governance/2026-04-27-required-gates-rollout.md](governance/2026-04-27-required-gates-rollout.md) | Required gates rollout plan (April 2026) |
+| [DB Boundary Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/db-boundary-policy.md) | Database boundary enforcement policy (migrated to the knowledge base) |
+| [Typed-Metadata Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/typed-metadata-policy.md) | Typed metadata enforcement policy (migrated to the knowledge base) |
+| [Required-Gates Rollout — April 2026 Snapshot](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/required-gates-rollout-2026-04-27.md) | Required gates rollout plan, superseded historical snapshot (migrated to the knowledge base) |
 
 ---
 
