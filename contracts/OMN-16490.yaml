@@ -1,0 +1,32 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16490"
+title: "Per-emission hookEventName guard (replace whole-file grep)"
+summary: >
+  scripts/check_hook_event_names.sh tested hookEventName with a whole-file `grep -q`, so any file carrying
+  one conforming emitter masked every non-conforming emission beside it. That is how session-start.sh:145
+  shipped a hookEventName-less SessionStart envelope while the same file's three full-mode emissions (1533/1542/1546)
+  kept the guard green. OMN-16416 fixed :145 and explicitly deferred the guard; this closes it. The check
+  is now per-emission with a proximity window and reports file:line.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omniclaude PR #2031 CI checks green"
+    command: "gh pr checks 2031 --repo OmniNode-ai/omniclaude"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-16490-per-emission-guard"
+    description: >-
+      Content probe at the PR head: the whole-file grep form is gone and the per-emission proximity window
+      is present, so the guard can no longer be satisfied by an unrelated conforming emitter elsewhere
+      in the same file.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          SHA=f813e322c944a815ad3990e79f3679c8782d8c8a; D=$(mktemp -d); gh api "repos/OmniNode-ai/omniclaude/contents/scripts/check_hook_event_names.sh?ref=${SHA}" --jq .content | base64 -d > "${D}/guard.sh" || exit 1; grep -qE 'if ! grep -q .hookEventName. "\$file"' "${D}/guard.sh" && { echo "FAIL: whole-file grep still present"; exit 1; }; grep -q 'PROXIMITY_LINES' "${D}/guard.sh" || { echo "FAIL: per-emission window absent"; exit 1; }; echo "OMN-16490-GUARD-PASS: whole-file grep removed and per-emission proximity window present at f813e322c944a815ad3990e79f3679c8782d8c8a"
