@@ -10,7 +10,7 @@ Governance, drift detection, and enforcement library for the ONEX (OmniNode eXec
 
 ## What This Repo Is
 
-<!-- Verified against code on 2026-06-21 refresh (OMN-13459): src/ subdir layout, pyproject [project.scripts] (22 CLI entry points) and [project.entry-points."onex.nodes"] (4 drift nodes), templates/, kafka/topics.py, version 0.5.1. -->
+<!-- Verified against code 2026-08-25 (OMN-16546): src/ subdir layout, pyproject [project.scripts] (27 CLI entry points) and [project.entry-points."onex.nodes"] (4 drift nodes), templates/, kafka/topics.py, version 0.5.1. -->
 
 `onex_change_control` (package: `onex-change-control`) is the **canonical governance and enforcement hub** for the ONEX platform. It prevents cross-repo drift by:
 
@@ -159,7 +159,7 @@ onex_change_control/
 │   ├── overseer/         # Orchestration models: 14 models + 14 enums for worker/session/dispatch
 │   ├── promotion/        # Promotion tooling: manifest generation, workflow evidence, dev→main cutover
 │   ├── scanners/         # Doc-freshness, handler compliance, wire-schema compliance scanners
-│   ├── scripts/          # CLI entry point implementations (20+ registered scripts)
+│   ├── scripts/          # CLI entry point implementations (27 registered scripts)
 │   ├── testing/          # Wire schema test generator
 │   ├── validation/       # Shared validation helpers (patterns, SEMVER_PATTERN)
 │   ├── validators/       # Architectural validators (handler contract compliance, cross-schema coherence)
@@ -211,9 +211,9 @@ uv run check-db-boundary
 # Check hardcoded topics
 uv run check-hardcoded-topics
 
-# Stamp or check SPDX headers
-uv run onex spdx fix src tests scripts examples
-uv run onex spdx fix --check src tests scripts examples
+# Stamp or check SPDX headers (no examples/ dir in this repo)
+uv run onex spdx fix src tests scripts
+uv run onex spdx fix --check src tests scripts
 ```
 
 ---

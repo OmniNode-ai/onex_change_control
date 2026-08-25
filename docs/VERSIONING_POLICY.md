@@ -12,10 +12,14 @@ The package version (defined in `pyproject.toml`) and schema version (used in YA
 
 ### Current Versions
 
-- **Package version**: `0.1.0` (pre-release)
+- **Package version**: `0.5.1` (`pyproject.toml`, verified 2026-08-25)
 - **Schema version**: `1.0.0` (current schema format)
 
-**Note**: The package is currently in pre-release (`0.1.0`), but schemas use `1.0.0` to indicate the stable schema format. When the package reaches `1.0.0`, the versions will align.
+**Note**: In practice the 1:1 mapping above has not held — the package has moved from
+`0.1.0` to `0.5.1` across several minor releases while the schema version has stayed at
+`1.0.0` the whole time (no schema-breaking change has shipped yet). Treat the 1:1 mapping
+as the *rule for when a schema-breaking change ships*, not as a claim that the two numbers
+move in lockstep on every release.
 
 ## Semantic Versioning (SemVer)
 
@@ -53,6 +57,7 @@ These changes are backward-compatible:
 | Package Version | Schema Version | Notes |
 |----------------|---------------|-------|
 | `0.1.0` | `1.0.0` | Pre-release package, stable schema |
+| `0.5.1` | `1.0.0` | Current live version (2026-08-25) — schema unchanged since `0.1.0` |
 | `1.0.0` | `1.0.0` | First stable release |
 | `1.1.0` | `1.1.0` | New optional fields added |
 | `1.1.1` | `1.1.1` | Bug fix in validation |
@@ -79,16 +84,32 @@ When a breaking change is required:
 
 ## Downstream Consumption
 
-Downstream repos should pin package versions using SemVer ranges:
+`onex-change-control` is not published to PyPI — downstream repos consume it as a `uv`
+git dependency, pinned to an immutable commit SHA rather than a SemVer range (verified
+live in `omnibase_core/pyproject.toml` and `omnibase_infra/pyproject.toml`, 2026-08-25):
 
 ```toml
-[tool.poetry.dependencies]
-onex-change-control = "^1.0.0"  # Allows 1.x.x, blocks 2.0.0+
+[project]
+dependencies = [
+    "onex-change-control>=0.1.0",
+]
+
+[tool.uv.sources]
+onex-change-control = { git = "https://github.com/OmniNode-ai/onex_change_control.git", rev = "<commit-sha>" }
 ```
 
-This ensures:
-- Automatic updates for minor/patch versions (bug fixes, new optional fields)
-- Protection from breaking changes (major version bumps require explicit upgrade)
+The `>=0.1.0` in `[project.dependencies]` is a floor for tooling that reads package
+metadata; the `rev` in `[tool.uv.sources]` is what actually resolves, and it is the
+`git rev` a maintainer chose, not something `uv` re-resolves against new tags. This
+means:
+- There is no automatic minor/patch pickup — a consumer stays on its pinned SHA until
+  someone bumps `rev` by hand.
+- A breaking (major-version-equivalent) schema change does not "block" anything
+  automatically the way a SemVer range would; it is caught only when/if the consumer
+  re-pins and re-runs its own test suite against the new commit.
+- The versioning policy above still governs *when a change counts as breaking*; it does
+  not currently govern *how consumers are protected from picking one up*, since there is
+  no registry-level range enforcement in this consumption model.
 
 ## References
 
