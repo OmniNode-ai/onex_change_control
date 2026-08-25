@@ -19,6 +19,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 
@@ -67,6 +68,11 @@ class TestUvIndexPin:
         indexes = data.get("tool", {}).get("uv", {}).get("index", [])
         for idx in indexes:
             url = idx.get("url", "")
+            host = urlparse(url).hostname
+            assert host == "pypi.org", (
+                f"[tool.uv.index] entries must use the public PyPI host, got "
+                f"{host!r}: {idx}"
+            )
             assert "tail" not in url, f"tailnet-shaped host in [tool.uv.index]: {idx}"
             assert ".ts.net" not in url, (
                 f"tailnet-shaped host in [tool.uv.index]: {idx}"
