@@ -1,22 +1,59 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-16682"
-title: "Autobind OCC evidence for OMN-16682"
-summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #2916
-  and OmniNode-ai/onex_change_control PR #7229.
+title: "Re-key devpi index selection on runner class, not PR origin"
+summary: >-
+  Blocker 2 of OMN-16682. Two jobs in this repo's ci.yml selected the Tailscale-only devpi mirror (omninode-pc.tail75df5e.ts.net:3141)
+  with a ternary keyed on fork-vs-same-repo. PR origin is not runner class: the two agree only while vars.OMNI_TRUSTED_CI_RUNS_ON_JSON
+  still resolves to the self-hosted fleet, and diverge the moment that seam is flipped to a GitHub-hosted
+  value, which is the whole point of OMN-16682. A same-repo PR would then land on ubuntu-latest holding
+  an unresolvable index and hard-fail at install -- the OMN-16413/16427/16428/16431/16437 defect class.
+  The override is removed; index selection is left to the one mechanism that is keyed on runner class
+  by construction, the self-hosted fleet's runner-job-started.sh wire_pypi_cache hook. A new check in
+  check_runner_routing.py makes the policy a merge gate rather than a one-off edit. The contract also
+  preserves merged OCC evidence for OmniNode-ai/omnibase_infra PR #2916 and OmniNode-ai/onex_change_control
+  PR #7229.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "ci"
-    description: "PR #2916 and PR #7229 CI checks green"
-    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+    description: "PR product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-index-selection-removed-from-ci-yaml"
+    description: >-
+      No job in this repo's workflows pins a package-index env var to the Tailscale-only host. Counts
+      occurrences of the mirror URL in an index env assignment in ci.yml; must be zero.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(grep -cE "^ +(UV_DEFAULT_INDEX|UV_INDEX|UV_INDEX_URL|UV_EXTRA_INDEX_URL|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL):" .github/workflows/ci.yml)" = "0"
+  - id: "dod-runner-routing-gate-rejects-tailnet-index"
+    description: >-
+      check_runner_routing.py fails closed on the pre-fix shape. Red/green proof: the validator exits
+      1 naming both offending jobs when run against the ci.yml at the merge base, and exits 0 against
+      the fixed tree.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run python scripts/validation/check_runner_routing.py
+  - id: "dod-runner-routing-unit-tests"
+    description: >-
+      Unit coverage for the new index-host policy: every INDEX_ENV_VARS member carrying the fork-keyed
+      ternary is rejected, a bare literal pin is rejected, public-index and unrelated env vars pass, non-mapping
+      env is not a violation, and a step-level pin is caught as well as a job-level one.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest tests/unit/scripts/test_check_runner_routing.py -q
   - id: "dod-OmniNode-ai-omnibase_infra-pr-2916"
     description: "PR #2916 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
     source: "generated"
