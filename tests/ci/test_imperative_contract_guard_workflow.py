@@ -65,7 +65,7 @@ def test_imperative_contract_guard_pins_uv_and_retries_sync() -> None:
 
     steps = workflow["jobs"]["imperative-contract-guard"]["steps"]
     setup_uv_step = next(
-        step for step in steps if step.get("uses") == "astral-sh/setup-uv@v7"
+        step for step in steps if step.get("uses") == "astral-sh/setup-uv@v10.0.1"
     )
     assert setup_uv_step["with"]["version"] == "${{ inputs['uv-version'] }}"
 

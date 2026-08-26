@@ -212,6 +212,7 @@ jobs:
       # resilience (same-repo reads still work without the App).
       - name: Mint onexbot-occ-writer app token
         id: app-token
+        if: github.actor != 'dependabot[bot]'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
@@ -685,15 +686,42 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      - name: Classify dependency workflow-only PR
+        id: dep_scope
+        env:
+          BASE_REF: ${{ github.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          workflow_only=false
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            base_ref="${BASE_REF#refs/heads/}"
+            git fetch origin "$base_ref" --no-tags
+            mapfile -t changed_files < <(git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD || true)
+            if [ "${#changed_files[@]}" -gt 0 ]; then
+              workflow_only=true
+              for path in "${changed_files[@]}"; do
+                case "$path" in
+                  .github/workflows/*) ;;
+                  *) workflow_only=false ;;
+                esac
+              done
+            fi
+          fi
+          echo "workflow_only=$workflow_only" >> "$GITHUB_OUTPUT"
+      - name: Skip cross-repo migration conflict check for workflow-only dependency PR
+        if: steps.dep_scope.outputs.workflow_only == 'true'
+        run: echo "Workflow-only Dependabot PR; migration corpus is unchanged."
       # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
       - name: Mint onexbot-occ-writer app token
         id: app-token
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
           private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
           owner: OmniNode-ai
       - name: Clone cross-repo dependencies
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
@@ -730,8 +758,10 @@ jobs:
           clone_omni_repo omniclaude /tmp/omni_repos/omniclaude
           clone_omni_repo omnibase_core /tmp/omni_repos/omnibase_core
       - name: Copy suppressions file
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         run: cp migration_conflict_suppressions.yaml /tmp/omni_repos/
       - name: Check for migration conflicts
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         # Hard-fail on unsuppressed migration conflicts (OMN-6438).
         # Known intentional conflicts are listed in migration_conflict_suppressions.yaml.
         # --warn-columns: Column-reference violations are warnings until upstream repos fix them.
@@ -759,9 +789,35 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      - name: Classify dependency workflow-only PR
+        id: dep_scope
+        env:
+          BASE_REF: ${{ github.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          workflow_only=false
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            base_ref="${BASE_REF#refs/heads/}"
+            git fetch origin "$base_ref" --no-tags
+            mapfile -t changed_files < <(git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD || true)
+            if [ "${#changed_files[@]}" -gt 0 ]; then
+              workflow_only=true
+              for path in "${changed_files[@]}"; do
+                case "$path" in
+                  .github/workflows/*) ;;
+                  *) workflow_only=false ;;
+                esac
+              done
+            fi
+          fi
+          echo "workflow_only=$workflow_only" >> "$GITHUB_OUTPUT"
+      - name: Skip migration inventory for workflow-only dependency PR
+        if: steps.dep_scope.outputs.workflow_only == 'true'
+        run: echo "Workflow-only Dependabot PR; migration inventory inputs are unchanged."
       # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
       - name: Mint onexbot-occ-writer app token
         id: app-token
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
@@ -792,6 +848,7 @@ jobs:
       # fallback removed; `github.token` stays as the last-resort
       # fallback for App-token mint failures only.
       - name: Clone peer repos
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
@@ -829,6 +886,7 @@ jobs:
           ln -s "$GITHUB_WORKSPACE" "$repo_root/onex_change_control"
           echo "MIGRATION_INVENTORY_REPOS_ROOT=$repo_root" >> "$GITHUB_ENV"
       - name: Validate inventory
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         run: uv run check-migration-inventory --repos-root "$MIGRATION_INVENTORY_REPOS_ROOT"
 
   kafka-boundary-parity:
@@ -850,15 +908,42 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
+      - name: Classify dependency workflow-only PR
+        id: dep_scope
+        env:
+          BASE_REF: ${{ github.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          workflow_only=false
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            base_ref="${BASE_REF#refs/heads/}"
+            git fetch origin "$base_ref" --no-tags
+            mapfile -t changed_files < <(git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD || true)
+            if [ "${#changed_files[@]}" -gt 0 ]; then
+              workflow_only=true
+              for path in "${changed_files[@]}"; do
+                case "$path" in
+                  .github/workflows/*) ;;
+                  *) workflow_only=false ;;
+                esac
+              done
+            fi
+          fi
+          echo "workflow_only=$workflow_only" >> "$GITHUB_OUTPUT"
+      - name: Skip Kafka boundary parity for workflow-only dependency PR
+        if: steps.dep_scope.outputs.workflow_only == 'true'
+        run: echo "Workflow-only Dependabot PR; Kafka boundary inputs are unchanged."
       # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
       - name: Mint onexbot-occ-writer app token
         id: app-token
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
           private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
           owner: OmniNode-ai
       - name: Clone cross-repo dependencies
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
@@ -897,6 +982,7 @@ jobs:
           clone_omni_repo omnimarket /tmp/omni_repos/omnimarket
           ln -s "$GITHUB_WORKSPACE" /tmp/omni_repos/onex_change_control
       - name: Check Kafka boundary parity
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         run: uv run check-boundary-parity --repos-root /tmp/omni_repos
 
   cross-repo-null-contract:
@@ -927,15 +1013,42 @@ jobs:
           python-version: "3.12"
       - name: Install test dependencies
         run: uv sync --frozen --group dev
+      - name: Classify dependency workflow-only PR
+        id: dep_scope
+        env:
+          BASE_REF: ${{ github.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          workflow_only=false
+          if [[ "${{ github.event_name }}" == "pull_request" && "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            base_ref="${BASE_REF#refs/heads/}"
+            git fetch origin "$base_ref" --no-tags
+            mapfile -t changed_files < <(git diff --name-only --diff-filter=ACMRT "origin/${base_ref}"...HEAD || true)
+            if [ "${#changed_files[@]}" -gt 0 ]; then
+              workflow_only=true
+              for path in "${changed_files[@]}"; do
+                case "$path" in
+                  .github/workflows/*) ;;
+                  *) workflow_only=false ;;
+                esac
+              done
+            fi
+          fi
+          echo "workflow_only=$workflow_only" >> "$GITHUB_OUTPUT"
+      - name: Skip null-contract check for workflow-only dependency PR
+        if: steps.dep_scope.outputs.workflow_only == 'true'
+        run: echo "Workflow-only Dependabot PR; cross-repo schema inputs are unchanged."
       # OMN-16373: CROSS_REPO_PAT retirement — mint onexbot-occ-writer App token.
       - name: Mint onexbot-occ-writer app token
         id: app-token
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
           private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
           owner: OmniNode-ai
       - name: Clone omnidash for cross-repo schema check
+        if: steps.dep_scope.outputs.workflow_only != 'true'
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
@@ -1100,7 +1213,7 @@ jobs:
       # compliance check step below.
       - name: Mint onexbot-occ-writer app token
         id: app-token
-        if: steps.bootstrap_check.outputs.skip != 'true'
+        if: steps.bootstrap_check.outputs.skip != 'true' && github.actor != 'dependabot[bot]'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
@@ -2115,7 +2228,7 @@ jobs:
     # commit, reachable from dev permanently.
     uses: OmniNode-ai/omnimarket/.github/workflows/merge-hold-gate-reusable.yml@07a6b0811e1384f78c5d2a2e95a77a87df31f05e
     with:
-      vocabulary_ref: b9a2f0fb28412230ffac5d579116e4a9983521b4
+      vocabulary_ref: 07a6b0811e1384f78c5d2a2e95a77a87df31f05e
       context_name: merge-hold-gate / evaluate
 
   contract-shape-v1:
