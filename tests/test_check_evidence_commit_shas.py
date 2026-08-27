@@ -11,6 +11,7 @@ hook. These tests pin the fail-closed contract this gate must enforce.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -88,6 +89,29 @@ class TestMain:
 
 _GARBLED_SHA = "72b52d1d758597147bc0763e7918b67c42504ccd"
 _SQUASH_SHA = "0c5012bfa6b44e64e856977d740ab90070a93777"
+
+
+def _ensure_commit_available(repo_root: Path, sha: str) -> None:
+    """Fetch a known remote commit when CI's checkout is too shallow to hold it."""
+    if (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 0
+    ):
+        return
+
+    subprocess.run(
+        ["git", "fetch", "--depth=1", "origin", sha],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _write_base(item_dir: Path, sha: str = _GARBLED_SHA) -> Path:
@@ -251,6 +275,7 @@ class TestLiveCorpusOmn14402:
             "the append-only correction record is missing; the base receipt's "
             "garbled Evidence-Commit would be unexcused"
         )
+        _ensure_commit_available(repo_root, _SQUASH_SHA)
         # Base still carries the garbled SHA verbatim — it is immutable.
         assert _GARBLED_SHA in base.read_text()
         # Real resolver: the squash commit exists, the garbled one does not.
