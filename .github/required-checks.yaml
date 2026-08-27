@@ -73,13 +73,25 @@
 # required on `main` only, so on `dev` they failed OPEN — OCC#5597 merged
 # 2026-07-30T11:35:59Z with `verify / verify` RED (completed 11:12:17Z) and
 # `occ-preflight / eligibility` RED (completed 11:10:03Z), neither a
-# superseded stale run. `CI Summary` cannot cover them: OCC has no
-# `scripts/ci/ci_summary_gate.py` poller — its `ci-summary` job is a plain
-# `needs:` aggregator over `ci.yml` jobs only, and both of these live in
-# separate workflow files (`call-receipt-gate.yml`, `call-occ-preflight.yml`),
-# i.e. separate workflow runs a `needs:` expression can never observe. `dev`
-# was therefore strictly weaker than `main` on the repo where every real merge
-# lands on `dev`.
+# superseded stale run. At the time of that pass `CI Summary` could not cover
+# them: `ci-summary` was a plain `needs:` aggregator over `ci.yml` jobs only,
+# and both of these live in separate workflow files (`call-receipt-gate.yml`,
+# `call-occ-preflight.yml`) — separate workflow runs a `needs:` expression can
+# never observe. `dev` was therefore strictly weaker than `main` on the repo
+# where every real merge lands on `dev`.
+#
+# UPDATE (OMN-16007, landed on `dev`; pinned by OMN-15487): that structural
+# reason no longer holds. `ci-summary` now has NO `needs:` at all — it is the
+# `scripts/ci/ci_summary_gate.py` poller, whose L4 layer reads the PR head's
+# `commits/{sha}/check-runs` and so DOES observe cross-workflow contexts.
+# Both `verify / verify` and `occ-preflight / eligibility` are named in that
+# script's EXPECTED_EXTERNAL_CONTEXTS today.
+#
+# Their direct-required rows below nonetheless STAY. The overlap is deliberate
+# belt-and-braces (the gate's own comment on those two entries says so): it
+# keeps enforcement independent of branch protection and the poller staying in
+# sync with each other. Do not read the poller's coverage as grounds to demote
+# either row — the redundancy IS the design.
 #
 # Three rows changed in this pass:
 #   - `verify / verify`             : `branch: main` REMOVED (now both branches)
@@ -93,10 +105,11 @@
 #     `missing_from_manifest` on it before this change. It is NOT required on
 #     `main` (main's 23-context set does not contain it), hence `branch: dev`.
 #
-# `Pre-commit` deliberately gets NO dev row: it is a `ci.yml` job inside
-# `ci-summary`'s `needs:` list, so `CI Summary` already gates it transitively
-# on `dev`. Adding it as a direct dev context would be redundant, and the
-# manifest must mirror live protection exactly or the reconcile fails.
+# `Pre-commit` deliberately gets NO dev row: it is a `ci.yml` job registered in
+# the poller's STRICT_GATE_JOBS (success-only — its `ci:ready` label skip is
+# deliberately treated as blocking), so `CI Summary` already gates it
+# transitively on `dev`. Adding it as a direct dev context would be redundant,
+# and the manifest must mirror live protection exactly or the reconcile fails.
 #
 # Do NOT rename/remove a REQUIRED row without following the Branch Protection
 # Migration Safety procedure — flip branch protection first (or same PR), then
@@ -128,14 +141,31 @@ classification: toolchain
 repo: onex_change_control
 
 gates:
+  # OMN-15487 — why this rationale is worded so precisely, and pinned by a test:
+  # it previously read "Fail-closed if: always() aggregator over ci.yml
+  # sub-jobs", which was false in BOTH directions. It overstated coverage (7 of
+  # 33 ci.yml jobs — including `contract-compliance` — were absent from
+  # `ci-summary`'s `needs:` entirely, letting OCC#5591 merge 2026-07-30 with
+  # Contract Compliance Check RED and CI Summary GREEN on the same head), and
+  # after OMN-16007 it understated coverage (there is no `needs:` at all now,
+  # and L4 reaches contexts in other workflow files). A rationale that
+  # misdescribes the mechanism is what let the original gap survive review, so
+  # tests/ci/test_ci_summary_gate.py now fails if this text drifts back toward
+  # `needs:`/aggregator vocabulary or stops naming the poller script.
   - name: "CI Summary"
     mode: REQUIRED
     producer_kind: local
     workflow: ci.yml
     job_path: ["ci-summary"]
     skip_semantics: never
-    rationale: "Fail-closed if: always() aggregator over ci.yml sub-jobs; DO NOT rename. Live required
-      status check on both onex_change_control dev and main branch protection (verified 2026-07-25)."
+    rationale: "Fail-closed if: always() poller — scripts/ci/ci_summary_gate.py. Carries no job
+      dependencies: it polls this run's own job list (L1 strict success-only, L2 skippable, L3
+      default-deny sweep) plus the PR head's commits/{sha}/check-runs for cross-workflow contexts
+      (L4), and converts PENDING to FAILURE at a 90-minute deadline. Coverage is pinned by
+      tests/ci/test_ci_summary_gate.py::test_every_pr_triggered_job_is_classified, which fails when
+      any PR-triggered job in any workflow file is left unclassified — so this row's coverage claim
+      is enforced, not asserted. DO NOT rename. Live required status check on both
+      onex_change_control dev and main branch protection (verified 2026-08-27)."
 
   - name: "verify / verify"
     mode: REQUIRED

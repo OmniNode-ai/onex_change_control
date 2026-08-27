@@ -1,12 +1,38 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-15487"
-title: "Autobind OCC evidence for OMN-15487"
-summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #7279."
+title: "OCC CI Summary — make the required-checks.yaml rationale true and pin the schema-purity skip-laundering
+  cascade"
+summary: "OMN-15487 was filed against the needs:-gated ci-summary aggregator, which OMN-16007 has since
+  replaced on dev with the no-needs poller in scripts/ci/ci_summary_gate.py. That landing satisfied the
+  ticket's AC1 (parsing-derived completeness test), AC2 (all named jobs classified — 6 in the gate, the
+  7th, smart-test-select, deleted from ci.yml per OMN-15755), AC5 (drift guard for job 34) and AC6 (no
+  enforcement weakened; live dev required contexts are now 4, not the 2 in the ticket body). This ticket
+  closes the two ACs that landing did not cover. AC4: .github/required-checks.yaml carried three claims
+  that are now false — the CI Summary row's rationale ('Fail-closed if: always() aggregator over ci.yml
+  sub-jobs', false in BOTH directions: it overstated coverage when written, since 7 of 33 ci.yml jobs
+  were absent from needs: entirely, and it understates coverage now that there is no needs: at all and
+  L4 reaches contexts in other workflow files), the header block justifying the verify/verify and occ-preflight/eligibility
+  dev promotions with 'OCC has no scripts/ci/ci_summary_gate.py poller' (that file exists on dev and names
+  both contexts in EXPECTED_EXTERNAL_CONTEXTS; the promoted rows stay, the overlap is deliberate belt-and-braces,
+  only the stated reason was stale), and the Pre-commit note describing coverage via ci-summary's needs:
+  list rather than the poller's STRICT_GATE_JOBS. The corrected rationale is pinned by test so it cannot
+  drift back to needs:/aggregator vocabulary or stop naming the poller script. AC3: the schema-purity
+  skip-laundering cascade is closed at the source but was not pinned for its real shape — the pre-existing
+  red-replay test holds every other job green, including Schema Purity & Naming Check, whereas a failing
+  contract-compliance actually cascades schema-purity to skipped. Two new tests pin the real pair plus
+  a falsification control proving the FAILURE verdict comes from contract-compliance being read directly
+  and not from the skip, so a future edit moving 'Contract Compliance Check' into SOFT_ALLOWLIST/CLASSIFICATION_ONLY
+  cannot silently reopen the vector while the green-fixture test keeps passing. Self-authored by the implementer
+  for this ticket's OWN carrier PR (not a companion pattern) — a self-contained, gate-mechanical change,
+  per the OMN-16007/OMN-15710 precedent in this same corpus."
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
+  - kind: "ci"
+    description: "OCC PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
   - kind: "ci"
     description: "PR #7279 product diff scope present"
     command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
@@ -15,6 +41,58 @@ emergency_bypass:
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-omn15487-ci-summary-gate-suite-pass"
+    description: "The full ci_summary_gate behavioral suite passes with the four tests this ticket adds
+      (60 total, 56 before). Covers the AC3 cascade pair and its falsification control plus the two AC4
+      manifest-truth pins, alongside the pre-existing strict/skippable/sweep/external semantics. Falsifiable:
+      reverting either .github/required-checks.yaml or the new tests fails this exact command."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py -q"
+  - id: "dod-omn15487-schema-purity-cascade-pinned"
+    description: "AC3. Drives the real evaluate() against the cascade shape a failing contract-compliance
+      actually produces — Contract Compliance Check = failure AND its dependent Schema Purity & Naming
+      Check = skipped (ci.yml guards schema-purity on needs.contract-compliance.result == 'success') —
+      and asserts exit 1, so the failure cannot be laundered into a tolerated skip. Paired with a falsification
+      control asserting the skip ALONE still passes, which proves the failure verdict comes from contract-compliance
+      being read directly rather than from the skip. Falsifiable: moving 'Contract Compliance Check' out
+      of SKIPPABLE_GATE_JOBS into SOFT_ALLOWLIST or CLASSIFICATION_ONLY fails this exact command while
+      the pre-existing all-green red-replay test would still pass."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_contract_compliance_failure_cascading_schema_purity_skip_fails_closed
+          tests/ci/test_ci_summary_gate.py::test_schema_purity_skip_alone_is_not_what_makes_the_cascade_fail
+          -q"
+  - id: "dod-omn15487-manifest-rationale-is-true-and-pinned"
+    description: "AC4. Asserts .github/required-checks.yaml's CI Summary row names scripts/ci/ci_summary_gate.py
+      and carries no needs:/aggregator vocabulary, and that no manifest comment still claims OCC lacks
+      a ci_summary_gate.py poller while that file exists on disk. Both tests were confirmed RED against
+      dev before the manifest edit — the poller-claim test failed with 'manifest still asserts OCC lacks
+      a ci_summary_gate.py poller'. Falsifiable: restoring either the old rationale string or the old
+      header wording fails this exact command."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_ci_summary_rationale_describes_the_poller_not_a_needs_aggregator
+          tests/ci/test_ci_summary_gate.py::test_no_manifest_comment_claims_occ_lacks_a_ci_summary_poller
+          -q"
+  - id: "dod-omn15487-no-enforcement-weakened"
+    description: "AC6. No job moved between classification tiers and no gate was demoted: the diff touches
+      only .github/required-checks.yaml prose and tests/ci/test_ci_summary_gate.py. Verified by mypy --strict
+      over src/ and tests/ (374 source files clean) plus the completeness test, which still accounts for
+      every pull_request-reachable job across every workflow file. Falsifiable: dropping any name from
+      STRICT_GATE_JOBS or SKIPPABLE_GATE_JOBS fails the completeness test in this same command."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py::test_every_pr_triggered_job_is_classified
+          -q"
   - id: "dod-OmniNode-ai-onex_change_control-pr-7279"
     description: "PR #7279 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
     source: "generated"
