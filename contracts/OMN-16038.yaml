@@ -1,0 +1,110 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16038"
+title: "connect_cloud onboarding policy (G3) — masked secret prompt to 0600 credential"
+summary: >-
+  Adds the connect_cloud interactive onboarding policy in omnibase_infra: the flow that walks a new operator
+  through attaching a machine to the ONEX cloud gateway and produces the on-disk credential the gateway
+  client reads back. Three supporting extensions land with it. (1) Steps carry a `secret: true` marker
+  that routes collection through a new masked adapter method (getpass, echo off) instead of the echoing
+  text path, and records a `<redacted>` placeholder in the step-result receipt rather than the value.
+  (2) Policies declare a `credentials_output` block and the transition_reducer emits it as a `credentials`
+  dict of SecretStr alongside the existing env output, so secret material is separated from public configuration
+  by declaration rather than by guessing at env key names. (3) The onboarding handler writes a declared
+  credentials dict as the FLAT `{secret_ref: secret}` document — the shape StoreGatewayCredential (OMN-15922)
+  actually reads — and refuses a live run that would discard collected secrets. PREMISE CORRECTION on
+  the ticket as filed: the credentials writer from OMN-16035 was not merely present, it was already wired
+  into the handler, and its key-name heuristic produced a nested `{credentials: {policy: {...}}}` document
+  that the landed gateway credential store cannot resolve; the declared path therefore supersedes the
+  heuristic for any policy that declares credentials_output, and the heuristic remains only for policies
+  that do not. No prod, stability, or judge mutation; the live run writes one local 0600 file.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-connect-cloud-policy-loads-and-flow-order"
+    description: >-
+      AC1 (dry-run renders the full prompt flow). connect_cloud.yaml validates as an interactive policy,
+      the prompt order is gateway URL -> tenant slug -> client_id -> token endpoint -> masked client secret,
+      and exactly one step is marked secret. Also proves the terminal step is the write_credentials action.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest tests/unit/onboarding/test_connect_cloud_policy.py -q
+  - id: "dod-dry-run-writes-nothing"
+    description: >-
+      AC1 (dry-run writes nothing). Handler-level dry run over connect_cloud visits all five prompt steps,
+      reports the flow, and leaves no credentials file on disk.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest "tests/unit/nodes/node_onboarding_orchestrator/test_handler_onboarding_interactive.py::TestConnectCloudPolicy::test_dry_run_renders_the_flow_and_writes_nothing" -q
+  - id: "dod-live-run-writes-0600-credential-in-store-shape"
+    description: >-
+      AC2 (live run writes ~/.onex/credentials.json at mode 0600 via the credentials writer). Asserts
+      the artifact mode is exactly 0600 and the document is the flat {tenant-gateway: secret} shape, then
+      proves the shape is right end-to-end by having StoreGatewayCredential.load() read the credential
+      back through a composed config.yaml.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest "tests/unit/nodes/node_onboarding_orchestrator/test_handler_onboarding_interactive.py::TestConnectCloudPolicy::test_live_run_writes_the_credential_in_the_store_shape" "tests/unit/nodes/node_onboarding_orchestrator/test_handler_onboarding_interactive.py::TestConnectCloudPolicy::test_live_run_credential_resolves_through_the_gateway_store" -q
+  - id: "dod-secret-never-echoed"
+    description: >-
+      AC3 (no secret echoed to terminal, logs, or receipts). Four surfaces are asserted clean of the secret
+      value: the CLI adapter's masked prompt (collect_secret goes through getpass and fails the test if
+      it touches input(); nothing is written to stdout/stderr), the dry-run render, the live-run render
+      plus the full model_dump_json of the handler output, and the overlay file.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest tests/unit/onboarding/test_adapter_cli_input.py -q -k secret
+      - check_type: "command"
+        check_value: |-
+          uv run pytest "tests/unit/nodes/node_onboarding_orchestrator/test_handler_onboarding_interactive.py::TestConnectCloudPolicy" -q -k secret
+  - id: "dod-reducer-credentials-unit-tests"
+    description: >-
+      AC4 (transition_reducer unit tests cover the new credentials dict emission alongside env output).
+      Covers side-by-side emission, SecretStr wrapping so the value does not render, the empty case for
+      a policy with no credentials_output, rejection of a non-terminal step, missing required state key,
+      and construction-time rejection of a credentials_output block keyed on a step that never terminates.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest "tests/unit/onboarding/test_transition_reducer.py::TestCredentialsOutput" -q
+  - id: "dod-no-onboarding-regression"
+    description: >-
+      The whole onboarding surface — unit and integration, executor, reducer, adapters, policies, writers,
+      and the orchestrator handler — stays green with the new step field, protocol method, policy block,
+      result field, and handler branch in place.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest tests/unit/onboarding tests/unit/nodes/node_onboarding_orchestrator tests/integration/onboarding -q
+  - id: "dod-strict-typing"
+    description: "mypy --strict is clean across both changed packages."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run mypy src/omnibase_infra/onboarding src/omnibase_infra/nodes/node_onboarding_orchestrator --strict
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
