@@ -21,15 +21,35 @@ from unittest import mock
 import pytest
 
 from onex_change_control.scripts.check_platform_leads_review_tripwire import (
+    GH_MAX_ATTEMPTS,
+    EnumGhFailureClass,
     TripwireInconclusiveError,
     _diagnose,
+    _run_gh_checked,
+    classify_gh_failure,
     evaluate,
     get_team_member_count,
     is_review_required,
     main,
+    seconds_until_core_reset,
 )
 
 pytestmark = pytest.mark.unit
+
+#: The VERBATIM stderr GitHub returned on onex_change_control jobs
+#: 98501448095 and 98499618819 (2026-08-27), which wedged OCC PRs #7279 and
+#: #7280 while the old diagnostic blamed a missing read:org scope. Pinned as
+#: a literal so a future refactor of the classifier cannot silently
+#: reintroduce the misdiagnosis (OMN-16373).
+PRODUCTION_RATE_LIMIT_STDERR = (
+    "gh: API rate limit exceeded for user ID 1002253. If you reach out to "
+    "GitHub Support for help, please include the request ID "
+    "AC20:1A1545:B0D215:24E578E:6A901FB3 and timestamp 2026-08-27 11:29:55 "
+    "UTC. For more on scraping GitHub and how it may affect your rights, "
+    "please review our Terms of Service "
+    "(https://docs.github.com/en/site-policy/github-terms/"
+    "github-terms-of-service) (HTTP 403)"
+)
 
 
 def _completed(
@@ -203,6 +223,225 @@ class TestGetTeamMemberCountTokenSourceOMN14445:
             get_team_member_count(
                 "OmniNode-ai", "platform-leads", credential_origin="fallback"
             )
+
+
+class TestClassifyGhFailureOMN16373:
+    """GitHub returns HTTP 403 for BOTH "no scope" and "rate limited".
+
+    Classifying on the status code is what produced the misdiagnosis these
+    tests exist to prevent. Classification must come from the error body.
+    """
+
+    def test_production_rate_limit_stderr_classifies_as_rate_limited(self) -> None:
+        assert (
+            classify_gh_failure(PRODUCTION_RATE_LIMIT_STDERR)
+            is EnumGhFailureClass.RATE_LIMITED
+        )
+
+    def test_secondary_rate_limit_classifies_as_rate_limited(self) -> None:
+        assert (
+            classify_gh_failure("You have exceeded a secondary rate limit (HTTP 403)")
+            is EnumGhFailureClass.RATE_LIMITED
+        )
+
+    def test_genuine_scope_failure_still_classifies_as_permission(self) -> None:
+        assert (
+            classify_gh_failure("gh: Resource not accessible by integration (HTTP 403)")
+            is EnumGhFailureClass.PERMISSION
+        )
+
+    def test_bad_credentials_classifies_as_permission(self) -> None:
+        assert (
+            classify_gh_failure("gh: Bad credentials (HTTP 401)")
+            is EnumGhFailureClass.PERMISSION
+        )
+
+    def test_service_unavailable_classifies_as_transient(self) -> None:
+        assert (
+            classify_gh_failure("gh: No server is currently available (HTTP 503)")
+            is EnumGhFailureClass.TRANSIENT
+        )
+
+    def test_unrecognised_error_is_unclassified_not_guessed(self) -> None:
+        assert (
+            classify_gh_failure("gh: something entirely new (HTTP 418)")
+            is EnumGhFailureClass.UNCLASSIFIED
+        )
+
+
+class TestDiagnoseDoesNotBlameScopeForRateLimitOMN16373:
+    """The regression this ticket exists to kill.
+
+    A rate-limited read reported as "the PAT lacks read:org scope" sent at
+    least five separate lanes to investigate a credential that was working.
+    """
+
+    def test_rate_limit_diagnosis_does_not_advise_checking_scopes(self) -> None:
+        msg = _diagnose(
+            "could not read membership of OmniNode-ai/platform-leads",
+            PRODUCTION_RATE_LIMIT_STDERR,
+            "cross_repo_pat",
+            EnumGhFailureClass.RATE_LIMITED,
+        )
+        assert "RATE LIMIT, NOT A SCOPE PROBLEM" in msg
+        assert "lacks read:org scope" not in msg
+        assert "Do NOT rotate the PAT" in msg
+
+    def test_rate_limit_diagnosis_leads_with_cause_then_raw_error(self) -> None:
+        msg = _diagnose(
+            "could not read membership of OmniNode-ai/platform-leads",
+            PRODUCTION_RATE_LIMIT_STDERR,
+            "cross_repo_pat",
+            EnumGhFailureClass.RATE_LIMITED,
+        )
+        assert msg.index("RATE LIMIT") < msg.index("API rate limit exceeded")
+        assert PRODUCTION_RATE_LIMIT_STDERR in msg
+
+    def test_transient_diagnosis_does_not_advise_checking_scopes(self) -> None:
+        msg = _diagnose(
+            "could not read branch protection for x/y",
+            "gh: No server is currently available (HTTP 503)",
+            "cross_repo_pat",
+            EnumGhFailureClass.TRANSIENT,
+        )
+        assert "TRANSIENT GITHUB API FAILURE" in msg
+        assert "lacks read:org scope" not in msg
+
+    def test_permission_failure_still_gets_the_scope_advice(self) -> None:
+        # The scope hypothesis is correct for THIS class — the fix narrows it,
+        # it does not remove it.
+        msg = _diagnose(
+            "could not read membership of x/y",
+            "gh: Bad credentials (HTTP 401)",
+            "cross_repo_pat",
+            EnumGhFailureClass.PERMISSION,
+        )
+        assert "read:org scope" in msg
+
+
+class TestRunGhCheckedRetryOMN16373:
+    """Retry is bounded, class-aware, and still fail-closed."""
+
+    def test_rate_limited_call_is_retried_then_succeeds(self) -> None:
+        attempts = [
+            _completed(returncode=1, stderr=PRODUCTION_RATE_LIMIT_STDERR),
+            _completed(returncode=0, stdout="1\n"),
+        ]
+        slept: list[float] = []
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+                side_effect=attempts,
+            ),
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire.seconds_until_core_reset",
+                return_value=None,
+            ),
+        ):
+            result = _run_gh_checked(
+                ["api", "orgs/x/teams/y/members"],
+                action="could not read membership of x/y",
+                credential_origin="cross_repo_pat",
+                sleep=slept.append,
+            )
+        assert result.stdout.strip() == "1"
+        assert len(slept) == 1
+
+    def test_permission_failure_is_not_retried(self) -> None:
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+                return_value=_completed(
+                    returncode=1, stderr="gh: Bad credentials (HTTP 401)"
+                ),
+            ) as mock_run,
+            pytest.raises(TripwireInconclusiveError),
+        ):
+            _run_gh_checked(
+                ["api", "orgs/x/teams/y/members"],
+                action="could not read membership of x/y",
+                credential_origin="cross_repo_pat",
+                sleep=lambda _seconds: None,
+            )
+        assert mock_run.call_count == 1
+
+    def test_persistent_rate_limit_still_fails_closed_after_budget(self) -> None:
+        slept: list[float] = []
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+                return_value=_completed(
+                    returncode=1, stderr=PRODUCTION_RATE_LIMIT_STDERR
+                ),
+            ) as mock_run,
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire.seconds_until_core_reset",
+                return_value=None,
+            ),
+            pytest.raises(TripwireInconclusiveError, match="RATE LIMIT"),
+        ):
+            _run_gh_checked(
+                ["api", "orgs/x/teams/y/members"],
+                action="could not read membership of x/y",
+                credential_origin="cross_repo_pat",
+                sleep=slept.append,
+            )
+        assert mock_run.call_count == GH_MAX_ATTEMPTS
+        assert len(slept) == GH_MAX_ATTEMPTS - 1
+
+    def test_reset_further_away_than_budget_gives_up_immediately(self) -> None:
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+                return_value=_completed(
+                    returncode=1, stderr=PRODUCTION_RATE_LIMIT_STDERR
+                ),
+            ) as mock_run,
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire.seconds_until_core_reset",
+                return_value=3600.0,
+            ),
+            pytest.raises(TripwireInconclusiveError, match="RATE LIMIT"),
+        ):
+            _run_gh_checked(
+                ["api", "orgs/x/teams/y/members"],
+                action="could not read membership of x/y",
+                credential_origin="cross_repo_pat",
+                sleep=lambda _seconds: None,
+            )
+        assert mock_run.call_count == 1
+
+
+class TestSecondsUntilCoreResetOMN16373:
+    def test_parses_reset_epoch(self) -> None:
+        payload = '{"resources":{"core":{"limit":5000,"remaining":0,"reset":1000}}}'
+        with mock.patch(
+            "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+            return_value=_completed(returncode=0, stdout=payload),
+        ):
+            assert seconds_until_core_reset(now=940.0) == 60.0
+
+    def test_already_reset_clamps_to_zero(self) -> None:
+        payload = '{"resources":{"core":{"reset":1000}}}'
+        with mock.patch(
+            "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+            return_value=_completed(returncode=0, stdout=payload),
+        ):
+            assert seconds_until_core_reset(now=2000.0) == 0.0
+
+    def test_unreadable_rate_limit_returns_none_not_a_guess(self) -> None:
+        with mock.patch(
+            "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+            return_value=_completed(returncode=1, stderr="boom"),
+        ):
+            assert seconds_until_core_reset() is None
+
+    def test_malformed_payload_returns_none(self) -> None:
+        with mock.patch(
+            "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+            return_value=_completed(returncode=0, stdout="{}"),
+        ):
+            assert seconds_until_core_reset() is None
 
 
 class TestCliMainOMN14445:
