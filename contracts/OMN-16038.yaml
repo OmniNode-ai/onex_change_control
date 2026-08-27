@@ -1,0 +1,157 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16038"
+title: "connect_cloud onboarding policy (G3) — masked secret prompt to 0600 credential"
+summary: >-
+  Adds the connect_cloud interactive onboarding policy in omnibase_infra: the flow that walks a new operator
+  through attaching a machine to the ONEX cloud gateway and produces the on-disk credential the gateway
+  client reads back. Three supporting extensions land with it. (1) Steps carry a `secret: true` marker
+  that routes collection through a new masked adapter method (getpass, echo off) instead of the echoing
+  text path, and records a redaction placeholder in the step-result receipt rather than the value. (2)
+  Policies declare a `credentials_output` block and the transition_reducer emits it as a credentials dict
+  of SecretStr alongside the existing env output, so secret material is separated from public configuration
+  by declaration rather than by guessing at env key names. (3) The onboarding handler writes a declared
+  credentials dict as the FLAT `{secret_ref: secret}` document — the shape StoreGatewayCredential (OMN-15922)
+  actually reads — and refuses a live run that would discard collected secrets. PREMISE CORRECTION on
+  the ticket as filed: the credentials writer from OMN-16035 was not merely present, it was already wired
+  into the handler, and its key-name heuristic produced a nested `{credentials: {policy: {...}}}` document
+  that the landed gateway credential store cannot resolve; the declared path therefore supersedes the
+  heuristic for any policy that declares credentials_output, and the heuristic remains only for policies
+  that do not. No prod, stability, or judge mutation; the live run writes one local 0600 file. Evidence
+  note: these checks are remote content probes against the pushed product commit, because the OCC compliance
+  runner executes check_value inside the onex_change_control checkout and cannot run omnibase_infra's
+  pytest. Local execution evidence for every probed artifact — full unit suite 23,950 passed / 40 skipped
+  via the governed pre-push selector, mypy --strict clean, and an independent re-run from a clean clone
+  of the pushed commit — is recorded in the receipts and in OmniNode-ai/omnibase_infra#2924.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-connect-cloud-policy-prompt-flow"
+    description: >-
+      AC1 — the policy exists at the pushed commit and declares the full prompt flow. Counts the five
+      prompt step ids (gateway_base_url, tenant_slug, gateway_client_id, gateway_token_endpoint, gateway_client_secret)
+      in connect_cloud.yaml; must be 5.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/onboarding/policies/connect_cloud.yaml?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -cE '^  - id: (gateway_base_url|tenant_slug|gateway_client_id|gateway_token_endpoint|gateway_client_secret)$')" = "5"
+  - id: "dod-secret-ref-matches-gateway-store"
+    description: >-
+      AC2 — the credential this policy writes is the credential onex auth reads. The policy's credentials_output
+      is keyed by the `{state.tenant_slug}-gateway` ref template, byte-identical to the `f"{tenant_slug}-gateway"`
+      ref StoreGatewayCredential.save writes. Probes both files at the pushed commit; either side drifting
+      fails the check.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/onboarding/policies/connect_cloud.yaml?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -c '"{state.tenant_slug}-gateway"'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/gateway/client/store_gateway_credential.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -c 'secret_ref = f"{tenant_slug}-gateway"'
+  - id: "dod-handler-writes-flat-store-shape"
+    description: >-
+      AC2 — the handler gained the declared-credentials write path that emits the FLAT {secret_ref: secret}
+      document (rather than the OMN-16035 nested heuristic shape) and refuses a live run with no credentials
+      path. Probes for the writer function at the pushed commit.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_onboarding_orchestrator/handlers/handler_onboarding.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -c 'def _write_declared_credentials'
+  - id: "dod-masked-input-path"
+    description: >-
+      AC3 — the secret is collected with terminal echo off and is not retained in the step-result receipt.
+      Probes that the CLI adapter's collect_secret reads through getpass, and that the executor substitutes
+      REDACTED_RESPONSE for a secret-marked step.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/onboarding/adapter_cli_input.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -c 'getpass(f"{step.prompt} (input hidden): ")'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/onboarding/interactive_executor.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -c 'REDACTED_RESPONSE if step.secret else response'
+  - id: "dod-reducer-emits-credentials-dict"
+    description: >-
+      AC4 — the transition_reducer gained get_credentials_output, the credentials sibling of get_env_output,
+      returning SecretStr values so a logged or model-dumped result cannot leak them.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/onboarding/transition_reducer.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -c 'def get_credentials_output'
+  - id: "dod-reducer-credentials-unit-tests-exist"
+    description: >-
+      AC4 — the reducer unit tests covering credentials emission alongside env output exist at the pushed
+      commit. Counts the six TestCredentialsOutput cases (side-by-side emission, SecretStr non-rendering,
+      empty case, non-terminal rejection, missing required key, and construction-time rejection of a credentials_output
+      block on a step that never terminates); must be 6.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/onboarding/test_transition_reducer.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | sed -n '/class TestCredentialsOutput/,$p' | grep -c '    def test_')" = "6"
+  - id: "dod-connect-cloud-behavioral-tests-exist"
+    description: >-
+      AC1-AC3 — the behavioral tests exist at the pushed commit: the dry-run-writes-nothing case, the
+      0600 store-shape write, the round trip that has StoreGatewayCredential.load() read the written credential
+      back, and the no-secret-on-any-returned-surface case.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_onboarding_orchestrator/test_handler_onboarding_interactive.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -cE 'async def test_(dry_run_renders_the_flow_and_writes_nothing|live_run_writes_the_credential_in_the_store_shape|live_run_credential_resolves_through_the_gateway_store|secret_is_absent_from_every_returned_surface)')" = "4"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/onboarding/test_connect_cloud_policy.py?ref=72e6e36f2dcbf729fce3dc078e021f4d4c2f641c --jq '.content' | base64 -d | grep -c 'def test_secret_never_appears_in_the_receipt'
+  - id: "dod-product-pr-diff-scope"
+    description: "PR #2924 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2924 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-7278"
+    description: >-
+      OCC self-binding receipt for PR #7278, the in-repo evidence PR carrying this contract. Binds OMN-16038
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7278 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2924"
+    description: "PR #2924 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_onboarding_orchestrator/handlers/handler_onboarding.py?ref=71fe7399d9526fc097c61e60923fc59d96325d58 --jq '.content' | base64 -d | grep -c 'def _write_declared_credentials'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2924-ci"
+    description: "PR #2924 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2924 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-7291"
+    description: "OCC companion PR #7291 — self-bind for OMN-16038 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7291 --repo OmniNode-ai/onex_change_control --json number,state"
