@@ -21,7 +21,9 @@ from unittest import mock
 import pytest
 
 from onex_change_control.scripts.check_platform_leads_review_tripwire import (
+    GH_COMMAND_TIMEOUT_SECONDS,
     GH_MAX_ATTEMPTS,
+    GH_SECONDARY_RATE_LIMIT_MIN_WAIT_SECONDS,
     EnumGhFailureClass,
     GiveUpContext,
     TripwireDeferredRateLimitError,
@@ -51,6 +53,12 @@ PRODUCTION_RATE_LIMIT_STDERR = (
     "please review our Terms of Service "
     "(https://docs.github.com/en/site-policy/github-terms/"
     "github-terms-of-service) (HTTP 403)"
+)
+
+SECONDARY_RATE_LIMIT_STDERR = (
+    "gh: You have exceeded a secondary rate limit and have been temporarily "
+    "blocked from content creation. Please retry your request again later. "
+    "(HTTP 403)"
 )
 
 
@@ -456,6 +464,64 @@ class TestRunGhCheckedRetryOMN16373:
                 sleep=lambda _seconds: None,
             )
         assert mock_run.call_count == 1
+
+    def test_secondary_rate_limit_uses_one_minute_minimum_without_core_probe(
+        self,
+    ) -> None:
+        attempts = [
+            _completed(returncode=1, stderr=SECONDARY_RATE_LIMIT_STDERR),
+            _completed(returncode=0, stdout="1\n"),
+        ]
+        slept: list[float] = []
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+                side_effect=attempts,
+            ),
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire.seconds_until_core_reset",
+            ) as mock_core_reset,
+        ):
+            result = _run_gh_checked(
+                ["api", "orgs/x/teams/y/members"],
+                action="could not read membership of x/y",
+                credential_origin="cross_repo_pat",
+                sleep=slept.append,
+            )
+
+        assert result.stdout.strip() == "1"
+        assert slept == [GH_SECONDARY_RATE_LIMIT_MIN_WAIT_SECONDS]
+        mock_core_reset.assert_not_called()
+
+    def test_shared_deadline_gives_up_before_sleeping_past_workflow_budget(
+        self,
+    ) -> None:
+        slept: list[float] = []
+        with (
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire._run_gh",
+                return_value=_completed(
+                    returncode=1, stderr=SECONDARY_RATE_LIMIT_STDERR
+                ),
+            ) as mock_run,
+            mock.patch(
+                "onex_change_control.scripts.check_platform_leads_review_tripwire.time.monotonic",
+                return_value=1000.0,
+            ),
+            pytest.raises(TripwireInconclusiveError, match="RATE LIMIT"),
+        ):
+            _run_gh_checked(
+                ["api", "orgs/x/teams/y/members"],
+                action="could not read membership of x/y",
+                credential_origin="cross_repo_pat",
+                sleep=slept.append,
+                deadline=1000.0
+                + GH_SECONDARY_RATE_LIMIT_MIN_WAIT_SECONDS
+                + GH_COMMAND_TIMEOUT_SECONDS,
+            )
+
+        assert mock_run.call_count == 1
+        assert slept == []
 
 
 class TestSecondsUntilCoreResetOMN16373:

@@ -77,6 +77,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -93,6 +94,9 @@ DEFAULT_BRANCH = "dev"
 
 #: Total attempts (initial + retries) for a retryable `gh api` failure.
 GH_MAX_ATTEMPTS: Final[int] = 4
+#: Mirrors subprocess.run(timeout=...). Retry planning reserves this much time
+#: before starting the next `gh api` call.
+GH_COMMAND_TIMEOUT_SECONDS: Final[float] = 30.0
 #: Exponential-backoff base for transient (5xx / network) failures.
 GH_BACKOFF_BASE_SECONDS: Final[float] = 2.0
 #: Hard ceiling on a single rate-limit wait. The job's timeout-minutes is 45;
@@ -102,6 +106,16 @@ GH_MAX_RATE_LIMIT_WAIT_SECONDS: Final[float] = 600.0
 #: Cushion added to a reported reset epoch — GitHub's reset is a boundary, and
 #: retrying on the exact second reliably returns another 403.
 GH_RATE_LIMIT_RESET_CUSHION_SECONDS: Final[float] = 5.0
+#: Shared retry deadline across both live reads. The workflow timeout is 45m;
+#: keep a 3m cushion so the script can emit a DEFERRED/INCONCLUSIVE diagnostic
+#: before Actions terminates the job.
+GH_SHARED_RETRY_DEADLINE_SECONDS: Final[float] = (45.0 * 60.0) - (3.0 * 60.0)
+#: GitHub's documented minimum retry wait for secondary rate limits when no
+#: Retry-After header is available and the primary bucket is not exhausted.
+GH_SECONDARY_RATE_LIMIT_MIN_WAIT_SECONDS: Final[float] = 60.0
+#: Hard ceiling on one secondary-limit wait. Longer waits are deferred to a
+#: later workflow run rather than occupying the runner until job timeout.
+GH_MAX_SECONDARY_RATE_LIMIT_WAIT_SECONDS: Final[float] = 600.0
 
 
 class EnumGhFailureClass(StrEnum):
@@ -121,6 +135,13 @@ class EnumGhFailureClass(StrEnum):
 #: Substrings that identify a rate-limit rejection (primary or secondary).
 _RATE_LIMIT_SIGNATURES: Final[tuple[str, ...]] = (
     "rate limit exceeded",
+    "secondary rate limit",
+    "exceeded a secondary rate limit",
+    "was submitted too quickly",
+    "you have triggered an abuse detection mechanism",
+)
+
+_SECONDARY_RATE_LIMIT_SIGNATURES: Final[tuple[str, ...]] = (
     "secondary rate limit",
     "exceeded a secondary rate limit",
     "was submitted too quickly",
@@ -181,7 +202,7 @@ def _run_gh(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         ["gh", *args],  # noqa: S607  Why: `gh` resolved from PATH, matching repo convention.
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=GH_COMMAND_TIMEOUT_SECONDS,
         check=False,
     )
 
@@ -224,6 +245,28 @@ def _backoff_seconds(attempt: int) -> float:
     return GH_BACKOFF_BASE_SECONDS * float(2 ** (attempt - 1))
 
 
+def _is_secondary_rate_limit(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(sig in lowered for sig in _SECONDARY_RATE_LIMIT_SIGNATURES)
+
+
+def _retry_after_seconds(stderr: str) -> float | None:
+    match = re.search(r"\bretry-after\b[^0-9]*(\d+)", stderr, re.IGNORECASE)
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def _secondary_rate_limit_delay(stderr: str, attempt: int) -> float | None:
+    retry_after = _retry_after_seconds(stderr)
+    backoff = GH_SECONDARY_RATE_LIMIT_MIN_WAIT_SECONDS * float(2 ** (attempt - 1))
+    delay = retry_after if retry_after is not None else backoff
+    delay = max(GH_SECONDARY_RATE_LIMIT_MIN_WAIT_SECONDS, delay)
+    if delay > GH_MAX_SECONDARY_RATE_LIMIT_WAIT_SECONDS:
+        return None
+    return delay
+
+
 def _rate_limit_delay(reset_wait: float | None, attempt: int) -> float | None:
     """Seconds to wait out a rate limit, or None if waiting is futile.
 
@@ -246,6 +289,7 @@ def _run_gh_checked(
     action: str,
     credential_origin: str,
     sleep: Callable[[float], None] = time.sleep,
+    deadline: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run `gh api`, retrying retryable failures, or raise INCONCLUSIVE.
 
@@ -254,6 +298,19 @@ def _run_gh_checked(
     budget and delays the operator seeing the real message.
     """
     for attempt in range(1, GH_MAX_ATTEMPTS + 1):
+        if (
+            deadline is not None
+            and time.monotonic() + GH_COMMAND_TIMEOUT_SECONDS >= deadline
+        ):
+            raise TripwireInconclusiveError(
+                _diagnose(
+                    action,
+                    "retry deadline reached before starting another gh api call",
+                    credential_origin,
+                    None,
+                    give_up=GiveUpContext(attempt - 1),
+                )
+            )
         result = _run_gh(args)
         if result.returncode == 0:
             return result
@@ -264,8 +321,17 @@ def _run_gh_checked(
             if failure is EnumGhFailureClass.TRANSIENT:
                 delay = _backoff_seconds(attempt)
             elif failure is EnumGhFailureClass.RATE_LIMITED:
-                reset_wait = seconds_until_core_reset()
-                delay = _rate_limit_delay(reset_wait, attempt)
+                if _is_secondary_rate_limit(result.stderr):
+                    delay = _secondary_rate_limit_delay(result.stderr, attempt)
+                else:
+                    reset_wait = seconds_until_core_reset()
+                    delay = _rate_limit_delay(reset_wait, attempt)
+        if (
+            delay is not None
+            and deadline is not None
+            and time.monotonic() + delay + GH_COMMAND_TIMEOUT_SECONDS >= deadline
+        ):
+            delay = None
         if delay is None:
             error_type: type[TripwireInconclusiveError]
             error_type = (
@@ -396,13 +462,18 @@ def _diagnose(
 
 
 def get_team_member_count(
-    org: str, team_slug: str, *, credential_origin: str = "unknown"
+    org: str,
+    team_slug: str,
+    *,
+    credential_origin: str = "unknown",
+    deadline: float | None = None,
 ) -> int:
     """Return the live member count of `org/team_slug`, or raise if unreadable."""
     result = _run_gh_checked(
         ["api", f"orgs/{org}/teams/{team_slug}/members", "--jq", "length"],
         action=f"could not read membership of {org}/{team_slug}",
         credential_origin=credential_origin,
+        deadline=deadline,
     )
     try:
         return int(result.stdout.strip())
@@ -412,7 +483,11 @@ def get_team_member_count(
 
 
 def is_review_required(
-    repo: str, branch: str, *, credential_origin: str = "unknown"
+    repo: str,
+    branch: str,
+    *,
+    credential_origin: str = "unknown",
+    deadline: float | None = None,
 ) -> bool:
     """Return True if `required_pull_request_reviews` is configured on `repo@branch`."""
     result = _run_gh_checked(
@@ -424,6 +499,7 @@ def is_review_required(
         ],
         action=f"could not read branch protection for {repo}@{branch}",
         credential_origin=credential_origin,
+        deadline=deadline,
     )
     return result.stdout.strip() == "true"
 
@@ -478,13 +554,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    retry_deadline = time.monotonic() + GH_SHARED_RETRY_DEADLINE_SECONDS
 
     try:
         member_count = get_team_member_count(
-            args.org, args.team, credential_origin=args.credential_origin
+            args.org,
+            args.team,
+            credential_origin=args.credential_origin,
+            deadline=retry_deadline,
         )
         review_required = is_review_required(
-            args.repo, args.branch, credential_origin=args.credential_origin
+            args.repo,
+            args.branch,
+            credential_origin=args.credential_origin,
+            deadline=retry_deadline,
         )
     except TripwireDeferredRateLimitError as exc:
         print(f"TRIPWIRE DEFERRED: {exc}", file=sys.stderr)
