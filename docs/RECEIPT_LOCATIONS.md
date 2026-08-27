@@ -11,7 +11,7 @@
 Before OMN-9791, ONEX had **two** DoD-receipt locations on the platform:
 
 1. **`onex_change_control`** wrote per-item, per-run receipts under
-   `drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml`.
+   `drift/dod_receipts/<TICKET>/<ITEM_ID>/<CHECK_TYPE>.yaml`.
 2. The DoD compliance gate (`scripts/check_dod_compliance.py`) only looked at
    the legacy roll-up at `.evidence/<TICKET>/dod_report.json` produced by the
    old verifier path.
@@ -26,9 +26,20 @@ the deprecation timeline, and the migration path.
 ## Canonical receipt location
 
 ```
-drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml
+drift/dod_receipts/<TICKET>/<ITEM_ID>/<CHECK_TYPE>.yaml
 ```
 
+* The leaf filename is the **check type** of the `dod_evidence` check the
+  receipt answers — in practice `command.yaml`. This is not cosmetic:
+  `omnibase_core.validation.validator_occ_merge_eligibility` builds the path
+  as `receipts_dir / ticket_id / evidence_item_id / f"{check_type}.yaml"` and
+  reads that exact filename, so a receipt under any other name is invisible to
+  the gate and the PR fails `missing_receipt` with an empty `receipt_ids`
+  list, even though the file is present, PASS, and correctly hash-bound
+  (observed on OCC#7229, OMN-16682). Earlier revisions of this document
+  specified `<run_timestamp>.yaml`; that shape has never matched the resolver
+  and is corrected here. The run timestamp lives in the receipt's own
+  `run_timestamp` field.
 * Schema: `omnibase_core.ModelDodReceipt` (one file per probe run).
 * Granularity matches the `dod_evidence` items declared in the ticket
   contract — one canonical receipt directory per `dod_evidence` item.
@@ -89,7 +100,7 @@ For each ticket whose only receipt is the legacy `dod_report.json`:
 1. Run the per-item probe again (or re-attach existing per-item evidence) so
    the run produces a `ModelDodReceipt` per `dod_evidence` item.
 2. Write each receipt to
-   `drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml`.
+   `drift/dod_receipts/<TICKET>/<ITEM_ID>/<CHECK_TYPE>.yaml`.
 3. Optionally delete `.evidence/<TICKET>/dod_report.json` once the canonical
    corpus is in place (the gate ignores it as soon as canonical is present).
 
