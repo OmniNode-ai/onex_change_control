@@ -650,6 +650,153 @@ def test_pr_6346_contract_compliance_red_now_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
+# OMN-15487: the schema-purity SKIP-LAUNDERING cascade
+# ---------------------------------------------------------------------------
+# `schema-purity` (ci.yml) declares `needs: [zone-filter, test,
+# contract-compliance]` guarded by `needs.contract-compliance.result ==
+# 'success'`, so a FAILING contract-compliance does not merely fail on its
+# own -- it cascades `Schema Purity & Naming Check` to `skipped`. Under the
+# retired needs-based aggregator that skip was the laundering vector: the
+# generic rollup read `skipped` as passing and `contract-compliance` itself
+# was absent from `needs:`, so BOTH halves of the cascade were tolerated and
+# CI Summary went green over a red contract gate.
+#
+# The poller closes this at the source (contract-compliance is evaluated
+# directly, SKIPPABLE = success-or-skipped only), but nothing pinned the
+# CASCADE SHAPE itself. test_pr_6346_contract_compliance_red_now_fails above
+# holds every other job green -- including Schema Purity & Naming Check --
+# which is not what a real run looks like. These two tests pin the real
+# shape, so a future edit that moves "Contract Compliance Check" into
+# SOFT_ALLOWLIST or CLASSIFICATION_ONLY (both of which tolerate a present
+# failing job far more readily) cannot silently reopen the vector while the
+# green-fixture test above keeps passing.
+
+
+def test_contract_compliance_failure_cascading_schema_purity_skip_fails_closed() -> (
+    None
+):
+    """The real OMN-15487 cascade: contract-compliance FAILS and its
+    dependent schema-purity is consequently SKIPPED.
+
+    Both halves must not be tolerated together. Under the retired aggregator
+    this exact pair evaluated SUCCESS.
+    """
+
+    jobs = _all_green_jobs()
+    seen_failure = seen_skip = False
+    for j in jobs:
+        if j["name"] == "Contract Compliance Check":
+            j["conclusion"] = "failure"
+            seen_failure = True
+        elif j["name"] == "Schema Purity & Naming Check":
+            j["conclusion"] = "skipped"
+            seen_skip = True
+    # Guard the fixture itself: if either job is ever renamed out from under
+    # this test, fail here rather than vacuously asserting on a shape that no
+    # longer contains the cascade.
+    assert seen_failure, "fixture no longer contains 'Contract Compliance Check'"
+    assert seen_skip, "fixture no longer contains 'Schema Purity & Naming Check'"
+
+    code, report = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 1, "contract-compliance failure laundered into a tolerated skip"
+    assert "Contract Compliance Check" in report
+
+
+def test_schema_purity_skip_alone_is_not_what_makes_the_cascade_fail() -> None:
+    """Falsification control for the test directly above.
+
+    `Schema Purity & Naming Check` is legitimately SKIPPABLE (the docs_only
+    fast lane really does skip it), so its skip alone must PASS. This proves
+    the cascade test's failure verdict comes from the contract-compliance
+    failure being read directly -- not from the skip -- which is precisely
+    the property the retired aggregator lacked.
+    """
+
+    jobs = _all_green_jobs()
+    for j in jobs:
+        if j["name"] == "Schema Purity & Naming Check":
+            j["conclusion"] = "skipped"
+    code, _ = evaluate(
+        jobs,
+        check_runs=_all_green_check_runs(),
+        external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+    )
+    assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# OMN-15487 AC4: required-checks.yaml's CI Summary rationale must be TRUE
+# ---------------------------------------------------------------------------
+
+
+def test_ci_summary_rationale_describes_the_poller_not_a_needs_aggregator() -> None:
+    """`.github/required-checks.yaml` is the enforcement-parity manifest --
+    the surface an auditor reads to learn WHY a context is required and what
+    it actually covers. Its `CI Summary` row justified REQUIRED status with
+    "Fail-closed `if: always()` aggregator over ci.yml sub-jobs".
+
+    That sentence was already false when written (OMN-15487: 7 of 33 ci.yml
+    jobs were absent from `needs:` entirely) and is false again for the
+    opposite reason now that OMN-16007 landed: `ci-summary` has NO `needs:`
+    at all, and its coverage is no longer limited to `ci.yml` -- the L4 layer
+    asserts cross-workflow contexts too. A rationale that misdescribes the
+    mechanism in BOTH directions is worse than no rationale: it is what let
+    the original gap survive review.
+
+    Pin the rationale to the mechanism so it cannot drift back.
+    """
+
+    manifest = yaml.safe_load(
+        (REPO_ROOT / ".github" / "required-checks.yaml").read_text(encoding="utf-8")
+    )
+    rows = [c for c in manifest["gates"] if c["name"] == "CI Summary"]
+    assert len(rows) == 1, "expected exactly one 'CI Summary' row"
+    rationale = rows[0]["rationale"]
+
+    assert "ci_summary_gate.py" in rationale, (
+        "CI Summary's rationale must name the poller script that actually "
+        "produces the verdict"
+    )
+    # The retired mechanism's vocabulary must not reappear. `needs:` is the
+    # specific claim OMN-15487 falsified, and the gate now treats a `needs:`
+    # on ci-summary as a regression to the bug class in its own right.
+    assert "aggregator" not in rationale.lower(), (
+        "'aggregator' describes the retired needs-gated shape, not the poller"
+    )
+    assert "needs" not in rationale.lower(), (
+        "ci-summary has no `needs:`; describing one re-asserts the OMN-15487 falsehood"
+    )
+
+
+def test_no_manifest_comment_claims_occ_lacks_a_ci_summary_poller() -> None:
+    """The manifest's header block justified promoting `verify / verify` and
+    `occ-preflight / eligibility` to direct required contexts with: "`CI
+    Summary` cannot cover them: OCC has no `scripts/ci/ci_summary_gate.py`
+    poller".
+
+    OMN-16007 landed exactly that file, and both contexts are now asserted by
+    its L4 layer. The promotion remains correct (belt-and-braces, and the
+    gate says so itself), but the stated REASON is now false -- and a false
+    reason in the parity manifest is what an auditor would rely on when
+    deciding whether the promotion can be reverted.
+    """
+
+    text = (REPO_ROOT / ".github" / "required-checks.yaml").read_text(encoding="utf-8")
+    assert (REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py").is_file(), (
+        "this pin only makes sense while the poller exists"
+    )
+    assert "OCC has no" not in text, (
+        "manifest still asserts OCC lacks a ci_summary_gate.py poller; "
+        "the file exists on dev as of OMN-16007"
+    )
+    assert "plain\n# `needs:` aggregator" not in text.replace("\n#", "\n# ")
+
+
+# ---------------------------------------------------------------------------
 # Falsification control -- every EXPECTED_EXTERNAL_CONTEXTS entry is load-bearing
 # ---------------------------------------------------------------------------
 
