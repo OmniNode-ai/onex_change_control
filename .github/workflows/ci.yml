@@ -1939,38 +1939,44 @@ jobs:
     # fetch-depth:1 is provably safe here — unlike check-bot-authored-authz-
     # guard below, which shells git merge-base and keeps fetch-depth:0.
     timeout-minutes: 45
-    # OMN-15724 C1: reach the OMN-14027 devpi pull-through cache
-    # (omninode-pypi-cache on .201, confirmed healthy/soaked 12d) for this
-    # job's setup-uv PyPI downloads. Scoped to this job only — NOT the
-    # omnibase_infra fleet-wide activation the 2026-08-08 canary measurement
-    # left unauthorized (whole-job p95 did not clear the operator standing
-    # rule at fleet scale). Falls back to public PyPI when the runner-type
-    # ternary above resolves to the GitHub-hosted fallback (fork-origin PRs
-    # can't reach the Tailscale-only cache host), and PIP_EXTRA_INDEX_URL
-    # keeps PyPI as a live fallback even on the dedicated-fleet path so a
-    # cache miss/outage degrades rather than fails closed (matches the
-    # OMN-14027 runbook).
-    env:
-      UV_DEFAULT_INDEX: >-
-        ${{
-          (
-          github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name != github.repository
-          )
-          && 'https://pypi.org/simple/'
-          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
-        }}
-      UV_INDEX_STRATEGY: unsafe-best-match
-      PIP_INDEX_URL: >-
-        ${{
-          (
-          github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name != github.repository
-          )
-          && 'https://pypi.org/simple/'
-          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
-        }}
-      PIP_EXTRA_INDEX_URL: https://pypi.org/simple/
+    # OMN-16682: the OMN-15724 C1 job-level index override that used to sit
+    # here is REMOVED. It selected the devpi cache with a ternary keyed on
+    # fork-vs-same-repo, which is PR ORIGIN, not RUNNER CLASS — the two are
+    # only the same while vars.OMNI_TRUSTED_CI_RUNS_ON_JSON still resolves to
+    # the private runner fleet. The moment that seam is flipped to a
+    # GitHub-hosted value (OMN-16682's whole purpose), this job's `runs-on`
+    # above lands on a public hosted runner while this env block still selected
+    # `omninode-pc.tail75df5e.ts.net:3141`, which is Tailscale-only and
+    # unresolvable off-fleet — a hard install failure, the
+    # OMN-16413/16427/16428/16431/16437 defect class.
+    #
+    # Index selection is now owned by exactly ONE canonical mechanism, and it
+    # is genuinely keyed on runner class: the private runner fleet's
+    # `runner-job-started.sh` hook (`wire_pypi_cache`, omnibase_infra
+    # docker/runners/). It only ever executes on the fleet, so a
+    # GitHub-hosted runner cannot receive the mirror by construction; it
+    # HEAD-probes the cache and fails OPEN to pypi.org when the cache is
+    # down; and it exports UV_INDEX (an EXTRA index) rather than
+    # UV_DEFAULT_INDEX, leaving pypi.org as the default.
+    #
+    # That last point also fixes a second defect this block carried: uv
+    # resolves env over config, so UV_DEFAULT_INDEX=<devpi> outranked this
+    # repo's own pyproject.toml `[[tool.uv.index]] default = true` pin at
+    # pypi.org (OMN-16518) and invalidated the 62 `registry =
+    # "https://pypi.org/simple"` sources recorded in uv.lock. The fleet
+    # hook's own measured header documents the failure mode
+    # (UV_DEFAULT_INDEX=<devpi> -> rc=2 "lockfile ... needs to be updated";
+    # it cost omniintelligence run 94804218001 a real red) and says verbatim
+    # "Do not simplify this back to UV_DEFAULT_INDEX". Because setup-uv here
+    # runs a bare `uv sync` (not `--locked`), the failure mode was worse
+    # still: a silent re-resolve that rewrites uv.lock against devpi — the
+    # exact OMN-16162 mirror leak that omnibase_infra's
+    # lockfile-registry-allowlist gate (OMN-16516) now exists to catch.
+    #
+    # Enforced by scripts/validation/check_runner_routing.py
+    # (`check-runner-routing` pre-commit hook, run in CI's `pre-commit` job
+    # via `pre-commit run --all-files`), which now fails any workflow job
+    # that pins a package-index env var to a tailnet-only host.
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -2109,32 +2115,18 @@ jobs:
     # and is NOT touched here. 45m matches the uniform floor OMN-15722 set for
     # the other nine timed ci-summary members on this same preamble.
     timeout-minutes: 45
-    # OMN-15724 C1: same scoped devpi-cache activation as
-    # validate-prod-promotion-grants above (see that job's comment for full
-    # rationale). fetch-depth stays 0 here — this job shells
-    # `git fetch origin $BASE_REF` + `git merge-base` below and genuinely
-    # needs base history (OMN-15724 AC1 split; guard logic untouched).
-    env:
-      UV_DEFAULT_INDEX: >-
-        ${{
-          (
-          github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name != github.repository
-          )
-          && 'https://pypi.org/simple/'
-          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
-        }}
-      UV_INDEX_STRATEGY: unsafe-best-match
-      PIP_INDEX_URL: >-
-        ${{
-          (
-          github.event_name == 'pull_request'
-          && github.event.pull_request.head.repo.full_name != github.repository
-          )
-          && 'https://pypi.org/simple/'
-          || 'http://omninode-pc.tail75df5e.ts.net:3141/root/pypi/+simple/'
-        }}
-      PIP_EXTRA_INDEX_URL: https://pypi.org/simple/
+    # OMN-16682: the OMN-15724 C1 job-level index override that used to sit
+    # here is REMOVED for the same reason as validate-prod-promotion-grants
+    # above (see that job's comment for the full rationale) — it keyed the
+    # devpi mirror on PR ORIGIN, not RUNNER CLASS, so it would select a
+    # Tailscale-only index on a GitHub-hosted runner the moment
+    # vars.OMNI_TRUSTED_CI_RUNS_ON_JSON is flipped. Index selection is now
+    # owned solely by the private runner fleet's runner-job-started.sh hook,
+    # which is keyed on runner class by construction.
+    #
+    # fetch-depth stays 0 here — this job shells `git fetch origin $BASE_REF`
+    # + `git merge-base` below and genuinely needs base history (OMN-15724
+    # AC1 split; guard logic untouched).
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
