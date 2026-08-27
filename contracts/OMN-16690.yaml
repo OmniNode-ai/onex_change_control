@@ -1,0 +1,41 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16690"
+title: "Projection contracts declared access='write' while their handlers read — every event DLQ'd"
+summary: >-
+  A projection node whose contract declares a table `access: write` cannot perform any read against that
+  table: the wiring guard `_assert_read_declared()` in omnibase_infra admits only `read` / `read_write`.
+  Two shipped omnimarket handlers are built to read, so every event they received was refused with a PermissionError
+  and routed to the platform quarantine DLQ, and zero rows were ever written. The read is deliberate and
+  documented in the handler's own docstring — the projection adapter's `upsert()` has no `ON CONFLICT
+  ... DO NOTHING` mode, so an unconditional upsert would bump `updated_at` on every Kafka redelivery;
+  the handler therefore reads before writing and skips the upsert when found. The declared capability
+  (`write`) was strictly narrower than the capability the handler was built to use (`read_write`), so
+  this code path could never have written a row. It was invisible only because the gateway entry was fenced.
+  The failure mode is the dangerous kind: the gateway answers 202, the runtime logs an ERROR, the event
+  lands in quarantine, and the caller sees success. OmniNode-ai/omnimarket#2164 widens the 13 mismatched
+  contracts (14 tables), and — the load-bearing part — lands a fail-closed guard that resolves each projection
+  contract's declared access against the operations its handler actually invokes, wired as BOTH a CI job
+  and a pre-commit hook in the same PR so the class cannot reach production as a per-event DLQ again.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2164 on OmniNode-ai/omnimarket CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2164"
+    description: >-
+      PR #2164 on OmniNode-ai/omnimarket — widens the 13 mismatched projection contracts to `read_write`
+      and lands scripts/ci/check_projection_contract_access.py as a fail-closed CI + pre-commit gate.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2164 --repo OmniNode-ai/omnimarket --json number,state,headRefName"
+      - check_type: "command"
+        check_value: "gh pr view 2164 --repo OmniNode-ai/omnimarket --json files"
