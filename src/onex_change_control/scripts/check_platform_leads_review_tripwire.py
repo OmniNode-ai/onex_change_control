@@ -76,7 +76,7 @@ import subprocess
 import sys
 import time
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -151,6 +151,18 @@ _PERMISSION_SIGNATURES: Final[tuple[str, ...]] = (
 )
 
 
+class GiveUpContext(NamedTuple):
+    """How hard this call actually tried before giving up.
+
+    Bundled rather than passed loose so `_diagnose` keeps a readable
+    signature, and so "how many attempts" and "how far away was the reset"
+    can never drift apart in the message.
+    """
+
+    attempts_made: int
+    reset_wait_seconds: float | None = None
+
+
 class TripwireInconclusiveError(RuntimeError):
     """Raised when a required live fact could not be determined."""
 
@@ -198,20 +210,25 @@ def seconds_until_core_reset(now: float | None = None) -> float | None:
     return max(0.0, reset - (time.time() if now is None else now))
 
 
-def _retry_delay(failure: EnumGhFailureClass, attempt: int) -> float | None:
-    """Seconds to wait before the next attempt, or None if waiting is futile."""
-    backoff: float = GH_BACKOFF_BASE_SECONDS * float(2 ** (attempt - 1))
-    if failure is EnumGhFailureClass.TRANSIENT:
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff for a transient failure on `attempt` (1-based)."""
+    return GH_BACKOFF_BASE_SECONDS * float(2 ** (attempt - 1))
+
+
+def _rate_limit_delay(reset_wait: float | None, attempt: int) -> float | None:
+    """Seconds to wait out a rate limit, or None if waiting is futile.
+
+    `reset_wait is None` means the core bucket's reset could not be read —
+    typically a *secondary* rate limit, which has no published reset. Plain
+    backoff is the right response there; giving up would turn a few seconds
+    of throttling into a failed gate.
+    """
+    backoff = _backoff_seconds(attempt)
+    if reset_wait is None:
         return backoff
-    if failure is not EnumGhFailureClass.RATE_LIMITED:
+    if reset_wait > GH_MAX_RATE_LIMIT_WAIT_SECONDS:
         return None
-    wait = seconds_until_core_reset()
-    if wait is None:
-        # Secondary rate limit (no core-bucket reset to read) — plain backoff.
-        return backoff
-    if wait > GH_MAX_RATE_LIMIT_WAIT_SECONDS:
-        return None
-    return max(backoff, wait + GH_RATE_LIMIT_RESET_CUSHION_SECONDS)
+    return max(backoff, reset_wait + GH_RATE_LIMIT_RESET_CUSHION_SECONDS)
 
 
 def _run_gh_checked(
@@ -232,10 +249,23 @@ def _run_gh_checked(
         if result.returncode == 0:
             return result
         failure = classify_gh_failure(result.stderr)
-        delay = _retry_delay(failure, attempt) if attempt < GH_MAX_ATTEMPTS else None
+        reset_wait: float | None = None
+        delay: float | None = None
+        if attempt < GH_MAX_ATTEMPTS:
+            if failure is EnumGhFailureClass.TRANSIENT:
+                delay = _backoff_seconds(attempt)
+            elif failure is EnumGhFailureClass.RATE_LIMITED:
+                reset_wait = seconds_until_core_reset()
+                delay = _rate_limit_delay(reset_wait, attempt)
         if delay is None:
             raise TripwireInconclusiveError(
-                _diagnose(action, result.stderr, credential_origin, failure)
+                _diagnose(
+                    action,
+                    result.stderr,
+                    credential_origin,
+                    failure,
+                    give_up=GiveUpContext(attempt, reset_wait),
+                )
             )
         print(
             f"{action}: {failure.value} failure on attempt {attempt}/"
@@ -249,11 +279,38 @@ def _run_gh_checked(
     )
 
 
+def _describe_give_up(give_up: GiveUpContext | None) -> str:
+    """Say exactly why this call stopped retrying — no rounder-sounding fiction.
+
+    An earlier draft of this message claimed "already retried up to 4 times"
+    even when it had given up on the first attempt because the bucket's reset
+    was hours away. Overstating the effort in a diagnostic is the same class
+    of defect as misnaming the cause, so the numbers here are the real ones.
+    """
+    if give_up is None:
+        return ""
+    attempts_made = give_up.attempts_made
+    reset_wait = give_up.reset_wait_seconds
+    plural = "" if attempts_made == 1 else "s"
+    detail = f" Gave up after {attempts_made} attempt{plural}"
+    if reset_wait is not None and reset_wait > GH_MAX_RATE_LIMIT_WAIT_SECONDS:
+        detail += (
+            f": the bucket does not reset for ~{reset_wait / 60:.0f} min, "
+            f"beyond this job's {GH_MAX_RATE_LIMIT_WAIT_SECONDS / 60:.0f} min wait "
+            "budget, so waiting inside the job would only burn its timeout"
+        )
+    elif attempts_made >= GH_MAX_ATTEMPTS:
+        detail += f" (the full retry budget of {GH_MAX_ATTEMPTS})"
+    return detail + "."
+
+
 def _diagnose(
     action: str,
     stderr: str,
     credential_origin: str,
     failure: EnumGhFailureClass | None = None,
+    *,
+    give_up: GiveUpContext | None = None,
 ) -> str:
     """Build a legible diagnostic that names the real cause before anything else.
 
@@ -275,19 +332,19 @@ def _diagnose(
             "exhausted — GitHub returns HTTP 403 for this exactly as it does "
             "for a scope failure, so the status code alone does not "
             "distinguish them. The token's scopes are NOT implicated: this "
-            "same call succeeds on other PRs in the same window. "
-            f"This job already retried up to {GH_MAX_ATTEMPTS} times and the "
-            "limit had not cleared within its wait budget. Fix: re-run this "
-            "job after the bucket resets, and reduce concurrent API load "
-            "sharing that identity. Do NOT rotate the PAT on this evidence."
+            "same call succeeds on other PRs in the same window."
+            f"{_describe_give_up(give_up)} Fix: "
+            "re-run this job once the bucket resets, and reduce the "
+            "concurrent API load sharing that identity. Do NOT rotate the "
+            "PAT on this evidence."
         )
         return f"{cause}\n{action}: {raw}"
     if failure is EnumGhFailureClass.TRANSIENT:
         cause = (
             "TRANSIENT GITHUB API FAILURE, NOT A SCOPE PROBLEM: GitHub "
             "returned a server-side or network error, which says nothing "
-            "about this token's scopes or about platform-leads membership. "
-            f"Retried up to {GH_MAX_ATTEMPTS} times without success. Fix: "
+            "about this token's scopes or about platform-leads membership."
+            f"{_describe_give_up(give_up)} Fix: "
             "check githubstatus.com, then re-run this job."
         )
         return f"{cause}\n{action}: {raw}"

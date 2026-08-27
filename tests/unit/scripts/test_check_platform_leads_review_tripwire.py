@@ -23,6 +23,7 @@ import pytest
 from onex_change_control.scripts.check_platform_leads_review_tripwire import (
     GH_MAX_ATTEMPTS,
     EnumGhFailureClass,
+    GiveUpContext,
     TripwireInconclusiveError,
     _diagnose,
     _run_gh_checked,
@@ -317,6 +318,50 @@ class TestDiagnoseDoesNotBlameScopeForRateLimitOMN16373:
             EnumGhFailureClass.PERMISSION,
         )
         assert "read:org scope" in msg
+
+
+class TestGiveUpDescriptionIsHonestOMN16373:
+    """The diagnostic must not overstate its own effort.
+
+    Caught on the first live CI run of this fix: the message claimed it
+    "already retried up to 4 times" after giving up on attempt 1 because the
+    bucket's reset was hours away. Inflating the effort in a failure message
+    is the same class of defect as misnaming the cause.
+    """
+
+    def test_single_attempt_is_not_reported_as_a_full_retry_budget(self) -> None:
+        msg = _diagnose(
+            "could not read membership of x/y",
+            PRODUCTION_RATE_LIMIT_STDERR,
+            "cross_repo_pat",
+            EnumGhFailureClass.RATE_LIMITED,
+            give_up=GiveUpContext(attempts_made=1, reset_wait_seconds=3600.0),
+        )
+        assert "Gave up after 1 attempt." not in msg  # must explain WHY, not just count
+        assert "Gave up after 1 attempt" in msg
+        assert f"retried up to {GH_MAX_ATTEMPTS} times" not in msg
+        assert "does not reset for ~60 min" in msg
+
+    def test_exhausted_budget_says_so_explicitly(self) -> None:
+        msg = _diagnose(
+            "could not read membership of x/y",
+            PRODUCTION_RATE_LIMIT_STDERR,
+            "cross_repo_pat",
+            EnumGhFailureClass.RATE_LIMITED,
+            give_up=GiveUpContext(attempts_made=GH_MAX_ATTEMPTS),
+        )
+        assert f"Gave up after {GH_MAX_ATTEMPTS} attempts" in msg
+        assert "full retry budget" in msg
+
+    def test_give_up_detail_is_omitted_when_attempt_count_is_unknown(self) -> None:
+        msg = _diagnose(
+            "could not read membership of x/y",
+            PRODUCTION_RATE_LIMIT_STDERR,
+            "cross_repo_pat",
+            EnumGhFailureClass.RATE_LIMITED,
+        )
+        assert "Gave up after" not in msg
+        assert "RATE LIMIT, NOT A SCOPE PROBLEM" in msg
 
 
 class TestRunGhCheckedRetryOMN16373:
