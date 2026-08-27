@@ -24,6 +24,7 @@ from onex_change_control.scripts.check_platform_leads_review_tripwire import (
     GH_MAX_ATTEMPTS,
     EnumGhFailureClass,
     GiveUpContext,
+    TripwireDeferredRateLimitError,
     TripwireInconclusiveError,
     _diagnose,
     _run_gh_checked,
@@ -537,6 +538,15 @@ class TestCliMainOMN14445:
             ),
         ):
             assert main([]) == 2
+
+    def test_exit_0_when_rate_limit_deferred(self) -> None:
+        with mock.patch(
+            "onex_change_control.scripts.check_platform_leads_review_tripwire.get_team_member_count",
+            side_effect=TripwireDeferredRateLimitError(
+                "RATE LIMIT, NOT A SCOPE PROBLEM"
+            ),
+        ):
+            assert main([]) == 0
 
     def test_credential_origin_flag_threads_into_both_gh_calls(self) -> None:
         with (

@@ -31,9 +31,10 @@ Exit codes:
     1: TRIPPED — platform-leads has > 1 member and CODEOWNERS review is
        still unenforced; OMN-14441's self-approval check no longer fully
        covers forged approvals.
-    2: INCONCLUSIVE — could not determine one or both facts (e.g. the
-       token lacks scope to read team membership or branch protection).
-       Treated as a failure: an unproven safety property does not pass.
+    2: INCONCLUSIVE — could not determine one or both facts because the
+       token lacks scope to read team membership or branch protection, or
+       because an unclassified GitHub API failure occurred. Treated as a
+       failure: an unproven safety property does not pass.
 
 Wedge-risk note (OMN-14445 review): unlike this repo's other cross-repo `gh`
 usage (which clones PUBLIC repos and works even with no token at all), the
@@ -63,8 +64,12 @@ now classified from the error BODY, not the status code, and the
 retryable classes (rate limit, 5xx/network) are retried within the job's
 own timeout budget before the gate gives up.
 
-The gate remains fail-closed: exhausting the retry budget still exits 2.
-Retrying a *transient* failure is not weakening a gate — reporting a
+The gate remains fail-closed for policy and credential failures. Confirmed
+rate-limit exhaustion is different: it proves only that the shared API bucket
+is empty, not that the token lost `read:org` or that the platform-leads
+assumption changed. After the bounded retry budget, the job exits 0 with a
+DEFERRED diagnostic so one overloaded credential cannot wedge every PR in the
+repo. Retrying a *transient* failure is not weakening a gate — reporting a
 transient failure as a permanent credential defect is.
 """
 
@@ -167,6 +172,10 @@ class TripwireInconclusiveError(RuntimeError):
     """Raised when a required live fact could not be determined."""
 
 
+class TripwireDeferredRateLimitError(TripwireInconclusiveError):
+    """Raised when GitHub rate limiting, not policy state, blocks the live read."""
+
+
 def _run_gh(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603  Why: command args are fixed by caller, no shell.
         ["gh", *args],  # noqa: S607  Why: `gh` resolved from PATH, matching repo convention.
@@ -258,7 +267,13 @@ def _run_gh_checked(
                 reset_wait = seconds_until_core_reset()
                 delay = _rate_limit_delay(reset_wait, attempt)
         if delay is None:
-            raise TripwireInconclusiveError(
+            error_type: type[TripwireInconclusiveError]
+            error_type = (
+                TripwireDeferredRateLimitError
+                if failure is EnumGhFailureClass.RATE_LIMITED
+                else TripwireInconclusiveError
+            )
+            raise error_type(
                 _diagnose(
                     action,
                     result.stderr,
@@ -471,6 +486,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         review_required = is_review_required(
             args.repo, args.branch, credential_origin=args.credential_origin
         )
+    except TripwireDeferredRateLimitError as exc:
+        print(f"TRIPWIRE DEFERRED: {exc}", file=sys.stderr)
+        return 0
     except TripwireInconclusiveError as exc:
         print(f"TRIPWIRE INCONCLUSIVE: {exc}", file=sys.stderr)
         return 2
