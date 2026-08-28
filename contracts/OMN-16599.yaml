@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16599"
+title: "node_emit_daemon ACKed queued while discarding a cross-domain cmd.* fan-out leg"
+summary: >
+  OCC evidence companion for OmniNode-ai/omnimarket PR #2187. The emit daemon's socket server derived
+  its emit reply from the last SUCCESSFUL fan-out leg, so an event registered with two or more fan-out
+  topics replied {"status": "queued"} -- which every emit client maps to send_event() is True -- even
+  when another leg was discarded with nothing but a warning in the daemon log. The loss lands systematically
+  on the cmd leg because the registries give the cmd topic the full passthrough payload while the sibling
+  evt topic gets a strip_prompt reduction, so the size check can only ever fire on the cmd side. The fix
+  tracks every discarded leg and replies error, naming both the topics that landed and the topics that
+  did not.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2187 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: "Fan-out partial-drop regression suite executed against the patched daemon"
+    command: "uv run pytest tests/unit/nodes/node_emit_daemon/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2187"
+    description: >-
+      The fail-loud branch is present in the merged daemon at the PR #2187 head SHA, read back from the
+      live GitHub API rather than restated. This is the ticket's decision-free acceptance criterion: the
+      daemon no longer returns a queued ACK over a discarded publish.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_emit_daemon/socket_server.py?ref=ca3d8bfb9c62b5a1c47fa9b51ea9e823d4f54104
+          --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'partial fan-out for'
+  - id: "dod-16599-regression-test-present"
+    description: >-
+      The ticket's third acceptance criterion asks for a regression test proving a cmd.* publish either
+      lands or errors -- never both send_event() == True and zero delivery with no trace. The suite exists
+      at the PR #2187 head SHA and covers all three silent-loss branches (unserializable payload, payload
+      over max_payload_bytes, queue refusing the event) plus a control that a fully successful fan-out
+      still ACKs queued, so the fix cannot pass by rejecting everything.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_emit_daemon/test_fanout_partial_drop_omn16599.py?ref=ca3d8bfb9c62b5a1c47fa9b51ea9e823d4f54104
+          --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'test_oversize_cmd_leg_is_not_acked_as_queued'

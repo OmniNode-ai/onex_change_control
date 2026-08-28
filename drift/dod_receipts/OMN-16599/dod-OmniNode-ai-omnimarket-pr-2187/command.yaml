@@ -1,0 +1,34 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16599"
+evidence_item_id: "dod-OmniNode-ai-omnimarket-pr-2187"
+check_type: "command"
+check_value: >-
+  body="$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_emit_daemon/socket_server.py?ref=ca3d8bfb9c62b5a1c47fa9b51ea9e823d4f54104
+  --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'partial fan-out for'
+contract_sha256: "sha256:3a2224a097db0586a02c1d376e47b4f3146ace51d1af91c31d857f5779ad2ce8"
+contract_entry_sha256: "sha256:3ef5e5cf143c5b0ba8f7f73245da4e59c70032d306f58d44984cff267524bd25"
+status: PASS
+run_timestamp: "2026-08-28T14:29:10Z"
+commit_sha: "95c869ed8fa04733d0e349b137bc0f362895eaa4"
+runner: "build-OMN-16599"
+verifier: "live-command-readback"
+probe_command: >-
+  bash -o pipefail -c 'body="$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_emit_daemon/socket_server.py?ref=ca3d8bfb9c62b5a1c47fa9b51ea9e823d4f54104
+  --jq ".content" | base64 -d)" && printf "%s" "$body" | grep -cF "partial fan-out for"'
+probe_stdout: |
+  1
+actual_output: >-
+  PASS: the fail-loud branch is present in the emit daemon's socket server at the omnimarket#2187 head
+  SHA ca3d8bfb, read back from the live GitHub API rather than restated. Before this change EmitSocketServer._handle_emit
+  derived its reply from last_event_id, which only a SUCCESSFUL fan-out leg ever set, and treated a discarded
+  leg as a bare continue/logger.warning -- so a two-topic event replied {"status": "queued"}, which omnicursor/.cursor/hooks/lib/emit_client.py:126,
+  omnimarket/src/omnimarket/events/emit_client.py:142 and omniclaude/plugins/onex/hooks/lib/emit_client_wrapper.py:336
+  all map to True, while one leg was thrown away. The loss lands on the cmd leg systematically because
+  the registries give the cmd topic the full passthrough payload and the sibling evt topic a strip_prompt
+  reduction, so the max_payload_bytes check can only ever fire on the cmd side. The probe uses the sigpipe-safe
+  capture-then-grep shape under bash -o pipefail, so a failed gh call cannot be masked by grep's exit
+  code.
+exit_code: 0
+pr_number: 2187
+branch: "jonah/omn-16599-emit-daemon-fanout-fail-loud"
