@@ -10,6 +10,50 @@ evidence_requirements:
   - kind: "ci"
     description: "PR #2174 product diff scope present"
     command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  # OMN-16106 gap closure: the four ACs that are NOT met and NOT declared as
+  # dod_evidence, recorded here with their exact falsifiable probes so the bar
+  # still owed is legible rather than quietly dropped. All four are post-refresh
+  # observations of the .201 stability-test lane and are blocked on OMN-16803
+  # (the lane runs 6 of the 13 containers lane-manifest.yaml declares, so both
+  # sanctioned refresh paths refuse and --cold is dev-lane-only). They are
+  # deliberately NOT dod_evidence items: validator_receipt_gate demands a PASS
+  # receipt for EVERY dod_evidence item, so an honestly-red item here would
+  # wedge the OMN-16790 receipt gate for every future PR citing this ticket,
+  # including the PR that eventually repairs the lane.
+  - kind: "manual"
+    description: >-
+      AC1 (UNMET, blocked on OMN-16803) — the stability-test runtime container reports `healthy` with
+      a FailingStreak of 0. Currently `unhealthy` with a FailingStreak in the hundreds because the 0.38.4
+      image predates /usr/local/bin/onex-container-healthcheck; the healthcheck has never once succeeded,
+      so the `unhealthy` verdict carries no information about the service. A sanctioned lane refresh to
+      an image at or above 0.38.11 is the fix.
+    command: >-
+      ssh jonah@192.168.86.201 "docker inspect omninode-stability-test-runtime --format '{{.State.Health.Status}}/{{.State.Health.FailingStreak}}'"
+      | grep -qx 'healthy/0'
+  - kind: "manual"
+    description: >-
+      AC2 (UNMET, blocked on OMN-16803) — zero `KeyError: 'event'` dispatch failures on onex.evt.omniclaude.session-started.v1
+      over a 15-minute window with real traffic. omnimarket#2174 is merged to dev but the lane still runs
+      the pre-fix 0.38.4 image, so the loop continues; last measured at ~218/s. Falsified by any boundary_swallow_prevented
+      line for that topic in the window.
+    command: >-
+      ssh jonah@192.168.86.201 "docker logs --since 15m omninode-stability-test-runtime 2>&1 | grep -c
+      \"KeyError: 'event'\"" | grep -qx 0
+  - kind: "manual"
+    description: >-
+      AC4 (UNMET as a certification, blocked on OMN-16803) — six consecutive :18085/health probes at 3s
+      spacing all return 200 within 2s. This probe currently PASSES, but it measures the pre-fix image
+      and therefore cannot certify the fix; it is only creditable after the refresh that carries omnimarket#2174
+      into the lane.
+    command: >-
+      for i in 1 2 3 4 5 6; do curl -o /dev/null -s -w '%{http_code} %{time_total}\n' --max-time 2 http://192.168.86.201:18085/health;
+      sleep 3; done | grep -cv '^200 ' | grep -qx 0
+  - kind: "manual"
+    description: >-
+      AC5 (UNMET, blocked on OMN-16803) — RestartCount stays flat over a 1-hour window after the fix is
+      deployed. Last read at 16 on the un-refreshed container.
+    command: >-
+      ssh jonah@192.168.86.201 "docker inspect omninode-stability-test-runtime --format '{{.RestartCount}}'"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -40,3 +84,91 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7343 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # OMN-16106 evidence-autoclose gap closure. APPENDED — nothing above is
+  # edited, so every previously-merged receipt's `contract_entry_sha256` stays
+  # valid (OMN-13888 per-entry hashing).
+  #
+  # Why the four entries above carry `behavior_proving_count: 0` under the
+  # OMN-15911 proof-class axis, restated from their own bytes rather than from
+  # the sweep's verdict:
+  #
+  #   1. `dod-OmniNode-ai-omnimarket-pr-2174` is a
+  #      `gh api .../contents/<file>?ref=10f88abe... --jq .content | base64 -d |
+  #      grep -c 'def _require_an_event_timestamp'` blob read. Its terminal
+  #      segment head is `grep`, so `classify_command` returns SURROGATE
+  #      (static-artifact inspection, not execution). The symbol IS real —
+  #      handler_session_phase_reducer.py:122 on dev — so this is a content-bound
+  #      probe, not a mis-target; but `10f88abe1408d35653497e929852c45e70f5e6bf`
+  #      is an UNMERGED branch commit (`git merge-base --is-ancestor 10f88abe
+  #      origin/dev` exits 1 — #2174 landed as squash 8eb77553), so the probe
+  #      reads a frozen blob on a dangling commit. Revert the fix on dev and it
+  #      is still green. It binds provenance, never present behaviour.
+  #   2. `dod-...-pr-2174-ci` is a bare `gh pr view 2174 --json files`:
+  #      PR_STATE_SURROGATE, green for every visible PR with or without the fix.
+  #   3. `dod-occ-evidence-admissibility-validator` is OCC's own
+  #      `tests/test_evidence_admissibility.py`, enumerated in
+  #      FOREIGN_SUITE_DENYLIST — it tests the admissibility predicate, never a
+  #      ticket.
+  #   4. `occ-self-bind-pr-7343` is another bare `gh pr view`.
+  #
+  # All four would stay green with omnimarket#2174 reverted in full. The two
+  # entries below cannot: each executes the reducer through the real
+  # `omnibase_infra` dispatch seam, and each was RUN against the pre-fix tree
+  # (8eb77553^ = 06a0d942, detached worktree, suites copied in) and observed to
+  # fail with the ticket's literal production symptom.
+  #
+  # SCOPE — deliberately only AC3. OMN-16790 has five ACs. AC1 (healthcheck
+  # `healthy`, FailingStreak 0), AC2 (zero `KeyError: 'event'` over a 15-minute
+  # window), AC4 (six `:18085/health` probes under 2s) and AC5 (RestartCount
+  # flat for an hour) are ALL post-refresh observations of the `.201`
+  # stability-test lane. They are not declared here because they are not met,
+  # and their blocker is not this ticket: the lane is running 6 of the 13
+  # containers `lane-manifest.yaml` declares, so both the warm
+  # `refresh_stability_lane.sh --restart` path and `deploy-runtime.sh`'s
+  # hotpatch preflight refuse ("Could not resolve running image ID for
+  # omninode-stability-test-runtime-effects"), and `--cold` is scoped to the
+  # dev lane only. That is OMN-16803. Declaring an honestly-red dod_evidence
+  # item for those legs would wedge the OMN-16790 receipt gate for every future
+  # PR citing this ticket — including the one that eventually repairs the lane —
+  # so the unmet legs are recorded in `evidence_requirements` with their exact
+  # falsifiable probes instead.
+  # ---------------------------------------------------------------------------
+  - id: "dod-omn16790-ac3-wire-dispatch-seam"
+    description: >-
+      AC3 behaviour proof — the defect itself. Runs omnimarket's tests/integration/node_session_phase_reducer/test_omn16790_wire_dispatch.py,
+      which builds the REAL materialized wire envelope, hands it to the REAL `_make_dispatch_callback`
+      imported from the installed `omnibase_infra.runtime.auto_wiring.handler_wiring`, and drives `HandlerSessionPhaseReducer`
+      with a `session-started.v1` payload captured verbatim off the stability lane's Redpanda. Three assertions:
+      the dispatch must not raise, a started-then-ended pair must fold across two separate wire messages,
+      and `_resolve_def_b_input_model_type` must resolve `ModelSessionPhaseReducerInput` rather than returning
+      None (the def-B arity/annotation failure that made the runtime pass the raw dict). RED proven by
+      execution, not asserted — against 06a0d942 all three fail, two with `AssertionError: the real dispatch
+      seam raised KeyError: 'event'` and one with `resolved=None`; against dev they pass 3/3. This is
+      the only seam that could have caught the outage: every pre-fix suite hand-built the `{"event": ...}`
+      envelope the bus never produces, which is exactly why CI stayed green for the whole incident.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/node_session_phase_reducer/test_omn16790_wire_dispatch.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn16790-ac3-reducer-declared-input-model"
+    description: >-
+      AC3's second leg — the reducer's own suites now drive the DECLARED input model instead of the dead
+      local envelope. Runs omnimarket's tests/unit/nodes/node_session_phase_reducer/test_session_phase_reducer.py
+      and tests/integration/node_session_phase_reducer/test_session_phase_reducer_state_coverage.py, both
+      migrated by the fix to construct `ModelSessionPhaseReducerInput` from wire-shaped payloads and to
+      exercise `resolved_event_type`'s discriminator (`hook_source` on started, `reason` on ended) and
+      the read-prior-state-from-the-projection-file path. RED proven by execution: the same two files
+      run against the pre-fix tree give 11 failed / 15 passed; against dev, 26 passed. Falsifiable in
+      the direction that matters — restoring the `input_data["event"]` index or dropping the keyword-only
+      `state_path` marker turns these red.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/nodes/node_session_phase_reducer/test_session_phase_reducer.py
+          tests/integration/node_session_phase_reducer/test_session_phase_reducer_state_coverage.py -q"
+        cwd: "${OMNI_HOME}/omnimarket"
