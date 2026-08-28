@@ -10,6 +10,22 @@ evidence_requirements:
   - kind: "ci"
     description: "PR #1031 product diff scope present"
     command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "manual"
+    description: "AC4 — zero denied sts:AssumeRoleWithWebIdentity on subject repo:OmniNode-ai/omninode_infra:pull_request
+      in a 24h window after the fix landed. NOT YET SATISFIABLE AS WRITTEN: #1031 merged 2026-08-27T18:38:54Z,
+      so the 24h mark is 2026-08-28T18:38Z. Measured over the 8.1h elapsed at 2026-08-28T02:45Z the AC's
+      condition already holds — 33 AssumeRoleWithWebIdentity events since the merge, 0 denials, 22 of
+      them successful assumptions of omninode-github-actions-plan-role — against a pre-fix denial rate
+      of 5,160/7d (~30.7/h), i.e. ~248 expected. Recorded here rather than in dod_evidence deliberately:
+      the receipt gate requires a PASS receipt on disk for EVERY dod_evidence item, so a clock-blocked
+      item there would wedge the OMN-16784 receipt gate for every future PR citing this ticket, and the
+      check needs live AWS credentials that node_dod_verify does not carry. `date -u -v-24H` is BSD/macOS;
+      use `date -u -d '24 hours ago'` on GNU."
+    command: "aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity
+      --start-time \"$(date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)\" --max-results 1000 --query 'Events[].CloudTrailEvent'
+      --output json | python3 -c 'import json,sys; e=[json.loads(x) for x in json.load(sys.stdin)]; d=[x
+      for x in e if x.get(\"errorCode\") and \"omninode_infra:pull_request\" in x.get(\"userIdentity\",{}).get(\"principalId\",\"\")];
+      sys.exit(1 if d else 0)'"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -46,3 +62,48 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7366 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OMN-16784-ac1-role-variable-resolvability"
+    description: "AC1, and the regression class behind it. Executes the OMN-16784 guard suite shipped
+      by omninode_infra#1039: it reads both aws-actions/configure-aws-credentials steps out of the PARSED
+      .github/workflows/test-composite-actions.yml (not a grep, so the rationale comment naming the retired
+      variable can neither satisfy nor break it) and asserts each role-to-assume is arn:aws:iam::${{ vars.AWS_ACCOUNT_ID
+      }}:role/${{ vars.AWS_TERRAFORM_PLAN_ROLE_NAME }}; asserts vars.OIDC_ROLE_NAME and the literal github-actions-oidc-role
+      appear in no workflow's re-serialized YAML data; walks every auth step across all workflows so a
+      role-to-assume written in some third shape is red rather than invisible; and pins VERIFIED_ROLE_NAME_VARIABLES
+      so the allowlist is a pin, not a growth surface. Falsifiable, proven by execution not assertion:
+      reverting the two call sites to vars.OIDC_ROLE_NAME turns 4 of these 9 tests red."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/ci/test_workflow_iam_role_variables.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-OMN-16784-ac2-ban-gate-rule5-ratchet"
+    description: "AC2 — the ban-hardcoded-aws-ci-identifiers gate still passes, and now enforces resolvability
+      rather than only indirection. Executes the gate's own self-test suite, which includes test_repo_workflows_are_clean
+      (check_dir over the real .github/workflows tree, so a reintroduced dangling role variable anywhere
+      in the repo is red) plus the rule-5 unit coverage: an unverified variable is flagged, the retired
+      OIDC_ROLE_NAME is flagged in and out of a role/ position, whole-line comments are exempt from rule
+      5 ONLY (rules 1-4 keep scanning them, pinned by asserting a commented literal ARN still yields both
+      legacy findings), and the VERIFIED_ROLE_NAME_VARIABLES membership is pinned to the two variables
+      confirmed live with `aws iam get-role` on 2026-08-27."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest .github/scripts/test_check_no_hardcoded_aws_ci_identifiers.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-OMN-16784-ac5-oidc-role-name-variable-deleted"
+    description: "AC5 — the dangling OIDC_ROLE_NAME repo variable is gone from OmniNode-ai/omninode_infra.
+      Deleted on 2026-08-28 while #1039 carried the guard, so the name cannot be reintroduced by copy-paste
+      without rule 5 going red. It had been created 2026-06-14T17:30:19Z with value github-actions-oidc-role,
+      a role `aws iam get-role` reports as NoSuchEntity. Deleting it changed no working behaviour: the
+      two consumers were already fixed on dev, and every stale branch that still interpolates it was already
+      failing its auth step (AccessDenied) and falling through continue-on-error to result=skipped — it
+      now fails on a malformed ARN instead, without minting a CloudTrail denial. Falsifiable: recreating
+      the variable turns this red."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omninode_infra/actions/variables --jq '[.variables[].name]
+          | index(\"OIDC_ROLE_NAME\") // \"absent\"' | grep -qx absent"
