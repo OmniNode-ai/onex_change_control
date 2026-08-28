@@ -76,10 +76,6 @@ _RESULT_PASS = "PASS"  # noqa: S105
 _RESULT_WARN = "WARN"
 _RESULT_BLOCK = "BLOCK"
 _RESULT_NOT_EVALUATED = "NOT_EVALUATED"
-_SELF_STATUS_CHECK_NAMES = frozenset({"CI Summary", "Contract Compliance Check"})
-_NON_TERMINAL_STATUS_CHECK_STATES = frozenset(
-    {"EXPECTED", "IN_PROGRESS", "PENDING", "QUEUED"}
-)
 _EXECUTION_SCOPE_HOSTED_AND_LOCAL = "hosted_and_local"
 _EXECUTION_SCOPE_LOCAL_DONE_GATE = "local_done_gate"
 _EXECUTION_SCOPES = frozenset(
@@ -333,13 +329,16 @@ def _non_hermetic_reason(check: Any) -> str | None:
     exist on a CI runner. Returns ``None`` for a hermetic command (local file
     assertions, receipt greps, pure compute, loopback probes) so those still run.
 
-    Only ``check_type: command`` is inspected: its check_value is executed as a
-    shell command, so it is the only surface where these binaries actually run.
-    grep / file_exists / test_exists check_values are file/glob assertions that
-    may legitimately *contain* an IP or the word "docker" (e.g. grepping a
-    committed config), so scanning them would be a false-positive machine.
+    Only executed shell checks (``check_type: command`` and ``test_passes``)
+    are inspected. grep / file_exists / test_exists check_values are file/glob
+    assertions that may legitimately *contain* an IP or the word "docker"
+    (e.g. grepping a committed config), so scanning them would be a
+    false-positive machine.
     """
-    if not isinstance(check, dict) or check.get("check_type") != "command":
+    if not isinstance(check, dict) or check.get("check_type") not in {
+        "command",
+        "test_passes",
+    }:
         return None
     command = str(check.get("check_value", ""))
     if not command.strip():
@@ -581,52 +580,6 @@ def _check_test_exists(check_value: Any, workspace: Path) -> tuple[str, str]:
     return _RESULT_BLOCK, f"No files found matching glob '{pattern}'"
 
 
-def _check_test_passes(
-    _check_value: Any,
-    _workspace: Path,
-    pr_number: int,
-    repo: str,
-) -> tuple[str, str]:
-    """check_type=test_passes: check via gh pr checks (CI must be green)."""
-    rc, out, err = _run(
-        ["gh", "pr", "checks", str(pr_number), "--repo", repo, "--json", "name,state"],
-        timeout=60,
-    )
-    if rc != 0:
-        # gh pr checks fails if CI hasn't started yet -- warn, don't block
-        return (
-            _RESULT_WARN,
-            f"Could not fetch PR checks (CI may not have started): {err}",
-        )
-
-    try:
-        checks = json.loads(out)
-    except json.JSONDecodeError:
-        return _RESULT_WARN, "Could not parse PR checks JSON"
-
-    relevant_checks = [
-        c for c in checks if c.get("name") not in _SELF_STATUS_CHECK_NAMES
-    ]
-    failures = [
-        c
-        for c in relevant_checks
-        if c.get("state")
-        not in ("SUCCESS", "SKIPPED", "NEUTRAL", *_NON_TERMINAL_STATUS_CHECK_STATES)
-    ]
-    if failures:
-        names = ", ".join(c.get("name", "?") for c in failures)
-        return _RESULT_BLOCK, f"Failing CI checks: {names}"
-    pending = [
-        c
-        for c in relevant_checks
-        if c.get("state") in _NON_TERMINAL_STATUS_CHECK_STATES
-    ]
-    if pending:
-        names = ", ".join(c.get("name", "?") for c in pending)
-        return _RESULT_WARN, f"CI checks still pending: {names}"
-    return _RESULT_PASS, f"All {len(checks)} CI checks green"
-
-
 def _check_file_exists(check_value: Any, workspace: Path) -> tuple[str, str]:
     """check_type=file_exists: check_value is a glob pattern."""
     pattern = str(check_value)
@@ -753,15 +706,112 @@ def _build_command_env(
     return {**os.environ, **overlay}
 
 
-def _check_command(
+def _resolve_check_cwd(
+    cwd_template: Any,
+    workspace: Path,
+    pr_number: int,
+    repo: str,
+    ticket_id: str,
+) -> tuple[Path | None, str | None]:
+    """Resolve a check's declared ``cwd`` into a directory to execute in.
+
+    Returns ``(directory, None)`` when the check may run, or
+    ``(None, decline_reason)`` when it may not. ``cwd`` omitted resolves to
+    ``workspace`` -- the product checkout under test, the pre-OMN-16824
+    behaviour for every check.
+
+    OMN-16824. Before this, ``_check_command`` passed ``cwd=workspace``
+    unconditionally and never read the check's ``cwd`` at all, so a
+    cross-repo check silently resolved its paths against the wrong tree and
+    reported a verdict about a directory it was never pointed at. That is
+    worse than not running: it is an answer to a different question wearing
+    the contract entry's name.
+
+    A declared ``cwd`` this runner cannot resolve is therefore DECLINED, never
+    rerouted. The hosted gate checks out exactly one product repo; a ``cwd``
+    naming a sibling checkout (``${OMNI_HOME}/<other-repo>``) does not exist
+    here, and the honest report is that this gate did not evaluate the item --
+    which is what ``execution_scope: local_done_gate`` (OMN-15392) declares up
+    front.
+
+    Token substitution and containment mirror ``node_dod_verify``'s
+    ``_resolve_cwd`` (omnimarket) so both runners read the same field the same
+    way: ``${OMNI_HOME}``, ``${PR_NUMBER}``, ``${REPO}``, ``${TICKET_ID}``,
+    ``..`` rejected up front, and the resolved path must exist and be a
+    directory.
+    """
+    if cwd_template is None:
+        return workspace, None
+    if not isinstance(cwd_template, str) or not cwd_template.strip():
+        return None, (
+            "NOT-EVALUATED [cwd] -- 'cwd' must be a non-empty string, got "
+            f"{type(cwd_template).__name__}; refusing to guess a directory."
+        )
+
+    if ".." in Path(cwd_template).parts:
+        return None, (
+            f"NOT-EVALUATED [cwd] -- cwd path traversal not allowed: {cwd_template!r}"
+        )
+
+    substitutions = {
+        "OMNI_HOME": os.environ.get("OMNI_HOME", ""),
+        "PR_NUMBER": str(pr_number or os.environ.get("PR_NUMBER", "")),
+        "REPO": repo or os.environ.get("REPO", ""),
+        "TICKET_ID": ticket_id,
+    }
+    for token, value in substitutions.items():
+        if f"${{{token}}}" in cwd_template and not value:
+            return None, (
+                f"NOT-EVALUATED [cwd] -- cwd {cwd_template!r} references "
+                f"${{{token}}}, but that value is empty in this environment. "
+                "The hosted gate cannot execute this check; declare "
+                "execution_scope: local_done_gate (OMN-15392) so the local Done "
+                "gate owns it, or point cwd inside the checkout this PR changes."
+            )
+    rendered = cwd_template
+    for token, value in substitutions.items():
+        rendered = rendered.replace(f"${{{token}}}", value)
+
+    if "${" in rendered or not rendered.strip():
+        return None, (
+            f"NOT-EVALUATED [cwd] -- cwd {cwd_template!r} has unresolved template "
+            f"tokens in this environment (rendered {rendered!r}). The hosted gate "
+            "cannot execute this check; declare "
+            "execution_scope: local_done_gate (OMN-15392) so the local Done gate "
+            "owns it, or point cwd inside the checkout this PR changes."
+        )
+
+    candidate = Path(rendered)
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    candidate = candidate.resolve()
+
+    if not candidate.is_dir():
+        return None, (
+            f"NOT-EVALUATED [cwd] -- cwd {cwd_template!r} resolves to {candidate}, "
+            "which does not exist in this checkout. The hosted gate checks out "
+            "one product repo and will NOT reroute the command to its own "
+            "workspace (that would answer a different question). Declare "
+            "execution_scope: local_done_gate (OMN-15392) so the local Done gate "
+            "owns this item, or point cwd inside the checkout this PR changes."
+        )
+    return candidate, None
+
+
+def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
     _check_value: Any,
     workspace: Path,
     pr_number: int = 0,
     repo: str = "",
     ticket_id: str = "",
     contracts_dir: Path | None = None,
+    cwd: Any = None,
 ) -> tuple[str, str]:
     """check_type=command: check_value is a shell command; exit 0 = pass.
+
+    The check's declared ``cwd`` is honoured (OMN-16824); when it cannot be
+    resolved the check is declined (NOT_EVALUATED), never rerouted to
+    ``workspace``. See ``_resolve_check_cwd``.
 
     Supports both ``{pr}``/``{repo}``/``{ticket_id}`` and
     ``${PR_NUMBER}``/``${REPO}``/``${TICKET_ID}`` placeholders so contract YAML
@@ -782,6 +832,10 @@ def _check_command(
             f"Invalid --repo '{repo}': must match org/repo (alphanumeric, -, _, .)",
         )
 
+    run_cwd, decline = _resolve_check_cwd(cwd, workspace, pr_number, repo, ticket_id)
+    if decline is not None:
+        return _RESULT_NOT_EVALUATED, decline
+
     cmd_str = _substitute_tokens(str(_check_value), pr_number, repo, ticket_id)
 
     demoted = _maybe_demote_precommit(cmd_str)
@@ -790,13 +844,61 @@ def _check_command(
 
     cmd_env = _build_command_env(cmd_str, pr_number, repo, ticket_id, contracts_dir)
 
-    rc, out, err = _run(["sh", "-c", cmd_str], timeout=60, cwd=workspace, env=cmd_env)
+    # ``bash -o pipefail``, not ``sh -c``: under ``sh`` a pipeline reports only
+    # its LAST stage's exit code, so ``gh api ... | grep -q X`` passes when the
+    # ``gh`` call itself failed. node_dod_verify has executed check_values this
+    # way since OMN-15382; matching it here is part of the OMN-16824 single
+    # semantic -- the same contract entry must not mean two things.
+    rc, out, err = _run(
+        ["bash", "-o", "pipefail", "-c", cmd_str],
+        timeout=60,
+        cwd=run_cwd,
+        env=cmd_env,
+    )
     if rc == 0:
         return _RESULT_PASS, f"Command succeeded: {cmd_str[:80]}"
     output_snippet = (out + err)[:200]
     return (
         _RESULT_BLOCK,
         f"Command failed (exit {rc}): {cmd_str[:80]}\n  {output_snippet}",
+    )
+
+
+def _check_test_passes(  # noqa: PLR0913 -- signature is _check_command's, exactly
+    check_value: Any,
+    workspace: Path,
+    pr_number: int = 0,
+    repo: str = "",
+    ticket_id: str = "",
+    contracts_dir: Path | None = None,
+    cwd: Any = None,
+) -> tuple[str, str]:
+    """check_type=test_passes: an EXECUTED alias of ``check_type: command``.
+
+    OMN-16824 -- this runner used to ignore ``check_value`` entirely and report
+    whether the PR's own CI was green. ``node_dod_verify`` (omnimarket) has
+    always executed ``check_value`` and honoured ``cwd``, so one contract entry
+    was a behaviour proof to one gate and a PR-status proxy to the other. Worse,
+    the PR-status reading could never go RED for the reason the entry claimed:
+    an entry asserting "the new test passes" returned PASS whenever unrelated CI
+    was green, including when the named test did not exist.
+
+    One semantic now: ``test_passes`` runs ``check_value`` and reads its exit
+    status, exactly like ``command``. The alias survives because it states the
+    author's intent (this command is a test run) and is what
+    ``derive_proof_tier`` and the OMN-15911 proof classifier key on; it is not a
+    different question. A contract that genuinely wants to assert PR CI state
+    must say so with an explicit ``check_type: command`` probe of ``gh pr
+    checks`` -- visible in the contract instead of hidden behind this name.
+    """
+    return _check_command(
+        check_value,
+        workspace,
+        pr_number,
+        repo,
+        ticket_id,
+        contracts_dir,
+        cwd,
     )
 
 
@@ -817,6 +919,12 @@ def _check_endpoint(check_value: Any, workspace: Path) -> tuple[str, str]:
         return _RESULT_PASS, f"Path exists: {target}"
     return _RESULT_BLOCK, f"Path not found: {target}"
 
+
+# OMN-16824: check types whose check_value is shell text this runner EXECUTES,
+# honouring the check's ``cwd``. They share one signature and one dispatch
+# branch precisely so a future edit cannot give one of them a different meaning
+# without giving it to the other.
+_EXECUTED_COMMAND_CHECK_TYPES: frozenset[str] = frozenset({"command", "test_passes"})
 
 _CHECK_RUNNERS: dict[str, Any] = {
     "test_exists": _check_test_exists,
@@ -877,7 +985,10 @@ def _run_single_check(
     runner = _CHECK_RUNNERS.get(check_type)
     if runner is None:
         return check_type, _RESULT_WARN, f"Unknown check_type '{check_type}'"
-    if check_type == "command":
+    if check_type in _EXECUTED_COMMAND_CHECK_TYPES:
+        # OMN-16824: ONE dispatch for both, because they are one semantic --
+        # execute check_value, honour the check's cwd. Two branches here is
+        # exactly how the two readings drifted apart.
         result, detail = runner(
             check_value,
             workspace,
@@ -885,9 +996,8 @@ def _run_single_check(
             context.repo,
             context.ticket_id,
             context.contracts_dir,
+            check.get("cwd"),
         )
-    elif check_type == "test_passes":
-        result, detail = runner(check_value, workspace, context.pr_number, context.repo)
     else:
         result, detail = runner(check_value, workspace)
     return check_type, result, detail
@@ -1164,6 +1274,25 @@ def _outside_diff_state(changed_paths: frozenset[str]) -> str:
     )
 
 
+def _nothing_proven_summary(warns: int, not_evaluated: int, total: int) -> str:
+    """The line printed when no check FAILED but none PROVED anything either.
+
+    Do not call this "all checks satisfied" -- nothing was proven, and saying so
+    is the declaration-in-place-of-verification the ratchet exists to remove.
+    OMN-16824 folded NOT_EVALUATED into this branch: a contract whose every
+    check DECLINED (an unresolvable cross-repo ``cwd``) proved exactly as little
+    as one whose every check WARNed, and previously printed "All executable DoD
+    checks satisfied."
+    """
+    parts = [f"{warns}/{total} were WARN"]
+    if not_evaluated:
+        parts.append(f"{not_evaluated}/{total} were NOT_EVALUATED")
+    return (
+        f"[PASS] No enforceable DoD check failed, but {', '.join(parts)} "
+        "and 0 proved anything about the product."
+    )
+
+
 def run_compliance_check(
     pr_number: int,
     repo: str,
@@ -1277,15 +1406,8 @@ def run_compliance_check(
         )
         return 1
 
-    if warns and not passes:
-        # Do not call this "all checks satisfied" -- nothing was proven. Saying
-        # so is the same declaration-in-place-of-verification this ticket exists
-        # to remove.
-        print(
-            f"[PASS] No enforceable DoD check failed, but {warns}/{total} were "
-            "WARN and 0 proved anything about the product.",
-            flush=True,
-        )
+    if (warns or not_evaluated) and not passes:
+        print(_nothing_proven_summary(warns, not_evaluated, total), flush=True)
         return 0
 
     print("[PASS] All executable DoD checks satisfied.", flush=True)

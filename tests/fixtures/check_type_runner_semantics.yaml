@@ -1,0 +1,108 @@
+---
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-16824 -- the ONE cross-runner semantic for check_type: test_passes.
+#
+# This file is the shared, executable statement of what a `test_passes` (and
+# `command`) DoD check means. It is checked in BYTE-IDENTICALLY to two repos and
+# executed against a different runner in each:
+#
+#   onex_change_control  tests/fixtures/check_type_runner_semantics.yaml
+#                        -> onex_change_control.scripts.contract_compliance_check
+#                           (the hosted "Contract Compliance Check" gate)
+#   omnimarket           tests/fixtures/check_type_runner_semantics.yaml
+#                        -> omnimarket node_dod_verify EvidenceCollector
+#                           (the local Done gate)
+#
+# Both harnesses assert the SAME `expected` verdict for every case, and both
+# pin the sha256 of this file, so a one-sided edit fails that repo's test.
+#
+# THE SEMANTIC, stated once:
+#   * `test_passes` is an EXECUTED alias of `command`. Both runners run
+#     `check_value` in a shell and read its exit status. Neither runner
+#     substitutes a different question -- in particular, neither asks whether
+#     the PR's own CI is green.
+#   * a declared `cwd` is HONOURED. A `cwd` the runner cannot resolve REFUSES
+#     the check; it is never silently rerouted to the runner's own workspace.
+#   * the shell is `bash -o pipefail`, so a failing first stage of a pipeline
+#     fails the check.
+#
+# Verdict vocabulary (deliberately coarse, so the two runners' different
+# reporting shapes can still be compared):
+#   verified -- the runner reports the check satisfied (OCC PASS /
+#               node_dod_verify VERIFIED)
+#   refused  -- the runner does NOT report it satisfied, whether it failed the
+#               command or declined to run it (OCC BLOCK or NOT_EVALUATED /
+#               node_dod_verify FAILED)
+schema_version: 1
+
+# Directories and files the harness materialises under the fixture root before
+# running any case. The fixture root is exported as ${OMNI_HOME} so `cwd`
+# templates below resolve identically in both repos.
+fixture_files:
+  - product/marker.txt
+  - product/sub/only_here.txt
+
+cases:
+  - id: executing-a-failing-command-refuses
+    reason: >-
+      The anchor case. A test_passes entry whose check_value fails must refuse even when the PR's own
+      CI is entirely green. Before OMN-16824 the hosted runner returned PASS here because it never looked
+      at check_value.
+    check_type: test_passes
+    check_value: "false"
+    cwd: "${OMNI_HOME}/product"
+    expected: refused
+
+  - id: executing-a-passing-command-verifies
+    reason: The green control for the case above.
+    check_type: test_passes
+    check_value: "test -f marker.txt"
+    cwd: "${OMNI_HOME}/product"
+    expected: verified
+
+  - id: command-check_type-agrees-with-test_passes
+    reason: >-
+      test_passes is an alias of command, so the same check_value must produce the same verdict under
+      either check_type.
+    check_type: command
+    check_value: "false"
+    cwd: "${OMNI_HOME}/product"
+    expected: refused
+
+  - id: declared-cwd-is-honoured
+    reason: >-
+      The check_value names a file that exists ONLY under the declared cwd, so a runner that ignored cwd
+      could not pass this case.
+    check_type: test_passes
+    check_value: "test -f only_here.txt"
+    cwd: "${OMNI_HOME}/product/sub"
+    expected: verified
+
+  - id: declared-cwd-is-not-a-search-path
+    reason: >-
+      The mirror of the case above -- the same file, a cwd one level up. A runner that fell back to some
+      other directory would wrongly verify.
+    check_type: test_passes
+    check_value: "test -f only_here.txt"
+    cwd: "${OMNI_HOME}/product"
+    expected: refused
+
+  - id: unresolvable-cwd-refuses-instead-of-relocating
+    reason: >-
+      A cwd the runner cannot resolve (the cross-repo case) must refuse. Running the command somewhere
+      else answers a different question about a different tree, which is exactly the OMN-16824 defect.
+    check_type: test_passes
+    check_value: "test -f marker.txt"
+    cwd: "${OMNI_HOME}/no_such_checkout"
+    expected: refused
+
+  - id: pipeline-first-stage-failure-refuses
+    reason: >-
+      Both runners execute under `bash -o pipefail`, so a failing first stage is not masked by a succeeding
+      last stage.
+    check_type: test_passes
+    check_value: "false | cat"
+    cwd: "${OMNI_HOME}/product"
+    expected: refused
