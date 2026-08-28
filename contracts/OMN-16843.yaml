@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16843"
+title: "Wire OMNINODE_INTERNAL_DB_URL on the compose lanes"
+summary: >
+  OMNINODE_INTERNAL_DB_URL was set by ZERO compose files while its two sibling DSNs for the same `omninode_runtime_service`
+  topology binding were set by all five runtime services. handler_wiring resolves each binding with os.environ.get(dsn_env,
+  "") and raises on empty, so all 19 `database_ref: application` contracts failed to prepare at every
+  boot on every .201 compose lane. Auto-wiring is non-strict, so the runtime reported status=healthy with
+  those projections silently unattached. OMN-15426's landed slice (omninode_infra#803) wired the onex-dev
+  Kubernetes plane; this is the compose half of the same identity cutover.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_infra PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-deploy-internal-dsn-in-runtime-container"
+    description: >
+      AC1 — the dev-lane runtime container carries a non-empty OMNINODE_INTERNAL_DB_URL resolving as the
+      non-superuser omninode_runtime principal. Falsifiable by construction: this probe is RED on every
+      lane running today (the variable is absent from the container environment) and only goes GREEN once
+      a lane is refreshed with the compose change. It reads the LIVE container environment, never the
+      receipt or contract this PR authors.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          docker exec ${RUNTIME_CONTAINER:-omninode-runtime} sh -c 'env | grep -q "^OMNINODE_INTERNAL_DB_URL=postgresql://omninode_runtime:"'
+  - id: "dod-deploy-no-projection-wiring-failures-at-boot"
+    description: >
+      AC2 — a dev-lane boot logs zero "Projection handler requires topology bindings with configured DSNs"
+      failures. Probes the live container's own boot log; RED while any of the 19 application-database
+      contracts still fails to prepare. Fail-closed per OMN-15391 Rule D: the log is read ONCE into a
+      variable, the read is proven with the positive anchor "handlers wired" (emitted by auto-wiring itself),
+      and only then is absence asserted. A failed or empty `docker logs` therefore goes RED instead of
+      reporting a vacuous zero.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          logs="$(docker logs ${RUNTIME_CONTAINER:-omninode-runtime} 2>&1)" && printf '%s' "$logs" | grep -qF 'handlers wired' && ! printf '%s' "$logs" | grep -qF 'Projection handler requires topology bindings with configured DSNs'
+  - id: "dod-deploy-consumer-flow-projection-writes"
+    description: >
+      AC3 — projection_consumer_flow attaches and writes. Queries the live projection-api snapshot endpoint
+      and requires a non-zero row_count, which is only reachable once the projection is actually attached
+      and consuming.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          curl -sf http://localhost:3002/projection/onex.snapshot.projection.consumer-flow.v1 | grep -q '"backing":"bus"'
+  - id: "dod-deploy-runtime-principal-is-not-the-superuser"
+    description: >
+      AC4 — the connecting principal is non-superuser, non-BYPASSRLS and owns no tables. Reads pg_roles
+      and pg_tables on the live cluster; RED if the credential is ever repointed at the postgres superuser
+      or the role is granted an RLS-exempting attribute.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          docker exec ${POSTGRES_CONTAINER:-omnibase-infra-postgres} psql -U postgres -d omnidash_analytics -tAc "SELECT rolcanlogin AND NOT rolsuper AND NOT rolbypassrls AND (SELECT count(*) FROM pg_tables WHERE tableowner='omninode_runtime') = 0 FROM pg_roles WHERE rolname='omninode_runtime'" | grep -qx t
