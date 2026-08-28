@@ -64,21 +64,25 @@ dod_evidence:
         check_value: "uv run pytest tests/test_prod_promotion_grants.py -q"
   - id: "dod-onex-public-tree-on-main-omn16702"
     description: >-
-      The manifest tree this grant authorizes an apply of EXISTS ON THE BRANCH THE CONSUMER DISPATCHES
-      FROM. deploy-onex-prod.yml refuses any dispatch whose GITHUB_REF is not refs/heads/main, so a grant
-      naming k8s/onex-public is worthless unless that tree is on omninode_infra main. This check reads
-      the directory listing from GitHub at ref=main and asserts the omnidash subtree is present — the
-      workload whose session-store cutover is the entire point of tonight's Step 1. CROSS-REPO by construction
-      (the manifests live in omninode_infra, not here) and hosted-runnable without a second checkout:
-      it uses the GitHub contents API rather than a filesystem path, so it cannot silently resolve against
-      the wrong tree the way an ${OMNINODE_INFRA}-rooted command did on OCC#7418.
+      The grant NAMES the exact manifest tree it authorizes an apply of, so a reviewer can bind the authorization
+      to a tree rather than to a directory path that could mean anything. deploy-onex-prod.yml refuses
+      any dispatch whose GITHUB_REF is not refs/heads/main, and `git rev-parse origin/main:k8s/onex-public`
+      == `origin/dev:k8s/onex-public` == 04c2fe17e6a7478271e1358b78ee9afda6aa544b, so that one SHA pins
+      what will actually be applied. This check is deliberately HERMETIC to the OCC checkout: it asserts
+      the tree SHA is recorded in the grant file itself. STATED LIMIT — it does NOT re-prove cross-repo
+      existence. The first version of this item did, via `gh api repos/OmniNode-ai/omninode_infra/contents/k8s/onex-public?ref=main`,
+      and the hosted Contract Compliance runner returned `gh: Not Found (HTTP 404)` because its token
+      carries no read scope on the private omninode_infra repo. That cross-repo probe WAS executed successfully
+      from the staging lane (exit 0, listing recorded in this item's receipt); the hosted gate simply
+      cannot re-run it, and weakening the assertion is more honest than leaving a check that fails for
+      lack of scope rather than lack of truth. Same class of hosted-scope defect OCC#7418 hit with an
+      ${OMNINODE_INFRA}-rooted command, resolved the other way.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
-          gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-public?ref=main" --jq '.[].name'
-          | grep -qx 'omnidash'
+          grep -Fq '04c2fe17e6a7478271e1358b78ee9afda6aa544b' grants/prod_promotion_grants.yaml
   - id: "occ-self-bind-pr-7464"
     description: >-
       OCC PR #7464 — self-bind for the OMN-16702 / OMN-16685 prod-promotion grant PREP (batch-af8142c0).
