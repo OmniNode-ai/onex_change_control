@@ -149,94 +149,53 @@ def test_check_test_exists_block(tmp_path: Path) -> None:
     assert result == _RESULT_BLOCK
 
 
-def test_check_test_passes_ignores_own_contract_compliance_context(
+def test_check_test_passes_executes_check_value_and_ignores_pr_ci_state(
     tmp_path: Path,
 ) -> None:
-    checks_json = (
-        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
-        '{"name":"tests+coverage (shadow)","state":"SUCCESS"}]'
-    )
+    """OMN-16824: ``test_passes`` is an EXECUTED alias of ``command``.
+
+    This test replaces four tests that pinned the OPPOSITE semantic -- that
+    ``test_passes`` ignored ``check_value`` and reported whether the PR's own CI
+    was green. That reading made the entry unfalsifiable for the thing it
+    claimed: a contract asserting "the new test passes" returned PASS whenever
+    unrelated CI was green. Both runners now execute ``check_value``.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> tuple[int, str, str]:
+        calls.append(cmd)
+        if cmd[:2] == ["gh", "pr"]:
+            # If the runner ever asks this question again, it gets a green
+            # answer -- and must still BLOCK on the failing check_value below.
+            return 0, '[{"name":"CI","state":"SUCCESS"}]', ""
+        return 1, "", "boom"
+
     with patch(
         "onex_change_control.scripts.contract_compliance_check._run",
-        return_value=(0, checks_json, ""),
+        side_effect=fake_run,
     ):
         result, detail = _check_test_passes(
-            None,
+            "uv run pytest tests/test_nope.py",
             tmp_path,
             pr_number=5976,
             repo="OmniNode-ai/onex_change_control",
         )
 
-    assert result == _RESULT_PASS
-    assert "green" in detail
-
-
-def test_check_test_passes_ignores_ci_summary_aggregate_context(
-    tmp_path: Path,
-) -> None:
-    checks_json = (
-        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
-        '{"name":"CI Summary","state":"FAILURE"},'
-        '{"name":"tests+coverage (shadow)","state":"SUCCESS"}]'
+    assert result == _RESULT_BLOCK, detail
+    assert not any(cmd[:2] == ["gh", "pr"] for cmd in calls), (
+        f"runner substituted the PR-CI question: {calls}"
     )
-    with patch(
-        "onex_change_control.scripts.contract_compliance_check._run",
-        return_value=(0, checks_json, ""),
-    ):
-        result, detail = _check_test_passes(
-            None,
-            tmp_path,
-            pr_number=5976,
-            repo="OmniNode-ai/onex_change_control",
-        )
-
-    assert result == _RESULT_PASS
-    assert "green" in detail
+    assert calls[-1][-1] == "uv run pytest tests/test_nope.py"
 
 
-def test_check_test_passes_blocks_non_self_failed_context(tmp_path: Path) -> None:
-    checks_json = (
-        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
-        '{"name":"CI Summary","state":"FAILURE"},'
-        '{"name":"tests+coverage (shadow)","state":"FAILURE"}]'
-    )
-    with patch(
-        "onex_change_control.scripts.contract_compliance_check._run",
-        return_value=(0, checks_json, ""),
-    ):
-        result, detail = _check_test_passes(
-            None,
-            tmp_path,
-            pr_number=5976,
-            repo="OmniNode-ai/onex_change_control",
-        )
-
-    assert result == _RESULT_BLOCK
-    assert "tests+coverage (shadow)" in detail
-    assert "Contract Compliance Check" not in detail
-    assert "CI Summary" not in detail
-
-
-def test_check_test_passes_warns_on_pending_non_self_context(tmp_path: Path) -> None:
-    checks_json = (
-        '[{"name":"Contract Compliance Check","state":"FAILURE"},'
-        '{"name":"CI Summary","state":"PENDING"},'
-        '{"name":"tests+coverage (shadow)","state":"IN_PROGRESS"}]'
-    )
-    with patch(
-        "onex_change_control.scripts.contract_compliance_check._run",
-        return_value=(0, checks_json, ""),
-    ):
-        result, detail = _check_test_passes(
-            None,
-            tmp_path,
-            pr_number=5976,
-            repo="OmniNode-ai/onex_change_control",
-        )
-
-    assert result == _RESULT_WARN
-    assert "tests+coverage (shadow)" in detail
-    assert "CI Summary" not in detail
+def test_check_test_passes_and_command_are_the_same_runner(tmp_path: Path) -> None:
+    """The two check types must not be able to drift apart again."""
+    (tmp_path / "marker.txt").write_text("x\n")
+    for check_type_runner in (_check_test_passes, _check_command):
+        result, detail = check_type_runner("test -f marker.txt", tmp_path)
+        assert result == _RESULT_PASS, detail
+        failing, _ = check_type_runner("test -f absent.txt", tmp_path)
+        assert failing == _RESULT_BLOCK
 
 
 def test_check_file_exists_pass(tmp_path: Path) -> None:
@@ -303,11 +262,14 @@ def test_check_command_placeholder_substitution(tmp_path: Path) -> None:
 
     assert result == _RESULT_PASS
     assert captured, "No subprocess call captured — _run was never invoked"
-    # The final sh -c call must contain the substituted shell string
+    # The final shell call must contain the substituted shell string.
+    # OMN-16824: the runner invokes ``bash -o pipefail -c <cmd>`` (was
+    # ``sh -c <cmd>``) so a failing first pipeline stage is not masked, matching
+    # node_dod_verify. The command text is the LAST argv element either way.
     shell_cmd = captured[-1]
-    assert shell_cmd[0] == "sh", f"Unexpected command: {shell_cmd}"
-    assert shell_cmd[1] == "-c", f"Unexpected command: {shell_cmd}"
-    shell_str = shell_cmd[2]
+    assert shell_cmd[0] == "bash", f"Unexpected command: {shell_cmd}"
+    assert shell_cmd[-2] == "-c", f"Unexpected command: {shell_cmd}"
+    shell_str = shell_cmd[-1]
     assert "586" in shell_str, f"PR number not substituted in shell cmd: {shell_str!r}"
     assert "OmniNode-ai/omnidash" in shell_str, f"repo not substituted: {shell_str!r}"
     assert "{pr}" not in shell_str, f"Literal {{pr}} not replaced: {shell_str!r}"
@@ -343,7 +305,7 @@ def test_check_command_shell_style_dollar_substitution(tmp_path: Path) -> None:
         )
 
     assert result == _RESULT_PASS
-    shell_str = captured[-1][2]
+    shell_str = captured[-1][-1]
     expected = (
         "gh pr checks 452 --repo OmniNode-ai/onex_change_control && echo OMN-10086"
     )
@@ -512,7 +474,7 @@ def test_check_command_precommit_present_in_ci_enforces(
     assert result == _RESULT_PASS
     assert calls == [
         ["which", "pre-commit"],
-        ["sh", "-c", "pre-commit run --all-files"],
+        ["bash", "-o", "pipefail", "-c", "pre-commit run --all-files"],
     ]
 
 
@@ -1762,7 +1724,7 @@ def _resolve_via_check_command(check_value: str, tmp_path: Path) -> str:
             repo=_UNRELATED_RUNNER_REPO,
         )
     assert captured, "No subprocess call captured -- _run was never invoked"
-    return captured[-1][2]
+    return captured[-1][-1]
 
 
 @pytest.mark.parametrize(

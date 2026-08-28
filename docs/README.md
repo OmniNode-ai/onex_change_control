@@ -16,6 +16,7 @@ New to this repo? Read in this order:
 2. [CLAUDE.md](../CLAUDE.md) — developer context, naming conventions, development commands.
 3. [Design: Drift Control System](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) — the enforcement model.
 4. [Template Guide](TEMPLATE_GUIDE.md) — how to author YAML artifacts.
+5. [Check Types](CHECK_TYPES.md) — what each `dod_evidence` check actually executes.
 
 ---
 
@@ -87,6 +88,7 @@ When automation creates Linear tickets from drift findings:
 |-----|---------|
 | [VERSIONING_POLICY.md](VERSIONING_POLICY.md) | Schema SemVer, immutability rules, breaking-change definition |
 | [TEMPLATE_GUIDE.md](TEMPLATE_GUIDE.md) | Field-by-field reference for `day_close.template.yaml` and `ticket_contract.template.yaml` |
+| [CHECK_TYPES.md](CHECK_TYPES.md) | What every `dod_evidence` `check_type` does in each runner, the `cwd` rules, and the shell it executes under |
 | [EVAL_FRAMEWORK.md](EVAL_FRAMEWORK.md) | A/B evaluation framework: eval suites, comparator, metrics, verdicts |
 | [RECEIPT_LOCATIONS.md](RECEIPT_LOCATIONS.md) | Canonical DoD receipt location (`drift/dod_receipts/`) and migration from legacy path |
 | [wire-schema-contract-spec.md](wire-schema-contract-spec.md) | Wire schema contract specification |
