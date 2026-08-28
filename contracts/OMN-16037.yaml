@@ -11,6 +11,20 @@ evidence_requirements:
   - kind: "ci"
     description: "PR #1604 CI checks green"
     command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: >-
+      AC3 behavior proof, bindable TODAY against omnibase_core@dev: `onex health` is a registered, runnable
+      command. This is the AC the ticket left ambiguous ("register or de-scope") and the one half of OMN-16037
+      whose premise was falsified during implementation — health was already registered (cli_commands.py:371
+      on dev), so AC3 resolves to "it runs", and running it is the proof. Bound as dod_evidence item `dod-omn-16037-ac3-onex-health-behavior`.
+    command: "uv run pytest tests/unit/cli/test_commands.py::TestHealthCommand -q --color=no"
+  - kind: "tests"
+    description: >-
+      AC1/AC2/AC4 behavior proofs. These exercise the config-schema unification itself and are NOT bindable
+      as dod_evidence until omnibase_core#1604 merges — the module and its suite do not exist on omnibase_core@dev.
+      Recorded here as the owed bar so the contract states what is still unproven rather than implying
+      the AC3 check covers all four ACs. On #1604 merge these become dod_evidence checks with cwd ${OMNI_HOME}/omnibase_core.
+    command: "uv run pytest tests/unit/cli/test_cli_user_config.py -q"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -45,3 +59,30 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7311 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn-16037-ac3-onex-health-behavior"
+    description: >-
+      AC3 behavior proof (OMN-15911 gap closure). Every check minted onto this contract by the OMN-14285
+      autobind was exit-status-invariant over the product change: three byte-identical `gh api .../contents/cli_init.py
+      --jq .content | base64 -d | grep -c 'def _ensure_state_dirs'` file-content reads (static inspection,
+      and they grep a symbol OMN-16037 never touches), one `uv run pytest tests/test_evidence_admissibility.py
+      -q` (OCC's own ticket-independent suite, FOREIGN_SUITE_DENYLIST), and one bare `gh pr view 7311
+      --json number,state` (PR_STATE_SURROGATE). node_dod_verify therefore reported behavior_proving_count=0
+      — nothing in the contract EXECUTED anything. This item binds the one acceptance criterion of OMN-16037
+      that is provable against omnibase_core@dev today, by running it. Both checks are BEHAVIOR class
+      under omnimarket.nodes.node_dod_verify.services.check_proof_class (`pytest` and `onex` are both
+      allowlisted command heads) and both are falsifiable: if `health` were unregistered — which is exactly
+      what the ticket's scope item 3 asserted — TestHealthCommand's `runner.invoke(cli, ["health"])` assertions
+      fail and the CLI invocation exits non-zero. AC1/AC2/AC4 are NOT claimed here; they are carried in
+      evidence_requirements as the bar still owed on omnibase_core#1604, whose merge this contract's `::pr-live-state`
+      legs continue to fail on.
+    source: "manual"
+    linear_dod_text: >-
+      `onex health` either runs (registered command, minimal viable implementation) or OMN-8796's DoD
+      is corrected to remove the claim — pick one, do not leave both states true.
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/cli/test_commands.py::TestHealthCommand -q --color=no"
+        cwd: "${OMNI_HOME}/omnibase_core"
+      - check_type: "command"
+        check_value: "uv run onex health --component core"
+        cwd: "${OMNI_HOME}/omnibase_core"
