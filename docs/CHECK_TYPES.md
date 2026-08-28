@@ -10,10 +10,12 @@ check will do. Two different gates execute the checks you write:
 | **Hosted** — `Contract Compliance Check` | every PR, in CI | `onex_change_control.scripts.contract_compliance_check` |
 | **Local** — `node_dod_verify` | the local Done gate / autoclose evidence sweep | omnimarket `EvidenceCollector` |
 
-Both read the same contract bytes. **Anywhere this page states a behaviour, both
-runners implement it** — that is the OMN-16824 rule, and it is enforced by an
-executed case table (`tests/fixtures/check_type_runner_semantics.yaml`) that is
-checked into both repos byte-for-byte and run against both runners.
+Both read the same contract bytes. **For check types both runners execute, this
+page states one shared behaviour** — that is the OMN-16824 rule, and it is
+enforced by an executed case table
+(`tests/fixtures/check_type_runner_semantics.yaml`) that is checked into both
+repos byte-for-byte and run against both runners. Rows marked `—` are hosted-only
+surfaces until the local runner implements them.
 
 ---
 

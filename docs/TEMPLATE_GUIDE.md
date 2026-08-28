@@ -175,7 +175,7 @@ The Ticket Contract template (`ticket_contract.template.yaml`) is used to create
 
 #### `dod_evidence`
 - **Type**: List of objects (optional; omit if not needed)
-- **Description**: Executable DoD checks. Each item's `checks[].check_value` is a shell command (`check_type: "command"` or its executed alias `check_type: "test_passes"`) run by the hosted `Contract Compliance Check` **in the product checkout under test** — not the `onex_change_control` repo root — under `bash -o pipefail -c`; exit 0 = pass. A check may declare a `cwd`, which is honoured, or declined outright when it cannot be resolved.
+- **Description**: Executable DoD checks. For `check_type: "command"` and its executed alias `check_type: "test_passes"`, `checks[].check_value` is a shell command run by the hosted `Contract Compliance Check` **in the product checkout under test** — not the `onex_change_control` repo root — under `bash -o pipefail -c`; exit 0 = pass. A check may declare a `cwd`, which is honoured, or declined outright when it cannot be resolved. Other check types use the value shapes listed in `CHECK_TYPES.md`.
 - **See [`CHECK_TYPES.md`](CHECK_TYPES.md)** for what every `check_type` does in each of the two runners, the `cwd` rules, and why `test_passes` is not a "PR CI is green" assertion (OMN-16824).
 - **`check_value` must be falsifiable — it must be able to fail if the work is actually wrong.** A command that reads the receipt file the check itself is stamped in and greps that file for `status: PASS` is **not evidence**: the receipt says PASS because the author wrote PASS, and the check confirms the author wrote PASS. It passes identically whether the code is correct or broken.
 

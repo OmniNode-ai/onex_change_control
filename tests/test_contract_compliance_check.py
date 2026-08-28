@@ -1492,6 +1492,15 @@ def test_non_hermetic_rejects_ssh() -> None:
     assert "status: PASS" in reason
 
 
+def test_non_hermetic_rejects_test_passes_alias() -> None:
+    """OMN-16824: test_passes executes, so it gets the same hermetic guard."""
+    reason = _non_hermetic_reason(
+        {"check_type": "test_passes", "check_value": "docker ps"}
+    )
+    assert reason is not None
+    assert "docker" in reason
+
+
 def test_non_hermetic_rejects_live_docker() -> None:
     """`docker exec` against a live daemon (absent in CI) is rejected."""
     reason = _non_hermetic_reason(

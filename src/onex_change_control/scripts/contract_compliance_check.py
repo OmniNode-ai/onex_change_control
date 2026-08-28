@@ -329,13 +329,16 @@ def _non_hermetic_reason(check: Any) -> str | None:
     exist on a CI runner. Returns ``None`` for a hermetic command (local file
     assertions, receipt greps, pure compute, loopback probes) so those still run.
 
-    Only ``check_type: command`` is inspected: its check_value is executed as a
-    shell command, so it is the only surface where these binaries actually run.
-    grep / file_exists / test_exists check_values are file/glob assertions that
-    may legitimately *contain* an IP or the word "docker" (e.g. grepping a
-    committed config), so scanning them would be a false-positive machine.
+    Only executed shell checks (``check_type: command`` and ``test_passes``)
+    are inspected. grep / file_exists / test_exists check_values are file/glob
+    assertions that may legitimately *contain* an IP or the word "docker"
+    (e.g. grepping a committed config), so scanning them would be a
+    false-positive machine.
     """
-    if not isinstance(check, dict) or check.get("check_type") != "command":
+    if not isinstance(check, dict) or check.get("check_type") not in {
+        "command",
+        "test_passes",
+    }:
         return None
     command = str(check.get("check_value", ""))
     if not command.strip():
@@ -756,6 +759,15 @@ def _resolve_check_cwd(
         "REPO": repo or os.environ.get("REPO", ""),
         "TICKET_ID": ticket_id,
     }
+    for token, value in substitutions.items():
+        if f"${{{token}}}" in cwd_template and not value:
+            return None, (
+                f"NOT-EVALUATED [cwd] -- cwd {cwd_template!r} references "
+                f"${{{token}}}, but that value is empty in this environment. "
+                "The hosted gate cannot execute this check; declare "
+                "execution_scope: local_done_gate (OMN-15392) so the local Done "
+                "gate owns it, or point cwd inside the checkout this PR changes."
+            )
     rendered = cwd_template
     for token, value in substitutions.items():
         rendered = rendered.replace(f"${{{token}}}", value)

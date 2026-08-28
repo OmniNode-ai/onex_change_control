@@ -262,6 +262,38 @@ def test_unresolved_cwd_template_token_is_refused(
     assert result == _RESULT_NOT_EVALUATED, detail
 
 
+@pytest.mark.parametrize("check_type", ["command", "test_passes"])
+def test_empty_supported_cwd_template_value_is_refused(
+    check_type: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OMNI_HOME", raising=False)
+    marker = tmp_path / "omnimarket" / "wrong-workspace-marker.txt"
+    marker.parent.mkdir()
+    marker.write_text("x\n")
+
+    _, result, detail = _run_single_check(
+        {
+            "check_type": check_type,
+            "check_value": "test -f wrong-workspace-marker.txt",
+            "cwd": "${OMNI_HOME}/omnimarket",
+        },
+        tmp_path,
+        _CheckContext(
+            pr_number=0,
+            repo="",
+            ticket_id="OMN-16824",
+            contracts_dir=None,
+            is_legacy=False,
+            changed_paths=frozenset(),
+        ),
+    )
+    assert result == _RESULT_NOT_EVALUATED, detail
+    assert "OMNI_HOME" in detail
+    assert "empty" in detail
+
+
 # ---------------------------------------------------------------------------
 # AC4 -- falsifiability through the gate's own entry point, not a helper
 # ---------------------------------------------------------------------------
