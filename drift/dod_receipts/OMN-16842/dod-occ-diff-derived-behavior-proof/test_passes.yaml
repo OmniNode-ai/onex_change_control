@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16842"
+evidence_item_id: "dod-occ-diff-derived-behavior-proof"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/unit/scripts/test_lane_scratch.py -q
+contract_sha256: "sha256:6798863b86241315b0bc3f47d00a891310ec5a5d9b21c1919c543005fa0da9f8"
+contract_entry_sha256: "sha256:e481c256a41c54244f21d8f3ebf3292fb03bd6fd00ad319f7fddfce9c8439f3c"
+status: PASS
+run_timestamp: "2026-08-28T13:52:00+00:00"
+commit_sha: "23758060e9c960ac26096b363ec7baac6f32e3cb"
+runner: "pytest run in the OMN-16842 worktree ($OMNI_HOME/omni_worktrees/OMN-16842/omnibase_infra)"
+verifier: "friction-pair lane"
+probe_command: |-
+  # The checked-out product repo for this run is OmniNode-ai/omnibase_infra, NOT
+  # onex_change_control, so commit_sha below resolves there:
+  #   gh api repos/OmniNode-ai/omnibase_infra/commits/23758060e9c960ac26096b363ec7baac6f32e3cb
+  uv run pytest tests/unit/scripts/test_lane_scratch.py -q
+probe_stdout: |
+  ...............                                                          [100%]
+  15 passed in 0.65s
+actual_output: |
+  PASS: 15 passed, 0 failed, exit 0. The declared check was executed at the PR
+  head commit 23758060e9c960ac26096b363ec7baac6f32e3cb (verified with
+  `git log --oneline -1` in the worktree immediately before the run), and its
+  exit status was captured explicitly — the run wrote to a file and `$?` was
+  read, rather than being piped, because a piped `tail` reports the tail's
+  status and not pytest's (memory `feedback_check_exit_status_when_rewriting_evidence`).
+
+  What the 15 tests prove, all RED before the implementation landed (the first
+  run failed at collection with
+  `FileNotFoundError: .../scripts/lane_scratch.py`):
+    * same-label uniqueness, which is the actual incident shape — all three
+      recorded collisions were same-label ("log", "msg", "heavy"), not
+      distinct-label: 200 sequential mints of one label all distinct; 96 mints
+      of one label across a 16-thread pool all distinct; two separate
+      processes minting the same label get different paths;
+    * collision fails LOUDLY rather than reusing — an existing target raises
+      FileExistsError and the peer's content is asserted intact; the CLI
+      surfaces it as exit 73 with the `lane_scratch:` marker;
+    * a forgotten scope degrades to isolated, never shared — omitted, empty,
+      and whitespace-only labels yield three distinct paths, none of them a
+      bare shared name (OMN-15678 AC3's scaffolding requirement);
+    * attribution — the label round-trips out of the minted path, survives
+      sanitisation of a realistic label ("OMN-16842 heavy run/1"), and the pid
+      is embedded;
+    * `--dir` mode, `$CLAUDE_SCRATCHPAD_DIR` root resolution, and the default
+      root asserted NOT under /tmp.
+
+  Why this receipt was authored by hand rather than minted by the autobind.
+
+  contracts/OMN-16842.yaml declares this evidence item with
+  `check_type: "test_passes"`, but node_occ_companion_compute emitted only
+  `dod-occ-diff-derived-behavior-proof/command.yaml`. The eligibility validator
+  keys receipts as `<ticket>:<evidence_item>:<check_type>`, so it looked for
+  `OMN-16842:dod-occ-diff-derived-behavior-proof:test_passes`, found only the
+  `:command` sibling, and returned reason=missing_receipt
+  (onex_change_control#7407, job 98862463242). The autobind receipt's own
+  `actual_output` claims "product-repo test run executes the declared check"
+  while its probe is a `gh pr view` — i.e. it asserts the tests pass without
+  having run them.
+
+  This file supplies the declared check actually executed, with its real stdout
+  and its real exit status. Both hashes were recomputed independently rather
+  than copied from the sibling receipt:
+  `compute_contract_entry_sha256(contract, "dod-occ-diff-derived-behavior-proof")`
+  from omnibase_core.validation.validator_receipt_gate returns
+  sha256:e481c256a41c54244f21d8f3ebf3292fb03bd6fd00ad319f7fddfce9c8439f3c, and
+  sha256 of the contract file returns
+  sha256:6798863b86241315b0bc3f47d00a891310ec5a5d9b21c1919c543005fa0da9f8 —
+  which independently matches the `contract_hashes` the failing validator run
+  itself reported for OMN-16842.
+
+  The `command` sibling is left in place: nothing here supersedes it, and
+  deleting an autobind artefact to make a gate pass would be the wrong move.
+
+  This is the SECOND observation of the generator defect today — OMN-16838 hit
+  the identical check_type mismatch on omninode_infra#1040 and recorded it for
+  ticketing rather than filing. It is now filed against the generator as
+  OMN-16859, so the next lane does not hand-patch a third one.
+exit_code: 0
+pr_number: 2964
+branch: "auto/omninode-ai-omnibase_infra-pr-2964-occ-autobind"
