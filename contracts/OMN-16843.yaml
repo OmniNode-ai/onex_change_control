@@ -1,0 +1,89 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16843"
+title: "Wire OMNINODE_INTERNAL_DB_URL on the compose lanes"
+summary: >
+  OMNINODE_INTERNAL_DB_URL was set by ZERO omnibase_infra compose files while its two sibling DSNs for
+  the same `omninode_runtime_service` topology binding were set by all five runtime services. handler_wiring
+  resolves each binding with os.environ.get(dsn_env, "") and raises on empty, so all 19 `database_ref:
+  application` contracts failed to prepare at every boot on every .201 compose lane. Auto-wiring is non-strict,
+  so the runtime reported status=healthy with those projections silently unattached. The P5 internal-projection
+  identity cutover already landed the Kubernetes half (omninode_infra#803); omnibase_infra#2968 is the
+  compose half.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_infra PR CI checks green"
+    command: "gh pr checks 2968 --repo OmniNode-ai/omnibase_infra"
+  - kind: "tests"
+    description: >
+      The AC5 regression gate added by the product PR, executed at ${OMNI_HOME}/omni_worktrees/OMN-16843/omnibase_infra.
+    command: "uv run pytest tests/unit/infra/test_compose_lane_internal_dsn_omn16843.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn16843-compose-internal-dsn"
+    description: >
+      Deploy-scope leg. The base compose file — merged first by resolve_compose_file_args for the dev,
+      stability-test and prod lanes — now sets OMNINODE_INTERNAL_DB_URL on the x-runtime-env anchor as
+      the non-superuser omninode_runtime principal. Falsifiable: the same probe at the parent SHA (ccaff4181)
+      returns RED, because the key appeared in no compose file at all.
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.infra.yml?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'OMNINODE_INTERNAL_DB_URL: "postgresql://omninode_runtime:' <<<"$body" && printf 'compose-internal-dsn-ok\n'
+  - id: "dod-omn16843-judge-lane-internal-dsn"
+    description: >
+      The judge lane rebuilds its whole runtime env block rather than merging the base x-runtime-env anchor,
+      so it inherits nothing and needs the key declared on its own anchor. Without this leg the base-file
+      fix would silently leave one live .201 lane unwired.
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.judge.yml?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'OMNINODE_INTERNAL_DB_URL: "postgresql://omninode_runtime:' <<<"$body" && printf 'judge-internal-dsn-ok\n'
+  - id: "dod-omn16843-no-superuser-in-internal-dsn"
+    description: >
+      AC4. Asserts the connection identity is NOT the postgres superuser, which is the table owner and
+      carries SUPERUSER + BYPASSRLS (owners are exempt from row-level security unconditionally, FORCE
+      included). Written in the OMN-15391 Rule D fail-closed form — the file is read ONCE into a variable,
+      the read is proven with a positive anchor, and only then is the superuser form asserted absent —
+      so a failed fetch goes RED instead of passing vacuously.
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.infra.yml?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'OMNINODE_INTERNAL_DB_URL: "postgresql://omninode_runtime:' <<<"$body" && ! grep -qF 'OMNINODE_INTERNAL_DB_URL: "postgresql://${POSTGRES_USER' <<<"$body" && printf 'non-superuser-internal-dsn-ok\n'
+  - id: "dod-omn16843-login-only-provisioning-seam"
+    description: >
+      The role is created NOLOGIN by migration 099 on purpose (094's invariant: no credential material
+      in a migration; the LOGIN attach is deployment-owned). This leg proves the compose-lane deployment
+      seam exists and mints the credential through LOGIN_ONLY_ROLE_MAP rather than SERVICE_DB_MAP, whose
+      grant_role_to_database() would issue GRANT USAGE, CREATE ON SCHEMA public and DELETE on all tables.
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/000_create_multiple_databases.sh?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'LOGIN_ONLY_ROLE_MAP' <<<"$body" && printf 'login-only-provisioning-seam-ok\n'
+  - id: "dod-omn16843-partial-injection-gate"
+    description: >
+      AC5 — the regression gate. Derives the binding's DSN set from the topology instance and asserts
+      that a compose service declaring ONE of them declares them ALL, which is the exact shape of this
+      defect (five services carried two of three). Without this leg the next lane rediscovers the gap
+      by hand.
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/infra/test_compose_lane_internal_dsn_omn16843.py?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'def test_every_runtime_service_declares_all_runtime_binding_dsns' <<<"$body" && printf 'partial-injection-gate-ok\n'
+  - id: "occ-self-bind-pr-7411"
+    description: >-
+      OCC self-binding receipt for PR #7411, the in-repo evidence PR carrying this contract. Binds OMN-16843
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7411 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq
+          '.number'
