@@ -10,6 +10,17 @@ evidence_requirements:
   - kind: "ci"
     description: "PR #1026 product diff scope present"
     command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "ci"
+    description: "DoD leg 2 — UNMET as of 2026-08-28. `deploy-onex-prod.yml` has never completed green
+      end-to-end. The command below exits 0 only once at least one dispatch in the last 100 runs carries
+      conclusion=success; it exits 1 today (zero successes across the full recorded history). Recorded
+      here rather than in dod_evidence on purpose: the receipt gate requires a PASS receipt on disk for
+      EVERY dod_evidence item, so declaring an honestly-red leg there would wedge the OMN-16757 receipt
+      gate for every future PR that cites this ticket. The Done flip is withheld by the unchecked Definition-of-Done
+      checkbox in the Linear description, which the OMN-16736 AC-coverage guard reads before any flip
+      path. Clearing it needs an operator dispatch under a live prod-promotion grant."
+    command: "gh run list --repo OmniNode-ai/omninode_infra --workflow deploy-onex-prod.yml --limit 100
+      --json conclusion --jq '[.[] | select(.conclusion == \"success\")] | length' | grep -qxv 0"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -82,3 +93,29 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7312 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OMN-16757-ac1-prod-roster-scoped"
+    description: "DoD leg 1 — the post-deploy gate's verdict reflects only workloads the prod overlay
+      ships. Executes the OMN-16757 roster-split suite that landed with omninode_infra#1026: it parses
+      scripts/post-deploy-verify.sh, asserts VERIFY_DEPLOYMENTS_COMMON / VERIFY_DEPLOYMENTS_DEV_ONLY and
+      the ENVIRONMENT combiner resolve prod to COMMON only (no omnimarket-projection-* deployment and
+      no omnimarket-projection-api service assertion on prod), and derives the promote-to-prod job timeout
+      budget from the workflow itself. Falsifiable: reverting the roster split or shrinking the job cap
+      turns this red."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/k8s/test_post_deploy_verify_env_roster.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-OMN-16757-ac3-gate-timeout-rollback"
+    description: "DoD leg 3 — deploy-onex-prod.yml no longer carries a step timeout smaller than the work
+      it schedules, plus the OMN-16757 conditional-rollback fix from omninode_infra#1029. Executes the
+      workflow seam suite, which extracts the real `run:` bodies from the parsed workflow and runs them
+      under bash against a stub kubectl: the post-deploy gate step timeout must cover deployments x ROLLOUT_TIMEOUT,
+      and `rollout undo deployment/onex-api` must fire only when this run actually mutated onex-api (onex_api_mutation
+      == updated), never on `created` or unset. Falsifiable: restoring the unconditional rollback or the
+      5-minute gate timeout turns this red."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/k8s/test_deploy_onex_prod_workflow.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
