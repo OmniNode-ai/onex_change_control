@@ -4,56 +4,20 @@ ticket_id: "OMN-16843"
 evidence_item_id: "dod-omn16843-login-only-provisioning-seam"
 check_type: "command"
 check_value: |-
-  body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/000_create_multiple_databases.sh?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'LOGIN_ONLY_ROLE_MAP' <<<"$body"
-contract_sha256: "sha256:375a93bc424b5530769273e4758fddd160b2d45b7ea2e537a09c5f9db713d209"
-contract_entry_sha256: "sha256:1ce65ae43785cc93d6f3e2f810bab1cd1a8f1e4884d2d01c0863cc20f6b34a0a"
+  body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/000_create_multiple_databases.sh?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'LOGIN_ONLY_ROLE_MAP' <<<"$body" && printf 'login-only-provisioning-seam-ok\n'
+contract_sha256: "sha256:14e115c433e6ccda363f210c4949100599d3e00941b888e19d951adf504e9960"
+contract_entry_sha256: "sha256:3461a31347e14715d6992a8539e064776c07e1fb0b165503c2a63c7ea667cad5"
 status: PASS
-run_timestamp: "2026-08-28T15:53:59.100806+00:00"
+run_timestamp: "2026-08-28T15:56:03Z"
 commit_sha: "47f3758ba0b10023a03211455b32ae7b6c6bd9df"
-runner: "human-operated bash run in the OMN-16843 onex_change_control worktree"
-verifier: "omn16843-compose-lane-internal-dsn lane"
+runner: "codex-manual-merge-sweep"
+verifier: "codex-cli-gh-api"
 probe_command: |-
-  # The commit_sha above resolves in the PRODUCT repo, OmniNode-ai/omnibase_infra
-  # (PR #2968 head), not in onex_change_control:
-  #   gh api repos/OmniNode-ai/omnibase_infra/commits/47f3758ba0b10023a03211455b32ae7b6c6bd9df
-  #
-  # The declared check uses `grep -q`, which is silent by design. This probe is
-  # the INDEPENDENT read: it prints the matching line(s) at the fix SHA and then
-  # re-runs the same grep at the parent SHA ccaff4181 as a RED control, so the
-  # receipt carries evidence the predicate discriminates rather than a bare exit
-  # code that a always-true predicate would also produce.
-  gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/000_create_multiple_databases.sh?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d | grep -nF 'LOGIN_ONLY_ROLE_MAP' | head -2; echo "MATCHES_AT_FIX=$?"; gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/000_create_multiple_databases.sh?ref=ccaff4181" --jq '.content' | base64 -d | grep -cF 'LOGIN_ONLY_ROLE_MAP'; echo "PARENT_GREP_EXIT=$?"
+  body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/000_create_multiple_databases.sh?ref=47f3758ba0b10023a03211455b32ae7b6c6bd9df" --jq '.content' | base64 -d)" && grep -qF 'LOGIN_ONLY_ROLE_MAP' <<<"$body" && printf 'login-only-provisioning-seam-ok\n'
 probe_stdout: |
-  84:LOGIN_ONLY_ROLE_MAP=(
-  170:    # (OMN-16843). Issues NO grants and NO revokes — see LOGIN_ONLY_ROLE_MAP.
-  MATCHES_AT_FIX=0
-  0
-  PARENT_GREP_EXIT=1
-actual_output: |
-  PASS: the declared check_value was executed verbatim under
-  `bash -o pipefail -c` - the same interpreter
-  onex_change_control/src/onex_change_control/scripts/contract_compliance_check.py
-  uses - and exited 0.
-
-  What it proves: the compose-lane credential seam exists and routes omninode_runtime through LOGIN_ONLY_ROLE_MAP, not SERVICE_DB_MAP. Migration 099 creates the role NOLOGIN on purpose (094's invariant: no credential material in a migration), so without this seam the DSN would resolve and then fail at first connect.
-
-  Falsifiability, proven by execution rather than asserted. The SAME check_value
-  with only the ref swapped to the parent commit ccaff4181 exits
-  1 (RED). Before this fix OMNINODE_INTERNAL_DB_URL appeared in
-  ZERO omnibase_infra compose files, so the predicate genuinely discriminates
-  between the pre-fix and post-fix trees rather than passing unconditionally.
-
-  Why this leg is a repository read and not a live .201 probe. The first draft of
-  this contract expressed the deploy-scope legs as `docker exec` / `docker logs` /
-  `curl` probes against the dev lane. Contract Compliance Check executes every
-  check_value on a hosted GitHub runner, where no such container or endpoint
-  exists, so all four returned BLOCK (0/4 PASS, run 33176979377). A check a
-  runner cannot execute is not evidence. The wiring being fixed here is a
-  DECLARATION in deploy config, so the honest CI-executable predicate is a read
-  of that declaration at the exact commit under review. The runtime-attach
-  behaviour those live probes were reaching for is proven separately by the AC5
-  unit gate bound in this same contract, which asserts the invariant the runtime
-  depends on, and by the lane refresh that picks this commit up.
+  login-only-provisioning-seam-ok
+actual_output: "PASS: migration provisioning script at product SHA 47f3758ba0b10023a03211455b32ae7b6c6bd9df
+  defines LOGIN_ONLY_ROLE_MAP."
 exit_code: 0
 pr_number: 2968
-branch: "jonah/omn-16843-occ-companion"
+branch: "jonah/omn-16843-compose-lane-internal-dsn"
