@@ -122,6 +122,159 @@
 # forward byte-identical from `main`; the only text this PR drops is the
 # OMN-16626 per-request paragraph, which documents the entries it prunes.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# GRANT REQUEST (OMN-16702 / OMN-16685) — PREP ONLY, staged by an agent lane on
+# 2026-08-28T21:15Z. THIS PR MUST NOT BE MERGED BY ANY AGENT. It becomes
+# effective only when a human operator lands it on `onex_change_control@main`
+# — that CODEOWNERS-gated merge is the anti-self-issue anchor an agent
+# structurally cannot complete (OMN-13418). The merge IS the approval act.
+#
+# WHAT THIS AUTHORIZES — tonight's two-step window, in this order:
+#
+#   STEP 1 (gated pipeline). Exactly one `deploy-onex-prod.yml` dispatch run
+#   from `refs/heads/main` with `include_onex_public=true`, which converges the
+#   PUBLIC cluster's production-serving `onex-dev` namespace from
+#   `k8s/onex-public` (OMN-16685 Option A / OMN-16702). The recommended shape
+#   is `deploy_target=runtime-only`, `include_onex_public=true`,
+#   `reclaim_api_hostname=false` — see "DISPATCH SHAPE" below.
+#
+#   STEP 2 (operator-scheduled, no pipeline exists). The `dev/dev-valkey`
+#   `--requirepass` roll on the same cluster, per
+#   `omninode_infra/docs/runbooks/OMN-16702-dev-valkey-requirepass-roll.md`.
+#   NO workflow in omninode_infra applies `k8s/dev/**` — `grep -rn "k8s/dev"
+#   .github/workflows/` returns nothing — so this half is a hand-run apply by
+#   one operator at a terminal. Entry 4 below records the authorization; no
+#   gate reads it (see "WHAT IS AND IS NOT MECHANICALLY ENFORCED").
+#
+# It authorizes NO OTHER prod mutation. NO PROD MUTATION HAS OCCURRED. In
+# particular it does NOT authorize `reclaim_api_hostname=true`, does NOT
+# authorize an `onex-api` promotion in `onex-prod`, and does NOT re-authorize
+# anything under the OMN-16799 batch below.
+#
+# MANIFEST PROVENANCE. `deploy-onex-prod.yml` refuses any dispatch whose
+# GITHUB_REF is not `refs/heads/main`, so the tree that will be applied is
+# `k8s/onex-public` at omninode_infra `main`. Its git tree SHA is
+# `04c2fe17e6a7478271e1358b78ee9afda6aa544b`, byte-identical to the same path
+# on `dev` (verified `git rev-parse origin/main:k8s/onex-public ==
+# origin/dev:k8s/onex-public`, 2026-08-28). This schema has NO manifest-ref
+# field — `image_digest` is regex-constrained to `sha256:[0-9a-f]{64}` and a
+# 40-hex git tree SHA cannot be expressed in it — so the tree SHA is recorded
+# HERE, in prose, and each entry below pins the actual container digest that
+# tree writes onto the cluster.
+#
+# WHAT IS AND IS NOT MECHANICALLY ENFORCED — stated plainly rather than
+# implied, because three of these four entries are documentary:
+#
+#   Entry 1 (runtime sha256:13c96028…) IS read by a gate. The step "Enforce
+#   prod-promotion grant — runtime image (OMN-14209)" carries NO `if:` guard,
+#   so it runs on EVERY dispatch including `deploy_target=runtime-only`, and
+#   resolves RUNTIME_IMAGE_REF from `k8s/onex-prod/runtime/kustomization.yaml`.
+#   Without entry 1 the dispatch BLOCKS before it reaches anything else.
+#
+#   Entries 2, 3 and 4 are NOT read by any gate. `scripts/validate_prod_promotion_grant.py`
+#   is invoked exactly three times in that workflow — runtime image, onex-api
+#   image (`if: deploy_target != 'runtime-only'`), and the OMN-16838 omniweb
+#   public-surface planner. NONE of them resolves a digest out of
+#   `k8s/onex-public`, and NOTHING resolves a grant for `k8s/dev/**`. That is a
+#   real coverage gap in the pipeline, not a claim that these mutations are
+#   unauthorized: entries 2-4 exist so that the operator's single CODEOWNERS
+#   merge is a legible authorization of the production content that actually
+#   changes tonight, satisfying OMN-16702 AC5 ("mutation performed only under a
+#   prod-grade grant, cited in the closeout"). The same disclosure pattern was
+#   used for `grant-9c23ed5d-…` under OCC#7213. Do not read entries 2-4 as
+#   pipeline enforcement.
+#
+# DISPATCH SHAPE, and why `runtime-only`. On 2026-08-28T20:42Z, run
+# 33209359978 (`main`, dispatcher `daniyalabbas96`) failed at step 34
+# "Advisory lock quiesce gate" — "returned non-numeric output; refusing
+# deployment" — and again at step 39 "Post-deploy verification gate
+# (OMN-11969)" on check 8 (tenant-event outbox flusher log line absent while
+# KAFKA_BOOTSTRAP_SERVERS is configured; GATE_OUTCOME=ran-drift). The advisory
+# lock gate carries `if: inputs.deploy_target != 'runtime-only'`, so a
+# `runtime-only` dispatch skips it. The post-deploy gate carries
+# `if: "!cancelled()"` and runs regardless — see "PRECONDITION NOT YET TRUE".
+#
+# ENTRY 1 IS A SAME-DIGEST AUTHORIZATION, NOT A NEW PROMOTION.
+# sha256:13c96028… is (a) the digest pinned in
+# `k8s/onex-prod/runtime/kustomization.yaml` on `main` and `dev`, (b) the
+# digest `onex-prod/omninode-runtime` is already running, and (c) the digest
+# all four `onex-dev` runtime Deployments on the public cluster are already
+# running. All three verified live 2026-08-28T21:08Z, read-only SSM
+# `9a6e54d9-4c89-44b3-b715-34e4f4d4335d`, `--comment
+# OMN-16702-roll-staging-readonly`. The runtime half of both applies is
+# therefore a no-op and reschedules no runtime pod.
+#
+# WHAT ACTUALLY CHANGES ON THE CLUSTER (entries 2 and 3, same read-only
+# capture):
+#   * `onex-dev/omnidash` live image is the multi-arch INDEX digest
+#     sha256:483939d1…, which OMN-16805 established has been EXPIRED FROM ECR.
+#     The tree re-addresses it to the surviving `linux/amd64` child
+#     sha256:50601f9e… (entry 2). This is an image-ref change, so the omnidash
+#     pod restarts — and the same apply repoints its SESSION_STORE_URL from
+#     the unauthenticated `dev/dev-valkey` to the authenticated
+#     `data-plane/omninode-valkey`. Every live `dash.omninode.ai` session is
+#     invalidated at that moment. That is the intended, documented effect.
+#   * `onex-dev/onex-api` live image is the mutable tag
+#     `omnicloud/core:latest`, which the 2026-08-27 prod-currency audit found
+#     DELETED from ECR (`ImageNotFoundException`). The pod survives only
+#     because its layers are resident on the node. The tree pins it to
+#     sha256:b4c32554… (entry 3) — the digest that pod is already running, per
+#     its own imageID — so this is a re-addressing of the SAME image, not a
+#     version change, but it does restart the deployment serving
+#     `api.omninode.ai`.
+#
+# NO OMNIWEB GRANT IS NEEDED, verified rather than assumed. The OMN-16838
+# planner fires on CHANGE: `onex-prod/omniweb` is live on
+# sha256:eef1694295dcbfdb387e40a4e4cbcab433c9123cbfadbc29d277af743f0b7cda
+# (read-only SSM `9a6e54d9…`), which equals the pin in
+# `k8s/onex-prod/omniweb/deployment.yaml` on `main`. Run 33209359978's step 28
+# passed on that same equality with no omniweb entry present. If the live
+# digest moves before the window, this file needs a fourth ECR entry.
+#
+# PRECONDITION NOT YET TRUE AT STAGING TIME — the approver should know this
+# before merging. The `k8s/onex-public` steps (41-48) carry a bare
+# `if: inputs.include_onex_public`, i.e. GHA's implicit `success()`. The
+# post-deploy verification gate (step 39, `if: "!cancelled()"`) runs BEFORE
+# them and failed on 2026-08-28T20:44Z on check 8. While that check fails, the
+# PUBLIC block is SKIPPED and the onex-public apply CANNOT run — on any
+# `deploy_target`, `runtime-only` included. Merging this grant does not fix
+# that; it only removes the authorization blocker. This is disclosed here
+# rather than discovered at 3am.
+#
+# `approved_by` BELOW IS A PROPOSAL, NOT AN APPROVAL. As staged, the PR author
+# and `approved_by` are both `jonahgabriel` — self-approval on this file's own
+# header rule (step 4 above). Disclosed rather than claimed away; the
+# CODEOWNERS approver confirms or replaces it at merge time. It is a real
+# login, not a placeholder, for the reason OCC#7213 recorded: the consumer
+# enforces `approved_by != requested_by` against `github.actor`, and a
+# synthetic placeholder would compare unequal to EVERY dispatcher, silently
+# disabling the only mechanical anti-self-approval check on this path.
+#
+# ANTI-SELF-APPROVAL IS SATISFIED ON THE DISPATCHER SIDE. With the staged
+# value, the `workflow_dispatch` actor for `deploy-onex-prod.yml` MUST NOT be
+# `jonahgabriel`. The identity that has dispatched this workflow all week is
+# `daniyalabbas96` (runs 33117155819, 33209359978). If `approved_by` is
+# changed at merge time, re-derive the permitted dispatcher from the new value.
+#
+# `expires_at: 2026-08-29T09:00:00Z` IS A PROPOSAL — ~12h from staging, i.e.
+# tonight's window and nothing beyond it. The approver may shorten it before
+# merging; merging is approving. `requested_by` is deliberately not a YAML
+# field (see schema above) — the requester is the agent lane named at the top
+# of this block.
+#
+# THE OMN-16799 ENTRIES BELOW ARE CARRIED FORWARD UNTOUCHED, AND THAT IS A
+# DECISION, NOT AN OVERSIGHT. Run 33209359978 resolved BOTH of them (steps 25
+# and 26 both `success`) and then reached a terminal state — but the promotion
+# they authorized never executed: step 35 "Deploy onex-api to PROD using
+# digest" was SKIPPED after the advisory-lock gate failed, and steps 49-50
+# (the `api.omninode.ai` reclaim) were skipped with it. Whether that counts as
+# "consumed" under OMN-13424 is the operator's call, and marking or pruning
+# them here would silently strand the OMN-16799 cutover. This PR does not
+# decide it. Both carry `expires_at: 2026-08-30T16:00:00Z`, still in the
+# future, so the OMN-13424 no-expired-entry invariant holds at merge time —
+# but if this PR is still open after 2026-08-30T16:00Z, CI will fail on them
+# and they must be pruned then.
+# ---------------------------------------------------------------------------
 entries:
   - grant_id: grant-7ebd7674-9b25-466c-920d-a74a0f3efadb
     runtime_lane: prod
@@ -189,3 +342,130 @@ entries:
       omninode_infra's `scripts/validate_prod_promotion_grant.py` (OMN-14209). No raw SSH/kubectl path
       is used or implied. NO PROD MUTATION HAS OCCURRED OR IS AUTHORIZED BY THIS PR; the workflow_dispatch
       is a separate, explicit, subsequent human action by a dispatcher who is not `approved_by`.
+  - grant_id: grant-6219b88c-72a7-40ec-9fef-a4e95729021c
+    runtime_lane: prod
+    image_digest: sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6
+    promotion_batch_id: batch-af8142c0-f2bf-4d79-887a-e65d964c9da8
+    # PROPOSAL — the CODEOWNERS approver sets this at merge time (see header).
+    approved_by: jonahgabriel
+    expires_at: "2026-08-29T09:00:00Z"
+    created_at: "2026-08-28T21:15:00Z"
+    reason: >-
+      OMN-16702/OMN-16685 entry 1 of 4 — THE ONLY MECHANICALLY-REQUIRED ENTRY IN THIS BATCH, and a RUNTIME
+      SAME-DIGEST AUTHORIZATION rather than a new runtime promotion. Authorizes exactly one `deploy-onex-prod.yml`
+      dispatch from refs/heads/main with `include_onex_public=true` (recommended shape: deploy_target=runtime-only,
+      include_onex_public=true, reclaim_api_hostname=false), which converges the PUBLIC cluster i-0e596e8b557e27785's
+      production-serving `onex-dev` namespace from `k8s/onex-public` (git tree SHA 04c2fe17e6a7478271e1358b78ee9afda6aa544b,
+      identical on main and dev). It is required because "Enforce prod-promotion grant — runtime image
+      (OMN-14209)" carries NO `if:` guard — its own comment says "Runtime image is deployed unconditionally
+      for every deploy_target value ... so this check also runs unconditionally" — and resolves RUNTIME_IMAGE_REF
+      from `k8s/onex-prod/runtime/kustomization.yaml`, which pins sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6
+      on both main and dev. With no covering entry the dispatch BLOCKS before it reaches the onex-public
+      block at all. NO RUNTIME POD IS RESCHEDULED BY THIS ENTRY: the same digest is already live on onex-prod/omninode-runtime
+      AND on all four onex-dev runtime Deployments on the public cluster, verified read-only 2026-08-28T21:08Z
+      via SSM CommandId 9a6e54d9-4c89-44b3-b715-34e4f4d4335d (--comment OMN-16702-roll-staging-readonly),
+      so `kubectl apply -k` is a no-op for the runtime image in both trees. NOT AUTHORIZED BY THIS ENTRY:
+      reclaim_api_hostname=true, and any onex-api promotion in onex-prod. ROLLBACK: the workflow's "Roll
+      back newly-created PUBLIC objects on failure (OMN-16685)" step diffs the pre-apply object inventory
+      for namespace onex-dev and deletes what this run newly created; an in-place spec change to an existing
+      Deployment is reverted by `kubectl -n onex-dev rollout undo deployment/<name>`, and the declared
+      rollback target for the two workloads this run re-images is the prior ReplicaSet (omnidash → the
+      index ref sha256:483939d1…, onex-api → the tag `omnicloud/core:latest`) — BOTH OF WHICH ARE UNPULLABLE
+      FROM ECR TODAY, so a rollback survives only as long as the node's containerd still holds those layers.
+      Fix-forward is the preferred posture. Consumer: omninode_infra's `scripts/validate_prod_promotion_grant.py`
+      (k3s/EKS cloud plane, OMN-14209), NOT the `.201` compose-lane node_redeploy_orchestrator path. No
+      raw SSH/kubectl retag/recreate path is used or implied. NO PROD MUTATION HAS OCCURRED OR IS AUTHORIZED
+      BY THIS PR; the workflow_dispatch is a separate, explicit, subsequent human action by a dispatcher
+      who is not `approved_by`.
+  - grant_id: grant-a24c94a4-a8b8-409b-ad60-2d99384e6044
+    runtime_lane: prod
+    image_digest: sha256:50601f9e7c128724f09683d7a7e68aef8ef9bad7019dfbe44d2560b1ca3b9bdb
+    promotion_batch_id: batch-af8142c0-f2bf-4d79-887a-e65d964c9da8
+    # PROPOSAL — the CODEOWNERS approver sets this at merge time (see header).
+    approved_by: jonahgabriel
+    expires_at: "2026-08-29T09:00:00Z"
+    created_at: "2026-08-28T21:15:00Z"
+    reason: >-
+      OMN-16702/OMN-16685 entry 2 of 4 — DOCUMENTARY, NOT READ BY ANY GATE. State this plainly: no step
+      in `deploy-onex-prod.yml` resolves a digest out of `k8s/onex-public` against this file, so nothing
+      mechanically enforces this entry. It exists so the operator's single CODEOWNERS merge is a legible
+      authorization of the production content that actually changes, per OMN-16702 AC5 ("mutation performed
+      only under a prod-grade grant, cited in the closeout"); same disclosure pattern as grant-9c23ed5d-…
+      under OCC#7213. WHAT IT COVERS: `onex-dev/omnidash` on the public cluster — the workload serving
+      dash.omninode.ai — moves from the multi-arch INDEX ref sha256:483939d13a3cf721be5a15dbff0a63e12d0f31c264eba2f6189b9631dcb80894
+      (live 2026-08-28T21:08Z, SSM 9a6e54d9…; EXPIRED FROM ECR per OMN-16805, surviving only in the node's
+      containerd) to its surviving linux/amd64 child sha256:50601f9e7c128724f09683d7a7e68aef8ef9bad7019dfbe44d2560b1ca3b9bdb,
+      already the ref used by k8s/onex-prod/omnidash under OMN-16207. SAME BINARY, PULLABLE ADDRESS —
+      not a version change. The SAME apply repoints omnidash's SESSION_STORE_URL from the UNAUTHENTICATED
+      `redis://dev-valkey.dev.svc.cluster.local:6379` (live value confirmed in the same capture) to `redis://:$(VALKEY_PASSWORD)@omninode-valkey.data-plane.svc.cluster.local:6379`.
+      USER-VISIBLE EFFECT, stated rather than buried: the pod restarts and EVERY live dash.omninode.ai
+      session is invalidated at that moment. That is the intended effect and the reason the operator,
+      not a schedule, picks the window. ORDERING: this apply is deliberately FIRST, before the dev/dev-valkey
+      requirepass roll (entry 4), so that dashboard sessions are already off dev-valkey when the roll
+      lands and the roll's blast radius shrinks to Infisical only. PRECONDITION the workflow enforces
+      itself: `onex-dev/onex-valkey-credentials` does not exist (verified NotFound in the same capture)
+      and the five referencing Deployments use NON-optional secretKeyRefs, so the "Prepare Valkey mirror
+      secret before PUBLIC apply (OMN-16685)" step must create it before the apply or all five land in
+      CreateContainerConfigError. ROLLBACK: `kubectl -n onex-dev rollout undo deployment/omnidash`, caveated
+      as in entry 1 — the prior ref is not pullable from ECR.
+  - grant_id: grant-68783635-e5c2-4b72-8d54-3bc31218a28f
+    runtime_lane: prod
+    image_digest: sha256:b4c325545e1012aef53772d1a3f5a30eb9af3809b9a4036e28a156db906581bc
+    promotion_batch_id: batch-af8142c0-f2bf-4d79-887a-e65d964c9da8
+    # PROPOSAL — the CODEOWNERS approver sets this at merge time (see header).
+    approved_by: jonahgabriel
+    expires_at: "2026-08-29T09:00:00Z"
+    created_at: "2026-08-28T21:15:00Z"
+    reason: >-
+      OMN-16702/OMN-16685 entry 3 of 4 — DOCUMENTARY, NOT READ BY ANY GATE (same disclosure as entry 2;
+      the OMN-14209 onex-api gate resolves the ECR digest for the dispatched commit_sha in namespace onex-prod,
+      and is SKIPPED entirely on the recommended deploy_target=runtime-only shape — it never looks at
+      k8s/onex-public). WHAT IT COVERS: `onex-dev/onex-api` on the public cluster — the workload Traefik
+      currently serves for api.omninode.ai — is live on the MUTABLE TAG `272493677981.dkr.ecr.us-east-1.amazonaws.com/omnicloud/core:latest`
+      (verified live 2026-08-28T21:08Z, SSM 9a6e54d9…), a tag the 2026-08-27 prod-currency audit found
+      DELETED from ECR (ImageNotFoundException). The pod is running only because its layers are resident
+      on the node at replicas=1. `k8s/onex-public/api/deployment.yaml` pins it to sha256:b4c325545e1012aef53772d1a3f5a30eb9af3809b9a4036e28a156db906581bc
+      — the digest that same pod reports as its own imageID — so this is a RE-ADDRESSING of the running
+      image, not a version change. It nonetheless RESTARTS the deployment fronting api.omninode.ai; budget
+      for a brief 5xx window and watch `https://api.omninode.ai/health`. EXPLICITLY NOT AUTHORIZED HERE:
+      the OMN-16799 `reclaim_api_hostname=true` Ingress delete, and the onex-prod onex-api promotion to
+      sha256:bc95b9bc… — those are the OMN-16799 batch below, they are a different change, and tonight's
+      dispatch must run with reclaim_api_hostname=false. `k8s/onex-public` ships no Ingress objects and
+      a test enforces that, so nothing in tonight's apply touches hostname routing. ROLLBACK: `kubectl
+      -n onex-dev rollout undo deployment/onex-api` restores the `:latest` tag reference, which is NOT
+      pullable — the pod would survive on cached layers or not at all. Fix-forward.
+  - grant_id: grant-6627c1d1-bdff-465c-a8a7-240bb8889c2d
+    runtime_lane: prod
+    image_digest: sha256:53ae53785f9d46b820ed025077de0eec1ef53b31954194af1a67dee4a5c5e04f
+    promotion_batch_id: batch-af8142c0-f2bf-4d79-887a-e65d964c9da8
+    # PROPOSAL — the CODEOWNERS approver sets this at merge time (see header).
+    approved_by: jonahgabriel
+    expires_at: "2026-08-29T09:00:00Z"
+    created_at: "2026-08-28T21:15:00Z"
+    reason: >-
+      OMN-16702 entry 4 of 4 — DOCUMENTARY, NOT READ BY ANY GATE, AND THE ONLY ENTRY IN THIS BATCH THAT
+      NO PIPELINE COULD EVER READ. WHY IT EXISTS: OMN-16702 AC5 requires that the mutation be performed
+      under a prod-grade grant cited in the closeout, and STEP 2 of tonight's window — the `--requirepass`
+      roll of `dev/dev-valkey` on the same public cluster — has NO pipeline at all. `grep -rn "k8s/dev"
+      .github/workflows/` in omninode_infra returns nothing; that absence is the structural defect OMN-16702
+      surfaced and does not close. The roll is therefore a hand-run apply by one operator at a terminal,
+      per docs/runbooks/OMN-16702-dev-valkey-requirepass-roll.md, and THIS ENTRY plus the operator-consent
+      row in omni_home/docs/tracking/ROLLING_WORK_LEDGER.md are its authorization record — not a gate.
+      image_digest is the digest of the valkey server image the StatefulSet already pins (`valkey/valkey:8.0@sha256:53ae53785f9d46b820ed025077de0eec1ef53b31954194af1a67dee4a5c5e04f`
+      in k8s/dev/valkey/statefulset.yaml); the roll does NOT change the image, it adds `--requirepass
+      "$(cat /etc/valkey-secret/password)"` and mounts a Secret, so the digest is recorded as the identity
+      of the workload being mutated, not as a promotion target. This schema has no other way to name a
+      non-image mutation. LIVE DRIFT RE-CONFIRMED read-only 2026-08-28T21:08Z (SSM 9a6e54d9-4c89-44b3-b715-34e4f4d4335d,
+      --comment OMN-16702-roll-staging-readonly): command ["valkey-server"], args ["--save","60","1","--loglevel","warning"]
+      — no --requirepass, no credential; `dev/dev-valkey-credentials` NotFound; generation == observedGeneration
+      == 1; 695 keys / 25 with TTLs; 32 connected clients resolving to exactly TWO consumers (30 from
+      10.42.0.45 = dev/infisical, 1 from 10.42.0.147 = onex-dev/omnidash, 1 loopback = the probe itself),
+      so the runbook's Step 1b abort condition — an unknown consumer — is NOT triggered. IMPACT: the roll
+      restarts the server and Infisical, so every signed-in Infisical web session on this cluster is dropped
+      and everyone re-authenticates. dash.omninode.ai is unaffected PROVIDED entry 2's apply has already
+      landed and omnidash is off dev-valkey; run in the other order it would break dashboard sessions
+      too. THE PASSWORD VALUE IS GENERATED ON THE HOST DIRECTLY INTO THE K8S SECRET BY scripts/bootstrap-dev-valkey-credential.sh
+      AND IS NEVER PRINTED, LOGGED, ECHOED, OR RETURNED ANYWHERE. ROLLBACK: `kubectl -n dev rollout undo
+      deployment/infisical` then `kubectl -n dev rollout undo statefulset/dev-valkey`, in that order;
+      the credential Secret is deliberately NOT deleted on rollback. Rollback is a SECURITY REGRESSION,
+      not a neutral outcome — if used, the exposure returns and OMN-16702 stays open.
