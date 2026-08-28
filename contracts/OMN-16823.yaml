@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16823"
+title: "CR-thread-gate concession detection — agreement-plus-deferral class"
+summary: >
+  OCC evidence companion for OmniNode-ai/omniclaude PR (branch jonah/omn-16823-cr-concession-detect).
+  The required `gate / CodeRabbit Thread Check` context counted a CodeRabbit review thread as blocking
+  after CodeRabbit had conceded the finding in-thread and agreed to defer it to a ticket, because the
+  concession match in scripts/check-unresolved-threads.sh did not recognize the agreement-plus-deferral
+  phrasing class. The fix widens DETECTION only: the class is a conjunction (agreement token AND deferral
+  token AND no negation/escalation marker) evaluated over the salient reply body, on top of the pre-existing
+  human-rebuttal precondition. No auto-resolution is introduced; `pr_review_bot` remains the sole resolver
+  of CodeRabbit threads.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Behavior proof. The suite executes the real jq filters out of scripts/check-unresolved-threads.sh
+      (sourced from the script, not hand-copied) against fixtures. The positive case is the VERBATIM CodeRabbit
+      reply from omnibase_core#1604 thread 2 of 3 on src/omnibase_core/models/cli/model_cli_user_config_logging.py
+      — "agreed that `EnumLogLevel` cannot represent this YAML contract ... deferring the validation design
+      to OMN-16037 is reasonable". That case failed (blocking=1, expected 0) before the fix and passes
+      after it. Seven permanent negative controls run in the same suite and each assert blocking=1: an
+      unanswered CodeRabbit finding; a reply that escalates while reusing the deferral vocabulary; an
+      explicitly negated agreement over the same deferral sentence; agreement on a sub-point with the
+      finding kept; the concession vocabulary present only inside an auto-generated <details> block; agreement-plus-deferral
+      with no human rebuttal; and a truncated thread. The suite also asserts the gate script contains
+      no thread-resolution mutation.
+    command: "uv run pytest tests/scripts/test_check_unresolved_threads_filters.py -q --color=no"
+  - kind: "ci"
+    description: >-
+      Enforcement (omni_home Operating Rule 5). The suite is wired as a pre-commit hook (`cr-thread-gate-filters`)
+      and as a step in the CI `quality` job, which feeds the required `quality-gate` context. It was previously
+      an opt-in script wired to nothing.
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-16823-concession-detection-behavior"
+    description: >-
+      AC1/AC2/AC3 behavior proof for OMN-16823, executed rather than asserted. `pytest` is a BEHAVIOR-class
+      command head under omnimarket.nodes.node_dod_verify.services.check_proof_class, and the check is
+      falsifiable by construction: the same command against the pre-fix script fails on Case K (`FAIL
+      Case K: expected 0 got 1`), which is the defect OMN-16823 reports. AC3's negative controls are proven
+      by execution inside the same run — cases L through R each inject a non-concession and assert the
+      gate stays red, so a widened match cannot degrade into "any CodeRabbit reply clears the thread".
+      AC4 is asserted mechanically too: the suite greps the gate script for resolveReviewThread / unresolveReviewThread
+      / --resolve and fails if any appears, keeping `pr_review_bot` the sole resolver.
+    source: "manual"
+    linear_dod_text: >-
+      The concession phrasing class is recognized; a test pins the new behavior with the #1604 reply text
+      as a positive case; negative controls (unanswered finding, non-conceding reply) permanently stay
+      blocking, proven by execution; no auto-resolution is introduced.
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/scripts/test_check_unresolved_threads_filters.py -q --color=no"
+      - check_type: "test_passes"
+        check_value: "bash tests/scripts/test_check_unresolved_threads.sh"
