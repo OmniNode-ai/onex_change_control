@@ -272,3 +272,24 @@ dod_evidence:
         check_value: >-
           grep -q '^pr_number: 4059$' drift/dod_receipts/OMN-14471/occ-self-bind-pr-4059/command.yaml
           && grep -q '3d0f4f972' drift/dod_receipts/OMN-14471/occ-self-bind-pr-4059/command.yaml
+  - id: omn16916-dispatch-b30107b7-hs
+    description: >-
+      Append-only re-assertion of dod-dispatch-parity-baseline-b30107b7 under OMN-16916 AC3 (SIGPIPE corpus
+      remediation). The asserted CONTENT is unchanged and still holds -- same three JSON-field needles
+      read from the same pinned baseline-selection-v2.json at ref b30107b73b161f327b3cb6c10858eec81111f288
+      through the same GitHub contents API. What was wrong was the SHELL FORM: the compliance runner executes
+      check_values under bash -o pipefail -c, and the printf '%s' "$B" | grep -q idiom is a latent exit
+      141 -- grep -q exits on its first match and closes the pipe, killing printf with SIGPIPE, and pipefail
+      surfaces that as 141 even though every assertion actually passed. Measured directly this session:
+      10/10 bash -o pipefail -c runs on the original item's exact bytes exit 141, deterministic for this
+      instance. The merged item and its merged receipt are left byte-untouched per this repo's append-only
+      evidence discipline; this item re-states the identical assertion with here-string redirection (grep
+      -q '...' <<< "$B"), which has no pipe stage and so cannot be SIGPIPE'd regardless of size or match
+      position. Confirmed deterministically safe: 5/5 runs exit 0 under bash -o pipefail -c.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: |-
+          B=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/fixtures/dispatch_parity/baseline-selection-v2.json?ref=b30107b73b161f327b3cb6c10858eec81111f288" --jq .content | base64 -d); grep -q '"contracts_discovered": 122' <<< "$B" && grep -q '"omnibase_infra": 111' <<< "$B" && grep -q '"discovery_errors": 0' <<< "$B"
+    evidence_artifact: supersedes_dod_evidence:dod-dispatch-parity-baseline-b30107b7
