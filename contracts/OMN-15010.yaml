@@ -1,0 +1,95 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-15010
+title: Live prune of expired-grant residue from the prod-promotion trust anchor on main
+summary: >-
+  OMN-15010 asks a falsifiable question — does expired-grant residue actually accumulate in onex_change_control@main's
+  grants/prod_promotion_grants.yaml, and does anything ever run it down? This contract records the answer
+  and the corrective action. The answer is YES, residue accumulates: as of 2026-08-29T12:12Z the registry
+  on main carried four entries under promotion_batch_id batch-af8142c0-f2bf-4d79-887a-e65d964c9da8 (grant-6219b88c,
+  grant-a24c94a4, grant-68783635, grant-6627c1d1) whose expires_at of 2026-08-29T09:00:00Z had already
+  passed. Nothing prunes them automatically: validate-prod-promotion-grants.yml has NO `schedule:` trigger
+  — it fires only on pull_request touching that path, on merge_group, and on push to dev/main — so an
+  expired entry sits red on main until a human opens a prune PR. That is the OMN-15010 finding, and this
+  PR is the prune. It removes exactly those four entries and NOTHING else: the two still-valid OMN-16799
+  cutover entries under batch-404af076-32a6-449c-b60a-1e8848e3fe3c (expires_at 2026-08-30T16:00:00Z) are
+  carried forward byte-identical, and every comment line in the file is untouched. The diff shape is the
+  one commit 2a3be3fad ("chore(OMN-13424): prune expired prod grant", OCC#5382) established: prune entries,
+  leave the header prose alone. PREP/HYGIENE ONLY — this PR authorizes NO prod mutation, adds NO grant,
+  and widens NO permission; it only removes dead authorizations. It nevertheless touches the CODEOWNERS-protected
+  registry, so it MUST NOT be merged by any agent: the @OmniNode-ai/platform-leads merge is the operator's
+  act alone (OMN-13418).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: manual
+    description: >-
+      The four expired batch-af8142c0 entries are absent from the registry, the two valid batch-404af076
+      entries survive, and the repository's own prod-promotion-grant schema suite — which carries the
+      OMN-13424 no-expired-entry invariant — passes against the pruned file.
+    command: >-
+      grep -Fq 'batch-404af076-32a6-449c-b60a-1e8848e3fe3c' grants/prod_promotion_grants.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-expired-af8142c0-pruned-omn15010"
+    description: >-
+      All four EXPIRED entries under promotion_batch_id batch-af8142c0-f2bf-4d79-887a-e65d964c9da8 are
+      gone from grants/prod_promotion_grants.yaml — grant-6219b88c-72a7-40ec-9fef-a4e95729021c (omninode-runtime
+      sha256:13c96028…), grant-a24c94a4-a8b8-409b-ad60-2d99384e6044 (omnidash sha256:50601f9e…), grant-68783635-e5c2-4b72-8d54-3bc31218a28f
+      (omnicloud/core sha256:b4c32554…) and grant-6627c1d1-bdff-465c-a8a7-240bb8889c2d (valkey/valkey:8.0
+      sha256:53ae5378…), plus the batch id itself. All four carried expires_at 2026-08-29T09:00:00Z, which
+      was already in the past when this prune was staged. The check is falsifiable in the useful direction:
+      it FAILS on onex_change_control@main as it stands today, and passes only on a tree where the prune
+      has been applied.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run python -c 'import yaml; e = yaml.safe_load(open("grants/prod_promotion_grants.yaml"))["entries"];
+          pruned = ["grant-6219b88c-72a7-40ec-9fef-a4e95729021c", "grant-a24c94a4-a8b8-409b-ad60-2d99384e6044",
+          "grant-68783635-e5c2-4b72-8d54-3bc31218a28f", "grant-6627c1d1-bdff-465c-a8a7-240bb8889c2d"];
+          ids = {x["grant_id"] for x in e}; batches = {x["promotion_batch_id"] for x in e}; residue =
+          sorted(ids & set(pruned)); assert residue == [], residue; assert "batch-af8142c0-f2bf-4d79-887a-e65d964c9da8"
+          not in batches, batches; print("PASS: 0 of the 4 batch-af8142c0 grant_ids remain and the batch
+          id is absent; registry now holds %d entries" % len(e))'
+  - id: "dod-valid-404af076-preserved-omn15010"
+    description: >-
+      The prune is surgical, and this item is what makes that claim falsifiable rather than asserted.
+      Both still-valid OMN-16799 cutover entries under promotion_batch_id batch-404af076-32a6-449c-b60a-1e8848e3fe3c
+      — grant-7ebd7674-9b25-466c-920d-a74a0f3efadb (the runtime same-digest authorization) and grant-7013b49e-f714-4ead-8910-e6ffda84df56
+      (the onex-api promotion + api.omninode.ai hostname reclaim) — survive this PR untouched, along with
+      their expires_at of 2026-08-30T16:00:00Z. Those entries are the reason this prune is urgent rather
+      than cosmetic: they share the file with the expired rows, so while the registry is red on the OMN-13424
+      invariant, the live cutover grant is exposed to the same red gate.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run python -c 'import yaml; e = yaml.safe_load(open("grants/prod_promotion_grants.yaml"))["entries"];
+          kept = [x for x in e if x["promotion_batch_id"] == "batch-404af076-32a6-449c-b60a-1e8848e3fe3c"];
+          ids = sorted(x["grant_id"] for x in kept); assert ids == ["grant-7013b49e-f714-4ead-8910-e6ffda84df56",
+          "grant-7ebd7674-9b25-466c-920d-a74a0f3efadb"], ids; assert all(x["expires_at"] == "2026-08-30T16:00:00Z"
+          for x in kept), kept; assert len(e) == len(kept), "registry holds entries outside the preserved
+          batch"; print("PASS: both batch-404af076 entries preserved with expires_at 2026-08-30T16:00:00Z:
+          %s" % ", ".join(ids))'
+  - id: "dod-no-expired-entry-omn15010"
+    description: >-
+      The repository's own prod-promotion-grant schema suite passes against the pruned registry, including
+      the OMN-13424 at-rest invariant that refuses ANY entry whose expires_at is in the past. Executed
+      hermetically from the repo checkout. Independently corroborated by re-executing the validator body
+      extracted verbatim from .github/workflows/validate-prod-promotion-grants.yml against the same file,
+      which reported "PASS: grants/prod_promotion_grants.yaml — 2 grant(s) validated successfully"; the
+      same body run against origin/main's unpruned file reported "FAIL … 4 schema violation(s)", each
+      one an EXPIRED entry. The two producer-side checks agree and neither is a re-implementation of the
+      other.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants.py -q"
