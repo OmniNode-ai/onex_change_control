@@ -60,3 +60,25 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 5676 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: omn16916-15529-deploy-assess-hs
+    description: >-
+      Append-only re-assertion of dod-deploy-assessment-falsifiable under OMN-16916 AC3 (SIGPIPE corpus
+      remediation). The asserted CONTENT is unchanged and still holds -- same two needles (x-runtime-env,
+      ONEXBOT_OCC_PRIVATE_KEY) read from the same pinned docker-compose.infra.yml at ref f18d903ca2370c373e5192c0193d4dc6b45ebf24
+      through the same GitHub contents API. What was wrong was the SHELL FORM: the compliance runner executes
+      check_values under bash -o pipefail -c, and each leg's printf '%s' "$body" | grep -qF is the same
+      latent-141 idiom -- grep -q's first-match early exit closes the pipe and kills printf with SIGPIPE,
+      and pipefail surfaces that as 141 even though every assertion actually passed. Measured directly
+      this session: 10/10 bash -o pipefail -c runs on the original item's exact bytes exit 141, deterministic
+      for this instance. The merged item and its merged receipt are left byte-untouched per this repo's
+      append-only evidence discipline; this item re-states the identical two-leg assertion with here-string
+      redirection on each leg (grep -qF '...' <<< "$body"), which has no pipe stage and so cannot be SIGPIPE'd
+      regardless of size or match position. Confirmed deterministically safe: 5/5 runs exit 0 under bash
+      -o pipefail -c.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: |-
+          body=$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.infra.yml?ref=f18d903ca2370c373e5192c0193d4dc6b45ebf24' --jq '.content' | base64 -d) && grep -qF 'x-runtime-env' <<< "$body" && grep -qF 'ONEXBOT_OCC_PRIVATE_KEY' <<< "$body"
+    evidence_artifact: supersedes_dod_evidence:dod-deploy-assessment-falsifiable
