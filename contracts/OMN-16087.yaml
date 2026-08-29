@@ -185,3 +185,24 @@ dod_evidence:
           "57ad3c72522cbd22194b797f5142e8c0be2a8573") and ([.files[].path] | sort == ["src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py",
           "tests/unit/nodes/node_dod_verify/test_omn_16087_pr_live_state_intentional_state_assertion.py"])'
           | grep -qx true
+  - id: omn16916-16087-content-probe-hs
+    description: >-
+      Append-only re-assertion of dod-deploy-omn-16087-content-probe under OMN-16916 AC3 (SIGPIPE corpus
+      remediation). The asserted CONTENT is unchanged and still holds -- same symbol needle (_pr_binding_asserted_state)
+      read from the same pinned evidence_collector.py at ref 57ad3c72522cbd22194b797f5142e8c0be2a8573
+      through the same GitHub contents API. What was wrong was the SHELL FORM: the compliance runner executes
+      check_values under bash -o pipefail -c, and the printf '%s' "$body" | grep -qF idiom is a latent
+      exit 141 -- grep -q exits on its first match and closes the pipe, killing printf with SIGPIPE, and
+      pipefail surfaces that as 141 even though every assertion actually passed. Measured directly this
+      session: 10/10 bash -o pipefail -c runs on the original item's exact bytes exit 141, deterministic
+      for this instance. The merged item and its merged receipt are left byte-untouched per this repo's
+      append-only evidence discipline; this item re-states the identical assertion with here-string redirection
+      (grep -qF '...' <<< "$body"), which has no pipe stage and so cannot be SIGPIPE'd regardless of size
+      or match position. Confirmed deterministically safe: 5/5 runs exit 0 under bash -o pipefail -c.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py?ref=57ad3c72522cbd22194b797f5142e8c0be2a8573" --jq .content | base64 -d)"; grep -qF '_pr_binding_asserted_state' <<< "$body" && echo "OMN-16087-DEPLOY-PROBE-PASS: _pr_binding_asserted_state is present in evidence_collector.py at 57ad3c72522cbd22194b797f5142e8c0be2a8573"
+    evidence_artifact: supersedes_dod_evidence:dod-deploy-omn-16087-content-probe
