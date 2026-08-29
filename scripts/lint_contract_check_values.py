@@ -435,12 +435,23 @@ def _fail_open_zero_count_violation(value: str) -> str | None:
        positive anchor that must be present, and only then assert absence::
 
            body=$(gh api ... 'repos/O/R/contents/FILE?ref=PARENT')
-             && printf '%s' "$body" | grep -qF 'ANCHOR'
-             && ! printf '%s' "$body" | grep -qF 'MARKER'
+             && grep -qF 'ANCHOR' <<< "$body"
+             && ! grep -qF 'MARKER' <<< "$body"
 
        A failed fetch yields an empty body, the anchor leg fails, and the check
        goes RED. Pick an anchor present at BOTH the parent and the merge ref so
        it tracks the read rather than the fix.
+
+       Use a HERE-STRING (``<<<``), not ``printf '%s' "$body" | grep -qF``.
+       Both forms read the same already-materialized variable, but the pipe
+       form is itself SIGPIPE-fragile once ``$body`` is large enough: `grep
+       -qF` exits at the first match and closes its stdin, `printf`'s blocked
+       `write()` is then killed by SIGPIPE, and the compliance runner's `bash
+       -o pipefail -c` (see `docs/CHECK_TYPES.md`) surfaces that as exit 141
+       for a chain in which every assertion actually passed. A here-string
+       has no pipe stage at all, so it cannot be killed this way regardless
+       of size or match position. See OMN-16916 (OMN-15772 discovered this
+       measuring its own merged item, commit 4c48f4b40).
 
     2. File ABSENT at the parent ref (net-new). Pair a reachability control
        with the path-absence assertion, so a 404 counts as evidence of absence
@@ -749,8 +760,25 @@ def unanchored_cumulative_bound_violation(value: str) -> str | None:
 #
 # The fail-closed replacement is a buffered read: assign the producer's output
 # to a shell variable first, so it runs to completion and exits before anything
-# reads from it, then pipe a printf of that variable into grep -qF. See the
-# OCC#5496 and OCC#5523 repairs for the exact merged form.
+# reads from it, then assert against that variable with a HERE-STRING --
+# `grep -qF 'MARKER' <<< "$body"`, not `printf '%s' "$body" | grep -qF`.
+#
+# CORRECTION (OMN-16916). The original form of this fix recommended piping a
+# `printf` of the buffered variable into `grep -qF`. That is still a pipe,
+# and still SIGPIPE-fragile: once `$body` is large enough that printf's
+# `write()` blocks on the pipe, an early match by `grep -qF` closes the read
+# end and kills printf with SIGPIPE -- the exact 141 this rule exists to
+# name, now reproduced by the rule's own prescribed repair. OMN-15772
+# measured this on its own merged item (10/10 plain-`bash -c` runs exit 0,
+# 10/10 `bash -o pipefail -c` runs exit 141, deterministic for that instance)
+# and repaired it append-only in commit 4c48f4b40 by switching to a
+# here-string, which involves no pipe at all and so cannot be SIGPIPE'd
+# regardless of size or match position. `printf | grep -qF` is NOT added to
+# either producer tuple below -- see OMN-16916 AC3 for the scoped corpus
+# remediation and the decision to leave that census/repair for a follow-up
+# rather than bundle a corpus-scan-affecting detector change into a
+# guidance-text fix. See the OCC#5496, OCC#5523, and OCC#7500 repairs for
+# merged examples.
 #
 # ---------------------------------------------------------------------------
 
@@ -956,8 +984,10 @@ def sigpipe_fragile_violation(value: str) -> str | None:
         "dod_verify runner's `bash -o pipefail`, 141 becomes the pipeline's "
         "exit status -- a false RED on evidence that is actually present "
         "(the same command exits 0 when run by hand outside pipefail). "
-        "Buffer the producer instead: "
-        "body=\"$(<producer>)\" && printf '%s' \"$body\" | grep -qF 'MARKER' "
+        "Buffer the producer instead, and assert against the buffered "
+        "variable with a HERE-STRING, not a pipe -- `printf | grep -qF` is "
+        "itself SIGPIPE-fragile once the variable is large (OMN-16916): "
+        'body="$(<producer>)" && grep -qF \'MARKER\' <<< "$body" '
         "(OMN-15411 Rule E)"
     )
 
@@ -975,8 +1005,11 @@ def sigpipe_volume_dependent_violation(value: str) -> str | None:
         "dod_verify runner's `bash -o pipefail` once the producer's output "
         "outgrows the pipe buffer, and exits 0 below it -- so it is a latent "
         "false RED that appears when the input grows. Buffer the producer if "
-        "its output is not bounded small by construction (OMN-15411 Rule E, "
-        "advisory tier)"
+        "its output is not bounded small by construction, and assert against "
+        "the buffered variable with a HERE-STRING (`grep -qF 'MARKER' <<< "
+        '"$body"`), not `printf | grep -qF` -- that pipe form is itself '
+        "SIGPIPE-fragile once the variable is large (OMN-16916) (OMN-15411 "
+        "Rule E, advisory tier)"
     )
 
 
