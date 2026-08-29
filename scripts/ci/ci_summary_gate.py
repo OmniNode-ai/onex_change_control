@@ -148,6 +148,27 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     "AI-Slop Pattern Check (strict, PR diff)",
     "Context Integrity Contract Compliance",
     "Migration Conflict Check",
+    # OMN-15772 AC ("reclassify STRICT, or justify SKIPPABLE in writing").
+    # SKIPPABLE is RETAINED, deliberately. The ticket recorded this tier as
+    # leniency (ii) -- "its failure does not fail CI Summary" -- and that
+    # description does not survive a read of `evaluate()` below: a SKIPPABLE
+    # gate whose conclusion is not in GOOD_CONCLUSIONS lands in
+    # `skippable_failures` and fails the run exactly like a STRICT one. The
+    # ONLY thing this tier tolerates is a `skipped` conclusion.
+    #
+    # Promoting it to STRICT would therefore buy nothing on the failure path
+    # and would wedge the skip path: this job carries the docs_only
+    # evidence-only `if:` like its 11 tier-mates, and STRICT treats `skipped`
+    # as a failure -- every evidence-companion PR would go red in a repo whose
+    # merge traffic is mostly evidence companions.
+    #
+    # The fail-open the ticket actually observed was the CASCADE, not this
+    # tier: the job `needs: [pre-commit, zone-filter]`, so a failing
+    # `pre-commit` skipped it and the skip read as "not failing". Both
+    # upstreams are now covered independently -- `Pre-commit` is STRICT above,
+    # and `zone-filter` is in CLASSIFICATION_ONLY (deliberately NOT
+    # soft-allowlisted, so the L3 sweep fails the run on its failure). A skip
+    # of this job can no longer be produced by a silent upstream failure.
     "Migration Inventory Sync",
     "Kafka Boundary Parity",
     "Python↔TypeScript Null Contract",

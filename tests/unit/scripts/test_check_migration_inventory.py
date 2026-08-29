@@ -100,8 +100,15 @@ databases:
 
 
 @pytest.mark.unit
-def test_missing_repo_warns(tmp_path: Path) -> None:
-    """Missing repo root should warn, not error (degraded validation)."""
+def test_missing_repo_is_an_error(tmp_path: Path) -> None:
+    """Missing repo root is an ERROR, not a degraded-validation WARNING.
+
+    OMN-15772 inverted this. The WARNING form returned early with zero findings
+    for the peer, so a failed clone and a drift-free peer produced the identical
+    downstream signal -- three same-head reruns of the same PR reported 14 / 17
+    / 9 errors off an unchanged file set, and the shrinking count read as
+    "fixed" when it actually meant the clone had got worse.
+    """
     inventory = tmp_path / "inventory.yaml"
     inventory.write_text("""
 version: "1"
@@ -122,8 +129,7 @@ databases:
     )
 
     result = validate_inventory(inventory, tmp_path)
-    # Should still be ok (warnings don't fail)
-    assert result.ok
+    assert not result.ok
     assert any(
-        f.check == "MISSING_REPO" and f.severity == "WARNING" for f in result.findings
+        f.check == "MISSING_REPO" and f.severity == "ERROR" for f in result.findings
     )

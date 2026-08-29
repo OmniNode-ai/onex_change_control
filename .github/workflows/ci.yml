@@ -885,6 +885,28 @@ jobs:
           done
           ln -s "$GITHUB_WORKSPACE" "$repo_root/onex_change_control"
           echo "MIGRATION_INVENTORY_REPOS_ROOT=$repo_root" >> "$GITHUB_ENV"
+      # OMN-15772 structural fix, option (a). Fail-closed cloning (the step
+      # above) stopped this gate UNDER-REPORTING; it did not stop the drift,
+      # because migration_inventory.yaml was still a hand-maintained dual
+      # write -- every peer migration had to be transcribed by a human who
+      # remembered to. The file lists are now DERIVED from each peer's
+      # declared branch (`git ls-tree`), and this step asks the only question
+      # a build product admits: does the committed artifact equal what
+      # regeneration produces? That comparison is blind to provenance, so it
+      # also catches force-landed commits, direct-to-branch pushes, and
+      # bot-authored changes that never ran the peer repo's own CI -- none of
+      # which a writer-side PR gate in the peer repo could see.
+      #
+      # This step also emits the per-peer `repo@branch ref=... sha=...` line
+      # and the `peers resolved: N/M declared` count, so a future count
+      # discrepancy is diagnosable from this log alone rather than by
+      # re-deriving ground truth by hand as OMN-15771 had to.
+      - name: Verify derived inventory matches peer trees (OMN-15772)
+        if: steps.dep_scope.outputs.workflow_only != 'true'
+        run: |
+          uv run generate-migration-inventory \
+            --repos-root "$MIGRATION_INVENTORY_REPOS_ROOT" \
+            --check
       - name: Validate inventory
         if: steps.dep_scope.outputs.workflow_only != 'true'
         run: uv run check-migration-inventory --repos-root "$MIGRATION_INVENTORY_REPOS_ROOT"

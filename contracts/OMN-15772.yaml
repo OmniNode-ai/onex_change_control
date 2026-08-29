@@ -47,3 +47,34 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh api repos/OmniNode-ai/onex_change_control/pulls/6826 --jq .number | grep -x 6826
+  - id: "dod-omn-15772-derived-inventory-structural-fix"
+    description: >-
+      Structural fix, option (a) on record in the ticket: migration_inventory.yaml stops being hand-maintained
+      data and becomes a build product DERIVED from each peer repository's declared branch via `git ls-tree`,
+      with a whole-file comparison wired as the gate. Fail-closed cloning (PR #6635, the item above) stopped
+      this gate under-reporting but left the manual dual write intact, so drift kept accruing and the
+      gate could only complain sooner. Falsifiable static assertion over this PR's own in-tree checkout
+      (OCC invariant I3), written fail-closed per the OMN-15391 Rule D sanctioned form -- each file is
+      read once into a variable and every grep runs against that captured body, so a failed read cannot
+      pass as a false positive. It asserts four surfaces at once and goes RED if any one regresses --
+      the generator exists, ci.yml runs it in --check mode against the cloned repos-root, the committed
+      inventory carries the do-not-edit GENERATED banner, the declared-sources config carries no file
+      lists (proving the split is real rather than cosmetic), and check_migration_inventory treats an
+      absent peer as ERROR rather than the old degraded-validation WARNING. Complementary red->green proof
+      was run locally against a CI-shaped repos-root of seven peer clones at their declared branches --
+      `generate-migration-inventory --write` reproduced the hand-maintained data exactly (same file set
+      in every one of the 8 migration sets; only the omninode_cloud set's ORDER changed, from hand order
+      to byte-sorted), and `--check` then exited 0; deleting one peer from the repos-root made both the
+      generator and check-migration-inventory exit non-zero.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gen="$(cat src/onex_change_control/scripts/generate_migration_inventory.py)" && ci="$(cat .github/workflows/ci.yml)"
+          && inv="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)" && src="$(cat src/onex_change_control/boundaries/migration_inventory_sources.yaml)"
+          && chk="$(cat src/onex_change_control/scripts/check_migration_inventory.py)" && printf '%s'
+          "$gen" | grep -qF 'ls-tree' && printf '%s' "$ci" | grep -qF 'uv run generate-migration-inventory'
+          && printf '%s' "$ci" | grep -qF -- '--check' && printf '%s' "$inv" | grep -qF 'GENERATED FILE
+          -- DO NOT EDIT BY HAND' && ! printf '%s' "$src" | grep -qF 'migrations:' && printf '%s' "$chk"
+          | grep -A3 -F 'MISSING_REPO' | grep -qF 'ERROR'
