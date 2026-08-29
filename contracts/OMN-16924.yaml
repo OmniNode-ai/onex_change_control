@@ -1,0 +1,116 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16924"
+title: "Session phase reducer state moves from .onex_state to the database"
+summary: >
+  OCC evidence companion for OMN-16924 across two PRs: OmniNode-ai/omnibase_infra PR #3002 (the runtime
+  state_io seam -- contract-declared row key, overlay-resolved database/table binding, migration 102_create_session_phase_state.sql)
+  and OmniNode-ai/omnimarket PR #2204 (node_session_phase_reducer's contract declares the binding and
+  its handler stops doing filesystem I/O). The reducer's state of record was a cwd-relative .onex_state/session/phase_state.yaml
+  that no runtime container could write (/app is root:root 0755, the process runs as omniinfra), producing
+  a 100% PermissionError dispatch-failure rate on all three subscribed topics on every lane. Operator
+  ruling 2026-08-29, verbatim -- "onex_state should be configurable via contract overlay right? for our
+  purposes, state should only be kept in the database. if you disagree, let's have a conversation."
+is_seam_ticket: true
+interface_change: true
+# The `state_io` contract block gains a meaningful `key` and overlay-expanded
+# `database`/`table`, and StateStoreAdapter gains a `key_column` parameter --
+# both public_api surfaces other node contracts declare against. No event, topic,
+# or envelope shape changes.
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3002 CI checks green on OmniNode-ai/omnibase_infra"
+    command: "gh pr checks 3002 --repo OmniNode-ai/omnibase_infra"
+  - kind: "ci"
+    description: "PR #2204 CI checks green on OmniNode-ai/omnimarket"
+    command: "gh pr checks 2204 --repo OmniNode-ai/omnimarket"
+  - kind: "tests"
+    description: >-
+      RED-first behavior proof for the runtime half. The contract-declared domain key, the outbox-guard
+      gating, and both contract-overlay cases all fail against pre-fix handler_wiring -- the overlay cases
+      with the literal, un-expanded ${env.ONEX_SESSION_PHASE_STATE_DATABASE:omnibase_infra} in the error
+      text, which is the defect stated exactly. Executed at cwd ${OMNI_HOME}/omnibase_infra.
+    command: "uv run pytest tests/integration/test_state_io_domain_key_omn16924.py -q"
+  - kind: "tests"
+    description: >-
+      RED-first behavior proof for the node half. The live 750/750 permission shape is posed hermetically
+      -- a cwd stripped of its write bit -- and raises the exact PermissionError against the pre-fix handler.
+      Executed at cwd ${OMNI_HOME}/omnimarket.
+    command: "uv run pytest tests/integration/node_session_phase_reducer/test_omn16924_state_in_database.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3002"
+    description: >-
+      PR #3002 on OmniNode-ai/omnibase_infra -- the runtime state_io seam carries the contract-declared
+      row key and expands the contract-overlay binding.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3002/files --paginate --jq '.[].filename' | grep -cFx 'src/omnibase_infra/runtime/auto_wiring/handler_wiring.py'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3002/files --paginate --jq '.[].filename' | grep -cFx 'docker/migrations/forward/102_create_session_phase_state.sql'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3002/files --paginate --jq '.[].filename' | grep -cFx 'tests/integration/test_state_io_domain_key_omn16924.py'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2204"
+    description: >-
+      PR #2204 on OmniNode-ai/omnimarket -- the reducer declares the durable binding and its handler performs
+      no I/O.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2204/files --paginate --jq '.[].filename' | grep -cFx 'src/omnimarket/nodes/node_session_phase_reducer/state_codec.py'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2204/files --paginate --jq '.[].filename' | grep -cFx 'src/omnimarket/nodes/node_session_phase_reducer/contract.yaml'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2204/files --paginate --jq '.[].filename' | grep -cFx 'tests/integration/node_session_phase_reducer/test_omn16924_state_in_database.py'
+  - id: "dod-occ-runtime-seam-behavior-proof"
+    description: >-
+      PR #3002 -- diff-derived behavior proof for the runtime half (OMN-16434).
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/test_state_io_domain_key_omn16924.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-occ-node-behavior-proof"
+    description: >-
+      PR #2204 -- diff-derived behavior proof for the node half (OMN-16434). The 750/750 unwritable-cwd
+      case is the ticket's own AC4.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/node_session_phase_reducer/test_omn16924_state_in_database.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-occ-onex-state-path-deleted"
+    description: >-
+      The .onex_state path is DELETED, not shimmed -- the operator ruling's "state should only be kept
+      in the database" half, and the ticket's AC3. A surviving state_path keyword would be invisible to
+      bus dispatch while still letting a caller reintroduce the file.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/node_session_phase_reducer/test_omn16924_state_in_database.py::test_handle_has_no_state_path_parameter
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-occ-overlay-configurable-binding"
+    description: >-
+      The binding is configurable via contract overlay -- the other half of the operator ruling. Same
+      contract declaration, two environments, two durable targets, zero code change; an unresolvable ref
+      fails closed at wiring time with no local-file fallback.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/test_state_io_domain_key_omn16924.py -q -k overlay"
+        cwd: "${OMNI_HOME}/omnibase_infra"
