@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-16923
+title: OCC migration-inventory sync for omnibase_infra migration 101 on main
+summary: >-
+  omnibase_infra#2997 ("fix(OMN-16923): converge the service database's savings_estimates instead of declaring
+  around it", merged to omnibase_infra dev 2026-08-29T10:24:28Z) added docker/migrations/forward/101_converge_savings_estimates_to_node_declared_shape.sql
+  without a matching row in onex_change_control's cross-repo migration inventory. The OCC "Migration Inventory
+  Sync" gate is a required status check on main and it is fail-closed on exactly this condition, so from
+  10:24Z onward EVERY onex_change_control PR that runs it fails with `[ERROR] UNLISTED_FILE: omnibase_infra:
+  omnibase_infra/docker/migrations/forward/101_converge_savings_estimates_to_node_declared_shape.sql exists
+  on disk but not in inventory`. main itself was last green on this gate at 2026-08-28T21:51:09Z (bb5e3261f),
+  before the migration existed. This PR adds the one missing inventory row on main so the gate is green
+  again. It is a pure registry-sync change: no migration is authored, altered, or executed here, and onex_change_control
+  never runs migrations. Scope note — OCC#7549 carries the equivalent row on the dev side, but dev's and
+  main's copies of this inventory have diverged substantially (334 insertions / 385 deletions between
+  them), so landing that PR does not make a main-targeting PR green; main needs its own row, in main's
+  own quoted-filename style.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: manual
+    description: >-
+      The omnibase_infra migration set in the OCC cross-repo inventory lists migration 101 with a tables
+      field, so check_migration_inventory's UNLISTED_FILE rule no longer fires.
+    command: >-
+      grep -Fq '101_converge_savings_estimates_to_node_declared_shape.sql' src/onex_change_control/boundaries/migration_inventory.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-inventory-101-listed-omn16923"
+    description: >-
+      The omnibase_infra forward migration set in src/onex_change_control/boundaries/migration_inventory.yaml
+      lists 101_converge_savings_estimates_to_node_declared_shape.sql, positioned directly after 100_create_gateway_link_health.sql,
+      and carries a non-empty tables field (`savings_estimates`, the sole relation the migration's ALTER
+      TABLE / CREATE TABLE IF NOT EXISTS statements target). The tables field is checked because check_migration_inventory
+      raises MISSING_METADATA as a WARNING when it is absent — a listed-but-untabled row clears the blocking
+      error while leaving a warning behind, and this item asserts the row is complete rather than merely
+      sufficient. Deliberately HERMETIC to the OCC checkout: it asserts the inventory content, not the
+      cross-repo disk state, because the hosted contract-compliance runner has no omnibase_infra checkout
+      to compare against. The cross-repo execution is recorded in this item's receipt instead.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run python -c 'import yaml; inv = yaml.safe_load(open("src/onex_change_control/boundaries/migration_inventory.yaml"));
+          sets = [s for db in inv["databases"].values() for s in db.get("migration_sets", []) if s.get("source_repo")
+          == "omnibase_infra" and s.get("directory") == "docker/migrations/forward"]; rows = [m for s
+          in sets for m in s["migrations"] if m.get("file") == "101_converge_savings_estimates_to_node_declared_shape.sql"];
+          assert len(rows) == 1, rows; assert rows[0].get("tables"), rows[0]; print("PASS: migration 101
+          listed once in the omnibase_infra forward set with tables=%s" % rows[0]["tables"])'
