@@ -1,0 +1,97 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16993"
+title: "Provision the omninode_runtime identity the runtime already demands — warm-volume LOGIN credential
+  + the topology-declared public-schema grant"
+summary: >
+  Hand-authored OCC companion for OmniNode-ai/omnibase_infra PR #3010 and OmniNode-ai/omnimarket PR #2214.
+  occ-autobind declined to mint (occ-autobind-no-red-derivable:2214) because neither diff carries a pytest-derivable
+  RED candidate, so the evidence below is hand-authored per OMN-15247. Both PRs close one live defect:
+  node_projection_session_replay DLQ'd 100% of its topic on the .201 stability lane while /health reported
+  healthy and offsets kept committing.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "omnibase_infra PR #3010 CI checks green"
+    command: "gh pr checks 3010 --repo OmniNode-ai/omnibase_infra"
+  - kind: "ci"
+    description: "omnimarket PR #2214 CI checks green"
+    command: "gh pr checks 2214 --repo OmniNode-ai/omnimarket"
+  - kind: "tests"
+    description: >-
+      Behavior proof for the warm-volume credential seam. Asserts the runner's login-only role map agrees
+      with the bootstrap's LOGIN_ONLY_ROLE_MAP and that both lane compose files wire the credential onto
+      the forward-migration service. Static by construction: these assertions run on a host with no Docker
+      and no Postgres, which is exactly where a silent revert of a deployment-owned provisioning seam
+      would otherwise survive until a lane rediscovers it by hand.
+    command: "uv run pytest tests/unit/infra/test_warm_volume_login_credential_omn16993.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-3010-warm-volume-login"
+    description: >-
+      omnibase_infra #3010 adds section 0 to scripts/run-forward-migrations.sh (the one path that runs
+      on every compose up) so a warm Postgres volume re-asserts the deployment-owned LOGIN + PASSWORD
+      that docker-entrypoint-initdb.d only mints on a fresh volume.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3010 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3010/files --paginate --jq '.[].filename' | grep -cFx 'scripts/run-forward-migrations.sh'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3010/files --paginate --jq '.[].filename' | grep -cFx 'tests/unit/infra/test_warm_volume_login_credential_omn16993.py'
+  - id: "dod-infra-pr-3010-behavior-proof"
+    description: >-
+      Behavior proof, not a file-existence probe: the added test binds the runner's login-only role map
+      to the bootstrap's LOGIN_ONLY_ROLE_MAP and asserts OMNINODE_RUNTIME_PASSWORD is wired onto the forward-migration
+      service in both the shared compose base and the judge overlay (which redeclares the service wholesale
+      and inherits nothing).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/infra/test_warm_volume_login_credential_omn16993.py -q"
+  - id: "dod-omnimarket-pr-2214-runtime-grant"
+    description: >-
+      omnimarket #2214 adds the node migration that issues the grant all three topology instances already
+      declare for omninode_runtime on public.session_replay_snapshots. No migration in either repo has
+      ever granted this principal anything in schema public.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2214 --repo OmniNode-ai/omnimarket --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2214/files --paginate --jq '.[].filename' | grep -cFx 'src/omnimarket/nodes/node_projection_session_replay/migrations/0002_grant_omninode_runtime_session_replay_snapshots.sql'
+  - id: "dod-live-session-replay-real-row"
+    description: >-
+      Live end-to-end proof on the .201 stability lane after both halves were applied as role provisioning.
+      Before: pg_authid reported 'omninode_runtime | f | f', omninode_runtime held grants on nine omninode_internal
+      relations and ZERO relations in public, the runtime logged 22265 'password authentication failed'
+      in 30 minutes (~742/min), and session_replay_snapshots held 10 synthetic rows and no real session.
+      After: pg_authid reports 't | t', 39 public relations are granted, the SessionReplay handler logged
+      0 errors in 15 minutes, the quarantine DLQ high-watermark froze at 404489 across two reads 90s apart,
+      and the first real-session row landed - session_id 5bc4e084-6a53-4f69-936e-998985adbcf5, event_type
+      tool_call, ingested_at 2026-08-29T20:36:44Z, with its timestamp column advancing continuously (21:06:35
+      at a db_now of 21:06:40). Hook events were confirmed flowing concurrently: onex.evt.omniclaude.tool-executed.v1
+      grew +16 in 60s and all five projection_session_replay consumer groups read Stable / LAG 0.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          docker exec omnibase-infra-stability-test-postgres psql -U postgres -d postgres -tAc "SELECT rolcanlogin, (rolpassword IS NOT NULL) FROM pg_authid WHERE rolname='omninode_runtime'"
+      - check_type: "command"
+        check_value: |-
+          docker exec omnibase-infra-stability-test-postgres psql -U postgres -d omnidash_analytics -tAc "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee='omninode_runtime' AND table_schema='public'"
+      - check_type: "command"
+        check_value: |-
+          docker exec omnibase-infra-stability-test-postgres psql -U postgres -d omnidash_analytics -tAc "SELECT count(*) FROM public.session_replay_snapshots WHERE session_id='5bc4e084-6a53-4f69-936e-998985adbcf5'"
+      - check_type: "command"
+        check_value: |-
+          docker logs omninode-stability-test-runtime --since 15m 2>&1 | grep -c 'password authentication failed for user "omninode_runtime"'
