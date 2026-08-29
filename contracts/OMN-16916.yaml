@@ -1,0 +1,138 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16916"
+title: "Fix the OMN-15391 Rule D / OMN-15411 Rule E sanctioned check_value idiom -- printf | grep -q is
+  itself SIGPIPE-fragile"
+summary: >
+  The check_value idiom that OMN-15391 Rule D and OMN-15411 Rule E both hand out as the sanctioned fail-closed
+  / SIGPIPE-safe buffered-read replacement -- body="$(<producer>)" && printf '%s' "$body" | grep -qF 'MARKER'
+  -- is itself a latent SIGPIPE 141 under the compliance runner's real execution shell (bash -o pipefail
+  -c, per docs/CHECK_TYPES.md). `grep -qF` exits at the first match and closes its stdin; once $body is
+  large enough that printf's write() blocks on the pipe, the closed read end kills printf with SIGPIPE,
+  and pipefail surfaces that as exit 141 for a chain in which every assertion actually passed. OMN-15772
+  measured this on its own merged item (contracts/OMN-15772.yaml::dod-omn-15772-derived-inventory-structural-fix,
+  10/10 plain bash -c runs exit 0, 10/10 bash -o pipefail -c runs exit 141, deterministic) and repaired
+  it append-only in commit 4c48f4b40 by switching to a here-string (`grep -qF 'MARKER' <<< "$body"`),
+  which has no pipe stage and so cannot be SIGPIPE'd regardless of size or match position. This PR is
+  the guidance-only fix scoped by OMN-16916: the Rule D docstring, the Rule E block comment, both Rule
+  E message functions (sigpipe_fragile_violation, sigpipe_volume_dependent_violation), the two unit tests
+  that exercised the old printf-pipe form as "the sanctioned repair", and docs/CHECK_TYPES.md's "The shell"
+  section all now prescribe the here-string form. A corpus-wide static scan found 219 existing check_value
+  entries across 119 contract files still using the old idiom; a 40-item representative sample actually
+  EXECUTED under both plain bash -c and bash -o pipefail -c (real gh api calls against pinned refs) measured
+  7/40 (17.5%) actually reproducing the 0-to-141 divergence, extrapolating to roughly 20-25 of the 219
+  entries corpus-wide -- larger than the 10-item single-PR remediation bound, so the corpus repair itself
+  is deliberately NOT in this PR and remains OMN-16916's open AC3. The Rule D/E detection regexes and
+  producer tuples (_SIGPIPE_FRAGILE_PRODUCERS / _SIGPIPE_VOLUME_DEPENDENT_PRODUCERS) are also deliberately
+  untouched here -- adding printf there is corpus-scan-affecting (219 entries would newly surface tier-2
+  advisory warnings) and belongs with the remediation work, not bundled into a guidance-text fix.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "scripts/lint_contract_check_values.py's Rule D docstring and both Rule E message functions
+      recommend the here-string form instead of printf | grep -qF; docs/CHECK_TYPES.md documents the SIGPIPE
+      hazard and the safe form; the two unit tests that exercised the old form as sanctioned now exercise
+      the here-string form; the full unit + corpus-baseline test suites pass unchanged (Tier-1 Rule E
+      baseline is untouched since detection was not changed)."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "occ-self-bind-pr-7510"
+    description: >-
+      Stable self-bind proving this OCC companion PR exists. The probe intentionally checks only the immutable
+      PR number through the GitHub API; it does not assert transient open/closed state.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/7510 --jq .number | grep -x 7510
+  - id: "dod-omn16916-linter-guidance-here-string"
+    description: >-
+      Falsifiable static assertion over the changed source file (OCC invariant I3, this PR's own in-tree
+      checkout). Written per the OMN-15391 Rule D sanctioned form -- and dogfooding the fix this PR itself
+      ships -- the file is read once into a variable and every assertion runs against that captured body
+      via here-string, not a pipe into grep -q. Asserts: the Rule E block comment's correction note is
+      present ('CORRECTION (OMN-16916)'), the Rule D docstring's here-string guidance is present ('Use
+      a HERE-STRING'), the sigpipe_fragile_violation() message's here-string guidance is present ('HERE-STRING,
+      not a pipe'), the sigpipe_volume_dependent_violation() message's correction note is present ('SIGPIPE-fragile
+      once the variable is large (OMN-16916):'), the literal here-string syntax `<<< "$body"` appears
+      at least 4 times (Rule D docstring x2, both Rule E message functions x1 each), and 'OMN-16916' is
+      cited at least 5 times across the docstring, block comment, and both message functions. Executed
+      red/green proof at authoring time: every clause is GREEN against this PR's fixed file and RED against
+      the pre-fix file fetched via `git show origin/dev:scripts/lint_contract_check_values.py` (the CORRECTION/HERE-STRING/OMN-16916
+      text does not exist there at all). Confirmed safe under the compliance runner's actual shell: exit
+      0 under both plain `bash -c` and `bash -o pipefail -c`.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(cat scripts/lint_contract_check_values.py)" && grep -qF 'CORRECTION (OMN-16916)' <<<
+          "$body" && grep -qF 'Use a HERE-STRING' <<< "$body" && grep -qF 'HERE-STRING, not a pipe' <<<
+          "$body" && grep -qF 'SIGPIPE-fragile once the variable is large (OMN-16916):' <<< "$body" &&
+          [ "$(grep -oF '<<< "$body"' <<< "$body" | wc -l)" -ge 4 ] && [ "$(grep -oF 'OMN-16916' <<< "$body"
+          | wc -l)" -ge 5 ]
+  - id: "dod-omn16916-check-types-doc-updated"
+    description: >-
+      Falsifiable static assertion over docs/CHECK_TYPES.md's "The shell" section, same read-once-into-variable
+      discipline as the item above, here-string throughout. Asserts the new "reverse hazard" subsection
+      exists with the SIGPIPE mechanism explained, the here-string safe form is shown, the fragile printf-pipe
+      form is labeled unsafe, and the OMN-16916 cross-reference to the open AC3 corpus sweep is present.
+      Executed red/green proof at authoring time: GREEN against this PR's fixed doc, RED against `git
+      show origin/dev:docs/CHECK_TYPES.md` (none of this subsection exists on origin/dev). Exit 0 under
+      both plain `bash -c` and `bash -o pipefail -c`.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(cat docs/CHECK_TYPES.md)" && grep -qF 'reverse hazard: a passing check going RED via
+          SIGPIPE' <<< "$body" && grep -qF 'here-string**, not a pipe:' <<< "$body" && grep -qF 'safe:
+          no pipe stage, so nothing can be killed by SIGPIPE.' <<< "$body" && grep -qF 'OMN-16916 AC3.'
+          <<< "$body"
+  - id: "dod-omn16916-tests-updated-to-here-string"
+    description: >-
+      Falsifiable static assertion over the two unit tests (test_rule_e_does_not_flag_the_sanctioned_buffered_repair,
+      test_rule_e_skips_superseded_items) that previously exercised `printf '%s' "$body" | grep -qF 'MARKER'`
+      as "the sanctioned repair" -- itself an instance of the defect this ticket fixes. Asserts the corrected
+      docstring explaining the defect is present, the OCC#7500/commit-4c48f4b40 cross-reference is present,
+      and the here-string token `<<<` appears at least twice (once per updated fixture). Executed red/green
+      proof: GREEN against this PR's fixed test file, RED against `git show origin/dev:tests/unit/scripts/test_lint_contract_check_values.py`
+      (neither the corrected docstring nor the `<<<` fixtures exist on origin/dev -- that revision's fixtures
+      used the printf-pipe form exclusively).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(cat tests/unit/scripts/test_lint_contract_check_values.py)" && grep -qF 'OMN-16916:
+          an earlier revision of this test' <<< "$body" && grep -qF 'here-string form below is what OMN-15772
+          actually landed (commit' <<< "$body" && [ "$(grep -oF '<<<' <<< "$body" | wc -l)" -ge 2 ]
+  - id: "dod-omn16916-unit-tests-pass"
+    description: >-
+      Behaviour proof, not just a static text check: the two unit tests that were rewritten to exercise
+      the here-string form instead of the fragile printf-pipe form -- test_rule_e_does_not_flag_the_sanctioned_buffered_repair
+      and test_rule_e_skips_superseded_items -- actually pass, executed here rather than merely claimed.
+      Node ids are pinned rather than the full module so this check_value stays well clear of the hosted
+      runner's 60s / local runner's 30s per-check timeout even under system load (measured 0.04-3.1s locally
+      across repeated runs; a full-module `uv run pytest` invocation on this box was observed to vary
+      0.4s-37s under concurrent load from other sessions, too unreliable for a single per-check timeout
+      budget). The full unit test module (90 tests) and the companion corpus-baseline ratchet module (17
+      tests, covering Rule A/B/C/D/E over every contracts/*.yaml file including this one) were both also
+      run directly at authoring time and are green, proving the guidance-text change did not alter detection
+      behavior -- no Tier-1 Rule E baseline entry was added or removed, no Rule D baseline entry changed,
+      and this ticket's own contract does not itself trip any rule.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest "tests/unit/scripts/test_lint_contract_check_values.py::test_rule_e_does_not_flag_the_sanctioned_buffered_repair"
+          "tests/unit/scripts/test_lint_contract_check_values.py::test_rule_e_skips_superseded_items"
+          -q

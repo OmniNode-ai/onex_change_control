@@ -101,6 +101,37 @@ check_value: "gh api repos/OWNER/REPO/contents/x.py?ref=<sha> --jq .content | ba
 
 Under a plain `sh -c` this would have passed on `grep`'s exit code alone.
 
+**The reverse hazard: a passing check going RED via SIGPIPE.** `grep -q`
+(and `-qx`/`-qF`) exits at the *first match* and closes its stdin. If the
+stage feeding it still has bytes to write when that happens, the write
+fails with SIGPIPE and the stage exits 141 — and under `bash -o pipefail -c`
+that 141 becomes the whole pipeline's exit status, a **false RED on evidence
+that is actually present**. This is exposed by any unbounded producer piped
+straight into `grep -q` (a decoded file body, `gh pr diff`, a `git log`
+walk, a paginated REST list) — see OMN-15411 Rule E in
+`scripts/lint_contract_check_values.py` for the full detector and the
+measured producer list.
+
+The fail-closed replacement is a buffered read, asserted with a
+**here-string**, not a pipe:
+
+```bash
+# SIGPIPE-fragile: printf's write() can be killed once $body is large.
+body="$(gh api ... --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'MARKER'
+
+# safe: no pipe stage, so nothing can be killed by SIGPIPE.
+body="$(gh api ... --jq .content | base64 -d)" && grep -qF 'MARKER' <<< "$body"
+```
+
+OMN-16916: the `printf '%s' "$body" | grep -qF` form above was, until this
+ticket, the guidance both OMN-15391 Rule D and OMN-15411 Rule E handed out
+as *the* sanctioned buffered-read fix — it is still a pipe into an
+early-exit `grep -q` consumer, and OMN-15772 measured it reproducing this
+exact 141 on its own merged item (10/10 plain-`bash -c` runs exit 0, 10/10
+`bash -o pipefail -c` runs exit 141). Use the here-string form for any new
+check_value; a corpus-wide sweep of existing instances is tracked under
+OMN-16916 AC3.
+
 ---
 
 ## Two properties every check needs

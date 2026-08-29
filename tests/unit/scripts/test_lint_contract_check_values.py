@@ -1036,16 +1036,24 @@ def test_rule_e_does_not_flag_generated_self_bind_boolean_probe(tmp_path: Path) 
 
 @pytest.mark.unit
 def test_rule_e_does_not_flag_the_sanctioned_buffered_repair(tmp_path: Path) -> None:
-    """The OCC#5496 / OCC#5523 replacement idiom must be clean.
+    """The OCC#7500 here-string replacement idiom must be clean.
 
-    A rule that still fires on its own sanctioned fix is unusable: the stage
-    immediately upstream of the grep is `printf`, and the producer has already
-    exited into a shell variable.
+    A rule that still fires on its own sanctioned fix is unusable: the
+    producer has already exited into a shell variable, and the assertion
+    reads that variable via a here-string, which has no pipe stage at all
+    for the linter's pipeline scanner to see.
+
+    OMN-16916: an earlier revision of this test (and of the guidance it
+    exercises) used `printf '%s' "$body" | grep -qF 'MARKER'` as "the
+    sanctioned repair". That form is itself SIGPIPE-fragile once `$body` is
+    large -- it is still a pipe into an early-exit `grep -q` consumer. The
+    here-string form below is what OMN-15772 actually landed (commit
+    4c48f4b40) to fix its own instance of that exact defect.
     """
     ok = (
         'body="$(gh api repos/OmniNode-ai/omnibase_core/contents/README.md'
         '?ref=abc123 --jq .content | base64 -d)" '
-        "&& printf '%s' \"$body\" | grep -qF 'MARKER'"
+        "&& grep -qF 'MARKER' <<< \"$body\""
     )
     path = write_contract(tmp_path, ok)
     warnings = linter.lint_contract_warnings(path)
@@ -1117,7 +1125,7 @@ def test_rule_e_skips_superseded_items(tmp_path: Path) -> None:
                     "check_value": (
                         'body="$(gh api repos/O/R/contents/f.py?ref=abc '
                         '--jq .content | base64 -d)" '
-                        "&& printf '%s' \"$body\" | grep -qF 'MARKER'"
+                        "&& grep -qF 'MARKER' <<< \"$body\""
                     ),
                 }
             ],
