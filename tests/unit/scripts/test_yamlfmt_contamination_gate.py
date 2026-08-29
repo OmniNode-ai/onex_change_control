@@ -503,7 +503,14 @@ def test_widened_scope_catches_what_the_hardcoded_prefixes_missed() -> None:
             if not rel.startswith(_PRE_WIDENING_PREFIXES)
         }
     )
-    assert len(newly) >= 9, (
+    # Floor was 9 at the 2026-07-30 widening. OMN-15772 REPAIRED one entry --
+    # src/onex_change_control/boundaries/migration_inventory.yaml is now a
+    # generated artifact emitted with a literal (`|`) block scalar, so the Rule
+    # F precondition no longer exists in it -- and shrank both the baseline and
+    # this floor in the same commit. Repair is the sanctioned shrink direction;
+    # the floor exists to catch a re-narrowed SCOPE, which is a different thing
+    # and still fails the per-entry assertions below.
+    assert len(newly) >= 8, (
         "the baselines no longer hold any entry outside contracts/ + "
         f"drift/dod_receipts/ (found {newly}). Either the scope was re-narrowed "
         "or the widened-scope debt was dropped without being repaired."

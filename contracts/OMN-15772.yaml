@@ -47,3 +47,64 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh api repos/OmniNode-ai/onex_change_control/pulls/6826 --jq .number | grep -x 6826
+  - id: "dod-omn-15772-derived-inventory-structural-fix"
+    description: >-
+      Structural fix, option (a) on record in the ticket: migration_inventory.yaml stops being hand-maintained
+      data and becomes a build product DERIVED from each peer repository's declared branch via `git ls-tree`,
+      with a whole-file comparison wired as the gate. Fail-closed cloning (PR #6635) stopped this gate
+      under-reporting but left the manual dual write intact, so drift kept accruing and the gate could
+      only complain sooner. Falsifiable static assertion over this PR's own in-tree checkout (OCC invariant
+      I3), written fail-closed per the OMN-15391 Rule D sanctioned form -- each file is read once into
+      a variable and every subsequent test runs against that captured body, so a failed read cannot pass
+      as a false positive. Substring tests use here-string redirection rather than a pipe into `grep -q`,
+      because the compliance runner executes check_values under `bash -o pipefail` and `grep -q` closes
+      the pipe on its first match, killing the upstream `printf` with SIGPIPE and surfacing the whole
+      chain as exit 141 even when every assertion holds -- see the companion re-assertion item below.
+      It asserts five surfaces at once and goes RED if any one regresses -- the generator derives from
+      a git tree, ci.yml runs it in --check mode, the committed inventory carries the do-not-edit GENERATED
+      banner, the declared-sources config carries no file lists (proving the split is real rather than
+      cosmetic), and check_migration_inventory treats an absent peer as a fail-closed ERROR rather than
+      the old degraded-validation WARNING. Complementary red->green proof was run locally against a CI-shaped
+      repos-root of seven peer clones at their declared branches -- `generate-migration-inventory --write`
+      reproduced the hand-maintained data exactly (same file set in every one of the 8 migration sets;
+      only the omninode_cloud set's ORDER changed, from hand order to byte-sorted), and `--check` then
+      exited 0; deleting one peer from the repos-root made both the generator and check-migration-inventory
+      exit non-zero.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gen="$(cat src/onex_change_control/scripts/generate_migration_inventory.py)" && ci="$(cat .github/workflows/ci.yml)"
+          && inv="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)" && src="$(cat src/onex_change_control/boundaries/migration_inventory_sources.yaml)"
+          && chk="$(cat src/onex_change_control/scripts/check_migration_inventory.py)" && grep -qF 'ls-tree'
+          <<< "$gen" && grep -qF 'uv run generate-migration-inventory' <<< "$ci" && grep -qF -- '--check'
+          <<< "$ci" && grep -qF 'GENERATED FILE -- DO NOT EDIT BY HAND' <<< "$inv" && ! grep -qF 'migrations:'
+          <<< "$src" && grep -qF 'a missing peer is never a clean peer' <<< "$chk"
+  - id: "dod-omn-15772-pr-6635-fail-closed-reassert"
+    evidence_artifact: "supersedes_dod_evidence:dod-onex-change-control-pr-6635-fail-closed"
+    description: >-
+      Append-only re-assertion of `dod-onex-change-control-pr-6635-fail-closed`, retiring that item's
+      un-runnable form without weakening or editing it. The asserted CONTENT is unchanged and still holds
+      -- the same four needles, read from the same merged commit a1f5325fb9cc1dafcc36fe1b5fc76c8e54eb6453
+      through the same GitHub contents API -- and was confirmed GREEN under a plain `bash -c` run at the
+      time this item was appended. What was wrong was the SHELL FORM, not the claim. The compliance runner
+      executes check_values under `bash -o pipefail` (deliberately, so a failed `gh api` cannot be masked
+      by a passing `grep`), and under pipefail the repo's own sanctioned "read once into a variable, then
+      `printf | grep -qF`" idiom is a latent exit 141: `grep -q` exits on its first match and closes the
+      pipe, the upstream `printf` dies of SIGPIPE, and pipefail surfaces 141 for a chain in which every
+      assertion actually passed. The merged item and its merged receipt are left byte-untouched, per this
+      repo's append-only evidence discipline; this item re-states the identical assertion with here-string
+      redirection, which involves no pipe and therefore cannot be killed by SIGPIPE. Falsifiability is
+      preserved exactly: the merge-base c3a008a83991a09ceb4e50b55e57425b82698165 lacks the /tmp/repos
+      cleanup and still wraps the clone loop in `|| true`, so the same probe run against it goes RED.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/onex_change_control/contents/.github/workflows/ci.yml?ref=a1f5325fb9cc1dafcc36fe1b5fc76c8e54eb6453'
+          --jq .content | base64 -d)" && failed_clone_needle="$(printf '%s' '::error::Failed to clone
+          $'; printf '%s' '{'; printf '%s' 'repo} after 3 attempts')" && grep -qF 'rm -rf /tmp/repos'
+          <<< "$body" && grep -qF 'rm -rf "${target}"' <<< "$body" && grep -qF "$failed_clone_needle"
+          <<< "$body" && grep -qF 'clone_omni_repo "$repo" "/tmp/repos/$repo"' <<< "$body"

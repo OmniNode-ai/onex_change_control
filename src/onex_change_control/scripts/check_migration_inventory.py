@@ -6,9 +6,20 @@ Checks:
 2. Every .sql file on disk is listed in the inventory
 3. No duplicate migration filenames within the same migration set
 4. Referenced repo/directory roots exist on disk
-5. Each migration entry has required metadata (file, tables)
+5. Each migration entry has required metadata (file)
 6. No empty source_repo or directory fields
 7. Only .sql files listed in migrations entries
+
+Fail-closed contract (OMN-15772): an expected peer repo that is absent from
+--repos-root is an ERROR, not a degraded-validation WARNING. A missing peer is
+never a clean peer, and treating it as one is what let 24 files of migration
+drift accumulate invisibly.
+
+The inventory this validates is a GENERATED artifact
+(generate_migration_inventory.py). This script stays as the per-file surface --
+it names individual files, where the derivation gate reports a whole-file
+difference -- but it is no longer the only thing standing between a peer's tree
+and the committed listing.
 
 Usage:
     uv run check-migration-inventory --repos-root /path/to/omni_home
@@ -69,11 +80,17 @@ def _validate_migration_set(
 
     repo_root = repos_root / str(repo)
     if not repo_root.exists():
+        # OMN-15772: fail closed. This was a WARNING that returned early with
+        # zero findings for the peer, so a failed clone and a drift-free peer
+        # produced the identical downstream signal -- which is how three
+        # same-head reruns of the same PR reported 14 / 17 / 9 errors off an
+        # unchanged file set, and how a shrinking count read as "fixed" when it
+        # actually meant "the clone got worse".
         result.add(
             "MISSING_REPO",
-            "WARNING",
+            "ERROR",
             f"{db_name}: repo root {repo} not found at {repo_root}"
-            " (degraded validation)",
+            " (cannot validate; a missing peer is never a clean peer)",
         )
         return
 
@@ -115,7 +132,6 @@ def _validate_entries(
         if not isinstance(entry, dict):
             continue
         fname = entry.get("file", "")
-        tables = entry.get("tables")
 
         if not fname:
             result.add(
@@ -130,12 +146,10 @@ def _validate_entries(
                 "WARNING",
                 f"{db_name}: {fname} is not a .sql or .sh file",
             )
-        if tables is None:
-            result.add(
-                "MISSING_METADATA",
-                "WARNING",
-                f"{db_name}: {fname} missing 'tables' field",
-            )
+        # OMN-15772: `tables` is no longer required here. It moved to the
+        # optional annotation layer (migration_table_annotations.yaml) because
+        # table sets are not reliably derivable from SQL text, so an
+        # unannotated migration is by design, not a defect.
 
         if str(fname) in listed_files:
             result.add(
