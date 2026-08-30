@@ -41,6 +41,31 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/k8s/test_managed_kafka_rollout_roster.py tests/k8s/test_onex_dev_managed_postgres_networkpolicy.py tests/k8s/test_post_deploy_verify_env_roster.py -q
         cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-scope DoD for OMN-17210 so both product PRs clear the deploy-gate. The autobind wrote only
+      a `uv run pytest` behavior proof, which the gate correctly rejects as non-falsifiable: pytest's
+      exit status cannot depend on the state of any deployed or remote surface. All three checks below
+      put a `gh api` read of the LIVE dev branch in command position, and each greps for a symbol that
+      exists nowhere on dev today -- so each is RED right now and only goes GREEN once the corresponding
+      PR actually lands. None reads back a receipt or contract this ticket's own PRs author.
+    source: "generated"
+    checks:
+      # omnimarket#2225 -- the receipt-gate writer class must be on dev.
+      # RED until #2225 merges: node_projection_receipt_gate ships only the
+      # pure reducer and its handle_dict shim today, no BaseProjectionRunner.
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_receipt_gate/handlers/handler_receipt_gate.py?ref=dev --jq .content | base64 -d | grep -q 'class HandlerReceiptGateProjectionRunner(BaseProjectionRunner)'
+      # omninode_infra#1094 -- the savings writer Deployment must be on dev AND
+      # wired into the overlay. RED until #1094 merges: the manifest does not
+      # exist on dev and the kustomization lists twelve runtime Deployments.
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/deployment-omnimarket-projection-savings-writer.yaml?ref=dev --jq .content | base64 -d | grep -q 'omnimarket.nodes.node_projection_savings.handlers.handler_savings'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/kustomization.yaml?ref=dev --jq .content | base64 -d | grep -q 'deployment-omnimarket-projection-savings-writer.yaml'
   - id: "occ-self-bind-pr-7720"
     description: "OCC companion PR #7720 — self-bind for OMN-17210 (OMN-14650)."
     source: "generated"
