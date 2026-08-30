@@ -828,6 +828,7 @@ _KNOWN_REPO_HINTS: frozenset[str] = frozenset(
         "omnicrush",
         "omninode_bridge",
         "omnicursor",
+        "onex-self-extending-agent",
     )
 ) | frozenset({"jonahgabriel/steel_onslaught"})
 
