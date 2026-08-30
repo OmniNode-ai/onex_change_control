@@ -48,6 +48,10 @@ _KNOWN_REPOS = {
 }
 
 _PATH_TOKEN_STRIP = "`\"'.,);:]}"  # noqa: S105  Why: punctuation trim set.
+# A LEADING "." belongs to the path (`.github/workflows/...`), it is not
+# sentence punctuation -- stripping it from the front made every dotfile
+# reference unresolvable and always "missing" (OMN-17185).
+_PATH_TOKEN_STRIP_LEADING = _PATH_TOKEN_STRIP.replace(".", "")
 # Linear GraphQL endpoint resolves from the integration contract + overlay
 # (OMN-13563) — never a hardcoded URL literal.
 
@@ -177,7 +181,7 @@ def _git_path_exists(repo_root: Path, base_ref: str, path: str) -> bool:
 def _candidate_repo_and_path(
     raw: str, workspace_root: Path, current_repo_root: Path
 ) -> tuple[Path, str] | None:
-    cleaned = raw.strip(_PATH_TOKEN_STRIP)
+    cleaned = raw.strip().lstrip(_PATH_TOKEN_STRIP_LEADING).rstrip(_PATH_TOKEN_STRIP)
     first, _, rest = cleaned.partition("/")
     if rest:
         repo_name = _KNOWN_REPOS.get(first.lower(), first)
@@ -187,14 +191,31 @@ def _candidate_repo_and_path(
     return current_repo_root, cleaned
 
 
+def _is_same_repo(candidate: Path, current_repo_root: Path) -> bool:
+    """Return True when ``candidate`` is the repo the checked plan lives in."""
+    try:
+        return candidate.resolve() == current_repo_root.resolve()
+    except OSError:
+        return candidate == current_repo_root
+
+
 def verify_file_reference(
     ref: ModelDocReference,
     *,
     workspace_root: Path,
     current_repo_root: Path,
     base_ref: str | None,
+    head_ref: str | None = None,
 ) -> Finding:
-    """Verify a file path against a target git ref or checked-out workspace."""
+    """Verify a file path against a target git ref or checked-out workspace.
+
+    OMN-17185: for the repo the changeset actually edits, the correct target is
+    the PR head tree, not the base branch -- a file added by the same PR as the
+    plan that cites it is not "missing", and resolving it against ``base_ref``
+    made any PR landing two mutually-referencing docs fail by construction.
+    Sibling repos are checked out at their own default branch and keep
+    resolving against ``base_ref``.
+    """
     candidate = _candidate_repo_and_path(
         ref.raw_text, workspace_root, current_repo_root
     )
@@ -204,8 +225,13 @@ def verify_file_reference(
     else:
         repo_root, rel_path = candidate
         target = str(repo_root / rel_path)
-        if base_ref:
-            exists = _git_path_exists(repo_root, base_ref, rel_path)
+        target_ref = (
+            head_ref
+            if head_ref and _is_same_repo(repo_root, current_repo_root)
+            else base_ref
+        )
+        if target_ref:
+            exists = _git_path_exists(repo_root, target_ref, rel_path)
         else:
             exists = (repo_root / rel_path).exists()
 
@@ -332,6 +358,7 @@ def evaluate_plan_vs_live(  # noqa: PLR0913  Why: CLI options map directly to ch
     current_repo_root: Path,
     base_ref: str | None,
     default_pr_repo: str | None,
+    head_ref: str | None = None,
     ticket_states: Mapping[str, str],
     require_linear: bool,
     fail_on_uncited: bool = False,
@@ -349,6 +376,7 @@ def evaluate_plan_vs_live(  # noqa: PLR0913  Why: CLI options map directly to ch
                         workspace_root=workspace_root,
                         current_repo_root=current_repo_root,
                         base_ref=base_ref,
+                        head_ref=head_ref,
                     )
                 )
             elif ref.reference_type == EnumDocReferenceType.TICKET_STATE:
@@ -406,6 +434,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--head-ref",
+        default="HEAD",
+        help=(
+            "Git ref used for file checks inside the repo being changed "
+            "(the PR head tree). Defaults to HEAD so a path added by the same "
+            "changeset resolves. Ignored when --base-ref is empty "
+            "(filesystem mode)."
+        ),
+    )
+    parser.add_argument(
         "--default-pr-repo",
         default=None,
         help="Repo for bare #123 PR references, e.g. OmniNode-ai/omnimarket.",
@@ -442,11 +480,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
     ticket_states = _load_ticket_states(args.ticket_state_file)
     base_ref = args.base_ref.strip() or None
+    # An explicitly empty --base-ref selects filesystem checks; head-ref
+    # resolution would silently re-introduce a git lookup, so drop it there.
+    head_ref = (args.head_ref.strip() or None) if base_ref else None
     report = evaluate_plan_vs_live(
         plan_paths=[Path(path) for path in args.plan_files],
         workspace_root=Path(args.workspace_root),
         current_repo_root=Path(args.current_repo_root),
         base_ref=base_ref,
+        head_ref=head_ref,
         default_pr_repo=args.default_pr_repo,
         ticket_states=ticket_states,
         require_linear=args.require_linear,
