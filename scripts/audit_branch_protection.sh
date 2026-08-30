@@ -16,7 +16,12 @@
 #      REST `required_pull_request_reviews` object. REST can report a phantom
 #      `required_approving_review_count` even when reviews are not actually
 #      enforced, which would false-fail dev; GraphQL reports the true state.
-#   2. "CI Summary" is a required status check.
+#   2. Required status checks are correct for the branch's ROLE:
+#      - Ordinary PR-merge branches (all dev branches; main on repos that are
+#        not release-synced) must require "CI Summary".
+#      - RELEASE-SYNCED main (see RELEASE_SYNCED_MAIN_REPOS) must instead have
+#        an EMPTY required_status_checks *and* an active ruleset restricting
+#        updates to refs/heads/main with a non-empty bypass-actor set.
 #   3. enforce_admins is true.
 #
 # Main-only / repo-level checks (unchanged — the release boundary is not weakened):
@@ -32,6 +37,8 @@
 # DEV-EXEMPT repos (audited on `main` only): repos with no protected `dev` branch.
 #   omnistream — no `dev` branch exists.
 #   omniweb    — `dev` exists but is intentionally unprotected (PHP landing page).
+#
+# MAIN-EXEMPT repos (audited on `dev` only): see MAIN_AUDIT_EXEMPT_REPOS.
 #
 # Exit 0 = all repos compliant.  Exit 1 = at least one deviation found.
 
@@ -72,6 +79,54 @@ PRIVATE_REPOS=(omninode_infra omnistream omniweb)
 # Repos with no protected `dev` branch — audited on `main` only.
 DEV_EXEMPT_REPOS=(omnistream omniweb)
 
+# ──────────────────────────────────────────────────────────────────────
+# RELEASE-SYNCED main (OMN-16289 / OMN-17186)
+# ──────────────────────────────────────────────────────────────────────
+# For these repos `main` is NOT a PR-merge target. It is the release
+# boundary: release.yml fast-forwards main to the published tag's commit
+# after a release succeeds. PRs land on dev.
+#
+# Consequence for this guard: `required_status_checks` on main is
+# DELIBERATELY EMPTY. A PR-shaped context ("CI Summary", "verify / verify")
+# can never report on a ref that is only ever advanced by an automated
+# fast-forward, so a required context there does not gate anything — it only
+# blocks the sync. Asserting "CI Summary" on these mains asserts an invariant
+# OMN-16289 retired on purpose, and is why this guard was red on every
+# omni_home PR from 2026-08-24.
+#
+# What actually protects these mains is a repository RULESET on
+# refs/heads/main that restricts updates, with the release automation identity
+# as a bypass actor. BOTH halves are asserted below and neither alone is
+# sufficient: empty contexts without a ruleset is an unprotected main, and a
+# ruleset without empty contexts is a main that cannot sync.
+#
+# NOT legacy branch-protection `restrictions`: OMN-16343 proved live (GH006,
+# omnibase_core, run 32473543173, 2026-08-21) that restrictions:{apps:[...]}
+# reads back correctly yet the protected-branch hook still declines the
+# release sync push, silently desyncing main. `restrictions` stays null.
+RELEASE_SYNCED_MAIN_REPOS=(
+  omnibase_core
+  omnibase_infra
+  omnibase_spi
+  omnimemory
+  omnidash
+  omniintelligence
+  omnimarket
+)
+
+# Repos audited on `dev` only — `main` is not audited at all.
+#
+# omnibase_compat is a TEMPORARY repo (operator ruling 2026-08-21) and is
+# explicitly excluded from branch-protection hardening, so neither invariant
+# is asserted on its main.
+#
+# Do NOT "fix" this by moving it into RELEASE_SYNCED_MAIN_REPOS: its
+# release.yml still syncs main with the workflow GITHUB_TOKEN persisted by
+# actions/checkout, and OMN-16343 proved that token is not an authorizable
+# identity for a restricted ref — applying the ruleset there would break its
+# next release sync rather than protect anything.
+MAIN_AUDIT_EXEMPT_REPOS=(omnibase_compat)
+
 # Active repos that accept ticketed PRs must directly require the Receipt Gate.
 # Do not treat CI Summary as an implicit substitute; the branch protection rule
 # must expose the canonical `verify / verify` context so drift is visible.
@@ -111,6 +166,26 @@ is_dev_exempt() {
   return 1
 }
 
+is_release_synced_main() {
+  local repo="$1"
+  for p in "${RELEASE_SYNCED_MAIN_REPOS[@]}"; do
+    if [[ "$p" == "$repo" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_main_audit_exempt() {
+  local repo="$1"
+  for p in "${MAIN_AUDIT_EXEMPT_REPOS[@]}"; do
+    if [[ "$p" == "$repo" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 requires_receipt_gate() {
   local repo="$1"
   for p in "${RECEIPT_GATE_REQUIRED_REPOS[@]}"; do
@@ -138,6 +213,99 @@ emit_jsonl() {
     --arg detail "$detail" \
     '{repo:$repo, branch:$branch, check:$check, status:$status, detail:$detail}' \
     >> "$BRANCH_PROTECTION_AUDIT_JSONL"
+}
+
+# Release-synced `main` assertion (OMN-17186). Args: repo, protection_json
+#
+# Replaces the "CI Summary" / "verify / verify" required-context assertions for
+# repos whose main is advanced only by release automation. Asserts BOTH halves
+# of the replacement protection; a repo passes only if both hold.
+#
+#   a) required_status_checks on main is EMPTY.
+#   b) an ACTIVE branch ruleset covers refs/heads/main, carries the `update`
+#      rule (restrict who may advance the ref), and names at least one bypass
+#      actor (the release automation identity).
+#
+# (b) deliberately requires a NON-EMPTY bypass_actors set: a ruleset that
+# restricts updates with nobody allowed to bypass does not protect the release
+# boundary, it freezes it — the next release would fail to sync main.
+#
+# The rulesets LIST endpoint does not return `rules` or `bypass_actors`, so
+# each candidate ruleset is re-fetched by id.
+check_release_synced_main() {
+  local repo="$1"
+  local protection="$2"
+  local full="${ORG}/${repo}"
+
+  # (a) required_status_checks must be empty.
+  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+  local ctx_count
+  ctx_count=$(printf '%s' "$protection" | jq '
+    (
+      (.required_status_checks.contexts // [])
+      + ((.required_status_checks.checks // []) | map(.context))
+    )
+    | unique | length
+  ' 2>/dev/null || echo "-1")
+  if [[ "$ctx_count" == "0" ]]; then
+    echo "    [main] PASS: required_status_checks is empty (release-synced main)"
+    emit_jsonl "$repo" "main" "release_synced_contexts_empty" "PASS" "0 required contexts"
+  else
+    echo "    [main] FAIL: release-synced main carries ${ctx_count} required status check(s) — a PR context cannot report on an automated fast-forward ref, it only blocks the sync"
+    emit_jsonl "$repo" "main" "release_synced_contexts_empty" "FAIL" "${ctx_count} required contexts"
+    REPO_OK=false
+    FAILURES=$((FAILURES + 1))
+  fi
+
+  # (b) an active ruleset must restrict updates to refs/heads/main and name a
+  #     bypass actor.
+  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+  local rulesets
+  rulesets=$(gh api "repos/${full}/rulesets" 2>&1) || {
+    echo "    [main] FAIL: could not fetch rulesets"
+    echo "             API response: ${rulesets}"
+    emit_jsonl "$repo" "main" "release_synced_push_ruleset" "FAIL" "rulesets not fetchable"
+    REPO_OK=false
+    FAILURES=$((FAILURES + 1))
+    return
+  }
+
+  local candidate_ids matched_id="" matched_actors=""
+  candidate_ids=$(printf '%s' "$rulesets" | jq -r '
+    .[]? | select(.enforcement == "active" and .target == "branch") | .id
+  ' 2>/dev/null || true)
+
+  local rid detail verdict
+  while IFS= read -r rid; do
+    [[ -z "$rid" ]] && continue
+    detail=$(gh api "repos/${full}/rulesets/${rid}" 2>&1) || continue
+    verdict=$(printf '%s' "$detail" | jq -r '
+      if (((.conditions.ref_name.include // [])
+             | any(. == "refs/heads/main" or . == "~DEFAULT_BRANCH")))
+         and (((.conditions.ref_name.exclude // [])
+             | any(. == "refs/heads/main")) | not)
+         and (([.rules[]?.type] | any(. == "update")))
+         and (((.bypass_actors // []) | length) > 0)
+      then ((.bypass_actors | map("\(.actor_type):\(.actor_id):\(.bypass_mode)") | join(",")))
+      else "" end
+    ' 2>/dev/null || true)
+    if [[ -n "$verdict" ]]; then
+      matched_id="$rid"
+      matched_actors="$verdict"
+      break
+    fi
+  done <<< "$candidate_ids"
+
+  if [[ -n "$matched_id" ]]; then
+    echo "    [main] PASS: active ruleset ${matched_id} restricts updates to refs/heads/main (bypass actors: ${matched_actors})"
+    emit_jsonl "$repo" "main" "release_synced_push_ruleset" "PASS" "ruleset ${matched_id}; bypass ${matched_actors}"
+  else
+    echo "    [main] FAIL: no active ruleset restricts updates to refs/heads/main with a non-empty bypass-actor set"
+    echo "             main has no required contexts AND no push restriction — it is unprotected."
+    emit_jsonl "$repo" "main" "release_synced_push_ruleset" "FAIL" "no active update-restricting ruleset with bypass actors"
+    REPO_OK=false
+    FAILURES=$((FAILURES + 1))
+  fi
 }
 
 # Per-branch protection checks. Args: repo, branch, gql_rules_json
@@ -189,25 +357,31 @@ check_branch() {
     emit_jsonl "$repo" "$branch" "reviews_not_enforced" "WARN" "GraphQL rule unavailable"
   fi
 
-  # 2. "CI Summary" in required status checks
-  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-  local ci_summary
-  ci_summary=$(printf '%s' "$protection" | jq -r '
-    (
-      (.required_status_checks.contexts // [])
-      + ((.required_status_checks.checks // []) | map(.context))
-    )
-    | map(select(. == "CI Summary"))
-    | length
-  ')
-  if [[ "$ci_summary" -ge 1 ]]; then
-    echo "    [${branch}] PASS: \"CI Summary\" is a required status check"
-    emit_jsonl "$repo" "$branch" "required_check_ci_summary" "PASS" "CI Summary required"
+  # 2. Required status checks — role-dependent.
+  #    Release-synced main asserts the OMN-16289 replacement pair instead of
+  #    the (retired) "CI Summary" required context.
+  if [[ "$branch" == "main" ]] && is_release_synced_main "$repo"; then
+    check_release_synced_main "$repo" "$protection"
   else
-    echo "    [${branch}] FAIL: \"CI Summary\" not found in required status checks"
-    emit_jsonl "$repo" "$branch" "required_check_ci_summary" "FAIL" "CI Summary missing"
-    REPO_OK=false
-    FAILURES=$((FAILURES + 1))
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    local ci_summary
+    ci_summary=$(printf '%s' "$protection" | jq -r '
+      (
+        (.required_status_checks.contexts // [])
+        + ((.required_status_checks.checks // []) | map(.context))
+      )
+      | map(select(. == "CI Summary"))
+      | length
+    ')
+    if [[ "$ci_summary" -ge 1 ]]; then
+      echo "    [${branch}] PASS: \"CI Summary\" is a required status check"
+      emit_jsonl "$repo" "$branch" "required_check_ci_summary" "PASS" "CI Summary required"
+    else
+      echo "    [${branch}] FAIL: \"CI Summary\" not found in required status checks"
+      emit_jsonl "$repo" "$branch" "required_check_ci_summary" "FAIL" "CI Summary missing"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+    fi
   fi
 
   # 3. enforce_admins is true
@@ -226,7 +400,13 @@ check_branch() {
 
   # 4. "verify / verify" Receipt Gate — asserted on MAIN only. dev coverage is
   #    inconsistent across repos, so dev is informational (flagged, OMN-14683).
-  if requires_receipt_gate "$repo"; then
+  #    On release-synced main the Receipt Gate is skipped for the same reason
+  #    "CI Summary" is: no PR context can report on an automated fast-forward
+  #    ref. dev remains the surface where the Receipt Gate is enforced.
+  if [[ "$branch" == "main" ]] && is_release_synced_main "$repo"; then
+    echo "    [main] SKIP: \"verify / verify\" Receipt Gate not asserted on release-synced main (no PR context can report there)"
+    emit_jsonl "$repo" "main" "required_check_receipt_gate" "SKIP" "release-synced main"
+  elif requires_receipt_gate "$repo"; then
     local receipt_gate
     receipt_gate=$(printf '%s' "$protection" | jq -r '
       (
@@ -279,6 +459,12 @@ check_repo() {
   # ---------- Per-branch checks (main + dev) ----------
   local br
   for br in "${BRANCHES[@]}"; do
+    if [[ "$br" == "main" ]] && is_main_audit_exempt "$repo"; then
+      echo "  ── branch: main ───────────────────"
+      echo "    [main] SKIP: main not audited (temporary repo — excluded from branch-protection hardening by operator ruling 2026-08-21; see OMN-17186)"
+      emit_jsonl "$repo" "main" "main_branch_audit" "SKIP" "main-audit-exempt (temporary repo)"
+      continue
+    fi
     if [[ "$br" == "dev" ]] && is_dev_exempt "$repo"; then
       echo "  ── branch: dev ───────────────────"
       echo "    [dev] SKIP: repo has no protected dev branch (dev-exempt)"
@@ -358,6 +544,8 @@ echo "======================================="
 echo " Branch Protection Audit"
 echo " Org: ${ORG}  |  Branches: ${BRANCHES[*]}"
 echo " Dev-exempt (main only): ${DEV_EXEMPT_REPOS[*]}"
+echo " Main-exempt (dev only): ${MAIN_AUDIT_EXEMPT_REPOS[*]}"
+echo " Release-synced main:    ${RELEASE_SYNCED_MAIN_REPOS[*]}"
 echo " Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo "======================================="
 echo ""
