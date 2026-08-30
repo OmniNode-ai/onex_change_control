@@ -417,3 +417,31 @@ def test_cli_head_ref_defaults_to_head(
     report = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert report["status"] == "pass", report["failures"]
+
+
+def test_dotfile_path_reference_resolves(tmp_path: Path) -> None:
+    """OMN-17185: a leading '.' is part of the path, not sentence punctuation."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    _write_text(repo, ".github/workflows/gate.yml", "on: pull_request\n")
+    plan = _write_text(
+        repo,
+        "docs/plans/plan.md",
+        "Gate lives in `.github/workflows/gate.yml`.\n",
+    )
+    _commit_all(repo, "init")
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[plan],
+        workspace_root=tmp_path,
+        current_repo_root=repo,
+        base_ref="HEAD",
+        head_ref="HEAD",
+        default_pr_repo=None,
+        ticket_states={},
+        require_linear=False,
+    )
+
+    assert report["status"] == "pass", report["failures"]
+    assert report["findings"][0]["raw_text"] == ".github/workflows/gate.yml"

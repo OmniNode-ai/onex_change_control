@@ -48,6 +48,10 @@ _KNOWN_REPOS = {
 }
 
 _PATH_TOKEN_STRIP = "`\"'.,);:]}"  # noqa: S105  Why: punctuation trim set.
+# A LEADING "." belongs to the path (`.github/workflows/...`), it is not
+# sentence punctuation -- stripping it from the front made every dotfile
+# reference unresolvable and always "missing" (OMN-17185).
+_PATH_TOKEN_STRIP_LEADING = _PATH_TOKEN_STRIP.replace(".", "")
 # Linear GraphQL endpoint resolves from the integration contract + overlay
 # (OMN-13563) — never a hardcoded URL literal.
 
@@ -177,7 +181,7 @@ def _git_path_exists(repo_root: Path, base_ref: str, path: str) -> bool:
 def _candidate_repo_and_path(
     raw: str, workspace_root: Path, current_repo_root: Path
 ) -> tuple[Path, str] | None:
-    cleaned = raw.strip(_PATH_TOKEN_STRIP)
+    cleaned = raw.strip().lstrip(_PATH_TOKEN_STRIP_LEADING).rstrip(_PATH_TOKEN_STRIP)
     first, _, rest = cleaned.partition("/")
     if rest:
         repo_name = _KNOWN_REPOS.get(first.lower(), first)
