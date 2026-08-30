@@ -41,6 +41,39 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/k8s/test_managed_kafka_rollout_roster.py tests/k8s/test_onex_dev_managed_postgres_networkpolicy.py tests/k8s/test_post_deploy_verify_env_roster.py -q
         cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-scope DoD for OMN-17210 so both product PRs clear the deploy-gate. The autobind wrote only
+      a `uv run pytest` behavior proof, which the gate correctly rejects as non-falsifiable: pytest's
+      exit status cannot depend on the state of any deployed or remote surface. All three checks below
+      put a `gh api` read of live GitHub state in command position. Two read the merged dev branch and
+      grep for a string that was not there before omninode_infra#1094 landed; the third reads omnimarket#2225's
+      own live file list. None reads back a receipt or contract this ticket's own PRs author, which is
+      the failure mode the OMN-14505 falsifiability rule exists for. `grep -c` rather than `grep -q` deliberately:
+      `-q` exits on first match and SIGPIPEs the upstream `base64 -d`, which under the runner's `pipefail`
+      surfaced as a spurious exit 141 on a check whose content was actually present.
+    source: "generated"
+    checks:
+      # omninode_infra#1094 (merged 2026-08-30T17:22:24Z): the savings writer
+      # Deployment exists on dev and runs the right module. RED before that
+      # merge -- the manifest did not exist on dev at all.
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/deployment-omnimarket-projection-savings-writer.yaml?ref=dev' --jq .content | base64 -d | grep -c 'omnimarket.nodes.node_projection_savings.handlers.handler_savings'
+      # Separate check on purpose: a manifest committed but absent from the
+      # kustomization is never applied by the overlay, so the check above
+      # would read as done while nothing deploys.
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/kustomization.yaml?ref=dev' --jq .content | base64 -d | grep -c 'deployment-omnimarket-projection-savings-writer.yaml'
+      # omnimarket#2225: the receipt-gate writer module is in that PR's live
+      # diff. Scoped to the PR rather than to dev because this contract is what
+      # unblocks #2225's own deploy-gate -- a dev-branch probe would deadlock
+      # the two PRs against each other. Falsifiable: RED the moment #2225 stops
+      # carrying the file.
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2225/files --paginate --jq '.[].filename' | grep -cFx 'src/omnimarket/nodes/node_projection_receipt_gate/handlers/handler_receipt_gate.py'
   - id: "occ-self-bind-pr-7720"
     description: "OCC companion PR #7720 — self-bind for OMN-17210 (OMN-14650)."
     source: "generated"
