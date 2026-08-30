@@ -29,7 +29,6 @@ DEFAULT_PROMOTION_REPOS: tuple[str, ...] = (
     "omniweb",
     "onex_change_control",
     "omninode_infra",
-    "onex-self-extending-agent",
 )
 
 LOCKFILE_CANDIDATES: tuple[str, ...] = (
