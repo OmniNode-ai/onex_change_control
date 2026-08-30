@@ -284,3 +284,164 @@ def test_cli_emits_json_report(
     assert rc == 0
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "pass"
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", message], cwd=repo, check=True, capture_output=True
+    )
+
+
+def _mutually_referencing_head_repo(tmp_path: Path) -> Path:
+    """Repo whose HEAD adds two plan docs that cite each other; base has neither."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    _write_text(repo, "README.md", "base\n")
+    _commit_all(repo, "base")
+    subprocess.run(
+        ["git", "branch", "-M", "base"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "checkout", "-b", "feature"], cwd=repo, check=True, capture_output=True
+    )
+    _write_text(
+        repo,
+        "docs/plans/plan-a.md",
+        "Companion plan: `docs/plans/plan-b.md`.\n",
+    )
+    _write_text(
+        repo,
+        "docs/plans/plan-b.md",
+        "Parent plan: `docs/plans/plan-a.md`.\n",
+    )
+    _commit_all(repo, "add two mutually referencing plans")
+    return repo
+
+
+def test_same_pr_mutually_referencing_paths_resolve_on_head(tmp_path: Path) -> None:
+    """OMN-17185 AC1: paths added by the same changeset are not 'missing'."""
+    repo = _mutually_referencing_head_repo(tmp_path)
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[repo / "docs/plans/plan-a.md", repo / "docs/plans/plan-b.md"],
+        workspace_root=tmp_path,
+        current_repo_root=repo,
+        base_ref="base",
+        head_ref="HEAD",
+        default_pr_repo=None,
+        ticket_states={},
+        require_linear=False,
+    )
+
+    assert report["status"] == "pass", report["failures"]
+    assert report["failed_count"] == 0
+    assert {finding["status"] for finding in report["findings"]} == {"pass"}
+
+
+def test_same_pr_paths_still_fail_against_base_ref_negative_control(
+    tmp_path: Path,
+) -> None:
+    """Without head-ref resolution the same references fail -- the OMN-17185 bug."""
+    repo = _mutually_referencing_head_repo(tmp_path)
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[repo / "docs/plans/plan-a.md", repo / "docs/plans/plan-b.md"],
+        workspace_root=tmp_path,
+        current_repo_root=repo,
+        base_ref="base",
+        head_ref=None,
+        default_pr_repo=None,
+        ticket_states={},
+        require_linear=False,
+    )
+
+    assert report["status"] == "fail"
+    assert report["failed_count"] == 2
+    assert report["failures"][0]["message"] == "path missing on target branch"
+
+
+def test_head_ref_does_not_apply_to_sibling_repos(tmp_path: Path) -> None:
+    """A sibling repo path is still checked against its own base ref."""
+    repo = _mutually_referencing_head_repo(tmp_path)
+    sibling = tmp_path / "omnimarket"
+    sibling.mkdir()
+    _init_repo(sibling)
+    _write_text(sibling, "README.md", "sibling\n")
+    _commit_all(sibling, "base")
+    subprocess.run(
+        ["git", "branch", "-M", "base"], cwd=sibling, check=True, capture_output=True
+    )
+    plan = _write_text(
+        repo,
+        "docs/plans/plan-c.md",
+        "Sibling file: `omnimarket/src/absent.py`.\n",
+    )
+    _commit_all(repo, "add plan citing sibling repo path")
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[plan],
+        workspace_root=tmp_path,
+        current_repo_root=repo,
+        base_ref="base",
+        head_ref="HEAD",
+        default_pr_repo=None,
+        ticket_states={},
+        require_linear=False,
+    )
+
+    assert report["status"] == "fail"
+    assert report["failures"][0]["raw_text"] == "omnimarket/src/absent.py"
+
+
+def test_cli_head_ref_defaults_to_head(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI default resolves same-changeset paths without an explicit flag."""
+    repo = _mutually_referencing_head_repo(tmp_path)
+
+    rc = checker.main(
+        [
+            "--workspace-root",
+            str(tmp_path),
+            "--current-repo-root",
+            str(repo),
+            "--base-ref",
+            "base",
+            str(repo / "docs/plans/plan-a.md"),
+            str(repo / "docs/plans/plan-b.md"),
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert report["status"] == "pass", report["failures"]
+
+
+def test_dotfile_path_reference_resolves(tmp_path: Path) -> None:
+    """OMN-17185: a leading '.' is part of the path, not sentence punctuation."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    _write_text(repo, ".github/workflows/gate.yml", "on: pull_request\n")
+    plan = _write_text(
+        repo,
+        "docs/plans/plan.md",
+        "Gate lives in `.github/workflows/gate.yml`.\n",
+    )
+    _commit_all(repo, "init")
+
+    report = checker.evaluate_plan_vs_live(
+        plan_paths=[plan],
+        workspace_root=tmp_path,
+        current_repo_root=repo,
+        base_ref="HEAD",
+        head_ref="HEAD",
+        default_pr_repo=None,
+        ticket_states={},
+        require_linear=False,
+    )
+
+    assert report["status"] == "pass", report["failures"]
+    assert report["findings"][0]["raw_text"] == ".github/workflows/gate.yml"
