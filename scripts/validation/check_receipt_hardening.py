@@ -824,6 +824,7 @@ _KNOWN_REPO_HINTS: frozenset[str] = frozenset(
         "omnimarket",
         "omninode_infra",
         "omnistream",
+        "onex-self-extending-agent",
         "omnidash-v2-new",
         "omnicrush",
         "omninode_bridge",
