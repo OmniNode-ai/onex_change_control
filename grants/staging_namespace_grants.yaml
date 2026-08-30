@@ -1,0 +1,95 @@
+---
+# staging_namespace_grants.yaml — authorization anchor for PUBLIC-cluster
+# staging-class namespace mutations (OMN-16702, operator ruling 2026-08-30).
+#
+# WHAT THIS FILE AUTHORIZES
+#   Mutations of the namespaces `dev` and `onex-dev` on the public k3s cluster
+#   `omninode-k3s-system-public`, under the 2026-08-30 operator ruling: for
+#   those staging-class namespaces a fresh, timestamped, explicit in-session
+#   operator "go" satisfies the approval requirement. The dispatcher != approver
+#   rule is relaxed HERE AND ONLY HERE — `approved_by` MAY equal the actor that
+#   dispatches the run. That single relaxation is the whole point of this file.
+#
+# WHAT THIS FILE CANNOT AUTHORIZE — PROD RUNTIME PROMOTION
+#   Nothing in this file can promote anything to `onex-prod` or
+#   `omnibase-infra-prod`. Two independent structural reasons:
+#
+#     1. omninode_infra's scripts/validate_prod_promotion_grant.py reads
+#        `grants/prod_promotion_grants.yaml` and only that path (its module
+#        constant GRANT_FILE_PATH). It never reads this file, and OMN-16702
+#        leaves that script byte-unchanged.
+#     2. Every entry here is pinned to `runtime_lane: staging-namespace`, while
+#        the prod resolver matches on `runtime_lane == "prod"`. A staging entry
+#        is invisible to the prod resolver even if pasted into the prod anchor
+#        — where the prod schema validator would reject it outright anyway
+#        (missing image_digest / promotion_batch_id, unexpected extra fields).
+#
+#   The OMN-13418 / OMN-14209 prod-promotion grant path is UNCHANGED: fresh,
+#   CODEOWNERS-reviewed, digest-pinned, `approved_by != requested_by`, resolved
+#   from onex_change_control@main. See grants/prod_promotion_grants.yaml.
+#
+# SCHEMA (enforced by `uv run validate-staging-namespace-grants`)
+#   grant_id              grant-<uuid4>, unique across the file
+#   scope                 exactly "staging-namespace"
+#   runtime_lane          exactly "staging-namespace" (NEVER "prod")
+#   cluster               exactly "omninode-k3s-system-public"
+#   namespaces            non-empty list, subset of {dev, onex-dev}
+#   authorization         exactly "in-session-operator-go"
+#   operator_quote        the operator's "go", verbatim
+#   operator_quote_at     ISO-8601 UTC instant the "go" was given
+#   authorization_record  omni_home@<40-hex commit> the quote is readable in
+#   approved_by           MAY equal the dispatcher — this is the relaxation
+#   expires_at            absolute, approver-set, strictly after created_at
+#   created_at            ISO-8601 UTC
+#   reason                free text
+#   consumed / consumed_at / consumed_by_correlation_id   optional, single-use
+#
+# LIFECYCLE
+#   At rest this file is `entries: []`. An expired entry fails CI (it must be
+#   pruned). A later operator "hold" is expressed by pruning the entry or
+#   marking it `consumed: true` in a PR to `main` — the gate resolves from
+#   @main at dispatch time, so a merged prune revokes every future dispatch.
+#   It does not revoke a job already past the gate.
+#
+# WHAT THIS FILE DOES NOT PROVE
+#   Operator AUTHENTICITY. No YAML can prove a human said the quoted words.
+#   `authorization_record` raises the bar to "the quote exists in a landed
+#   omni_home@main commit", which is the strongest available anchor and is what
+#   the ruling itself demands — but an actor who can land an omni_home commit
+#   can mint the record. This anchor constrains BLAST RADIUS, not authenticity.
+entries:
+  # OMN-16702 — public-cluster staging-class convergence under the 2026-08-30
+  # in-session operator "go". Covers BOTH halves of the ticket:
+  #   * onex-dev — the k8s/onex-public convergence (include_onex_public), i.e.
+  #     the omnidash session-store repoint to the authenticated data-plane
+  #     Valkey;
+  #   * dev      — the dev-valkey --requirepass roll and its Infisical consumer.
+  # PRUNE THIS ENTRY once consumed, or set consumed: true. It expires absolutely
+  # at 16:00Z regardless.
+  - grant_id: grant-00ba7b7e-fc60-4938-9a32-70f9df9a9c7a
+    scope: staging-namespace
+    runtime_lane: staging-namespace
+    cluster: omninode-k3s-system-public
+    namespaces:
+      - dev
+      - onex-dev
+    authorization: in-session-operator-go
+    # Verbatim, byte-for-byte, from the 2026-08-30 in-session ruling. This exact
+    # string is readable in the authorization_record commit below (it appears
+    # twice in that commit's diff, in CLAUDE.md 2a and 12), which is what the
+    # omninode_infra gate's UNRECORDED_QUOTE check resolves against.
+    operator_quote: "Amend doctrine: in-session operator 'go' counts"
+    operator_quote_at: "2026-08-30T05:30:00Z"
+    authorization_record: "omni_home@e72943be6d7d27e69d00a017511a41fe3a7ac9a6"
+    # Equal to the dispatcher on purpose. THIS is the relaxation the ruling
+    # granted, and it applies to this anchor only. Prod runtime promotion still
+    # requires approved_by != requested_by via grants/prod_promotion_grants.yaml.
+    approved_by: jonahgabriel
+    expires_at: "2026-08-30T16:00:00Z"
+    created_at: "2026-08-30T10:30:00Z"
+    reason: >-
+      OMN-16702: converge the public cluster's staging-class namespaces under the 2026-08-30 in-session
+      operator "go". Scope is the k8s/onex-public apply (namespace onex-dev) and the dev-valkey --requirepass
+      roll with its Infisical consumer (namespace dev). Promotes no image and touches no onex-prod object;
+      the applied trees are proven to render only into {dev, onex-dev} by scripts/assert_staging_namespace_scope.py
+      before this grant is even read.
