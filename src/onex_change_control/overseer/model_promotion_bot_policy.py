@@ -38,7 +38,6 @@ OMNINODE_PROMOTION_REPOS: frozenset[str] = frozenset(
         "omniweb",
         "onex_change_control",
         "omninode_infra",
-        "onex-self-extending-agent",
     }
 )
 

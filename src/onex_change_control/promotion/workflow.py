@@ -51,7 +51,6 @@ PROMOTION_WAVES: tuple[tuple[str, ...], ...] = (
         "omniweb",
         "onex_change_control",
         "omninode_infra",
-        "onex-self-extending-agent",
     ),
 )
 PASS_STATUSES = frozenset({"pass", "passed", "ok", "healthy", "success"})

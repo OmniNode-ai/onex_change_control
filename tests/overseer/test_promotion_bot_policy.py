@@ -22,7 +22,7 @@ def test_default_policy_matches_dev_to_main_identity_contract() -> None:
     assert policy.source_branch == "dev"
     assert policy.target_branch == "main"
     assert policy.allowed_repos == OMNINODE_PROMOTION_REPOS
-    assert len(policy.allowed_repos) == 13
+    assert len(policy.allowed_repos) == 12
 
 
 def test_default_policy_allows_only_promotion_actions() -> None:
@@ -47,7 +47,7 @@ def test_default_policy_promotes_only_dev_to_main_in_allowed_repos() -> None:
     policy = DEFAULT_PROMOTION_BOT_POLICY
 
     assert policy.can_promote("omnibase_core", "dev", "main")
-    assert policy.can_promote("onex-self-extending-agent", "dev", "main")
+    assert policy.can_promote("omninode_infra", "dev", "main")
     assert not policy.can_promote("archived-repo", "dev", "main")
     assert not policy.can_promote("omnibase_core", "main", "dev")
     assert not policy.can_promote("omnibase_core", "feature/OMN-1", "main")

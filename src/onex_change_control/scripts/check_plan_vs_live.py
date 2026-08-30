@@ -43,8 +43,6 @@ _KNOWN_REPOS = {
     "omnibase_core": "omnibase_core",
     "omnibase-core": "omnibase_core",
     "omnidash": "omnidash",
-    "sea": "onex-self-extending-agent",
-    "onex-self-extending-agent": "onex-self-extending-agent",
 }
 
 _PATH_TOKEN_STRIP = "`\"'.,);:]}"  # noqa: S105  Why: punctuation trim set.
