@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17186"
+title: "Branch-protection audit asserts the release-synced main invariant"
+summary: >-
+  audit_branch_protection.sh asserted "CI Summary" as a required status check on main for every repo,
+  including the repos where OMN-16289 deliberately emptied main's required_status_checks because main
+  is advanced only by an automated release fast-forward. The guard was red on every omni_home PR from
+  2026-08-24 while the configuration it judged was correct. For the release-synced set the audit now asserts
+  the invariant that is actually policy: required_status_checks on main is empty AND an active repository
+  ruleset restricts updates to refs/heads/main with a non-empty bypass-actor set. Both halves are required;
+  empty contexts alone is an unprotected main. The compliant set keeps the CI-Summary assertion on main,
+  and every dev assertion is unchanged.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Release-synced main passes on empty contexts + restricting ruleset, and fails without
+      either."
+    command: "uv run pytest tests/test_audit_branch_protection_release_synced.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-release-synced-main-assertion-tests"
+    description: >-
+      RED-first proof for OMN-17186. The seven behavioural tests drive the real script with a stubbed
+      gh on PATH. Against the pre-change script 6 of 7 fail (the release-synced main case fails with '"CI
+      Summary" not found in required status checks'); against the changed script all 7 pass. The suite
+      pins both directions: a release-synced main with no restricting ruleset, or with a ruleset carrying
+      an empty bypass-actor set, or with required contexts re-introduced, all still fail — so the guard
+      cannot be turned green by deleting the assertion. A repo outside the release-synced set still fails
+      without "CI Summary" on main.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_audit_branch_protection_release_synced.py -q
+  - id: "dod-release-synced-main-live-audit"
+    description: >-
+      Live end-to-end proof against the real GitHub API, same worktree. Before the change the audit exited
+      1 with 13 failures across 8 repos (omnibase_core, omnibase_infra, omnibase_spi, omnimemory, omnidash,
+      omniintelligence, omnimarket, omnibase_compat — all 'CI Summary missing' / 'verify / verify missing'
+      on main). After the change the audit exits 0 with 0 failures across 102 checks, and each of the
+      seven release-synced repos reports its matched ruleset id and bypass actor (Integration:4361937:always,
+      the onexbot-occ-writer App that release.yml pushes main as).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash scripts/audit_branch_protection.sh
