@@ -194,3 +194,89 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7744 --repo OmniNode-ai/onex_change_control --json number,state"
+  # -------------------------------------------------------------------------
+  # OMN-6790 supersession refresh, append-only (2026-08-30, after #3040 merged).
+  #
+  # WHAT BROKE, observed not theorised. The dod-supersede-001/002/003 entries
+  # above were authored while omnibase_infra#3040 was still OPEN, and three of
+  # them assert live PR state that is only true while it is open:
+  # 001 requires `.state == "OPEN"`, 002 requires `.mergedAt == null`, and 003
+  # reads a live `statusCheckRollup` that GitHub stops serving in the same shape
+  # once a PR is merged and its head branch is deleted. #3040 merged at
+  # 2026-08-30T19:17:50Z as 28025666a961f6eab0e5af8f8f7555701df474e9, and OCC
+  # job 99309183236 on PR #7744 then reported `OMN-6790: 3/14 PASS, 8 WARN,
+  # 3 BLOCK` with exactly those three commands failing (exit 1). So the earlier
+  # repair was correct for its moment and self-expiring by construction: it
+  # re-wedged this ticket for every FOLLOWING PR the instant the PR it pinned
+  # landed. omnimarket#2228 is that following PR.
+  #
+  # THE FIX AND ITS SHAPE. Append-only, same mechanism, nothing deleted and
+  # nothing edited: three more entries, each superseding one of the three
+  # transient ones by id. The replacements assert the SAME claims against
+  # POST-MERGE facts, which are monotonic — a merge commit oid, a merged base
+  # ref, and the check-run conclusions recorded against a frozen head sha do not
+  # revert. That is the property the earlier entries lacked, and it is the whole
+  # point of this refresh; a fourth round of this should not be necessary.
+  #
+  # dod-supersede-004 is NOT superseded here. Its check reads the PR body, which
+  # survives merge, and it was the one of the four that passed.
+  #
+  # NOT DONE HERE, stated rather than glossed: these entries still verify the
+  # omnibase_infra half of OMN-6790. The omnimarket half's own proof is
+  # dod-OmniNode-ai-omnimarket-pr-2228 below, and the end-to-end ladder proof
+  # (a real `onex delegate` reaching the GLM rung on the Coding Plan surface via
+  # the contract) is NOT claimed by any entry in this file.
+  - id: "dod-supersede-005-pr3040-merged-identity"
+    description: >-
+      Supersedes dod-supersede-001-pr3040-open-dev, which required `.state == "OPEN"` and pinned the pre-merge
+      head 6706fc109ac171cdf3509f206382261868674e63. Same claim — the product PR for this ticket exists,
+      landed on the real landing branch, and carried both changed paths — restated against the post-merge
+      fact: #3040 is MERGED into `dev` at merge commit 28025666a961f6eab0e5af8f8f7555701df474e9, titled
+      for OMN-6790, with the judge-lane compose default and the fail-closed guard test both in its file
+      list. Falsifiable by construction and verified so: substituting a zero merge-commit oid makes the
+      same command exit 1. Nothing here is time-dependent — a merged PR does not un-merge and its merge
+      oid does not change.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-supersede-001-pr3040-open-dev"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 3040 --repo OmniNode-ai/omnibase_infra --json state,baseRefName,mergeCommit,title,files --jq '.state == "MERGED" and .baseRefName == "dev" and .mergeCommit.oid == "28025666a961f6eab0e5af8f8f7555701df474e9" and (.title | contains("OMN-6790")) and ((.files | map(.path)) | index("docker/docker-compose.judge.yml") != null) and ((.files | map(.path)) | index("tests/test_glm_endpoint_surface_omn6790.py") != null)' | grep -qx true
+  - id: "dod-supersede-006-pr3040-landing-branch-merged"
+    description: >-
+      Supersedes dod-supersede-002-pr3040-landing-branch, which asserted `.mergedAt == null` and `.mergeable
+      == "MERGEABLE"` — both structurally unavailable now that the PR has landed. The claim that entry
+      was actually making is the landing-branch fact, and that claim is now provable in its strongest
+      form rather than its weakest: #3040 did not merely TARGET `dev`, it MERGED into `dev`, and `dev`
+      is genuinely omnibase_infra's default branch (so the original boilerplate's premise of a merge-to-`main`
+      step remains wrong, which is the defect dod-002 carried). Kept distinct from dod-supersede-005 above:
+      005 pins identity, merge oid and diff scope; this one pins the branch topology, including the independent
+      repo-level `default_branch` read that 005 does not make.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-supersede-002-pr3040-landing-branch"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 3040 --repo OmniNode-ai/omnibase_infra --json baseRefName,mergedAt --jq '.baseRefName == "dev" and (.mergedAt != null)' | grep -qx true && gh api repos/OmniNode-ai/omnibase_infra --jq '.default_branch == "dev"' | grep -qx true
+  - id: "dod-supersede-007-pr3040-head-checks-green"
+    description: >-
+      Supersedes dod-supersede-003-pr3040-occ-cascade-only. That entry was an explicitly WEAKENED form
+      of "tests pass in CI" — it could only claim that every red leg belonged to the OCC/receipt cascade,
+      because the OCC repair it was part of had not landed yet, and it carried a name-matching exclusion
+      regex to say so. That weakening is no longer necessary and is therefore not carried forward: the
+      cascade cleared, `CI Summary` went green on run 33324340197 job 99307966267, and #3040 merged. This
+      entry makes the STRONGER, unqualified claim the original boilerplate was reaching for — on the reviewed
+      head 6706fc109ac171cdf3509f206382261868674e63, taking the LATEST attempt per check name, there is
+      not one check run whose conclusion is outside {success, skipped, neutral}. No exclusion list, no
+      OCC-family carve-out, nothing named. The head sha is frozen and its check-run conclusions are immutable,
+      so unlike its predecessor this cannot expire. The `--watch` of the original is deliberately not
+      reproduced: a blocking poll inside an evidence probe hangs the executor.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-supersede-003-pr3040-occ-cascade-only"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/commits/6706fc109ac171cdf3509f206382261868674e63/check-runs?per_page=100" --jq '[.check_runs[]] | group_by(.name) | map(max_by(.started_at)) | map(select(.conclusion | IN("success","skipped","neutral") | not)) | length == 0' | grep -qx true
