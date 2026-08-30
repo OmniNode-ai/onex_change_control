@@ -2017,6 +2017,52 @@ jobs:
           # schema + duplicate-id integrity checks remain fail-closed.
           uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml
 
+  validate-staging-namespace-grants:
+    name: validate-staging-namespace-grants
+    # OMN-16702: the PUBLIC-cluster staging-class namespace authorization
+    # anchor (grants/staging_namespace_grants.yaml). Deliberately a SEPARATE
+    # anchor from grants/prod_promotion_grants.yaml above, not a `scope:` field
+    # inside it: the prod schema rejects unexpected per-entry fields, and
+    # omninode_infra's scripts/validate_prod_promotion_grant.py raises
+    # ValueError -> MALFORMED -> exit 1 for EVERY prod promotion when an entry
+    # lacks image_digest / promotion_batch_id. A staging entry in the prod
+    # anchor would BRICK prod promotion. Two files, two validators, zero
+    # coupling — and scripts/validate_prod_promotion_grant.py stays
+    # byte-unchanged, which is the machine-checkable proof of scoping.
+    #
+    # Unconditional (no `needs:`, no `if:`) for the same OMN-14441 reason as
+    # validate-prod-promotion-grants above: an authorization-anchor change must
+    # never be able to be misclassified into a short-circuited zone. ci-summary
+    # has no `needs:` and auto-discovers in-run jobs, so no registration edit is
+    # required here.
+    runs-on: >-
+      ${{
+        (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    # OMN-15722 uniform 45m floor across ci-summary members (see the prod-grant
+    # job above for the measured justification). This validator has zero
+    # git/subprocess usage (single-file read), so fetch-depth: 1 is provably
+    # safe here for the same reason it is above.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate staging-namespace authorization anchor (OMN-16702)
+        run: |
+          set -euo pipefail
+          uv run validate-staging-namespace-grants --file grants/staging_namespace_grants.yaml
+
   check-platform-leads-review-tripwire:
     name: check-platform-leads-review-tripwire
     # OMN-14445: validate-prod-promotion-grants' approved_by != PR-author check
