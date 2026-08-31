@@ -131,7 +131,6 @@ Every PR must:
 - Include `OMN-XXXX` in the title.
 - Have a `dod_evidence` block in the PR body citing the ticket contract.
 - Pass all CI gates (`gh pr checks <num> --watch`).
-- Have no unresolved CodeRabbit threads.
 
 See `omni_home/CLAUDE.md` for the full PR checklist.
 
