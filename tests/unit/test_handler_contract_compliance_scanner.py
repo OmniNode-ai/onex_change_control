@@ -217,6 +217,96 @@ class TestParseContractTransports:
         transports = parse_contract_transports(contract)
         assert transports == []
 
+    def test_scalar_transport_type_still_declares_one(self, tmp_node_dir: Path) -> None:
+        """A scalar metadata.transport_type keeps working — no breaking change.
+
+        Every contract in the fleet declares a bare string today. Widening the
+        slot to a list must not change what a scalar means.
+        """
+        contract = tmp_node_dir / "contract.yaml"
+        contract.write_text(
+            "name: test\n"
+            "node_type: COMPUTE_GENERIC\n"
+            "metadata:\n"
+            '  transport_type: "http"\n'
+        )
+        assert parse_contract_transports(contract) == ["HTTP"]
+
+    def test_transport_type_list_declares_every_transport(
+        self, tmp_node_dir: Path
+    ) -> None:
+        """OMN-16963: a node that genuinely speaks N transports can declare N.
+
+        The scanner previously stringified a list into a single nonsense token
+        (``"['HTTP', 'KAFKA', 'DATABASE']"``), so a node speaking three
+        transports could not declare more than two without fabricating a
+        routing entry per transport. A declaration slot that cannot hold the
+        truth forces either an allowlist or a fake routed operation — both
+        overrides in disguise.
+        """
+        contract = tmp_node_dir / "contract.yaml"
+        contract.write_text(
+            "name: test\n"
+            "node_type: EFFECT_GENERIC\n"
+            "metadata:\n"
+            "  transport_type:\n"
+            '    - "http"\n'
+            '    - "kafka"\n'
+            '    - "database"\n'
+        )
+        transports = parse_contract_transports(contract)
+        assert transports == ["HTTP", "KAFKA", "DATABASE"]
+
+    def test_transport_type_list_entries_are_normalized_and_pruned(
+        self, tmp_node_dir: Path
+    ) -> None:
+        """Blank and non-scalar list entries never become a declared transport.
+
+        A declaration the scanner cannot read must not silently widen the set
+        of transports a handler is allowed to use.
+        """
+        contract = tmp_node_dir / "contract.yaml"
+        contract.write_text(
+            "name: test\n"
+            "node_type: COMPUTE_GENERIC\n"
+            "metadata:\n"
+            "  transport_type:\n"
+            '    - "  http  "\n'
+            '    - ""\n'
+            "    - null\n"
+            "    - [nested]\n"
+        )
+        assert parse_contract_transports(contract) == ["HTTP"]
+
+    def test_handler_type_list_declares_every_transport(
+        self, tmp_node_dir: Path
+    ) -> None:
+        """The routing-entry slot widens on the same terms as the metadata one."""
+        contract = tmp_node_dir / "contract.yaml"
+        contract.write_text(
+            "name: test\n"
+            "node_type: COMPUTE_GENERIC\n"
+            "handler_routing:\n"
+            "  handlers:\n"
+            '    - operation: "op"\n'
+            "      handler:\n"
+            '        name: "HandlerTest"\n'
+            '        module: "m"\n'
+            "        handler_type:\n"
+            '          - "kafka"\n'
+            '          - "database"\n'
+        )
+        assert parse_contract_transports(contract) == ["KAFKA", "DATABASE"]
+
+    def test_empty_transport_type_list_declares_nothing(
+        self, tmp_node_dir: Path
+    ) -> None:
+        contract = tmp_node_dir / "contract.yaml"
+        contract.write_text(
+            "name: test\nnode_type: COMPUTE_GENERIC\nmetadata:\n  transport_type: []\n"
+        )
+        assert parse_contract_transports(contract) == []
+
 
 # --- parse_contract_handler_routing ---
 

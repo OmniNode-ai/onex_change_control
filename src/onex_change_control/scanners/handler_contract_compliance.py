@@ -228,10 +228,35 @@ def parse_contract_topics(contract_path: Path) -> tuple[list[str], list[str]]:
     return publish, subscribe
 
 
+def _normalize_declared_transports(raw: Any) -> list[str]:
+    """Normalize a ``transport_type`` declaration into upper-case transport names.
+
+    OMN-16963: the slot accepts either a single transport name or a list of
+    them. A node that genuinely speaks more than one transport must be able to
+    say so; before this, a list was stringified into one nonsense token
+    (``"['HTTP', 'KAFKA']"``), which declared nothing and silently left every
+    real transport undeclared.
+
+    Entries that are not scalar strings, and blank entries, are dropped rather
+    than coerced: a declaration the scanner cannot read must never widen the
+    set of transports a handler is allowed to use.
+    """
+    items = raw if isinstance(raw, list) else [raw]
+    normalized: list[str] = []
+    for item in items:
+        if item is None or isinstance(item, (list, tuple, dict, set)):
+            continue
+        name = str(item).strip().upper()
+        if name and name not in normalized:
+            normalized.append(name)
+    return normalized
+
+
 def parse_contract_transports(contract_path: Path) -> list[str]:
     """Extract declared transport types from contract.yaml.
 
     Looks at metadata.transport_type and handler_routing.handlers[].handler_type.
+    Both slots accept a single transport name or a list of them (OMN-16963).
     """
     data = _load_yaml(contract_path)
     if data is None:
@@ -242,14 +267,14 @@ def parse_contract_transports(contract_path: Path) -> list[str]:
     # Check metadata.transport_type
     metadata = data.get("metadata", {}) or {}
     if transport := metadata.get("transport_type"):
-        transports.append(str(transport).upper())
+        transports.extend(_normalize_declared_transports(transport))
 
     # Check handler_routing.handlers[].handler_type
     handler_routing = data.get("handler_routing", {}) or {}
     for handler_entry in handler_routing.get("handlers", []) or []:
         handler_info = handler_entry.get("handler", {}) or {}
         if handler_type := handler_info.get("handler_type"):
-            transports.append(str(handler_type).upper())
+            transports.extend(_normalize_declared_transports(handler_type))
 
     # Infer transports from node_type and topics
     _infer_kafka_transport(data, transports)
