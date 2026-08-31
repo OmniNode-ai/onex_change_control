@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12626"
+title: "feat: prod runtime promotion-lineage guard — pin prod image to a promoted main digest (R1)"
+summary: >-
+  Risk R1 (High, Governance): the prod runtime image was unpinned and built from a drifted source clone.
+  The promotion gate protects the main BRANCH, but nothing pinned the prod IMAGE to a promoted main digest:
+  prod's 0.36.1 image (built 2026-05-24) predated build-provenance + org.opencontainers.image.revision
+  that dev/stability 0.37.0 already bake, and was built from a clone 12 commits behind origin/main with
+  dirty edits. omnibase_infra PR 1840 closes the gap with a pre-build/deploy guard (scripts/check_prod_promotion_lineage.py,
+  mypy --strict clean) that refuses to build the prod-bound image unless (a) the build source working
+  tree is clean (no uncommitted/untracked edits), (b) HEAD is an ancestor-of/equal-to origin/main (promoted
+  lineage — dev-only or dirty trees are rejected), (c) the build bakes org.opencontainers.image.revision=<git
+  sha> + a build-provenance manifest (the guard emits the GIT_SHA/VCS_REF/RUNTIME_SOURCE_HASH build args
+  the Dockerfile already stamps into the revision label and provenance manifest), and (d) the deployed
+  image carries that revision so "prod == promoted main digest" is assertable from docker inspect. The
+  guard is fail-fast with structured EnumProdLineageFailure reasons and no silent default. It is wired
+  into the prod build/deploy path three ways: deploy-agent _compose_build (release-mode builds fail closed
+  on a dirty/non-promoted source before any docker side effect), deploy-runtime.sh (--prod / ONEX_DEPLOY_LANE=prod
+  runs the guard and hard-fails), and CI (prod-promotion-lineage.yml: a PR gate runs the guard unit tests,
+  and a reusable lineage-check job gates build-and-push-runtime.yml on main); a pre-commit hook runs the
+  guard tests when the guard or deploy tooling changes. Tests prove the guard FAILS on a dirty/dev-only
+  tree and PASSES on a clean promoted HEAD, and were live-verified (clean+promoted PASS exit 0; dev-only
+  commit FAIL exit 1 "not_promoted"; dirty tree FAIL exit 1 "dirty_tree"). This change is build/deploy-tooling
+  code only; it never rebuilds or touches the live prod runtime.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-1840"
+    description: "omnibase_infra PR 1840 adds scripts/check_prod_promotion_lineage.py (clean-tree + ancestor-of-origin/main
+      + image-revision/provenance guard, mypy --strict clean), wires it into deploy-agent _compose_build
+      (release-mode fail-closed), deploy-runtime.sh (--prod / ONEX_DEPLOY_LANE=prod hard-fail), CI (prod-promotion-lineage.yml
+      PR gate + reusable lineage-check gating build-and-push-runtime.yml on main), and pre-commit. Includes
+      31 new tests (tests/scripts/test_check_prod_promotion_lineage.py 21, tests/scripts/test_deploy_runtime_prod_lineage.py
+      6, scripts/deploy-agent/.../test_executor_promotion_lineage.py 4)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12626/dod-infra-pr-1840/command.yaml"
+  - id: "dod-guard-live-proof"
+    description: "The guard was live-verified end-to-end: against a real promoted clone (clean + HEAD
+      == origin/main) it exits 0 'OK: build source clean and promoted'; against a dev-only commit on top
+      of origin/main it exits 1 'FAIL (not_promoted)'; against a dirty/untracked tree it exits 1 'FAIL
+      (dirty_tree)'. Full deploy-agent suite (138 passed), tests/scripts (121 passed), tests/unit/scripts
+      (472 passed), and pre-commit on all staged files (exit 0) are green."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12626/dod-guard-live-proof/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "This OCC PR carries the OMN-12626 central contract (validates against ModelTicketContract)
+      and the dod-infra-pr-1840 + dod-guard-live-proof + dod-occ-pr-self receipts, each bound to the contract_sha256."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12626/dod-occ-pr-self/command.yaml"

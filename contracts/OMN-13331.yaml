@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13331"
+title: "feat(omnimarket): port topic-drift emitting jobs to omnimarket CI (WS-3)"
+summary: >
+  WS-3 cross-repo topic-drift ratchet — omnimarket half. Ports three required status contexts to omnimarket
+  CI so they emit alongside the omnibase_infra contexts already required. The three contexts are: "Topic
+  Naming Lint" (job name field added to existing topic-naming-lint job), "Topic Enum Drift Check" (new
+  job + script check_topic_enum_drift.py: validates TOPIC_* constants in events/topics.py are backed by
+  contracts), and "Topic Drift Check" (new job + script check_topic_drift.py: validates contract topic
+  format and producer namespaces; cross-repo registry gaps are warn-only). All three jobs pass clean on
+  the current omnimarket codebase. The required_status_checks flip onto omnimarket dev is a SEPARATE SERIAL
+  STEP and is explicitly NOT included in this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >
+      omnimarket CI workflow emits "Topic Naming Lint", "Topic Enum Drift Check", and "Topic Drift Check"
+      status contexts on PRs to dev. The topic-naming-lint job gains a name: field; two new jobs topic-enum-drift
+      and topic-drift-check are added with the correct name: fields.
+    command: >-
+      grep -E 'name: (Topic Naming Lint|Topic Enum Drift Check|Topic Drift Check)' .github/workflows/ci.yml
+  - kind: "ci"
+    description: >
+      check_topic_enum_drift.py passes clean on current omnimarket codebase (31 constants backed by contracts,
+      1 allowlisted with onex-topic-allow, 0 orphaned violations).
+    command: "uv run python scripts/ci/check_topic_enum_drift.py"
+  - kind: "ci"
+    description: >
+      check_topic_drift.py passes clean on current omnimarket codebase (0 new format violations; cross-repo
+      registry gaps reported as warnings only, exit 0).
+    command: "uv run python scripts/ci/check_topic_drift.py"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-topic-drift"
+    description: >
+      omnimarket PR adding check_topic_enum_drift.py + check_topic_drift.py + ci.yml job name fields.
+      All three topic-drift contexts emit. check_topic_enum_drift exits 0 (31 backed, 1 allowlisted).
+      check_topic_drift exits 0 (0 new violations). All pre-commit hooks pass.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13331/dod-omnimarket-topic-drift/command.yaml
+          && grep -q 'Topic Enum Drift Check PASSED' drift/dod_receipts/OMN-13331/dod-omnimarket-topic-drift/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for this onex_change_control PR carrying the OMN-13331 contract
+      onto dev.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13331/dod-occ-pr-self/command.yaml &&
+          grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13331/dod-occ-pr-self/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >
+      CI-config-only PR: no new node, event-bus topic, contract, runtime topology, or live deploy. No
+      .201 mutation, no container restart. Normal CI merge pipeline applies. required_status_checks flip
+      is a separate serial step (explicitly excluded from this PR scope).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13331/dod-deploy-assessment/command.yaml
+          && grep -q 'No deploy action required' drift/dod_receipts/OMN-13331/dod-deploy-assessment/command.yaml

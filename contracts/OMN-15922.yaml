@@ -1,0 +1,203 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15922
+title: Port the onex auth gateway JWT client into omnibase_infra
+summary: 'OCC companion for OmniNode-ai/omnibase_infra PR #2747. The gateway JWT client -- the surface
+  an unattended runtime uses to mint a token, store a credential, and keep a session attached -- was built
+  in omnibase_core, where it could not stay: ADR-005 forbids core reaching outward for a live HTTP transport,
+  and the slice had been routing around that with an entry-point group whose only purpose was the detour.
+  This companion binds the evidence that the slice now lives in omnibase_infra behind an infra-owned transport
+  protocol (the layering the port exists to restore), that the entry-point indirection is gone rather
+  than relocated, that the CLI surface is actually wired so the deployed image gains an ``onex auth``
+  command group, and that the ported classes satisfy the OMN-14350 lifecycle-class ratchet under their
+  new home rather than being baselined into an allowlist that may only shrink.'
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - protocols
+  - public_api
+evidence_requirements:
+  - kind: ci
+    description: 'PR #2747 CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+dod_evidence:
+  - id: dod-OmniNode-ai-omnibase_infra-pr-2747
+    description: 'PR #2747 on OmniNode-ai/omnibase_infra ports the gateway JWT client out of core and
+      into infra.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 2747 --repo OmniNode-ai/omnibase_infra --json number,state
+  - id: dod-transport-protocol-is-infra-owned
+    description: The live-HTTP seam is a protocol owned by omnibase_infra. This is the whole point of
+      the port -- ADR-005 forbids omnibase_core owning a transport that reaches outward, and a port that
+      left the protocol behind in core would have moved the code without moving the dependency.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/protocols/protocol_gateway_transport.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'class ProtocolGatewayTransport(Protocol):'
+  - id: dod-entry-point-indirection-removed-not-relocated
+    description: 'The ADR-005 workaround is deleted, not rehomed. The slice previously resolved its transport
+      through an entry-point group that existed solely so core could avoid importing httpx directly; with
+      the code in infra that indirection has no reason to exist, and leaving it would preserve the defect
+      under a new address. Asserted positively -- the CLI constructs the concrete adapter at its callsite
+      -- because the corresponding absence check (grep -v for the loader) is satisfied by any file that
+      has other lines and would go green on a build that still shipped the indirection.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_auth.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq ''.content'' | base64 -d | grep -c ''transport=GatewayTransportHttpx()'''
+  - id: dod-lifecycle-class-names-satisfy-the-ratchet
+    description: The ported classes carry ratchet-compliant names under their new home. omnibase_infra
+      enforces the same OMN-14350 lifecycle-class ban as core and hard-fails Service*/Client*/Adapter*;
+      the allowlist may only shrink, so the port renamed rather than baselined. Verified as a positive
+      assertion on the names that now exist.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/gateway/client/gateway_token_minter.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'class GatewayTokenMinter:'
+  - id: dod-credential-secrets-are-not-plain-strings
+    description: The stored credential holds its secret material in SecretStr, so a log line, a repr,
+      or an exception rendering the model cannot spill a live gateway token. This is the property that
+      makes an on-disk credential store safe to keep at all.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/gateway/models/model_gateway_credential.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'SecretStr'
+  - id: dod-transport-adapter-has-its-own-tests
+    description: 'The real httpx adapter is exercised directly, not only through fakes. Every other test
+      in the slice drives a stand-in for the transport seam; those assertions are only honest if the one
+      real implementation behaves the same way, and the adapter is new code that could not exist in core
+      at all.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/gateway/test_gateway_transport_httpx.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq '.content' | base64 -d | grep -c 'GatewayTransportHttpx'
+  - id: occ-self-bind-pr-6509
+    description: 'Binds OMN-15922 to OCC companion PR #6509 (self-bind).'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6509 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: dod-deploy-assessment
+    description: 'Falsifiable deploy probe (OMN-14443). The deployed surface this ticket changes is the
+      CLI: the port is only real in a runtime image if that image''s ``onex`` entrypoint actually exposes
+      the ``auth`` command group, and a build that ported the modules but never registered the group would
+      import cleanly, pass every unit test, and still leave an unattended runtime with no way to mint
+      a credential -- the failure this probe exists to catch. This reads commands.py back from GitHub
+      at the pinned omnibase_infra head via gh api and asserts the registration line, so it goes RED the
+      moment the wiring is dropped or renamed; it reads a surface outside this repo and never a receipt
+      or contract this PR authors. The live-cluster half (docker exec ${RUNTIME_CONTAINER:-omninode-runtime}
+      onex auth --help, then a real mint -> store -> attach against deployed onex-api) is the post-deploy
+      acceptance test tracked on the ticket; it cannot run before the image carrying this port exists,
+      and asserting it here would be the vacuous evidence this ratchet exists to reject.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: 'gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/commands.py?ref=b14d59f7ed8fab54167a22ad696071a37f86180b
+          --jq .content | base64 -d | grep -q ''cli.add_command(auth_group)'''
+  - id: dod-onex-cli-entry-point-group-exposes-auth
+    description: '``onex auth`` resolves through the ``onex.cli`` entry-point group. The sibling dod-deploy-assessment
+      item asserts ``cli.add_command(auth_group)`` in commands.py, which registers the group on the ``omni-infra``
+      console script ONLY; omnibase_core''s ``onex`` CLI does not read that module and loads extensions
+      exclusively from the ``onex.cli`` entry-point group. The two are independent registrations, so dod-deploy-assessment
+      was green at dev HEAD 254c3672471261c596c565245fb51ac9d951c494 while ``onex auth`` was still a phantom
+      callable (``Error: No such command auth``) -- and ``onex``, not ``omni-infra``, is the binary the
+      marketplace skill and every harness shell out to. This probe reads pyproject.toml back from GitHub
+      at the pinned omnibase_infra head via gh api, narrows to the body of the ``[project.entry-points."onex.cli"]``
+      table with awk, and counts the declaration inside it, so a declaration moved to any other entry-point
+      table (the exact defect) does not satisfy it. Section-scoped rather than a bare file grep because
+      the string also appears under the ``omni-infra`` registration path. Falsifiable and measured, not
+      asserted: the identical command emits 1 (exit 0) at head e3a02d96ca2f87ceeb05732db467366ad8c1f7a3
+      and 0 (exit 1) at the merge base 254c3672471261c596c565245fb51ac9d951c494, the RED leg the OCC autobind
+      heuristic could not construct for itself because this PR''s only other regression proof is a test
+      file that does not exist at the merge base.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/pyproject.toml?ref=e3a02d96ca2f87ceeb05732db467366ad8c1f7a3 --jq '.content' | base64 -d | awk '/^\[project\.entry-points\."onex\.cli"\]$/{f=1;next} /^\[/{f=0} f' | grep -c '^auth = "omnibase_infra\.cli\.cli_auth:auth_group"$'
+  - id: occ-self-bind-pr-6552
+    description: 'Binds OMN-15922 to OCC companion PR #6552 (self-bind). Mirrors occ-self-bind-pr-6509
+      above and exists for the same mechanical reason: validator_occ_merge_eligibility requires at least
+      one PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence, otherwise the
+      companion is ineligible with reason pr_ticket_mismatch. It is a binding record, not the substantive
+      proof -- the falsifiable evidence for this companion is dod-onex-cli-entry-point-group-exposes-auth
+      above, which measures RED at the merge base and GREEN at the fix head.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6552 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: occ-self-bind-pr-6593
+    description: 'Binds OMN-15922 to OCC companion PR #6593 (self-bind), the evidence companion for OmniNode-ai/omniintelligence#825
+      (branch-identity-fixed replacement of #824, itself superseded). Mirrors occ-self-bind-pr-6509 and
+      occ-self-bind-pr-6552 above and exists for the same mechanical reason: validator_occ_merge_eligibility
+      requires at least one PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence,
+      otherwise the companion is ineligible with reason pr_ticket_mismatch. It is a binding record, not
+      substantive proof of the omniintelligence deliverable itself.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6593 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: occ-self-bind-pr-6586
+    description: 'Binds OMN-15922 to OCC companion PR #6586 (self-bind), the evidence companion for OmniNode-ai/omninode_infra#925
+      (branch-identity-fixed replacement of #921, itself superseded). Mirrors occ-self-bind-pr-6509 and
+      occ-self-bind-pr-6552 above and exists for the same mechanical reason: validator_occ_merge_eligibility
+      requires at least one PASS receipt on the cited ticket to bind to the OCC PR carrying the evidence,
+      otherwise the companion is ineligible with reason pr_ticket_mismatch. It is a binding record, not
+      substantive proof of the omninode_infra deliverable itself.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6586 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: dod-onex-auth-fails-closed-without-credential
+    description: 'Ticket DoD item 4 (RED-before fail-closed), auth-CLI-layer slice only. ``onex auth status``/``onex
+      auth token`` invoked with no stored credential exit non-zero and name the remediation (``onex auth
+      login``) rather than warning-and-succeeding -- re-run live in this evidence lane against the merged
+      #2758 head: ``uv run pytest tests/unit/gateway/test_cli_auth.py -m unit`` = 10 passed, 0 failed,
+      including both fail-closed cases. NOT the ticket''s full DoD-4 scope: DoD-4''s "zero local execution"
+      clause is about ``onex delegate`` never silently falling back to local execution when a cloud target
+      is configured and no valid token resolves (OMN-15680 AC-e restated at the auth layer). ``cli_delegate.py``
+      has no reference to ``cli_auth``/``auth_group``/gateway credential resolution anywhere in its source
+      at this head -- that integration is unbuilt, so the delegate-level fail-closed property remains
+      unproven and is NOT asserted by this item. This item proves only the auth CLI''s own refusal shape,
+      which is real and re-run live, not merely read back from GitHub content.'
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/gateway/test_cli_auth.py?ref=a6f1574498e8d028c18fe00f9a26485e15f4bce5"
+          --jq '.content' | base64 -d | grep -c 'def test_token_without_a_credential_fails_closed_before_touching_a_transport\|def
+          test_status_without_a_credential_exits_non_zero_and_names_the_remediation'
+  - id: occ-self-bind-pr-6582
+    description: OCC companion PR  #6582 -- self-bind for OMN-15922 (OMN-14650).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: gh pr view 6582 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: "dod-OmniNode-ai-omninode_infra-pr-933"
+    description: "PR #933 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 933 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-933-ci"
+    description: "PR #933 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 933 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-6615"
+    description: "OCC companion PR #6615 — self-bind for OMN-15922 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6615 --repo OmniNode-ai/onex_change_control --json number,state"
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''

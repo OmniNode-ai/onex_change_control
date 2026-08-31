@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14330"
+title: "fix(OMN-14330): re-add OMN-7018 worktree guard as targeted hooks.json carve-out"
+summary: >-
+  omniclaude PR #1891 restores the OMN-7018 `git worktree add` canonical-root guard that OMN-13244 silently
+  disabled when it gutted `plugins/onex/hooks/hooks.json` to a measurement baseline. Mirroring the OMN-13856
+  Done-flip-guard precedent, the PR extracts a new, dedicated `plugins/onex/hooks/scripts/pre_tool_use_worktree_guard.sh`
+  containing ONLY the `git worktree add` canonical-root check (gated on the `WORKTREE_GUARD` bit, `EnumHookBit.WORKTREE_GUARD
+  = 1 << 59`), registers it as a second PreToolUse entry in hooks.json, and updates the regression-lock
+  test (`tests/hooks/test_hooks_baseline_omn_13244.py`) to assert exactly two registered hooks. `pre_tool_use_bash_guard.sh`
+  / `bash_guard.py` (which bundle the same worktree check together with unrelated destructive-command
+  HARD_BLOCK/SOFT_ALERT/CONTEXT_ADVISORY logic) stay untouched and unregistered. An independent verifier
+  (not the implementing agent) re-executed the guard's synthetic proof cases directly against the PR head,
+  confirmed the scope is exactly the 3 claimed files with zero drift into bash_guard.py, and confirmed
+  the hooks.json/test wiring is internally consistent.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1891"
+    description: >-
+      Independent verification (a separate verifier, NOT the implementing agent) reproduced omniclaude
+      PR #1891 (head 1035e6d79227f9bd9cfb086f559b73c2e688025c, base dev) in the OMN-14330 omniclaude worktree.
+      The diff is exactly three files: `plugins/onex/hooks/hooks.json` (13 lines changed — adds one `Bash`-matcher
+      PreToolUse entry, bumps description/version), the new `plugins/onex/hooks/scripts/pre_tool_use_worktree_guard.sh`
+      (198 lines, extracted verbatim worktree-add canonical-root block), and `tests/hooks/test_hooks_baseline_omn_13244.py`
+      (updated to assert exactly two registered PreToolUse hooks and that bash_guard stays on disk unregistered).
+      Independently re-executed the guard's synthetic PreToolUse JSON payload proof directly against the
+      new script binary (not the PR's self-reported claims): (a) `git worktree add /tmp/evil-worktree
+      -b jonah/evil` outside the canonical root -> `{"decision":"block",...}`, exit 2; (b) `git worktree
+      add $OMNI_HOME/omni_worktrees/OMN-99999/omniclaude -b ...` inside the canonical root -> passthrough,
+      exit 0; (c) benign `ls -la` -> passthrough, exit 0; (d) non-Bash tool (`Read`) -> passthrough, exit
+      0; (e) `OMNI_HOME` unset with no override, tested in a clean isolated HOME with no `~/.omnibase/.env`
+      to confound the result -> `{"decision":"block","reason":"BLOCKED: cannot resolve canonical worktree
+      root..."}`, exit 2 (fail-fast, matches the script's own documented guarantee); (f) a quoted string
+      containing the literal text "worktree add" inside a commit message (not a real `git worktree add`
+      invocation) -> passthrough, exit 0 (false-positive avoidance). All six cases match the PR's dod_evidence
+      claims. Confirmed scope-cleanliness via `git diff origin/dev...HEAD`: `plugins/onex/hooks/scripts/pre_tool_use_bash_guard.sh`
+      and `plugins/onex/hooks/lib/bash_guard.py` are BYTE-FOR-BYTE untouched (0 diff lines on both files)
+      — the new script does not drag in any of bash_guard's destructive-command HARD_BLOCK, `--no-verify`,
+      `gh pr merge` mismatch, SOFT_ALERT, or CONTEXT_ADVISORY logic. Confirmed `hooks.json` is valid JSON
+      with exactly 2 PreToolUse entries (Done-flip guard matcher `^mcp__linear-server__(save_issue|update_issue)$`,
+      worktree guard matcher `Bash`), matching correct script paths. Ran the regression-lock test file
+      standalone: `tests/hooks/test_hooks_baseline_omn_13244.py` 7/7 passed, including the new `test_bash_guard_and_bash_guard_py_remain_on_disk_unregistered`.
+      Ran the broader `tests/hooks/` directory: 3357 passed, 1 failed, 25 skipped — the 1 failure (`test_pre_tool_use_bash_guard_worktree.py::TestWorktreeGuardToggle::test_mask_with_worktree_guard_cleared_short_circuits`)
+      is a pre-existing, PR-unrelated local-environment issue (ambient `~/.omnibase/.env` `ONEX_HOOKS_MASK`
+      clobbers a test's subprocess env override; root-caused and reproduced in isolation against the untouched
+      `pre_tool_use_bash_guard.sh` / `common.sh`, filed as OMN-14334, does not touch any file in this
+      PR's diff). Confirmed no hardcoded `/Users/` or `/Volumes/` paths in the new script. Independently
+      confirmed `gh pr checks 1891` is red ONLY on the expected `occ-preflight` / Evidence-Source dependency
+      chain (`OCC PREFLIGHT FAILED: PR body is missing required 'Evidence-Source:' line`), not on any
+      real lint/type/test failure — verified via `gh run view --job` on the Tests Gate and occ-preflight
+      job logs.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14330/dod-omniclaude-pr-1891/command.yaml &&
+          grep -q '^pr_number: 1891$' drift/dod_receipts/OMN-14330/dod-omniclaude-pr-1891/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14330 contract and the PASS
+      receipt consumed by omniclaude PR #1891 via its Evidence-Source line. It binds itself to occ-preflight
+      by commit_sha (the contract commit C1), which is a member of this PR's commit set, so occ-preflight
+      verifies the companion without OCC PR-number prediction under concurrent lanes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14330/dod-occ-self/command.yaml

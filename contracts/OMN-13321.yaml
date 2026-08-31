@@ -1,0 +1,118 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13321"
+title: "feat(merge-sweep): emit durable per-PR ledger projection every sweep iteration"
+summary: >
+  Enforcement Map F5 (hardens OMN-12569). The PR-lifecycle state reducer (node_pr_lifecycle_state_reducer)
+  now materializes one user-readable ledger row per PR EVERY sweep iteration -- not only at sweep end
+  -- so an operator can answer "what does the ledger say right now?". Each row carries the ticket-required
+  fields found_at / repo+pr / initial_state / action_taken / evidence / final_state / next_check_at, keyed
+  by (sweep_id, repo, pr_number, iteration) so two consecutive iterations both produce rows and neither
+  overwrites the other. A new shared model omnimarket.projection.pr_ledger_projection (ModelPrLedgerProjectionRow
+  + pure build_ledger_rows) is homed in the shared projection package (not a node package) to satisfy
+  the cross-node reach-in guard and avoid an import cycle. The reducer handle() gains projection_db +
+  sweep_id + iteration + found_at and UPSERTs one row per PR per iteration through ProtocolProjectionDatabaseSync;
+  with no projection_db AND no sweep_id the reducer remains the pure classifier, and supplying one without
+  the other fails fast (no half-configured durable surface silently dropping rows -- the OMN-12569 failure
+  mode this hardens). The orchestrator passes projection_db + sweep_id(=run_id) + a per-sweep iteration
+  index resolved from the durable projection (max+1) so consecutive passes append distinct rows. contract.yaml
+  declares projection_api + db_io (topic onex.snapshot.projection.pr-lifecycle-ledger.v1, table pr_lifecycle_ledger_entries
+  -- declared in the contract, not hardcoded only in code) and a node-owned migration creates pr_lifecycle_ledger_entries
+  in omnidash_analytics with UNIQUE(sweep_id,repo,pr_number,iteration). No new node, no envelope/contract-API
+  change, no live-lane mutation. REOPENED (vendoring gap): the omnimarket node code merged in #1440 but
+  its node-owned migration was never committed into omnibase_infra's tracked forward-migration tree (docker/migrations/forward/nodes/node_pr_lifecycle_state_reducer/0001_create_pr_lifecycle_ledger_entries.sql),
+  so the OMN-13415 migration-sync guard correctly aborted and pr_lifecycle_ledger_entries was missing
+  on dev. omnibase_infra PR #2112 vendors the node migration via scripts/sync-node-migrations.sh (byte-identical
+  to the omnimarket source), so the next forward-migration run materializes the table. This is the OMN-13636
+  migration-gap class made concrete.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Focused tests proving the per-iteration emission and the DoD probe semantics. The new suite covers
+      the pure row-builder (exact ticket fields), the reducer handle() writing one row per PR per iteration
+      through the projection database, two consecutive iterations both producing distinct durable rows
+      (DoD count >= open-PR count for the sweep), fail-fast on a half-configured durable surface, and
+      the contract declaring the projection topic + table. An orchestrator-path integration test drives
+      the REAL reducer through two consecutive passes and asserts iterations [0,1] both materialize rows.
+    command: "uv run pytest tests/test_pr_lifecycle_ledger_projection_omn13321.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >
+      omnimarket product PR adds the shared projection model omnimarket.projection.pr_ledger_projection,
+      wires node_pr_lifecycle_state_reducer to emit one ledger row per PR each iteration, declares projection_api
+      + db_io + the node-owned migration on the reducer contract, and adds tests/test_pr_lifecycle_ledger_projection_omn13321.py.
+      Full local verify passes (pytest 8947, mypy --strict clean, ruff clean, pre-commit clean on changed
+      files, import-check clean).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13321/dod-omnimarket-pr/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13321/dod-omnimarket-pr/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13321/dod-omnimarket-pr/command.yaml"
+  - id: "dod-omnibase-infra-pr-2112"
+    description: >
+      Binds omnibase_infra PR #2112 (REOPEN / vendoring gap). The node-owned migration 0001_create_pr_lifecycle_ledger_entries.sql
+      is vendored into docker/migrations/forward/nodes/node_pr_lifecycle_state_reducer/ via scripts/sync-node-migrations.sh,
+      byte-identical to the omnimarket source @ dev/#1440 (cmp IDENTICAL). The forward-migration runner
+      applies it under the namespaced id node:node_pr_lifecycle_state_reducer:0001_create_pr_lifecycle_ledger_entries.sql,
+      so a clean clone / redeploy materializes pr_lifecycle_ledger_entries. TDD: test_pr_lifecycle_ledger_migration_vendored
+      failed before the vendor and passes after; the sync drift guard reports "check: in sync". Real-SQL
+      apply proof on ephemeral Postgres 14 creates the table (12 columns, UNIQUE(sweep_id,repo,pr_number,iteration),
+      3 indexes) and the exact DoD probe returns 8 over 4 PRs x 2 iterations (iterations {0,1}, idempotent
+      re-apply). Local verify: 79 passed across migration suites, mypy --strict clean, ruff clean, pre-commit
+      all hooks green.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13321/dod-omnibase-infra-pr-2112/command.yaml
+          && grep -q '^pr_number: 2112$' drift/dod_receipts/OMN-13321/dod-omnibase-infra-pr-2112/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13321/dod-omnibase-infra-pr-2112/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR adds a shared projection model, a contract projection_api/db_io declaration,
+      a node-owned migration, and tests in omnimarket. The per-iteration ledger lands through the existing
+      ProtocolProjectionDatabaseSync boundary into omnidash_analytics; the new table is created by the
+      vendored node-owned migration on the next standard forward-migration run, not by a live-lane mutation
+      in this PR. The parity proof exercises pure in-process handlers against sqlite/in-memory adapters;
+      no runtime lane is mutated. No live deploy is performed by this PR. The receipt check_value carries
+      the deploy keyword for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13321/dod-deploy-assessment/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13321/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13321/dod-deploy-assessment/command.yaml"
+  - id: "dod-omnimarket-pr-1445-harden"
+    description: >
+      Binds omnimarket PR #1445 (CodeRabbit Major hardening). The pr_lifecycle ledger migration adds an
+      idempotent DO block that guarantees the UNIQUE(sweep_id,repo,pr_number,iteration) conflict key on
+      a WARM omnidash_analytics where the table pre-exists without it (CREATE TABLE IF NOT EXISTS would
+      otherwise skip the inline UNIQUE, breaking the reducer ON CONFLICT UPSERT). Order-independent set
+      comparison so the fresh-DB inline auto-named constraint counts (no-op there). Proven on real Postgres
+      14: fresh apply x3 == 1 constraint + DoD count 8; warm-without-constraint adds uq_... + ON CONFLICT
+      works + idempotent re-apply. Vendored byte-identical into omnibase_infra.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13321/dod-omnimarket-pr-1445-harden/command.yaml
+          && grep -q '^pr_number: 1445$' drift/dod_receipts/OMN-13321/dod-omnimarket-pr-1445-harden/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13321/dod-omnimarket-pr-1445-harden/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13321 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13321/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13321/dod-occ-pr-self/command.yaml"

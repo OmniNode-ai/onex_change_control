@@ -1,0 +1,85 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13572"
+title: "Wire doc_content_scan as a required gate (Model B rollup, omnibase_core pilot)"
+summary: >
+  Promote the doc_content_scan validator (OMN-13569, already merged to dev) from advisory to a REAL required,
+  blocking gate by dogfooding the Model B failing-rollup mechanism (OMN-13574, #1327): no new gate type
+  is invented. omnibase_core ci.yml gains a doc-content-scan job that runs the corpus-accepted COMPUTE
+  validator over the full tracked documentation set and is added to quality-gate.needs + the quality-gate
+  pass/fail logic, so a doc-content violation turns the single required CI Summary rollup red. The validator-requirements.yaml
+  spec gains an additive doc-content-scan entry (pre_commit + ci_workflow required) and the Model B model_b_rollup_enforcement.validator_jobs
+  map registers doc-content-scan so the rollup-coverage meta-check (validator_rollup_coverage.py) keeps
+  it from silently dropping out. The check-doc-content-scan pre-commit hook is exported and wired. The
+  handler gains the operator-set SKILL.md `ticket: OMN-NNNN` frontmatter exemption (with a unit test).
+  applies_to_repos is scoped to the pilot repo (omnibase_core) only; fleet rollout to the other 11 repos
+  is OMN-13576 — a global required:true would break their handshake gate before their wiring lands. Proven
+  additive: the consumer gap set for all 11 other repos is byte-identical between canonical dev spec and
+  this branch's spec.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Doc-content COMPUTE validator unit + corpus tests including the new SKILL.md ticket-frontmatter
+      exemption, plus the Model-B rollup-coverage meta-check asserting the live ci.yml covers doc-content-scan
+      in the CI Summary transitive needs graph.
+    command: "uv run pytest tests/unit/validation/doc_content_scan/ tests/validation/test_validator_rollup_coverage.py
+      -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1330"
+    description: >
+      Binds omnibase_core PR #1330 at head commit 1e93c7a32031cbf0dddb85f086ffca0a9c0e284c. The doc-content
+      COMPUTE validator + the new SKILL.md ticket-frontmatter exemption pass 51 tests; the Model-B rollup-coverage
+      meta-check passes 10 tests and reports the committed omnibase_core ci.yml as AIRTIGHT with doc-content-scan
+      covered in the CI Summary rollup. The planted-failure proof (a .201 host ref + an OMN-9999 prose
+      ref) makes the doc-content-scan job exit 1 → quality-gate red → CI Summary red; the SKILL.md `ticket:
+      OMN-1234` frontmatter and an onex_change_control-path OMN ref are exempt (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13572/dod-omnibase-core-pr-1330/command.yaml
+          && grep -q '^pr_number: 1330$' drift/dod_receipts/OMN-13572/dod-omnibase-core-pr-1330/command.yaml
+          && grep -q '61 passed' drift/dod_receipts/OMN-13572/dod-omnibase-core-pr-1330/command.yaml"
+  - id: "dod-other-repos-green"
+    description: >
+      HARD GUARDRAIL: the validator-requirements spec change is additive — applies_to_repos is scoped
+      to omnibase_core (pilot) so the other 11 repos never see doc-content-scan. Proven by running the
+      validator_requirements_consumer for each of the 11 other repos against canonical origin/dev spec
+      vs this branch's spec and confirming a byte-identical gap set (diff clean) for all 11.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13572/dod-other-repos-green/command.yaml
+          && grep -q '11 repos' drift/dod_receipts/OMN-13572/dod-other-repos-green/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: omnibase_core PR #1330 changes CI workflow wiring (ci.yml needs graph), adds
+      a pre-commit hook + an additive spec entry + a Model B validator_jobs mapping, and a small handler
+      exemption with a unit test. No live runtime deploy or container mutation is performed; the change
+      gates merge via the existing CI Summary required check only.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13572/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1330$' drift/dod_receipts/OMN-13572/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13572/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev-targeted evidence PR. This onex_change_control
+      PR carries the OMN-13572 contract and receipts onto dev, satisfying the receipt-to-PR binding required
+      by validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13572/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13572/dod-occ-pr-self/command.yaml"

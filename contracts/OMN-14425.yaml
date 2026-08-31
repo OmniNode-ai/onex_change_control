@@ -1,0 +1,113 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14425"
+title: "fix(OMN-14425): OCC autobind emits a falsifiable L1 check, not existence-only"
+summary: >-
+  omnimarket PR #1723 teaches the OCC Evidence-Source autobind (OMN-13317 F1, occ_companion_emitter.py
+  / occ_evidence_stamp.py) to declare a second dod_evidence item alongside its existing `gh pr view` existence
+  probe: `gh pr checks <n> --repo <repo>`, which is falsifiable (it fails when the PR's CI fails) and
+  is required so autobind-minted contracts can satisfy the OMN-14409 contract substance floor (onex_change_control#3990)
+  once that gate lands fail-closed. Independently verified (S-C adversarial verifier, not the implementer):
+  (1) falsifiability proven with real exit codes in both directions, not asserted; (2) the fix survives
+  the ACTUAL corrected #3990 deriver, whose HEAD commit at verification time had already inverted polarity
+  to default-reject — `gh pr checks` passes via an explicit `_CI_OUTCOME_RE` allowlist, not a permissive
+  "anything but gh pr view" default; (3) the claimed RED->GREEN transition reproduced by importing and
+  running the REAL `derive_proof_tier` / `evaluate_contract` from the fetched #3990 branch against the
+  REAL `render_companion_contract` output from #1723's own source, byte-identical to the PR body; (4)
+  the pre-existing existence probe is kept, not replaced, and remains covered by the same whole-file `_rebind_all_receipts`
+  pass; (5) 180 tests green plus the OMN-14285 one-producer-per-contract gate, reproduced fresh from the
+  PR's own `uv.lock`. CAVEAT (landing order, tracked separately as OMN-14429 finding + a ROLLING_WORK_LEDGER.md
+  entry, NOT part of this contract's DoD): #3990 must not merge until #1723 is merged AND the omnimarket
+  autobind runtime is redeployed and a freshly-minted contract is confirmed to carry the new L1 item —
+  the currently-deployed autobind still emits only the pre-fix existence-only shape.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1723-falsifiability"
+    description: >-
+      Falsifiability of the `gh pr checks` probe class, proven bidirectionally with real exit codes at
+      verification time (2026-07-12T02:36-02:50Z): `gh pr checks 1723 --repo OmniNode-ai/omnimarket` (this
+      PR, occ-preflight-cascade red) exited 1; `gh pr checks 1721 --repo OmniNode-ai/omnimarket` (sibling
+      merged PR, all-green CI) exited 0. The command is not a rubber-stamp probe — it reports the real
+      CI verdict of the PR it is pointed at. This item's check re-executes the stable (merged, permanently-green)
+      case as a forward regression guard.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "env TARGET_PR=1721 TARGET_REPO=OmniNode-ai/omnimarket sh -c 'gh pr checks \"$TARGET_PR\"
+          --repo \"$TARGET_REPO\"'"
+  - id: "dod-omnimarket-pr-1723-deriver-allowlist"
+    description: >-
+      Fetched the REAL onex_change_control#3990 branch (jonah/omn-14409-contract-substance-floor, commit
+      ea949d28fd09fd9670e9a87806eb61979527f6e1 at verification time — its own latest commit message is
+      "invert deriver polarity ... gate crashed in CI and accepted `true`", confirming the deriver had
+      already been hardened to default-reject before this check was written) and ran the real `evaluate_contract`/`derive_proof_tier`
+      against the real `render_companion_contract` output from #1723's source: OLD shape (single `gh pr
+      view ... --json number,state` item) -> passed=False, [L0] only; NEW shape (#1723's actual render)
+      -> passed=True, [L0] existence probe unchanged + [L1] `gh pr checks 1721 --repo OmniNode-ai/omnimarket`
+      -- byte-identical to the PR body's claimed output. Confirmed directly that `true` and `echo ok`
+      both derive L0 under the same deriver (the default branch is REJECT, not "anything not gh pr view"),
+      and that `gh pr checks` derives L1 specifically because it matches the deriver's explicit `_CI_OUTCOME_RE`
+      allowlist regex (`\bgh\s+(pr\s+checks|run\s+view)\b|statusCheckRollup`), not because it falls through
+      a permissive default. This item's check statically confirms that allowlist regex is present in the
+      pinned deriver commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/onex_change_control/contents/scripts/validation/check_contract_substance_floor.py?ref=ea949d28fd09fd9670e9a87806eb61979527f6e1"
+          --jq '.content' | base64 -d | grep -q '_CI_OUTCOME_RE'
+  - id: "dod-omnimarket-pr-1723-regression-proof"
+    description: >-
+      Regression + gate proof against #1723's own pinned head, reproduced fresh in an isolated clone built
+      from the PR branch's own uv.lock (not the canonical dev checkout, to avoid dependency drift): `uv
+      sync --frozen` then `pytest tests/unit/nodes/node_pr_lifecycle_fix_effect/ tests/test_golden_chain_pr_lifecycle_fix_effect.py
+      -m "not kafka"` -> 180 passed; `python scripts/ci/check_one_occ_producer.py` (OMN-14285 one-producer-per-contract
+      gate) -> passed; `ruff check` on both touched files -> All checks passed; `mypy --strict` on both
+      touched files -> Success: no issues found in 2 source files. All commands run under `env -u PYTHONPATH`
+      to exclude ambient-PYTHONPATH shadowing of the pinned wheel.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          git clone --branch jonah/omn-14425-autobind-l1-probe https://github.com/OmniNode-ai/omnimarket.git
+          && cd omnimarket && git rev-parse HEAD && uv sync --frozen && uv run pytest tests/unit/nodes/node_pr_lifecycle_fix_effect/
+          tests/test_golden_chain_pr_lifecycle_fix_effect.py -m "not kafka" && uv run python scripts/ci/check_one_occ_producer.py
+  - id: "dod-deploy-assessment-head-77f1936c"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1723 head 77f1936cc162c2f3a1c029c46b5df5ad8415635a:
+      the diff touches only two handler source files and two unit test files (no docker-compose, Dockerfile,
+      or deploy/ path in the changed file list). It does not register a new service deployment, mutate
+      runtime configuration, perform a deploy or restart, change topics, or add a migration. NOTE: this
+      assessment covers the SOURCE change only. The runtime effect of this fix requires a SEPARATE redeploy
+      of the omnimarket autobind service, tracked outside this contract (see summary caveat + ROLLING_WORK_LEDGER.md
+      landing-order entry, 2026-07-12T02:52:00Z).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1723 --repo OmniNode-ai/omnimarket --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14425 central contract and PASS
+      receipts for omnimarket PR #1723 head 77f1936cc162c2f3a1c029c46b5df5ad8415635a. The receipt binds
+      the first evidence commit for occ-preflight eligibility before the OCC PR number exists. Checks
+      the contract artifact's own structural identity rather than its own receipt's status field (avoids
+      the OMN-14417 self-referential-receipt-grep class this PR's methodology is explicitly built to move
+      away from).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'ticket_id: "OMN-14425"' contracts/OMN-14425.yaml && grep -q 'schema_version: "1.0.0"'
+          contracts/OMN-14425.yaml

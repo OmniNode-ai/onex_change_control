@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13084"
+title: "feat(OMN-13084): expose swarm_runs on the projection API"
+summary: >-
+  node_projection_swarm (REDUCER) already upserts the swarm_runs table from terminal swarm-dispatch events,
+  but its contract.yaml carried no projection_api stanza, so onex.snapshot.projection.swarm.runs.v1 was
+  never discovered by build_projection_topic_map() nor served on the projection API surface. omnimarket
+  PR #1537 adds the projection_api stanza (expose/topic/table/columns/order_by/freshness_column/limit
+  with the onex-topic-allow snapshot-prefix annotation), declares db_io.db_tables[swarm_runs].migration,
+  and ships a node-local migration 0001_create_swarm_runs.sql so the table materializes in the projection
+  database (omnidash_analytics / NODE_POSTGRES_DB) the API reads; the pre-existing omnibase_infra forward/082_swarm_runs.sql
+  only creates it in the flat infra DB (POSTGRES_DB), which would have left the topic DEGRADED. The PR
+  is bound to head commit 228c9b8d24b608eca6c0e32c7175ba04d527ac07. This OCC contract supplies the central
+  Evidence-Source/Evidence-Ticket proof required by the receipt and OCC eligibility gates.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "New TDD projection_api tests + the full-topic-map migration-coverage gate pass for PR
+      #1537."
+    command: "uv run pytest tests/test_golden_chain_projection_swarm.py -q"
+  - kind: "ci"
+    description: "omnimarket PR #1537 code and CI checks are green."
+    command: "gh pr view 1537 --repo OmniNode-ai/omnimarket --json headRefOid,mergeable,statusCheckRollup"
+  - kind: "manual"
+    description: "Deploy assessment documents that this evidence PR performs no live deploy, restart,
+      or .201 mutation."
+    command: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13084/dod-deploy-assessment/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-product-pr-1537"
+    description: >-
+      omnimarket PR #1537 is bound to OMN-13084 at head commit 228c9b8d24b608eca6c0e32c7175ba04d527ac07.
+      The PR adds the projection_api stanza to node_projection_swarm/contract.yaml, declares db_io.db_tables[swarm_runs].migration,
+      and ships node-local migration 0001_create_swarm_runs.sql. build_projection_topic_map() now returns
+      onex.snapshot.projection.swarm.runs.v1 (table swarm_runs, schema public, 16 columns, order_by created_at
+      DESC), and validate_projection_materialization_contracts scoped to node_projection_swarm returns
+      no issues (authority + cold DDL proof).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13084/dod-product-pr-1537/command.yaml && grep
+          -q '^pr_number: 1537$' drift/dod_receipts/OMN-13084/dod-product-pr-1537/command.yaml && grep
+          -q '^commit_sha: "228c9b8d24b608eca6c0e32c7175ba04d527ac07"$' drift/dod_receipts/OMN-13084/dod-product-pr-1537/command.yaml
+  - id: "dod-local-validation"
+    description: >-
+      Local validation passed: the 3 new TDD tests in tests/test_golden_chain_projection_swarm.py::TestProjectionSwarmProjectionApi
+      failed before the change and pass after, the full-topic-map gate test_every_public_projection_table_has_a_node_migration
+      stays green because the node-local migration creates swarm_runs, and the full omnimarket suite is
+      green except two Kafka integration tests that require a live broker at 192.168.86.201:19092 (unreachable
+      from the local env, unrelated to this change).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13084/dod-local-validation/command.yaml && grep
+          -q '11039 passed' drift/dod_receipts/OMN-13084/dod-local-validation/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Static deploy/contract assessment for PR #1537. The change is a contract.yaml projection_api stanza
+      plus a node-local SQL migration and tests. This OCC evidence PR does not perform or claim a live
+      deploy, runtime restart, topic mutation, or .201 mutation; runtime proof is not claimed and the
+      node-migration vendoring into omnidash_analytics remains a normal post-merge deploy lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13084/dod-deploy-assessment/command.yaml &&
+          grep -qi 'no live deploy' drift/dod_receipts/OMN-13084/dod-deploy-assessment/command.yaml &&
+          grep -qi 'runtime proof is not claimed' drift/dod_receipts/OMN-13084/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR. This PR carries the OMN-13084
+      central contract and PASS receipts so omnimarket PR #1537 can reference the OCC PR through Evidence-Source
+      and satisfy validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13084/dod-occ-self/command.yaml

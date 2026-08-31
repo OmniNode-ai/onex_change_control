@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13378"
+evidence_item_id: "dod-deploy-assessment"
+check_type: "command"
+check_value: "rpk topic produce onex.cmd.omnimarket.node-generation-requested.v1 (dev redpanda) + curl
+  http://192.168.86.201:3002/projection/<topic> + docker exec omnibase-infra-postgres psql -d omnidash_analytics"
+status: PASS
+run_timestamp: "2026-06-20T15:30:00Z"
+commit_sha: "68266ffb282c9ad229ef454c18e55b6b930baa18"
+runner: "claude-gen01-probe-worker"
+verifier: "claude-receipt-review"
+contract_sha256: "sha256:9083fa53c096b6ddf0c5361c6a9cbdf78365eeff7e5e6f3a55941fc3de2d242f"
+branch: "jonah/omn-13378-gen01-probe-topic-mismatch"
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-13378/omnimarket"
+pr_number: 1306
+probe_command: "curl -s -o /dev/null -w 'HTTP %{http_code}' http://192.168.86.201:3002/projection/onex.evt.omnimarket.node-generation-completed.v1
+  ; curl -s -o /dev/null -w 'HTTP %{http_code}' http://192.168.86.201:3002/projection/onex.snapshot.projection.generation.events.v1"
+probe_stdout: |
+  GET /projection/onex.evt.omnimarket.node-generation-completed.v1  -> HTTP 200
+  GET /projection/onex.snapshot.projection.generation.events.v1     -> HTTP 404
+  generation_events newest row: 896f24d7-bd34-4b95-bbc4-7a2fa43cb4b4 | contract_passed=t | provider=local | 2026-06-20 12:32:31+00
+  projection-API body: row_count=1, rows[0].correlation_id=896f24d7-..., top_keys include rows/row_count/topic/data_freshness
+actual_output: |
+  Live-proven read-only on the .201 dev lane (mutable proof lane). The fixed read
+  path GET /projection/onex.evt.omnimarket.node-generation-completed.v1 returns
+  HTTP 200 with a populated generation_events row (correlation_id
+  896f24d7-bd34-4b95-bbc4-7a2fa43cb4b4, contract_passed=t, provider=local), read
+  back via 'docker exec omnibase-infra-postgres psql -d omnidash_analytics'. The
+  previously-referenced snapshot topic GET
+  /projection/onex.snapshot.projection.generation.events.v1 returns HTTP 404,
+  proving it was never exposed. A declared-fields-only command was produced to the
+  dev generation command topic via 'rpk topic produce' inside the
+  omnibase-infra-redpanda container (partition 0, offset 1); the
+  node_generation_consumer consumer group showed lag 0 (command consumed), but the
+  running dev runtime DLQ-routed it: omninode-runtime-effects logged '[WARNING] No
+  dispatcher found for category command and message type
+  omnimarket.node-generation-requested; routing to DLQ' at 2026-06-20 15:18:24.
+  That dispatcher gap is the OMN-12525 routing-divergence class and is independent
+  of this test fix — the publish-side probe legs are valid for a lane with the
+  generation dispatcher wired. No prod/judge/stability lane mutation; all psql
+  reads were read-only SELECTs. The dev redpanda advertises only redpanda:9092
+  internally, so the in-cluster 'rpk topic produce' is the correct publish surface.
+exit_code: 0
+duration_ms: 0

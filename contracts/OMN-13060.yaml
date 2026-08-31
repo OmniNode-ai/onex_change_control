@@ -1,0 +1,65 @@
+---
+# OMN-13060 central OCC contract.
+schema_version: "1.0.0"
+ticket_id: "OMN-13060"
+title: "A-5 receipt hardening - staged-receipt pre-commit gate (contract_sha256 presence + hash match
+  + verifier denylist)"
+summary: >-
+  Ships the retro A-5 enforceable slice: a pre-commit + CI gate (scripts/validation/check_receipt_hardening.py,
+  wired in .pre-commit-config.yaml, which OCC CI runs via pre-commit run --all-files) over drift/dod_receipts/.
+  Receipts produced on/after 2026-06-12 must carry contract_sha256 matching sha256(contracts/<ticket>.yaml),
+  and PASS receipts may not use session-local verifier aliases. Legacy receipts (run_timestamp/verified_at
+  before the cutoff, or pre-schema artifacts with no timestamp) are exempt so the 2,870-file sha-less
+  migration debt does not retro-block CI. Core-side required-field follow-through is scoped in the ticket.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-focused-checks"
+    description: "Focused gate tests pass (17 passed); ruff and strict mypy pass on the new gate source."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13060/dod-focused-checks/command.yaml
+          && grep -q '17 passed' drift/dod_receipts/OMN-13060/dod-focused-checks/command.yaml && grep
+          -q 'Success: no issues found' drift/dod_receipts/OMN-13060/dod-focused-checks/command.yaml"
+  - id: "dod-full-corpus-clean"
+    description: "The gate runs over the entire drift/dod_receipts/ corpus (6,160 files) with exit 0 -
+      legacy receipts are exempt and current tool-generated receipts pass, so pre-commit run --all-files
+      (the OCC CI job) stays green."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13060/dod-full-corpus-clean/command.yaml
+          && grep -q 'FULL-CORPUS exit=0 CLEAN' drift/dod_receipts/OMN-13060/dod-full-corpus-clean/command.yaml"
+  - id: "dod-negative-proof"
+    description: "A 2530/2533/2534-style receipt (sha-less, denylisted verifier, post-cutoff timestamp)
+      is rejected with exit 1 and both violations named - the retro acceptance criterion."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13060/dod-negative-proof/command.yaml
+          && grep -q 'missing contract_sha256' drift/dod_receipts/OMN-13060/dod-negative-proof/command.yaml
+          && grep -q 'session-local verifier alias' drift/dod_receipts/OMN-13060/dod-negative-proof/command.yaml"
+  - id: "dod-occ-pr"
+    description: "onex_change_control PR carries the gate, its tests, the pre-commit wiring, and this
+      contract + receipt evidence."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13060/dod-occ-pr/command.yaml &&
+          grep -q '^ticket_id: OMN-13060$' drift/dod_receipts/OMN-13060/dod-occ-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      OMN-13060 changes pre-commit/CI gating inside onex_change_control only. No .201 install, deploy,
+      restart, Kafka topic mutation, or container mutation occurs. The gate activates for every contributor
+      on next pre-commit install / CI run; no runtime deploy step exists.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13060/dod-deploy-assessment/command.yaml
+          && grep -q '^ticket_id: OMN-13060$' drift/dod_receipts/OMN-13060/dod-deploy-assessment/command.yaml"

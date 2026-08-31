@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15052"
+evidence_item_id: "dod-verify-4746-fail-closed-evaluate-gate"
+check_type: "command"
+check_value: >-
+  test "$(gh api "repos/OmniNode-ai/onex_change_control/contents/.github/workflows/staleness-monitor.yml?ref=601610509a74bb8b8a14abfcb90b78ff39c0f015"
+  --jq .content | base64 -d | grep -c 'name: Evaluate monitor outcome')" -ge 1
+status: PASS
+run_timestamp: "2026-07-25T06:17:59Z"
+commit_sha: "601610509a74bb8b8a14abfcb90b78ff39c0f015"
+runner: "occ-queue-runner"
+verifier: "occ-queue-verifier"
+pr_number: 4746
+probe_command: >-
+  gh api .../staleness-monitor.yml?ref=<sha> --jq .content | base64 -d | grep -c 'name: Evaluate monitor
+  outcome' # plus an INDEPENDENT live re-probe of run 30134917149: gh run view 30134917149 --log
+probe_stdout: |
+  # #4746 head 6016105 -- step exists (1 occurrence): exit 0 GREEN
+  # OCC dev dc408dd2 -- step does not exist (0 occurrences): exit 1 RED
+  # Live re-probe of run 30134917149 (this lane, independent of the PR body's claim):
+  #   echo "- max_staleness_days: 60.149"
+  #   echo "- requires_linear_ticket: true (notified: false)"
+  #   echo "- requires_slack_alert: true (notified: false)"
+  #   ##[warning]could not clone/fetch omniweb / omninode_infra / onex-self-extending-agent
+  #   ::error::promotion staleness monitor did not complete its job this run: ...
+  #   ##[error]Process completed with exit code 1.
+  #   (conclusion via gh run view --json status,conclusion: "failure")
+exit_code: 0
+actual_output: >-
+  PASS: reads .github/workflows/staleness-monitor.yml at #4746's exact head commit SHA and confirms the
+  "Evaluate monitor outcome" step exists. This step is the load-bearing anti-silent-no-op mechanism this
+  task specifically asked to be checked, on top of what the PR body claims: it ties the job's own exit
+  code to whether report generation succeeded, whether a required Linear ticket was confirmed created,
+  and whether a required Slack alert was confirmed sent -- fail-closed on any of those, not merely "the
+  step ran". This lane independently re-ran `gh run view 30134917149 --log` (not trusting the PR body)
+  and confirmed the run detected real staleness (max_staleness_days=60.149), correctly flagged 3 unreadable
+  repos, and correctly FAILED (exit code 1) specifically because LINEAR_API_KEY/ SLACK_WEBHOOK_URL are
+  not configured for this org -- a fail-closed result, not a silent pass. This is a materially different
+  design from nightly-promote.yml's sibling defect (21+ green scheduled runs, zero promotion PRs -- an
+  UNCONDITIONAL no-op regardless of live drift state); this monitor's green/red state is conditioned on
+  the actual detected facts. RED DIRECTION PROVEN by execution: the identical grep against OCC dev HEAD
+  returns 0 occurrences (exit 1, the step does not exist there at all).
+branch: "jonah/omn-15052-occ-companion-4746"
+contract_sha256: "sha256:f37e0d453bb6e2aae93f9d63a115ad141431961d72e03c2efec5b6b2a87766a4"
+contract_entry_sha256: "sha256:a4f51e7e73cc40734f35de0fab5623d88ddb6811b390d4abd4c7aefb195e832e"

@@ -1,0 +1,96 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16816"
+title: "Autobind OCC evidence for OMN-16816"
+summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #2177."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2177 product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2177"
+    description: "PR #2177 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/scripts/validation/dep_health_gate_cache.py?ref=88007cb3a8dc7d856a5a2d410bbcd4173de7b69d --jq '.content' | base64 -d | grep -c 'class ScanLockTimeoutError'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2177-ci"
+    description: "PR #2177 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2177 --repo OmniNode-ai/omnimarket --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-7361"
+    description: "OCC companion PR #7361 — self-bind for OMN-16816 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7361 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # Behaviour-proving leg appended to the OMN-14285 autobind output. Nothing
+  # above is edited, so every receipt already minted against the four entries
+  # above keeps a valid contract_entry_sha256 (OMN-13888 per-entry binding).
+  #
+  # The four autobind entries carry behavior_proving_count = 0: a
+  # `gh api .../contents/<file>?ref=<sha> | base64 -d | grep -c` static probe,
+  # a `gh pr view ... --json files` diff-scope probe, OCC's own
+  # tests/test_evidence_admissibility.py, and a bare `gh pr view --json state`.
+  # All four are true statements about which bytes landed; none of them executes
+  # the cache or the lock, so none can go red if the gate regressed to an
+  # uncached, unserialized full-tree scan — which is the entire subject of this
+  # ticket.
+  #
+  # The entry below runs the suite the fix shipped with, in the repo that owns
+  # the code. It is falsifiable by construction and that was proven by
+  # execution, not asserted: with scripts/validation/dep_health_gate_cache.py
+  # moved aside, the same command fails collection outright
+  # (FileNotFoundError -> "1 error in 1.24s"), because the tests load the gate
+  # module by path rather than restating its behaviour.
+  # ---------------------------------------------------------------------------
+  - id: "dod-16816-cache-and-lock-behavior"
+    description: >-
+      Behaviour proof for the dep-health-gate cache + machine-wide lock. Runs omnimarket's tests/test_dep_health_gate_cache_omn16816.py
+      (22 cases) and tests/validation/test_dep_health_precommit_hook.py (11 cases). Pins the properties
+      that make the fix real rather than incidental: the cache key is identical across two checkouts holding
+      identical content (the property that turns N concurrent worktree lanes into one scan) and insensitive
+      to the checkout path; it changes on a changed or added scanned source file, on the baseline JSON,
+      and on the argument signature, and does NOT change for a file the sweep never reads (.md, .pyc);
+      cache entries are content-addressed, atomically published, and rejected when torn, absent, or key-mismatched;
+      the machine-wide lock is exclusive and re-acquirable; a cold run invokes the sweep exactly once
+      and the warm run does not invoke it at all; a blocking rc=1 verdict is replayed rather than downgraded;
+      an engine failure (rc>=2) is never cached; and lock exhaustion FAILS CLOSED without either running
+      or skipping the scan. Also asserts the Phase 1 / Phase 2 argv (--delta-mode + --baseline-path only
+      when a baseline is committed) against the function that now builds it, replacing a grep of the shell
+      script.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_dep_health_gate_cache_omn16816.py tests/validation/test_dep_health_precommit_hook.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "occ-self-bind-pr-7367"
+    description: >-
+      OCC self-binding receipt for PR #7367, the in-repo evidence PR carrying the behaviour-proving leg
+      above. Binds OMN-16816 to that OCC PR by pr_number so eligibility can resolve a PASS receipt for
+      the evidence PR itself (OMN-14650).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7367 --repo OmniNode-ai/onex_change_control --json number,state,headRefName

@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13014"
+title: "Hot-patch ledger + rebuild preflight gate: rebuilds silently destroy live in-container patches
+  (retro B-1)"
+summary: >-
+  Container-layer hot-patches on the .201 runtime lanes (in-container file patch + docker restart with
+  a .prepatch sibling) silently revert on any image rebuild or compose force-recreate: the 2026-06-11
+  20:58:53Z projection-api rebuild erased a live /api/generate patch that had to be re-applied by hand
+  (TOTAL_ARCHITECTURE_FINDINGS.md section 2.1). There was no machine-readable ledger mapping patched files
+  to source PRs and no rebuild-path gate refusing to rebuild a container whose live patches are not merged
+  into the build ref. OMN-13014 ships (1) the operational ledger at /data/omninode/hotpatch-ledger/ledger.yaml
+  on .201, backfilled from a live docker-exec census of all 10 app containers (5 .prepatch files / 4 source
+  PRs, all MERGED to dev: omnimarket#1180 a4e13e9b, #1181 a0ad3c99, #1184 1d5074d9, omnibase_infra#1951
+  36d98275), mirrored on the omni_home docs branch; (2) omnibase_infra PR #1959: scripts/preflight_hotpatch_ledger.py,
+  which hard-fails when any ledger row's source-PR merge commit is not an ancestor of the per-repo build
+  ref (git merge-base --is-ancestor) or when the running container carries unledgered .prepatch files,
+  with a --post-rebuild mode requiring zero .prepatch survivors, wired into scripts/deploy-runtime.sh
+  as guard_hotpatch_ledger (dry-run + execute); sole bypass is the Rule-10 user-approval receipt form
+  via HOTPATCH_PREFLIGHT_BYPASS, regex-validated, malformed values hard-fail; (3) a standalone drop-in
+  installed at /data/omninode/hotpatch-ledger/preflight.sh on .201, demonstrated live: FAIL (exit 1) against
+  the current pre-merge build-host clone HEADs (5010b1f4 / 8d7da124 — the exact incident class) and PASS
+  (exit 0) against origin/dev refs with the .prepatch tripwire seeing all 5 ledgered files and zero unledgered.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR #1959 adds scripts/preflight_hotpatch_ledger.py (ancestor gate + .prepatch tripwire
+      + post-rebuild mode + Rule-10 bypass validation) with guard_hotpatch_ledger wired into scripts/deploy-runtime.sh
+      main(), plus 17 unit tests in tests/unit/scripts/test_preflight_hotpatch_ledger.py covering ancestor
+      pass/fail, unknown-commit config error, default-build-ref resolution, lane scoping, ledger schema/missing/empty
+      handling, tripwire (ledgered pass / unledgered fail / post-rebuild both ways / exec failure), and
+      bypass forms (valid receipt, malformed hard-fail, absent). Local proof: ruff format/check clean;
+      mypy --strict clean on the script and on src/ (2418 files); bash -n + shellcheck clean on deploy-runtime.sh;
+      pre-commit all hooks passed at commit time.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13014/dod-infra-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13014"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13014/dod-infra-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: PR #1959 itself performs no live deploy, restart, topic mutation, or container
+      recreate; the deploy-runtime.sh guard reaches hosts through the normal script distribution path.
+      Operationally (user-authorized P0.3 lane work, not a runtime mutation): the ledger (/data/omninode/hotpatch-ledger/ledger.yaml,
+      sha256 50b28669...) and the standalone gate (/data/omninode/hotpatch-ledger/preflight.sh, sha256
+      4d558a42...) were installed on .201 as plain files so tonight's stability rebuild can use the gate
+      before the PR merges. Live verification on .201 2026-06-12T07:54-07:56Z: gate FAILS (exit 1) against
+      current build-host clone HEADs (pre-merge identities) and PASSES (exit 0) against origin/dev build
+      refs with the live .prepatch tripwire (2 + 3 files, zero unledgered). deploy_pending = true for
+      the repo-wired guard path.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13014/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13014"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13014/dod-deploy-assessment/command.yaml"
+          && grep -q 'no live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13014/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13014 ticket_contract and the dod-infra-pr / dod-deploy-assessment
+      receipts that the omnibase_infra code PR #1959 Receipt-Gate resolves via its Evidence-Source line.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13014/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13014"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13014/dod-occ-pr/command.yaml"

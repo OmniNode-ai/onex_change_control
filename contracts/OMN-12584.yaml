@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12584"
+title: "fix: runner-image prebuilt-env bake fails on uv cache EACCES + add build smoke gate"
+summary: >-
+  Fixes the OMN-12567 versioned runner image, which had never built. The docker/runners/Dockerfile prebuilt-env
+  bake step crashed with "uv sync -> failed to create directory /home/runner/.cache/uv: Permission denied
+  (os error 13)": mkdir -p of the ci-envs root runs as root and creates the parent /home/runner/.cache
+  as root:root, while the following chown only covers the omni/ci-envs subtree, so the runner user cannot
+  create its default ~/.cache/uv after USER runner. The primary fix widens the existing chown to cover
+  /home/runner/.cache before USER runner. This is identity-neutral: the Dockerfile is not part of the
+  runner_image_identity binding, so docker/runners/runner-image.lock.json identity_digest is unchanged
+  (231ae5fa883556778e9db274f1d5f83b, confirmed via runner_image_identity.py --mode verify). The enforcement
+  fix adds .github/workflows/runner-image-build-smoke.yml, which actually builds docker/runners/Dockerfile
+  through the prebuilt-env bake stage to a throwaway tag (no push, no fleet contact) on any PR touching
+  docker/runners/** or the runner-image scripts, and asserts the baked identity equals the lock identity_digest
+  plus a ready prebuilt env exists. A non-building runner image can no longer merge green. Proven non-destructively
+  on the .201 linux/amd64 host: a from-scratch docker build --no-cache succeeds, the bake completes, and
+  scripts/ci/validate_runner_image.py reports GREEN; the live 48-runner fleet and omninode-runner:latest
+  were untouched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr"
+    description: "omnibase_infra PR 1834 widens the runner image chown to /home/runner/.cache so the prebuilt-env
+      bake builds, and adds runner-image-build-smoke.yml as a real PR build gate. The lock identity_digest
+      is unchanged (Dockerfile is not part of the binding)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-infra-pr/command.yaml"
+          && grep -q '^pr_number: 1834$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-infra-pr/command.yaml"
+  - id: "dod-build-proof"
+    description: "On the .201 linux/amd64 host, a from-scratch docker build --no-cache of the fixed docker/runners/Dockerfile
+      completes the prebuilt-env bake (no EACCES), the candidate image's bound identity label equals the
+      lock identity_digest 231ae5fa883556778e9db274f1d5f83b, and validate_runner_image.py reports GREEN.
+      The fleet was untouched."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-build-proof/command.yaml"
+          && grep -q '231ae5fa883556778e9db274f1d5f83b' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-build-proof/command.yaml"
+          && grep -q 'RESULT: GREEN' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-build-proof/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12584 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-occ-pr-self/command.yaml"
+  - id: "dod-occ-pr-2117-rescue-binding"
+    description: "onex_change_control PR #2117 binds the auto-shipped rescued OMN-12584 dod_report.json
+      artifact."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-occ-pr-2117-rescue-binding/command.yaml"
+          && grep -q '^pr_number: 2117$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12584/dod-occ-pr-2117-rescue-binding/command.yaml"

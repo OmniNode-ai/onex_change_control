@@ -1,0 +1,129 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16846"
+title: "Autobind OCC evidence for OMN-16846"
+summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #2971."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2971 product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2971"
+    description: "PR #2971 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=61b1d3634cc700094ce899ec34313ae2a6219503 --jq '.content' | base64 -d | grep -c 'def _dod_verify_argv'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2971-ci"
+    description: "PR #2971 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2971 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-7436"
+    description: "OCC companion PR #7436 — self-bind for OMN-16846 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7436 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # OMN-16846 behaviour proof (appended; nothing above is edited, so every prior
+  # receipt's contract_entry_sha256 stays valid — OMN-13888).
+  #
+  # The four entries above are the OMN-14285 autobind's own output and carry
+  # behavior_proving_count = 0 under the OMN-15911 proof-class axis: a
+  # `gh api .../contents/<file>?ref=<sha> | base64 -d | grep -c` probe (static
+  # artifact inspection — SURROGATE), a bare `gh pr view --json files`
+  # (PR_STATE_SURROGATE), OCC's own tests/test_evidence_admissibility.py
+  # (FOREIGN_SUITE_DENYLIST — SURROGATE), and a self-bind `gh pr view`. All four
+  # are true statements about which PR exists and which bytes landed; none of
+  # them executes the product change, so none can go red if the sweep job is put
+  # back on a single venv.
+  #
+  # That distinction is the entire subject of this ticket: run 33194402437
+  # recorded three behaviour checks as `FAILED ... Canonical venv is IMPURE`
+  # with behavior_proving_count = 0, and a companion carrying only surrogates
+  # cannot tell that state apart from a proven one. The two entries below run
+  # the real suites the fix shipped with, pinned via `cwd` to the repo that owns
+  # the code, and each goes RED against the pre-fix tree.
+  # ---------------------------------------------------------------------------
+  - id: "dod-16846-dispatch-venv-separation"
+    description: >-
+      AC2 + AC6 behaviour proof. Runs omnibase_infra's tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_omn_16846_dispatch_venv_separation.py,
+      which asserts (a) the sweep dispatches the verifier from its own interpreter's `onex` rather than
+      through `uv run`, proven through the real runner's exec path and not only the helper, (b) the workflow
+      composes a dispatch venv separate from the project's `.venv`, (c) the omnimarket co-install targets
+      that dispatch venv and never `.venv`, (d) every dod_verify/sweep dispatch runs through it, and (e)
+      a fail-fast gate-venv purity assertion runs BEFORE any dispatch. Confirmed RED against the pre-fix
+      tree: with the workflow and handler restored to dev HEAD e57ad1577 it exits 2 on `cannot import
+      name '_dod_verify_argv'`, and with only the pre-fix workflow restored it reports 4 failed / 3 passed
+      on exactly the four wiring assertions.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_omn_16846_dispatch_venv_separation.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-16846-sweep-node-suite-intact"
+    description: >-
+      AC6 regression proof for the co-changed workflow-lint matchers. Runs the whole node_evidence_autoclose_sweep_effect
+      unit suite, which carries the OMN-16792 kill-switch wiring assertions and the OMN-16845 OMNI_HOME
+      wiring assertions alongside the new OMN-16846 ones. Both of those modules located their subject
+      by the substring `onex skill <name>`; this PR moved the dispatch onto the dispatch venv's own binary,
+      so an unwidened matcher would have matched NOTHING and asserted an ordering over an empty set instead
+      of failing on its subject. Observed live during the change: before widening, 3 OMN-16792 assertions
+      failed on "expected exactly one step invoking ... found 0". This entry is what proves the widening
+      kept them anchored rather than silently disarming them.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/nodes/node_evidence_autoclose_sweep_effect/ -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-7442"
+    description: >-
+      OCC self-binding receipt for PR #7442, the in-repo evidence PR carrying the two behaviour-proving
+      entries above. Binds OMN-16846 to that OCC PR by pr_number so occ-preflight eligibility can resolve
+      a PASS receipt for the evidence PR itself. Binding, not proof: it is a PR-state surrogate (PR_STATE_SURROGATE
+      under the OMN-15911 proof-class axis), green with the product change entirely reverted, and it does
+      not count toward completion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7442 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-OmniNode-ai-omnimarket-pr-2208"
+    description: "PR #2208 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/models/model_dod_verify_state.py?ref=8694efef975e4199ff47e822641fab833a343822 --jq '.content' | base64 -d | grep -c 'class EnumProductCloneFreshness'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2208-ci"
+    description: "PR #2208 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2208 --repo OmniNode-ai/omnimarket --json files"
+  - id: "occ-self-bind-pr-7593"
+    description: "OCC companion PR #7593 — self-bind for OMN-16846 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7593 --repo OmniNode-ai/onex_change_control --json number,state"

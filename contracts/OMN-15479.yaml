@@ -1,0 +1,92 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15479"
+title: "yamlfmt contamination ratchet over contracts/ + drift/dod_receipts/"
+summary: >-
+  yamlfmt v0.21.0 (pinned in .pre-commit-config.yaml, running on every commit) rewrites the PARSED VALUE
+  of a folded block scalar that carries an internal newline -- each internal newline is replaced by a
+  19-character yamlfmt-internal line marker and the newline itself is destroyed -- while the hook reports
+  Passed. The output is still valid, parseable YAML, so it lands in a merged evidence receipt looking
+  correct. contracts/ and drift/dod_receipts/ are the evidence control plane, so this produces receipts
+  that assert something the verifier never observed. This PR ships a gate with two shrink-only set-equality
+  ratchets: Rule S rejects the yamlfmt marker reaching a parsed value, and Rule F rejects the folded-scalar
+  shape that produces it, pointing the author at literal block style. A fresh census re-derived by two
+  independent code paths found 510 already-contaminated files (784 occurrences; 477 receipts and 33 contracts)
+  plus 14 files still carrying the intact precondition, so both rules are frozen baselines rather than
+  flat assertions -- a flat assertion would be permanently red and unmergeable. Enforcement ships in the
+  same PR per root CLAUDE.md rule 5: an unconditional ci.yml job wired into the required CI Summary context
+  with a strict success-only check, two pre-commit hooks with the scanning hook declared BEFORE yamlfmt
+  so the precondition is rejected while the original text still exists, and a --check-wiring anti-removal
+  anchor. The gate never mutates a file.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      The corpus ratchet runs unconditionally in ci.yml and gates the required CI Summary context with
+      a strict success-only check.
+    command: "uv run python scripts/validation/check_yamlfmt_contamination.py --check-wiring"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "occ-self-bind-pr-5587"
+    description: "Binds OMN-15479 to its own OCC PR #5587 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5587 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5589"
+    description: >-
+      Binds OMN-15479 to OCC PR #5589, the evidence-only follow-up that carries this contract and its
+      receipts (self-bind). #5587 landed before the contract commit existed, so the ticket's OCC eligibility
+      is satisfied from this PR rather than from that one.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5589 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-5602"
+    description: "Binds OMN-15479 to OCC PR #5602 after the docstring correction branch."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5602 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "dod-omn-15479-corpus-ratchet-green"
+    description: >-
+      The Rule S / Rule F shrink-only corpus ratchet runs over every tracked YAML file under contracts/
+      and drift/dod_receipts/ and exits 0 against the real tree. This is a set-equality assertion in three
+      directions, not a smoke test -- it fails on a NEW violating path, on a GROWN occurrence count inside
+      an already-baselined path, and on a STALE baseline entry that a live scan no longer reproduces.
+      It therefore also proves the 510 baselined files do NOT fail, which is what keeps the required context
+      from going permanently red.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run python scripts/validation/check_yamlfmt_contamination.py --corpus"
+  - id: "dod-omn-15479-wiring-required-context"
+    description: >-
+      The anti-removal anchor asserts ci.yml declares the yamlfmt-contamination-ratchet job, that the
+      job is unconditional (no needs, no if), that it executes the corpus ratchet and the RED/GREEN test
+      module and re-runs this wiring check, and that ci-summary both lists the job in needs and applies
+      a strict success-only check to it. The generic ci-summary rollup passes on a skipped need, so membership
+      in needs alone is not enforcement.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run python scripts/validation/check_yamlfmt_contamination.py --check-wiring"
+  - id: "dod-omn-15479-red-green-controls"
+    description: >-
+      58 controls proving the gate FIRES rather than merely existing: the two defect shapes go red and
+      the three proven-safe shapes (literal block, single-paragraph folded, quoted multi-line) stay green;
+      the ratchet fails on a new path, a grown count and a stale entry; the wiring anchor fails on each
+      of six removal vectors (job deleted, made conditional, given a needs chain, steps gutted, dropped
+      from ci-summary needs, strict check removed); the pre-commit hook regex is compiled and matched
+      against real corpus paths taken from the live baseline rather than invented ones; the scanning hook
+      is asserted to be declared BEFORE yamlfmt; and the gate is asserted not to auto-fix.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_yamlfmt_contamination_gate.py -q -p no:randomly"

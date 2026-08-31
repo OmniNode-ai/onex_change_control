@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13477"
+title: "refactor: drive delegation FSM via contract typed-FSM advance + per-step dispatch (zero _transition
+  calls)"
+summary: >-
+  Track A W5 of the delegation-orchestrator decomposition (epic OMN-13471), gated on W2 (OMN-13474, DONE):
+  builds on its typed, executor-bound ModelFSMSubcontract binding. Before this wave HandlerDelegationWorkflow
+  hand-drove its FSM through an imperative _transition guard (15 call sites) backed by a parallel _VALID_TRANSITIONS
+  set, and routed every payload through a hand-maintained isinstance ladder in handle(). This wave removes
+  both. State advancement now flows through a single _advance(workflow, target) surface that resolves
+  each edge from the typed _DECLARED_TRANSITIONS projection of the contract FSM (the same typed ModelFSMStateTransition
+  objects the canonical core FSM executor consumes) and rejects any edge the contract does not declare
+  — so the contract FSM, not handler logic, is the transition authority. The imperative _transition method,
+  its _VALID_TRANSITIONS set, and all 15 _transition call sites are gone (imperative _transition call
+  count = 0, asserted by an AST gate test). Payload dispatch is table-driven via _PER_STEP_DISPATCH (one
+  entry per handler_routing event_model the contract declares, routing_strategy payload_type_match), with
+  no catch-all branch: an undeclared payload type fails closed. Behavior preserved: the full delegation
+  unit suite passes unchanged and the async handle() dispatch path reaches identical FSM state + identical
+  terminal events vs the per-step methods. Purely intra-omnimarket change; no core wire DTO changes. Blocks
+  W6 (OMN-13478, ARCH-004 ratchet baseline-exemption removal).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      tests/unit/delegation/test_delegation_per_step_dispatch_omn13477.py proves the W5 DoD directly:
+      an AST gate asserts the handler module makes ZERO _transition(...) calls and defines no _transition
+      method; _advance resolves and returns the typed contract transition it drove and fails closed on
+      undeclared / terminal-origin edges; _PER_STEP_DISPATCH maps every payload to a real per-step handler
+      that matches a declared handler_routing event_model with no catch-all; and the REAL async handle()
+      dispatch path reaches the same FSM state + emits the same terminal events (served tokens, quality
+      verdict) as the per-step methods for both the completed and non-escalatable-failed chains. The full
+      delegation unit suite passes unchanged (370 passed, 1 skipped), and the W1/W2 reconciliation + contract-bound
+      tests were updated to assert the same contract-source invariants against _DECLARED_TRANSITIONS /
+      _advance.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13477/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Quality gates green on the changed surface: mypy --strict clean on the delegation orchestrator package
+      (33 source files, no issues); runtime sweep classifies 322/322 entry points OK; ruff format + check
+      clean; full pre-commit fleet green on all changed files (stub detector, canonical inference gate,
+      URL authority, plugin-daemon gate, node-purity, topic-literal, env-read, golden-chain coverage,
+      no-skip-token — 27 Passed, 0 Failed). Code-gen was dogfooded via onex skill delegate (Qwen3.6-35B-A3B
+      on .201, quality gate passed) as the _advance/_DECLARED_TRANSITIONS seed, then hand-hardened against
+      the real symbols (the model hallucinated states/classes).
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13477/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
+      PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13477\"$' contracts/OMN-13477.yaml"

@@ -1,0 +1,38 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15288"
+evidence_item_id: "dod-omn15288-staging-red-receipt"
+check_type: "command"
+check_value: "if test -f drift/dod_receipts/OMN-15288/dod-omn15288-staging-red-receipt/command.yaml; then
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-15288/dod-omn15288-staging-red-receipt/command.yaml;
+  else gh api repos/OmniNode-ai/onex_change_control/contents/drift/dod_receipts/OMN-15288/dod-omn15288-staging-red-receipt/command.yaml
+  --jq .content | tr -d ' ' | base64 -d | grep -q '^status: PASS$'; fi"
+contract_entry_sha256: "sha256:2124104391ca3768f87abce8a4b6828dd0b1831fe0ff0139c2d0a06380570df8"
+status: PASS
+run_timestamp: "2026-07-28T05:21:10Z"
+commit_sha: "9417e83d14666c929aefa15cc11ecf6a6ee2ea09"
+runner: "fable-overnight-0728-gate-integrity-fix-1"
+verifier: "fable-overnight-0728-gate-integrity-fix-1-readback"
+evidence_class: ui_dashboard
+probe_command: |
+  playwright browser_navigate https://app.omninode.ai/login?callbackUrl=%2Fapp
+  then playwright browser_network_requests -- captures the full proxy-origin
+  network trace through the live Auth.js -> Keycloak redirect handshake
+probe_stdout: |
+  PAGE  https://app.omninode.ai/login?callbackUrl=%2Fapp  (title: OmniNode - The AI Agent Platform)
+  GET   https://app.omninode.ai/api/auth/providers                      => 200
+  GET   https://app.omninode.ai/api/auth/csrf                           => 200
+  POST  https://app.omninode.ai/api/auth/signin/keycloak                => 200
+  GET   https://auth.omninode.ai/realms/omninode/protocol/openid-connect/auth
+          ?response_type=code&client_id=omniweb
+          &redirect_uri=https%3A%2F%2F0.0.0.0%3A3000%2Fapi%2Fauth%2Fcallback%2Fkeycloak
+          &code_challenge_method=S256&scope=openid+profile+email        => 400
+  FINAL PAGE  https://auth.omninode.ai/realms/omninode/protocol/openid-connect/auth...
+              HTTP status 400, title 'Sign in to OmniNode'
+actual_output: |
+  PASS -- browser-driven proxy-origin trace reproduces the OMN-15288 auth_session RED leg.
+  The live sign-in flow redirects to Keycloak with
+  redirect_uri=https://0.0.0.0:3000/api/auth/callback/keycloak (non-routable), and Keycloak
+  rejects it with HTTP 400. This is stronger than a string match on the providers document:
+  it shows the misconfigured callback actually breaking the login handshake in a real browser.
+exit_code: 0

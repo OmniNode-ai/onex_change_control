@@ -1,0 +1,95 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13230"
+title: "two-layer worktree GC: catch-up backstop + retained hourly timer (T6)"
+summary: >-
+  OMN-13230 completes the merge-triggered worktree GC epic (OMN-13008, T6) by adding the Layer 2 timer-backstop
+  / catch-up sweep that complements the T4 (OMN-13228) event-first reaper, and by documenting the two-layer
+  model so both layers are proven to converge. Layer 1 (event-first) reaps each newly-merged PR's worktree
+  within one short poll interval by reading the onex.evt.github.pr-merged.v1 projection ?since=<cursor>.
+  Layer 2 (this ticket) is a cursor-INDEPENDENT full reconciliation that drives the canonical prune-worktrees.sh
+  directly across every root, reaping ALL already-merged worktrees still present — not just the since-cursor
+  window — to catch events missed during daemon downtime or dropped before the cursor advanced. The catch-up
+  sweep reuses the SAME prune safety (merged + clean + pushed-only; dirty / no-upstream / detached SKIPPED)
+  and never touches the cursor, so it can never regress Layer 1's watermark. Two feature PRs: omniclaude
+  ships run_catch_up_sweep() in scripts/worktree_reaper.py with --catch-up / --catch-up-interval CLI flags
+  (a sweep runs once on daemon start and every hour in --loop, the Mac equivalent of the .201 onex-disk-gc.timer),
+  the daemon launcher passes ONEX_REAPER_CATCH_UP_INTERVAL through, and unit tests prove the catch-up
+  sweep converges on a seeded stale-but-merged worktree while SKIPPING a dirty one through the real prune
+  subprocess path, with the cursor untouched; omnibase_infra ships docs/runbooks/worktree-reaper-two-layer-gc.md
+  + a deploy/disk-gc README pointer documenting the two-layer model and RETAINING the hourly onex-disk-gc.timer
+  backstop (no behavior removal), and vendors the already-merged omnimarket-dev node migrations to clear
+  the pre-existing node-migration-sync gate drift (vendored SQL matches omnimarket dev tip exactly, mechanically
+  generated). ruff + mypy --strict clean; full non-integration omniclaude suite green. Scope is code +
+  docs only; the live cross-machine catch-up verification belongs to the orchestrator's deploy step. This
+  contract does NOT deploy, install or enable any systemd/launchd unit, restart runtime, mutate prod/judge/.201,
+  or publish live traffic.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001-omniclaude-catchup"
+    description: >-
+      omniclaude feature PR — the Layer 2 catch-up backstop on the Mac. scripts/worktree_reaper.py adds
+      run_catch_up_sweep(): a cursor-independent reconciliation that drives prune-worktrees.sh across
+      every root, reaping ALL already-merged worktrees still present. New --catch-up / --catch-up-interval
+      CLI flags (sweep on daemon start + hourly in --loop); worktree-reaper-daemon.sh passes ONEX_REAPER_CATCH_UP_INTERVAL
+      through; the plist documents both layers. Unit tests prove the catch-up sweep converges on a seeded
+      stale-but-merged worktree and SKIPS a dirty one through the real prune subprocess path, never touches
+      the cursor, dry-run never deletes, and a one-shot needs no projection URL; ruff + mypy --strict
+      clean; full non-integration suite green. Code only; NOT loaded live (orchestrator deploy step).
+      Self-binding PASS receipt bound to this OCC PR; commit_sha is the feature PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13230/dod-001-omniclaude-catchup/command.yaml
+          && grep -q '^pr_number: 2767$' drift/dod_receipts/OMN-13230/dod-001-omniclaude-catchup/command.yaml
+  - id: "dod-002-infra-runbook"
+    description: >-
+      omnibase_infra feature PR — the two-layer documentation + retained backstop. docs/runbooks/worktree-reaper-two-layer-gc.md
+      describes the event-first (Layer 1, T4) + timer-backstop (Layer 2, T6) model, the coexisting .201
+      systemd units (onex-worktree-reaper.* every 2 min + onex-disk-gc.* hourly, BOTH retained), the Mac
+      launchd daemon packing both layers, and the convergence proof citing the T4 + T6 tests; deploy/disk-gc/README.md
+      points where the timers live and states the retention rule. RETAINS the hourly onex-disk-gc.timer
+      as the Layer 2 backstop — no unit removed, no behavior changed. Also vendors the already-merged
+      omnimarket-dev node migrations (node_pr_merged_projection, node_renderer_capability_projection)
+      to clear the pre-existing node-migration-sync gate drift; the vendored SQL matches omnimarket dev
+      tip exactly. Docs + vendored SQL only; zero Python touched. Self-binding PASS receipt bound to this
+      OCC PR; commit_sha is the feature PR head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13230/dod-002-infra-runbook/command.yaml &&
+          grep -q '^pr_number: 2767$' drift/dod_receipts/OMN-13230/dod-002-infra-runbook/command.yaml
+  - id: "dod-003-deploy-readiness"
+    description: >-
+      Deploy-readiness note. The catch-up backstop touches runtime/.201-adjacent paths: the Mac daemon
+      runs the catch-up sweep against the local worktree roots and the .201 onex-disk-gc.timer is the
+      retained hourly backstop. The live two-layer convergence (install/enable the units, merge a throwaway
+      PR while the daemon is briefly down, observe the catch-up sweep reap the missed worktree within
+      one backstop interval) is exercised by the deploy agent. These PRs do NOT themselves deploy, install/enable
+      any unit, restart runtime, mutate prod/judge/.201, or publish live traffic. This receipt records
+      that the change is deploy-safe and the live deploy belongs to the orchestrator.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13230/dod-003-deploy-readiness/command.yaml
+          && grep -q 'deploy' drift/dod_receipts/OMN-13230/dod-003-deploy-readiness/command.yaml
+  - id: "pr-occ-binding"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to the onex_change_control
+      evidence PR so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound
+      to the OCC PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13230/pr-occ-binding/command.yaml && grep -q
+          '^pr_number: 2767$' drift/dod_receipts/OMN-13230/pr-occ-binding/command.yaml

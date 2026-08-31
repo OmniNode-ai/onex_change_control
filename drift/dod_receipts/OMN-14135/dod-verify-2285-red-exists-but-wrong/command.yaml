@@ -1,0 +1,29 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14135
+evidence_item_id: dod-verify-2285-red-exists-but-wrong
+check_type: command
+check_value: |-
+  b="$(mktemp)" && v="$(mktemp)" && g="$(mktemp)" && gh api "repos/OmniNode-ai/omnibase_infra/contents/config/validation/handler_dispatch_entrypoint_baseline.yaml?ref=29c92ef28da5aa753c00388d64a2722382458a86" --jq .content | base64 -d > "$b" && gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/validators/handler_dispatch_entrypoint.py?ref=29c92ef28da5aa753c00388d64a2722382458a86" --jq .content | base64 -d > "$v" && gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_handler_dispatch_entrypoint_coverage_omn14489.py?ref=29c92ef28da5aa753c00388d64a2722382458a86" --jq .content | base64 -d > "$g" && ! grep -F -- 'handler: HandlerA2ATask' "$b" && grep -F -- 'def test_a2a_task_is_not_baselined' "$g" && grep -F -- 'stale = sorted(baseline - live)' "$v" && grep -F -- 'def test_baseline_is_shrink_only_and_never_stale' "$g"
+status: PASS
+run_timestamp: '2026-07-13T03:15:00Z'
+commit_sha: '0000000'
+runner: claude-opus-4-8
+verifier: occ-interim-manual-verify
+pr_number: 2285
+probe_command: |-
+  gh api .../baseline.yaml + validator + gate test ?ref=29c92ef2 | base64 -d | grep -F <symbols>
+probe_stdout: |
+  baseline @ 29c92ef2: NO data row 'handler: HandlerA2ATask' (0 rows) - the victim is NOT exempted.
+  gate test: test_a2a_task_is_not_baselined asserts it can never be baselined.
+  validator: stale = sorted(baseline - live) -> a FIXED handler left listed FAILS.
+  Local RED proofs against the SHIPPED validator (python -m ...handler_dispatch_entrypoint):
+    (a) HandlerA2ATask reverted to submit()/watch()-only -> exit 1, names it
+    (b) HandlerLedgerProjection de-baselined, source UNTOUCHED -> exit 1 under BOTH contracts
+    (c) a fixed handler left in the baseline -> exit 1 (stale guard)
+    (d) clean tree -> exit 0 (153 distinct handlers, 40 entrypointless, 0 new violations)
+exit_code: 0
+actual_output: |-
+  PASS: RED against EXISTS-but-WRONG, not against absence. The victim handler exists, is contract-declared and wires cleanly, and the gate still fails it. No assertion in this PR is green BECAUSE the system is broken - the gap is never encoded as a passing check.
+branch: jonah/omn-14135-occ-infra-2285-dispatch-entrypoint-gate
+contract_entry_sha256: sha256:c972efcaf215528ab4d3ae60398043cca24ea5458672ac78b370575ec49138ff

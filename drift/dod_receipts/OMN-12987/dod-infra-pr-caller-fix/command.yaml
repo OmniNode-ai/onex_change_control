@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12987"
+evidence_item_id: "dod-infra-pr-caller-fix"
+check_type: "command"
+check_value: "bash -n scripts/deploy-runtime.sh && uv run pytest tests/scripts/test_deploy_runtime_build_context.py
+  tests/scripts/test_check_sibling_lock_pins.py -q"
+status: PASS
+run_timestamp: "2026-06-13T22:30:00Z"
+commit_sha: "ba82d615658671ee5d681ee9417e2a8d3ba0d58a"
+runner: "worktree-agent-omn-12987-caller-fix"
+verifier: "receipt-gate-local"
+probe_command: "OMNI_HOME=/Users/jonah/Code/omni_home python3 scripts/runtime_build/check_sibling_lock_pins.py
+  --lock $OMNI_HOME/omnimarket/uv.lock --repo omnibase-infra=... --repo omnibase-core=... --repo omnibase-spi=...
+  --repo omnibase-compat=... --repo onex-change-control=... --output workspace/sibling-repos/.sibling-lock-pins.json
+  # RE-PROVE: old --provenance-out invocation vs corrected interface"
+probe_stdout: |
+  # A) STALE invocation (the bug) — the removed --provenance-out flag:
+  $ python3 scripts/runtime_build/check_sibling_lock_pins.py --provenance-out <out>
+  usage: check_sibling_lock_pins.py [-h] --lock LOCK [--repo PACKAGE=PATH] [--output OUTPUT] [--allow-drift]
+  check_sibling_lock_pins.py: error: the following arguments are required: --lock
+  EXIT=2   # this is the failure that blocked EVERY workspace --execute deploy
+
+  # B) CORRECTED invocation (matches the fixed deploy-runtime.sh guard_args) — the guard now runs:
+  $ python3 .../check_sibling_lock_pins.py --lock $OMNI_HOME/omnimarket/uv.lock \
+      --repo omnibase-infra=$OMNI_HOME/omnibase_infra --repo omnibase-core=$OMNI_HOME/omnibase_core \
+      --repo omnibase-spi=$OMNI_HOME/omnibase_spi --repo omnibase-compat=$OMNI_HOME/omnibase_compat \
+      --repo onex-change-control=$OMNI_HOME/onex_change_control --output <out>
+  [DRIFT/forward] omnibase-infra: lock=0.38.1 clone=0.38.3 ...
+  FAIL: 5 sibling pin(s) drifted from uv.lock. Workspace build would vendor stale code -- aborting (OMN-12977).
+  EXIT=1   # no '--provenance-out unrecognized', no '--lock required'; the guard ran and did its real job
+
+  # C) CORRECTED + ALLOW_SIBLING_PIN_DRIFT=1 -> --allow-drift (OMN-12977 operator override path the fix wires):
+  WARNING: 5 sibling pin(s) drifted from uv.lock; proceeding under explicit operator override ...
+  sibling-pin comparison written to <out>
+  EXIT=0   # clean exit on the override path; comparison artifact written
+
+  # D) Static regression + guard unit tests after the fix:
+  $ uv run pytest tests/scripts/test_deploy_runtime_build_context.py tests/scripts/test_check_sibling_lock_pins.py -q
+  14 passed
+  # includes the new test_deploy_runtime_uses_current_lock_pin_preflight_interface (asserts the removed
+  # flag is gone and --lock/--repo/--output/--allow-drift are wired).
+actual_output: >-
+  PASS: deploy-runtime.sh check_sibling_lock_pins() now calls the guard with the current OMN-12977/12987
+  interface (--lock omnimarket/uv.lock, one --repo per vendored sibling, --output to the unchanged workspace/sibling-repos/.sibling-lock-pins.json
+  destination). RE-PROVE confirms the stale-flag failure is gone: the old --provenance-out invocation
+  errored at argparse (exit 2); the corrected invocation runs the guard and either aborts on real drift
+  (exit 1, its job) or exits 0 under the explicit ALLOW_SIBLING_PIN_DRIFT override. 14/14 static + guard
+  unit tests GREEN, including a new permanent regression test pinning the interface. PROVES: the preflight
+  caller is correct and the workspace --execute deploy path no longer fails before the build. SCOPE: no
+  live deploy/restart/topic/.201 mutation performed — see dod-deploy-assessment.
+exit_code: 0
+contract_sha256: "sha256:868dcd40a879cce47d028283ac5225791739eaffaa154d3e128f3b4ae4030091"
+branch: "jonah/fix-deploy-runtime-sibling-pin-preflight"

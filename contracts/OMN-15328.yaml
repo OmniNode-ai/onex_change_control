@@ -1,0 +1,112 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15328"
+title: "Third-party admissible OCC evidence for the Beta terminal-receipt runtime pin"
+summary: >-
+  Net-new, third-party evidence companion for the 2026-07-28 terminal Beta receipt chain: omnibase_infra
+  build run 30347509136 -> image digest sha256:1c4e3062... -> onex-dev runtime pin (omninode_infra#727,
+  merged 6d4cfbafc5e0366f3f6a20fac450ab2171f1089e) -> canary run 30349179289 (7/7 PASS). Authored by a
+  session that did NOT implement #727 (no-self-evidence). Every check probes a PUBLIC repository (OmniNode-ai/omnibase_infra)
+  at a pinned commit, run id, or mutable dev ref, so it is re-executable by any runner holding only public
+  read -- unlike the previously landed OMN-15301 entries, which probe the PRIVATE OmniNode-ai/omninode_infra
+  and therefore cannot be re-run from onex_change_control CI.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      The omnibase_infra build that produced the pinned runtime image concluded success at the commit
+      the pin claims it was built from.
+    command: "gh run view 30347509136 --repo OmniNode-ai/omnibase_infra --json conclusion,headSha"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-15328-build-run-30347509136-provenance"
+    description: >-
+      Binds the build leg of the Beta receipt chain: omnibase_infra Actions run 30347509136 ("Build workspace
+      stability-candidate runtime", OMN-13656) concluded `success`, was a `workflow_dispatch`, and ran
+      at headSha 416b7b9945b6e1f7135a7befe7ea7f4f3668704d on branch `dev`. This is the run that produced
+      the digest the onex-dev runtime is pinned to. FALSIFIABLE because the assertion is on the run's
+      own conclusion and headSha, not on the run existing: `jq -e` exits 1 when any conjunct is false.
+      Verified by execution 2026-07-28: exit 0 as written; exit 1 with the expected headSha changed to
+      the predecessor build's commit (0b65877...). omnibase_infra is public, so the probe needs only public
+      read -- no cross-repo credential.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh run view 30347509136 --repo OmniNode-ai/omnibase_infra --json conclusion,headSha,event,headBranch | jq -e '.conclusion == "success" and .headSha == "416b7b9945b6e1f7135a7befe7ea7f4f3668704d" and .event == "workflow_dispatch" and .headBranch == "dev"' >/dev/null
+  - id: "dod-15328-fix-621e5689-ancestor-of-416b7b99"
+    description: >-
+      Binds the load-bearing PREMISE of the whole pin -- that candidate-416b7b9 is the first runtime image
+      carrying OMN-15301's projection-writer fix. Asserts, via the GitHub compare API, that the fix commit
+      621e56899a0d2e40a7159a7a4667c3edf6807f91 (PR #2512, merged 2026-07-28T05:27:20Z) is an ANCESTOR
+      of the built commit 416b7b9945b6e1f7135a7befe7ea7f4f3668704d: `status == "ahead"` with `behind_by
+      == 0`. Without this, "the image contains the fix" is an assertion about a Docker build nobody can
+      re-check. FALSIFIABLE: swap either endpoint for a commit off that line of history and the status
+      becomes `diverged` or `behind`. Verified by execution 2026-07-28: exit 0 as written (ahead, behind_by
+      0, ahead_by 11); exit 1 with the two endpoints reversed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/compare/621e56899a0d2e40a7159a7a4667c3edf6807f91...416b7b9945b6e1f7135a7befe7ea7f4f3668704d | jq -e '.status == "ahead" and .behind_by == 0' >/dev/null
+  - id: "dod-15328-seam-blob-sha256-eq-pod-measurement"
+    description: >-
+      Makes the anti-stale-image proof independently reproducible. During the 2026-07-28 staging deploy
+      the projection-writer seam file was hashed INSIDE the running pod (omninode-runtime-6b449f7f9c-59hbm)
+      as sha256 c66ab0a3677fedd952766f8d568ae7e814d8a5420404e5b379e66ceba5c08c96. That measurement is
+      not re-runnable -- the pod is gone. This check re-derives the same hash from the public git object
+      at the fix commit, so the claim "the deployed image carried exactly this source" survives the pod.
+      FALSIFIABLE by content: any byte change to the file yields a different digest. Verified by execution
+      2026-07-28: exit 0 at 621e5689; exit 1 at its parent 78b11b77c906ab7edb85db794c27e9b8486d9c60; exit
+      1 at a nonexistent ref (fail-closed -- there is no `!` negation here, so an empty fetch hashes to
+      the empty-input digest and simply does not match).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=621e56899a0d2e40a7159a7a4667c3edf6807f91' -H 'Accept: application/vnd.github.raw' | shasum -a 256 | grep -q '^c66ab0a3677fedd952766f8d568ae7e814d8a5420404e5b379e66ceba5c08c96'
+  - id: "dod-15328-manifest-binds-digest-commit-run"
+    description: >-
+      Binds the digest itself -- the one field of the pin -- to a PUBLIC artifact, closing the gap left
+      by omninode_infra being private. Run 30347509136 uploads `build-manifest.json`, which records image_digest,
+      image_tag, commit_sha, workflow_run_id and prod_pinnable together. Asserting all five at once proves
+      the digest sha256:1c4e3062... was produced by run 30347509136 from commit 416b7b99, carries tag
+      candidate-416b7b9-20260728094011, and is NOT prod-pinnable (dev/stability class only -- corroborating
+      that no prod surface was touched). FALSIFIABLE: verified by execution 2026-07-28, exit 0 as written;
+      exit 1 when image_digest is asserted to be the PREDECESSOR pin sha256:8f082522f4aa1581d9ab75d0f21d63d5339789ea3824a17c2cc5a925d0f3dd7d;
+      exit 1 against a run that has no such artifact (30334346616) -- the `&&` chain is fail-closed, an
+      unfetchable artifact never reaches `jq`. HONEST SCOPE LIMIT: GitHub artifact retention is finite
+      (90d default), so this probe has a shelf life; when it expires it goes RED for a retention reason,
+      not a correctness one. The three commit-pinned checks above have no such horizon.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d=$(mktemp -d) && gh run download 30347509136 --repo OmniNode-ai/omnibase_infra -n build-manifest-candidate-candidate-416b7b9-20260728094011 -D "$d" && jq -e '.image_digest == "sha256:1c4e306268290df9c378a8ec5973b9c0eaeb8cf094db2923b52ff4c68272fb03" and .commit_sha == "416b7b9945b6e1f7135a7befe7ea7f4f3668704d" and .image_tag == "candidate-416b7b9-20260728094011" and .workflow_run_id == "30347509136" and .prod_pinnable == false' "$d/build-manifest.json" >/dev/null; rc=$?; rm -rf "$d"; exit $rc
+  - id: "dod-15328-fix-present-at-dev-head"
+    description: >-
+      The only check in this contract that reads a MUTABLE ref, and it is deliberate. Every OMN-15301
+      entry landed so far pins a frozen commit, so reverting the fix leaves all of them GREEN -- a historical
+      commit cannot change. This one reads omnibase_infra `dev` HEAD and asserts the canonical transaction-scoped
+      tenant-context seam `SELECT set_config(%s, %s, true)` is still there, so a revert of PR #2512 turns
+      this evidence RED. Pinned to the parameterized `set_config(..., true)` form specifically because
+      a bare `SET LOCAL` is a no-op under the adapter's `autocommit = True` -- that distinction IS the
+      defect OMN-15301 fixed. Fail-closed: no negation, so an unreadable ref yields empty stdin and `grep
+      -q` exits 1. Verified by execution 2026-07-28 (dev HEAD c448c67ce5985cb7292d4a0ba2684636b2e23b5b):
+      exit 0 at `dev`; exit 1 against the pre-fix tree at 78b11b77c906ab7edb85db794c27e9b8486d9c60, which
+      is what a revert would restore.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev' -H 'Accept: application/vnd.github.raw' | grep -qF 'SELECT set_config(%s, %s, true)'

@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14596"
+title: "fix(OMN-14596): rename fsm.transitions on key to trigger"
+summary: >-
+  Central OCC evidence for omnimarket PR #1772. The product PR fixes a YAML 1.1 parsing hazard where bare
+  transition keys named `on` load as Python boolean `True` under PyYAML safe_load, then proves the on-disk
+  state-machine contract now uses a string `trigger` key and includes a regression test that catches the
+  prior shape.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1772-product-head"
+    description: >-
+      Product-observing verification for omnimarket PR #1772 at head aa4dbbe8e919a80b44b07724de9bf214014c7e32.
+      Verifies the PR targets dev, changed only the node contract and state-coverage test, the contract
+      contains trigger labels, no bare transition `on:` key remains, and the regression test is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1772; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=aa4dbbe8e919a80b44b07724de9bf214014c7e32;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'fix(OMN-14596): rename fsm.transitions on: key to trigger: (YAML Norway problem)' "$d/pr.txt"
+          && for p in src/omnimarket/nodes/node_swarm_fanout_orchestrator/contract.yaml tests/integration/node_swarm_fanout_orchestrator/test_swarm_fanout_orchestrator_state_coverage.py;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/OmniNode-ai/omnimarket/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'trigger: commands_built' "$d/src/omnimarket/nodes/node_swarm_fanout_orchestrator/contract.yaml"
+          && ! grep -Eq '^[[:space:]]*-?[[:space:]]*on:[[:space:]]' "$d/src/omnimarket/nodes/node_swarm_fanout_orchestrator/contract.yaml"
+          && grep -Fq 'test_contract_transitions_trigger_key_is_a_real_string' "$d/tests/integration/node_swarm_fanout_orchestrator/test_swarm_fanout_orchestrator_state_coverage.py"
+  - id: "dod-omnimarket-pr-1772-local-verification"
+    description: >-
+      Verification record for omnimarket PR #1772 at head aa4dbbe8e919a80b44b07724de9bf214014c7e32. The
+      PR body records a non-vacuous RED/GREEN proof against the pre-fix on-disk contract, the full state-coverage
+      plus node unit suite result, and the strict state-coverage validation result.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1772; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=aa4dbbe8e919a80b44b07724de9bf214014c7e32;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("transition dict contains a boolean-True key")) and
+          (.body | contains("47 passed")) and (.body | contains("PASS: 1 WARN: 0 FAIL: 0"))' | grep -qx
+          true
+  - id: "dod-omnimarket-pr-1772-deploy-scope"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1772. The diff is limited to a node contract YAML file
+      and a regression test; it does not touch Dockerfiles, compose manifests, deploy scripts, migrations,
+      runtime service definitions, or infrastructure configuration.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=1772; PRODUCT_REPO=OmniNode-ai/omnimarket; PRODUCT_HEAD=aa4dbbe8e919a80b44b07724de9bf214014c7e32;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations)(/|$)'
+  - id: "dod-occ-self-bind-pr-4174"
+    description: >-
+      Self-binding verification for onex_change_control PR #4174. Verifies the evidence PR is open on
+      the expected branch and contains the initial OMN-14596 evidence commit that carries this contract
+      and receipt bundle for omnimarket PR #1772.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/4174 --jq '.head.ref == "jonah/omn-14596-occ-omnimarket-1772"
+          and .state == "open"' | grep -qx true && gh api repos/OmniNode-ai/onex_change_control/pulls/4174/commits
+          --paginate --jq '.[].sha' | grep -Fx 489267af204354df42490474a9788dcb0baeaee1

@@ -1,0 +1,52 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13170"
+evidence_item_id: "pr-omnimarket"
+check_type: "command"
+check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13170/pr-omnimarket/command.yaml"
+status: PASS
+run_timestamp: "2026-06-17T15:30:00-00:00"
+commit_sha: "695e0897cc286537a205212d757ff889365a343e"
+contract_sha256: "sha256:ae43485b29a7020c86b67b1e5f1926b117c318c0c51d416d1619913c66d9324a"
+branch: "jonahgabriel/omn-13170-delegation-transport-ignores-backend-timeout_ms-hardcoded"
+pr_number: 2705
+runner: "omn-13170-impl"
+verifier: "receipt-gate-local"
+probe_command: "grep -n 'timeout_seconds: float = 120.0' src/omnimarket/nodes/node_llm_delegation_call_effect/handlers/transport.py
+  | wc -l ; uv run pytest tests/unit/routing/test_delegation_backend_timeout.py tests/unit/nodes/node_llm_delegation_call_effect/test_handler_llm_delegation_call.py
+  tests/unit/nodes/node_delegate_skill_orchestrator/test_local_dispatch_evidence.py -q ; uv run pytest
+  tests/ -m 'not kafka' -q"
+probe_stdout: |
+  # grep -n 'timeout_seconds: float = 120.0' src/omnimarket/.../transport.py | wc -l  ->  0
+  #   The hardcoded transport default is deleted; post_chat_completion(timeout_seconds=...)
+  #   is now a required parameter, so the contract-resolved backend timeout_ms is the
+  #   only source of the HTTP timeout.
+  # focused: tests/unit/routing/ + node_llm_delegation_call_effect/ + node_delegate_skill_orchestrator/  ->  109 passed
+  #   incl. new test_delegation_backend_timeout.py (8): every committed backend declares timeout_ms;
+  #   resolve_delegation_backend carries it + fails closed when missing/non-int/non-positive;
+  #   resolve_timeout_seconds divides by 1000 + rejects non-positive; 300s contract timeout > deleted 120s cap.
+  #   incl. test_request_timeout_seconds_is_threaded_to_transport (handler) and
+  #   test_local_dispatch_threads_backend_timeout_to_transport (port: timeout_ms=300000 -> 300.0s).
+  # uv run pytest tests/ -m 'not kafka' (no -k)  ->  7509 passed, 64 skipped, 9 deselected in 303.08s
+  #   the 9 deselected are @pytest.mark.kafka tests requiring a live broker on .201; unrelated to this change.
+  # uv run ruff format src/ tests/ + uv run ruff check --fix src/ tests/  ->  All checks passed
+  # uv run mypy --strict (5 changed modules)  ->  Success: no issues found in 5 source files
+  # pre-commit run --all-files  ->  all hooks Passed
+actual_output: >-
+  PASS: omnimarket PR #1249 (branch jonahgabriel/omn-13170-delegation-transport-ignores-backend-timeout_ms-hardcoded,
+  base dev, head 695e0897cc286537a205212d757ff889365a343e) honors the contract-resolved per-backend timeout_ms
+  throughout the delegation transport and deletes the hardcoded 120s post_chat_completion default. resolve_delegation_backend
+  now reads timeout_ms (fail-closed, no silent default) and carries it on ModelResolvedDelegationBackend.timeout_ms;
+  the new resolve_timeout_seconds converts ms -> s at the orchestrator; ModelLlmDelegationCallRequest
+  carries a required timeout_seconds (gt=0); LocalDelegationDispatchPort threads backend.timeout_ms /
+  1000 into the call request; the handler passes request.timeout_seconds to post_chat_completion; and
+  post_chat_completion's timeout_seconds is now required with the 120.0 default removed. grep for 'timeout_seconds:
+  float = 120.0' in transport.py returns 0. Gates green: focused delegation/routing suites 109 passed
+  (incl. 10 new TDD tests across the routing resolver, the effect handler, and the dispatch port); full
+  `uv run pytest tests/ -m "not kafka"` (no -k) 7509 passed / 64 skipped (9 kafka deselected, live-broker-dependent
+  and unrelated); ruff format + ruff check --fix clean; mypy --strict on the 5 changed modules Success;
+  pre-commit run --all-files all hooks Passed. This receipt is the grep-target consumed by the check_value
+  in contracts/OMN-13170.yaml (contract bytes hash to sha256:ae43485b29a7020c86b67b1e5f1926b117c318c0c51d416d1619913c66d9324a
+  after the OMN-13170 timeout-value follow-up addendum was added to the contract).
+exit_code: 0
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-13170/onex_change_control"

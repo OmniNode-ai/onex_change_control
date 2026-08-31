@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13144"
+evidence_item_id: "dod-omnimarket-emit-daemon-pr"
+check_type: "command"
+check_value: "gh pr view --repo OmniNode-ai/omnimarket --json state,baseRefName,headRefName,headRefOid
+  jonah/omn-13144-emit-daemon-kafka-wire"
+status: PASS
+run_timestamp: "2026-06-14T17:43:58Z"
+commit_sha: "0619408cf71a85bc722b7e7a259eba2870a09e66"
+runner: "worktree-agent-omn-13144"
+verifier: "receipt-gate-local"
+probe_command: "uv run pytest tests/unit/nodes/node_emit_daemon/test_standalone_kafka_wiring.py -v ; (simulate
+  dead path -> RED) ; (restore fix -> GREEN)"
+probe_stdout: |
+  $ uv run pytest tests/unit/nodes/node_emit_daemon/test_standalone_kafka_wiring.py -v
+  TestBuildKafkaPublishFn::test_publish_fn_calls_bus_publish PASSED
+  TestBuildKafkaPublishFn::test_publish_fn_tolerates_missing_correlation_id PASSED
+  TestStandalonePublishesThroughBus::test_event_reaches_bus_via_publisher_loop PASSED
+  TestCreateKafkaBusFailFast::test_empty_bootstrap_raises PASSED
+  TestWireKafkaPublisher::test_wires_real_publish_when_bootstrap_supplied PASSED
+  TestWireKafkaPublisher::test_spool_only_when_no_bootstrap PASSED
+  6 passed in 0.85s
+
+  # Failing-first proof — simulated OMN-13144 dead path (publish_fn left on no-op):
+  TestWireKafkaPublisher::test_wires_real_publish_when_bootstrap_supplied FAILED
+  E   assert None is <_FakeKafkaBus object>     # event acked but never reached the bus
+  1 failed, 1 passed
+
+  # Restored fix:
+  6 passed in 0.86s
+actual_output: >-
+  PASS: omnimarket code PR (branch jonah/omn-13144-emit-daemon-kafka-wire, base=dev, head 0619408cf71a85bc722b7e7a259eba2870a09e66)
+  wires the real Kafka publish into the standalone emit-daemon runner. New kafka_publish.py (create_kafka_bus
+  builds + starts EventBusKafka via the authorised config path; build_kafka_publish_fn adapts it into
+  the publisher loop's publish_fn with canonical ModelEventHeaders); __main__._wire_kafka_publisher seam
+  rebinds publish_fn off the no-op stub when --kafka-bootstrap-servers is supplied and returns the bus
+  for close-on-shutdown; KafkaPublisherLoop.set_publish_fn public setter; metadata.yaml declares the omnibase-infra
+  dependency. The failing-first test was verified RED against the simulated dead path (publish_fn left
+  on the no-op stub -> event acked but never reaches the bus) and GREEN with the fix. PROVES: the standalone
+  runner now actually publishes to Kafka instead of advertising Kafka support it never delivered. No live
+  deploy, restart, or topic mutation was performed.
+exit_code: 0
+contract_sha256: "sha256:14c3db834e24ed466a1761f2d81599aa67e0bd630c576dd66f0ba2f33c645aa8"
+pr_number: null
+branch: "jonah/omn-13144-emit-daemon-kafka-wire"

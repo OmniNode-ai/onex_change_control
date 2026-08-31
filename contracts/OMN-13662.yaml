@@ -1,0 +1,97 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13662"
+title: "Classify delegate-skill terminals as explicit not_tier_routed in the delegation projection rollup"
+summary: >-
+  Define the projection rule for delegation terminals that carry no serving LLM tier. The delegate-skill
+  terminal path (ModelDelegateSkillTerminalProjection) is skill->node delegation, not LLM-tier routing,
+  so those delegation_events rows legitimately leave cost_tier_name empty (real column, omnimarket migration
+  0018, populated on the LLM path by OMN-13649 / #1458). Per doctrine (no silent default, no consumer
+  guessing) the tier rollup must classify these rows explicitly rather than letting each consumer derive
+  a meaning. Decision: map empty cost_tier_name -> the explicit value 'not_tier_routed'; EXCLUDE those
+  rows from tier-distribution percentage DENOMINATORS (so tier-routed percentages sum to 1.0 over LLM
+  rows only) while still INCLUDING them in total task counts; surface the classification + the excluded
+  count on the projection so the dashboard reads it and never re-derives it. Not 'unknown', not 'local',
+  not silently dropped. Implemented as a projection VIEW change (psql-applicable CREATE OR REPLACE VIEW,
+  no node redeploy needed): omnimarket PR #1462 adds node-owned migration 0021, which appends a by_tier
+  jsonb column to projection_delegation_model_routing carrying total_tasks (inclusive), tier_routed_total
+  (the denominator = rows with non-empty cost_tier_name), not_tier_routed_count (the excluded bucket),
+  and per-tier tiers[] with pct_of_tier_routed gated on tier_routed_total > 0 (the not_tier_routed bucket
+  gets pct 0; tier-routed pcts sum to 1.0). The model-routing.v1 projection_api exposure declares by_tier
+  in columns + json_columns so the read surface serves the classification. No new node, no new REST route,
+  no client-side computation, no terminal/wire DTO field; topics stay contract-sourced; the cost_tier_name
+  column already exists (migration 0018), so no schema migration runs. Product PR: omnimarket #1462.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1462"
+    description: >-
+      omnimarket PR #1462 adds node-owned migration 0021 (CREATE OR REPLACE VIEW projection_delegation_model_routing
+      with the by_tier jsonb column appended at the end of the SELECT for replace-compatibility) and declares
+      by_tier in the model-routing.v1 projection_api exposure (columns + json_columns). The classification
+      CASE maps empty cost_tier_name -> 'not_tier_routed'; pct_of_tier_routed is gated on tier_routed_total
+      > 0 so the not_tier_routed bucket gets pct 0 and tier-routed percentages sum to 1.0. The new test
+      module test_projection_delegation_tier_distribution_omn13662.py proves, over a mixed fixture (2x
+      local + 1x claude LLM-tiered rows + 2x delegate-skill empty-tier rows), that tier-% sums to 1.0
+      over LLM rows only, totals include all rows, and not_tier_routed is surfaced + counted; it also
+      executes the real view DDL against Postgres (self-skips without a DB). The probe re-runs the focused
+      test module and proves 10 passed (plus the 1 DB-gated integration test self-skipped).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13662/dod-omnimarket-pr-1462/command.yaml &&
+          grep -q '^pr_number: 1462$' drift/dod_receipts/OMN-13662/dod-omnimarket-pr-1462/command.yaml
+          && grep -q '10 passed' drift/dod_receipts/OMN-13662/dod-omnimarket-pr-1462/command.yaml
+  - id: "dod-infra-pr-2121"
+    description: >-
+      omnibase_infra PR #2121 vendors the byte-identical omnimarket node migration 0021 under docker/migrations/forward/nodes/node_projection_delegation
+      (sha256 112dc502e55bff20125d2acc187668ba71f8d6ee37db1b36e78ac8e7c9a19070 on both the vendored copy
+      and the omnimarket dev source) so a clean dev redeploy's forward-migration runner applies the namespaced
+      migration node:node_projection_delegation:0021_* and materializes the projection_delegation_model_routing
+      by_tier (not_tier_routed) rollup without any manual in-container patch. scripts/sync-node-migrations.sh
+      --check reports "in sync"; the vendored tree compares byte-for-byte against the omnimarket dev tip.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13662/dod-infra-pr-2121/command.yaml && grep
+          -q '^pr_number: 2121$' drift/dod_receipts/OMN-13662/dod-infra-pr-2121/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for omnimarket PR #1462. The change is a projection VIEW DDL addition (migration
+      0021 CREATE OR REPLACE VIEW) plus an additive model-routing.v1 read-surface exposure (by_tier column);
+      the cost_tier_name column already exists (migration 0018), so no schema migration runs. No new node,
+      no terminal/wire DTO field, no envelope-breaking change, no Dockerfile / compose / topic mutation,
+      and no live deploy, runtime restart, or .201 mutation is performed by this PR (dev lane only). The
+      live dev-lane psql proof (apply the view via CREATE OR REPLACE VIEW, then SELECT by_tier FROM projection_delegation_model_routing
+      to show delegate-skill rows classified not_tier_routed and absent from the tier-% denominator for
+      a known correlation_id of each kind, plus the projection-API exposure returning the classification)
+      is a SEPARATE serialized Stage-4 step after this OCC pairing merges; this receipt does NOT claim
+      that live render is already proven.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13662/dod-deploy-assessment/command.yaml &&
+          grep -q '^pr_number: 1462$' drift/dod_receipts/OMN-13662/dod-deploy-assessment/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-13662/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR. Carries the OMN-13662 contract
+      and PASS receipts onto dev and binds this OCC evidence PR's own number so omnimarket #1462 can reference
+      Evidence-Source as this OCC merge commit, satisfying validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13662/dod-occ-self/command.yaml

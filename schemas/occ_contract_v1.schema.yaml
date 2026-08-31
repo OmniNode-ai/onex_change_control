@@ -1,0 +1,229 @@
+---
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# THE ONE CANONICAL OCC CONTRACT SHAPE (v1) — OMN-15669, ruling R-0802-9.
+#
+# P1: this file is the SINGLE machine-readable schema artifact every OCC
+# contract authored under v1 validates against. Shape validation REPLACES human
+# review: there is no reviewer judgement anywhere in the gate, and there is no
+# second schema. Per the one-model-per-shape rule, adding a second contract
+# schema artifact anywhere in this repo is itself the defect — extend this file.
+#
+# The semantic rules the gate layers on top (P2 ticket identity, P3 case
+# collection, P4 case-space coverage, P5 seam-schema mock binding, P6 dual
+# binding) are all driven by DATA DECLARED IN THIS FILE'S INSTANCES — the gate
+# reads the declarations, it does not carry a private shape of its own.
+# Engine: src/onex_change_control/validation/contract_shape_v1.py
+#
+# HOME: instances live at contracts/v1/OMN-XXXX.yaml. contracts/*.yaml (top
+# level) is owned by omnibase_core's ModelTicketContract (extra="forbid",
+# SemVer schema_version), so the v1 blocks are unrepresentable there today.
+# One shape per path — see V1_DIR in the engine for the full rationale.
+#
+# SCOPE (grandfather, no backfill sweep): a contract is checked only when the PR
+# touches it under contracts/v1/, or when it already carries the v1 marker.
+# A contract the PR does not touch is never opened by this gate.
+#
+# STYLE NOTE: every scalar below is a single line under 100 chars. Folded (>-)
+# scalars are avoided deliberately — the repo's yamlfmt hook reflows them and
+# injects a sentinel comment, which the OMN-15479 contamination ratchet rejects.
+
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://onex.omninode.ai/schemas/occ_contract_v1.schema.yaml"
+title: OCC Canonical Contract Shape v1
+description: One canonical shape for an OCC ticket contract (OMN-15669).
+
+type: object
+# Legacy/adjacent keys are not rejected: this shape governs the v1 blocks.
+additionalProperties: true
+
+required:
+  - schema_version
+  - ticket_id
+  - title
+  - interface
+  - dependencies
+  - cases
+  - dod_evidence
+
+properties:
+  schema_version:
+    # The v1 marker. Its presence keeps a landed contract permanently in scope.
+    description: The v1 marker; migration into v1 is one-way.
+    const: occ-contract/v1
+
+  ticket_id:
+    description: Linear ticket this contract is the contract OF.
+    type: string
+    pattern: "^OMN-[0-9]+$"
+
+  title:
+    type: string
+    minLength: 8
+
+  interface:
+    # P4. Typed inputs/outputs plus the error taxonomy. This block is what makes
+    # the case space ENUMERABLE — a generator can walk every error class and
+    # every input-constraint boundary declared here.
+    description: P4 — the typed surface that makes the case space enumerable.
+    type: object
+    additionalProperties: false
+    required: [inputs, outputs, error_taxonomy]
+    properties:
+      inputs:
+        type: array
+        items: {$ref: "#/$defs/io_field"}
+      outputs:
+        type: array
+        minItems: 1
+        items: {$ref: "#/$defs/io_field"}
+      error_taxonomy:
+        # Every error class the unit can raise. Each must map to a case or to a
+        # labeled exclusion; an unmapped class is shape-RED.
+        description: Every error class; each maps to a case or a labeled exclusion.
+        type: array
+        minItems: 1
+        items: {$ref: "#/$defs/error_class"}
+
+  dependencies:
+    # P5. Every injected dependency, each carrying the seam schema BOTH the mock
+    # and the real implementation validate against — so mock-shape divergence
+    # (the OMN-15598 class) is unrepresentable rather than merely discouraged.
+    description: P5 — injectable dependencies and the seam schema mock and real share.
+    type: array
+    items: {$ref: "#/$defs/dependency"}
+
+  cases:
+    # P3. Binding-agnostic case declarations, written FIRST and the code second.
+    # The gate asserts each exists in the PR tree and is collected for real.
+    description: P3 — binding-agnostic cases, declared before the code exists.
+    type: array
+    minItems: 1
+    items: {$ref: "#/$defs/case"}
+
+  exclusions:
+    # P4. Deliberate, labeled non-coverage. A target that is neither covered by
+    # a case nor excluded here is shape-RED.
+    description: P4 — labeled, reasoned non-coverage of an enumerated target.
+    type: array
+    items: {$ref: "#/$defs/exclusion"}
+
+  dod_evidence:
+    # One v1 addition over the legacy shape: at least one check must be
+    # falsifiable (tier L1+ under the OMN-14409 deriver). A v1 contract whose
+    # entire evidence is existence/self-bind probes is an unfalsifiability
+    # overclaim and is shape-RED. There is no grandfather for this inside v1.
+    description: At least one check must be falsifiable (OMN-14409 tier L1+).
+    type: array
+    minItems: 1
+
+$defs:
+  # A target token naming one member of the enumerable case space:
+  #   error:<CODE>                  one error class
+  #   input:<field>.<constraint>    one input-constraint boundary
+  #   dependency:<name>             one dependency seam
+  target_token:
+    type: string
+    pattern: "^(error:[A-Z][A-Z0-9_]*|input:[a-z_][a-z0-9_]*\\.[a-z_][a-z0-9_]*|dependency:[a-z_][a-z0-9_]*)$"
+
+  io_field:
+    type: object
+    additionalProperties: false
+    required: [name, type, required]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z_][a-z0-9_]*$"
+      type:
+        description: Declared type token (python/JSON type or dotted model path).
+        type: string
+        minLength: 3
+      required:
+        type: boolean
+      constraints:
+        # EVERY key here is a boundary of the case space and must map to a case
+        # or to a labeled exclusion.
+        description: Constraint name to bound; every key is a case-space boundary.
+        type: object
+        minProperties: 0
+        propertyNames:
+          pattern: "^[a-z_][a-z0-9_]*$"
+
+  error_class:
+    type: object
+    additionalProperties: false
+    required: [code, when]
+    properties:
+      code:
+        type: string
+        pattern: "^[A-Z][A-Z0-9_]*$"
+      when:
+        description: The condition that raises it, in one falsifiable sentence.
+        type: string
+        minLength: 12
+      raises:
+        description: Optional dotted path of the exception type.
+        type: string
+
+  dependency:
+    type: object
+    additionalProperties: false
+    required: [name, seam_schema, injectable]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z_][a-z0-9_]*$"
+      seam_schema:
+        # The ONE schema both the real dependency and its mock validate against.
+        # Repo-relative file path, or an importable dotted pydantic model path.
+        # Must resolve; an unresolvable ref is RED.
+        description: Schema shared by the real dependency and its mock; must resolve.
+        type: string
+        minLength: 3
+      injectable:
+        # Always true: a non-injectable dependency cannot be mock-bound, so P6
+        # dual-binding would be unprovable for it.
+        description: Always true; a non-injectable dependency cannot be dual-bound.
+        const: true
+
+  case:
+    type: object
+    additionalProperties: false
+    required: [id, class, behavior, test_path, bindings]
+    properties:
+      id:
+        type: string
+        pattern: "^[a-z][a-z0-9_]*$"
+      class:
+        enum: [unit, golden_chain, error_chain]
+      behavior:
+        description: What must be true, stated so that it can fail.
+        type: string
+        minLength: 12
+      test_path:
+        # Must exist AND be collected by the real runner — a declared-but-absent
+        # case is RED.
+        description: Path in the PR tree; must exist and be really collected.
+        type: string
+        pattern: "^tests/.*\\.py$"
+      bindings:
+        # `both` means the IDENTICAL case body runs mock-bound (fast, no infra)
+        # and real-bound (integration/golden-chain) on ONE parameterized fixture
+        # axis — never two test bodies. Any case covering a dependency defaults
+        # to `both`. See docs/standards/DUAL_BINDING_CASES.md.
+        description: P6 — one body, one fixture axis, mock-bound and real-bound.
+        enum: [mock, real, both]
+      covers:
+        type: array
+        items: {$ref: "#/$defs/target_token"}
+
+  exclusion:
+    type: object
+    additionalProperties: false
+    required: [target, reason]
+    properties:
+      target: {$ref: "#/$defs/target_token"}
+      reason:
+        type: string
+        minLength: 12

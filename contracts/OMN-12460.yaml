@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12460"
+title: "Bug — node_plan_to_tickets handler crashes on raw dict / StartCommand dispatch payload (30s timeout)"
+summary: >-
+  HandlerPlanToTickets.handle accessed request.plan_content directly, but the RuntimeLocal dispatch boundary
+  delivers the contract input_model (ModelPlanToTicketsStartCommand) as a raw dict for operation_match
+  handlers, or as a ModelPlanToTicketsStartCommand instance on the single-handler path — not the ModelPlanToTicketsRequest
+  the handler operated on. The mismatched attribute (plan_path vs plan_content) raised AttributeError,
+  no terminal completion event was emitted, and onex run-node hung until the 30s RuntimeLocal timeout.
+  Fix: handle now accepts ModelPlanToTicketsRequest | ModelPlanToTicketsStartCommand | dict and normalizes
+  the payload (validating a dict into ModelPlanToTicketsStartCommand, then reading plan_path into plan_content
+  for the command shapes) before any attribute access. Adds unit tests covering the raw-dict, StartCommand-instance,
+  and ModelPlanToTicketsRequest.model_validate(dict) deserialization paths plus an AttributeError regression
+  guard. This OCC PR carries the central contract consumed by the omnimarket PR Receipt Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      Both RuntimeLocal dispatch-boundary payload shapes parse to status=parsed instead of crashing: a
+      raw dict (ModelPlanToTicketsStartCommand-shaped, plan_path) and a ModelPlanToTicketsStartCommand
+      instance both reach HandlerPlanToTickets.handle and return a populated ModelPlanToTicketsResult
+      (status=parsed, entry_count>0) — proving the AttributeError / 30s onex run-node timeout is fixed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12460/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Static + full-suite quality gates green on the omnimarket worktree: uv run ruff format/check src/
+      tests/ clean; uv run mypy src/omnimarket/nodes/node_plan_to_tickets --strict succeeds; the new ModelPlanToTicketsRequest.model_validate(dict)
+      unit test passes; and the full pytest suite (uv run pytest tests/ -q -m "not kafka", NO -k filter)
+      passes 7922/64 skipped. pre-commit --files clean.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12460/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change is a handler payload-normalization bug fix plus unit tests inside
+      a single COMPUTE node. It contains NO runtime deploy, NO migration, NO REST surface, and NO live-lane
+      mutation. The ST-lane redeploy that carries the fixed image to the consumer-group container is an
+      operator-gated follow-up (dev lane only for this PR); nothing in this PR touches a live lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-12460/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-12460.yaml consumed
+      by the omnimarket PR Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves the
+      contract is present with the correct ticket_id.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-12460\"$' contracts/OMN-12460.yaml"

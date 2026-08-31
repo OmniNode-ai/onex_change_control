@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14394"
+evidence_item_id: "dod-omnibase-infra-pr-2266-head-daa28e5c"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-14394/dod-omnibase-infra-pr-2266-head-daa28e5c/command.yaml
+  && grep -q '^pr_number: 2266$' drift/dod_receipts/OMN-14394/dod-omnibase-infra-pr-2266-head-daa28e5c/command.yaml
+  && grep -q 'daa28e5cd1af226af79b3641de1637915510539a' drift/dod_receipts/OMN-14394/dod-omnibase-infra-pr-2266-head-daa28e5c/command.yaml
+status: PASS
+run_timestamp: "2026-07-12T01:15:00Z"
+commit_sha: "daa28e5cd1af226af79b3641de1637915510539a"
+runner: "fix-14394"
+verifier: "verify-14394"
+pr_number: 2266
+probe_command: >-
+  gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward?ref=dev" --jq '.[].name'
+  | grep -E '^09[0-9]' && gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward?ref=jonah/omn-14375-github-state-projection-pr-state"
+  --jq '.[].name' | grep -E '^09[0-9]' && gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward?ref=jonah/omn-14394-pr-state-is-draft-seam"
+  --jq '.[].name' | grep -E '^09[0-9]'; cd omnibase_infra && git diff b134fc47 daa28e5c -- 'src/*' > /tmp/is_draft_src.patch
+  && git apply -R /tmp/is_draft_src.patch && uv run pytest tests/unit/nodes/node_pr_state_projection_compute/
+  tests/unit/nodes/node_pr_state_write_effect/ tests/unit/nodes/node_github_pr_poller_effect/ -q; git
+  apply /tmp/is_draft_src.patch && uv run pytest tests/unit/nodes/node_pr_state_projection_compute/ tests/unit/nodes/node_pr_state_write_effect/
+  tests/unit/nodes/node_github_pr_poller_effect/ -q && python3 -c "import ast; tree = ast.parse(open('src/omnibase_infra/nodes/node_pr_state_projection_compute/handlers/handler_pr_state_projection.py').read());
+  [print('sync methods:', len([n.name for n in c.body if isinstance(n, ast.FunctionDef)])) for c in ast.walk(tree)
+  if isinstance(c, ast.ClassDef) and c.name == 'HandlerPrStateProjection']"
+probe_stdout: |
+  === migrations (collision check) ===
+  dev: 090_create_delegation_workflow_state.sql
+  #2262 branch (jonah/omn-14375-github-state-projection-pr-state): 090_create_delegation_workflow_state.sql, 091_pr_state.sql
+  #2266 branch (jonah/omn-14394-pr-state-is-draft-seam): 090_create_delegation_workflow_state.sql, 091_pr_state.sql, 092_pr_state_add_is_draft.sql
+  -> sequential, no collision.
+
+  === RED (pre-fix src, post-fix tests, 4 src files reverse-patched) ===
+  FAILED tests/unit/nodes/node_pr_state_projection_compute/test_handler_pr_state_projection.py::test_project_extracts_canonical_fields
+  FAILED tests/unit/nodes/node_pr_state_projection_compute/test_handler_pr_state_projection.py::test_project_extracts_is_draft_true
+  FAILED tests/unit/nodes/node_pr_state_projection_compute/test_handler_pr_state_projection.py::test_project_defaults_is_draft_false_when_missing
+  FAILED tests/unit/nodes/node_pr_state_projection_compute/test_handler_pr_state_projection.py::test_is_draft_field_type_matches_reader_contract
+  FAILED tests/unit/nodes/node_pr_state_projection_compute/test_handler_pr_state_projection.py::test_handle_accepts_dict_shaped_envelope
+  FAILED tests/unit/nodes/node_pr_state_write_effect/handlers/test_handler_pr_state_upsert.py::TestHandlerPrStateUpsertIsDraft::test_upsert_sends_is_draft_as_final_sql_parameter
+  FAILED tests/unit/nodes/node_pr_state_write_effect/handlers/test_handler_pr_state_upsert.py::TestHandlerPrStateUpsertIsDraft::test_upsert_defaults_is_draft_false
+  FAILED tests/unit/nodes/node_github_pr_poller_effect/test_handler_github_api_poll.py::test_handle_uses_github_http_client_adapter
+  FAILED tests/unit/nodes/node_github_pr_poller_effect/test_handler_github_api_poll.py::test_handle_publishes_is_draft_true_for_draft_pr
+  9 failed, 47 passed in 0.31s
+
+  === GREEN (src restored) ===
+  ........................................................                 [100%]
+  56 passed in 0.16s
+
+  === god-class ratchet ===
+  sync methods: 10
+actual_output: >-
+  PASS: independently reproduced RED (9 failed) -> GREEN (56 passed) for omnibase_infra#2266 head daa28e5cd1af226af79b3641de1637915510539a
+  in a fresh worktree by reverse-patching the 4 touched src files against the post-fix tests, matching
+  the PR body's claimed test count exactly. Migration 092 is collision-free across dev/#2262-branch/#2266-branch
+  (sequential 090->091->092). HandlerPrStateProjection holds at exactly 10 sync methods (the god-class
+  ratchet), confirming the inline bool-coercion approach (no new _first_bool sibling method) the PR body
+  describes. Also confirmed via gh pr diff that #2266's diff contains only the is_draft delta (no bleed
+  from #2262's own content) and that ModelPayloadPrStateUpsert.is_draft: bool = False matches omnimarket's
+  ModelOpenPrSummary.is_draft: bool (required, non-nullable) field-for-field, with the SQL column BOOLEAN
+  NOT NULL DEFAULT false.
+exit_code: 0
+branch: "jonah/omn-14394-pr-state-is-draft-seam"
+contract_sha256: "sha256:d988ab7aa858dbc480ea9863512f77a612296964c545145ca4c10230ae646a39"

@@ -1,0 +1,714 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# guards.yml — consolidated per-commit guard workflows (OMN-16260).
+#
+# Direct demand-side fix from the 2026-08-19 GH Actions wedge correlation
+# analysis (omni_home docs/audits/2026-08-19-gh-actions-wedge-correlation.md),
+# per the operator's ruling that CI cost from false/duplicative work must come
+# down ("right now false done work is consuming github and runner cycles").
+#
+# onex_change_control was creating ~20 separate single-job workflow RUNS per
+# commit (each guard/validator in its own file) -- 297 runs across 15 SHAs in
+# one measured burst; one 15-PR companion remint produced ~810 jobs in 6
+# minutes against an 88-runner fleet. This file consolidates NINE of those
+# single-job files into ONE workflow with parallel jobs -- GitHub schedules
+# jobs within one run far more efficiently than separate runs, and this is a
+# straight run-count cut with zero behavioral change to any guard.
+#
+# CONSOLIDATED HERE (file moves + job wrapping only, NO guard-logic changes):
+#   self-companion-guard-autobind, occ-autobind        <- call-occ-autobind.yml
+#   self-companion-guard-companion-effect,
+#     occ-companion-effect                             <- call-occ-companion-effect.yml
+#   call-reject-skip-token                              <- call-reject-skip.yml
+#   dep-provenance-gate                                 <- dep-provenance-gate.yml
+#   main-target-guard                                   <- main-target-guard.yml
+#   non-dev-base-guard                                  <- non-dev-base-guard.yml
+#   pr-title                                            <- pr-title-check.yml
+#   required-check-skip-guard                           <- required-check-skip-guard-caller.yml
+#   stale-todo-gate                                     <- stale-todo-gate.yml
+#
+# NAME-PRESERVING CONSOLIDATION (the hard requirement, per OMN-16260): every
+# job below keeps its EXACT original check-run name -- either via an
+# unchanged explicit `name:` field, or (for `pull-title`/`required-check-
+# skip-guard`, which call reusable workflows via `uses:`) via keeping the
+# EXACT same calling job id, since GitHub composes a reusable-call check-run
+# name as `<calling job id> / <inner workflow's own name>` and neither the
+# calling job id nor the `uses:` target changed. Verified live: OCC dev's
+# required-context set needs zero edits; see the PR body for the full
+# before/after check-run name-set diff and the required_status_checks
+# readback.
+#
+# TWO id collisions existed across the nine source files and are resolved
+# here WITHOUT changing any check-run name:
+#   - `self-companion-guard` (call-occ-autobind.yml AND
+#     call-occ-companion-effect.yml both used this job id). Both jobs carry
+#     an EXPLICIT `name: Self-companion guard (OMN-15334)` field -- the
+#     check-run name is driven by that field, not the job id -- so the two
+#     ids are disambiguated below (`-autobind` / `-companion-effect`
+#     suffixes) with zero effect on either check-run's displayed name. The
+#     `needs:`/`if:` references in occ-autobind / occ-companion-effect are
+#     updated to match the renamed ids.
+#
+# TRIGGER-PARITY (the other hard requirement): the nine source files did NOT
+# share one trigger shape (different `pull_request` `types:`, different
+# `branches:` filters, some with/without `merge_group`). This file's `on:`
+# block is the UNION of all nine; each job below carries an explicit `if:`
+# that reproduces its OWN original file's narrower trigger scope exactly, so
+# a guard that only used to fire on `[opened, synchronize, reopened]` does
+# NOT start firing on `edited` or `ready_for_review` events post-consolidation,
+# and vice versa. `occ-autobind` / `occ-companion-effect` need no added `if:`
+# -- their existing `if: needs.<guard>.outputs.should_publish == 'true'`
+# already gates them correctly, since a skipped upstream guard's output is
+# empty and the comparison evaluates false.
+#
+# DELIBERATELY NOT CONSOLIDATED HERE (documented, not silently omitted):
+#   - governance-file-advisory-gate.yml: its own header carries an explicit
+#     "DELIBERATELY ADVISORY -- READ THIS TWICE" banner stating it "lives in
+#     its OWN workflow file (this one), separate from ci.yml" as one of four
+#     conditions that keep it permanently non-required. Honored as written.
+#   - product-readiness-shadow.yml: its own header lists "REPORT-ONLY /
+#     NON-REQUIRED / STANDALONE... This is a SEPARATE workflow" as a
+#     LOAD-BEARING INVARIANT (do not weaken). Isolation from the required
+#     guards this file DOES consolidate is itself part of that invariant
+#     (a wedge in a shared file would now correlate the shadow surface's
+#     failure with required checks it must stay independent of).
+#   - call-occ-preflight.yml (630 lines) and call-receipt-gate.yml (893
+#     lines): despite the "call-" naming, these are large, mostly
+#     self-contained in-repo implementations (OCC's own contract/receipt
+#     evaluation, invariant I3 -- see docs/RECEIPT_LOCATIONS.md), not thin
+#     callers, and both back DIRECTLY-required branch-protection contexts
+#     (`occ-preflight / eligibility`, `verify / verify`). Moving ~1,500
+#     lines of the two most critical gates in one pass is a disproportionate
+#     risk for a file-moves-only ticket; flagged as follow-up scope.
+#   - docs-validate.yml, doctrine-coverage.yml, omni-standards-compliance.yml,
+#     security-scan.yml, validate-validator-requirements.yml,
+#     validator-g2-ip-family.yml: each also triggers on `push` (to
+#     partially-overlapping but NOT identical branch sets) and/or `schedule`
+#     (security-scan's weekly CodeQL cron), which is materially harder to
+#     verify via the DoD's single-test-PR before/after check-run diff (a PR
+#     does not itself emit a `push` event to a protected branch). Flagged as
+#     follow-up scope rather than risking an unverifiable trigger-parity bug
+#     on required contexts under time pressure. Three of these four also
+#     share a byte-identical `zone-filter` sub-job that would need either a
+#     job-id collision resolution or a deliberate cross-file dedup -- a
+#     reasonable follow-on, not attempted here.
+#
+# CORRELATED-FAILURE TRADEOFF (documented, not hidden): consolidating these
+# nine guards into one workflow FILE means a GH-side run-materialization
+# failure (the OMN-16241 "workflow file may be broken" / zero-jobs wedge
+# class) would now affect all nine simultaneously, where today each is an
+# independent failure domain. This is the accepted, inherent tradeoff of
+# every run-count consolidation in this codebase (ci.yml already bundles 34
+# jobs this way) and is the explicit point of the operator's cost-reduction
+# ruling -- recorded here so it is a stated tradeoff, not a silent one.
+
+name: Guards
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ===========================================================================
+  # From call-occ-autobind.yml (OMN-15261, OMN-15012/13/17, OMN-14160,
+  # OMN-14987, OMN-15334). Trigger scope preserved: pull_request only,
+  # types [opened, synchronize, reopened, ready_for_review], no branch filter,
+  # no merge_group.
+  # ===========================================================================
+
+  # OMN-15334: the single decision point for "should this PR get a companion?".
+  #
+  # RUNNER: the centralized PUBLIC selector, unconditionally — no fork/trusted
+  # branch like the reusable's OMNI_RUNNER_SELECTOR_V1. The predicate is pure
+  # metadata arithmetic needing no broker or LAN reachability, so the born path
+  # must not inherit the trusted .201 runner lane's availability risk
+  # (omninode-pc was down for ~6h earlier on 2026-07-28). A bare literal runner
+  # label is rejected by the CI Naming Convention gate ("workflows must use
+  # centralized runner selector variables"), hence the vars indirection. NOTE:
+  # that gate is a plain substring grep over .github/workflows with no
+  # comment-awareness, so the label names themselves cannot be written here.
+  #
+  # The predicate is checked out from the PR head, not from `dev`. That is
+  # deliberate: pinning to `dev` would deadlock the PR that introduces the
+  # predicate (the file does not exist at `dev` yet, so the guard would fail and
+  # this PR could never be bound). The anti-self-authorize concern that governs
+  # `allowlists/scripts_exceptions.yaml` does not apply -- this predicate grants
+  # no authority, it only suppresses machine noise, and it is not a required
+  # check.
+  #
+  # Renamed from `self-companion-guard` (OMN-16260) to resolve a job-id
+  # collision with call-occ-companion-effect.yml's own job of the same
+  # original id -- the check-run NAME is unaffected: it is driven by the
+  # explicit `name:` field below, not the job id.
+  self-companion-guard-autobind:
+    name: Self-companion guard (OMN-15334)
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    outputs:
+      should_publish: ${{ steps.decide.outputs.should_publish }}
+      verdict: ${{ steps.decide.outputs.verdict }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Check out the trigger predicate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: src/onex_change_control/scripts/check_occ_autobind_trigger.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # No `pip install`: the predicate is stdlib-only and imports nothing from
+      # its own package, so it runs on a bare interpreter. Run by file path for
+      # the same reason (`import onex_change_control` would pull pydantic +
+      # omnibase_core).
+      #
+      # Every attacker-controllable value (PR title, head ref, labels) is passed
+      # through env, never interpolated into the shell command.
+      - name: Decide whether to publish the autobind command
+        id: decide
+        env:
+          OCC_TRIGGER_EVENT_NAME: ${{ github.event_name }}
+          OCC_TRIGGER_ACTOR: ${{ github.actor }}
+          OCC_TRIGGER_PR_TITLE: ${{ github.event.pull_request.title }}
+          OCC_TRIGGER_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          OCC_TRIGGER_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python src/onex_change_control/scripts/check_occ_autobind_trigger.py
+
+  occ-autobind:
+    needs: self-companion-guard-autobind
+    # The full trigger predicate (bot exemption, ticket token, and the three
+    # self-companion signals) lives in the guard module, so it has exactly one
+    # definition and cannot drift against a hand-maintained copy of the same
+    # conditions in this expression. Enforced by
+    # tests/unit/test_occ_autobind_self_exclusion_omn15334.py. Needs no
+    # additional trigger-scope `if:` -- a skipped guard's output is empty, so
+    # this comparison already evaluates false when the guard didn't run.
+    if: needs.self-companion-guard-autobind.outputs.should_publish == 'true'
+    # Pinned `@dev` -- call-occ-autobind-reusable.yml exists only on
+    # omniclaude dev today, matching every other repo's caller (compat,
+    # omnidash, spi, infra). Re-pin to `@main` or a main SHA once the reusable
+    # promotes to omniclaude main (OMN-14812).
+    uses: OmniNode-ai/omniclaude/.github/workflows/call-occ-autobind-reusable.yml@dev
+    secrets: inherit
+    with:
+      lane: dev
+
+  # ===========================================================================
+  # From call-occ-companion-effect.yml (OMN-15261, OMN-15012/13/17, OMN-14160,
+  # OMN-14987, OMN-15334). Trigger scope preserved: pull_request only,
+  # types [opened, synchronize, reopened, ready_for_review], no branch filter,
+  # no merge_group -- identical to call-occ-autobind.yml's own scope.
+  # ===========================================================================
+
+  # OMN-15334: byte-identical predicate to self-companion-guard-autobind by
+  # design — both callers consult the one canonical predicate, so neither can
+  # drift. Renamed from `self-companion-guard` (OMN-16260) to resolve the
+  # job-id collision noted above; check-run NAME unaffected (explicit
+  # `name:` field below, unchanged).
+  self-companion-guard-companion-effect:
+    name: Self-companion guard (OMN-15334)
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    outputs:
+      should_publish: ${{ steps.decide.outputs.should_publish }}
+      verdict: ${{ steps.decide.outputs.verdict }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Check out the trigger predicate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: src/onex_change_control/scripts/check_occ_autobind_trigger.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # No `pip install`: the predicate is stdlib-only and imports nothing from
+      # its own package. Every attacker-controllable value (PR title, head ref,
+      # labels) is passed through env, never interpolated into the shell command.
+      - name: Decide whether to publish the companion-effect command
+        id: decide
+        env:
+          OCC_TRIGGER_EVENT_NAME: ${{ github.event_name }}
+          OCC_TRIGGER_ACTOR: ${{ github.actor }}
+          OCC_TRIGGER_PR_TITLE: ${{ github.event.pull_request.title }}
+          OCC_TRIGGER_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          OCC_TRIGGER_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python src/onex_change_control/scripts/check_occ_autobind_trigger.py
+
+  occ-companion-effect:
+    needs: self-companion-guard-companion-effect
+    # Dependency-bot exemption, ticket-token gate and the three self-companion
+    # signals all live in the guard module, so they have exactly one definition
+    # and cannot drift against a hand-maintained copy of the same conditions in
+    # this expression. The reusable keeps its own defensive bot/OMN gate. Needs
+    # no additional trigger-scope `if:` -- see occ-autobind's comment above.
+    if: needs.self-companion-guard-companion-effect.outputs.should_publish == 'true'
+    uses: OmniNode-ai/omniclaude/.github/workflows/call-occ-companion-effect-reusable.yml@dev
+    with:
+      lane: dev
+
+  # ===========================================================================
+  # From call-reject-skip.yml (OMN-10422 Wave 5). Trigger scope preserved:
+  # pull_request types [opened, edited, synchronize, reopened],
+  # branches [main, dev, "hotfix/**"], plus merge_group.
+  #
+  # Required-status-check name: `call-reject-skip-token / scan /
+  # reject-skip-gate-token` (unchanged -- driven by the explicit `name:`
+  # field below and the unchanged reusable-workflow target).
+  #
+  # REQUIRED context (main branch, .github/required-checks.yaml) -- carries
+  # NO job-level `if:` (OMN-16260, per the Required-Check Skip-Vector Guard's
+  # own prescribed fix: a job-level `if:` that isn't provably true for every
+  # PR-reachable event this file declares is a live silent-pass bypass, since
+  # a skipped job satisfies branch protection). The original file's narrower
+  # trigger types/branches are instead reproduced as an in-job early exit,
+  # matching this job's own existing merge_group short-circuit below --
+  # running the SAME scan on a few additional event types/branches this job
+  # wasn't previously triggered for is strictly safer (more coverage), never
+  # a guard-logic change.
+  # ===========================================================================
+  call-reject-skip-token:
+    name: call-reject-skip-token / scan / reject-skip-gate-token
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Scan PR body and diff for skip-gate bypass tokens
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.base_ref || 'dev' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "merge_group" ]]; then
+            echo "merge_group scan is covered by pull_request events."
+            exit 0
+          fi
+
+          BODY_FILE="$(mktemp)"
+          DIFF_FILE="$(mktemp)"
+          FILTERED_DIFF_FILE="$(mktemp)"
+          printf '%s' "${PR_BODY:-}" > "${BODY_FILE}"
+          if [[ -n "${PR_NUMBER:-}" ]]; then
+            if ! gh pr diff "${PR_NUMBER}" --repo "${GH_REPO}" > "${DIFF_FILE}"; then
+              echo "::warning::gh pr diff failed; falling back to local git diff against origin/${BASE_REF}"
+              git fetch origin "${BASE_REF}" --no-tags --depth=1
+              git diff --no-ext-diff --unified=0 "origin/${BASE_REF}"...HEAD > "${DIFF_FILE}"
+            fi
+          fi
+
+          awk '
+            /^\+\+\+ / { p=$2; sub(/^b\//, "", p); f=p; next }
+            /^--- / { next }
+            /^diff --git / { f=""; next }
+            /^\+/ {
+              if (f != "" &&
+                  f ~ /\.(md|yaml|yml|txt)$/ &&
+                  f != ".github/workflows/guards.yml") print
+            }
+          ' "${DIFF_FILE}" > "${FILTERED_DIFF_FILE}"
+
+          if grep -E '\[skip-[^]]+\]' "${BODY_FILE}" "${FILTERED_DIFF_FILE}"; then
+            echo "::error::skip-gate bypass token found."
+            exit 1
+          fi
+
+          echo "No skip-gate bypass tokens found."
+
+  # ===========================================================================
+  # From dep-provenance-gate.yml (OMN-13873). Trigger scope preserved:
+  # pull_request types [opened, synchronize, reopened], branches [main, dev],
+  # plus merge_group.
+  #
+  # This job is a REQUIRED STATUS CHECK. The job name "Dep Provenance Gate"
+  # must match branch protection rules -- unchanged here.
+  # ===========================================================================
+  dep-provenance-gate:
+    name: Dep Provenance Gate
+    if: >-
+      (github.event_name == 'pull_request' &&
+        contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action) &&
+        (github.base_ref == 'main' || github.base_ref == 'dev')) ||
+      github.event_name == 'merge_group'
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Skip on merge_group
+        if: ${{ github.event_name == 'merge_group' }}
+        run: |
+          echo "merge_group event — provenance already proven at PR time; skipping."
+
+      - name: Checkout
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Forbid first-party git-source overrides on dev/main
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_REF="origin/${{ github.base_ref }}"
+          CHANGED=$(git diff --name-only "$BASE_REF"...HEAD -- pyproject.toml || true)
+
+          if [ -z "$CHANGED" ]; then
+            echo "pyproject.toml unchanged in this PR — no new provenance surface. Skipping."
+            exit 0
+          fi
+
+          echo "pyproject.toml modified in this PR — verifying dependency provenance."
+          python3 scripts/check_dep_provenance.py --pyproject pyproject.toml
+
+  # ===========================================================================
+  # From main-target-guard.yml (OMN-12243, OMN-12477, OMN-13022).
+  #
+  # REQUIRED context (main branch, .github/required-checks.yaml) -- carries
+  # NO job-level `if:` (OMN-16260, see call-reject-skip-token's comment above
+  # for why). Safe unconditionally: the job's own step already reads
+  # `BASE_REF` from `github.event.pull_request.base.ref` and exits 0
+  # immediately for anything but a main-targeting PR (empty/undefined
+  # BASE_REF on a merge_group event takes the same safe early-exit path).
+  # ===========================================================================
+  main-target-guard:
+    name: main-target-guard
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Check PR target branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${BASE_REF}" != "main" ]]; then
+            echo "::notice::PR targets '${BASE_REF}', not main; guard does not apply."
+            exit 0
+          fi
+
+          echo "PR targets main. Checking head ref: '${HEAD_REF}'"
+
+          if [[ "${HEAD_REF}" == "dev" ]]; then
+            if echo "${PR_BODY}" | grep -qE 'promotion-receipt:[[:space:]]*OCC-[0-9]+'; then
+              echo "::notice::Promotion PR from dev with valid promotion-receipt. Allowed."
+              exit 0
+            fi
+
+            echo "::error::PR is from dev but is missing a promotion receipt."
+            echo "::error::Add a line matching: promotion-receipt: OCC-<number>"
+            echo "::error::Retarget this PR to dev; main accepts only promotion PRs."
+            exit 1
+          fi
+
+          echo "::error::PRs targeting main must come from dev."
+          echo "::error::Head ref '${HEAD_REF}' is not permitted to target main directly."
+          echo "::error::Retarget this PR to dev; main accepts only promotion PRs."
+          exit 1
+
+  # ===========================================================================
+  # From non-dev-base-guard.yml (OMN-13021, retro A-6). Trigger scope
+  # preserved: pull_request types [opened, edited, synchronize], no branch
+  # filter, no merge_group -- identical to main-target-guard's own scope.
+  # ===========================================================================
+  non-dev-base-guard:
+    name: non-dev-base-guard
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(fromJSON('["opened","edited","synchronize"]'), github.event.action)
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Check PR base branch
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${BASE_REF}" == "dev" ]]; then
+            echo "::notice::PR targets dev; guard does not apply."
+            exit 0
+          fi
+
+          if [[ "${BASE_REF}" == "main" ]]; then
+            echo "::notice::PR targets main; main-target-guard governs that path."
+            exit 0
+          fi
+
+          echo "PR targets feature base '${BASE_REF}' from head '${HEAD_REF}'."
+
+          if echo "${PR_BODY}" | grep -qE 'Stacked-Parent:[[:space:]]*#[0-9]+'; then
+            echo "::notice::Declared stacked PR (Stacked-Parent found). Allowed."
+            echo "::warning::Stacked PRs merge INTO their parent branch, not dev."
+            echo "::warning::Do NOT arm auto-merge on this PR; land the parent into dev first."
+            exit 0
+          fi
+
+          echo "::error::PR base '${BASE_REF}' is not the integration branch (dev)."
+          echo "::error::Auto-merge on this PR would fold it INTO '${BASE_REF}' and strand it off dev"
+          echo "::error::(feedback_stacked_prs_orphan_from_dev — the #1185/#1954 incident class)."
+          echo "::error::Either retarget to dev, or declare an intentional stack by adding a body line:"
+          echo "::error::  Stacked-Parent: #<parent-pr-number>"
+          exit 1
+
+  # ===========================================================================
+  # From pr-title-check.yml (OMN-6912). Trigger scope preserved: pull_request
+  # types [opened, edited, synchronize, reopened], no branch filter, no
+  # merge_group.
+  #
+  # Required-status-check name: `pr-title / check-title` (unchanged -- the
+  # calling job id `pr-title` and the `uses:` target are both identical to
+  # the original file).
+  # ===========================================================================
+  pr-title:
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(fromJSON('["opened","edited","synchronize","reopened"]'), github.event.action)
+    uses: ./.github/workflows/pr-title-check-reusable.yml
+    permissions:
+      pull-requests: read
+
+  # ===========================================================================
+  # From required-check-skip-guard-caller.yml (OMN-14864, fan-out from
+  # OMN-14854 / omniclaude#1917). Trigger scope preserved: pull_request types
+  # [opened, synchronize, reopened, ready_for_review], no branch filter, plus
+  # merge_group (types: [checks_requested] -- the only type merge_group
+  # currently emits, so a bare event_name check is equivalent).
+  #
+  # IMPORTANT (carried over verbatim): this trigger MUST NOT carry a
+  # `paths:`/`paths-ignore:` filter (design spec section 4c) -- this is the
+  # one required-check workflow that is exempt from "narrow the trigger for
+  # efficiency", since a path filter here would be the exact self-referential
+  # skip-vector this guard exists to catch. guards.yml's own `on:` block
+  # carries no path filter, so this property is preserved.
+  #
+  # Produces status check: "required-check-skip-guard / check-skip-vectors"
+  # (unchanged -- the calling job id `required-check-skip-guard` and the
+  # `uses:` target are both identical to the original file).
+  #
+  # REQUIRED context (dev branch, .github/required-checks.yaml) -- carries NO
+  # job-level `if:` (OMN-16260, see call-reject-skip-token's comment above
+  # for why: vector-3, an ungated caller `if:` means the composed context is
+  # never even created when it evaluates false, worse than a plain skip). The
+  # reusable workflow it calls is the canonical, widely-used skip-vector
+  # guard used org-wide and already handles arbitrary pull_request/merge_group
+  # event shapes.
+  # ===========================================================================
+  required-check-skip-guard:
+    uses: OmniNode-ai/omniclaude/.github/workflows/required-check-skip-guard-reusable.yml@dev
+
+  # ===========================================================================
+  # From stale-todo-gate.yml (OMN-5688).
+  #
+  # REQUIRED context (main branch, .github/required-checks.yaml) -- carries
+  # NO job-level `if:` (OMN-16260, see call-reject-skip-token's comment above
+  # for why). Safe unconditionally: the step's own `BASE_REF` resolution
+  # (`github.base_ref || 'main'`) and graceful LINEAR_API_KEY-unset skip
+  # already make this job a safe no-op for any event/branch it wasn't
+  # previously scoped to.
+  # ===========================================================================
+  stale-todo-gate:
+    name: Stale TODO Gate
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check for stale TODOs in changed files
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # --- Graceful degradation ---
+          if [ -z "${LINEAR_API_KEY:-}" ]; then
+            echo "::warning::LINEAR_API_KEY not set -- stale-TODO gate skipped"
+            exit 0
+          fi
+
+          # --- Collect changed .py files ---
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          CHANGED_FILES=$(git diff --name-only "origin/${BASE_REF}...HEAD" -- '*.py' || true)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No Python files changed -- nothing to check."
+            exit 0
+          fi
+
+          # --- Extract unique OMN-XXXX ticket IDs from TODO comments ---
+          TICKET_IDS=""
+          while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            # Match TODO(OMN-1234), FIXME(OMN-1234), HACK(OMN-1234) in comments
+            IDS=$(grep -oE '#.*\b(TODO|FIXME|HACK)\(OMN-[0-9]+\)' "$file" 2>/dev/null \
+              | grep -oE 'OMN-[0-9]+' || true)
+            if [ -n "$IDS" ]; then
+              TICKET_IDS="$TICKET_IDS"$'\n'"$IDS"
+            fi
+          done <<< "$CHANGED_FILES"
+
+          UNIQUE_IDS=$(echo "$TICKET_IDS" | sort -u | grep -v '^$' || true)
+          if [ -z "$UNIQUE_IDS" ]; then
+            echo "No TODO ticket references found in changed files -- clean."
+            exit 0
+          fi
+
+          echo "Found ticket references: $(echo "$UNIQUE_IDS" | tr '\n' ' ')"
+
+          # --- Query Linear for ticket states ---
+          # Build a filter query to batch-check all ticket IDs
+          STALE_TICKETS=""
+          STALE_COUNT=0
+
+          while IFS= read -r TICKET_ID; do
+            [ -z "$TICKET_ID" ] && continue
+
+            # Validate format
+            if ! echo "$TICKET_ID" | grep -qE '^OMN-[0-9]+$'; then
+              continue
+            fi
+
+            RESPONSE=$(curl -s --max-time 15 -X POST https://api.linear.app/graphql \
+              -H "Authorization: $LINEAR_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\": \"{ issue(id: \\\"$TICKET_ID\\\") { identifier title state { name type } } }\"}" \
+              2>&1)
+
+            STATE_TYPE=$(echo "$RESPONSE" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          issue = data.get('data', {}).get('issue')
+          if issue:
+              print(issue.get('state', {}).get('type', ''))
+          else:
+              print('NOT_FOUND')
+          " 2>/dev/null || echo "UNKNOWN")
+
+            STATE_NAME=$(echo "$RESPONSE" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          issue = data.get('data', {}).get('issue')
+          if issue:
+              print(issue.get('state', {}).get('name', ''))
+          else:
+              print('')
+          " 2>/dev/null || echo "")
+
+            TITLE=$(echo "$RESPONSE" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          issue = data.get('data', {}).get('issue')
+          if issue:
+              print(issue.get('title', ''))
+          else:
+              print('')
+          " 2>/dev/null || echo "")
+
+            # Terminal states: COMPLETED or CANCELED (using Linear's state type field)
+            if echo "$STATE_TYPE" | grep -qiE '^(completed|canceled|cancelled)$'; then
+              STALE_COUNT=$((STALE_COUNT + 1))
+              STALE_TICKETS="${STALE_TICKETS}  - ${TICKET_ID} (${STATE_NAME}): ${TITLE}"$'\n'
+
+              # Find which files reference this ticket
+              while IFS= read -r file; do
+                [ -f "$file" ] || continue
+                LOCATIONS=$(grep -n "TODO.*${TICKET_ID}\|FIXME.*${TICKET_ID}\|HACK.*${TICKET_ID}" "$file" 2>/dev/null || true)
+                if [ -n "$LOCATIONS" ]; then
+                  while IFS= read -r loc; do
+                    STALE_TICKETS="${STALE_TICKETS}    ${file}:${loc}"$'\n'
+                  done <<< "$LOCATIONS"
+                fi
+              done <<< "$CHANGED_FILES"
+            fi
+          done <<< "$UNIQUE_IDS"
+
+          if [ "$STALE_COUNT" -gt 0 ]; then
+            echo ""
+            echo "::error::Found ${STALE_COUNT} stale TODO(s) referencing closed/canceled tickets:"
+            echo ""
+            echo "$STALE_TICKETS"
+            echo ""
+            echo "These TODOs reference tickets that are already Done or Canceled."
+            echo "Either remove the TODO or create a new ticket for the remaining work."
+            exit 1
+          fi
+
+          echo "All ${UNIQUE_IDS_COUNT:-$(echo "$UNIQUE_IDS" | wc -l | tr -d ' ')} TODO ticket references are active -- clean."

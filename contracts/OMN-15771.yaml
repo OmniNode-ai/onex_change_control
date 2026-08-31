@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15771"
+title: "Resolve migration_inventory.yaml ground truth and reconcile the four drifted migration sets"
+summary: >
+  Platform blocker on the publish-chain critical path. The onex_change_control ci.yml `migration-inventory`
+  job (`uv run check-migration-inventory --repos-root /tmp/repos`) failed on every non-docs-only OCC PR
+  because four migration sets had drifted from the peer repos on disk. The ticket's open question was
+  that the reported count was clone-flaky across runs on the same head, so ground truth was never pinned.
+  This resolves it deterministically: the job clones peer repos with `git clone --depth=1` and no `--branch`,
+  so it reads each peer's DEFAULT branch, which is `dev` for omnibase_infra, omniintelligence and omninode_infra
+  (verified via `gh api repos/OmniNode-ai/<repo> --jq .default_branch`). Ground truth is therefore each
+  peer's `origin/dev` tree, enumerated with `git ls-tree --name-only origin/dev:<dir>` rather than a local
+  working tree, which is what made earlier counts vary. Reconciled against that ref: 7 unlisted omnibase_infra
+  forward migrations (093-099), 1 unlisted omnibase_infra intelligence migration (026_create_code_entities.sql),
+  12 unlisted omninode_infra cloud migrations, and 4 stale omniintelligence listings whose files were
+  deliberately deleted by omniintelligence#819 when code_entities DDL ownership moved to the applied set.
+  Listings are corrected to match reality; no migration file was renamed, moved or deleted by this change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "The OCC boundary inventory matches each peer repo's origin/dev migration tree for all
+      four drifted sets -- every added file is listed and every retired file is delisted."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-inventory-matches-peer-origin-dev-trees"
+    description: >-
+      Falsifiable static assertion over the changed source file, covering both directions of the reconciliation.
+      Positive anchors assert one added entry per drifted set: 093_add_delegation_workflow_state_outbox_columns.sql
+      and 099_create_omninode_internal_live_events.sql (omnibase_infra/docker/migrations/forward, 7 added),
+      026_create_code_entities.sql (omnibase_infra/docker/migrations/intelligence, 1 added), and 20260814_tenants_acl_state_three_state_reconciliation.sql
+      (omninode_infra/db/migrations, 12 added). Absence assertions cover the retired omniintelligence
+      listings and are written fail-closed per the OMN-15391 Rule D sanctioned form -- the file is read
+      once into a variable, the read is proven by the positive anchors above, and only then is absence
+      asserted with `! ... grep -qF`, so a failed read cannot pass as absence. It goes RED if any added
+      entry is missing or any retired entry reappears. The complementary red->green proof was run locally
+      against a CI-shaped repos-root containing only the peer clones: check-migration-inventory exited
+      1 with 24 ERROR lines on the pre-fix inventory and exited 0 with zero ERROR lines on the fixed inventory.
+      check-migration-conflicts was run against the same root on both inventories and produced byte-identical
+      finding sets (81 each), proving this change is conflict-neutral despite moving 20 files out of the
+      __uninventoried__ boundary.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)" && printf '%s' "$body"
+          | grep -qF '093_add_delegation_workflow_state_outbox_columns.sql' && printf '%s' "$body" | grep
+          -qF '099_create_omninode_internal_live_events.sql' && printf '%s' "$body" | grep -qF '026_create_code_entities.sql'
+          && printf '%s' "$body" | grep -qF '20260814_tenants_acl_state_three_state_reconciliation.sql'
+          && ! printf '%s' "$body" | grep -qF '025_create_code_entities.sql' && ! printf '%s' "$body"
+          | grep -qF '027_code_entity_enrichment_part2.sql'

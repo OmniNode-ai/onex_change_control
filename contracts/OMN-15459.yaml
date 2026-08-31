@@ -1,0 +1,138 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15459
+title: OCC supersession wrong-item rebind — fail-closed S1 distinctness + S2 family binding gate, and
+  append-only repair of the 8 OCC#5534 mis-pairings
+summary: 'Supersession is the repair primitive of the append-only OCC receipt store, and until this ticket
+  it was also a laundering channel: scripts/validation/check_receipt_hardening.py validated a replacement''s
+  schema, hashes and identity and never asked whether the replacement executes the check the superseded
+  item declares — the string check_value did not occur once in that file''s 417 lines on dev. The live
+  instance is onex_change_control#5534 (merged 2026-07-30T01:53:03Z, merge commit 34c8dacc4cab7bf0e48a616fdb9820aefb09434d),
+  which added 8 command.supersede.2552.yaml files against 8 DISTINCT dod_evidence items, every one carrying
+  a byte-identical replacement.check_value — one grep of scripts/create_kafka_topics.py for def _build_specs.
+  So dod-occ-evidence-admissibility-validator, whose declared bar is uv run pytest tests/test_evidence_admissibility.py
+  -q, now authoritatively attests that a Kafka-topic script defines a function while the admissibility
+  suite it names goes unrun; dod-deploy-assessment, whose declared bar is a two-probe deploy read, attests
+  the same grep. OCC#5528 did the same with 6 files one PR earlier. This is machine-producer behaviour,
+  not a hand-authoring slip, which is what separates it from the rest of the OMN-15247 laundering family:
+  the grep IS RED-derivable (1 at the fix ref, 0 at the parent), so the falsifiability shelf reads it
+  as a well-formed probe. It is falsifiable — it just falsifies a different item. Every prior gate (the
+  OMN-14505 predicate, lint_contract_check_values, contract_compliance_check) reasons about a check in
+  isolation; nothing reasoned about the item-to-replacement pairing. The fix lands in onex_change_control#5621
+  as two fail-closed rules inside the gate that already owns the supersession leg (single owner; scripts/
+  is DEFAULT-DENY for new scripts per OMN-14475): S1 distinctness — two supersessions in one cohort (same
+  ticket directory, same .supersede.<TOKEN>. suffix) against DIFFERENT evidence items may not carry a
+  byte-identical replacement.check_value; S2 family binding — a replacement must reference an anchor the
+  superseded item''s OWN contract entry declares (a path, symbol, test target or PR number), a pr-<N>
+  fragment of the item id, or the item id itself. Both were proven RED against the real merged bytes before
+  the repair, not against a fixture: the 8 files at 34c8dacc produce exactly 16 violations (S1 and S2
+  on each) and OCC#5528''s 6 produce 11 (S1 on all six, S2 on five — dod-deploy-assessment names its own
+  artifact in that cohort, so the claim is stated per rule rather than blanket). The 8 mis-pairings are
+  repaired append-only: 8 net-new command.supersede.15459.yaml records, zero merged bytes edited, zero
+  deletions. A cure is deliberately hard to fake — it must chain supersedes: to the mis-paired RECORD
+  (ModelReceiptSupersession is extra=forbid, so a bespoke corrects: key would invalidate the record),
+  carry a HIGHER .supersede.<NNNN>. token than its target (omnibase_core.validation.validator_receipt_supersession
+  resolves the active receipt as the max token, so a lower-numbered repair is cosmetic), and be itself
+  clean under S1 and S2. Enforcement ships in the same PR per CLAUDE.md rule 5: the existing required-path
+  check-receipt-hardening pre-commit hook now evaluates supersessions, plus a new UNCONDITIONAL supersession-binding-ratchet
+  CI job carrying a frozen shrink-only corpus baseline (.onex_ratchets/omn_15459_supersession_binding_baseline.yaml,
+  1,515 entries — 84% of the merged supersession corpus fails at least one rule, which is itself the finding),
+  a 20-test RED/GREEN module, a --check-supersession-wiring anti-removal anchor that is also a pre-commit
+  hook scoped to ci.yml, and a strict success-only check in ci-summary so skipped/cancelled/failure all
+  block. This contract is authored by the independent adversarial verifier for the lane, NOT by the implementer
+  (feedback_no_self_authored_evidence); every check below was executed with a RED control before landing.
+  Two residuals are recorded rather than papered over: acceptance criterion (d), producer-side refusal
+  in handler_occ_companion_compute.py, is NOT closed by #5621 — that file was concurrently owned by the
+  OMN-15485 lane — and OCC#5528''s 6 files plus the OMN-15395 .supersede.2546/.2550/.2554 cohorts (20
+  entries) are detected but not repaired, carried as shrink-only baseline debt.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: 'OCC PR CI checks green'
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn-15459-wrong-item-rebind-real-at-occ5534
+    description: 'The defect this ticket exists for is real in MERGED dev bytes, not inferred. Read at
+      the immutable merge commit 34c8dacc4cab7bf0e48a616fdb9820aefb09434d (OCC#5534, a squash on dev —
+      a durable ref, deliberately NOT the deleted feature-branch head 05e105cf that the mis-paired records
+      themselves pin and that reference_never_pin_a_feature_branch_head forbids), the supersession for
+      dod-occ-evidence-admissibility-validator rebinds that item to a grep of scripts/create_kafka_topics.py.
+      That item''s own declared bar is uv run pytest tests/test_evidence_admissibility.py -q, so the replacement
+      names a file from an entirely different artifact family. Falsifiable: asserting the repaired family
+      anchor (test_evidence_admissibility.py) against these same merged bytes exits 1 — executed as a
+      RED control — which is precisely the discrimination S2 adds.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "gh api 'repos/OmniNode-ai/onex_change_control/contents/drift/dod_receipts/OMN-15395/dod-occ-evidence-admissibility-validator/command.supersede.2552.yaml?ref=34c8dacc4cab7bf0e48a616fdb9820aefb09434d'
+          --jq '.content' | base64 -d | grep -cF 'create_kafka_topics.py' | grep -qx 1"
+  - id: dod-omn-15459-s1-s2-rules-shipped-pr-5621
+    description: 'onex_change_control#5621 actually introduces both rules into the gate, rather than only
+      describing them. Asserted against the PR''s own diff hunks for scripts/validation/check_receipt_hardening.py:
+      exactly two ADDED lines declare the rule constants DISTINCTNESS = "S1" and FAMILY_BINDING = "S2".
+      Reading the ADDED lines (the ^+ anchor) is what makes this a proof of introduction rather than of
+      mere presence — the same two constants sitting unchanged in the file would not match. Falsifiable:
+      asserting any count other than 2 exits non-zero, executed as a RED control at 3. Bound to the PR
+      diff API rather than to a commit SHA on the feature branch, so the check stays executable after
+      the branch is updated or deleted.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/5621/files --paginate --jq '[.[]
+          | select(.filename == \"scripts/validation/check_receipt_hardening.py\") | .patch] | join(\"\")'
+          | grep -cE '^\\+.*(DISTINCTNESS = \"S1\"|FAMILY_BINDING = \"S2\")' | grep -qx 2"
+  - id: dod-omn-15459-repair-is-append-only-pr-5621
+    description: 'The repair of the 8 mis-pairings is append-only in the strong sense the OCC store requires:
+      exactly 8 files named command.supersede.15459.yaml appear in #5621''s diff, every one with GitHub
+      status "added" and deletions == 0. An in-place edit of a merged immutable receipt — the OMN-15485
+      failure class — would surface as status "modified" and drop the count below 8, so this check discriminates
+      a genuine append from a rewrite. Falsifiable: asserting 9 exits non-zero, executed as a RED control.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/5621/files --paginate --jq '[.[]
+          | select(.filename | endswith(\"/command.supersede.15459.yaml\")) | select(.status == \"added\")
+          | select(.deletions == 0)] | length' | grep -cxF '8' | grep -qx 1"
+  - id: "occ-self-bind-pr-5621"
+    description: 'Self-bind: OCC PR 5621 is the carrier for this ticket''s gate and repair, proven by
+      its own file list containing scripts/validation/check_receipt_hardening.py — the single file this
+      ticket names as the owner of the supersession leg. Deliberately does NOT assert .state == "OPEN":
+      per OMN-15386 that predicate is permanently false after merge and produces a non-convergent rebind
+      loop. It also does not assert the presence of contracts/OMN-15459.yaml, because #5621 does not carry
+      that file — this companion does, which is the whole point of the implementer not authoring its own
+      evidence.'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "gh pr view 5621 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'scripts/validation/check_receipt_hardening.py' | grep -qx 1"
+  - id: "occ-self-bind-pr-5633"
+    description: 'Self-bind: OCC PR 5633 is this companion itself — the contract-and-receipt carrier that
+      #5621 cannot author for itself without authoring its own evidence. `occ-preflight / eligibility`
+      requires a PASS receipt binding every cited ticket to the PR under evaluation, and #5633 is a second
+      PR citing OMN-15459, so it needs its own binding item; without it eligibility returns reason=pr_ticket_mismatch,
+      which was observed live on this PR before this entry was added. Bound to the file this companion
+      exists to deliver. Deliberately does NOT assert .state == "OPEN" (OMN-15386: permanently false after
+      merge, non-convergent rebind loop).'
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "gh pr view 5633 --repo OmniNode-ai/onex_change_control --json files --jq '.files[].path'
+          | grep -cxF 'contracts/OMN-15459.yaml' | grep -qx 1"
+  - id: "occ-self-bind-pr-5650"
+    description: "Binds OMN-15459 to OCC companion PR #5650 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5650 --repo OmniNode-ai/onex_change_control --json number,state"

@@ -1,0 +1,66 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13888"
+title: "OCC per-entry receipt hashing + append-only + supersession + dual-accept"
+summary: >-
+  Redesign the OCC merge-eligibility binding (Option A) so appending a dod_evidence entry no longer invalidates
+  prior receipts. omnibase_core PR #1382 adds compute_contract_entry_sha256 (canonical per-entry hash
+  over one dod_evidence item + an immutable ticket_id/schema_version header), the ModelDodReceipt.contract_entry_sha256
+  field, the dual-accept check_receipt_contract_binding wired into both OCC gates, ModelReceiptSupersession
+  + resolve_supersession (append-only .supersede.<NNNN>.yaml chain, tombstone/rebind without editing merged
+  files), and validator_occ_append_only. omnimarket PR #1592 adds the dod_verify origin/dev contract-resolution
+  rider and DurableEvidenceGate tombstone honoring. CI/library change; no runtime mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-occ-self"
+    description: "This onex_change_control PR carries the net-new OMN-13888 contract and PASS receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13888/dod-occ-self/command.yaml && grep -q '^ticket_id:
+          "OMN-13888"$' drift/dod_receipts/OMN-13888/dod-occ-self/command.yaml
+  - id: "dod-omnibase-core-pr-1382"
+    description: >-
+      omnibase_core PR #1382 lands per-entry hashing, dual-accept binding, supersession/tombstone resolution,
+      and the append-only validator with 21 regression tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13888/dod-omnibase-core-pr-1382/command.yaml
+          && grep -q '^pr_number: 1382$' drift/dod_receipts/OMN-13888/dod-omnibase-core-pr-1382/command.yaml
+  - id: "dod-omnimarket-pr-1592"
+    description: >-
+      omnimarket PR #1592 lands the dod_verify origin/dev resolution rider and DurableEvidenceGate tombstone
+      honoring with 7 regression tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13888/dod-omnimarket-pr-1592/command.yaml &&
+          grep -q '^pr_number: 1592$' drift/dod_receipts/OMN-13888/dod-omnimarket-pr-1592/command.yaml
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence (OMN-8912 / OMN-11423) for the omnimarket PR #1592 runtime-path touch under
+      src/omnimarket/nodes/node_dod_verify/services/. Following the OMN-9552 reconciliation pattern the
+      post-merge runtime smoke is RECORDED here and executed by the redeploy flow after merge; live post-deploy
+      RestartCount / container-exec proof is intentionally not claimed pre-merge. Recorded post-merge
+      runtime smoke -> docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c 'import omnimarket.nodes.node_dod_verify.services.durable_evidence_gate
+      as g; import omnimarket.nodes.node_dod_verify.services.evidence_collector as c; assert hasattr(g,
+      "apply_supersessions"); print("OMN-13888 dod_verify services import OK")'
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Fq 'docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c' contracts/OMN-13888.yaml

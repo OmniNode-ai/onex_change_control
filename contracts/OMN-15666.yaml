@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15666"
+title: "RuntimeDispatch dual-sink terminal durability — primary DLQ then canonical quarantine, no commit
+  on dual failure"
+summary: >
+  OCC contract for OmniNode-ai/omnibase_core PR #1546. Adds the reusable RuntimeDispatch dual-sink terminal-durability
+  primitive: the primary DLQ is attempted exactly once, the canonical quarantine sink only on its failure,
+  and when both fail the source offset is not committed so replay reprocesses the same record. Recomposed
+  only from the merged parents OMN-15667 (54d7bdf7) and OMN-15665 (0ce53d68).
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1546 CI checks green"
+    command: "gh pr checks 1546 --repo OmniNode-ai/omnibase_core"
+  - kind: "tests"
+    description: "Full omnibase_core suite green on the gate host before push"
+    command: "uv run pytest tests/ --ignore=tests/integration"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1546"
+    description: "PR #1546 on OmniNode-ai/omnibase_core — dual-sink terminal durability."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1546 --repo OmniNode-ai/omnibase_core --json number,state,headRefName"
+  - id: "dod-omn-15666-deploy-probe"
+    description: >
+      Falsifiable deploy probe for the runtime paths this PR touches. Reads the SHIPPED bytes of runtime_dual_sink.py
+      at the pinned commit off GitHub and asserts the dual-sink ordering primitive is present. Never reads
+      back a receipt or contract this PR authors, so it can go RED. The producer is BUFFERED into a variable
+      before grep (OMN-15411 Rule E): piping an unbounded producer straight into an early-exit `grep -q`
+      is SIGPIPE-killed at the first match, and `bash -o pipefail` turns that 141 into a false RED.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dual_sink.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'async def resolve_terminal_disposition'
+  - id: "dod-omn-15666-no-commit-on-dual-failure"
+    description: >
+      Falsifiable probe for the load-bearing invariant: RuntimeDispatch.run_once refuses to commit an
+      exhausted record when neither sink became durable. Asserts the shipped runtime_dispatch.py bytes
+      carry the _terminalize commit gate. Buffered producer per OMN-15411 Rule E.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_dispatch.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'async def _terminalize'
+  - id: "dod-omn-15666-dual-sink-suite"
+    description: >
+      Dual-sink golden chain shipped with the change: primary ack, fallback ack, dual failure/no commit,
+      idempotent replay, and the cross-boundary RuntimeDispatch join. Buffered producer per OMN-15411
+      Rule E.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api repos/OmniNode-ai/omnibase_core/contents/tests/unit/runtime/test_runtime_dual_sink_durability.py?ref=2a5b973a882f116968001366a84ec50a3a2c792a
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'class TestRuntimeDispatchDualSinkJoin'
+  - id: "occ-self-bind-pr-6043"
+    description: >
+      Binds OMN-15666 to this OCC companion PR #6043 so occ-preflight can resolve a PASS receipt bound
+      to this PR (pr_ticket_mismatch otherwise). Same self-bind entry the autobind producer emits on every
+      companion.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6043 --repo OmniNode-ai/onex_change_control --json number,state"

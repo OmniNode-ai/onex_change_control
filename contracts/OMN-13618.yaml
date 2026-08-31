@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13618"
+title: "WS-C Phase 4.2: Route deployer.py/deploy/ to node_redeploy_orchestrator + deploy effect; delete
+  bespoke SCP/SSH + hardcoded 192.168.86.201/jonah"
+summary: >
+  Wave-1 of the SEA -> canonical migration (epic OMN-13604, TRANSFORM->PROVE->DELETE). Routes the SEA
+  remote-deploy capability to the canonical gated deploy path that already exists and is runtime-proven
+  in omnimarket -- node_redeploy_orchestrator (ORCHESTRATOR) + node_redeploy_deploy_effect (EFFECT) --
+  and DELETES the bespoke SEA deploy modules after parity (no shim). The canonical deploy effect publishes
+  an HMAC-signed rebuild command over the bus to the external deploy agent, monitors completion by correlation_id,
+  and rolls back on failed post-deploy health; it never opens SSH/SCP, never calls rpk, and has no subprocess.
+  SEA src/pipeline/deployer.py (bespoke deploy client) and src/deploy/ (contract_deployer.py raw-KafkaProducer
+  registration + mcp_client.py raw-httpx MCP client; the only remaining hardcoded 192.168.86.201 default
+  lived in contract_deployer.py line 132) are deleted, along with the unit/integration tests bound to
+  them. The proof_of_life integration tests are rewired so the deploy step routes through the gated node
+  command path (emit DEPLOYMENT_REQUESTED_TOPIC, record DEPLOYMENT_COMPLETED_TOPIC) with no bespoke client
+  and no hardcoded target; the deployment-request topic constant moves to its canonical SEA home src/pipeline/topics.py.
+  After cleanup, the SEA deploy surface has zero hardcoded 192.168.86.201 and zero hardcoded jonah username,
+  and the canonical aislop_sweep prohibited-patterns check (hardcoded IP / path / username) is clean scoped
+  to the SEA repo. ROUTE-only: this ticket does NOT itself perform a prod promotion (prod promotion stays
+  owner-gated per OMN-13418). No new omnimarket source: the canonical redeploy nodes already exist and
+  are proven. No topic schema, envelope, or contract-API change; no Postgres migration; no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      SEA full unit suite 1263 passed / 1 skipped; mypy --strict clean (156 source files); ruff check
+      + format clean; integration tests collect 10 (no dangling import to the deleted deployer.py / deploy/).
+      aislop_sweep prohibited-patterns scoped to onex-self-extending-agent = clean (findings: []). Canonical
+      parity proven by the pre-existing omnimarket redeploy node suite (golden chain + FSM + rollback
+      + prod-promotion-gate + input boundary).
+    command: "uv run pytest tests/unit -q; uv run mypy src/ --strict; uv run pytest tests/integration
+      --collect-only -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-sea-pr"
+    description: >
+      onex-self-extending-agent PR DELETES src/pipeline/deployer.py + src/deploy/ (contract_deployer.py
+      + mcp_client.py) and their unit/integration tests (test_deployer.py, test_contract_deployer.py,
+      test_mcp_client.py, test_mcp_remote_invocation.py, test_deployer_import) with no shim, after canonical
+      parity. Adds DEPLOYMENT_REQUESTED_TOPIC to src/pipeline/topics.py and rewires the proof_of_life
+      integration tests to route the deploy step through the gated node command path. Zero hardcoded 192.168.86.201
+      / jonah in the SEA deploy surface; aislop_sweep prohibited-patterns clean. mypy --strict + full
+      unit suite green. Evidence anchor: SEA head commit dfc10251fc60a849c5fb8bfd6cb721b944e9ef6b.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13618/dod-sea-pr/command.yaml &&
+          grep -q 'passed' drift/dod_receipts/OMN-13618/dod-sea-pr/command.yaml"
+  - id: "dod-canonical-parity"
+    description: >
+      Canonical parity: the SEA remote-deploy capability is owned by the existing, runtime-proven omnimarket
+      gated deploy path -- node_redeploy_orchestrator (prod-promotion gate runs BEFORE any deploy effect)
+      + node_redeploy_deploy_effect (HMAC-signed rebuild command over the bus -> external deploy agent
+      -> monitor -> rollback; no SSH/rpk/subprocess). Proven by the omnimarket redeploy node test suite
+      (test_golden_chain_redeploy, test_golden_chain_redeploy_orchestrator, test_redeploy_lane_fsm, test_redeploy_rollback,
+      test_redeploy_prod_promotion_gate, test_redeploy_prod_promotion_grant, test_redeploy_input_boundary).
+      Evidence anchor: omnimarket dev HEAD c05720bd3ddcd449642757e0ebf01df5e2fec176 (redeploy nodes present
+      on dev).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13618/dod-canonical-parity/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: SEA-only file deletion + test rewiring routing deploy to the existing canonical
+      gated node path. No new omnimarket source; no change to existing topic schema / envelope / contract-API;
+      no Postgres migration; no live-lane mutation; no prod promotion performed (prod stays owner-gated
+      per OMN-13418).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13618/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      The OCC receipt PR carries this OMN-13618 contract + dod receipts; the self-binding receipt binds
+      to this OCC PR's own number (validator_occ_merge_eligibility).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13618/dod-occ-pr-self/command.yaml"

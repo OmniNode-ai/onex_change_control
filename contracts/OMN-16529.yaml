@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16529"
+title: "Off-box onex delegate never engages the platform Kafka bus — probe authority determination fix"
+summary: >-
+  probe_kafka's AUTHORITATIVE tier (omnibase_infra/src/omnibase_infra/backends/backend_probe.py) compared
+  the caller's dialed bootstrap host string against the broker's advertised listener host. For a Tailscale/MagicDNS-fronted
+  broker (e.g. .201's dev-lane redpanda) dialed by its plain LAN IP, the broker always advertises its
+  MagicDNS hostname back, never the caller's dialed IP — so this check can never pass for an off-box caller
+  no matter how healthy the broker genuinely is (live-reproduced: pinned at HEALTHY, reason "broker mismatch",
+  100% reproducible). Fix: probe_kafka gains an authority_topic param; a live Stable consumer group bound
+  to that topic (matched via the .__t.<topic> scope suffix every derive_consumer_group_id -minted group
+  ID carries) is sufficient for AUTHORITATIVE ahead of the broken broker-identity check — real wiring-truth
+  liveness, works identically on-box or off-box. resolve_default_bus (omnibase_infra/src/omnibase_infra/cli/cli_delegate.py)
+  wires the delegation command topic through as authority_topic. Client-tooling CLI change (onex delegate)
+  — no live deployed server/container is redeployed by this fix; the checks below are content-bound probes
+  against the pushed PR head commit (OMN-14051 hermetic/compute-only shape).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2892-backend-probe"
+    description: >-
+      omnibase_infra PR #2892 head commit 9594830da7a96c98f17927fe443edbffa63c5975 adds probe_kafka's
+      Stage 3a consumer-group-liveness authority check (_has_live_consumer_group) to backend_probe.py.
+      Content-bound probe: reads the omnibase_infra blob at the PR head through the GitHub API, so it
+      executes against a surface this OCC PR does not author, and it is falsifiable.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/backends/backend_probe.py?ref=9594830da7a96c98f17927fe443edbffa63c5975'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'def _has_live_consumer_group'
+  - id: "dod-omnibase-infra-pr-2892-cli-delegate"
+    description: >-
+      Same PR head commit wires resolve_default_bus (cli_delegate.py) to pass SUFFIX_DELEGATION_REQUEST
+      through to probe_kafka as authority_topic. Content-bound probe, same falsifiability shape as above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=9594830da7a96c98f17927fe443edbffa63c5975'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'authority_topic=SUFFIX_DELEGATION_REQUEST'
+  - id: "dod-omnibase-infra-pr-2892-tests"
+    description: >-
+      Same PR head commit's regression test suite (test_backend_probe.py) exercises the new authority_topic
+      precedence, including the exact live off-box symptom (broker-mismatch reason text) upgraded to AUTHORITATIVE
+      via consumer-group liveness. Content-bound probe against the pushed test file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/backends/test_backend_probe.py?ref=9594830da7a96c98f17927fe443edbffa63c5975'
+          --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'test_offbox_broker_mismatch_with_live_consumer_group_is_authoritative'
+  - id: "occ-self-bind-pr-7095"
+    description: "Binds OMN-16529 to onex_change_control PR #7095 (self-bind for this OCC companion)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7095 --repo OmniNode-ai/onex_change_control --json number,state"

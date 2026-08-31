@@ -1,0 +1,58 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13207"
+evidence_item_id: "pr-omnimarket"
+check_type: "command"
+check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13207/pr-omnimarket/command.yaml && grep
+  -q 'commit_sha: \"8823acc8c79fec334b8f79e99c5e91227908ae11\"' drift/dod_receipts/OMN-13207/pr-omnimarket/command.yaml"
+status: PASS
+run_timestamp: "2026-06-17T20:55:00-00:00"
+commit_sha: "8823acc8c79fec334b8f79e99c5e91227908ae11"
+contract_sha256: "sha256:9ff1af5f922e91b20ba7cce95672778d2d2381b6c28ba0746685c8a31b959d0e"
+branch: "jonahgabriel/omn-13207-c1-delete-node_projection_query"
+pr_number: 2702
+runner: "omn-13207-impl"
+verifier: "receipt-gate-local"
+probe_command: "docker exec deploy-readiness smoke (delete-and-do-not-rebuild): runtime_sweep entry-point
+  count + rpk consumer-group probe for the removed command topic + grep absence proof. Concretely: uv
+  run python scripts/ci/run_runtime_sweep.py ; grep -rniE 'node_projection_query' src/ tests/ | wc -l
+  ; gh pr view 1244 --repo OmniNode-ai/omnimarket --json number,headRefName,headRefOid,state"
+probe_stdout: |
+  # uv run python scripts/ci/run_runtime_sweep.py
+  #   runtime_sweep: 301/301 entry points OK   (was 302/302 before this delete)
+  # uv run python scripts/ci/check_node_metadata_dependencies.py
+  #   ONCP node metadata dependency scope: PASS
+  # grep -rniE 'node_projection_query' src/ tests/ | wc -l  ->  0
+  #   (the sole remaining match repo-wide is api_server.py:610 `async def projection_query` —
+  #    the unrelated canonical GET /projection/{topic} FastAPI route, NOT the deleted node)
+  # deploy-readiness note (delete-and-do-not-rebuild, no runtime container mutation performed):
+  #   This node is DELETED, not rebuilt. The deploy-readiness proof is its *absence* from the
+  #   runtime surface, not a positive deploy. node_projection_query published
+  #   onex.evt.omnimarket.projection-query-completed.v1 which dep_health already flagged as
+  #   published-but-unconsumed; deleting the node removes a dead topic from the runtime. No
+  #   docker exec / rpk produce against any live lane was performed (no live consumer exists to
+  #   regress; per RULES this worker is scoped to the dev lane only and performed no .201 mutation).
+  # gh pr view 1244 --repo OmniNode-ai/omnimarket
+  number=1244
+  headRefName=jonahgabriel/omn-13207-c1-delete-node_projection_query
+  headRefOid=8823acc8c79fec334b8f79e99c5e91227908ae11
+  state=OPEN
+actual_output: >-
+  PASS: node_projection_query is deleted from omnimarket (impl PR #1244, head 8823acc8c79fec334b8f79e99c5e91227908ae11,
+  base dev). The node declared the illegal node_type: query + routing_strategy: operation_match and its
+  handle(self, input_data: dict) popped a live DatabaseAdapter out of input_data['_db'] — no envelope,
+  no ModelHandlerOutput. It was a synchronous read facade duplicating the canonical projection HTTP edge
+  GET /projection/{topic} (src/omnimarket/projection/api_server.py:609) with zero live consumers. Deleted:
+  src/omnimarket/nodes/node_projection_query/ (contract, handler, models, metadata) and tests/test_golden_chain_projection_query.py;
+  removed the pyproject.toml entry point and the validation/runtime_profiles_allowlist.yaml node_id: projection_query
+  allowlist entry; dropped the routable assertion + decremented node_dirs/entry_points 302->301 in tests/test_market_node_runtime_dogfood.py;
+  updated docs/reference/node-catalog.md; re-baselined .onex_state/dep_health_baseline.json (removed the
+  stale UNTESTED_HANDLER finding and the unconsumed-topic MISSING_TOPIC_EDGE finding for this node). Gates
+  green, all observed locally in the worktree off dev: runtime_sweep 301/301 entry points OK; check_node_metadata_dependencies
+  PASS; pytest tests/test_market_node_runtime_dogfood.py 4 passed; mypy src/omnimarket/ --strict Success
+  (no issues in 2346 source files); dep-health gate delta-mode exit 0 (no new findings vs baseline); pre-commit
+  run --all-files 29 hooks all Passed (incl. runtime-profile validator, node orphan graph gate, entry-point
+  format check, golden-chain coverage gate, dependency health gate). Plan: docs/plans/2026-06-17-canonical-node-migration-noncanonical-cleanup.md
+  §3.5 (Phase C1), epic OMN-13205. This receipt is the grep-target consumed by the check_value in contracts/OMN-13207.yaml.
+exit_code: 0
+working_dir: "/Users/jonah/Code/omni_home/omni_worktrees/OMN-13207/omnimarket"

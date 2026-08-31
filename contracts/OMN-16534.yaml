@@ -1,0 +1,96 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16534"
+title: "OCC companion for OmniNode-ai/omninode_infra#991 (OMN-16534)"
+summary: >
+  deploy-onex-staging.yml was failing every apply with "spec.template.spec.containers[0].env[11].valueFrom:
+  Invalid value: \"\": may not be specified when value is not empty". Forensics: PR #947 (OMN-16205) migrated
+  omniweb's AUTH_URL env var from a literal to a configMapKeyRef valueFrom; the prior SSA apply (field
+  manager "kubectl") still owned a live literal .value on that entry, and --force-conflicts does not implicitly
+  clear a field the new manifest never mentions — the merged object carried both value and valueFrom and
+  the apiserver rejected it. This is the OMN-14938 failure class in the mirror direction the v2 guard
+  (added in #931) does not check. omninode_infra#991 adds the mirror predicate to the same guard step.
+  Live remediation (a targeted kubectl JSON patch removing the stale literal) was applied directly to
+  the dev cluster ahead of this PR and proven with a real green deploy-onex-staging.yml dispatch (run
+  32862749407, apply step confirmed).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #991 CI checks green"
+    command: "gh pr checks 991 --repo OmniNode-ai/omninode_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omninode_infra-pr-991"
+    description: "PR #991 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=1523f2640b08f0b02a71762609dfa261805fd5b7' --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'VALUEFROM_TYPED_JQ'
+  - id: "dod-OmniNode-ai-omninode_infra-pr-991"
+    description: "PR #991 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 991 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-991-ci"
+    description: "PR #991 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 991 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-7102"
+    description: "OCC companion PR #7102 — self-bind for OMN-16534 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7102 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7103"
+    description: >-
+      OCC self-binding receipt for PR #7103, the in-repo evidence PR carrying this contract. Binds OMN-16534
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7103 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "occ-self-bind-pr-7105"
+    description: "Binds OMN-16534 to OCC companion PR #7105 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7105 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-7103"
+    description: "PR #7103 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7103 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: omn16916-infra991-valuefrom-hs
+    description: >-
+      Append-only re-assertion of dod-omninode_infra-pr-991 under OMN-16916 AC3 (SIGPIPE corpus remediation).
+      The asserted CONTENT is unchanged and still holds -- same VALUEFROM_TYPED_JQ needle read from the
+      same pinned deploy-onex-staging.yml at ref 1523f2640b08f0b02a71762609dfa261805fd5b7 through the
+      same GitHub contents API. What was wrong was the SHELL FORM: the compliance runner executes check_values
+      under bash -o pipefail -c, and the printf '%s' "$body" | grep -qF idiom is a latent exit 141 --
+      grep -q exits on its first match and closes the pipe, killing printf with SIGPIPE, and pipefail
+      surfaces that as 141 even though every assertion actually passed. Measured directly this session:
+      10/10 bash -o pipefail -c runs on the original item's exact bytes exit 141, deterministic for this
+      instance. The merged item and its merged receipt are left byte-untouched per this repo's append-only
+      evidence discipline; this item re-states the identical assertion with here-string redirection (grep
+      -qF '...' <<< "$body"), which has no pipe stage and so cannot be SIGPIPE'd regardless of size or
+      match position. Confirmed deterministically safe: 5/5 runs exit 0 under bash -o pipefail -c.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=1523f2640b08f0b02a71762609dfa261805fd5b7' --jq .content | base64 -d)" && grep -qF 'VALUEFROM_TYPED_JQ' <<< "$body"
+    evidence_artifact: supersedes_dod_evidence:dod-omninode_infra-pr-991

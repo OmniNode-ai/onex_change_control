@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13143"
+title: "omnimarket _load_bifrost_endpoints() silently returns {} on contract load failure — fail loud
+  (Rule-8 residue)"
+summary: >-
+  _load_bifrost_endpoints() in the delegation-routing reducer swallowed contract/overlay load failures
+  (except (FileNotFoundError, ValueError, yaml.YAMLError): return {}) so a misconfigured or missing bifrost
+  contract silently yielded zero backends, degraded the router to tier-only routing, and froze the empty
+  result for the process lifetime via @lru_cache — a silent wrong-default of exactly the class CLAUDE.md
+  Rule 8 exists to prevent. Folded into omnimarket PR #1215 (branch jonah/omn-13140-cloud-escalation,
+  base=dev, head 3d507076965b94c185846a0c2e19cec9f5c200fb) because it touches the same file as OMN-13140
+  GATE 3. The fix replaces the silent return {} with fail-loud behavior: emit structured evidence (bifrost_endpoint_load_failed
+  / bifrost_no_usable_endpoints) and re-raise ProtocolConfigurationError, distinguishing "no override
+  configured -> packaged default" (legitimate; loader still loads the packaged default) from "configured-but-unloadable
+  / zero usable endpoints" (must fail). A failing-first test asserts a missing/invalid contract raises
+  (not silent {}) and that structured evidence is logged on failure. Scope kept narrow per the ticket:
+  loader fallback semantics only; no runtime restart / re-probe work folded in.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-failloud-loader"
+    description: >-
+      omnimarket PR #1215 (head 3d507076965b94c185846a0c2e19cec9f5c200fb) replaces the silent `except
+      (FileNotFoundError, ValueError, yaml.YAMLError): return {}` in _load_bifrost_endpoints() with fail-loud
+      behavior: emits structured evidence (bifrost_endpoint_load_failed on load error; bifrost_no_usable_endpoints
+      when the contract parses but declares zero resolvable endpoints) and re-raises ProtocolConfigurationError
+      with a FILESYSTEM error context. A "no override configured" path still loads the packaged default
+      (legitimate, not an error). Failing-first tests in test_cloud_escalation_omn13140.py assert: missing
+      contract path raises ProtocolConfigurationError (not silent {}); invalid YAML raises AND logs the
+      bifrost_endpoint_load_failed structured record; a parses-but-empty-endpoints contract raises. ruff
+      + mypy --strict clean; full suite 7372 passed / 69 skipped.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13143/dod-failloud-loader/command.yaml"
+          && grep -q '^ticket_id: "OMN-13143"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13143/dod-failloud-loader/command.yaml"
+          && grep -q '^pr_number: 1215$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13143/dod-failloud-loader/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13143 contract and the dod-failloud-loader receipt that the
+      omnimarket PR #1215 Receipt-Gate resolves via Evidence-Source: OCC#<pr> (OMN-13143 folded into the
+      same omnimarket PR as OMN-13140).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13143/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13143"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13143/dod-occ-pr/command.yaml"

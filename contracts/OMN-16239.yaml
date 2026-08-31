@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16239"
+title: "OCC evidence for OMN-16239"
+summary: >
+  Manual OCC companion for OmniNode-ai/omnibase_infra PR #2803 (resolve ProjectionTableTarget schema through
+  physical_schema_mapping at SQL emission). ProjectionTableTarget carried the raw contract schema straight
+  into the schema-qualified SQL built by _execute_upsert/_execute_query, while the grant check ran the
+  same declaration through physical_grant_schema_for_table() -- so for every relation still under the
+  OMN-15359 relocation bridge, grant validation passed against the physical schema while the statement
+  that actually executed named the declared one. The fix resolves the physical schema exactly once in
+  _resolve_projection_database_target and feeds both the grant check (threaded in as grant_schema, replacing
+  its own second resolution) and the emitted SQL from that single value. Records a RED-before/GREEN-after
+  differential as two independently falsifiable single-command source probes, each pinned to an immutable
+  git blob: the buggy form present at the merge-base and absent at head, and the fixed form absent at
+  the merge-base and present at head. Hand-authored rather than waiting on the live occ_companion_emitter:
+  the born-path call-occ-autobind run (32228344745) for this PR sat QUEUED for over an hour behind an
+  omnibase_infra backlog that grew 192 -> 247 while queued, so the canonical producer was not converging.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2803"
+    description: "PR #2803 on OmniNode-ai/omnibase_infra — Evidence-Source (hand-authored: this build
+      lane opened the OCC PR directly rather than waiting on the live occ_companion_emitter consumer,
+      per the operator-authorized hand-authored-companion pattern established on occ#6633/occ#6640; the
+      born-path autobind run for this PR was still QUEUED behind a growing 247-run backlog)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2803 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2803-red-before"
+    description: "RED-before half of the differential (OMN-14051 source-presence pattern, pinned to the
+      immutable merge-base blob fa3c706faa4c98ada3c1c05a95776249fff0100c): counts the pre-fix buggy form
+      'INSERT INTO \"{target.schema}\"' in handler_wiring.py, the line that schema-qualified emitted SQL
+      straight from the unmapped contract value. Expected 1 at the merge-base. Falsifiable: if the buggy
+      form were never there, this returns 0 and the receipt is not earned."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api \"repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=fa3c706faa4c98ada3c1c05a95776249fff0100c\"
+          --jq '.content' | base64 -d | grep -c 'INSERT INTO .{target.schema}'"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2803-green-after"
+    description: "GREEN-after half of the differential, pinned to the PR's exact head blob 9356a4e7f1d7705aeff8753715faa3d942018cc2:
+      counts 'target.physical_schema' in handler_wiring.py — the single resolved value both SQL emitters
+      now qualify with. Expected 4, enumerated: the physical_schemas property (:1973), the _execute_upsert
+      INSERT (:2776), the _execute_query SELECT (:2800), and the adapter-selection debug log's target.physical_schemas
+      (:3234, which contains the counted substring). Falsifiable and counter-checked: the identical probe
+      against the merge-base blob returns 0 — the identifier does not exist there at all."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api \"repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=9356a4e7f1d7705aeff8753715faa3d942018cc2\"
+          --jq '.content' | base64 -d | grep -c 'target.physical_schema'"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2803-regr-test"
+    description: "The regression test exists at the PR head and drives the real SQL-emission path: counts
+      the asserted physical-schema INSERT string in the new test_projection_physical_schema_sql_emission_omn16239.py.
+      The test captures statements from a DB-API double rather than mocking the resolution, so the assertion
+      is on emitted SQL. Expected >= 1."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api \"repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_projection_physical_schema_sql_emission_omn16239.py?ref=9356a4e7f1d7705aeff8753715faa3d942018cc2\"
+          --jq '.content' | base64 -d | grep -c 'INSERT INTO .public.\\..delegation_events'"
+  - id: "occ-self-bind-pr-6722"
+    description: "OCC companion PR #6722 — self-bind for OMN-16239: every other entry in this contract
+      binds to omnibase_infra#2803, not this OCC PR, so occ-preflight's merge-eligibility validator (validator_occ_merge_eligibility._receipt_bound_to_pr)
+      needs this entry to find a PASS receipt bound to the OCC PR that carries it (established pattern:
+      occ-self-bind-pr-6633 / occ-self-bind-pr-6640)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6722 --repo OmniNode-ai/onex_change_control --json number,state"

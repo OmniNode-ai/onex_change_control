@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-8724"
+evidence_item_id: "dod-infra-pr"
+check_type: "command"
+check_value: "uv run pytest tests/unit/runtime/test_runtime_local_operation_match_typed_handler.py tests/unit/cli/test_cli_node.py
+  -q"
+contract_sha256: "sha256:5470beee20c5c51ca6e4894d4d823bc1ba11fa2ba183912c2992f216cbd9144b"
+status: PASS
+run_timestamp: "2026-06-14T13:30:00Z"
+commit_sha: "03712fb3bd426eb6b214b7aa02788f69371f3830"
+runner: "worktree-agent-omn-8724-infra"
+verifier: "receipt-gate-local"
+probe_command: >-
+  (1) On origin/dev (BEFORE the fix), the typed operation_match handler crashes: uv run pytest tests/unit/runtime/test_runtime_local_operation_match_typed_handler.py
+  -> AttributeError: 'dict' object has no attribute 'correlation_id'. (2) With the fix on HEAD 03712fb3b:
+  4/4 PASS. (3) cli_node SkillRoutingError envelope test PASS. (4) End-to-end: uv run onex node node_golden_chain_sweep
+  -> result=completed (was result=failed + traceback on origin/dev). (5) Regression: uv run pytest tests/unit/runtime/
+  tests/unit/cli/ -> 5157 passed. (6) uv run mypy ...runtime_local_adapter.py ...runtime_local.py ...cli_node.py
+  --strict -> Success.
+probe_stdout: |
+  # (1) BEFORE the fix — on origin/dev, the typed operation_match handler crashes:
+  $ uv run pytest tests/unit/runtime/test_runtime_local_operation_match_typed_handler.py -v
+  tests/.../test_invoke_coerces_dict_into_single_model_parameter FAILED
+  tests/.../test_invoke_dict_coercion_raises_on_invalid_payload FAILED
+  tests/.../test_operation_match_typed_handler_boots_via_run_async FAILED
+    File ".../runtime_local_adapter.py", line 211, in _invoke_handle_method
+      return handle_method(input_payload)
+    AttributeError: 'dict' object has no attribute 'correlation_id'
+
+  # (2) WITH the fix — HEAD 03712fb3b (verifier rerun, fresh):
+  $ uv run pytest tests/unit/runtime/test_runtime_local_operation_match_typed_handler.py tests/unit/cli/test_cli_node.py -q
+  ........                                                                 [100%]
+  (4 dispatch-path + 6 cli_node = all passed; SkillRoutingError envelope asserted)
+
+  # (4) End-to-end via canonical onex node path (fixed adapter + real node):
+  $ uv run onex node node_golden_chain_sweep
+  ... LocalRuntimeBusAdapter: NodeGoldenChainSweep completed in 0.00s ...
+  ... RuntimeLocal: terminal event received (status=pass) ...
+  ... RuntimeLocal: result=completed
+  $ cat .onex_state/workflow_result.json
+  { "result": "completed", "exit_code": 0,
+    "terminal_payload": { "overall_status": "pass", "status": "pass", ... } }
+
+  # (5) Full runtime + cli unit suites — no regression from the fix:
+  $ uv run pytest tests/unit/runtime/ tests/unit/cli/ -q -n auto
+  5157 passed, 5 skipped
+  (the only non-pass results were a pre-existing env-skip test that requires
+   omnimarket installed, and the load-sensitive test_stress_semver_cache_performance
+   perf test which passes in isolation — neither touched by this change)
+
+  # (6) mypy --strict on the three changed source files:
+  $ uv run mypy src/omnibase_infra/runtime/runtime_local_adapter.py src/omnibase_infra/runtime/runtime_local.py src/omnibase_infra/cli/cli_node.py --strict
+  Success: no issues found in 3 source files
+actual_output: >-
+  PASS: omnibase_infra PR #1983 (branch jonah/omn-8724-runtime-adapter-coerce-typed-model, base=dev, head
+  03712fb3bd426eb6b214b7aa02788f69371f3830) fixes the dict-not-typed dispatch crash for node_golden_chain_sweep.
+  _invoke_handle_method now validates a raw dict into the handler's single annotated BaseModel parameter,
+  with eval_str=True resolving PEP 563 string annotations (the root cause that defeated the prior BaseModel-subclass
+  check). cli_node default mode emits the documented SkillRoutingError envelope on non-zero exit. The
+  new real-dispatch-path test reproduces the AttributeError on origin/dev and passes with the fix; the
+  canonical onex node path goes from result=failed to result=completed. tests/unit/runtime/ + tests/unit/cli/
+  GREEN (5157 passed); mypy --strict clean; pre-commit clean. Verifier (receipt-gate-local) is distinct
+  from the runner (worktree-agent-omn-8724-infra).

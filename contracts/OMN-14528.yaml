@@ -1,0 +1,115 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14528"
+title: "fix(OMN-14528): runtime_sweep deadness detector — in-code broker probe + per-contract census"
+summary: >-
+  omnimarket PR #1745 makes node_runtime_sweep's consumer-liveness check a real, fail-closed deadness
+  detector. Before this fix the census was a hand-typed --live-consumer-profiles operator flag that nothing
+  automated ever supplied (always None on the onex skill dispatch path -> silent skip, zero findings),
+  and the check was per-PROFILE, so one live consumer group vouched for every contract sharing its runtime_profile
+  (all 13 known dead contract-declared consumers passed even with a perfect census). The fix: broker_probe.collect_live_consumer_groups
+  collects the census IN CODE via confluent AdminClient.list_consumer_groups counting only LIVE (non-Empty)
+  groups; the CONSUMER_LIVENESS phase checks each subscribing contract's OWN node-name identity against
+  the census (per-contract, anchored on .{node}.consume. via the runtime's normalize_kafka_identifier
+  — a sibling's live group no longer vouches); the census is REQUIRED with scanned_count>0 (None/empty
+  raises, never a silent skip); and _resolve_default_input probes the broker on the skill path (fail closed
+  on missing KAFKA_BOOTSTRAP_SERVERS) so the detector actually runs. Independently verified at PR head
+  a788d8c100e99dd570d1c29ea50e2485eed698b6 (not the implementer's own claim): RED reproduced against the
+  exists-but-wrong pre-fix source, GREEN restored, fail-closed and probe-liveness behaviors exercised
+  with real assertions.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-verify-1745-red-green-reproduced"
+    description: >-
+      RED->GREEN reproduced independently at omnimarket PR #1745 head a788d8c100e99dd570d1c29ea50e2485eed698b6
+      (env -u PYTHONPATH, in the PR-head worktree). GREEN with the fix present: the golden-chain TestRuntimeSweepConsumerLiveness
+      class + the OMN-14528 test module ran 29 passed. Then the FIX SOURCE ONLY was reverted to origin/dev
+      (handler_runtime_sweep.py + __main__.py via git checkout origin/dev; broker_probe.py removed) with
+      the new/modified tests left untouched, and the same corpus went RED against the exists-but-wrong
+      pre-fix code: the OMN-14528 module failed collection with `ModuleNotFoundError: No module named
+      'omnimarket.nodes.node_runtime_sweep.broker_probe'`, and the golden-chain class produced 5 failed
+      with `AttributeError: type object 'EnumSweepCheck' has no attribute 'CONSUMER_LIVENESS'`. Restoring
+      the fix (git checkout HEAD --) returned the corpus to 29 passed. The failures are a real EXISTS-but-WRONG
+      defect (the new symbols/behavior are genuinely absent in the pre-fix code), not vacuous absence
+      — the fix is load-bearing.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14528/dod-verify-1745-red-green-reproduced/command.yaml
+          && grep -q '29 passed' drift/dod_receipts/OMN-14528/dod-verify-1745-red-green-reproduced/command.yaml
+          && grep -q "No module named 'omnimarket.nodes.node_runtime_sweep.broker_probe'" drift/dod_receipts/OMN-14528/dod-verify-1745-red-green-reproduced/command.yaml
+          && grep -q "has no attribute 'CONSUMER_LIVENESS'" drift/dod_receipts/OMN-14528/dod-verify-1745-red-green-reproduced/command.yaml
+  - id: "dod-verify-1745-required-census-fails-closed"
+    description: >-
+      The census is REQUIRED and fails closed, never a silent skip (the exact defect OMN-14528 closes).
+      At PR head a788d8c1, three fail-closed behaviors are covered by passing tests: a None census while
+      required raises (test_census_required_but_none_raises — matches 'census is None'); a zero-live-group
+      census while required raises (test_required_but_empty_census_raises — 'ZERO live consumer groups',
+      scanned_count>0 assertion); and the skill-path resolver raises when KAFKA_BOOTSTRAP_SERVERS is unset
+      (test_resolver_fails_closed_without_broker). The full runtime_sweep surface (golden-chain + OMN-14528
+      + OMN-13919 + integration + import-check) ran 58 passed; the affected-file superset ran 152 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14528/dod-verify-1745-required-census-fails-closed/command.yaml
+          && grep -q '58 passed' drift/dod_receipts/OMN-14528/dod-verify-1745-required-census-fails-closed/command.yaml
+  - id: "dod-verify-1745-broker-probe-per-contract"
+    description: >-
+      The broker probe counts only LIVE groups and the identity check is per-contract. At PR head a788d8c1,
+      passing tests prove: the probe excludes EMPTY/DEAD/UNKNOWN groups from the census (test_empty_and_dead_groups_excluded
+      — an Empty group's mere existence never vouches for its node) and fails closed on broker-level listing
+      errors (test_broker_errors_fail_closed); the per-contract matcher flags a dead corpse even when
+      a LIVE sibling in the same runtime_profile exists (test_dead_corpse_flagged_despite_live_sibling
+      -> CONTRACT_NO_LIVE_CONSUMER) and does not false-match on a prefix collision (test_prefix_collision_does_not_vouch:
+      node_foo is not vouched for by node_foobar); GREEN only when the contract's own node-name is in
+      a live group (test_node_with_own_live_group_passes / test_node_name_case_and_separator_normalized).
+      The skill-path resolver probes the broker and marks the census required (test_resolver_probes_and_requires_census).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14528/dod-verify-1745-broker-probe-per-contract/command.yaml
+          && grep -q 'CONTRACT_NO_LIVE_CONSUMER' drift/dod_receipts/OMN-14528/dod-verify-1745-broker-probe-per-contract/command.yaml
+  - id: "dod-deploy-assessment-head-a788d8c1"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1745 head a788d8c100e99dd570d1c29ea50e2485eed698b6:
+      the diff touches node source + tests + pyproject/metadata/uv.lock only (no docker-compose, Dockerfile,
+      or deploy/ path). It does not register a new service deployment, mutate runtime configuration, perform
+      a deploy or restart, change topics, or add a migration. NOTE: this is a SOURCE change. The runtime
+      behavior change (onex skill runtime_sweep now requires KAFKA_BOOTSTRAP_SERVERS and probes the broker)
+      takes effect when the node is next dispatched with a broker configured; no redeploy is performed
+      by this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          ! (gh pr diff 1745 --repo OmniNode-ai/omnimarket --name-only | grep -qE "docker-compose|Dockerfile|deploy/")
+  - id: "dod-occ-self-4096"
+    description: >-
+      OCC self-binding: this onex_change_control branch (jonah/omn-14528-occ-companion) carries the OMN-14528
+      central contract and the PASS receipts for omnimarket PR #1745. This item binds OMN-14528 to the
+      OCC companion PR #4096 and its initial evidence commit be564353998da11b920d92f9bf938131a5cac5d3
+      so the OCC PR's own occ-preflight eligibility is satisfied before the PR merges. Product-observing
+      evidence for omnimarket#1745 is carried by the other four entries in this contract; this item is
+      binding only. The check confirms the receipt's own structural identity (status/pr_number/commit)
+      rather than any external mutable state.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14528/dod-occ-self-4096/command.yaml && grep
+          -q 'pr_number: 4096' drift/dod_receipts/OMN-14528/dod-occ-self-4096/command.yaml && grep -q
+          'be564353' drift/dod_receipts/OMN-14528/dod-occ-self-4096/command.yaml

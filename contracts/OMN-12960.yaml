@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12960"
+title: "Single envelope-unwrap predicate in core + mandatory real-dispatch fixture / dispatch-surface
+  gate"
+summary: >
+  Generalizes OMN-12940/12946: the transport-envelope unwrap predicate existed as two hand-synced marker-key
+  sets — omnibase_infra.runtime.auto_wiring.handler_wiring._ENVELOPE_MARKER_KEYS and omnimarket.nodes.evidence_pipeline_native._ENVELOPE_MARKER_KEYS.
+  Each was fixed once already and they drifted again: as of this ticket the infra set was missing the
+  "__bindings" marker that the omnimarket set carried, so a dispatch-engine materialized envelope whose
+  only top-level marker was "__bindings" unwrapped on the omnimarket side and silently no-op'd on the
+  infra side — the OMN-12946 defect class re-introduced. Fix collapses both into one authoritative source,
+  omnibase_core.utils.util_envelope_unwrap (ENVELOPE_MARKER_KEYS + unwrap_transport_envelope + is_transport_envelope);
+  both call sites import it and the hand-synced cross-repo consistency test is deleted in favor of the
+  single source. By layering this wire-level concern belongs in omnibase_compat, but the compat pin is
+  policy-frozen, so per the P1.4 plan it lands in omnibase_core (already a runtime dependency of both
+  consumers) with a documented note. Adds the dispatch-surface-test-required validator (omnibase_core.validators.dispatch_surface_test_required)
+  wired as a pre-commit hook and a CI quality-gate dependency: a path-heuristic ratchet that makes a real-dispatch-path
+  test MANDATORY for any change touching dispatch / routing / handler-registration / message-envelope
+  source surfaces, because handler-isolation tests pass while live dispatch fails. No topic schema, envelope
+  wire, or contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-1228"
+    description: >
+      omnibase_core PR #1228 adds src/omnibase_core/utils/util_envelope_unwrap.py (single predicate),
+      src/omnibase_core/validators/dispatch_surface_test_required.py (path-heuristic gate), their unit
+      tests, the pre-commit hook, and the CI quality-gate wiring. Evidence anchor: omnibase_core branch
+      head commit fbe4f60e9. 31 new unit tests pass; mypy --strict clean on both new modules.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12960/dod-omnibase-core-pr-1228/command.yaml
+          && grep -q '^pr_number: 1228$' drift/dod_receipts/OMN-12960/dod-omnibase-core-pr-1228/command.yaml
+          && grep -q 'util_envelope_unwrap' drift/dod_receipts/OMN-12960/dod-omnibase-core-pr-1228/command.yaml"
+  - id: "dod-occ-pr-2471"
+    description: >
+      Self-binding OCC eligibility receipt: onex_change_control PR #2471 carries the OMN-12960 contract
+      and the dod receipts on this branch, satisfying the receipt-to-PR binding required by validator_occ_merge_eligibility
+      (at least one PASS receipt must bind to the OCC PR or one of its commit SHAs).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-12960/dod-occ-pr-2471/command.yaml
+          && grep -q '^pr_number: 2471$' drift/dod_receipts/OMN-12960/dod-occ-pr-2471/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: omnibase_core is a library; this PR adds a pure predicate module, a static validator,
+      a pre-commit hook, and CI workflow wiring. No runtime topology, Kafka topic, envelope wire, or contract
+      API change. The downstream consumer migrations (omnibase_infra handler_wiring and omnimarket evidence_pipeline_native
+      importing the shared predicate) are gated on a core pin bump after this PR merges, and reach live
+      effect only on the standard post-merge stability image rebuild. No live deploy is performed by this
+      PR; no dev/prod mutation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_core/pulls/1228/files --jq '.[].filename' | grep
+          -q 'dispatch_surface_test_required' && echo 'deploy: library + static gate only; consumer pin
+          bump and live effect gated on post-merge stability rebuild; no prod mutation'"

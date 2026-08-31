@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12494"
+title: "Materialize savings_estimates projection from source delegation events"
+summary: >-
+  Close the projection gap: savings_estimates was only materialized from the derived delegate-skill terminal
+  event, leaving the Delegation Savings widget truthfully-empty for the canonical onex.evt.omniclaude.task-delegated.v1
+  stream that drives delegation_events. node_projection_savings now subscribes to that source stream and
+  materializes a savings_estimates row from it. The figures are MEASUREMENTS, not estimates: local = the
+  measured actual cost (OMN-13355), cloud = the pinned premium counterfactual, savings = cloud - local.
+  Idempotent on the (session_id, event_timestamp, model_local, model_cloud_baseline) identity index; replay-deterministic;
+  truthful-empty (no row) when there is no pinned counterfactual. Proven by the omnimarket source-materialization
+  suite (6 passing) including the idempotent-replay and truthful-empty cases.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market-pr-1320-source-materialization"
+    description: >-
+      omnimarket PR #1320: a canonical task-delegated SOURCE event materializes exactly one savings_estimates
+      row with local = measured actual, cloud = counterfactual, savings = cloud - local; replaying the
+      same source event yields exactly one row (idempotent identity index); a source event without a pinned
+      counterfactual writes no row (truthful-empty).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_savings_estimates_from_source_omn12494.py -q"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: savings_estimates already exists (migration 074); OMN-12494 adds a SOURCE-event
+      subscription + materializer, no new migration. The probe greps the node_projection_savings contract
+      and proves the task-delegated source subscription is declared (picked up on the next runtime redeploy).
+      No bespoke endpoint, no env-for-model.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'task-delegated' src/omnimarket/nodes/node_projection_savings/contract.yaml"

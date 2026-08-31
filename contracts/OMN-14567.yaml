@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14567"
+title: "omniclaude status line hangs ~75s on unroutable host probe — bound nc connect timeout with -G"
+summary: >-
+  omniclaude PR #1899 bounds the `nc` connect phase in `plugins/onex/hooks/scripts/statusline.sh`'s `tcp_up()`
+  with `-G 1`. macOS BSD `nc`'s `-w` bounds only the final read, not connection setup, so against an unroutable
+  host (e.g. a 192.168.86.x LAN IP while off-network) `connect()` blocks ~75s on kernel SYN-retransmit
+  and stalls the whole status line past Claude Code's render timeout (blank status line). `-G` is the
+  portable BSD-nc connect timeout and keeps the probe within its 1s budget. Scripts-only change (no src/
+  or runtime-path change), so deploy-gate is deploy-neutral.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr-1899"
+    description: >-
+      Live GitHub verification: omniclaude PR #1899 (head 50fe1e58b8ba153e45ac98abd4e1cada894aa74a) targets
+      dev from branch jonah/omn-14567-statusline-nc-connect-timeout. The diff is a single file — plugins/onex/hooks/scripts/statusline.sh,
+      tcp_up() — changing `nc -z -w 1` to `nc -z -G 1 -w 1` plus a NOTE comment documenting why `-G` is
+      required. No src/ or runtime-path change, so deploy-gate is deploy-neutral. Direct measurement (diagnosis):
+      `nc -z -w 1 192.168.86.201 5436` = 1m15s; `nc -z -G 1 -w 1 192.168.86.201 5436` = 1.02s. Acceptance
+      test (patched script in the PR-branch worktree, 2026-07-13): piped a minimal Claude Code status
+      JSON to statusline.sh with POSTGRES_HOST=VALKEY_HOST=192.0.2.1 (TEST-NET-1, guaranteed unroutable)
+      and KAFKA_BOOTSTRAP_SERVERS=192.0.2.1:19092 — exit 0, wall time 1.70s, exactly 3 lines emitted (pg/rp/vk
+      probes all red within budget). pre-commit run --files on the changed file: exit 0, all applicable
+      hooks passed. The check_value below reads the product code at the PR head SHA and asserts the introduced
+      `-G 1` connect-timeout symbol — it goes RED (grep count 0, exit 1) at dev where the fix is absent.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omniclaude/contents/plugins/onex/hooks/scripts/statusline.sh?ref=50fe1e58b8ba153e45ac98abd4e1cada894aa74a"
+          --jq '.content' | base64 -d | grep -cF -- 'nc -z -G 1 -w 1'
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14567 contract and the PASS
+      receipt consumed by omniclaude PR #1899 via its Evidence-Source line. Self-binds by commit_sha (the
+      contract commit), which is a member of this PR's commit set.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-14567/dod-occ-self/command.yaml"

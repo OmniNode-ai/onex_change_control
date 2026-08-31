@@ -1,0 +1,79 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-12813
+title: "SEA generation output format — force fenced yaml+python blocks + one-shot exemplar, suppress reasoning"
+summary: >
+  Root cause of contract_passed=false / empty generation_events row: the local coder model Qwen3.6-35B-A3B
+  (a reasoning model) returns reasoning prose instead of the required two-fenced-block output. Fix: strengthen
+  the generation system prompt + add two inference-protocol profiles (local-qwen-generation-no-think,
+  local-qwen-generation-exemplar) scoped to task_type=node_generation, wired via apply_inference_protocol
+  in HandlerGenerationConsumer._call_llm. Profiles add a /no_think directive and a one-shot exemplar (valid
+  yaml contract + python handler) to force the output format. Non-Qwen models and non-generation task
+  types are unaffected. Reuses the OMN-12738 inference_protocols machinery. Proven GREEN e2e on stability-test
+  (real contract_passed=true, non-empty contract_yaml + handler_source).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+evidence_requirements:
+  - kind: ci
+    description: >
+      17 new unit tests (test_omn12813_output_format_fix.py) pass; full omnimarket suite green (no regression);
+      mypy --strict 0 errors; ruff clean; pre-commit all hooks pass. Branch rebased on current dev (includes
+      OMN-12801 endpoint resolution) with the merge conflict in handler_generation_consumer.py resolved
+      to keep dev endpoint plumbing + the OMN-12813 inference-protocol system_prompt.
+    command: >
+      cd omnimarket && uv run pytest tests/unit/nodes/node_generation_consumer/test_omn12813_output_format_fix.py
+      -q --tb=short
+  - kind: docs
+    description: OCC contract file OMN-12813.yaml present and schema-valid
+    command: >
+      cd onex_change_control && uv run validate-yaml contracts/OMN-12813.yaml
+dod_evidence:
+  - id: dod-omn12813-new-tests
+    description: >
+      17 new unit tests in test_omn12813_output_format_fix.py pass: system prompt marker/prose-suppression
+      assertions; both inference-protocol profiles fire for Qwen+node_generation and are silent for other
+      models/task-types; apply_once dedup; validate_generation on well-formed and reasoning-prose responses;
+      handler wires apply_inference_protocol; end-to-end contract_passed=True with non-empty contract_yaml
+      + handler_source. Verified locally on the rebased branch jonah/omn-12813-sea-generation-output-format
+      before push.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12813/dod-omn12813-new-tests/command.yaml"
+  - id: dod-omn12813-no-regression
+    description: >
+      Full omnimarket suite 6459 passed, 0 failed (m=not kafka and not slow) on the rebased branch — confirms
+      the dev merge (OMN-12801) + OMN-12813 combine cleanly with no regression. Real probe output recorded
+      in the paired receipt.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12813/dod-omn12813-no-regression/command.yaml"
+  - id: dod-omn12813-mypy
+    description: mypy --strict on the changed handler reports 0 errors (recorded in the paired receipt).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12813/dod-omn12813-mypy/command.yaml"
+  - id: dod-omn12813-profiles-scoped
+    description: >
+      Both new inference-protocol profiles are scoped to task_types=[node_generation] and do NOT fire
+      for other task types (recorded in the paired receipt).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12813/dod-omn12813-profiles-scoped/command.yaml"
+  - id: dod-omn12813-e2e-green
+    description: >
+      Generation e2e on stability-test produced real generation_events rows with contract_passed=true
+      and non-empty contract_yaml + handler_source. The demo-critical exit criterion. The paired receipt
+      records the independently verified psql probe (verifier!=runner): corr 3409edcc/e22efff6/e0cfba24.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12813/dod-omn12813-e2e-green/command.yaml"

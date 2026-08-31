@@ -1,0 +1,65 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13333"
+title: "ci(omnimarket): port dispatcher-route-coverage gate to omnimarket CI"
+summary: >
+  Ports the dispatcher-route-coverage CI gate from omnibase_infra to omnimarket so the dispatcher-route-coverage
+  status context is emitted on every omnimarket PR. The gate verifies every contract.yaml that subscribes
+  to a command topic (onex.cmd.*) has a dispatcher route declared via handler_routing or runtime_dispatch.
+  Missing wiring causes messages to go to DLQ silently; this is a pre-runtime ratchet. Static analysis
+  of all 200+ omnimarket cmd-topic subscribers confirms 0 violations. The required_status_checks flip
+  onto omnimarket dev is a SEPARATE SERIAL STEP explicitly NOT included in this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: >
+      omnimarket CI workflow emits "dispatcher-route-coverage" status context on PRs to dev. The new workflow
+      file .github/workflows/dispatcher-route-coverage.yml is added with the correct job name dispatcher-route-coverage,
+      triggering on pull_request to dev/main, push to main, and merge_group.
+    command: >-
+      grep -E 'name: dispatcher-route-coverage' .github/workflows/dispatcher-route-coverage.yml
+  - kind: "ci"
+    description: >
+      Static analysis of all omnimarket cmd-topic contract.yaml subscribers returns 0 violations: every
+      subscriber declares handler_routing or runtime_dispatch.
+    command: >-
+      python check_dispatcher_route_coverage.py src/omnimarket
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-dispatcher-coverage"
+    description: >
+      omnimarket PR adding .github/workflows/dispatcher-route-coverage.yml. The dispatcher-route-coverage
+      context emits. Static analysis of 200+ cmd-topic subscribers confirms 0 violations. All pre-commit
+      hooks pass. CI workflow addition only, no runtime path.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13333/dod-omnimarket-dispatcher-coverage/command.yaml
+          && grep -q 'dispatcher-route-coverage' drift/dod_receipts/OMN-13333/dod-omnimarket-dispatcher-coverage/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for this onex_change_control PR carrying the OMN-13333 contract
+      onto dev.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13333/dod-occ-pr-self/command.yaml &&
+          grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13333/dod-occ-pr-self/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >
+      CI-config-only PR: no new node, event-bus topic, contract, runtime topology, or live deploy. No
+      .201 mutation, no container restart. Normal CI merge pipeline applies. required_status_checks flip
+      is a separate serial step (explicitly excluded from this PR scope).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13333/dod-deploy-assessment/command.yaml
+          && grep -q 'No deploy action required' drift/dod_receipts/OMN-13333/dod-deploy-assessment/command.yaml

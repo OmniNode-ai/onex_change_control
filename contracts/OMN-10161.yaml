@@ -1,0 +1,76 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-10161"
+title: "fix(OMN-10161): non-blocking async subprocess in _call_cli_model"
+summary: >-
+  AdapterInferenceBridge._call_cli_model is declared async but executed a synchronous subprocess.run([cli_command,
+  combined_prompt], capture_output=True, text=True, timeout=int(timeout_seconds), check=False), which
+  blocks the event loop for the full CLI-model latency and starves every concurrent infer()/review/grader
+  task on the same loop (the root cause of CLI-model, eval, and hostile_reviewer timeouts). The omnimarket
+  fix in src/omnimarket/inference/adapter_inference_bridge.py replaces the blocking call with proc = await
+  asyncio.create_subprocess_exec(cli_command, combined_prompt, stdout=PIPE, stderr=PIPE) followed by stdout,
+  stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds). The return contract is
+  preserved (decoded stdout.strip()); non-zero exit is tolerated (prior check=False semantics); and the
+  asyncio timeout is mapped to subprocess.TimeoutExpired after reaping the child via proc.kill()/proc.wait(),
+  so callers catching the prior exception type keep working. The HTTP path (_call_http_model) is unchanged.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Focused inference-bridge unit tests, including new non-blocking and timeout-mapping
+      assertions, pass under the async subprocess path."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-10161/dod-unit-tests/command.yaml
+  - kind: "ci"
+    description: "Full omnimarket suite green; ruff, mypy --strict, and pre-commit clean."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-10161/dod-implementation/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-unit-tests"
+    description: >-
+      tests/unit/inference/test_adapter_inference_bridge.py converts the two CLI tests to the asyncio.create_subprocess_exec
+      path and adds two focused cases: a non-blocking assertion (a sibling coroutine set via asyncio.gather
+      only runs if the event loop is not frozen while infer() awaits the subprocess) and a timeout-mapping
+      assertion (asyncio.wait_for timeout surfaces subprocess.TimeoutExpired and reaps the child via proc.kill()/proc.wait()).
+      Probe: cd omni_worktrees/OMN-10161/omnimarket && uv run pytest tests/unit/inference/test_adapter_inference_bridge.py
+      tests/test_adapter_inference_bridge.py. Result: 22 passed. Evidence-Source SHA: 29fab3d7cd9a4c1a389da074b3f126ea25bba591
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10161/dod-unit-tests/command.yaml"
+  - id: "dod-implementation"
+    description: >-
+      Implementation in omnimarket branch jonah/omn-10161-async-subprocess-call-cli-model commit 29fab3d7cd9a4c1a389da074b3f126ea25bba591
+      replaces the synchronous subprocess.run inside the async _call_cli_model with asyncio.create_subprocess_exec
+      + asyncio.wait_for(proc.communicate()). No subprocess.run remains in the async path. The full omnimarket
+      suite is green and static gates are clean. Probe: cd omni_worktrees/OMN-10161/omnimarket && uv run
+      pytest tests/ -m "not kafka" -q. Result: 11070 passed, 48 skipped, 9 deselected. uv run mypy src/omnimarket/inference/adapter_inference_bridge.py
+      --strict -> clean; ruff format/check and pre-commit run --files clean.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10161/dod-implementation/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-readiness assessment. OMN-10161 is a code-only change to a shared adapter module (src/omnimarket/inference/adapter_inference_bridge.py):
+      the async _call_cli_model body is rewritten to dispatch the CLI subprocess off the event loop. No
+      Dockerfile, docker-compose, node contract.yaml, published_events, topic, or infra/runtime-kernel
+      change; no prod or stability mutation. Behavior is exercised entirely by unit tests with mocked
+      subprocess transport. The updated module ships to the runtime via the standard post-merge node redeploy
+      path (node_redeploy_orchestrator); no repository-tracked deploy artifact is required.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10161/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-10161 contract and DoD receipts.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"

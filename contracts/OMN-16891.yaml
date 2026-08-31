@@ -1,0 +1,139 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16891"
+title: "Promote the OpenRouter free coder to an ACTIVE code tier; ship GLM declared-but-disabled"
+summary: >-
+  OCC evidence companion for omnibase_infra#2993 and omnimarket#2198. The OpenRouter delegation rung was
+  credential-dead on every deployed lane because the lane secret mappings named an env var the .201 host
+  does not define; that name is converged, the free coder rung is promoted to carry the whole code-class
+  family, and GLM returns as a declared rung that self-enables on its key.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2993 product diff scope present"
+    command: "gh pr view 2993 --repo OmniNode-ai/omnibase_infra --json files"
+  - kind: "ci"
+    description: "PR #2198 product diff scope present"
+    command: "gh pr view 2198 --repo OmniNode-ai/omnimarket --json files"
+  - kind: "tests"
+    description: >-
+      Behavior proof derived from each PR's own diff: the invariant suites they add. omnibase_infra pins
+      the lane secret name as a data invariant; omnimarket pins the active-tier placement, the quota classification,
+      and the placement_reason telemetry field.
+    command: |-
+      uv run pytest tests/unit/test_openrouter_secret_name_convergence_omn16891.py -q
+  - kind: "ci"
+    description: >-
+      Deploy-scoped surface touched (docker/docker-compose.judge.yml): the judge lane must forward the
+      env var name the .201 host actually exports, or its OpenRouter-backed judge cannot authenticate.
+      Falsifiable content probe at the merged ref - it fails if the judge compose stops naming the canonical
+      variable.
+    command: |-
+      gh api repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.judge.yml?ref=0dca4f5401cfa204cb91ae46f9176f218f6659d6 --jq '.content' | base64 -d | grep -c 'OPENROUTER_API_KEY'
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  # ---------------------------------------------------------------- infra ---
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2993"
+    description: >-
+      PR #2993 on OmniNode-ai/omnibase_infra - Evidence-Source autobind. Content-bound probe at the pinned
+      ref: the dev lane's secret_resolver mapping must name OPENROUTER_API_KEY. Live probe 2026-08-28
+      proved the .201 host exports that name (len 73) and defines OPEN_ROUTER_API_KEY nowhere, so this
+      grep going to zero means the rung is credential-dead again.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/contracts/services/runtime_policy.contract.yaml?ref=0dca4f5401cfa204cb91ae46f9176f218f6659d6 --jq '.content' | base64 -d | grep -c 'source_path: OPENROUTER_API_KEY'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2993-ci"
+    description: "PR #2993 on OmniNode-ai/omnibase_infra - product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2993 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy-scope DoD for PR #2993 (F-05). docker-compose.judge.yml is a deploy-scoped surface; the judge
+      lane forwards the OpenRouter credential by name, so a half-applied rename leaves the lane looking
+      wired while resolving to empty. Falsifiable: the probe fails if the canonical name is absent from
+      the judge compose at the pinned ref.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.judge.yml?ref=0dca4f5401cfa204cb91ae46f9176f218f6659d6 --jq '.content' | base64 -d | grep -c 'OPENROUTER_API_KEY'
+  - id: "dod-infra-name-convergence-invariant"
+    description: >-
+      PR #2993 - diff-derived behavior proof (OMN-16434). The invariant suite this PR adds, executed against
+      the lane contracts it changes. Verified red-first: 4/4 failing on the retired name before the change.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/test_openrouter_secret_name_convergence_omn16891.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  # ------------------------------------------------------------ omnimarket ---
+  - id: "dod-OmniNode-ai-omnimarket-pr-2198"
+    description: "PR #2198 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/inference/provider_quota_policy.py?ref=fffc5ea4cdef5ee4649f1979da557a5f9adb1a22 --jq '.content' | base64 -d | grep -c 'class ModelQuotaVerdict'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2198-ci"
+    description: "PR #2198 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2198 --repo OmniNode-ai/omnimarket --json files"
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #2198 on OmniNode-ai/omnimarket — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/delegation/test_active_cloud_tiers_omn16891.py tests/unit/delegation/test_delegation_orchestrator.py tests/unit/delegation/test_placement_reason_telemetry_omn16891.py tests/unit/delegation/test_provider_quota_policy_omn16891.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omnimarket-active-tier-placement"
+    description: >-
+      PR #2198 - diff-derived behavior proof (OMN-16434) for the placement work. Asserts the free OpenRouter
+      coder rung serves and is REACHABLE from all five code classes ahead of every metered tier, that
+      GLM is declared, credential-gated and pointed at a documented model on the standard surface, and
+      that the credential name matches the host. Verified red-first: 9 of 13 failing before the change.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/delegation/test_active_cloud_tiers_omn16891.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omnimarket-quota-and-placement-telemetry"
+    description: >-
+      PR #2198 - diff-derived behavior proof for the quota guard and the placement_reason telemetry field.
+      Covers z.ai 1310 (disable until the provider-stated reset), 1113 (disable + alert, never retry),
+      the fail-safe retryable default for unmapped codes, and the JSONL round-trip of placement_reason.
+      Also re-runs OMN-16442's task-type coverage invariant, which this ticket's tier edits must not break.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/delegation/test_provider_quota_policy_omn16891.py tests/unit/delegation/test_placement_reason_telemetry_omn16891.py tests/unit/delegation/test_task_type_backend_coverage_omn16442.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "occ-self-bind-pr-7514"
+    description: >-
+      OCC self-binding receipt for PR #7514, the in-repo evidence PR carrying this contract. Binds OMN-16891
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself
+      (OMN-14650).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7514 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7513"
+    description: "OCC companion PR #7513 — self-bind for OMN-16891 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7513 --repo OmniNode-ai/onex_change_control --json number,state"

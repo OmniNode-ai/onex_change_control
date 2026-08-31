@@ -1,0 +1,91 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13823
+title: "fix(OMN-13823): recover deployed legacy omnidash source to origin + digest-pin onex-dev/onex-prod
+  (close mutable :dev tag reproducibility gap) [B11]"
+summary: >
+  Forensics (default SSO + SSM into k3s node i-0e596e8b557e27785) found the live Keycloak-gated omnidash
+  dashboard (pods in onex-dev + onex-prod) runs the LEGACY full-stack "rest-express" omnidash (Express
+  4.21.2, express-session 1.19.0, openid-client 5.7.1, server/auth/* Keycloak OIDC), NOT the app on omnidash
+  origin/dev (a disjoint orphan-root Vite rewrite with no auth). Both pods run mutable tag omnidash:dev,
+  currently resolved to digest sha256:483939d1, which had drifted off the committed manifest pins. That
+  deployed app+auth was on no origin ref. This ticket (Option A) recovers the deployed source to a source-controlled
+  origin branch + annotated tag, digest-pins onex-dev live and authors the onex-prod digest-pin PR (operator-gated).
+  Migrating onto the Vite app is OMN-13824 (architecture-gated, not executed). Repos: OmniNode-ai/omnidash
+  (branch recovered/omnidash-legacy-rest-express + tag omnidash-legacy-deployed-483939d1) and OmniNode-ai/omninode_infra
+  (PRs #552 dev, #553 prod).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: dod-001
+    description: >
+      The deployed legacy dashboard source (omnidash commit a8f87b60, package.json byte-matching the live
+      image: name=rest-express, express ^4.21.2, express-session ^1.19.0, openid-client ^5.7.1) is recovered
+      to a source-controlled origin ref — branch recovered/omnidash-legacy-rest-express + annotated tag
+      omnidash-legacy-deployed-483939d1 — and git grep now finds server/auth/* + initOidcClient on that
+      origin ref (previously reachable from no origin ref; git branch -r --contains a8f87b60 was empty).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13823/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      The onex-dev omnidash deployment is digest-pinned live to sha256:483939d1 (was mutable omnidash:dev
+      + imagePullPolicy Always). kubectl patch applied via SSM, rollout succeeded on the same digest (image-neutral,
+      no content change), and the live deployment spec image is now the digest with imagePullPolicy IfNotPresent.
+      Committed in omninode_infra PR #552 (base dev).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13823/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      The onex-prod digest-pin PR (omninode_infra #553, base dev) is authored, repinning the stale committed
+      sha256:55493fb7 to the live sha256:483939d1 (both onex-prod and onex-dev pods run 483939d1, so image-neutral).
+      It is NOT applied to live prod — prod is operator/Daniyal-gated via the manual "Deploy onex-prod
+      (Manual Promotion)" workflow (workflow_dispatch-only; merge does not deploy). Added to the Daniyal
+      prod-residuals handoff. Option B (migrate to the Vite app) filed as architecture-gated OMN-13824.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13823/dod-003/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13823 contract and PASS receipts required by
+      the downstream omninode_infra PRs #552/#553 Receipt Gate and OCC preflight eligibility check.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13823/dod-occ-self/command.yaml"
+  - id: dod-omninode-infra-pr-570
+    description: >
+      Consuming-PR binding: omninode_infra PR #570 adds the legacy omnidash reproducible rebuild Dockerfile,
+      verify-only workflow, and local symbol probe preserving the Keycloak auth gate.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13823/dod-omninode-infra-pr-570/command.yaml
+          && grep -q '^pr_number: 570$' drift/dod_receipts/OMN-13823/dod-omninode-infra-pr-570/command.yaml
+  - id: dod-occ-pr-3601-self
+    description: >
+      Self-binding OCC receipt: onex_change_control PR #3601 carries the OMN-13823 companion receipt for
+      omninode_infra PR #570.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13823/dod-occ-pr-3601-self/command.yaml && grep
+          -q '^pr_number: 3601$' drift/dod_receipts/OMN-13823/dod-occ-pr-3601-self/command.yaml && grep
+          -q '^ticket_id: "OMN-13823"$' drift/dod_receipts/OMN-13823/dod-occ-pr-3601-self/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''

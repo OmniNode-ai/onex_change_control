@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13379"
+title: "Make pr-merged publisher self-contained (no omnibase_core at runtime)"
+summary: >-
+  Central evidence for omnimarket PR #1307. The "Publish pr-merged event" job (omnimarket/.github/workflows/pr-merged-publisher.yml
+  -> scripts/publish_pr_merged_event.py) crashed after every merge with ModuleNotFoundError: No module
+  named 'omnibase_core'. The publisher is bus-native and runs in the workflow's minimal CI env (confluent-kafka
+  + click + pydantic only), but importing omnimarket.events.topics first executes the parent package omnimarket/events/__init__.py,
+  which eagerly re-exports a model graph (events/generation.py:9 -> omnibase_core.models.pipeline.model_golden_chain_entry)
+  that is absent in that env. The fix loads the single topic constant PR_MERGED_TOPIC_V1 directly from
+  src/omnimarket/events/topics.py by file path via importlib, executing only that pure-constant module
+  and never the package __init__. topics.py stays the single source of truth (no inlined literal that
+  could drift); the publish path no longer requires omnibase_core or a heavyweight uv sync. Parent epic
+  OMN-13316, hardens OMN-13226.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Clean-venv reproduction matching the workflow's exact minimal install (confluent-kafka + click +
+      pydantic only, omnibase_core and omnimarket absent) shows publish_pr_merged_event.py --dry-run exits
+      0 and resolves topic onex.evt.github.pr-merged.v1; before the fix the same command crashed with
+      ModuleNotFoundError. A regression test blocks both omnibase_core and the omnimarket.events package
+      from import and asserts the script still resolves the canonical topic. Full non-kafka suite (7631
+      passed), strict mypy on the script, ruff, and pre-commit all pass.
+    command: >-
+      uv run pytest tests/unit/scripts/test_publish_pr_merged_event.py -v
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1307"
+    description: >-
+      omnimarket PR #1307 carries the OMN-13379 fix at commit 9d8bdf8abe306c00eda31b76bfa6f289dab968d4.
+      It replaces the package-level topic import with a standalone importlib file-path load of topics.py
+      so the bus-native publish path no longer imports omnibase_core, and adds a regression test that
+      loads the script with omnibase_core and the omnimarket.events package blocked.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13379/dod-omnimarket-pr-1307/command.yaml"
+          && grep -q '^pr_number: 1307$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13379/dod-omnimarket-pr-1307/command.yaml"
+          && grep -q '^commit_sha: "9d8bdf8abe306c00eda31b76bfa6f289dab968d4"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13379/dod-omnimarket-pr-1307/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13379 contract and receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13379/dod-occ-pr-self/command.yaml"
+          && grep -q '^evidence_item_id: "dod-occ-pr-self"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13379/dod-occ-pr-self/command.yaml"
+  - id: "dod-local-validation"
+    description: >-
+      PR-local validation evidence reports the full non-kafka pytest suite (7631 passed), the clean-venv
+      minimal-env dry-run repro (exit 0, topic resolved), strict mypy on the changed script, ruff format/check,
+      and pre-commit all passed for the OMN-13379 change.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13379/dod-local-validation/command.yaml"
+          && grep -q '7631 passed' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13379/dod-local-validation/command.yaml"

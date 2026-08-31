@@ -1,0 +1,138 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14394"
+title: "fix(OMN-14394): close pr_state is_draft seam gap + dict-envelope regression test"
+summary: >-
+  omnibase_infra PR #2266 closes a seam gap found during independent verification of #2262 (OMN-14375):
+  ModelOpenPrSummary.is_draft (the OMN-14374 read skill, omnimarket's node_github_repo_gateway_effect)
+  had zero counterpart in pr_state's schema. This PR threads is_draft end-to-end on the producer side
+  (migration 092, ModelPayloadPrStateUpsert, HandlerPrStateProjection extraction, poller emission, write-effect
+  SQL $15) plus a separate test-gap item: a regression test proving HandlerPrStateProjection.handle()
+  accepts a raw DICT-shaped envelope, not just an already-typed ModelEventMessage. STACKED PR — base is
+  jonah/omn-14375-github-state-projection-pr-state (#2262), not dev; #2262's pr_state table/models/handlers
+  do not exist on dev yet, and #2262 is itself OCC-cascade-blocked. #2266 cannot merge until #2262 lands
+  and GitHub retargets its base to dev. This companion clears #2266's own occ-preflight so it is merge-ready
+  the moment that happens.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "events"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2266-head-daa28e5c"
+    description: >-
+      Independent adversarial verification of omnibase_infra PR #2266 at head daa28e5cd1af226af79b3641de1637915510539a:
+      confirmed the diff is a clean stacked delta (no bleed from #2262's own content), confirmed migration
+      092 is collision-free across dev/#2262-branch/#2266-branch, confirmed the is_draft field matches
+      the omnimarket reader (ModelOpenPrSummary.is_draft: bool) field-for-field with no nullability/type
+      mismatch, and independently reproduced RED (9 failed against pre-fix source) then GREEN (56 passed
+      with the fix restored) in a fresh worktree, plus confirmed the HandlerPrStateProjection god-class
+      ratchet holds at exactly 10 sync methods.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14394/dod-omnibase-infra-pr-2266-head-daa28e5c/command.yaml
+          && grep -q '^pr_number: 2266$' drift/dod_receipts/OMN-14394/dod-omnibase-infra-pr-2266-head-daa28e5c/command.yaml
+          && grep -q 'daa28e5cd1af226af79b3641de1637915510539a' drift/dod_receipts/OMN-14394/dod-omnibase-infra-pr-2266-head-daa28e5c/command.yaml
+  - id: "dod-deploy-assessment-head-daa28e5c"
+    description: >-
+      Deploy-surface assessment for omnibase_infra PR #2266 head daa28e5cd1af226af79b3641de1637915510539a:
+      the diff adds one additive forward+rollback migration (092_pr_state_add_is_draft.sql, idempotent
+      ALTER TABLE ... ADD COLUMN IF NOT EXISTS) plus four handler/model source files and four test files.
+      It does not perform a live deploy, service restart, or .201 mutation itself, and the PR is merge-blocked
+      (stacked on #2262) so nothing in this diff can reach any runtime environment until #2262 lands first.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14394/dod-deploy-assessment-head-daa28e5c/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14394/dod-deploy-assessment-head-daa28e5c/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14394 central contract and PASS
+      receipts for omnibase_infra PR #2266 head daa28e5cd1af226af79b3641de1637915510539a. The receipt
+      binds the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14394/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14394-occ-pr2266' drift/dod_receipts/OMN-14394/dod-occ-self-commit/command.yaml
+  - id: "dod-verify-2266-product-observing-repair"
+    description: >-
+      OMN-14436 REPAIR — appended, nothing mutated. Every pre-existing entry in this contract is INERT:
+      it greps this repo's own receipt store, which the DoD runner could not see past because --workspace
+      pointed at the onex_change_control clone rather than the product. That was a platform wiring defect,
+      not an authoring failure — with the runner mis-pointed, NO other kind of check could have executed.
+      This entry adds the product-observing evidence that was impossible to write before. It asserts the
+      projection handler carries is_draft across the seam, read from omnibase_infra#2266's exact head
+      SHA (daa28e5cd1af226af79b3641de1637915510539a) via the GitHub contents API. OMN-14394 closes an
+      is_draft SEAM GAP: the field existed on one side and was dropped on the other, so the projection
+      silently lost it. Asserting is_draft in the HANDLER (the consuming side of the seam) is what proves
+      the gap is closed — the model alone would not. RED DIRECTION PROVEN by execution: the symbol occurs
+      at #2266's head and ZERO times at omnibase_infra dev, so the identical command exits 1 at dev and
+      at a bogus SHA, and exits 0 only at a ref where #2266's code genuinely exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_pr_state_projection_compute/handlers/handler_pr_state_projection.py?ref=daa28e5cd1af226af79b3641de1637915510539a"
+          --jq .content | base64 -d | grep -c 'is_draft')" -ge 1 #magic___^_^___line
+  - id: "dod-replacement-pr-2268-head-dd2c589b"
+    description: >-
+      Replacement binding for OMN-14394 after the original stacked PR #2266 auto-closed unmerged when
+      its base branch (#2262) merged and was deleted. The product branch was rebased onto omnibase_infra
+      dev at dd2c589b8a4652d215d7c5a172f07f9d3c7c3d3c and reopened as PR #2268. This evidence observes
+      the replacement PR head directly via the GitHub contents API and asserts the same seam-closing handler-side
+      is_draft propagation that the original #2266 evidence proved.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_pr_state_projection_compute/handlers/handler_pr_state_projection.py?ref=dd2c589b8a4652d215d7c5a172f07f9d3c7c3d3c"
+          --jq .content | base64 -d | grep -c 'is_draft')" -ge 1
+  - id: "dod-occ-self-pr-4030"
+    description: >-
+      OCC self-binding for onex_change_control PR #4030, the append-only OMN-14394 refresh that binds
+      replacement omnibase_infra PR #2268/head dd2c589b after original stacked PR #2266 auto-closed unmerged.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^pr_number: 4030$' drift/dod_receipts/OMN-14394/dod-occ-self-pr-4030/command.yaml &&
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14394/dod-occ-self-pr-4030/command.yaml
+  - id: "dod-replacement-pr-2268-head-715ec6f6"
+    description: >-
+      Follow-up replacement binding for omnibase_infra PR #2268 after the branch advanced from dd2c589b
+      to 715ec6f680f34b5b4aa08dea1cff5ac5fc1cac44 with a real content change. The new commit updates the
+      GitHub poller runtime golden-chain integration test so the emitted PR-status event expectation includes
+      is_draft: False. This product-observing check reads that exact test file from the current PR head
+      via the GitHub contents API and asserts the newly added expectation is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/integration/runtime/test_github_api_poll_golden_chain.py?ref=715ec6f680f34b5b4aa08dea1cff5ac5fc1cac44"
+          --jq .content | base64 -d | grep -c '"is_draft": False')" -ge 1
+  - id: "dod-occ-self-pr-4033"
+    description: >-
+      OCC self-binding for onex_change_control PR #4033, the append-only OMN-14394 refresh that binds
+      replacement omnibase_infra PR #2268/current head 715ec6f680f34b5b4aa08dea1cff5ac5fc1cac44.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^pr_number: 4033$' drift/dod_receipts/OMN-14394/dod-occ-self-pr-4033/command.yaml &&
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14394/dod-occ-self-pr-4033/command.yaml

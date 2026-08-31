@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12635"
+title: "fix: node_dirty_canonical_sweep crashes on untracked directories (read_bytes IsADirectoryError)"
+summary: >-
+  Epic OMN-7466 / skill /onex:ship_dirty_canonical. The Step 2 dirty-file copy loop in HandlerDirtyCanonicalSweep._ship_repo
+  (omnimarket/src/omnimarket/nodes/node_dirty_canonical_sweep/handlers/handler_dirty_canonical_sweep.py)
+  called read_bytes() on each dirty path. git status --porcelain reports an untracked DIRECTORY as a single
+  entry (e.g. evidence/OMN-12584/); read_bytes() on a directory raises "[Errno 21] Is a directory" and
+  the ship aborts with status=failed, producing no rescue PR. Observed 2026-06-03 on onex_change_control
+  (had an untracked evidence/OMN-12584/ dir) — the sweep crashed and the repo had to be shipped manually.
+  Fix (omnimarket PR #1023): when a dirty path is a directory, recurse (rglob) and copy every contained
+  file with preserved relative paths; no directory ever has read_bytes() called on it. Shipped in the
+  same omnimarket PR as OMN-12636 (stale-base diff); the primary OCC contract and Evidence-Ticket for
+  that PR is OMN-12636.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-tdd-reproduction"
+    description: >-
+      TDD red->green. test_dirty_untracked_directory_is_expanded_to_files was added first and confirmed
+      failing against the pre-fix code with the exact production error "[Errno 21] Is a directory" and
+      repos_failed=1. After the directory-expansion fix the same test ships with repos_shipped=1 and no
+      "Is a directory" error.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12635/dod-tdd-reproduction/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12635 (paired with OMN-12636) central
+      contract and receipt."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12635/dod-occ-pr-self/command.yaml"

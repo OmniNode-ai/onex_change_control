@@ -1,0 +1,60 @@
+---
+# OMN-13469 central OCC contract.
+schema_version: "1.0.0"
+ticket_id: "OMN-13469"
+title: "Durabilize dev Redpanda partition cap via .bootstrap.yaml"
+summary: >-
+  Root cause: fresh Redpanda volume boots with DEFAULT cluster cap topic_partitions_per_shard=1000. With
+  ~1392 contract topics, the broker jams at ~995 with BROKER_NOT_AVAILABLE, leaving the runtime stuck
+  runtime_pending. Existing mechanisms (--set flag + redpanda-partition-cap init service) do not apply
+  on a fresh volume reset. Fix: add docker/redpanda/.bootstrap.yaml (read by Redpanda on first cluster
+  formation) making the 7000 cap volume-reset-proof. Scope: dev compose only. Prod/stability/judge parity
+  is a follow-up.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-compose-syntax"
+    description: >-
+      docker-compose.infra.yml syntax is valid after adding the .bootstrap.yaml bind-mount. docker-compose
+      config -q exits 0 (env-var interpolation warning is pre-existing and not caused by this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "find drift/dod_receipts/OMN-13469/dod-compose-syntax -type f -name '*.yaml' | grep
+          -q ."
+  - id: "dod-precommit"
+    description: >-
+      pre-commit run on changed files passes all hooks including yamlfmt, ONEX Contract Validation, and
+      Reject skip-gate bypass tokens.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "find drift/dod_receipts/OMN-13469/dod-precommit -type f -name '*.yaml' | grep -q
+          ."
+  - id: "dod-deploy-assessment"
+    description: >-
+      OMN-13469 modifies docker/docker-compose.infra.yml (adds a read-only bind-mount for .bootstrap.yaml)
+      and docker/catalog/services/redpanda.yaml. This is a compose configuration change only — no live
+      container mutation, no docker exec, no rpk topic mutation, and no runtime restart is performed in
+      this PR. The fix takes effect on the next 'docker compose up' of the dev lane. Operator must run
+      'docker compose up -d --force-recreate redpanda' on the dev lane to apply.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json state,baseRefName,headRefOid --jq
+          '.state + \":\" + .baseRefName + \":\" + .headRefOid'"
+  - id: "dod-infra-pr-2064"
+    description: >-
+      omnibase_infra PR #2064 carries the fix: docker/redpanda/.bootstrap.yaml (new), docker/docker-compose.infra.yml
+      (bootstrap mount added), docker/catalog/services/redpanda.yaml (bootstrap mount added). Branch jonah/omn-13469-durabilize-partition-cap
+      targets dev.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --repo ${REPO} --json state,baseRefName,headRefOid --jq
+          '.state + \":\" + .baseRefName + \":\" + .headRefOid'"

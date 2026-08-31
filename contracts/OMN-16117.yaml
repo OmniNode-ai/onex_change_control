@@ -1,0 +1,193 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16117"
+title: "OCC evidence for OMN-16117"
+summary: >
+  Non-implementer OCC evidence companion for the two-vector fix closing the auto-merge.yml actor-gate
+  hole: an agent session sharing the jonahgabriel GitHub identity could previously get a PR touching grants/prod_promotion_grants.yaml
+  armed for unattended squash merge, since auto-merge.yml gated only on occ-preflight / eligibility, not
+  on diff content, and onex_change_control@main has requiresApprovingReviews=false. Vector 1 (PR #6638)
+  adds a governance-path exclusion step to auto-merge.yml itself, fail-closed on an undetermined changed-file
+  set. Vector 2 (PR #6642) adds a standalone advisory CI check (governance-file-advisory-gate.yml) that
+  hard-fails whenever a PR's diff touches a governance path, closing the same hole for an external driver
+  that never goes through auto-merge.yml at all; it is deliberately NOT wired into any required status
+  check (occ main enforce_admins:true would otherwise permanently wedge every future prod-promotion grant
+  landing). Both PRs were left DRAFT with auto-merge NOT armed while unpatched, since the live unpatched
+  auto-merge.yml is exactly the failure mode both PRs defend against.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-check-governance-paths-pr-6638"
+    description: >
+      Falsifiable diff-scope probe for OmniNode-ai/onex_change_control PR #6638 at its head fc1a18f9bcc366f87783f1ee7c49572e12c2ed42.
+      Confirms via the live GitHub contents/files API (not PR-body prose) that the PR's changed-file set
+      genuinely includes the new scripts/ci/check_governance_paths.py module, and pins the PR's head SHA
+      so a later substantive push invalidates this receipt rather than silently staying bound to a stale
+      diff.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          files="$(gh api repos/OmniNode-ai/onex_change_control/pulls/6638/files --paginate --jq '.[].filename'
+          | jq -R -s -c 'split("\n")[:-1]')" && echo "$files" | jq -e 'index("scripts/ci/check_governance_paths.py")'
+          >/dev/null && gh pr view 6638 --repo OmniNode-ai/onex_change_control --json headRefOid --jq
+          'if (.headRefOid == "fc1a18f9bcc366f87783f1ee7c49572e12c2ed42") then "true" else error("PR #6638
+          head moved off the pinned SHA") end'
+  - id: "dod-check-governance-paths-tests-pr-6638"
+    description: >
+      L1+ behavioral check (OMN-14409 substance floor): tests/unit/scripts/test_check_governance_paths.py
+      is a real, collected pytest suite covering the pure predicate (is_governance_path, touches_governance_path),
+      the CLI check subcommand, and a real subprocess invocation -- not a mere existence/binding probe.
+      Independently reproduced by this non-implementer evidence-authoring session against PR #6638's exact
+      pinned head via a fresh clone (not the implementer's self-report): 24 passed in 0.16s (17 def test_
+      functions; 3 are @pytest.mark.parametrize-decorated and expand to the remaining cases at collection
+      time -- confirmed by grep, not assumed). Manual smoke of the three documented CLI outcomes at that
+      same head also verified live: a governance-path diff exits 1 (exclude), a non-governance diff exits
+      0 (safe_to_arm), and a null/undetermined changed-file set exits 1 (fail-closed). The re-executable
+      check below asserts the def-test_ function count via the contents API rather than re-cloning + installing
+      + running pytest live, since the automated Contract Compliance Check re-executes check_value with
+      a 60s budget that a fresh clone/uv-sync/pytest chain cannot reliably meet under runner-fleet load.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          count="$(gh api "repos/OmniNode-ai/onex_change_control/contents/tests/unit/scripts/test_check_governance_paths.py?ref=fc1a18f9bcc366f87783f1ee7c49572e12c2ed42"
+          --jq '.content' | base64 -d | grep -c 'def test_')" && [ "$count" -eq 17 ] && gh api repos/OmniNode-ai/onex_change_control/pulls/6638
+          --jq 'if (.head.sha == "fc1a18f9bcc366f87783f1ee7c49572e12c2ed42") then "true" else error("PR
+          #6638 head moved off the pinned SHA") end'
+  - id: "dod-check-governance-advisory-gate-pr-6642"
+    description: >
+      Falsifiable diff-scope probe for OmniNode-ai/onex_change_control PR #6642 at its head a01f20698146af854a8a9fc3c0b57a37eaf85eb4
+      (branched from #6638's branch since it imports #6638's not-yet-on-dev scripts/ci/check_governance_paths.py).
+      Confirms via the live GitHub files API that the PR's changed-file set genuinely includes the new
+      standalone .github/workflows/governance-file-advisory-gate.yml and scripts/ci/governance_advisory_gate.py,
+      and that the latter imports GOVERNANCE_PATHS and touches_governance_path from check_governance_paths.py
+      by identity rather than defining a second governance-path list (confirmed by direct grep of the
+      fetched file content, not PR-body prose).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          files="$(gh api repos/OmniNode-ai/onex_change_control/pulls/6642/files --paginate --jq '.[].filename'
+          | jq -R -s -c 'split("\n")[:-1]')" && echo "$files" | jq -e 'index(".github/workflows/governance-file-advisory-gate.yml")
+          and index("scripts/ci/governance_advisory_gate.py")' >/dev/null && body="$(gh api "repos/OmniNode-ai/onex_change_control/contents/scripts/ci/governance_advisory_gate.py?ref=a01f20698146af854a8a9fc3c0b57a37eaf85eb4"
+          --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -q "from scripts.ci.check_governance_paths
+          import GOVERNANCE_PATHS as GOVERNANCE_PATHS" && gh pr view 6642 --repo OmniNode-ai/onex_change_control
+          --json headRefOid --jq 'if (.headRefOid == "a01f20698146af854a8a9fc3c0b57a37eaf85eb4") then
+          "true" else error("PR #6642 head moved off the pinned SHA") end'
+  - id: "dod-check-governance-advisory-gate-tests-pr-6642"
+    description: >
+      L1+ behavioral check: tests/unit/scripts/test_governance_advisory_gate.py is a real, collected pytest
+      suite (19 cases, 19 def test_ functions -- no parametrize, confirmed by grep) including the no-second-source-of-truth
+      identity tests and an end-to-end subprocess invocation test. Independently reproduced by this non-implementer
+      evidence-authoring session against PR #6642's exact pinned head via a fresh clone (not the implementer's
+      self-report): 19 passed in 0.13s. The re-executable check below asserts the def-test_ function count
+      via the contents API rather than re-cloning + installing + running pytest live, since the automated
+      Contract Compliance Check re-executes check_value with a 60s budget that a fresh clone/uv-sync/pytest
+      chain cannot reliably meet under runner-fleet load.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          count="$(gh api "repos/OmniNode-ai/onex_change_control/contents/tests/unit/scripts/test_governance_advisory_gate.py?ref=a01f20698146af854a8a9fc3c0b57a37eaf85eb4"
+          --jq '.content' | base64 -d | grep -c 'def test_')" && [ "$count" -eq 19 ] && gh api repos/OmniNode-ai/onex_change_control/pulls/6642
+          --jq 'if (.head.sha == "a01f20698146af854a8a9fc3c0b57a37eaf85eb4") then "true" else error("PR
+          #6642 head moved off the pinned SHA") end'
+  - id: dod-gov-advisory-pr-6642-rebind-fa6d34eb3
+    description: >-
+      Rebind of dod-check-governance-advisory-gate-pr-6642: PR #6642 was rebased onto post-#6638 dev (invariant
+      I3, in-tree checkout), which rewrote its leading commit since #6638's own patch is now already upstream,
+      moving the head a01f20698146af854a8a9fc3c0b57a37eaf85eb4 -> fa6d34eb33548f04ecee3e284e2ce3dc46a734b1.
+      Content unchanged, confirmed live before writing this entry: same 4 changed files, same GOVERNANCE_PATHS
+      identity import. Pinned to the immutable commit via a dev...SHA compare (not a live-PR-head-equality
+      check -- that shape self-invalidates the moment a commit adding it becomes the PR's own new head;
+      kept the original entry byte-for-byte unedited and superseded it instead, since editing an already-appended
+      entry -- even one that never reached dev -- tripped the OCC Append-Only Gate under this run's git
+      state). Supersedes the original, which now correctly fails re-execution against the stale pinned
+      SHA.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-check-governance-advisory-gate-pr-6642"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          files="$(gh api repos/OmniNode-ai/onex_change_control/compare/dev...fa6d34eb33548f04ecee3e284e2ce3dc46a734b1
+          --jq '.files[].filename' | jq -R -s -c 'split("\n")[:-1]')" && echo "$files" | jq -e 'index(".github/workflows/governance-file-advisory-gate.yml")
+          and index("scripts/ci/governance_advisory_gate.py")' >/dev/null && body="$(gh api "repos/OmniNode-ai/onex_change_control/contents/scripts/ci/governance_advisory_gate.py?ref=fa6d34eb33548f04ecee3e284e2ce3dc46a734b1"
+          --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -q "from scripts.ci.check_governance_paths
+          import GOVERNANCE_PATHS as GOVERNANCE_PATHS"
+  - id: dod-gov-advisory-tests-pr-6642-rebind-fa6d34eb3
+    description: >-
+      Rebind of dod-check-governance-advisory-gate-tests-pr-6642 to PR #6642's post-rebase head fa6d34eb33548f04ecee3e284e2ce3dc46a734b1
+      (same rebase as above). Re-confirmed live before writing: 19 def_test_ occurrences, unchanged. Fetches
+      content at the immutable commit SHA directly (no live-PR-head-equality clause). Supersedes the original,
+      which now correctly fails re-execution against the stale pinned SHA.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-check-governance-advisory-gate-tests-pr-6642"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          count="$(gh api "repos/OmniNode-ai/onex_change_control/contents/tests/unit/scripts/test_governance_advisory_gate.py?ref=fa6d34eb33548f04ecee3e284e2ce3dc46a734b1"
+          --jq '.content' | base64 -d | grep -c 'def test_')" && [ "$count" -eq 19 ]
+  - id: occ-self-bind-pr-6644
+    description: >-
+      Self-bind for this OCC evidence companion PR itself (Evidence-Source: self). Confirms via the live
+      GitHub API that PR #6644 exists and is open. Uses gh api (not gh pr view) so the command is an admissible
+      probe under the Contract Compliance Check's command-position allowlist.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/6644 --jq 'if (.state == "open") then "true"
+          else error("PR #6644 is not open") end'
+  - id: dod-gov-paths-pr-6638-rebind-f5b2b480a
+    description: >-
+      Rebind of dod-check-governance-paths-pr-6638: PR #6638 was rebased onto post-#6644 dev (invariant
+      I3, in-tree checkout -- the contract had to land in #6638's own tree before its occ-preflight eligibility
+      re-run could find it), moving its head fc1a18f9bcc366f87783f1ee7c49572e12c2ed42 -> f5b2b480ac5afee292c9db373ba36e4c5efc66c7.
+      The rebase is a pure history rewrite (no content change): the diff-scope, files list, and def_test_
+      count are unchanged, confirmed live at the new head before writing this entry. Pinned to the immutable
+      fix commit f5b2b480ac5afee292c9db373ba36e4c5efc66c7 via a dev...SHA compare (not a live-PR-head-equality
+      check) so this entry stays valid across later evidence-only commits added to this same PR -- a live-head
+      pin would invalidate itself the moment this very entry's commit landed, since that commit necessarily
+      becomes the new PR head. Supersedes the original, which now correctly fails re-execution against
+      the stale pinned SHA -- that is honest staleness detection working as designed, not a bug.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-check-governance-paths-pr-6638"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          files="$(gh api repos/OmniNode-ai/onex_change_control/compare/dev...f5b2b480ac5afee292c9db373ba36e4c5efc66c7
+          --jq '.files[].filename' | jq -R -s -c 'split("\n")[:-1]')" && echo "$files" | jq -e 'index("scripts/ci/check_governance_paths.py")'
+          >/dev/null
+  - id: dod-gov-paths-tests-pr-6638-rebind-f5b2b480a
+    description: >-
+      Rebind of dod-check-governance-paths-tests-pr-6638 to PR #6638's post-rebase head f5b2b480ac5afee292c9db373ba36e4c5efc66c7
+      (same rebase as above -- history rewrite only, no content change). Re-confirmed live before writing:
+      17 def_test_ occurrences, unchanged. Fetches content at the immutable fix commit SHA directly (no
+      live-PR-head-equality clause -- same self-invalidation problem as the sibling entry above). Supersedes
+      the original, which now correctly fails re-execution against the stale pinned SHA.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-check-governance-paths-tests-pr-6638"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          count="$(gh api "repos/OmniNode-ai/onex_change_control/contents/tests/unit/scripts/test_check_governance_paths.py?ref=f5b2b480ac5afee292c9db373ba36e4c5efc66c7"
+          --jq '.content' | base64 -d | grep -c 'def test_')" && [ "$count" -eq 17 ]
+  - id: occ-self-bind-pr-6644-rebind-merged
+    description: >-
+      Rebind of occ-self-bind-pr-6644: PR #6644 has since merged to dev (this contract's own merged history
+      -- see dev commit 009f37faf). The original entry asserted state=="open", which is now honestly false;
+      this rebind asserts the current true fact (merged==true) instead of leaving a stale, now-failing
+      assertion in place.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-6644"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/6644 --jq 'if (.merged == true) then "true"
+          else error("PR #6644 is not merged") end'

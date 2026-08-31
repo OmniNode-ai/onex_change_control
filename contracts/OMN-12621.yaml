@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12621"
+title: "feat: topic-migration contract model + breaking-schema validator (Section 6a, core)"
+summary: >-
+  Section 6a of the divergent-transport-runtime-convergence plan, landed in omnibase_core PR 1191. Before
+  this change there was no ModelTopicMigrationContract (grep-confirmed) and no link between a topic's
+  free-text .vN segment and the ModelEventType.schema_version SemVer, so "detect a breaking schema change"
+  had nothing to diff against; only build_dlq_topic existed, not a general versioned-topic builder. The
+  PR adds the core half of the topic-schema migration machinery: (1) ModelTopicMigrationContract (frozen,
+  extra=forbid, ModelSemVer-versioned) plus EnumMigrationPhase and EnumCutoverCriterion, general enough
+  to express a namespace rename (onex.evt.<old-ns>.* -> <new-ns>.*, OMN-12407) as well as a .vN bump,
+  carrying old/new ModelTopicSchemaBinding, old/new consumer groups, a bounded compatibility window, cutover
+  criteria, and a drain-proof gate enforced in a model_validator; (2) the topic .vN <-> event schema_version
+  linkage via ModelTopicSchemaBinding + ModelCanonicalTopic + parse_canonical_topic/build_versioned_topic
+  and detect_breaking_delta(old, new) -> EnumTopicSchemaDelta, asserting the topic .vN equals the event
+  schema_version major (wire-compat boundary), making a breaking delta (major_bump | namespace_rename)
+  detectable; (3) the breaking_schema_change validator, modeled on contract_config_compliance.py and reusing
+  compute_contract_fingerprint, which diffs baseline vs current *.topic-schema.yaml bindings and requires
+  an adjacent *.migration.yaml ModelTopicMigrationContract on a breaking delta. Per Rule #5 (enforcement,
+  not detection) the validator is wired in the SAME PR as both a pre-commit hook (.pre-commit-config.yaml)
+  and a blocking CI gate (.github/workflows/ci.yml breaking-schema-change job, added to the Quality Gate
+  needs). 24 new unit tests cover topic parsing/builder, the linkage, breaking-delta classification, the
+  contract validators, and the validator-fires-without / passes-with-migration proof. This contract covers
+  the landable core code; no runtime/.201 deploy is in scope.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+  - "topics"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-pr-1191"
+    description: "omnibase_core PR 1191 adds ModelTopicMigrationContract (+ EnumMigrationPhase, EnumCutoverCriterion),
+      the topic .vN <-> schema_version linkage (ModelTopicSchemaBinding, ModelCanonicalTopic, parse_canonical_topic,
+      build_versioned_topic, detect_breaking_delta, EnumTopicSchemaDelta), and the breaking_schema_change
+      validator wired as BOTH a pre-commit hook (.pre-commit-config.yaml) and a blocking CI gate (.github/workflows/ci.yml
+      breaking-schema-change job in the Quality Gate needs). 14 files changed; 24 new unit tests."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12621/dod-core-pr-1191/command.yaml"
+  - id: "dod-validator-enforces-migration"
+    description: "Live proof the breaking-schema-change validator enforces an adjacent migration contract:
+      on a fixture *.topic-schema.yaml declaring a breaking major_bump delta (v1 -> v2) with NO adjacent
+      *.migration.yaml the validator main() exits 1 and emits a missing_topic_migration_contract finding;
+      adding a covering *.migration.yaml ModelTopicMigrationContract makes main() exit 0. The 24-test
+      targeted suite (tests/unit/validators/test_breaking_schema_change.py + tests/unit/models/contracts/test_topic_migration_contract.py)
+      is green."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12621/dod-validator-enforces-migration/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12621 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12621/dod-occ-pr-self/command.yaml"

@@ -1,0 +1,85 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15157"
+title: "Delegation provider binding in steel's LlmProviderBinding union — receipt contract for already-merged
+  work (false-Backlog reconciliation)"
+summary: >-
+  OMN-15157 is a false-Backlog ticket, not unbuilt work. The deliverable landed on jonahgabriel/steel_onslaught
+  `main` (steel's canonical branch is `main`, NOT `dev`) in PR #217, merge commit 35868b660413d005cbf8d4e4b8c2c5ddff8e3c41,
+  merged 2026-07-26T09:36:53Z — yet the Linear ticket carried a single Backlog stateHistory entry with
+  startedAt=null and completedAt=null through the whole build. This contract is the receipt surface for
+  the dod_verify path that reconciles that gap; it makes no status change itself. DELIBERATE RENAME, not
+  a defect: the binding landed as `ModelSODelegationProviderBinding`, NOT the ticket text's placeholder
+  name `ModelSOKafkaDelegationProviderBinding`, because the client never speaks Kafka directly — it subprocesses
+  `onex node node_delegate_skill_orchestrator --output receipt`. The rename is recorded in the 2026-07-26T09:40Z
+  and 11:10Z rolling-ledger entries; do not "repair" the name back to the ticket's placeholder. Every
+  check below is pinned to the merge SHA (immutable content), was executed GREEN at authoring time, and
+  was RED-proven against the merge commit's parent (965d574558de2164e2f573014eb8cad6bef6c8a0), where the
+  same probes return count 0 and the `grep -qx 1` assertion fails.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+evidence_requirements:
+  - kind: "ci"
+    description: "steel PR #217 is MERGED on jonahgabriel/steel_onslaught main at merge commit 35868b66"
+    command: "gh pr view 217 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-15157-pr-217-merged"
+    description: >-
+      steel PR #217 ("OMN-15157/OMN-15159 — delegation provider binding + LlmBusDelegationClient") is
+      MERGED and its merge commit is exactly 35868b660413d005cbf8d4e4b8c2c5ddff8e3c41. Asserting state
+      AND the merge SHA in one line is what makes this falsifiable: a closed-unmerged PR yields "CLOSED
+      none", an open PR "OPEN none", and a rebase/re-land under a different SHA yields a different oid
+      — all three produce count 0 and fail the `grep -qx 1`.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 217 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")' | grep -cFx 'MERGED 35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' | grep -qx 1
+  - id: "dod-omn-15157-union-member"
+    description: >-
+      At the merge SHA, `src/steel_onslaught/contracts/application.py` both DEFINES the closed binding
+      (`class ModelSODelegationProviderBinding(_ClosedBinding):`) and ENROLLS it as a member of the discriminated
+      union (`    | ModelSODelegationProviderBinding,` inside the `LlmProviderBinding = Annotated[...]`
+      block, discriminated on `kind`). Definition alone would leave the union unchanged — a silent no-op
+      of exactly the PAIR_INCOMPATIBLE class the seam rule exists to catch — so both facts are asserted,
+      each with its own exact-count probe.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/contracts/application.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cF 'class ModelSODelegationProviderBinding(_ClosedBinding):' | grep -qx 1
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/contracts/application.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cF '    | ModelSODelegationProviderBinding,' | grep -qx 1
+  - id: "dod-omn-15157-composition-branch"
+    description: >-
+      The union member is actually reachable at runtime: `src/steel_onslaught/match/composition.py` carries
+      exactly one dispatch branch on the new binding type (`elif isinstance(provider, ModelSODelegationProviderBinding):`)
+      inside `build_llm_dependencies()`. This is the check that discriminates "binding declared" from
+      "binding wired" — the ticket's own scope is the declaration, but a declared-and-unreachable binding
+      is a false Done.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.content' | base64 -d | grep -cF 'elif isinstance(provider, ModelSODelegationProviderBinding):' | grep -qx 1
+  - id: "dod-omn-15157-contract-test"
+    description: >-
+      The binding ships with its own contract test at the merge SHA: `tests/contracts/test_delegation_provider_binding_omn15157.py`
+      is present in the tracked tree. Probed via the directory listing with an anchored exact-name match
+      so a renamed, moved, or absent test file returns count 0 and the check goes RED.
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/contracts?ref=35868b660413d005cbf8d4e4b8c2c5ddff8e3c41' --jq '.[].name' | grep -cFx 'test_delegation_provider_binding_omn15157.py' | grep -qx 1

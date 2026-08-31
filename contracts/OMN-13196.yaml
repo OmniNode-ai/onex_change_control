@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13196"
+title: "B4: delete ModelOnexEnvelope entirely + retarget tests + clean cross-repo references"
+summary: >-
+  Completes the envelope-dedup workstream by deleting the legacy ModelOnexEnvelope class and collapsing
+  the canonical envelope surface to ModelEventEnvelope[T]. omnibase_core deletes src/omnibase_core/models/core/model_onex_envelope.py
+  and its 2 exports in models/core/__init__.py, deletes the 4 ModelOnexEnvelope-specific test files (test_model_onex_envelope.py,
+  test_model_onex_envelope_source_node_id.py, test_model_onex_envelope_chunking.py, and the perf benchmark
+  test_source_node_id_overhead.py — these exercised ModelOnexEnvelope's own fields, source_node_id/chunking/operation,
+  which have no ModelEventEnvelope equivalent), and retargets tests/unit/validation/test_envelope_validator.py
+  to a minimal frozen Pydantic stub because the surviving EnvelopeValidator is duck-typed (getattr) over
+  dispatch-routing fields (source_node/operation/target_node) that ModelEventEnvelope[T] does not carry.
+  Stale docstring/comment references in model_envelope_metadata.py, model_chunked_envelope.py, type_serializable_value.py,
+  and the mixin_metadata.yaml `requires` entry are retargeted to ModelEventEnvelope. A coordinated omnibase_infra
+  PR retargets the one live ModelOnexEnvelope import in tests/performance/test_production_benchmarks.py
+  (the _make_envelope helper, used only for model_dump_json() serialization in the benchmarks) to ModelEventEnvelope[dict[str,
+  Any]] and corrects two stale src docstrings, so omnibase_infra stays green after the core deletion.
+  Grep across all repos under omni_home shows zero ModelOnexEnvelope references in src + tests after this
+  phase. No Kafka topic schema change, no DDL/migration, no runtime/deploy/.201 mutation. Predecessor
+  B3 (OMN-13194, impl PR #1248) is MERGED to dev (merge commit b7ed3f0f0845f7ccd26f84473841b8061afb7d98,
+  the base of this work).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "pr-omnibase_core"
+    description: >-
+      omnibase_core implementation PR (branch jonah/omn-13196-delete-modelonexenvelope, base dev) deletes
+      ModelOnexEnvelope + its exports + 4 envelope-specific test files and retargets the validator test
+      fixture and stale docstrings. The paired OCC receipt drift/dod_receipts/OMN-13196/pr-omnibase_core/command.yaml
+      binds the code PR head sha (commit_sha) and OCC PR number (pr_number) with status PASS, and records
+      the zero-ModelOnexEnvelope grep proof plus green gate results (ruff clean, mypy --strict no new
+      errors, validator suite 40 passed, full pytest green modulo pre-existing xdist flakes).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13196/pr-omnibase_core/command.yaml && grep
+          -q '^pr_number: 2692$' drift/dod_receipts/OMN-13196/pr-omnibase_core/command.yaml && grep -q
+          '^commit_sha: "a77ef5ecb2e7bb7b7f6761fb7468f5741e9cde23"$' drift/dod_receipts/OMN-13196/pr-omnibase_core/command.yaml
+  - id: "pr-omnibase_infra"
+    description: >-
+      omnibase_infra coordinated implementation PR (branch jonah/omn-13196-drop-modelonexenvelope-ref,
+      base dev) retargets the one live ModelOnexEnvelope import in tests/performance/test_production_benchmarks.py
+      to ModelEventEnvelope[dict[str, Any]] and corrects two stale src docstrings (mixin_kafka_broadcast.py,
+      handler_llm_openai_compatible.py) so the repo stays green after the core deletion. The paired OCC
+      receipt drift/dod_receipts/OMN-13196/pr-omnibase_infra/command.yaml binds the code PR head sha and
+      OCC PR number with status PASS, and records the zero-ModelOnexEnvelope grep proof plus green gate
+      results (ruff clean, mypy --strict on changed src Success, perf benchmark 13 passed).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13196/pr-omnibase_infra/command.yaml && grep
+          -q '^pr_number: 2692$' drift/dod_receipts/OMN-13196/pr-omnibase_infra/command.yaml && grep -q
+          '^commit_sha: "f432045df3516dbf1d6aeb954d25c686d6da4e0a"$' drift/dod_receipts/OMN-13196/pr-omnibase_infra/command.yaml

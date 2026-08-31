@@ -1,0 +1,49 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13580"
+title: "fix(OMN-13580): forwarder handle() deserializes raw-dict envelope before .payload"
+summary: >
+  HandlerForwardOutbound and HandlerConsumeInbound in node_bus_forwarder_effect read envelope.payload
+  directly inside _coerce_dispatch_input. The runtime dispatcher delivers the outer envelope as a raw
+  dict (its serialized form), so .payload crashed with AttributeError: 'dict' object has no attribute
+  'payload' (fired 24x on stability-test, blocked the delegation terminal projection — no delegation-completed.v1,
+  zero delegation_events rows for escalated CIDs). Fix coerces the outer envelope to ModelEventEnvelope[object]
+  via model_validate when it is not already a typed instance (mirrors the OMN-12001/12940 dict-vs-typed
+  pattern) BEFORE reading .payload. handle()/coerce params typed object to avoid adding a counted non-optional
+  union (infra budget was at ceiling, 154).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Raw-dict envelope regression tests on both forwarder handle() entrypoints (TDD red->green)"
+    command: "cd omnibase_infra && uv run pytest tests/unit/nodes/node_bus_forwarder_effect/test_handler_dispatch_entrypoints.py
+      -v"
+  - kind: "tests"
+    description: "Full forwarder node unit + contract-integration suite stays green"
+    command: "cd omnibase_infra && uv run pytest tests/unit/nodes/node_bus_forwarder_effect/ tests/integration/gateway/test_bus_forwarder_contract_integration.py
+      -v"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >
+      omnibase_infra PR #2100 makes _coerce_dispatch_input deserialize the raw-dict outer envelope to
+      ModelEventEnvelope[object] before reading .payload. TDD regression tests added (red before, green
+      after). Local proof: uv run pytest tests/unit/nodes/node_bus_forwarder_effect/ -> 23 passed. Ruff
+      clean, mypy --strict clean, all pre-commit hooks pass (ONEX Union Usage Validation back at 154).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13580/dod-001/command.yaml && grep
+          -q '^ticket_id: \"OMN-13580\"$' drift/dod_receipts/OMN-13580/dod-001/command.yaml && grep -q
+          '^pr_number: 2100$' drift/dod_receipts/OMN-13580/dod-001/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "OCC PR carrying this OMN-13580 contract and downstream receipt."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13580/dod-occ-pr-self/command.yaml
+          && grep -q '^ticket_id: \"OMN-13580\"$' drift/dod_receipts/OMN-13580/dod-occ-pr-self/command.yaml"

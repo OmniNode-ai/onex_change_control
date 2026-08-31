@@ -1,0 +1,82 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13150"
+title: "node_projection_routing_decision DB target repoint to omnidash_analytics + runtime proof (FIX-1)"
+summary: >-
+  FIX-1 (Phase 2.4). The projection node node_projection_routing_decision writes agent_routing_decisions.
+  Its runtime DSN resolvers (RoutingDecisionProjectionRunner via ModelProjectionRuntimeBinding.from_legacy_settings,
+  and the projection-API reader api_server._projection_database_binding_from_settings) BOTH resolve omnidash_analytics_db_url
+  FIRST, ignoring the contract db_io database field. The prior OMN-13127 repoint to omnibase_infra fed
+  ONLY the canonical message_dispatch_engine path (handler_wiring._DB_URL_ENV_MAP), splitting the writer
+  DSN from the reader DSN, and the table never existed in omnidash_analytics. Every sibling projection
+  table lives in omnidash_analytics — the canonical projection DB. Fix: repoint the contract database
+  field to omnidash_analytics; add a per-node forward migration creating agent_routing_decisions there
+  (owned by this node, vendored into omnibase_infra forward/nodes/); flip metadata ddl_owner to the node;
+  expose the table over the projection API. Proven on the dev lane with a 3-part runtime triple (write
+  via the real handler / read-back / projection-API HTTP 200).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-market-pr"
+    description: >-
+      omnimarket PR #1218 (branch jonah/omn-13150-routing-decision-db-repoint, base=dev, head fd5fc09d).
+      Repoints node_projection_routing_decision contract database -> omnidash_analytics, adds per-node
+      migration migrations/0021_create_agent_routing_decisions.sql, flips metadata ddl_owner to the node,
+      exposes the table over the projection API, and updates the golden-chain ownership tests. Full suite
+      (4 splits) GREEN: 7374 passed, 72 skipped, 0 failed; ruff clean; mypy --strict clean; pre-commit
+      passes.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13150/dod-market-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13150"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13150/dod-market-pr/command.yaml"
+  - id: "dod-deploy-runtime-proof"
+    description: >-
+      Deploy/runtime proof on the dev lane (.201, mutable + pre-authorized). DDL applied to the live omnidash_analytics
+      DB via `docker exec omnibase-infra-postgres psql -d omnidash_analytics -f -`; then the REAL RoutingDecisionProjectionRunner.project_event
+      (run inside the live omnimarket-projection-api container) resolved omnidash_analytics, wrote row
+      965b9edd, read it back, and the real projection-API HTTP handler returned that row (HTTP 200, row_count=1).
+      docker exec is the deploy-class action.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13150/dod-deploy-runtime-proof/command.yaml"
+  - id: "dod-infra-pr"
+    description: >-
+      omnibase_infra PR #1985 (branch jonah/omn-13150-routing-decision-db-repoint, base=dev, head 60016ddd46b36c673b0fc6954c74a5641e37f9c7)
+      vendors the per-node forward migration that creates agent_routing_decisions in omnidash_analytics
+      for clean deploys after omnimarket PR #1218 repointed the node contract target.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13150/dod-infra-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Paired OCC receipt PR in onex_change_control (this PR) carries the contract + PASS receipts for
+      OMN-13150 with Evidence-Source 653c6470 (omnimarket dev HEAD the work branched from).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13150/dod-occ-pr/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      This OCC PR carries the follow-up OMN-13150 receipt binding for omnibase_infra PR #1985.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13150/dod-occ-pr-self/command.yaml"

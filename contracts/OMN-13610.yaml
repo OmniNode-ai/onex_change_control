@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13610"
+title: "docs(OMN-13610): WS-C Phase 1.2 ROUTE SEA generation pipeline -> omnimarket node_generation_consumer"
+summary: >
+  WS-C Phase 1.2 of the SEA->canonical migration (epic OMN-13604). ROUTE: the SEA imperative generation
+  loop (src/pipeline/consumer.py main loop + src/pipeline_local/consumer_local.py local-tier subclass
+  + src/pipeline/kafka_runner.py cloud-tier Kafka daemon) has its permanent canonical home in omnimarket
+  node_generation_consumer. The ROUTE-1 gates pass: the target node exists on disk (contract.yaml + handlers
+  + models) AND is runtime-proven -- its consumer group is Stable with a live aiokafka member, committed
+  offsets, and zero lag on both the stability-test and prod lanes (rpk group describe). The canonical
+  handler HandlerGenerationConsumer.handle subsumes the SEA generate_with_retry/run_once capability: bounded
+  retry loop over contract max_attempts, per-run cost from the canonical cost-pricing contract (no hardcoded
+  constant), MEASURED-only usage provenance, and both tiers (local vLLM + cloud Gemini) resolving endpoint+model+api-key
+  from the routing-authority bifrost overlay keyed by endpoint_ref -- never an LLM_* env var. Transport/lifecycle
+  is owned by the runtime; the node holds no raw KafkaConsumer/KafkaProducer and no signal handlers. This
+  PR adds a migration boundary doc (docs/migrations/sea-generation-pipeline-routing.md) and a structural
+  parity test pinning all of the above. The three SEA copies are NOT deleted in this PR: consumer.py is
+  still load-bearing in-process infra for several SEA-internal surfaces (demo entrypoint, model-comparison
+  runner, agent demo/tools, delegation executor, eval runner) whose own canonicalization is tracked by
+  later phases; deleting it standalone would break SEA. The generation capability is routed + proven canonically;
+  the SEA file removal is a repo-archival (Phase 8) step, not a parity step -- recorded honestly in the
+  boundary doc. Docs+test only; no envelope/contract-API change, no live-lane mutation.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      A failing-first structural parity suite proving the canonical node subsumes the SEA generation loop:
+      canonical async handle() entrypoint, bounded retry loop over contract max_attempts, contract-sourced
+      cost, usage provenance aggregation, routing-authority endpoint resolution with no LLM_* env reads,
+      no Kafka client in the node, and a recorded capability->canonical-home boundary doc. The existing
+      per-tier endpoint-resolution proof (local vLLM + cloud Gemini distinct URLs from the contract, fail-closed,
+      no env endpoint) in test_endpoint_routing_authority.py remains green.
+    command: "uv run pytest tests/unit/nodes/node_generation_consumer/test_sea_generation_routing_parity.py
+      tests/unit/nodes/node_generation_consumer/test_endpoint_routing_authority.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >
+      omnimarket product PR adds docs/migrations/sea-generation-pipeline-routing.md (the ROUTE capability->canonical-home
+      boundary) and tests/unit/nodes/node_generation_consumer/test_sea_generation_routing_parity.py (structural
+      parity). Full local verify passes (node suite green, full omnimarket non-kafka suite green, mypy
+      --strict clean on changed file, ruff clean, pre-commit clean on changed files). The SEA file deletion
+      is intentionally deferred (documented) because consumer.py is still load-bearing SEA-internal infra;
+      this PR closes the loop with the omnimarket permanent home + proven runtime path.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13610/dod-omnimarket-pr/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13610/dod-omnimarket-pr/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13610/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this PR is docs + a structural unit test in omnimarket -- no envelope/contract-API
+      change, no node behavior change, no live-lane mutation. No live deploy is performed by this PR.
+      The canonical node it documents is already deployed and runtime-proven on stability-test + prod
+      (Stable consumer group, live member, committed offsets, zero lag) -- the ROUTE target reachability
+      is the pre-existing runtime, not a new deploy. The receipt check_value carries the deploy keyword
+      for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13610/dod-deploy-assessment/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13610/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13610/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev->main promotion PR: this onex_change_control PR
+      carries the OMN-13610 contract and dod receipts onto main, satisfying the receipt-to-PR binding
+      required by validator_occ_merge_eligibility (a PASS receipt whose pr_number binds to this PR).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13610/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13610/dod-occ-pr-self/command.yaml"

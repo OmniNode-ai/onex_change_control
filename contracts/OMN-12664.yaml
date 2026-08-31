@@ -1,0 +1,107 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12664"
+title: "fix(OMN-12664): route full Gemini endpoint via endpoint_url to preserve /v1beta/openai/chat/completions"
+summary: >-
+  Central OCC evidence for omnimarket PR #1031. The generation consumer passed the contract-provided LLM
+  endpoint through ModelLlmInferenceRequest.base_url, which makes the omnibase_infra adapter append /v1/chat/completions
+  and produce a 404 against Gemini's OpenAI-compatible endpoint. The fix routes the complete contract-provided
+  endpoint through endpoint_url (post-as-is) using a provider-neutral, path-based predicate; origin-only
+  bases keep the legacy append. No new helper module, router, or adapter.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1031-final-url"
+    description: >-
+      omnimarket PR #1031 regression tests build the real ModelLlmInferenceRequest the handler emits and
+      run it through the canonical infra HandlerLlmOpenaiCompatible._build_url, asserting the final POST
+      URL is https://generativelanguage.googleapis.com/v1beta/openai/chat/completions and is neither the
+      single-versioned nor double-versioned 404 variant.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnimarket-pr-1031-final-url/command.yaml"
+          && grep -q '^pr_number: 1031$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnimarket-pr-1031-final-url/command.yaml"
+  - id: "dod-omnimarket-pr-1031-typed-failure"
+    description: >-
+      omnimarket PR #1031 keeps provider 404 a typed failure (contract_passed=False, generation-failed
+      emitted, no deploy/registration) — never blank success.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnimarket-pr-1031-typed-failure/command.yaml"
+          && grep -q '^pr_number: 1031$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnimarket-pr-1031-typed-failure/command.yaml"
+  - id: "dod-omnibase-infra-pr-1859-final-url"
+    description: >-
+      omnibase_infra PR #1859 fixes the bifrost gateway side of OMN-12664. The gateway fed every backend
+      URL through ModelLlmInferenceRequest.base_url, so HandlerLlmOpenaiCompatible._build_url appended
+      /v1/chat/completions even when the configured URL was already a complete chat endpoint, producing
+      the Gemini 404. _build_inference_request now routes a configured base_url that already ends in /chat/completions
+      or /completions through endpoint_url (post-as-is), and the Gemini config default resolves to the
+      full /v1beta/openai/chat/completions endpoint. Regression tests assert the resolved POST URL is
+      https://generativelanguage.googleapis.com/v1beta/openai/chat/completions and is neither the single-versioned
+      nor the double-versioned 404 variant. Provider-neutral path predicate; no new router/adapter module.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnibase-infra-pr-1859-final-url/command.yaml"
+          && grep -q '^pr_number: 1859$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnibase-infra-pr-1859-final-url/command.yaml"
+  - id: "dod-omnibase-infra-pr-1859-non-gemini-unaffected"
+    description: >-
+      omnibase_infra PR #1859 leaves non-Gemini backends unchanged: local OpenAI-compatible and GLM origin
+      bases keep their bare base_url and the legacy single append, and the full node_llm_inference_effect
+      unit suite passes. No .201 runtime mutation was performed (code + PR only).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnibase-infra-pr-1859-non-gemini-unaffected/command.yaml"
+          && grep -q '^pr_number: 1859$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnibase-infra-pr-1859-non-gemini-unaffected/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12664 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-occ-pr-self/command.yaml"
+  - id: "dod-omnibase-infra-pr-1863-revert-1859"
+    description: >-
+      omnibase_infra PR #1863 reverts PR #1859. PR #1859 hardcoded a provider-specific full Gemini endpoint
+      (https://generativelanguage.googleapis.com/v1beta/openai/chat/completions) as the config_loader_bifrost
+      Gemini default and added a /chat/completions|/completions URL-shape predicate in handler_bifrost_gateway.
+      That baked one provider's URL shape into the config loader and gateway. The revert restores dev
+      to its exact pre-#1859 state: the Gemini default returns to the provider-agnostic bare origin and
+      the URL-shape predicate is removed; the node_llm_inference_effect + bifrost unit suite (455 tests)
+      passes after the revert. The provider-agnostic, table-driven endpoint rewrite is the forward fix
+      and will land separately. Code + PR only; no .201 runtime mutation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnibase-infra-pr-1863-revert-1859/command.yaml"
+          && grep -q '^pr_number: 1863$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-omnibase-infra-pr-1863-revert-1859/command.yaml"
+  - id: "dod-occ-pr-2166-observation"
+    description: >-
+      onex_change_control PR #2166 carries the OMN-11513 evidence-port observation that the contractor
+      forced-escalation run still saw the OMN-12664 Gemini 404 signature on the live path after closure.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-occ-pr-2166-observation/command.yaml"
+          && grep -q '^pr_number: 2166$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12664/dod-occ-pr-2166-observation/command.yaml"

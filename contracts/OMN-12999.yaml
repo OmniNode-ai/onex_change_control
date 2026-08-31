@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12999"
+title: "[SEA-PERF] /projection/{topic} unbounded heavy-payload response makes Event Bus / SEA tiles show
+  '—' for ~10-28s"
+summary: >-
+  The Event Bus / SEA dashboard tiles render '—' for ~10-28s while the SEA node-generation-completed projection
+  serializes its full unbounded ~419KB payload. Measure-first against the live stability-test projection
+  API (:13002, 2026-06-11, read-only): the DB is NOT the cost driver — EXPLAIN (ANALYZE, BUFFERS) of the
+  panel's SQL on generation_events (169 rows / 408KB, omnidash_analytics) is sub-ms (ORDER BY created_at
+  DESC LIMIT 500 = 0.22ms; MAX(created_at) freshness aggregate = 0.10ms; bounded LIMIT 20 = 0.265ms).
+  The latency is server-side JSON serialization of the full unbounded payload (all 20 columns incl contract_yaml/handler_source)
+  under a max_size=5 asyncpg pool that three panels poll every 5s; the ?correlation_id-filtered single-row
+  path returns in 14ms every time. Bounding rows is the lever: full row payload = 249KB vs LIMIT 20 =
+  25KB (~10x). Two coordinated fixes: (a) omnimarket projection API adds generic, contract-respecting
+  limit/order query params to /projection/{topic} (limit clamps to the contract ceiling; order toggles
+  only the direction of the contract-declared order_by column — no arbitrary column injection); (b) omnidash
+  SEA/EventBus tiles request the bounded latest-50 window they actually render. No topic schema, envelope-breaking,
+  or contract API change; additive query params plus a bounded caller. The API half is deploy-pending
+  and reaches the live image only via the normal post-merge batched stability rebuild.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1179"
+    description: >-
+      omnimarket PR #1179 adds resolve_effective_limit + resolve_order_clause and wires limit/order Query
+      params into /projection/{topic} (api_server.py), defaulting to the contract limit and the contract-declared
+      sort direction. New unit + route tests in tests/test_projection_api_server.py cover clamp-to-ceiling,
+      direction toggle, injection rejection, 422 on bad input, and the correlation-filtered path. Projection
+      test slice: 508 passed / 2 skipped; mypy --strict clean. Evidence anchor: omnimarket head commit
+      09ca3c7f03830c9895b6cd0bcc656b6a322fc9f7.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-omnimarket-pr-1179/command.yaml"
+          && grep -q '^ticket_id: "OMN-12999"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-omnimarket-pr-1179/command.yaml"
+          && grep -q '^pr_number: 1179$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-omnimarket-pr-1179/command.yaml"
+  - id: "dod-omnidash-pr-210"
+    description: >-
+      omnidash PR #210 bounds the SEA/EventBus node-generation read: fetchNodeGenerations requests limit=50&order=desc
+      (event-dash-api.ts). New event-dash-api.test.ts asserts the bounded query string and that unrelated
+      fetchers stay param-less. vitest src/services → 36 passed; eslint + tsc + normalization-symmetry
+      clean. Evidence anchor: omnidash head commit 9ad85aa0e961769e4e1152a4023800086d9d58c4.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-omnidash-pr-210/command.yaml"
+          && grep -q '^ticket_id: "OMN-12999"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-omnidash-pr-210/command.yaml"
+          && grep -q '^pr_number: 210$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-omnidash-pr-210/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: the omnimarket projection-API change (PR #1179) is the deploy-pending half. It
+      is additive (new query params, new envelope fields) with unit/CI proof only. No live deploy, restart,
+      topic mutation, or .201 mutation is performed by either PR; the API change reaches the live projection-api
+      image only through the normal post-merge batched stability rebuild. The omnidash change (PR #210)
+      is safe to merge ahead of the API deploy because the live API ignores unknown query params. The
+      endpoint-level <1s acceptance is verified against the live backend after that rebuild (steps recorded
+      in the ticket).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12999"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-12999 contract plus the dod-omnimarket-pr-1179 / dod-omnidash-pr-210
+      / dod-deploy-assessment receipts that the two code PRs' Receipt-Gate resolves via Evidence-Source:
+      OCC#<this-pr>.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-12999"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12999/dod-occ-pr/command.yaml"

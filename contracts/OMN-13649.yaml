@@ -1,0 +1,122 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13649"
+title: "Carry routing cost tier onto the delegation projection; delete client-side tier-guessing regex"
+summary: >-
+  Make the routing cost tier authoritative truth that flows routing-decision -> durable terminal event
+  -> projection column -> dashboard, and delete the omnidash client-side model-name tier-guessing regex
+  so the dashboard renders the projection's tier instead of deriving it. Root cause: delegation_events
+  already had cost_tier_name + cost_tier_type columns (omnimarket migration 0018) but they were never
+  authoritatively populated on the common path -- the orchestrator knew the serving tier (workflow.current_tier_name)
+  and threaded it into TerminalEmissionInputs.cost_tier_name, yet _emit_terminal used it ONLY to price
+  cost and never carried it onto the canonical ModelDelegationResult wire DTO (which had no tier field,
+  lives in omnibase_core under extra="forbid"). The projection then recovered the tier only via the metered-escalation
+  winner, which returns "" for a COMPLETED local/free delegation (the winning attempt is never recorded
+  in escalation_history on the completed path), so the most common path wrote an empty tier -- which is
+  exactly why omnidash fell back to a model-name regex. Fix: add the additive ModelDelegationResult.cost_tier_name
+  field (str, default "", omnibase_core PR #1349); _emit_terminal sets it from the priced tier; the projection
+  converter (_canonical_result_to_task_delegated_payload) prefers the authoritative top-level cost_tier_name
+  and falls back to the metered escalation winner for pre-OMN-13649 terminals; the projection derives
+  cost_tier_type from the tier name via the typed cost model; decisions.v1 + correlation-trace.v1 exposures
+  now list cost_tier_name + cost_tier_type. omnidash deletes src/pages/dashboard/lib/modelTier.ts and
+  binds the dashboard to the projection field (no model-name heuristic). No new node, no new REST route;
+  topics stay contract-sourced; the delegation_events columns already exist (migration 0018), so no migration.
+  Product PRs: omnibase_core #1349, omnimarket #1458, omnimarket #1459, omnidash #243.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-pr-1349"
+    description: >-
+      omnibase_core PR #1349 adds the additive ModelDelegationResult.cost_tier_name field (str, default
+      "", frozen + extra="forbid" preserved, back-compat empty default) so the delegation terminal can
+      carry the serving tier. The delegation wire-model unit suite passes including the two new cost_tier_name
+      tests (test_cost_tier_name_defaults_empty, test_cost_tier_name_round_trips). The probe re-runs the
+      suite and proves 90 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13649/dod-core-pr-1349/command.yaml && grep
+          -q '90 passed' drift/dod_receipts/OMN-13649/dod-core-pr-1349/command.yaml
+  - id: "dod-omnimarket-pr-1458"
+    description: >-
+      omnimarket PR #1458 carries cost_tier_name onto the canonical terminal in _emit_terminal and, in
+      the projection converter _canonical_result_to_task_delegated_payload, prefers the authoritative
+      top-level cost_tier_name (falling back to the metered escalation winner for pre-OMN-13649 terminals);
+      the decisions.v1 + correlation-trace.v1 exposures now list cost_tier_name + cost_tier_type. New
+      tests prove a COMPLETED local terminal writes row cost_tier_name="local" + derived cost_tier_type="free_local"
+      (test_canonical_terminal_carries_authoritative_cost_tier), back-compat fallback to the metered winner
+      (test_canonical_terminal_without_tier_falls_back_to_metered_winner), and the exposure columns (test_decisions_exposure_declares_cost_tier_columns).
+      The probe re-runs the projection-delegation suite and proves 54 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13649/dod-omnimarket-pr-1458/command.yaml &&
+          grep -q '^pr_number: 1458$' drift/dod_receipts/OMN-13649/dod-omnimarket-pr-1458/command.yaml
+          && grep -q '54 passed' drift/dod_receipts/OMN-13649/dod-omnimarket-pr-1458/command.yaml
+  - id: "dod-omnimarket-pr-1459"
+    description: >-
+      omnimarket PR #1459 is the pin-hygiene follow-up after #1458. It re-pins omnibase-core from the
+      deleted feature-branch SHA 3f0c4495bb4cc707319f24315e7b8252af6c4dac to the canonical omnibase_core
+      dev merge SHA ae403176f17e9d82f09e6af4e11a12cbe27afd46 without changing runtime source behavior.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13649/dod-omnimarket-pr-1459/command.yaml &&
+          grep -q '^pr_number: 1459$' drift/dod_receipts/OMN-13649/dod-omnimarket-pr-1459/command.yaml
+          && grep -q '6625ce66314b037c3e948acc00b40b1f97038664' drift/dod_receipts/OMN-13649/dod-omnimarket-pr-1459/command.yaml
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence for omnibase_core PR #1349: a pure additive typed-model field (Pydantic wire
+      DTO) with no runtime process, broker topic, migration, Dockerfile, or compose change; omnimarket
+      consumes the field on the next core pin bump and runtime redeploy. The probe greps the changed core
+      module and proves the cost_tier_name field is present on ModelDelegationResult.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13649/dod-deploy/command.yaml && grep -q 'cost_tier_name
+          field present' drift/dod_receipts/OMN-13649/dod-deploy/command.yaml
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for omnimarket PR #1458. Pure handler-logic plumb (terminal carry + projection
+      converter) plus an additive projection-API read-surface exposure (decisions.v1 / correlation-trace.v1
+      columns) plus a dependency pin bump; the delegation_events cost_tier_name + cost_tier_type columns
+      already exist (migration 0018), so no migration runs. No new node, no envelope-breaking change,
+      no Dockerfile / compose / topic mutation, and no live deploy, runtime restart, or .201 mutation
+      is performed by this PR (dev lane only). The live dev-lane proof (psql delegation_events shows a
+      real cost_tier_name for a known correlation_id and GET /projection/onex.snapshot.projection.delegation.decisions.v1
+      returns the tier) is a SEPARATE serialized step after the cross-repo stack lands + the projection
+      redeploys -- this receipt does NOT claim that live render is already proven.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13649/dod-deploy-assessment/command.yaml &&
+          grep -q '^pr_number: 1458$' drift/dod_receipts/OMN-13649/dod-deploy-assessment/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-13649/dod-deploy-assessment/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR. Carries the OMN-13649 contract
+      and DoD receipts onto dev and binds the OCC evidence PR itself with a PASS receipt whose pr_number
+      is this PR's number, satisfying validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13649/dod-occ-self/command.yaml && grep -q '^pr_number:
+          3205$' drift/dod_receipts/OMN-13649/dod-occ-self/command.yaml

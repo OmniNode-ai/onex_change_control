@@ -1,0 +1,36 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14356
+evidence_item_id: dod-001
+check_type: command
+check_value: >-
+  python -m pytest tests/test_kafka_acl_manager.py tests/test_msk_acl_manager.py tests/test_cross_tenant_group_overlap.py
+status: PASS
+run_timestamp: "2026-07-10T00:00:00Z"
+commit_sha: b69dd199b599976b0433b0328865bce8d1d57f70
+runner: claude-opus-4-8
+verifier: claude-independent-verify
+pr_number: 582
+probe_command: >-
+  cd omni_worktrees/OMN-14356/omninode_infra/docker/onex-api && python -m pytest tests/test_kafka_acl_manager.py
+  tests/test_msk_acl_manager.py tests/test_cross_tenant_group_overlap.py
+probe_stdout: |
+  tests/test_cross_tenant_group_overlap.py = 10 passed (redpanda + msk parametrized)
+  full ACL suite = 66 passed, 1 warning
+  independent fuzz over 14 legal slugs: 0 cross-tenant group overlaps under fixed '.' (both providers)
+  same fuzz under reconstructed pre-fix '-': 8 leaks per provider (assertions load-bearing)
+  validate_tenant_slug('acme.foo') raises ValueError = '.' charset-rejected
+actual_output: >-
+  PASS: omninode_infra PR #582 head b69dd199b599976b0433b0328865bce8d1d57f70 changes both consumer-GROUP
+  ACL delimiters from '-' to '.'. kafka_acl_manager.py TENANT_GROUP_PREFIX_TEMPLATE = 'tenant-{slug}.'
+  and msk_acl_manager.py TENANT_GROUP_PREFIX_TEMPLATE = 'tenant-{slug}.*'. The 10 new cross-tenant tests
+  drive the real granted group resources from each provider's production path and apply each provider's
+  real matcher (Kafka literal-prefix; AWS IAM glob), asserting acme's grant never authorizes acme-foo's
+  groups in both directions and that each tenant keeps access to its own groups. Independent fuzz confirms
+  zero overlap under the fix and eight leaks per provider under the old '-' delimiter. The pre-existing
+  group-prefix assertions in test_kafka_acl_manager.py and test_msk_acl_manager.py were adjusted to '.',
+  not deleted. The only residual 'tenant-<slug>-' source string is the MSK IAM role name (an exact identifier,
+  not prefix/glob-matched).
+exit_code: 0
+branch: jonah/omn-14356-collision-safe-group-delimiter
+contract_sha256: sha256:3e288c25b27b2365f07f4765f4b33e416dba3784ece86f19ff19ef640dcb4c07

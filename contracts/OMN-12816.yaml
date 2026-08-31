@@ -1,0 +1,220 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-12816
+title: "SEA generation determinism — enable_thinking:false via additive extra_body + robust block extraction"
+summary: >
+  Determinism layer atop OMN-12813's exemplar (all 12813 green rows were attempt_count=2 — the exemplar
+  alone needs a retry). Two repos: omnibase_infra adds an additive extra_body passthrough on ModelLlmInferenceRequest
+  + HandlerLlmOpenaiCompatible._build_payload; omnimarket declares model_routing.inference_extra_body
+  chat_template_kwargs.enable_thinking=false in the generation contract and hardens _extract_blocks (last
+  fenced block, dedent markdown nesting, fail-clean on no-fence). Suppresses the Qwen3.6-35B-A3B reasoning
+  preamble so the FIRST attempt returns clean fenced blocks (attempt_count=2 -> 1). Additive and contract-native;
+  no env, no literal.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+evidence_requirements:
+  - kind: ci
+    description: >
+      omnibase_infra: 3 new extra_body unit tests + node_llm_inference_effect suite 460 pass, mypy strict
+      + ruff clean. omnimarket: 5 new unit tests (last-block, dedent, fail-clean, contract extra_body->request,
+      default empty) + full suite 6463 pass, mypy strict + ruff clean. Both verified locally before push.
+    command: >
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-tests/command.yaml
+  - kind: docs
+    description: OCC contract file OMN-12816.yaml present and schema-valid
+    command: >
+      cd onex_change_control && uv run validate-yaml contracts/OMN-12816.yaml
+dod_evidence:
+  - id: dod-omn12816-infra-tests
+    description: >
+      omnibase_infra extra_body passthrough: 3 new unit tests (default adds nothing; extra_body merged;
+      cannot override declared) + node_llm_inference_effect suite 460 pass, mypy strict + ruff clean.
+      omnibase_infra PR #1903 (commit 97a3f092).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-tests/command.yaml"
+  - id: dod-omn12816-market-tests
+    description: >
+      omnimarket determinism: 5 new unit tests (last-block extraction, dedent, fail-clean on no-fence,
+      contract inference_extra_body flows to request, default empty) + full omnimarket suite 6463 pass,
+      mypy strict + ruff + pre-commit clean. omnimarket PR #1107 (commit e284d11f).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-market-tests/command.yaml"
+  - id: dod-omn12816-empirical
+    description: >
+      enable_thinking:false proven against the live Qwen3.6-35B-A3B vLLM: output collapsed from 5989 chars
+      of thinking to 605 (one clean fenced block). The last-block+dedent extraction recovered a valid
+      contract from a real thinking-model response (_validate_generation valid=True). Recorded in the
+      paired receipt.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-empirical/command.yaml"
+  - id: dod-omn12816-additive-safe
+    description: >
+      extra_body is additive (default {}), so existing callers incl. the delegation chain are unaffected;
+      declared payload fields take precedence over identically -named extra_body keys (test_extra_body_cannot_override_declared_fields).
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-additive-safe/command.yaml"
+  - id: dod-omn12816-deploy-assessment
+    description: >
+      Runtime deploy is required after the OMN-12816 infra and market PRs merge. The final closure sequence
+      is a clean stability-test rebuild from merged dev, image digest/source SHA capture, and 8-10 fresh
+      runtime correlations with contract_passed=true and attempt_count=1. Current cc8c2e8e exemplar proof
+      remains demo-visible evidence, not final-build runtime proof.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-deploy-assessment/command.yaml
+          && printf '%s\\n' 'deploy required: clean stability-test rebuild after #1903 and #1107 merge'"
+  - id: dod-omn12816-main-promotion-infra
+    description: >
+      omnibase_infra main-promotion PR #1905 binds the merged OMN-12816 extra_body contract support to
+      the production-lineage branch.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-main-promotion-infra/command.yaml
+          && grep -q '^pr_number: 1905$' drift/dod_receipts/OMN-12816/dod-omn12816-main-promotion-infra/command.yaml"
+  - id: dod-omn12816-main-promotion-market
+    description: >
+      omnimarket main-promotion PR #1108 binds the merged OMN-12816 deterministic generation mechanism
+      and infra pin to the production-lineage branch.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-main-promotion-market/command.yaml
+          && grep -q '^pr_number: 1108$' drift/dod_receipts/OMN-12816/dod-omn12816-main-promotion-market/command.yaml"
+  - id: dod-omn12816-infra-backmerge-main-to-dev
+    description: >
+      omnibase_infra backmerge PR #1906 brings current main release metadata into dev so the OMN-12816
+      dev-to-main promotion can merge cleanly.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-backmerge-main-to-dev/command.yaml
+          && grep -q '^pr_number: 1906$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-backmerge-main-to-dev/command.yaml"
+  - id: dod-omn12816-infra-promotion-conflict-normalize
+    description: >
+      omnibase_infra PR #1907 normalizes the two add/add conflict points left by the squash-based backmerge
+      so the required dev-to-main OMN-12816 promotion PR #1905 can merge without bypassing the main-target
+      guard.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-promotion-conflict-normalize/command.yaml
+          && grep -q '^pr_number: 1907$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-promotion-conflict-normalize/command.yaml"
+  - id: dod-omn12816-occ-main-promotion-evidence
+    description: >
+      onex_change_control PR #2321 publishes the OMN-12816 main-promotion evidence receipts used by the
+      downstream release-promotion receipt gates.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-main-promotion-evidence/command.yaml
+          && grep -q '^pr_number: 2321$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-main-promotion-evidence/command.yaml"
+  - id: dod-omn12816-occ-normalization-evidence
+    description: >
+      onex_change_control PR #2322 publishes the OMN-12816 receipt that binds the infra promotion conflict-normalization
+      PR #1907, plus its own PR-bound receipt, so downstream gates can resolve the refreshed evidence
+      snapshot.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-normalization-evidence/command.yaml
+          && grep -q '^pr_number: 2322$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-normalization-evidence/command.yaml"
+  - id: dod-omn12816-infra-promotion-coverage-marker
+    description: >
+      omnibase_infra PR #1908 adds a top-level integration coverage marker for the OMN-12816 LLM inference
+      contract so the dev-to-main promotion gate observes the already-proven runtime integration coverage
+      without weakening the gate.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-promotion-coverage-marker/command.yaml
+          && grep -q '^pr_number: 1908$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-promotion-coverage-marker/command.yaml"
+  - id: dod-omn12816-occ-promotion-coverage-evidence
+    description: >
+      onex_change_control PR #2323 publishes the OMN-12816 receipt that binds the infra promotion coverage
+      marker PR #1908, plus its own PR-bound receipt, so downstream promotion gates can resolve the refreshed
+      evidence snapshot.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-promotion-coverage-evidence/command.yaml
+          && grep -q '^pr_number: 2323$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-promotion-coverage-evidence/command.yaml"
+  - id: dod-omn12816-occ-coverage-refresh
+    description: >
+      onex_change_control PR #2324 refreshes the OMN-12816 receipt for infra promotion coverage marker
+      PR #1908 after its formatting commit changed the PR head SHA, and self-binds that refreshed OCC
+      evidence update.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-coverage-refresh/command.yaml
+          && grep -q '^pr_number: 2324$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-coverage-refresh/command.yaml"
+  - id: dod-omn12816-infra-receipt-policy-caller
+    description: >
+      omnibase_infra PR #1909 wires the reusable receipt-gate caller to select main-release policy for
+      dev-to-main promotion PRs and dev-preflight policy for dev PRs, preserving receipt enforcement while
+      allowing the required #1905 promotion branch shape.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-receipt-policy-caller/command.yaml
+          && grep -q '^pr_number: 1909$' drift/dod_receipts/OMN-12816/dod-omn12816-infra-receipt-policy-caller/command.yaml"
+  - id: dod-omn12816-occ-receipt-policy-evidence
+    description: >
+      onex_change_control PR publishes the OMN-12816 receipt that binds the infra receipt-policy caller
+      PR #1909, plus its own PR-bound receipt, so downstream promotion gates can resolve the refreshed
+      evidence snapshot.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-receipt-policy-evidence/command.yaml"
+  - id: dod-omn12816-core-max-attempts
+    description: >
+      omnibase_core PR #1221 raises the generation request default retry budget from 2 attempts to 10
+      attempts and updates the focused model test expectation.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-core-max-attempts/command.yaml
+          && grep -q '^pr_number: 1221$' drift/dod_receipts/OMN-12816/dod-omn12816-core-max-attempts/command.yaml"
+  - id: dod-omn12816-market-max-attempts
+    description: >
+      omnimarket PR #1110 raises generation consumer, delegation escalation, and CI-fix retry defaults
+      from 2 attempts to 10 attempts while preserving explicit two-attempt test fixtures.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-market-max-attempts/command.yaml
+          && grep -q '^pr_number: 1110$' drift/dod_receipts/OMN-12816/dod-omn12816-market-max-attempts/command.yaml"
+  - id: dod-omn12816-sea-max-attempts
+    description: >
+      onex-self-extending-agent PR #218 raises the SEA generation consumer and Track-B route consumer
+      retry defaults from 2 attempts to 10 attempts.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-sea-max-attempts/command.yaml
+          && grep -q '^pr_number: 218$' drift/dod_receipts/OMN-12816/dod-omn12816-sea-max-attempts/command.yaml"
+  - id: dod-omn12816-occ-max-attempts-evidence
+    description: >
+      onex_change_control PR #2331 publishes the PR-bound OMN-12816 max-attempt retry evidence for omnibase_core
+      #1221, omnimarket #1110, and onex-self-extending-agent #218.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-max-attempts-evidence/command.yaml
+          && grep -q '^pr_number: 2331$' drift/dod_receipts/OMN-12816/dod-omn12816-occ-max-attempts-evidence/command.yaml"

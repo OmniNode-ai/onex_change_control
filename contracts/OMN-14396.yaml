@@ -1,0 +1,70 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14396"
+title: "fix(OMN-14396): contract_model_ref override must respect use_for on id collision"
+summary: >-
+  omnimarket PR #1720 fixes a local-first routing bug: routing_tiers.yaml's local tier declares two backends
+  (local-coder, local-heavy-reasoning) that share the model id Qwen3.6-35B-A3B for different capabilities.
+  _select_model_for_task's contract_model_ref loop matched on model.id alone, so a task-class override
+  pointing at that shared id always resolved to whichever backend was declared first (local-coder), even
+  when local-coder does not declare the task type. A live incident (2026-07-11T16:27:43Z stability-test)
+  showed task_type=research routed to local-coder, whose failure then escalated the whole local tier to
+  cloud (z.ai glm-5.2, itself quota-exhausted). The fix disambiguates an id collision by preferring the
+  match whose use_for declares the task type, falling back to the first id match (unchanged) only when
+  none of the id matches declare it — preserving the OMN-10942/13140 explicit-pin override behavior for
+  the common single-match case. Independently verified (S-C adversarial verifier, not the implementer):
+  RED-before/GREEN-after reproduced against the two new regression tests, the duplicate-id premise confirmed
+  against the real routing_tiers.yaml/task_class_contracts.v1.yaml, a live before/after probe against
+  the real config showing the fix also silently corrects reasoning/planning/review (same root cause, not
+  disclosed in the PR body, no regression), the 752-passed/2-skipped delegation suite reproduced locally,
+  and CI red classified as occ-preflight cascade only (no independent failures). Proof class is code-only
+  / test-proven -- delegation_events was empty on stability-test postgres so the live incident could not
+  be replayed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1720-head-f4685f4c"
+    description: >-
+      Independent adversarial verification of omnimarket PR #1720 at head f4685f4c960eb59425f320ebdad4498abcfeeac8.
+      RED-before/GREEN-after reproduced by swapping in the pre-fix source with the new tests kept (both
+      failed), then restoring the fix (both passed). The full targeted delegation-routing suite (node_delegation_routing_reducer,
+      unit/delegation, node_llm_delegation_routing_compute, node_delegate_skill_orchestrator) passed 752/2
+      skipped with zero regressions, matching the PR body's claimed numbers exactly.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14396/dod-omnimarket-pr-1720-head-f4685f4c/command.yaml
+          && grep -q '^pr_number: 1720$' drift/dod_receipts/OMN-14396/dod-omnimarket-pr-1720-head-f4685f4c/command.yaml
+          && grep -q 'f4685f4c960eb59425f320ebdad4498abcfeeac8' drift/dod_receipts/OMN-14396/dod-omnimarket-pr-1720-head-f4685f4c/command.yaml
+  - id: "dod-deploy-assessment-head-f4685f4c"
+    description: >-
+      Deploy-surface assessment for omnimarket PR #1720 head f4685f4c960eb59425f320ebdad4498abcfeeac8:
+      the diff is limited to a routing-reducer handler function's model-selection logic and its focused
+      unit/end-to-end tests. It does not register a new service deployment, mutate runtime configuration,
+      perform a deploy or restart, change topics, add a migration, or touch .201.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14396/dod-deploy-assessment-head-f4685f4c/command.yaml
+          && grep -qi 'no live deploy' drift/dod_receipts/OMN-14396/dod-deploy-assessment-head-f4685f4c/command.yaml
+  - id: "dod-occ-self-commit"
+    description: >-
+      OCC self-binding: this onex_change_control branch carries the OMN-14396 central contract and PASS
+      receipts for omnimarket PR #1720 head f4685f4c960eb59425f320ebdad4498abcfeeac8. The receipt binds
+      the first evidence commit for occ-preflight eligibility before the OCC PR number exists.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14396/dod-occ-self-commit/command.yaml && grep
+          -q 'jonah/omn-14396-occ-pr1720' drift/dod_receipts/OMN-14396/dod-occ-self-commit/command.yaml

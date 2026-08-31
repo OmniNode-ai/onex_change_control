@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12623"
+title: "feat: topic-migration executor + lag/drain gate + status projection + replay-equivalence harness
+  (Section 6b, infra)"
+summary: >-
+  Section 6b of the divergent-transport convergence epic (OMN-12618), in omnibase_infra. Builds the four
+  load-bearing pieces the migration substrate lacked. (1) Lag/offset observation: ProtocolKafkaAdminLike
+  (protocols/protocol_kafka_admin_like.py) is extended with list_consumer_group_offsets + list_offsets;
+  ServiceConsumerLagObserver (migration/service_consumer_lag_observer.py) computes per-partition committed-vs-
+  log-end lag (ModelTopicPartitionOffset / ModelConsumerGroupLag); ServiceDrainProofGate (migration/service_drain_proof_gate.py)
+  blocks old-consumer-group retirement until residual lag is zero, and refuses to treat absence-of-offsets
+  as drain. (2) Migration executor: NodeTopicMigrationExecutorEffect (contract-native EFFECT) consumes
+  ModelTopicMigrationContract from omnibase_core (OMN-12621), provisions the new topic via ModelTopicSpec/TopicProvisioner,
+  mints the new consumer group via compute_consumer_group_id, advances PLANNED->DUAL_WRITE->DUAL_READ->CUTOVER->COMPLETE
+  forward-only, gates CUTOVER/COMPLETE on the drain-proof gate, and emits a ModelTopicMigrationLifecycleEvent
+  per advanced phase. (3) Status projection: NodeTopicMigrationProjection (COMPUTE) + schemas/schema_topic_migration_projection.sql
+  with FSM current_state enum + idempotency columns (last_applied_event_id/sequence/offset/partition)
+  modeled on schema_registration_projection.sql. (4) Cross-boundary replay-equivalence harness (tests/replay/
+  test_topic_migration_replay_equivalence.py) that projects the same source corpus through old- and new-topic
+  paths and asserts equivalent projected state via ModelOutputDiff/deepdiff. The omnibase_core git pin
+  is bumped to dev HEAD a1e73fff (OMN-12621 #1191) which adds ModelTopicMigrationContract; uv.lock regenerated.
+  Governance updates land in the same PR: protocol lockfile regen, infra-node-allowlist entries (infra-only
+  nodes), subscribe-wiring-health baseline (the command topic is operator/runtime-issued), test-selection
+  adjacency for the new migration module, validation-exemptions for the Service<Name> naming + Kafka group_id
+  string, and onex.nodes entry points. Live .201 consumer-group runtime proof is OPERATOR-GATED and was
+  NOT run; this contract covers the landable code + local/integration proof only.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "topics"
+  - "events"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-suite-green"
+    description: "Landable code proof: the OMN-12623 migration unit + replay tests pass (lag model, lag
+      observer, drain-proof gate blocks while lag remains / allows after drain proof, executor forward-only
+      + cutover-blocking, projection idempotency, cross-boundary replay equivalence), and the governance
+      gates reacting to the new files pass (protocol lockfile, protocol ownership, subscribe-wiring-health,
+      test-selection adjacency, generate-entry-points, handler-architecture-invariants). pre-commit run
+      on the staged change set passes with no bypass. Three failures in the full suite (test_node_migration_discovery
+      sync, test_receipt_gate_install_guard, test_runner_image_identity) are pre-existing on origin/dev
+      — byte-identical files untouched by this change."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12623/dod-infra-suite-green/command.yaml"
+  - id: "dod-runtime-proof-pending-201"
+    description: "Runtime verification METHOD (HELD behind operator-approved .201 run, per the OMN-12574/12588
+      deploy hold B3). The contract-native executor replaces the argparse path; live proof requires deploying
+      the node to a .201 runtime lane and exercising a real consumer group. Documented method: deploy
+      node_topic_migration_executor_effect with ONEX_GROUP_ID on a stability-test lane, produce a fixture
+      *.v1 corpus via `rpk topic produce onex.evt.<svc>.<event>.v1`, run the executor through DUAL_WRITE
+      (verify the new topic exists via `rpk topic list`) and CUTOVER (verify the drain-proof gate blocks
+      while old-group lag > 0 via `docker exec ... rpk group describe <old-group>`), then COMPLETE after
+      drain. PENDING operator-approved .201 run — NOT executed; no live-runtime claim is made here."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12623/dod-runtime-proof-pending-201/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "Self-binding receipt for the OCC PR carrying the OMN-12623 central contract and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12623/dod-occ-pr-self/command.yaml"

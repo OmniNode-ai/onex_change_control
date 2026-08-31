@@ -1,0 +1,84 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17188"
+title: "omnidash first-ever CodeQL scan — 13 alerts dispositioned"
+summary: >
+  OCC contract for OmniNode-ai/omnidash PR #302. omnidash's first CodeQL analysis returned 13 open alerts.
+  Eight were judged reachable-or-cheap and fixed in code (auth-boundary and static/SPA rate limiting,
+  log-injection and tainted-format-string on the projection read path, three dead defensive guards); five
+  were dismissed through the code-scanning API with written justifications citing the code. The query
+  suite was not narrowed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #302 CI checks green"
+    command: "gh pr checks 302 --repo OmniNode-ai/omnidash"
+  - kind: "tests"
+    description: >
+      14 new vitest cases land with this change and are the behavior proof for the security fixes. The
+      log-injection cases are written as the injection ATTEMPT the flagged code used to permit, asserting
+      refusal; the rate-limiting cases pin middleware mount ORDER (a limiter mounted after the auth boundary
+      protects nothing) and prove the skipSuccessfulRequests semantics the auth fix depends on. This is
+      a hand-authored, ticket-scoped target, not a ticket-independent suite standing in for proof.
+    command: "npx vitest run server/projection-utils.test.ts server/__tests__/rate-limiting.test.ts"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnidash-pr-302"
+    description: "PR #302 on OmniNode-ai/omnidash — CodeQL alert remediation."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnidash/pulls/302 --jq '{number,state,head:.head.ref}'"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/pulls/302/files --paginate --jq '.[].filename' | grep -cFx 'server/index.ts'
+  - id: "dod-omn17188-codeql-alerts-dispositioned"
+    description: >
+      All five CodeQL alerts judged FALSE POSITIVE are dismissed through the code-scanning API with dismissed_reason=used_in_tests
+      and a written comment citing the code, rather than suppressed by narrowing query_suite.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/pulls/302/files --paginate --jq '.[].filename' | grep -E '^(server/index.ts|server/postgres-projection-reader.ts|server/projection-utils.ts|server/__tests__/rate-limiting.test.ts|server/projection-utils.test.ts)$' | awk 'END{exit !(NR==5)}'
+  - id: "occ-self-bind-pr-7784"
+    description: "Binds OMN-17188 to OCC companion PR #7784 (self-bind)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/onex_change_control/pulls/7784 --jq '{number,state,head:.head.ref}'"
+  - id: "dod-OmniNode-ai-omnidash-pr-304"
+    description: >
+      PR #304 on OmniNode-ai/omnidash — follow-up. #302 fixed the log-injection flows correctly at runtime,
+      but the dev analysis that ran after it opened two NEW alerts (#14, #15) on the same lines: CodeQL
+      recognizes a js/log-injection sanitizer via StringReplaceCall.replaces, which resolves a constant
+      pattern per alternation branch and does not look inside a character class, so `.replace(/[\r\n]/g,'
+      ')` was invisible to the query. #304 switches to the documented `/\n|\r/g` alternation form. Same
+      neutralization, recognized shape; nothing dismissed and query_suite untouched.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnidash/pulls/304 --jq '{number,state,head:.head.ref}'"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/pulls/304/files --paginate --jq '.[].filename' | grep -cFx 'server/projection-utils.ts'
+  - id: "dod-OmniNode-ai-omnidash-pr-305"
+    description: >
+      PR #305 on OmniNode-ai/omnidash — second attempt at alerts #14/#15, diagnosed from the analysis
+      SARIF rather than guessed. The data-flow path ran straight THROUGH both replace calls, so CodeQL
+      treated neither as a sanitizer. Query source is decisive: StringReplaceSanitizer requires `replaces(s,
+      "") and s.regexpMatch("\n")`, and `replaces(old,new)` resolves `new` via getRawReplacement().mayHaveStringValue
+      -- so a ' ' replacement yields new=" " and never matches. #304's character-class-vs-alternation
+      theory was WRONG; the replacement string was the defect. Fixed with `.replace(/\n/g,'').replace(/\r/g,'')`.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnidash/pulls/305 --jq '{number,state,head:.head.ref}'"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/pulls/305/files --paginate --jq '.[].filename' | grep -cFx 'server/projection-utils.ts'

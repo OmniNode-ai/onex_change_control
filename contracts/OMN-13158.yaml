@@ -1,0 +1,121 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13158"
+title: "code_generation escalation reaches OAuth-backed headless Codex"
+summary: >
+  OMN-13158 fixes the delegation escalation bug found by the 2026-06-15 runtime integration sweep: code_generation
+  could start at cheap_cloud, fail the quality gate, and terminate with no_higher_tier_available because
+  next_eligible_tier() ignored the task-class escalation_policy.tier_order. The live repro CID was f97e21c5-b29c-4bbb-9b23-d9098dcc56cb:
+  glm-4.5 produced weak output, fallback was recommended, escalation_count stayed 0, and no higher tier
+  was selected. omnimarket PR #1231 (branch jonah/omn-13158-codegen-tier-order, head b51892997fee3d48cb24ad633a85006212c7a3c0)
+  treats escalation_policy.tier_order as the complete ordered set for the task class, uses that order
+  when task_type is provided, and preserves declaration-order behavior when task_type is omitted. It also
+  closes the latent leak where tiers absent from a class tier_order were appended and tried after the
+  declared ceiling. Follow-up runtime proof after deploy showed the fixed runtime now escalates cheap_cloud
+  -> local, and also exposed that the declared final claude tier was the wrong operational model for installed
+  lanes because OmniNode uses local OAuth/subscription CLI sessions rather than an Anthropic API key.
+  The follow-up omnimarket PR #1233 changes code_generation escalation toward OAuth-backed cli_agents,
+  registers codex-cli/cli-codex as the first cli_agents backend, and executes terminal delegation through
+  the OAuth CLI intent handler. The paired omnibase_infra PR #1996 removes the superseded Anthropic secret-map
+  change, registers codex-cli in infra routing config, lets the generic CLI subprocess handler resolve
+  auto-wired codex-cli/claude-cli/ gemini-cli/opencode-cli requests from request.model, uses OAuth-safe
+  CLI argv for Codex subprocess delegation, and prevents deploy-runtime verification from inheriting stale
+  HEALTH_CHECK_URL values from ~/.omnibase/.env.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-1231-head"
+    description: >-
+      omnimarket PR #1231 carries the closed-set tier_order fix at head b51892997fee3d48cb24ad633a85006212c7a3c0.
+      Focused delegation verification passed on current dev: 78 focused tests across test_delegation_tier_escalation.py,
+      test_cloud_escalation_omn13140.py, and test_delegation_orchestrator.py; strict mypy passed for handler_delegation_routing.py;
+      ruff format/check passed with only pre-existing invalid noqa warnings in unrelated settings.py.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnimarket-1231-head/command.yaml\""
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment for PR #1231: this is a handler/config-comment/test change with no DDL, migration,
+      topic/schema mutation, or live runtime mutation in the PR. Runtime redeploy and post-fix code_generation
+      repro are separate post-merge live-runtime proof steps before claiming the fix is live.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-deploy-assessment/command.yaml\"
+          && grep -q 'live-runtime proof follows merge' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-deploy-assessment/command.yaml\""
+  - id: "dod-occ-pr-self"
+    description: >-
+      The paired onex_change_control PR carries this central OMN-13158 contract and the receipts used
+      by omnimarket#1233 and omnibase_infra#1996 via Evidence-Source and Evidence-Ticket.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-occ-pr-self/command.yaml\""
+  - id: "dod-omnimarket-1233-headless-codex"
+    description: >-
+      omnimarket PR #1233 carries the headless Codex routing follow-up at head bc441fd2ea07e4452a13c194ba2741c5389bf007.
+      It routes terminal code_generation delegation through the OAuth-backed CLI intent handler, registers
+      codex-cli/cli-codex as the first CLI agent backend, and adds routing-authority coverage for the
+      headless Codex path.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnimarket-1233-headless-codex/command.yaml\""
+  - id: "dod-omnibase-infra-1996-headless-codex"
+    description: >-
+      omnibase_infra PR #1996 carries the infra side of the headless Codex fix at head c15b3e0026a300a61f4b7fe1f543014af82b53f1.
+      It removes the superseded Anthropic API-key runtime-policy mapping, registers codex-cli in cli_agents,
+      documents the contract behavior change, resolves auto-wired CLI subprocess requests from request.model,
+      hardens Codex CLI subprocess argv for OAuth-backed execution, and prevents stale deploy health URL
+      inheritance.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnibase-infra-1996-headless-codex/command.yaml\""
+  - id: "dod-omnimarket-1239-autowiring"
+    description: >-
+      omnimarket PR #1239 carries the effects-lane auto-wiring repair (merged-code + tests) at head 9851e4e4bfc51d8e29c5fe35e7d387949d7f8fe0.
+      F1: HandlerSegmentation constructs synchronously and builds its default inference bridge lazily
+      under an asyncio.Lock, resolving the OpenRouter key via the async secret resolver (the boot-time
+      auto-wiring path constructs handlers inside a running loop where the sync secret resolver failed
+      closed). F2/F4/F5 (+2 same-class): removed phantom handler_routing.handlers entries that named non-handlers
+      (node_build_loop_orchestrator, node_overnight, node_platform_diagnostics). Adds a tests/unit/runtime
+      regression harness for the four auto-wiring failure modes plus a generalized every-routing-entry-resolves-to-a-handler
+      invariant. Scope: merged-code auto-wiring repair + green tests; this does NOT claim the .201 runtime
+      failed=0 acceptance (separate later gated artifact).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnimarket-1239-autowiring/command.yaml\""
+  - id: "dod-omnibase-infra-2003-autowiring"
+    description: >-
+      omnibase_infra PR #2003 carries the infra side of the auto-wiring repair (merged-code + tests) at
+      head 89698f6f21a16be1fc3fa0d56f6e04da7e1c6fba. F3: the db_io.database identity validator now accepts
+      all per-service db_io.database identities so handler DB injection auto-wires without rejecting valid
+      per-service identities (the _DB_URL_ENV_MAP fix). Adds tests/unit/runtime/auto_wiring coverage for
+      handler wiring DB injection. Scope: merged-code auto-wiring repair + green tests; this does NOT
+      claim the .201 runtime failed=0 acceptance (separate later gated artifact).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnibase-infra-2003-autowiring/command.yaml\""
+  - id: "dod-omnimarket-1240-pinbump"
+    description: >-
+      omnimarket PR #1240 carries the uv.lock sibling-pin bump at head 9fd35afedc595dbf0fafd7cc1fda064c445289bb.
+      It bumps the [tool.uv.sources] + override-dependencies git revs for omnibase-infra/core/compat +
+      onex-change-control to their current origin/dev tip SHAs and regenerates uv.lock so the lock pins
+      match the build-input clone HEAD (OMN-12977 sibling-pin guard). This aligns omnimarket to the dev-tip
+      siblings — including the omnibase-infra F3 db_io.database identity validator merge (1c1a5b17) that
+      the .201 dev-lane workspace build required — and proves the dev-tip infra works under the bumped
+      lock via focused effects tests. Scope: merged-code lock-alignment DoD + green focused tests; this
+      does NOT claim the .201 runtime failed=0 acceptance (separate later gated artifact).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13158/dod-omnimarket-1240-pinbump/command.yaml\""

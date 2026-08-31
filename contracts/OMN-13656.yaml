@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13656"
+title: "feat(OMN-13656): scanned workspace-from-dev ECR build as a gated stability-candidate"
+summary: >-
+  Adds a CI path that builds a SCANNED workspace-from-dev runtime image to ECR as an explicitly non-prod
+  stability-candidate, and proves the prod-promotion gate refuses such an image for prod absent an explicit
+  candidate grant. omnibase_infra PR #2116 adds build-workspace-candidate-runtime.yml (workflow_dispatch
+  only) which stages the sibling repos at dev HEAD, builds docker/Dockerfile.runtime in workspace mode,
+  runs the SAME Trivy scan (CRITICAL,HIGH --ignore-unfixed --exit-code 1) plus the OMN-9139 source-hash
+  attestation and a provenance build-manifest, then pushes a candidate-* image. The image is stamped build_source=workspace,
+  promotion_class=stability-candidate, non_main_lineage=true on the manifest and as OCI labels, and the
+  Dockerfile fails closed unless a workspace build is so marked, so it can never masquerade as a clean-main
+  build under the lineage guard. omnimarket PR #1460 makes node_prod_promotion_gate_compute REFUSE a stability-candidate
+  / non-main-lineage image for the prod lane unless an explicit candidate-authorizing grant exists; the
+  refusal is a pure gate decision provable with no prod mutation. The candidate digest is pinnable to
+  dev/stability lanes ONLY — never prod.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-gate-refuses-candidate"
+    description: >-
+      omnimarket PR #1460 adds node_prod_promotion_gate_compute refusal of a stability-candidate / non-main-lineage
+      image for prod. The deterministic suite tests/test_redeploy_prod_promotion_gate.py reports 25 passed
+      (10 new), including refusal with and without a readiness projection, dev-lane pinnability, the approver
+      candidate-grant opt-in, and the COMPUTE handler emitting a rejection decision while staying pure
+      (no prod mutation).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'node_prod_promotion_gate_compute refusal' contracts/OMN-13656.yaml"
+  - id: "dod-workspace-build-path"
+    description: >-
+      omnibase_infra PR #2116 adds build-workspace-candidate-runtime.yml staging siblings + building Dockerfile.runtime
+      in workspace mode + the SAME Trivy scan + source-hash attestation + provenance manifest + push to
+      ECR. tests/ci/test_workspace_candidate_build.py reports 13 passed, pinning the workspace BUILD_SOURCE,
+      pinned third-party action refs, safe workflow_dispatch input handling, the RUNTIME_SOURCE_HASH attestation,
+      the unweakened Trivy invariants, the provenance fields, and the lineage-label assertion ordered
+      before push.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'build-workspace-candidate-runtime.yml staging siblings' contracts/OMN-13656.yaml"
+  - id: "dod-deploy"
+    description: >-
+      No prod kustomization is mutated and no prod deploy/restart is performed. The candidate is pinnable
+      to dev/stability lanes only; the prod refusal is proven by the omnimarket gate test, not by a deploy.
+      This DoD item records dev/stability-scoped evidence only and does NOT authorize any prod deploy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'does NOT authorize any prod deploy' contracts/OMN-13656.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt — onex_change_control PR #3208 refreshes the OMN-13656 contract + receipts
+      consumed by omnimarket #1460 and omnibase_infra #2116.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^pr_number: 3208$' drift/dod_receipts/OMN-13656/dod-occ-self/command.yaml"
+  - id: "dod-omnimarket-pr-1460"
+    description: >-
+      omnimarket PR #1460 makes node_prod_promotion_gate_compute refuse a stability-candidate / non-main-lineage
+      image for prod absent an explicit candidate grant; 25 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^pr_number: 1460$' drift/dod_receipts/OMN-13656/dod-omnimarket-pr-1460/command.yaml"
+  - id: "dod-infra-pr-2116"
+    description: >-
+      omnibase_infra PR #2116 adds the scanned workspace-from-dev ECR build that stamps the stability-candidate;
+      13 passed after hardening action refs, source-hash attestation, and workflow_dispatch input handling.
+      Does NOT authorize any prod deploy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^pr_number: 2116$' drift/dod_receipts/OMN-13656/dod-infra-pr-2116/command.yaml"

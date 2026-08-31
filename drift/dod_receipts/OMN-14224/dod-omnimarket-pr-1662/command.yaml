@@ -1,0 +1,76 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14224"
+evidence_item_id: "dod-omnimarket-pr-1662"
+check_type: "command"
+check_value: "independent guardrail probe (undeclared -> local-only, paid disallowed) + inverse control
+  (declared still routes to paid) + base-commit control on 2 unrelated pre-existing failures, on a clean
+  detached checkout of PR head ed515bd6"
+status: PASS
+run_timestamp: "2026-07-10T00:25:09Z"
+commit_sha: ed515bd6439b406362a690e45932331f9f96c82b
+runner: "omn-14224-independent-verifier"
+verifier: "occ-evidence-lane"
+probe_command: >-
+  # Verified on a clean detached checkout of PR head ed515bd6 (isolated from the shared worktree's uncommitted
+  # OMN-14225 paid-gate changes), deps via co-installed venv + PYTHONPATH overlay to the clean src. #
+  GUARDRAIL: _tier_allowed_by_contract(ModelRoutingTier(name,cost), entry=None) for tier in # {local,
+  cheap_frontier, cheap_cloud, claude}; plus via _task_class_entry(contract, missing_class) -> None. #
+  INVERSE CONTROLS: _tier_allowed_by_contract(tier, declared_entry) for cloud_routing_policy=allowed,
+  # cloud_routing_policy=blocked, and pricing_ceiling_per_1k_tokens=0.005. # TESTS: uv-venv pytest tests/nodes/node_delegation_routing_reducer/test_contract_routing_policy.py
+  (22) # + broad themed delegation/routing/escalation suite (1959 collected). # BASE CONTROL: the 2 failing
+  local-dispatch tests re-run on base commit e8594b7c under the identical harness.
+probe_stdout: |
+  _LOCAL_TIERS = {'local'}
+  GUARDRAIL (entry=None, undeclared class) — must be LOCAL-only:
+    tier=local          cost=0.0    -> allowed=True
+    tier=cheap_frontier cost=0.0    -> allowed=False   (free but non-local -> excluded)
+    tier=cheap_cloud    cost=0.002  -> allowed=False   (paid -> excluded)
+    tier=claude         cost=0.015  -> allowed=False   (paid -> excluded)
+    via _task_class_entry(contract,'future_unlisted_class') = None -> local=True, claude=False
+  INVERSE CONTROL (declared class still routes normally):
+    cloud_routing_policy=allowed : local=True, cheap_cloud=True, claude=True   (NOT over-restricted)
+    cloud_routing_policy=blocked : local=True, claude=False                    (unchanged)
+    pricing_ceiling=0.005        : cheap_cloud($0.002)=True, claude($0.015)=False (unchanged)
+  TESTS (clean checkout ed515bd6):
+    test_contract_routing_policy.py .......................... 22 passed
+      (incl. renamed test_no_entry_fails_closed_to_local_only asserting the NEW local-only behavior)
+    themed delegation/routing/escalation suite: 1924 passed, 33 skipped, 3 deselected, 2 failed
+    the 2 failures:
+      test_local_dispatch_cli_hang_omn13597::test_dispatch_offloads_blocking_call_off_the_event_loop
+      test_local_dispatch_fork_safety_omn13842::test_dispatch_returns_typed_receipt_through_process_boundary
+      (both hit http://unreachable.invalid:8000 with task_type=research — a DECLARED class; the guardrail
+       entry-is-None branch is never reached)
+  BASE CONTROL (base commit e8594b7c, same harness, pre-PR):
+    both tests FAIL IDENTICALLY (same unreachable.invalid / spawn-boundary root cause)
+    => pre-existing environment/spawn artifacts, NOT caused by PR #1662
+  LINT: ruff check All checks passed; ruff format 2 files already formatted; mypy --strict Success: no issues;
+        pre-commit all hooks Passed (topic-naming-lint Passed with OMNIBASE_INFRA_PATH set).
+actual_output: >-
+  PASS: omnimarket PR #1662 (head ed515bd6, base dev, draft) changes exactly two files — src/omnimarket/nodes/node_delegation_routing_reducer/handlers/handler_delegation_routing.py
+  (the entry-is-None branch of _tier_allowed_by_contract now returns `tier.name in _LOCAL_TIERS` instead
+  of True) and tests/nodes/node_delegation_routing_reducer/test_contract_routing_policy.py (the test formerly
+  named test_no_entry_allows_any_tier is renamed test_no_entry_fails_closed_to_local_only and now asserts
+  paid/free-cloud tiers are DISALLOWED and only the local tier is allowed for an undeclared class) — no
+  foreign content. An independent verifier (separate from the implementing agent) reproduced the guardrail
+  on a clean detached checkout of ed515bd6 (isolated from the shared worktree's uncommitted OMN-14225
+  paid-gate changes, which would otherwise have contaminated the probe): an undeclared task class (entry=None,
+  directly and via the real _task_class_entry path) can reach ONLY the local tier — every paid tier (cheap_cloud,
+  claude) and even the free-but-non-local cheap_frontier tier is disallowed. The guardrail is genuinely
+  fail-closed and is wired into the escalation eligibility gate _tier_can_route_task (and the delta/select
+  call sites), so it actually gates tier selection — it is not a no-op. The inverse control passes: a
+  DECLARED class (cloud_routing_policy=allowed) still routes to paid normally (local, cheap_cloud, claude
+  all allowed), so declared classes are not over-restricted; declared cloud-blocked and pricing-ceiling
+  classes behave unchanged. Zero-behavior-change holds: all 15 accepted delegation task classes are declared
+  in task_class_contracts.v1.yaml and the default_task_model_ref map is a subset of them, so the changed
+  branch is unreachable by any accepted class. Tests: 22/22 in the changed file pass; the broad themed
+  suite ran 1924 passed / 33 skipped / 3 deselected with 2 failures, and both failures (spawn/network
+  local-dispatch tests on the DECLARED task_type=research) reproduce identically on the pre-PR base commit
+  e8594b7c under the identical harness, proving they are pre-existing environment artifacts unrelated
+  to this PR. No gate weakened, no skip token, no --no-verify. ruff check + ruff format --check + mypy
+  --strict clean; pre-commit clean (topic-naming-lint passes with OMNIBASE_INFRA_PATH set — the bare-worktree
+  failure is a relative-path env artifact, not a code defect).
+exit_code: 0
+pr_number: 1662
+branch: "jonah/omn-14224-never-silent-paid-guardrails"
+contract_sha256: "sha256:63bb9791d36eafe618f151dfaf0e9a62f65f60418ade8a3132d1bc12dec78c46"

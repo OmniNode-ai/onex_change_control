@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13401"
+title: "Vendor delegation cost/budget migrations 0018/0019 into omnibase_infra deployed tree"
+summary: >-
+  Vendor the two node-owned delegation migrations that omnimarket origin/dev ships (0018_delegation_cost_measurements,
+  0019_delegation_budget_state) into omnibase_infra's deployed forward-migration tree under docker/migrations/forward/nodes/node_projection_delegation/.
+  The omnibase_infra vendored tree topped out at 0017; the forward-migration runner reads only the vendored
+  tree, so a dev rebuild applied 0017 only and left the dev ledger at 0016->0017, leaving required 0018/0019
+  unapplied and invalidating Phase 5 savings/cost runtime readback (measured cost, budget state). Vendored
+  1:1 via the canonical scripts/sync-node-migrations.sh path (OMN-12559 — no hand-copy, no renumber);
+  the runner applies them under namespaced ids node:node_projection_delegation:0018_... / 0019_... in
+  a separate identity space from the flat infra sequence. Both files are byte-for-byte identical to the
+  omnimarket source (sha256 match) and were not hand-edited. Mirrors the 0017 vendoring (OMN-13355 / infra#2050).
+  0018 carries OMN-13234's typed per-tier actual-cost columns; 0019 carries OMN-13235's per-tenant ceiling
+  budget-state table.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2054-vendor"
+    description: >-
+      omnibase_infra PR #2054 vendors 0018_delegation_cost_measurements.sql and 0019_delegation_budget_state.sql
+      under docker/migrations/forward/nodes/node_projection_delegation/. The probe greps the vendored
+      0019 file in the infra worktree and proves the budget-state table create is present (CREATE TABLE
+      IF NOT EXISTS delegation_budget_state).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13401/dod-infra-pr-2054-vendor/command.yaml"
+  - id: "dod-byte-match"
+    description: >-
+      The vendored 0018/0019 SQL is byte-for-byte identical to the omnimarket origin/dev source (cmp equal,
+      sha256 match) — the vendoring tool copied 1:1 with no hand-edit. The probe records the sha256 of
+      both source and vendored files and proves they match.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13401/dod-byte-match/command.yaml"
+  - id: "dod-sync-check"
+    description: >-
+      scripts/sync-node-migrations.sh --check reports the vendored node-migration tree in sync with the
+      omnimarket source after vendoring (no remaining drift). The probe runs the check and proves exit
+      0 with "check: in sync".
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13401/dod-sync-check/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this change vendors two idempotent node-owned SQL migrations (0018 ALTER TABLE
+      ... ADD COLUMN IF NOT EXISTS; 0019 CREATE TABLE IF NOT EXISTS) into the deployed forward-migration
+      tree. No new runtime process, broker topic, service, Dockerfile, or compose file is added by the
+      infra PR — the forward-migration runner materializes the columns/table on the next dev rebuild +
+      force-recreate. The probe greps the vendored 0018 file and proves the ADD COLUMN is guarded by IF
+      NOT EXISTS (idempotent, re-runnable on warm volumes). Live readback over the surface is verified
+      in Ticket B (OMN-13397) after the dev rebuild applies node:node_projection_delegation:0017/0018/0019.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13401/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract used by the omnibase_infra
+      Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13401.yaml
+      is present (carried by this OCC PR).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13401\"$' contracts/OMN-13401.yaml"

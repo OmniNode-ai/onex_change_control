@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15454"
+title: "OCC companion for OMN-15454"
+summary: >
+  Hand-authored OCC Evidence-Source companion for OmniNode-ai/omnimarket#2108 (node_dod_verify's EvidenceCollector
+  fails CLOSED, not open, when the OCC governance ref refresh fails — was silently proceeding against
+  a possibly-stale local clone while logging that the run resolved "dev-first" from a verified-fresh ref).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2108 CI checks"
+    command: "gh pr checks 2108 --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2108"
+    description: "PR #2108 on OmniNode-ai/omnimarket — Evidence-Source binding."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2108 --repo OmniNode-ai/omnimarket --json number,state,headRefName"
+  - id: "dod-omnimarket-pr-2108-fail-closed-refusal"
+    description: >
+      Content-bound behavioral probe confirming the OCC_REF_REFRESH_FAILED refusal path is actually present
+      at the PR's head ref, not just described in the PR body — the fail-closed default this ticket's
+      fix turns on (was: swallowed at logger.info and silently proceeded).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "body=\"$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py?ref=40316069be0bff9761506358a77d835f5ee45a33
+          --jq .content | base64 -d)\" && printf '%s' \"$body\" | grep -qF 'OCC_REF_REFRESH_FAILED: git
+          fetch of '"
+  - id: "occ-self-bind-pr-6695"
+    description: "Binds OMN-15454 to OCC companion PR #6695 (self-bind)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6695 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: omn16916-mkt2108-failclosed-hs
+    description: >-
+      Append-only re-assertion of dod-omnimarket-pr-2108-fail-closed-refusal under OMN-16916 AC3 (SIGPIPE
+      corpus remediation). The asserted CONTENT is unchanged and still holds -- same OCC_REF_REFRESH_FAILED
+      refusal-path needle read from the same pinned evidence_collector.py at ref 40316069be0bff9761506358a77d835f5ee45a33
+      through the same GitHub contents API. What was wrong was the SHELL FORM: the compliance runner executes
+      check_values under bash -o pipefail -c, and the printf '%s' "$body" | grep -qF idiom is a latent
+      exit 141 -- grep -q exits on its first match and closes the pipe, killing printf with SIGPIPE, and
+      pipefail surfaces that as 141 even though every assertion actually passed. Measured directly this
+      session: 10/10 bash -o pipefail -c runs on the original item's exact bytes exit 141, deterministic
+      for this instance. The merged item and its merged receipt are left byte-untouched per this repo's
+      append-only evidence discipline; this item re-states the identical assertion with here-string redirection
+      (grep -qF '...' <<< "$body"), which has no pipe stage and so cannot be SIGPIPE'd regardless of size
+      or match position. Confirmed deterministically safe: 5/5 runs exit 0 under bash -o pipefail -c.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: |-
+          body="$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py?ref=40316069be0bff9761506358a77d835f5ee45a33 --jq .content | base64 -d)" && grep -qF 'OCC_REF_REFRESH_FAILED: git fetch of ' <<< "$body"
+    evidence_artifact: supersedes_dod_evidence:dod-omnimarket-pr-2108-fail-closed-refusal

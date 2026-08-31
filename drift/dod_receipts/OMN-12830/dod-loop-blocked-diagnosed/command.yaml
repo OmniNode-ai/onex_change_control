@@ -1,0 +1,40 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12830"
+evidence_item_id: "dod-loop-blocked-diagnosed"
+check_type: "command"
+check_value: "produce 2 fresh node-generation-requested commands; verify generation_events rows + runtime
+  handler logs"
+status: PASS
+run_timestamp: "2026-06-08T23:00:00Z"
+contract_sha256: "sha256:9a4e473d39e44b33017abfd917ac5acaa6731a782b736986155170b183ad39c1"
+commit_sha: "95769ba2dd3cebf1cb3a7316f8bf375871b5bcf8"
+branch: "jonah/omn-12830-d1-integration"
+runner: "claude-d1-orchestrator"
+verifier: "claude-occ-verifier"
+probe_command: "rpk topic produce onex.cmd.omnimarket.node-generation-requested.v1 (CIDs 7d05bb4f...,
+  eb0b8a34...); psql 'SELECT correlation_id FROM generation_events WHERE correlation_id IN (...)'; docker
+  logs runtime-effects | grep -E 'service_kernel|No dispatcher'"
+probe_stdout: |
+  Produced to partition 2 at offset 75 (CID 7d05bb4f-45e8-4259-9da4-1df6426312aa)
+  Produced to partition 5 at offset 30 (CID eb0b8a34-6dbe-43d2-be90-a41c29665a1b)
+  consumer group node-generation-requested.v1: all partitions LAG 0 (messages consumed)
+  generation_events rows for both CIDs: 0 rows
+  runtime-effects log:
+    22:49:09 service_kernel: Dispatch started
+    22:49:09 service_kernel: No dispatcher found for category command and message type omnimarket.node-generation-requested; routing to DLQ
+    22:52:23 service_kernel: Dispatch started
+    22:52:23 service_kernel: No dispatcher found for category command and message type omnimarket.node-generation-requested; routing to DLQ
+actual_output: >-
+  PASS diagnosis; loop NOT closed. The generate->register->invoke loop does not execute on this build.
+  Both fresh generation commands were consumed (offsets advanced, LAG 0) but produced zero generation_events
+  rows and no handler log; the runtime service_kernel found no command dispatcher for omnimarket.node-generation-requested
+  and routed to DLQ. Two production attempts (wrapped + raw payload) failed identically, so per the Two-Strike
+  Diagnosis Protocol the diagnosis was recorded rather than continuing trial-and-error live-deploy mutations.
+  A separate build-completeness defect was observed (cachetools, a transitive omnimemory dep, not installed
+  -> node_semantic_analyzer_compute fails to load), evidencing an incomplete workspace dependency install.
+  The prior working runtime image was overwritten by the :latest tag during the rebuild, removing the
+  rollback/compare baseline. This item is honestly recorded as not-closed; no fresh delegation row, escalation
+  proof, or dashboard one-backend render were produced.
+exit_code: 0
+working_dir: "/data/omninode/omni_home (.201)"

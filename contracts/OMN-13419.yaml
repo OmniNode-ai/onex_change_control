@@ -1,0 +1,90 @@
+---
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+schema_version: '1.0.0'
+ticket_id: OMN-13419
+title: >-
+  Consolidate EventBusInmemory into omnibase_core; delete the omnibase_infra duplicate transport (single
+  canonical in-memory bus)
+summary: >-
+  Phase 3b (B1 / OMN-7077 tail) of the local-first runtime re-convergence (epic OMN-13442). The 861-line
+  in-memory transport in omnibase_infra/event_bus/event_bus_inmemory.py is deleted; the single canonical
+  EventBusInmemory transport now lives in omnibase_core.event_bus.event_bus_inmemory (the zero-dep transport
+  implementing the spi ProtocolEventBus). The infra module becomes a ~270-line thin adapter that SUBCLASSES
+  the core transport and inherits all transport behavior (deque history, async lock, FIFO ordering, topic
+  offsets, subscriber registry, per-subscriber circuit breaker). It overrides ONLY the infra-contract
+  boundary the pinned core release does not yet provide - JUSTIFIED real infra concerns - (1) infra-typed
+  ModelEventMessage/ModelEventHeaders (str schema_version vs core ModelSemVer) so the infra runtime, EventBusKafka,
+  node handlers and 50+ tests receive the model they are typed against, (2) the infra error taxonomy InfraUnavailableError/ProtocolConfigurationError
+  (core raises ModelOnexError), (3) the dict-shaped health_check() the RuntimeHostProcess + ServiceRuntimeHealthMonitor
+  read, and (4) get_consumer_groups() (part of ProtocolEventBusLike alongside EventBusKafka). A blocking
+  CI grep-lint (scripts/validation/check_no_infra_inmemory_import.sh, wired into .github/workflows/ci.yml
+  Lint job AND pre-commit) blocks any import of omnibase_infra...event_bus_inmemory outside the small
+  allowlist of infra-runtime wrapper modules, so node packages depend on core's bus only. No core changes
+  (core pin held at db7f341, <0.47.0). This OCC contract is consumed by the omnibase_infra PR Receipt
+  Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      The 861-line infra duplicate transport is deleted; the infra EventBusInmemory subclasses the canonical
+      core transport; in-memory bus + runtime + health-monitor suites pass with no regression; the grep-lint
+      gate passes; mypy --strict and ruff clean.
+    command: >-
+      uv run pytest tests/unit/event_bus/ tests/unit/runtime/ tests/unit/services/test_service_runtime_health_monitor.py
+      -q && bash scripts/validation/check_no_infra_inmemory_import.sh && uv run mypy src/omnibase_infra
+      --strict
+  - kind: ci
+    description: CI pipeline green on PR
+    command: gh pr checks <PR> --repo OmniNode-ai/omnibase_infra
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-001
+    description: >-
+      The infra 861-line EventBusInmemory transport is deleted and replaced by a thin adapter subclassing
+      omnibase_core.event_bus.event_bus_inmemory.EventBusInmemory. The 6 remaining infra src importers
+      (event_bus/__init__.py, backends/auto_configure.py, runtime/runtime_host_process.py, runtime/util_wiring.py,
+      runtime/service_kernel.py, runtime/transition_notification_publisher.py) consume the adapter; node_invocation_adapter
+      consumes core directly. Verified by mypy --strict (no issues in 2485 files) and ruff clean.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13419/dod-001/command.yaml"
+  - id: dod-002
+    description: >-
+      No behavior regression in the infra in-memory bus + runtime tests: tests/unit/event_bus + tests/unit/runtime
+      + the runtime health monitor unit suite are green (5388 passed, 0 failed). The full pytest run's
+      24 failed / 18 errored are live-infra integration/performance tests (Kafka/Postgres/container-health/LLM-endpoint-SLO)
+      that fail identically on clean origin/dev (verified: tests/unit/verification/test_cli.py::test_registration_only
+      fails the same on the canonical dev clone) and are not caused by this change.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13419/dod-002/command.yaml"
+  - id: dod-003
+    description: >-
+      The single-canonical in-memory bus is enforced by a real (blocking) gate, not advisory: scripts/validation/check_no_infra_inmemory_import.sh
+      fails on any import of omnibase_infra...event_bus_inmemory outside the infra-runtime wrapper allowlist,
+      and is wired both into .github/workflows/ci.yml (Lint job) and .pre-commit-config.yaml. Gate run
+      exits 0 on this branch.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13419/dod-003/command.yaml"
+  - id: dod-occ-pr
+    description: >-
+      The paired OCC PR carries contracts/OMN-13419.yaml + PASS dod_receipts under drift/dod_receipts/OMN-13419/;
+      the infra PR body Evidence-Source pins the merged OCC commit SHA.
+    source: generated
+    status: verified
+    checks:
+      - check_type: command
+        check_value: "grep -c '^ticket_id: OMN-13419$' contracts/OMN-13419.yaml"

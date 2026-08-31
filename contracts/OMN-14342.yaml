@@ -1,0 +1,60 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14342"
+title: "feat(OMN-14342): shadow-mode test-selection instrumentation on dev CI"
+summary: >-
+  omnibase_core PR #1424 (child of the OMN-13969 smart-tests epic) adds observational shadow-mode test-selection
+  instrumentation to dev CI: a forced-on capture step, a non-blocking shadow-compare job, a workflow_run
+  harvester, a frozen ModelShadowRecord output contract, and a premise-replay script. The instrumentation
+  is the evidence engine for the eventual change-aware selector rollout — it measures the selector's real-world
+  escaped-failure rate WITHOUT changing what CI actually runs (the full suite still executes on the boundary).
+  All eight new files are additive (5 scripts/workflows + 1 model + 2 test modules); no runtime contract,
+  node, or deploy surface is touched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase_core-pr-1424"
+    description: >-
+      Independent adversarial verification (a separate verifier, NOT the implementing agent) of omnibase_core
+      PR #1424 head b7911c27d196f928d700b549283b4759b0e354d5 in the isolated worktree with PYTHONPATH
+      cleared. (1) Observational, not gating: the forced-on "Shadow selection" CI step writes shadow_selection.json
+      which is consumed ONLY by the upload-artifact step and the shadow-compare job; grep confirms nothing
+      feeds it into the real test-parallel matrix, and the shadow-compare job is continue-on-error with
+      a full-suite-only guard, so the full suite still runs unchanged. (2) The escaped-failure safety
+      metric is NON-VACUOUS: inverting the `not _is_selected` condition in build_record turned three tests
+      RED (test_escaped_failure_detected_outside_predicted_set 0!=1, test_failure_inside_predicted_set_does_not_escape
+      1!=0, and the full-suite validator itself raised); reverted, tree clean. (3) ModelShadowRecord validators
+      enforce every invariant — eight direct constructions that violate escaped_count==len(escaped), escaped_count<=full_suite_failure_count,
+      selected<=total, full_suite=>escaped==0, full_suite=>saved==0, split_count 1..40, fraction 0..1,
+      and ge=0 bounds each raise ValueError. (4) Harvester appends dedup'd (key repo+head_sha+pr_number),
+      append-only ("a" mode) to the ci-shadow-metrics orphan branch via workflow_run in the trusted base-repo
+      context (CI only uploads an artifact) — no CI->LAN coupling and no secrets beyond github.token.
+      (5) Premise reproducibility: shadow_premise_replay over 120 live merged dev PRs regenerated 72%
+      full-suite escalation worst-case / 67% best-case (the documented 67-72% range) with `models` the
+      single dominant shared_module trigger (35 worst / 49 best, ~2.2x the next), so the headline is reproducible
+      from gh pr list JSON rather than a one-off. (6) 133 unit tests pass; the models-miss e2e drives
+      escaped_failure_count=1 through real junit parsing (not a hardcoded assert); ruff check + ruff format
+      clean; mypy clean on all 10 source files (via package-base resolution). No runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14342/dod-omnibase_core-pr-1424/command.yaml
+          && grep -q '^pr_number: 1424$' drift/dod_receipts/OMN-14342/dod-omnibase_core-pr-1424/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      OCC companion self-binding: this onex_change_control PR carries the OMN-14342 contract and PASS
+      receipt for omnibase_core PR #1424, binding itself to occ-preflight by commit_sha (contract commit
+      C1), with no runtime or deploy scope.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-14342/dod-occ-self/command.yaml

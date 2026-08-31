@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13658"
+title: "fix: sync event_publisher loop affinity — schedule onto kernel loop via run_coroutine_threadsafe"
+summary: >-
+  OCC evidence for omnibase_infra PR #2133, which fixes the asyncio event-loop affinity bug in _make_sync_event_publisher
+  (src/omnibase_infra/runtime/auto_wiring/handler_wiring.py). The dispatch engine offloads blocking sync
+  handlers (e.g. HandlerContextRoiRunner / node_context_roi_runner) onto a ThreadPoolExecutor worker thread
+  via run_in_executor; the old adapter hit RuntimeError on asyncio.get_running_loop() and fell back to
+  asyncio.run(), spinning a throwaway loop in the worker thread. The publish awaitable's internal Futures
+  bind to the kernel loop, so running them on that foreign loop raised "got Future attached to a different
+  loop" and delayed terminal emission 2-3 minutes via retry (attempt 1/4) plus duplicate delivery. The
+  fix captures the kernel loop at wiring/construction time and schedules the publish coroutine back onto
+  it with asyncio.run_coroutine_threadsafe for any non-kernel thread; on-kernel-loop publishes keep the
+  create_task fast path; the asyncio.run throwaway-loop branch is removed entirely.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-loop-affinity-unit"
+    description: >-
+      tests/unit/runtime/auto_wiring/test_sync_event_publisher_loop_affinity.py proves a publish from
+      a non-event-loop worker thread completes without error, never calls asyncio.run (patched + assert_not_called),
+      and runs the publish coroutine on the kernel loop (publish_loop is kernel_loop) — not a throwaway
+      worker-thread loop. The test fails on the pre-fix code (asyncio.run called once) and passes on the
+      fix.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13658/dod-loop-affinity-unit/command.yaml\""
+  - id: "dod-deploy-gate"
+    description: >-
+      Deploy-gate evidence for the runtime publish path this fix corrects: after merge, redeploy the omnibase_infra
+      dev-lane runtime and confirm node_context_roi_runner no longer emits the attempt-1/4 "got Future
+      attached to a different loop" retry warning and the terminal event is emitted promptly (no 2-3 minute
+      delay, no duplicate delivery). No live prod deploy or runtime restart was performed as part of this
+      pre-merge evidence update; the pre-merge proof is the deterministic loop-affinity unit test.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13658/dod-deploy-gate/command.yaml\""
+  - id: "dod-occ-pr-self"
+    description: >-
+      This onex_change_control PR carries the central contracts/OMN-13658.yaml and its PASS receipts,
+      consumed by the omnibase_infra PR #2133 Receipt Gate via Evidence-Source: OCC#3238.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' \"${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13658/dod-occ-pr-self/command.yaml\""

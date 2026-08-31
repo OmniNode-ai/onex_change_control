@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-16117 (second vector): standalone ADVISORY governance-file gate.
+#
+# WHY THIS EXISTS: `auto-merge.yml`'s governance-path exclusion (OMN-16117
+# first vector, `scripts/ci/check_governance_paths.py`) stops THIS repo's
+# own `auto-merge.yml` from arming auto-merge on a PR that touches
+# `grants/prod_promotion_grants.yaml` or `allowlists/skip_token_approvals
+# .yaml` (the OMN-13418 prod-promotion trust anchor). It does not stop an
+# external automated driver that reads "every check is green" as its own
+# authorization to run `gh pr merge` directly, bypassing `auto-merge.yml`
+# entirely. This workflow closes THAT signal: it HARD-FAILS whenever a PR's
+# diff touches a guarded governance path, so "all checks green" is never
+# true for such a PR, and any driver gating a merge decision on all-green
+# will see this check red and skip it.
+#
+# ****************************************************************************
+# DELIBERATELY ADVISORY — READ THIS TWICE BEFORE CHANGING ANYTHING BELOW
+# ****************************************************************************
+# This check MUST NEVER become a required status check, directly or
+# transitively:
+#   - It lives in its OWN workflow file (this one), separate from ci.yml.
+#   - It must NOT be added to ci-summary's `needs:` list, and the job name
+#     below must NEVER be added to STRICT_GATE_JOBS or SKIPPABLE_GATE_JOBS
+#     in scripts/ci/ci_summary_gate.py — either would make it transitively
+#     required via the `CI Summary` umbrella context, which IS required on
+#     occ main.
+#   - It must NOT be added to .github/required-checks.yaml.
+#   - Branch protection must NOT be touched to add this context.
+#
+# `onex_change_control@main` has `enforce_admins: true`. A REQUIRED failing
+# check there blocks merges for administrators too, permanently wedging all
+# future prod-promotion grant landings, including emergency prod recovery.
+# Advisory is a deliberate choice: this check's job is to break the
+# automated all-green signal, not to block a human decision. See omni_home
+# CLAUDE.md rules 2a and 12.
+#
+# The governance-path list lives in exactly one place —
+# scripts/ci/check_governance_paths.py's GOVERNANCE_PATHS — and is imported,
+# never redefined, by scripts/ci/governance_advisory_gate.py, which this
+# workflow calls. See that module's docstring for the fail-closed semantics
+# and the full failure-message content.
+
+name: Governance File Advisory Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: governance-file-advisory-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  governance-file-advisory-gate:
+    name: Governance File Advisory Gate
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve PR changed-file set
+        id: changed_files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # NOTE: --paginate cannot be combined with --jq here (gh emits one
+          # JSON array PER PAGE, so a >100-file PR would silently produce
+          # multiple concatenated JSON documents and --jq would only see the
+          # first page). Fetch raw pages, then `jq -s` (slurp) combines
+          # however many page-documents were emitted into one array before
+          # flattening to filenames -- correct for both the 1-page and
+          # multi-page case. Same pattern as auto-merge.yml's governance
+          # gate step and merged PR #6622.
+          if [ -z "${PR:-}" ]; then
+            echo "::warning::No PR number in event payload; failing closed (OMN-16117)."
+            changed_files_json="null"
+          elif changed_files_json="$(gh api "repos/${GH_REPO}/pulls/${PR}/files" --paginate 2>/dev/null | jq -c -s '[.[][].filename]')" \
+            && [ -n "$changed_files_json" ]; then
+            :
+          else
+            echo "::warning::Could not resolve the changed-file set for PR #${PR} via the GitHub API; failing closed (OMN-16117)."
+            changed_files_json="null"
+          fi
+          # Persist to a step output via env file to avoid multi-line/quoting
+          # pitfalls with GITHUB_OUTPUT for a JSON array value.
+          {
+            echo "changed_files_json<<GOV_EOF"
+            echo "$changed_files_json"
+            echo "GOV_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check governance-file advisory gate
+        env:
+          CHANGED_FILES_JSON: ${{ steps.changed_files.outputs.changed_files_json }}
+        run: |
+          set -euo pipefail
+          python3 -m scripts.ci.governance_advisory_gate check \
+            --changed-files-json "$CHANGED_FILES_JSON"

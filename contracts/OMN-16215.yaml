@@ -1,0 +1,82 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16215"
+title: "gate expensive CI workflows behind non-draft PR state — omnibase_core"
+summary: >
+  Central OCC evidence for OmniNode-ai/omnibase_core PR #1562, the omnibase_core arm of the OMN-16214
+  org-wide fan-out of the draft-state CI admission gate first proven on onex_change_control#6686 (OMN-15731).
+  The PR changes .github/workflows/ci.yml only: the pull_request trigger gains an explicit types list
+  including ready_for_review (so undrafting re-evaluates the current head without a new push), and the
+  two largest cost drivers -- test-parallel (up to 40 shards x 70m) and tests-integration (4 shards x
+  30m) -- each gain a "(github.event_name != 'pull_request' || github.base_ref != 'dev' || !github.event.pull_request.draft)"
+  admission clause. The ~50 cheap single-shard quality-gate leaves are deliberately NOT gated (documented
+  scoping decision, pinned by a scope-lock test), and main-targeting PRs are untouched so the promotion
+  boundary still runs full CI unconditionally. Fail-closed behaviour needed no new code: the gated jobs
+  feed Tests Gate, whose existing OMN-15315 per-upstream skip policy treats a skipped upstream as a FAILURE
+  unless zone-filter reports docs_only, and Tests Gate is a GATE_JOBS completeness anchor in scripts/ci/ci_summary_gate.py,
+  so CI Summary (the sole required dev context) fails closed. PR #1562 was filed as a DRAFT on purpose:
+  it is itself the live RED control for acceptance criterion (b).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1562 CI and receipt gates green"
+    command: "gh pr checks 1562 --repo OmniNode-ai/omnibase_core"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1562"
+    description: "PR #1562 on OmniNode-ai/omnibase_core is open against dev, carrying the draft-state
+      CI admission gate for this repo."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1562 --repo OmniNode-ai/omnibase_core --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1562-ci"
+    description: "PR #1562 on OmniNode-ai/omnibase_core — product diff scope check (OMN-14425): touches
+      only .github/workflows/ci.yml and the new pinning test module, no runtime source."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1562 --repo OmniNode-ai/omnibase_core --json files"
+  - id: "dod-omnibase_core-1562-draft-gate-present"
+    description: "The draft admission clause is actually present in .github/workflows/ci.yml at PR #1562's
+      draft-control commit d11b02feea0afbeb6b7d959cbd2be607ad7df46b — one occurrence on each gated job
+      (test-parallel, tests-integration) — proving the mechanism is landed in the workflow file, not just
+      claimed in the PR description."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_core/contents/.github/workflows/ci.yml?ref=d11b02feea0afbeb6b7d959cbd2be607ad7df46b" --jq '.content' | base64 -d | grep -c 'github.event.pull_request.draft'
+  - id: "dod-omnibase_core-1562-draft-red-control"
+    description: "OMN-16215 AC(b), live: at PR #1562's draft commit d11b02feea0afbeb6b7d959cbd2be607ad7df46b
+      both Tests Gate and CI Summary concluded `failure`, not `success` and not green-by-skip. The draft
+      PR is therefore genuinely un-mergeable against live branch protection — the admission gate does
+      not open a skip-vector."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_core/commits/d11b02feea0afbeb6b7d959cbd2be607ad7df46b/check-runs?per_page=100" --paginate --jq '.check_runs[] | select(.name=="Tests Gate" or .name=="CI Summary") | "\(.name)=\(.conclusion)"' | grep -c '=failure$'
+  - id: "dod-omnibase_core-1562-gated-jobs-unexpanded"
+    description: "OMN-16215 AC(a), live: at the same draft commit the two gated jobs appear as exactly
+      two `skipped` check runs whose names still carry the UNEXPANDED `${{ matrix.split }}` placeholder
+      (`Tests (Split ${{ matrix.split }}/...)` and `Integration Tests (Split ${{ matrix.split }}/4)`).
+      An unexpanded matrix name is the machine-checkable signature that GitHub never fanned the matrix
+      out at all — zero of the up-to-40 test-parallel shards and zero of the 4 tests-integration shards
+      were ever scheduled, so the draft consumed zero runner minutes on the gated jobs rather than merely
+      exiting them early."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_core/commits/d11b02feea0afbeb6b7d959cbd2be607ad7df46b/check-runs?per_page=100" --paginate --jq '.check_runs[] | select(.conclusion=="skipped") | .name' | grep -c 'matrix.split'

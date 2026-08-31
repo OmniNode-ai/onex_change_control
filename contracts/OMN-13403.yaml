@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13403"
+title: "Workspace sibling-pin guard: allow same-version clone-ahead"
+summary: >-
+  Make the workspace-mode sibling-pin guard (omnibase_infra scripts/runtime_build/check_sibling_lock_pins.py,
+  invoked by stage_workspace.sh) treat a same-version, strictly clone-AHEAD (git-descendant) sibling as
+  a non-fatal clone_ahead note instead of fatal drift. onex_change_control is a real omnimarket runtime
+  dep AND a checked sibling whose dev SHA advances on every receipt PR (including the receipts pin-bump
+  PRs require), so an exact OCC pin can never durably converge — re-locking is unwinnable. compare_pins
+  now applies a narrow, version-gated exception: when the clone version EXACTLY matches the lock and the
+  clone HEAD is a strict git DESCENDANT of the locked SHA (proven via git merge-base --is-ancestor against
+  the actual clone), the SHA difference is recorded, non-fatal, and the build proceeds. Everything else
+  stays FATAL: version mismatch (any direction), clone BEHIND the lock (the 2026-06-11 stale-sibling crash),
+  unrelated/non-ancestor SHAs, and a locked SHA absent from the clone. The ALLOW_SIBLING_PIN_DRIFT escape
+  hatch is unchanged. Shipped on omnibase_infra PR #2055.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      compare_pins classifies a same-version, git-descendant clone as a non-fatal clone_ahead note (matches
+      stays True); clone-behind, version-mismatch, absent-SHA, and no-repo-root cases all stay fatal.
+      Proven by the guard unit tests on omnibase_infra PR #2055.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13403/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      check_pins returns rc 0 with clone_ahead_count=1 / drift_count=0 for a same-version clone-ahead
+      sibling, and rc 1 with drift_count=1 for a clone-behind sibling; the compatibility test surface
+      stays green. Proven by the guard compatibility tests on omnibase_infra PR #2055.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13403/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contract consumed by the omnibase_infra
+      PR #2055 Receipt Gate via Evidence-Source. The probe greps the OCC tree and proves contracts/OMN-13403.yaml
+      is present.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13403\"$' contracts/OMN-13403.yaml"

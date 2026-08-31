@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13415"
+title: "Deployed-migration-tree sync gate — abort deploy on stale bind-mounted forward-migration tree"
+summary: >
+  Recurrence guard for the stability-promotion footgun where ~/.omnibase/infra/deployed/<ver>/docker/migrations/forward
+  was bind-mounted and carried a stale 0016 (4645 bytes) with no 0018/0019, so the lane looked "deployed"
+  while forward-migration ran the WRONG migration SQL — caught only by an out-of-band rsync from the .201
+  canonical clone before recreate. scripts/check_deployed_migration_tree_sync.py asserts the deployed
+  (bind-mounted) forward-migration tree is byte-identical to the canonical clone @ the target SHA, using
+  the clone's git object at the ref as the source of truth (git ls-tree / git cat-file blob); it detects
+  missing, stale/modified, and extra-leftover files (exit 1 on drift, exit 2 on config error — fails closed).
+  deploy-runtime.sh calls assert_deployed_migration_tree_synced after sync_files and BEFORE snapshot_migration_tree
+  / the forward-migration phase, so a drifted deployed tree ABORTS the deploy instead of silently mis-migrating.
+  node-migration-sync.yml gains a deployed-migration-tree-sync-logic job that runs the unit suite as a
+  logic-regression gate (the live deploy-time compare cannot run on a hosted runner with no deployed tree;
+  the logic gate guards the comparison from regressing — same pattern as the sibling-lock-pins logic gate).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Deployed-migration-tree sync unit + live-smoke suite: in-sync-passes, stale-fails (the footgun),
+      missing-fails (the 0018/0019 case), extra-leftover-fails, nested-node-migration drift, and bad-ref
+      / non-git / absent-tree config errors.
+    command: "uv run pytest tests/scripts/test_check_deployed_migration_tree_sync.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-infra-pr-2105"
+    description: >
+      Binds omnibase_infra PR #2105. The deployed-migration-tree sync gate passes 9/9 unit + live-smoke
+      tests; the existing test_deploy_runtime_build_context.py stays 7/7 green; ruff and mypy --strict
+      are clean; bash -n and actionlint are clean; pre-commit runs all hooks green. The diff touches no
+      docker/migrations/forward/ files (the unrelated ONEX Node Migration Vendor Sync drift over node_projection_cost_by_repo
+      / node_projection_traces is pre-existing on origin/dev).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13415/dod-omnibase-infra-pr-2105/command.yaml
+          && grep -q '^pr_number: 2105$' drift/dod_receipts/OMN-13415/dod-omnibase-infra-pr-2105/command.yaml
+          && grep -q '9 passed' drift/dod_receipts/OMN-13415/dod-omnibase-infra-pr-2105/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: omnibase_infra PR #2105 adds a deploy-time assertion script, its test suite,
+      a deploy-runtime.sh call site, and a CI logic-regression job. No live runtime deploy or container
+      mutation is performed by this PR; the gate runs at the NEXT deploy. No runtime lane is touched here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13415/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 2105$' drift/dod_receipts/OMN-13415/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13415/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      Self-binding OCC eligibility receipt for the dev-targeted evidence PR. This onex_change_control
+      PR carries the OMN-13415 contract and receipts onto dev, satisfying the receipt-to-PR binding required
+      by validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^status: \"?PASS\"?$' drift/dod_receipts/OMN-13415/dod-occ-pr-self/command.yaml
+          && grep -Eq '^pr_number: [0-9]+$' drift/dod_receipts/OMN-13415/dod-occ-pr-self/command.yaml"

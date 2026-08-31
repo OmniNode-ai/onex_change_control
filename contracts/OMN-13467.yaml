@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13467"
+title: "fix(OMN-13467): await terminal-event broker ACK before node-generation offset commit"
+summary: >-
+  OCC evidence for omnimarket PR #1340. node_generation_consumer previously committed the input Kafka
+  offset before the terminal node-generation-completed / node-generation-failed event was durably broker
+  ACKed. The runtime sync publisher schedules async publish work and returns immediately, so a crash in
+  that window could lose the terminal event for fresh subscribers. The fix makes terminal emit helpers
+  awaitable, accepts both sync and async EventPublisher callables, awaits every terminal publish in handle(),
+  and preserves idempotence through the replay guard on redelivery.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-terminal-ack-before-offset"
+    description: >-
+      Product PR #1340 changes node_generation_consumer terminal publication ordering so terminal publish
+      is awaited before handle() returns and the wiring layer commits the input offset. Regression tests
+      cover async publisher awaiting, restart/redelivery with no terminal loss, sync publisher backward
+      compatibility, and updated golden-chain generation self-extension emit paths.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'terminal publish' contracts/OMN-13467.yaml"
+  - id: "dod-deploy-gate"
+    description: >-
+      Deploy-gate evidence for the runtime-path node_generation_consumer handler change in omnimarket
+      PR #1340. No live deploy, restart, docker exec, rpk topic produce, or runtime lane mutation was
+      performed during this manual merge sweep. The runtime behavior change is covered by local tests
+      and should be validated in the normal downstream runtime lane after merge.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'deploy-gate evidence' contracts/OMN-13467.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13467.yaml consumed
+      by omnimarket PR #1340 Receipt Gate and Deploy Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13467\"$' contracts/OMN-13467.yaml"

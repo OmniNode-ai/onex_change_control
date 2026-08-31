@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13515"
+title: "RuntimeLocal._instantiate_handler injects event_bus for handlers that declare it"
+summary: >-
+  RuntimeLocal._instantiate_handler (omnibase_core/runtime/runtime_local.py) injected only the state_root
+  runtime-owned dependency by parameter name and NEVER injected event_bus, so any handler whose __init__
+  declares a non-defaulted event_bus crashed at instantiation with "__init__() missing 1 required positional
+  argument: 'event_bus'". This broke 8 omnimarket handlers via the event-driven and single-handler RuntimeLocal
+  paths (aislop_sweep, architectural_invariant_loop, autopilot_orchestrator, build_loop_orchestrator,
+  overseer_verifier, pr_lifecycle_orchestrator, swarm_supervisor_orchestrator, version_skew_detector);
+  surfaced by the aislop_sweep dogfood run on 2026-06-22 (the sweep could not scan because the runtime
+  crashed instantiating its own handler). Fix (runtime-side, OMN-13515 preferred option): _instantiate_handler
+  takes a keyword-only bus: ProtocolLocalRuntimeBus | None and injects kwargs["event_bus"] = bus when
+  the constructor advertises an event_bus param AND a bus is provided, mirroring the existing state_root
+  injection. The two bus-owning call sites (_run_single_handler, _run_event_driven) thread their in-scope
+  bus; the compute path (_run_compute) owns no bus and keeps bus=None (handler not injected, prior behavior
+  preserved). Handlers are NOT changed to make event_bus optional (that would hide the bug and silently
+  disable sweep-result telemetry per OMN-8172); the 2 already-tolerant handlers keep working and now receive
+  the real bus. This OCC PR carries the central contract consumed by the omnibase_core PR (#1307) Receipt
+  Gate via Evidence-Source.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      TDD regression suite (tests/unit/runtime/test_runtime_local.py) proves the fix: a handler declaring
+      a mandatory event_bus instantiates via _instantiate_handler and receives the in-scope bus; state_root
+      + event_bus co-inject without clobbering; tolerant (event_bus | None = None) handlers still instantiate
+      and now receive the real bus; no-dep handlers are unaffected; the compute-style bus=None path is
+      preserved; and an end-to-end RuntimeLocal.run_async() run loads a contract whose handler requires
+      event_bus and reaches a COMPLETED terminal. With the src fix stashed, the end-to-end test reproduces
+      the exact ticket error (missing 1 required positional argument 'event_bus', result=FAILED). 6 targeted
+      tests pass.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13515/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      No regression across the handler-instantiation surface: the broad scoped run tests/unit/{runtime,nodes,dispatch,pipeline}
+      passes 1070 tests with 0 failures; mypy --strict on src/omnibase_core/runtime/runtime_local.py is
+      clean; ruff format + check clean; pre-commit run on the changed files passes all hooks (exit 0).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13515/dod-002/command.yaml"
+  - id: "dod-deploy"
+    description: >-
+      Deploy-gate evidence: this PR is a pure runtime-library bug fix in omnibase_core (one method signature
+      + three call sites + tests), with NO runtime/topology/Dockerfile change and NO new Kafka topic.
+      The fix is exercised in-process against the core in-memory bus (RuntimeLocal.run_async reaches a
+      typed terminal, exit 0) — no live .201 deploy is required or performed. Consumers (omnimarket et
+      al.) pin-bump in a later PR; no consumer pins are touched here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13515/dod-deploy/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries contracts/OMN-13515.yaml as the central Evidence-Source consumed by the omnibase_core
+      PR Receipt Gate; the dod-occ-pr receipt self-binds OMN-13515 to this OCC evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13515\"$' contracts/OMN-13515.yaml"

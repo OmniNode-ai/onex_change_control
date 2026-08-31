@@ -1,0 +1,87 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16293"
+title: "Autobind OCC evidence for OMN-16293"
+summary: >
+  OCC contract for OmniNode-ai/omnibase_infra PR #2818 (savings-estimation correlation rewrite: node_savings_estimation_compute
+  COMPUTE_GENERIC -> EFFECT_GENERIC, real Postgres-projection-backed correlation via HandlerSavingsCorrelation,
+  legacy ServiceSavingsEstimator in-memory buffer deleted). Local-CLI mint fallback: occ-autobind/occ-companion-effect
+  had not produced a companion within the observed autobind window (both the pull_request-triggered run
+  and a manual workflow_dispatch replay sat queued for 20+ minutes with zero runner pickup), same class
+  as the OMN-16284/OMN-16106/OMN-15683 silent-drop symptoms already documented on other tickets this session.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-2818-scope"
+    description: >
+      PR #2818 on OmniNode-ai/omnibase_infra -- product diff scope check (OMN-14425): confirms the exact
+      35-file change set (new correlation handler + models + migration, rewired contract.yaml + service_kernel.py,
+      deleted legacy consumer/config + their tests, plus the CI-gate fixups the change required).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 2818 --repo OmniNode-ai/omnibase_infra --json files --jq '[.files[].path] | length'
+  - id: "dod-infra-2818-new-handler"
+    description: >
+      PR #2818 on OmniNode-ai/omnibase_infra -- content-pinned RED-before/GREEN-after differential: fetches
+      the new correlation handler's source path via the GitHub contents API at the PR's base and head
+      SHAs and confirms it is absent (404) at base and present at head with the real correlation-batch
+      entry point (run_correlation_batch) plus the no-buffering ingest methods.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          base_check=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_savings_estimation_compute/handlers/handler_savings_correlation.py?ref=381333da507754fa35dc6c292fbe76208f34f314"
+          2>&1); head_body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_savings_estimation_compute/handlers/handler_savings_correlation.py?ref=6f4216874b81128e5d939ed0dfaf8500c14e30ce"
+          --jq .content | base64 -d)"; echo "$base_check" | grep -q "Not Found" && printf '%s' "$head_body"
+          | grep -qF "async def run_correlation_batch" && printf '%s' "$head_body" | grep -qF "async def
+          ingest_injection_event" && echo "OMN-16293-INFRA-2818-DIFFERENTIAL-PROBE-PASS: handler_savings_correlation.py
+          absent at base (404), present at head with run_correlation_batch and ingest_injection_event"
+  - id: "dod-infra-2818-legacy-deleted"
+    description: >
+      PR #2818 on OmniNode-ai/omnibase_infra -- confirms the superseded legacy ServiceSavingsEstimator
+      in-memory-buffer consumer is present at the PR's base SHA and absent (404) at head, proving the
+      deletion actually landed rather than being a parallel/unwired addition.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          base_check=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/services/observability/savings_estimation/consumer.py?ref=381333da507754fa35dc6c292fbe76208f34f314"
+          --jq '.path' 2>&1); head_check=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/services/observability/savings_estimation/consumer.py?ref=6f4216874b81128e5d939ed0dfaf8500c14e30ce"
+          2>&1); echo "$base_check" | grep -qF "src/omnibase_infra/services/observability/savings_estimation/consumer.py"
+          && echo "$head_check" | grep -q "Not Found" && echo "OMN-16293-INFRA-2818-DIFFERENTIAL-PROBE-PASS:
+          legacy consumer.py present at base, absent (404) at head"
+  - id: "occ-self-bind-pr-6786"
+    description: >
+      OCC companion PR #6786 -- self-bind for OMN-16293 (OMN-14650). Required by the receipt gate: without
+      a PASS receipt bound to this PR, occ-preflight returns pr_ticket_mismatch.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6786 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-omnimarket-2126"
+    description: >
+      omnimarket PR #2126 -- self-bind for OMN-16293 (companion PR for omnibase_infra#2818, registers
+      the savings_injection_signals / savings_validator_catch_signals catalog ownership entries in scripts/application-relation-ownership.yaml).
+      Required by the receipt gate: without a PASS receipt bound to this PR, occ-preflight returns pr_ticket_mismatch
+      (the existing OMN-16293 receipts all bind to omnibase_infra#2818 / OCC#6786, not this PR).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2126 --repo OmniNode-ai/omnimarket --json number,state"
+  - id: "occ-self-bind-pr-6905"
+    description: >
+      OCC companion PR #6905 -- self-bind for OMN-16293. Required by the receipt gate: without a PASS
+      receipt bound to this PR, occ-preflight returns pr_ticket_mismatch (same pattern as occ-self-bind-pr-6786
+      above; #6905 itself cites Ticket: OMN-16293 in its body, so it needs its own self-bind receipt independent
+      of the omnimarket#2126 self-bind entry it carries).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6905 --repo OmniNode-ai/onex_change_control --json number,state"

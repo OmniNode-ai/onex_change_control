@@ -1,0 +1,92 @@
+---
+topic: "onex.cmd.omnimarket.redeploy-start.v1"
+schema_version: "1.0.0"
+ticket: "OMN-12576"
+description: >
+  Canonical OCC wire contract for the runtime deployment request consumed by the node_redeploy deployment
+  orchestrator. OCC owns this wire schema as the source of truth; omnibase_compat mirrors the DTO transiently.
+  The request carries the target runtime lane, the source branch/SHA to deploy, and — for production promotion
+  — the exact image digest and promotion batch proven in stability-test. The deployment orchestrator may
+  not start a prod deploy of a digest other than the latest stability-test READY digest.
+topic_authority: "onex_change_control"
+freshness_sla: "24h"
+
+producer:
+  repo: "omnibase_infra"
+  file: ".github/workflows/runtime-rebuild-trigger.yml"
+  function: "trigger_rebuild_on_merge"
+
+consumer:
+  repo: "omnimarket"
+  file: "src/omnimarket/nodes/node_redeploy/contract.yaml"
+  model: "ModelRedeployCommand"
+
+required_fields:
+  - name: "correlation_id"
+    type: "uuid"
+    description: "Deployment run correlation ID shared by all deployment events."
+  - name: "deployment_id"
+    type: "uuid"
+    description: "Stable identifier for this deployment attempt."
+  - name: "runtime_lane"
+    type: "string"
+    description: "Target runtime lane."
+    constraints:
+      enum:
+        - "dev"
+        - "stability-test"
+        - "prod"
+  - name: "source_branch"
+    type: "string"
+    description: "Branch that triggered the deployment (dev | main)."
+  - name: "source_sha"
+    type: "string"
+    description: "Exact source commit SHA to deploy."
+  - name: "requested_by"
+    type: "string"
+    description: "Identity of the requesting workflow or operator."
+  - name: "requested_at"
+    type: "datetime"
+    description: "When the deployment request was issued."
+
+optional_fields:
+  - name: "promotion_batch_id"
+    type: "string"
+    nullable: true
+    description: "Promotion batch identifier shared with OCC promotion evidence; required for prod."
+  - name: "image_ref"
+    type: "string"
+    nullable: true
+    description: "Mutable image reference. The digest is the authority, not the ref."
+  - name: "image_digest"
+    type: "string"
+    nullable: true
+    description: "Immutable image digest. Required for prod; pinned to the stability-test READY digest."
+  - name: "deployment_reason"
+    type: "string"
+    nullable: true
+    description: "Human-readable trigger reason (merge, manual promotion, rollback)."
+  - name: "requires_occ"
+    type: "boolean"
+    nullable: true
+    description: "Whether OCC evidence drafting is required for this lane."
+  - name: "requires_readiness_gate"
+    type: "boolean"
+    nullable: true
+    description: "Whether the readiness gate must pass before the lane is READY."
+
+output:
+  deployment_acceptance:
+    type: "object"
+    description: "Acceptance record proving the deployment request was admitted by the orchestrator."
+    required_fields:
+      - "correlation_id"
+      - "deployment_id"
+      - "runtime_lane"
+      - "source_sha"
+
+doctrine:
+  - clause_id: "DT-001"
+    binding: "onex_change_control owns the runtime deployment wire contract."
+  - clause_id: "DT-005"
+    binding: "Production deploys only the image digest proven READY in stability-test."

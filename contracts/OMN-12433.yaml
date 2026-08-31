@@ -1,0 +1,112 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12433"
+title: "Self-hosted CI runner github.com egress healthcheck — dead runners self-remove"
+summary: >
+  Add a github.com egress healthcheck to the CI runner image so a runner that has silently lost its GitHub
+  connection is marked unhealthy and removed from rotation, instead of staying "healthy" in Docker while
+  offline in the pool. Root cause of the 2026-05-29 CI wedge where ~9 of 20 runners were disconnected
+  but Docker-healthy. omnibase_infra PR replaces the pgrep-only healthcheck with healthcheck.sh (listener
+  + github.com probe), wired in the Dockerfile and mounted into every runner service.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-runner-egress-healthcheck"
+    description: >-
+      Runner healthcheck.sh probes github.com egress in addition to the Runner.Listener process; the compose
+      healthcheck for every omninode-runner service invokes the script (not bare pgrep) and mounts it.
+      Verified by tests/unit/observability/runner_health/test_runner_fleet_config.py (151 passed) and
+      shellcheck-clean script.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-runner-egress-healthcheck/command.yaml"
+  - id: "dod-omnibase-infra-pr-1792-deploy-impact"
+    description: >-
+      Deploy impact for omnibase_infra PR #1792 is reviewed: the change updates the self-hosted runner
+      image healthcheck and compose mounts, and requires runner stack deploy/recreate during the post-merge
+      runtime sweep so unhealthy/offline runners self-remove from rotation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-omnibase-infra-pr-1792-deploy-impact/command.yaml
+          && grep -q deploy drift/dod_receipts/OMN-12433/dod-omnibase-infra-pr-1792-deploy-impact/command.yaml"
+  - id: "dod-occ-pr-1882-self-binding"
+    description: >-
+      OCC PR #1882 carries the OMN-12433 contract and PASS receipt on current dev with a narrow evidence-only
+      diff, so the OCC evidence PR itself is receipt-gate eligible before downstream PR #1792 consumes
+      the merged OCC SHA.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-occ-pr-1882-self-binding/command.yaml"
+  - id: "dod-occ-pr-1888-deploy-evidence-publication"
+    description: "onex_change_control PR #1888 publishes the OMN-12433 deploy-impact evidence for PR #1792."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-occ-pr-1888-deploy-evidence-publication/command.yaml
+          && grep -q '^pr_number: 1888$' drift/dod_receipts/OMN-12433/dod-occ-pr-1888-deploy-evidence-publication/command.yaml"
+  - id: "dod-omniclaude-pr-1713-deploy-gate-timeout"
+    description: >-
+      omniclaude PR #1713 updates the dev reusable deploy-gate workflow timeout from 15 to 25 minutes
+      so bounded checkout/OCC fetch retries can complete before deploy-gate validation runs. This binds
+      OMN-12433 receipt-gate evidence to the omniclaude dev backmerge PR that carries the shared workflow
+      fix.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-omniclaude-pr-1713-deploy-gate-timeout/command.yaml
+          && grep -q '^pr_number: 1713$' drift/dod_receipts/OMN-12433/dod-omniclaude-pr-1713-deploy-gate-timeout/command.yaml"
+  - id: "dod-omniclaude-pr-1714-deploy-gate-timeout-hotfix"
+    description: >-
+      omniclaude PR #1714 updates the main reusable deploy-gate workflow timeout from 15 to 25 minutes
+      so omnibase_infra PR #1792, which calls omniclaude deploy-gate at main, can complete the existing
+      bounded retry budget instead of timing out before validation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-omniclaude-pr-1714-deploy-gate-timeout-hotfix/command.yaml
+          && grep -q '^pr_number: 1714$' drift/dod_receipts/OMN-12433/dod-omniclaude-pr-1714-deploy-gate-timeout-hotfix/command.yaml"
+  - id: "dod-occ-pr-1899-omniclaude-receipt-publication"
+    description: >-
+      onex_change_control PR #1899 publishes the OMN-12433 omniclaude deploy-gate timeout receipts that
+      bind Receipt Gate eligibility for omniclaude PR #1713 and PR #1714.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-occ-pr-1899-omniclaude-receipt-publication/command.yaml
+          && grep -q '^pr_number: 1899$' drift/dod_receipts/OMN-12433/dod-occ-pr-1899-omniclaude-receipt-publication/command.yaml"
+  - id: "dod-occ-pr-1932-contract-validator-retry-backmerge"
+    description: >-
+      onex_change_control PR #1932 backmerges the reusable validate-contract and validate-boundaries install
+      retry hardening to dev after omnibase_infra PR #1792 exposed a transient GitHub TLS failure while
+      fetching omnibase_core during contract validation.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-occ-pr-1932-contract-validator-retry-backmerge/command.yaml
+          && grep -q '^pr_number: 1932$' drift/dod_receipts/OMN-12433/dod-occ-pr-1932-contract-validator-retry-backmerge/command.yaml"
+  - id: "dod-occ-pr-1933-contract-validator-retry-hotfix"
+    description: >-
+      onex_change_control PR #1933 publishes the main hotfix for reusable validate-contract and validate-boundaries
+      install retry hardening consumed by omnibase_infra PR #1792.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-12433/dod-occ-pr-1933-contract-validator-retry-hotfix/command.yaml
+          && grep -q '^pr_number: 1933$' drift/dod_receipts/OMN-12433/dod-occ-pr-1933-contract-validator-retry-hotfix/command.yaml"

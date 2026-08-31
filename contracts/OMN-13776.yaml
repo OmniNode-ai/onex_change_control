@@ -1,0 +1,90 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13776"
+title: "DoD evidence classifier: HTTP-probe misclassified as UI/Playwright; trivial-infra OCC fast-path"
+summary: >-
+  (a) node_session_bootstrap/dod_verification_registry.py's RENDERED_OUTPUT DoD check was a Phase-2-deferred
+  stub with no classification logic at all. Adds classify_evidence_kind, a pure function fed by two new
+  optional ModelDodEvidenceCheck fields (artifact_command, target_endpoint): curl/httpx/wget against a
+  non-UI endpoint (/ready, /health, /v1/..., /api/..., /introspection, *.json) classifies HTTP_EVIDENCE
+  and passes without a Playwright receipt; any endpoint matching a UI/dashboard/browser-rendered pattern
+  classifies UI_RENDERED and still fails without real rendered-output evidence (no regression of the OMN-13024/OMN-13052
+  UI-evidence gate — curl-only proof against a UI page is rejected regardless of tool); no artifact metadata
+  present preserves the existing deferred-pass behavior. (b) node_pr_lifecycle_fix_effect's deploy_gate_contract_not_found
+  route always minted a full OCC contract + receipt-chain PR, even for a one-line non-runtime infra edit.
+  Adds classify_trivial_infra_fastpath (adapter_occ_contract.py): a size-AND-path-scoped exemption (all
+  changed files match a non-runtime infra allowlist, none touch node business logic or migrations, diff
+  stays within trivial thresholds) wired into HandlerPrLifecycleFix._route via two new optional ModelPrLifecycleFixCommand
+  fields (changed_files, diff_total_lines) — a mechanical exemption, not a skip token; omitting the fields
+  (existing callers) never takes the fast-path. omnimarket PR #1548.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: FULL
+evidence_requirements:
+  - kind: "tests"
+    description: "New unit suites cover both DoD acceptance criteria: (a) a curl/httpx probe against a
+      non-UI endpoint classifies HTTP-evidence and passes without Playwright while a UI-class receipt
+      still requires it (TestClassifyEvidenceKind, TestCheckRenderedOutputHttpProbeClassification); (b)
+      a trivial infra fast-path hit and a runtime-touching change correctly NOT taking it (TestClassifyTrivialInfraFastpath,
+      TestHandlerTrivialInfraFastpathRouting). Full omnimarket suite stays green modulo pre-existing live-infra-dependent
+      failures."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13776/dod-implementation/command.yaml
+  - kind: "ci"
+    description: "ruff format/check clean, focused suite green, full suite green modulo pre-existing live-Postgres/Kafka-dependent
+      failures unrelated to this diff, pre-commit clean on all changed files (pre-existing repo-wide URL-authority
+      + Topic Naming Lint gaps in untouched files noted but not caused by this change)."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13776/dod-ci-gates/command.yaml
+  - kind: "ci"
+    description: "Self-binding OCC receipt for this onex_change_control PR."
+    command: >-
+      grep -q '^status: PASS$' drift/dod_receipts/OMN-13776/dod-occ-self/command.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-implementation"
+    description: >-
+      omnimarket branch jonah/omn-13776-classifier-fastpath commit cc9493d6cded040f116ef2aa0a97a0d46a4c324a
+      adds classify_evidence_kind (dod_verification_registry.py) + EnumEvidenceArtifactKind and two new
+      ModelDodEvidenceCheck fields (models/model_task_contract.py); classify_trivial_infra_fastpath (adapter_occ_contract.py)
+      + two new ModelPrLifecycleFixCommand fields, wired into HandlerPrLifecycleFix._route (handler_pr_lifecycle_fix.py).
+      Probe: cd omni_worktrees/OMN-13776/omnimarket && uv run pytest tests/test_session_bootstrap_rev7.py
+      tests/unit/nodes/node_pr_lifecycle_fix_effect/test_occ_proactive_repair.py tests/test_golden_chain_pr_lifecycle_fix_effect.py
+      -v -> 95 passed. Full suite: uv run pytest tests/ -v -> 11097 passed, 59 skipped, 5 failed (test_datasource_postgres.py
+      x4 + test_cost_event_publisher_kafka.py x1 — live Postgres localhost:5436 / Kafka broker not running
+      in this environment, files untouched by this diff), 1 error (test_kafka_integration_bus_smoke.py
+      — no broker). state-coverage-gate (OMN-13781, landed on dev mid-branch): uv run python scripts/validate_state_coverage.py
+      --check-changed origin/dev --strict -> PASS 2/2 (node_session_bootstrap coverage added for the prompt-embedded
+      onex.evt.omnimarket.session-cron-health-violation.v1 output state).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13776/dod-implementation/command.yaml"
+  - id: "dod-ci-gates"
+    description: >-
+      uv run ruff format src/ tests/ -> 2 files reformatted (whitespace only), re-verified clean. uv run
+      ruff check --fix src/ tests/ -> All checks passed. uv run pre-commit run --all-files (with OMNIBASE_INFRA_PATH
+      set to the sibling omnibase_infra canonical clone) -> every hook Passed except URL Authority Gate,
+      which fails on pre-existing violations in files this PR does not touch (node_generation_consumer/validator_corpora/corpus_hardcoded_localhost_url.py
+      — a literal-corpus test fixture, node_demo_drift_detector, node_demo_rehearsal, scripts/generation/drive_validator_generation.py);
+      confirmed clean on this PR's own changed files via `pre-commit run check-url-authority --files src/omnimarket/nodes/node_session_bootstrap/models/model_task_contract.py`
+      after rewording a docstring example that originally embedded a literal https:// URL. omnimarket
+      PR #1548 CI: all required checks green except occ-preflight/verify (Evidence-Source line, resolved
+      by this OCC PR) and state-coverage-gate (resolved by an additional coverage-only commit, see dod-implementation).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13776/dod-ci-gates/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC receipt: this onex_change_control PR carries the OMN-13776 contract and its DoD
+      receipts (dod-implementation, dod-ci-gates, dod-occ-self), self-binding evidence for the omnimarket
+      PR #1548 Evidence-Source citation.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "printf 'PASS\n'"

@@ -1,0 +1,69 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13345"
+title: "fix(omnimarket): thread contract-declared backend max_tokens through delegation escalation re-dispatch"
+summary: >-
+  The bus-native delegation pipeline (onex.cmd.omnibase-infra.delegation-request.v1 -> node_delegation_orchestrator
+  -> node_delegation_routing_reducer) discarded the contract-declared per-backend output-token ceiling
+  (cloud-glm declares max_tokens 65536 in bifrost_delegation.yaml) and posted the delegation request's
+  max_tokens instead, which is structurally pinned at the small DELEGATION_MAX_TOKENS_HARD_LIMIT default.
+  Cloud GLM then truncated output (finish_reason=length) and the quality gate scored low on every escalated
+  cloud up-tier. Same defect class as OMN-13342 (node_generation_consumer), but a separate node path and
+  NOT covered by it — this is the path the live prober exercised for the delegation-request command and
+  the escalation re-dispatch through the routing reducer. The routing reducer loaded backends into BifrostBackendRef
+  (no max_tokens slot, value read then dropped) and ModelRoutingDecision threaded timeout_ms but had no
+  max_tokens field, so the ceiling never reached the orchestrator. This fix adds a max_tokens slot to
+  BifrostBackendRef (populated from backend.max_tokens), adds max_tokens (Field ge=1) to ModelRoutingDecision
+  (threaded from backend.max_tokens in the reducer), and posts decision.max_tokens on the wire at both
+  orchestrator inference-intent construction sites (initial dispatch, escalation re-entry, and compliance-repair
+  re-dispatch) — fail-closed >= 1, no hardcoded literal. Regression tests assert the inference intent
+  posts the contract backend ceiling (explicit non-default value and the production cloud-glm 65536) on
+  the initial routing decision and the escalation re-entry, and that the routing decision carries the
+  contract-declared ceiling. Child of OMN-12646 (Delegation, SEA & Model-Routing Quality).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1284"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1284 (jonah/omn-13345-delegation-escalation-max-tokens,
+      base=dev). Threads the contract-declared bifrost backend max_tokens onto BifrostBackendRef and ModelRoutingDecision
+      and into the orchestrator inference-intent construction so cloud backends receive their full output
+      ceiling on the wire instead of the provider's truncating request default. Adds regression tests
+      for the initial routing decision, the escalation re-entry, and the reducer decision. Binds OMN-13345
+      to omnimarket PR #1284 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13345/dod-omnimarket-pr-1284/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13345. The change is a focused handler/model fix in omnimarket
+      (node_delegation_orchestrator + node_delegation_routing_reducer). It corrects which value the delegation
+      inference request carries; it adds no runtime node, changes no contract topic, and alters no image
+      build inputs. The running stability-test image predates the fix, so the corrected behavior reaches
+      the runtime only on the next normal dev->promotion->image rebuild — no separate redeploy is gated
+      by this PR, and no .201 mutation is performed here. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13345/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13345 contract and code-PR
+      binding. Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility check can resolve
+      a PASS receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13345/dod-occ-pr-self/command.yaml

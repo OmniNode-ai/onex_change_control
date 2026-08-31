@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12848"
+title: >-
+  stability-test rebuild lost node-generation-requested dispatch route -> DLQ + cachetools missing in
+  workspace image
+summary: >-
+  Fix two defects blocking the close-the-loop demo. (1) Routing regression: a sole handler entry that
+  declares an event_model and subscribes to more than one topic (node_generation_consumer subscribing
+  to node-generation-requested AND node-deploy after OMN-12826) fell through _topics_for_handler_entry
+  to return () and registered ZERO dispatch routes, so generation commands were consumed then DLQ'd ('No
+  dispatcher found for category command'). A sole handler unambiguously owns every subscribe topic; only
+  competing multi-handler entries keep the ambiguity guard. (2) Workspace-mode image missing cachetools
+  (omnimemory transitive dep) -> node_semantic_analyzer_compute / node_agent_learning_retrieval_effect
+  failed to load. Added cachetools to the runtime external-deps install + a build-time import smoke check
+  so a missing transitive dep fails the build instead of degrading at runtime.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      _topics_for_handler_entry assigns all topics to a sole handler entry (regression covered); existing
+      multi-handler ambiguity and per-handler event_type behavior preserved.
+    command: "uv run pytest tests/unit/runtime/auto_wiring/test_topics_for_handler_entry.py -q"
+  - kind: "ci"
+    description: "CI pipeline green on omnibase_infra PR"
+    command: "gh pr checks 1916 --repo OmniNode-ai/omnibase_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-route-regression-fixed"
+    description: >-
+      A single-handler contract with an event_model and multiple subscribe topics gets all topics assigned
+      (dispatch route registered), fixing the node-generation-requested -> DLQ regression. Multi-handler
+      ambiguity guard and per-handler event_type selection unchanged.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12848/dod-route-regression-fixed/command.yaml"
+  - id: "dod-auto-wiring-suite-green"
+    description: >-
+      Full auto_wiring unit suite remains green after the topic-assignment fix (no regression in dispatcher
+      / route registration).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12848/dod-auto-wiring-suite-green/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      OCC PR binds the OMN-12848 contract and receipts to a mergeable onex_change_control evidence PR
+      paired with omnibase_infra PR #1916.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12848/dod-occ-pr/command.yaml"

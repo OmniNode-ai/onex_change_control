@@ -1,0 +1,123 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16759"
+title: "Autobind OCC evidence for OMN-16759"
+summary: >
+  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #2935.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2935 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2935"
+    description: "PR #2935 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_100_gateway_link_health_verdicts.py?ref=428697c971cdf2aa411be196e3f0ad7a674b4f61 --jq '.content' | base64 -d | grep -c 'def test_migration_refuses_to_run_when_the_schema_is_absent_omn_16759'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_100_gateway_link_health_verdicts.py?ref=428697c971cdf2aa411be196e3f0ad7a674b4f61 --jq '.content' | base64 -d | grep -c 'def test_migration_refuses_to_run_when_the_schema_is_absent_omn_16759'
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-7315"
+    description: "Binds OMN-16759 to OCC companion PR #7315 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7315 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # OMN-16106 evidence-autoclose gap closure (appended; nothing above is edited,
+  # so every prior receipt's contract_entry_sha256 stays valid — OMN-13888).
+  #
+  # The four entries above are the OMN-14285 autobind's own output and carry
+  # behavior_proving_count = 0 under the OMN-15911 proof-class axis: two
+  # byte-identical `gh api .../contents/<file>?ref=<sha> | base64 -d | grep -c`
+  # probes (static-artifact inspection — SURROGATE), OCC's own
+  # tests/test_evidence_admissibility.py (FOREIGN_SUITE_DENYLIST — SURROGATE),
+  # and a bare `gh pr view` (PR_STATE_SURROGATE). All four are true statements
+  # about which PR exists and which bytes landed; none of them executes the
+  # product change, so none can go red if migration 100 regressed to the
+  # CREATE SCHEMA form this ticket exists to remove.
+  #
+  # The three entries below run the real suites the fix shipped with. Each is a
+  # test runner (BEHAVIOR under check_proof_class), pinned via `cwd` to the repo
+  # that owns the code, and each one goes RED against the pre-fix tree.
+  #
+  # AC4 (a green deploy-onex-staging.yml run) is deliberately NOT declared here:
+  # it is not met, and it is blocked on a different migration's data ruling
+  # (0031_delegation_events_tenant_id_to_uuid.sql — `column "tenant_id" of
+  # relation "delegation_events" contains null values`), not on anything this
+  # ticket changed. Declaring a check for it would either fail forever or, worse,
+  # be quietly written to pass. The Linear description carries AC4 as an
+  # unchecked task item instead, which is the signal the OMN-16736 AC-coverage
+  # guard reads to withhold the autoclose flip.
+  # ---------------------------------------------------------------------------
+  - id: "dod-16759-ac1-ac2-supersede-assert"
+    description: >-
+      AC1 + AC2 behaviour proof. Runs omnibase_infra's tests/unit/db/test_migration_100.py, which asserts
+      that the flat docker/migrations/forward/100_create_gateway_link_health.sql creates nothing and names
+      its replacement, that the replacement nodes/node_gateway_link_health_write_effect/0001_create_gateway_link_health.sql
+      ASSERTS omninode_internal through the OMN-16249 pg_catalog.pg_namespace probe rather than issuing
+      CREATE SCHEMA, and that the node artifact's declared checksum in _ledger/application-migrations.tsv
+      matches its bytes. Goes RED on the pre-fix tree: the flat file still carried the DDL and the node
+      file did not exist.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/db/test_migration_100.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-16759-ac3-no-db-privilege-gate"
+    description: >-
+      AC3 behaviour proof. Runs omnibase_infra's tests/unit/db/test_migration_no_database_level_privilege_omn16759.py,
+      the parametrised corpus gate that fails if ANY deployable forward migration (flat or node-owned)
+      issues CREATE SCHEMA / CREATE DATABASE / ALTER DATABASE — the privilege class that stalled deploy
+      32301533344 on 0005 (OMN-16249) and deploy 33080116991 on 100 (this ticket). Carries its own two
+      anti-vacuity assertions (corpus > 100 files, exemption ledger parses), so a glob that matched nothing
+      fails instead of passing.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/db/test_migration_no_database_level_privilege_omn16759.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-16759-ac1-append-only-manifest"
+    description: >-
+      AC1's append-only leg. OMN-16705 made migration history append-only, so migration 100 could not
+      be edited in place; the fix had to add a new node-owned artifact and declare it. This runs omnibase_infra's
+      tests/unit/scripts/validation/test_application_migration_manifest.py, which holds the checked-in
+      application-migration manifest exact — a new artifact that is undeclared, double-declared, or drifted
+      from its source record fails closed here.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/scripts/validation/test_application_migration_manifest.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-7358"
+    description: >-
+      OCC self-binding receipt for PR #7358, the in-repo evidence PR carrying the three behavior-proving
+      entries above. Binds OMN-16759 to that OCC PR by pr_number so occ-preflight eligibility can resolve
+      a PASS receipt for the evidence PR itself. Binding, not proof: it is a PR-state surrogate and does
+      not count toward behavior_proving_count, by design (OMN-14409).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 7358 --repo OmniNode-ai/onex_change_control --json number,state,headRefName

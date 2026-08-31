@@ -1,0 +1,44 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14473"
+evidence_item_id: "dod-14473-gate-runs-acceptance-in-pr"
+check_type: "command"
+check_value: >-
+  C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=398cddb17ea3a312d6aef51333695998f828f5ed"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'effect-assertion-gate')"
+  -ge 1 && test "$(printf '%s' "$C" | grep -c 'tests/scripts/test_trigger_producer_effect_assertion.py')"
+  -ge 1
+status: PASS
+run_timestamp: "2026-07-12T19:15:00Z"
+commit_sha: "398cddb17ea3a312d6aef51333695998f828f5ed"
+runner: "occ-queue-runner"
+verifier: "rt6-builder"
+pr_number: 4052
+probe_command: >-
+  C=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=398cddb17ea3a312d6aef51333695998f828f5ed"
+  --jq .content 2>/dev/null | base64 -d 2>/dev/null); test "$(printf '%s' "$C" | grep -c 'effect-assertion-gate')"
+  -ge 1 && test "$(printf '%s' "$C" | grep -c 'tests/scripts/test_trigger_producer_effect_assertion.py')"
+  -ge 1   # then re-run VERBATIM at the pre-remediation ref f304e13b, where ci.yml EXISTS but has no effect-assertion-gate,
+  and at a bogus SHA
+probe_stdout: |
+  # bound check_value exit codes, run verbatim (verifier, 2026-07-12):
+  #   ref=398cddb1 (dev, #2271 squash-merge)   -> exit 0   GREEN  (job present + runs the acceptance test)
+  #   ref=f304e13b (pre-remediation #2271 head) -> exit 1   RED    <- EXISTS but WRONG (ci.yml has no gate)
+  #   ref=000...0  (bogus SHA)                   -> exit 1   RED    <- not vacuous
+  # live corroboration: Effect-Assertion Gate (RT-5) ran 2m0s on #2271 run 29204792812; job log shows
+  #   test_runtime_change_with_broker_unset_fails_closed PASSED and test_producer_has_no_silent_skip_path PASSED.
+exit_code: 0
+actual_output: >-
+  PASS: ci.yml at the merged squash (398cddb1) carries the effect-assertion-gate job and that job runs
+  tests/scripts/test_trigger_producer_effect_assertion.py (the RED-on-zero acceptance + anti-regression
+  policy tests) plus tests/unit/utils/test_util_producer_effect_assertion.py. The job always instantiates
+  (no job-level if) so it is present+completed+success for the strict completeness anchor; only the expensive
+  setup+pytest STEPS are gated by a tj-actions/changed-files filter on the producer/util/test files, with
+  a green no-op step for unrelated PRs. RED PROVEN at the pre-remediation ref f304e13b (the original #2271
+  head my prior companion #4049 evidenced): ci.yml EXISTS there but has NO effect-assertion-gate job ->
+  exit 1 — this is exactly the gap OMN-14473 tracks (the change-aware selector never ran these tests on
+  the dev PR). Exit 1 at a bogus SHA. Corroborated live: the gate ran 2m0s in-PR on #2271 and its log
+  shows the acceptance + anti-regression tests executing (not the no-op branch). gh-api content read,
+  workspace-INDEPENDENT.
+branch: "jonah/omn-14473-occ-enforcement-evidence"
+contract_entry_sha256: "sha256:aab5b45a17295817618071ad773039bea1a8442d85f814342b16b4ecc9e64174"

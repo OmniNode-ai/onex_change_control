@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14776"
+title: "Port scripts/merge-proof local-proof env wrapper into onex_change_control (F-20 deferred half)"
+summary: >-
+  Port the F-20 merge-proof local-proof env wrapper (OMN-14462) into onex_change_control: resolve OMNI_HOME
+  + SIBLING_REPOS_DIR deterministically from the script's own on-disk location, fail fast with exact export
+  lines when it cannot, and strip GIT_* + PYTHONPATH from any delegated child env.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "The wrapper pytest drives the real script via subprocess and passes."
+    command: "uv run pytest tests/unit/scripts/test_merge_proof.py -q"
+  - kind: "manual"
+    description: "The wrapper is shellcheck-clean and strips the documented leaked env vars."
+    command: "shellcheck --severity=style scripts/merge-proof"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-wrapper-tests"
+    description: "The wrapper pytest (8 tests) drives the real scripts/merge-proof via subprocess in an
+      isolated tmp location: unresolved-env fails with literal export guidance, resolved env passes, worktree
+      layout auto-resolves, and a delegated command does not inherit GIT_*/PYTHONPATH."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_merge_proof.py -q"
+  - id: "dod-wrapper-env-contract"
+    description: "The wrapper is shellcheck-clean and strips GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE + PYTHONPATH
+      from any delegated child env (worktree-safety + PYTHONPATH shadow hazard)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          shellcheck --severity=style scripts/merge-proof && grep -q 'unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE
+          PYTHONPATH' scripts/merge-proof
+  - id: "dod-not-governed-no-allowlist"
+    description: "Extensionless scripts/merge-proof is not governed by the scripts-canonical-form scanner
+      (is_governed_script requires a .py/.sh/.bash suffix), so no allowlists/scripts_exceptions.yaml entry
+      is needed — matching the omnimarket#1805 / omnibase_infra#2338 precedent."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run python -c "import sys; from pathlib import Path; from onex_change_control.scanners.script_canonical_form
+          import is_governed_script; sys.exit(0 if not is_governed_script(Path('scripts/merge-proof'))
+          else 1)"

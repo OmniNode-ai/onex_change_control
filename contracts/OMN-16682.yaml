@@ -1,0 +1,206 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16682"
+title: "Re-key devpi index selection on runner class, not PR origin"
+summary: >-
+  Blocker 2 of OMN-16682. Two jobs in this repo's ci.yml selected the Tailscale-only devpi mirror (omninode-pc.tail75df5e.ts.net:3141)
+  with a ternary keyed on fork-vs-same-repo. PR origin is not runner class: the two agree only while vars.OMNI_TRUSTED_CI_RUNS_ON_JSON
+  still resolves to the self-hosted fleet, and diverge the moment that seam is flipped to a GitHub-hosted
+  value, which is the whole point of OMN-16682. A same-repo PR would then land on ubuntu-latest holding
+  an unresolvable index and hard-fail at install -- the OMN-16413/16427/16428/16431/16437 defect class.
+  The override is removed; index selection is left to the one mechanism that is keyed on runner class
+  by construction, the self-hosted fleet's runner-job-started.sh wire_pypi_cache hook. A new check in
+  check_runner_routing.py makes the policy a merge gate rather than a one-off edit. The contract also
+  preserves merged OCC evidence for OmniNode-ai/omnibase_infra PR #2916 and OmniNode-ai/onex_change_control
+  PR #7229.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-index-selection-removed-from-ci-yaml"
+    description: >-
+      No job in this repo's workflows pins a package-index env var to the Tailscale-only host. Counts
+      occurrences of the mirror URL in an index env assignment in ci.yml; must be zero.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(grep -cE "^ +(UV_DEFAULT_INDEX|UV_INDEX|UV_INDEX_URL|UV_EXTRA_INDEX_URL|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL):" .github/workflows/ci.yml)" = "0"
+  - id: "dod-runner-routing-gate-rejects-tailnet-index"
+    description: >-
+      check_runner_routing.py fails closed on the pre-fix shape. Red/green proof: the validator exits
+      1 naming both offending jobs when run against the ci.yml at the merge base, and exits 0 against
+      the fixed tree.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run python scripts/validation/check_runner_routing.py
+  - id: "dod-runner-routing-unit-tests"
+    description: >-
+      Unit coverage for the new index-host policy: every INDEX_ENV_VARS member carrying the fork-keyed
+      ternary is rejected, a bare literal pin is rejected, public-index and unrelated env vars pass, non-mapping
+      env is not a violation, and a step-level pin is caught as well as a job-level one.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run pytest tests/unit/scripts/test_check_runner_routing.py -q
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2916"
+    description: "PR #2916 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_ci_workflow_resilience.py?ref=d4a11537d3fdd26f03f7a7eee44cbf755d6ab82f --jq '.content' | base64 -d | grep -c 'def _setup_python_uv_steps'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_ci_workflow_resilience.py?ref=d4a11537d3fdd26f03f7a7eee44cbf755d6ab82f --jq '.content' | base64 -d | grep -c 'def _setup_python_uv_steps'
+  - id: "dod-infra2916-single-check"
+    description: "Supersedes duplicated PR #2916 Evidence-Source autobind with one bounded content probe."
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-2916"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_ci_workflow_resilience.py?ref=d4a11537d3fdd26f03f7a7eee44cbf755d6ab82f --jq '.content' | base64 -d | grep -c 'def _setup_python_uv_steps'
+  - id: "dod-OmniNode-ai-onex_change_control-pr-7229"
+    description: "PR #7229 on OmniNode-ai/onex_change_control — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/contents/scripts/validation/check_runner_routing.py?ref=6576cd7a62f55f2e90f5532d6aa5826fb82d847f --jq '.content' | base64 -d | grep -c 'def validate_index_env'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/contents/scripts/validation/check_runner_routing.py?ref=6576cd7a62f55f2e90f5532d6aa5826fb82d847f --jq '.content' | base64 -d | grep -c 'def validate_index_env'
+  - id: "dod-occ-evidence-admissibility-validator"
+    description: "Hosted OCC evidence admissibility validator (OMN-15247)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_evidence_admissibility.py -q"
+  - id: "occ-self-bind-pr-7230"
+    description: "Binds OMN-16682 to OCC companion PR #7230 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7230 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7231"
+    description: "Binds OMN-16682 to OCC companion PR #7231 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7231 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniclaude-pr-2051"
+    description: "PR #2051 on OmniNode-ai/omniclaude — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/contents/tests/workflows/test_occ_publisher_runner_carveout.py?ref=78097a7b582d8b60c99cfa7ad771639da050bb63 --jq '.content' | base64 -d | grep -c 'def _load'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2051-ci"
+    description: "PR #2051 on OmniNode-ai/omniclaude — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2051 --repo OmniNode-ai/omniclaude --json files"
+  - id: "occ-self-bind-pr-7247"
+    description: "OCC companion PR #7247 — self-bind for OMN-16682 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7247 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2157"
+    description: "PR #2157 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/tests/unit/workflows/test_occ_autobind_runner_carveout.py?ref=b6f478fce1bca8d95023959afc642833130ae254 --jq '.content' | base64 -d | grep -c 'def _runs_on'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2157-ci"
+    description: "PR #2157 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2157 --repo OmniNode-ai/omnimarket --json files"
+  - id: "occ-self-bind-pr-7245"
+    description: "OCC companion PR #7245 — self-bind for OMN-16682 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7245 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7261"
+    description: "Binds OMN-16682 to OCC companion PR #7261 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7261 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7266"
+    description: "Binds OMN-16682 to OCC companion PR #7266 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7266 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7271"
+    description: "Binds OMN-16682 to OCC companion PR #7271 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7271 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7270"
+    description: "Binds OMN-16682 to OCC companion PR #7270 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7270 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7269"
+    description: "Binds OMN-16682 to OCC companion PR #7269 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7269 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7268"
+    description: "Binds OMN-16682 to OCC companion PR #7268 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7268 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omniweb-pr-327"
+    description: "PR #327 on OmniNode-ai/omniweb — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 327 --repo OmniNode-ai/omniweb --json number,state"
+  - id: "dod-OmniNode-ai-omniweb-pr-327-ci"
+    description: "PR #327 on OmniNode-ai/omniweb — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 327 --repo OmniNode-ai/omniweb --json files"
+  - id: "occ-self-bind-pr-7267"
+    description: "OCC companion PR #7267 — self-bind for OMN-16682 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7267 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7265"
+    description: "Binds OMN-16682 to OCC companion PR #7265 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7265 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-7273"
+    description: "Binds OMN-16682 to OCC companion PR #7273 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 7273 --repo OmniNode-ai/onex_change_control --json number,state"

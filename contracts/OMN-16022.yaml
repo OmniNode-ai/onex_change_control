@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-16022"
+title: "Enforce gateway session expiry and bound degraded mode"
+summary: >
+  OCC companion for OmniNode-ai/omnibase_infra PR #2736. node_gateway_attach_effect stored expires_at
+  at attach and read it on no path, and OMN-15918's outage-is-not-revocation rule had no time bound composed
+  with it — together a revocation-suppression vector for anyone able to partition the gateway from Keycloak.
+  This companion binds the evidence that both bounds are now enforced before any network call, and that
+  the OMN-15918 split is preserved.
+is_seam_ticket: false
+interface_change: true
+interfaces_touched:
+  - "public_api"
+  - "events"
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2736 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-2736"
+    description: "PR #2736 on OmniNode-ai/omnibase_infra carries the enforcement change."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2736 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-expiry-enforced-on-heartbeat"
+    description: "Heartbeat evaluates the expiry bound (AC a) — the policy call is present in the handler
+      at the PR head."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/handlers/handler_gateway_heartbeat.py?ref=103daf8b8c2919abcd62e25aa951f20cda5647fb
+          --jq '.content' | base64 -d | grep -c 'session_policy.is_expired'"
+  - id: "dod-degraded-ceiling-constant-present"
+    description: "The named degraded-mode ceiling (AC b) exists on the config model at the PR head."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_gateway_attach_effect/models/model_gateway_attach_config.py?ref=103daf8b8c2919abcd62e25aa951f20cda5647fb
+          --jq '.content' | base64 -d | grep -c 'max_unverified_session_seconds'"
+  - id: "occ-self-bind-pr-6449"
+    description: "Binds OMN-16022 to OCC companion PR #6449 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6449 --repo OmniNode-ai/onex_change_control --json number,state"

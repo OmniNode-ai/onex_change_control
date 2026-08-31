@@ -1,0 +1,93 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13354"
+title: "fix(omnimarket): make research quality-gate heuristic research-appropriate"
+summary: >-
+  The delegation quality-gate research task_class declared the heuristic pair cites_specific_lines + explains_tradeoffs
+  (src/omnimarket/configs/task_class_contracts.v1.yaml). cites_specific_lines (handler_quality_gate.py::_check_cites_specific_lines)
+  is a CODE-line-citation regex (line N / Lnn / :nn) that a legitimate research answer cannot satisfy
+  — research cites theorems / papers / sections, not code lines. This made the research gate a catch-22:
+  per the 2026-06-19 stability-test reprove (docs/evidence/2026-06-19-sea-escalation-reprove.md §2b),
+  a research delegation escalated local Qwen -> glm-5.2 -> gemini-2.5-flash and EXECUTED at every tier
+  (no truncation), but ALL failed quality with score 0.733, reason ["TASK_MISMATCH: missing specific line
+  citations", "TASK_MISMATCH: failed explains_tradeoffs"], fail_category=fail_heuristic; the only outputs
+  that could pass carried code-line markers, which then passed at the LOCAL tier and never escalated,
+  so the ceiling could never demonstrate a research pass. Fix (research-appropriate, NOT a blanket loosen):
+  add a cites_sources heuristic (_check_cites_sources + _SOURCE_CITATION_RE) that detects general source/reference
+  forms — references / citations / sources keywords, see / according to / cf. attribution, named results
+  (theorem N / section N / page N / equation N), bracketed numeric [12], author-year (Smith, 2020), URLs,
+  and DOIs — as a presence check, NOT the code-line regex. The research DoD swaps cites_specific_lines
+  -> cites_sources and explains_tradeoffs -> methodical_analysis (reasoning-structure markers because
+  / therefore / evidence / risk). cites_specific_lines + explains_tradeoffs stay as named checks bound
+  to the review (code-review) task class and the existing escalation tests, unchanged. The research class
+  is added to the quality-gate calibration corpus with good/bad cases (per-class margin 1.0 - 0.6 = 0.40
+  >= the 0.3 threshold). Tests (tests/unit/delegation/test_quality_gate_research_omn13354.py) prove: (a)
+  a substantive research answer that cites sources and reasons passes (score 1.0), (b) a thin / empty
+  research answer still fails, and (c) code-line-only content does not pass research and the shipped DoD
+  declares cites_sources not cites_specific_lines — the research path is no longer the code-citation regex.
+  Full suite green (7532 passed, 0 failed, no -k filter), mypy --strict clean (2390 files), ruff + pre-commit
+  clean. Child of OMN-12646 (Delegation, SEA & Model-Routing Quality).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1293"
+    description: >-
+      Per-code-PR binding receipt for omnimarket PR #1293 (jonah/omn-13354-research-quality-gate-heuristic,
+      base=dev). Adds the research-appropriate cites_sources heuristic (_check_cites_sources + _SOURCE_CITATION_RE)
+      to handler_quality_gate.py, swaps the research task class DoD (cites_specific_lines -> cites_sources,
+      explains_tradeoffs -> methodical_analysis) in task_class_contracts.v1.yaml, adds the research class
+      to the calibration corpus, and aligns the delegation chain e2e good-content fixture to a research-shaped
+      answer. cites_specific_lines / explains_tradeoffs remain bound to the review task class. Binds OMN-13354
+      to omnimarket PR #1293 by pr_number and commit_sha.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13354/dod-omnimarket-pr-1293/command.yaml
+  - id: "dod-research-gate-discrimination"
+    description: >-
+      Behavioral proof that the fixed research gate discriminates without the code-line catch-22. Running
+      the shipped research DoD (response_non_empty + no_refusal + cites_sources + methodical_analysis)
+      through handler_quality_gate.delta: a substantive research answer (cites Theorem / Section / author-year
+      / [12], reasons because/therefore/evidence) PASSES at score 1.0; a thin unsupported answer FAILS
+      fail_heuristic on missing source citations; an empty answer FAILS fail_deterministic; code-line-only
+      content (line 42 / lines 50-55) does NOT pass research. Verifier = the focused OMN-13354 + calibration
+      unit tests (verifier path distinct from the manual probe runner; no quality verdict hand-asserted).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13354/dod-research-gate-discrimination/command.yaml
+  - id: "dod-deploy-no-runtime-impact"
+    description: >-
+      Deploy-path DoD evidence for OMN-13354. The change is a config + pure-handler heuristic change in
+      omnimarket (a new deterministic quality-gate check function and a task_class_contracts.v1.yaml DoD
+      swap, plus test/corpus alignment). It adds no runtime node, changes no contract topic, and alters
+      no image build inputs. The running stability-test image predates the change, so the repointed research
+      DoD reaches the runtime only on the next normal dev->promotion->image rebuild — this PR gates no
+      separate redeploy and performs no .201 mutation. deploy
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13354/dod-deploy-no-runtime-impact/command.yaml
+  - id: "dod-occ-pr-self"
+    description: >-
+      OCC self-binding receipt for the central evidence PR carrying the OMN-13354 contract, the omnimarket
+      code-PR binding, the research-gate discrimination receipt, and the deploy no-runtime-impact receipt.
+      Binds the OCC PR itself by pr_number so the OCC receipt-gate eligibility check can resolve a PASS
+      receipt for the evidence PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13354/dod-occ-pr-self/command.yaml

@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13140"
+evidence_item_id: "dod-emit-wired-pr1221"
+check_type: "command"
+check_value: >-
+  uv run pytest tests/unit/delegation/test_escalation_emit_omn13140.py -q && uv run mypy src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py
+  --strict
+status: PASS
+run_timestamp: "2026-06-14T23:45:00Z"
+commit_sha: "f1808ef0527356aea672fcef852dc3f56827a59c"
+runner: "occ-author-omn-13140-emit-20260614"
+verifier: "occ-evidence-verifier-omn-13140-emit"
+probe_command: >-
+  git checkout origin/dev -- handler_delegation_workflow.py contract.yaml (revert fix, keep test) && uv
+  run pytest tests/unit/delegation/test_escalation_emit_omn13140.py -q  [RED] ; git checkout HEAD -- (restore
+  fix) && uv run pytest tests/unit/delegation/test_escalation_emit_omn13140.py -q  [GREEN] ; uv run mypy
+  src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py --strict ;
+  gh pr checks 1221 --repo OmniNode-ai/omnimarket
+probe_stdout: |
+  # RED — fix reverted to origin/dev, escalation test file still present:
+  $ git checkout origin/dev -- .../handler_delegation_workflow.py .../node_delegation_orchestrator/contract.yaml
+  $ uv run pytest tests/unit/delegation/test_escalation_emit_omn13140.py -q
+  E   AssertionError: the orchestrator contract must declare the escalation topic in
+  E   publish_topics + published_events so the applier routes the typed event ...
+  E   assert 'onex.evt.omnimarket.delegation-completed.v1' == 'onex.evt.omnimarket.delegation-escalation-triggered.v1'
+  FAILED ...::TestQualityGateEscalationEmitsTerminalEvent::test_escalation_emits_typed_event_with_escalation_count
+  FAILED ...::TestInferenceErrorEscalationEmitsTerminalEvent::test_retryable_inference_error_emits_escalation_event
+  FAILED ...::TestEscalationEventRoutesToCanonicalTopicViaApplier::test_escalation_event_resolves_to_escalation_topic
+  3 failed, 3 passed in 0.55s
+
+  # GREEN — fix restored to PR #1221 HEAD (f1808ef0):
+  $ git checkout HEAD -- .../handler_delegation_workflow.py .../contract.yaml
+  $ uv run pytest tests/unit/delegation/test_escalation_emit_omn13140.py -q
+  ......                                                                   [100%]
+  6 passed in 0.40s
+
+  # mypy --strict on the changed handler:
+  $ uv run mypy src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py --strict
+  Success: no issues found in 1 source file
+
+  # gh pr checks 1221 — every code-quality gate GREEN; ONLY the Receipt-Gate is red:
+  $ gh pr checks 1221 --repo OmniNode-ai/omnimarket
+  verify / verify                          FAILURE   (Receipt-Gate: placeholder Evidence-Source)
+  lint                                     pass
+  Tests (Split 1/1)                        pass
+  Contract Compliance Check                pass
+  Golden Chain Suite (inmemory bus)        pass
+  Runtime Sweep                            pass
+  Hostile Reviewer (adversarial gate)      pass
+  deploy-gate / deploy-gate                pass
+  gate / CodeRabbit Thread Check           pass
+  imperative-contract-guard                pass
+  node-drift-gate                          pass
+  Event Registry Drift                     pass
+  (3 non-success rows are duplicate verify/verify renderings of the same Receipt-Gate)
+actual_output: >-
+  PASS: omnimarket PR #1221 (branch jonah/omn-13140-wire-delegation-escalation-emit, base=dev, head f1808ef0527356aea672fcef852dc3f56827a59c)
+  wires the TERMINAL delegation-escalation emit that PR #1215 left missing. PR #1215 opened the three
+  routing GATES only; the orchestrator still emitted ONLY a ModelRoutingIntent on escalation, never the
+  typed ModelLlmDelegationEscalationTriggeredEvent, so the escalation topic HWM stayed at 0 and node_delegation_routing_feedback_reducer
+  (its declared consumer) saw zero signal. #1221 builds the typed event in _build_escalation_event (src/omnimarket/nodes/node_delegation_orchestrator/handlers/handler_delegation_workflow.py:972)
+  and emits it from BOTH escalation branches — handle_inference_response (line 647, retryable infra error)
+  and handle_gate_result (line 903, quality-gate-recommends-fallback) — returning the typed ModelLlmDelegationEscalationTriggeredEvent
+  (line 1003). The topic onex.evt.omnimarket.delegation-escalation-triggered.v1 is contract-declared on
+  the orchestrator (contract.yaml publish_topics line 75 + published_events line 103) so the runtime DispatchResultApplier
+  routes the typed event — orchestrators emit, never publish directly. The consumer node_delegation_routing_feedback_reducer
+  already subscribes to that topic (its contract.yaml line 48), closing the producer/consumer pairing.
+  This receipt is authored by a verifier DISTINCT from the code author: the RED->GREEN proof was reproduced
+  independently by reverting the handler + contract to origin/dev (test present) — 3 failed positive emit/route
+  cases + 3 passed negative no-emit cases — then 6 passed with the fix; mypy --strict is clean on the
+  changed handler; gh pr checks #1221 shows every code-quality gate GREEN with ONLY verify/verify (this
+  Receipt-Gate) failing on the placeholder Evidence-Source that this OCC receipt resolves. HONESTY: this
+  receipt proves the terminal emit is wired and routed to the canonical topic over the applier; it does
+  NOT claim the live deployed-lane escalation topic HWM>0 (deploy_pending — observable only after the
+  next dev redeploy rebuilds the runtime image with this code; see dod-deploy-assessment).
+exit_code: 0
+contract_sha256: "sha256:3632a9bbf592343730a6140e68234295b74a709182bd56b1cc484c6a7bb34c1a"
+pr_number: 1221
+branch: "jonah/omn-13140-wire-delegation-escalation-emit"

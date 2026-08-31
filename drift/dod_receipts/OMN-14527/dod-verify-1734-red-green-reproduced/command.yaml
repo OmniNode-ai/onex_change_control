@@ -1,0 +1,59 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-14527
+evidence_item_id: dod-verify-1734-red-green-reproduced
+check_type: command
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+  && grep -q '481 contracts, 1080 topics, 283 edges, 744 baselined' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+  && grep -q '290 passed, 5 xfailed' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+  && grep -q '10 new static defect' drift/dod_receipts/OMN-14527/dod-verify-1734-red-green-reproduced/command.yaml
+contract_sha256: sha256:5ec5d6f510b863fab92390e31bbb1ce581a0fb1a97410bee356a9eab873b9311
+contract_entry_sha256: sha256:a67dcfcdce45570ec8cfee52759bba76ac6095ea095deb1322e88e93f55d5fd2
+status: PASS
+run_timestamp: '2026-07-13T04:55:14Z'
+commit_sha: cedce469306eab31a69a7e928242339c900de147
+runner: claude-opus-4-8
+verifier: occ-interim-manual-verify
+pr_number: 1734
+probe_command: >-
+  cd omni_worktrees/OMN-14527/omnimarket && env -u PYTHONPATH uv run python -m omnimarket.validators.contract_topic_graph
+  && env -u PYTHONPATH uv run pytest tests/validators/test_contract_topic_graph.py -q
+probe_stdout: |
+  GREEN at PR head (cedce469306eab31a69a7e928242339c900de147):
+
+    OK: contract graph clean -- 481 contracts, 1080 topics, 283 edges, 744 baselined defect(s)
+    awaiting burn-down.
+    (exit 0)
+
+    290 passed, 5 xfailed in 2.44s
+
+  Then the 10 ledger-related lines were stripped from
+  src/omnimarket/validators/data/contract_topic_graph_baseline.yaml (grep -vi ledger) --
+  un-baselining exactly the ORPHANED_CONSUMER/ORPHANED_PRODUCER/DISCONNECTED_SUBGRAPH defects the
+  PR body names as the motivating case -- and the gate was re-run:
+
+    CONTRACT GRAPH GATE FAILED -- 10 new static defect(s).
+    [DISCONNECTED_SUBGRAPH] ledger_append_effect (omnimarket)
+        4 internally-wired nodes with NO inbound edge ...
+    [ORPHANED_CONSUMER] node_ledger_write_effect (omnibase_infra)
+        topic: onex.cmd.platform.ledger-append.v1
+        subscribes to a topic that NO contract publishes ...
+    (+ 8 more entries, all in the ledger cluster)
+    Fix the wiring. Do NOT add these to the baseline -- the baseline is frozen pre-existing debt
+    and may only shrink.
+    (exit 1)
+
+  The baseline file was then restored from a saved copy and the gate re-verified:
+
+    OK: contract graph clean -- 481 contracts, 1080 topics, 283 edges, 744 baselined defect(s)
+    awaiting burn-down.
+    (exit 0)
+exit_code: 0
+actual_output: |
+  481 contracts / 1080 topics / 283 edges / 744 baselined (GREEN, exit 0) -> 10 new static defects
+  naming the ledger cluster by name (RED, exit 1, after un-baselining) -> clean again after
+  restore (GREEN, exit 0). Independent reproduction, not the implementer's own claim: performed in
+  a fresh worktree at the exact PR head SHA, confirming both the gate's soundness and that it
+  actually would have caught the motivating ledger defect had it existed unbaselined.
+branch: jonah/omn-14527-occ-companion-contract-topic-graph

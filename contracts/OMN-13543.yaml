@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13543"
+title: "fix(delegation): research escalation-exhaustion emits a blank terminal — resolved-by-OMN-13546
+  (forwarder missing handle() inference amplification loop)"
+summary: >
+  The research delegation path scored 1/2 in the 2026-06-23 dogfood matrix: a real inference succeeded
+  but no model/token-bearing terminal landed in delegation_events, so the path looked exhausted-blank.
+  Root cause was NOT a quality-gate/escalation defect in the orchestrator. It was the inference amplification
+  loop in node_bus_forwarder_effect: HandlerForwardOutbound and HandlerConsumeInbound lacked the canonical
+  handle()/handle_async() dispatch entrypoint, so the runtime dispatcher raised ModelOnexError on every
+  gateway forward/consume (144 errors per dev redeploy) and the inference response never propagated back
+  to a terminal. OMN-13546 added handle() to both handlers (omnibase_infra PR #2088, merged 2026-06-24,
+  mergeCommit a9f57e891177ee4f0b82ec9274fa64423d6c8324). After dev redeploy to that HEAD, the 2026-06-24
+  dogfood re-test shows research PASS with a real terminal row (Qwen3.6-35B-A3B, 70/1725 tokens, quality
+  pass, 9021 ms, correlation_id d26ab17a-d847-4b12-bdd3-4a978b837956). OMN-13543 is therefore resolved-by-OMN-13546.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: >
+      Dev-lane dogfood re-test (verifier != runner): a research delegation terminalizes with non-empty
+      model_name + tokens>0 in omnidash_analytics.delegation_events, read by psql against the dev PG container.
+    command: "see docs/evidence/2026-06-24-redeploy-dogfood/results.md STEP 1 — research row"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >
+      OMN-13543 resolved-by-OMN-13546. The resolving change is omnibase_infra PR #2088 (MERGED 2026-06-24,
+      mergeCommit a9f57e891177ee4f0b82ec9274fa64423d6c8324), which added the canonical handle() dispatch
+      entrypoint to HandlerForwardOutbound + HandlerConsumeInbound in node_bus_forwarder_effect, closing
+      the inference amplification loop that dropped the research terminal. Live proof: dev-lane redeploy
+      to that HEAD, then dogfood re-test — research terminalized with model_name=Qwen3.6-35B-A3B, 70 input
+      / 1725 output tokens, quality-gate pass, 9021 ms, correlation_id d26ab17a-d847-4b12-bdd3-4a978b837956
+      (docs/evidence/2026-06-24-redeploy-dogfood/results.md). verifier != runner: the delegation_events
+      row was read with psql against the dev PG container, a state surface written by the runtime, not
+      the runner.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13543/dod-001/command.yaml && grep
+          -q '^ticket_id: \"OMN-13543\"$' drift/dod_receipts/OMN-13543/dod-001/command.yaml && grep -q
+          '^pr_number: 3008$' drift/dod_receipts/OMN-13543/dod-001/command.yaml && grep -q 'a9f57e891177ee4f0b82ec9274fa64423d6c8324'
+          drift/dod_receipts/OMN-13543/dod-001/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "OCC PR carrying this OMN-13543 resolved-by-OMN-13546 contract and downstream receipt."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13543/dod-occ-pr-self/command.yaml
+          && grep -q '^ticket_id: \"OMN-13543\"$' drift/dod_receipts/OMN-13543/dod-occ-pr-self/command.yaml"

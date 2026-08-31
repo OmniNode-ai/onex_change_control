@@ -1,0 +1,236 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-10445"
+title: "Runtime Stability Reconciliation -- capture .201 patches, fix wiring crash, deploy unified image"
+summary: "Stabilize runtime package activation and intelligence/quality node auto-wiring across omnibase_infra
+  and omnimarket, with deploy validation held for an explicit approved runtime window."
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+  - "topics"
+evidence_requirements:
+  - kind: "tests"
+    description: "omnimarket intelligence and quality node runtime contracts and golden-chain coverage
+      pass"
+    command: "cd omni_worktrees/OMN-10445/omnimarket && uv run pytest tests/test_node_intelligence_orchestrator_contract.py
+      tests/test_node_quality_scoring_contract.py tests/nodes/node_intelligence_orchestrator/test_contract_runtime_readiness.py
+      tests/test_intelligence_node_dependency_scope.py tests/nodes/node_intent_event_consumer_effect/test_golden_chain_intent_event_consumer_effect.py
+      -q"
+  - kind: "tests"
+    description: "omnibase_infra runtime package activation, env parity, and auto-wiring coverage pass"
+    command: "cd omni_worktrees/OMN-10445/omnibase_infra && uv run pytest tests/ci/test_env_parity.py
+      tests/ci/test_plugin_env_service_completeness.py tests/unit/runtime/auto_wiring/test_wiring.py tests/unit/runtime/auto_wiring/test_handler_wiring_event_type_alias.py
+      -q"
+  - kind: "tests"
+    description: "omnibase_infra sibling omninode_infra parity checks pass with explicit OMNINODE_INFRA_DIR"
+    command: "cd omni_worktrees/OMN-10445/omnibase_infra && OMNINODE_INFRA_DIR=/Users/jonah/Code/omni_home/omninode_infra
+      uv run pytest tests/ci/test_env_parity.py tests/ci/test_plugin_env_service_completeness.py -q"
+  - kind: "tests"
+    description: "omnimarket PR review bot report poster is runtime-wirable for PR #515"
+    command: "cd omni_worktrees/OMN-10445/omnimarket-pr-review-bot-runtime-wiring && uv run pytest tests/nodes/node_pr_review_bot/test_workflow_runner_wiring.py
+      tests/nodes/node_pr_review_bot/test_workflow_runner_concrete_wiring.py -q"
+  - kind: "tests"
+    description: "OCC receipt evidence for PR #515 is locally eligible before opening central evidence
+      PR #665"
+    command: "PYTHONPATH=src uv run python -m omnibase_core.validation.validator_occ_merge_eligibility
+      --repo omnimarket --pr-number 515 --pr-title 'fix(OMN-10445): make report poster runtime-wirable'
+      --pr-branch jonah/omn-10445-pr-review-bot-runtime-wiring --contracts-dir contracts --receipts-dir
+      drift/dod_receipts --pr-commit-sha 933a985ebc388e5bf07cacc9aa09d462b6533e40"
+  - kind: "tests"
+    description: "OCC GitHub Actions workflows use centralized runner selector variables"
+    command: "python -c \"from pathlib import Path; import yaml; [yaml.safe_load(p.read_text()) for p
+      in Path('.github/workflows').glob('*.yml')]\" && ! grep -RIn '^    runs-on: [^>$]' .github/workflows
+      && grep -R 'vars.OMNI_TRUSTED_CI_RUNS_ON_JSON' .github/workflows >/dev/null && grep -R 'vars.OMNI_PUBLIC_PR_RUNS_ON_JSON'
+      .github/workflows >/dev/null && actionlint -ignore 'SC2129' -ignore 'unexpected key \\\"type\\\"'
+      .github/workflows/*.yml"
+  - kind: "tests"
+    description: "OCC runner selector expressions provide standardized defaults when caller repos lack
+      OMNI runner variables"
+    command: "ruby -e 'require \"yaml\"; Dir[\".github/workflows/*.yml\"].each { |p| YAML.load_file(p)
+      }' && actionlint -ignore 'SC2129' -ignore 'unexpected key \"type\"' .github/workflows/*.yml && !
+      rg -n 'fromJSON\\(vars\\.OMNI_(PUBLIC_PR|TRUSTED_CI)_RUNS_ON_JSON\\)' .github/workflows && test
+      \"$(rg -n 'fromJSON\\(vars\\.OMNI_(PUBLIC_PR|TRUSTED_CI)_RUNS_ON_JSON \\|\\|' .github/workflows
+      | wc -l | tr -d ' ')\" = \"52\""
+  - kind: "manual"
+    description: "Post-merge approved deploy validation command is recorded; live deploy/restart requires
+      explicit approval"
+    command: "deploy validation: docker exec omninode-runtime printenv ONEX_ACTIVE_RUNTIME_PACKAGES &&
+      docker exec omninode-runtime python -m omnibase_infra.runtime.auto_wiring.discovery"
+  - kind: "tests"
+    description: "Runner fleet health config standardization and GitHub/Docker reconciliation proof pass"
+    command: "cd omni_worktrees/OMN-10445/omnibase_infra-runner-standardization && PYTHONPATH=src uv run
+      pytest tests/unit/observability/runner_health/test_cli_runner_health.py tests/unit/observability/runner_health/test_runner_fleet_config.py
+      tests/unit/observability/runner_health/test_collector_runner_health.py tests/integration/observability/test_runner_fleet_config_contract.py
+      -q"
+  - kind: "tests"
+    description: "omnibase_infra workflows route trusted PR and merge queue work to centralized runner
+      selector variables"
+    command: "cd omni_worktrees/OMN-10445/omnibase_infra-runner-standardization && ruby -e 'require \"yaml\";
+      Dir[\".github/workflows/*.{yml,yaml}\"].each { |p| YAML.load_file(p) }' && actionlint -ignore 'SC2044'
+      -ignore 'SC2086' -ignore 'SC2129' -ignore 'SC1090' -ignore 'SC2016' -ignore 'SC2035' -ignore 'property
+      \"cross_repo_pat\" is not defined' .github/workflows/*.yml && ! rg -n 'runs-on: ubuntu-latest|USE_SELF_HOSTED_RUNNERS|fromJSON\\('\\''|self-hosted,
+      omnibase-ci' .github/workflows && rg -n 'OMNI_PUBLIC_PR_RUNS_ON_JSON|OMNI_TRUSTED_CI_RUNS_ON_JSON'
+      .github/workflows"
+  - kind: "tests"
+    description: "omnibase_core CI, stale TODO, receipt, and docs workflows use centralized runner selector
+      variables"
+    command: "cd omni_worktrees/OMN-10445/omnibase_core-runner-routing && actionlint -ignore 'SC2086'
+      -ignore 'SC2129' .github/workflows/ci.yml .github/workflows/validate-docs.yml .github/workflows/receipt-gate.yml
+      .github/workflows/stale-todo-gate.yml && ! grep -RIn '^    runs-on: [^>$]' .github/workflows/ci.yml
+      .github/workflows/validate-docs.yml .github/workflows/receipt-gate.yml .github/workflows/stale-todo-gate.yml
+      && grep -R 'vars.OMNI_TRUSTED_CI_RUNS_ON_JSON' .github/workflows/ci.yml .github/workflows/validate-docs.yml
+      .github/workflows/receipt-gate.yml .github/workflows/stale-todo-gate.yml >/dev/null && grep -R 'vars.OMNI_PUBLIC_PR_RUNS_ON_JSON'
+      .github/workflows/ci.yml .github/workflows/validate-docs.yml .github/workflows/receipt-gate.yml
+      .github/workflows/stale-todo-gate.yml >/dev/null"
+  - kind: "tests"
+    description: "omniclaude reusable CR gate workflow uses centralized runner selector variables"
+    command: "cd omni_worktrees/OMN-10445/omniclaude-runner-routing && actionlint .github/workflows/cr-thread-gate.yml
+      && ! grep -RIn '^    runs-on: [^>$]' .github/workflows/cr-thread-gate.yml && grep -R 'vars.OMNI_TRUSTED_CI_RUNS_ON_JSON'
+      .github/workflows/cr-thread-gate.yml >/dev/null && grep -R 'vars.OMNI_PUBLIC_PR_RUNS_ON_JSON' .github/workflows/cr-thread-gate.yml
+      >/dev/null"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: "omnimarket intelligence and quality node runtime contract tests pass on PR #487 head"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-001/command.yaml && grep
+          -q 'ticket_id: \"OMN-10445\"' drift/dod_receipts/OMN-10445/dod-001/command.yaml && grep -q '18
+          passed' drift/dod_receipts/OMN-10445/dod-001/command.yaml"
+  - id: "dod-002"
+    description: "omnibase_infra runtime package activation and auto-wiring tests pass on PR #1481 head"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-002/command.yaml && grep
+          -q 'ticket_id: \"OMN-10445\"' drift/dod_receipts/OMN-10445/dod-002/command.yaml && grep -q '50
+          passed' drift/dod_receipts/OMN-10445/dod-002/command.yaml"
+  - id: "dod-003"
+    description: "omnibase_infra sibling env parity checks pass with explicit omninode_infra checkout"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-003/command.yaml && grep
+          -q 'ticket_id: \"OMN-10445\"' drift/dod_receipts/OMN-10445/dod-003/command.yaml && grep -q '5
+          passed' drift/dod_receipts/OMN-10445/dod-003/command.yaml"
+  - id: "dod-004"
+    description: "omnimarket PR #515 report poster runtime-wiring regression tests pass"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-004/command.yaml && grep
+          -q 'pr_number: 515' drift/dod_receipts/OMN-10445/dod-004/command.yaml && grep -q '11 passed'
+          drift/dod_receipts/OMN-10445/dod-004/command.yaml"
+  - id: "dod-005"
+    description: "OCC PR #665 receipt evidence is locally eligible for downstream omnimarket PR #515"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-005/command.yaml && grep
+          -q 'pr_number: 665' drift/dod_receipts/OMN-10445/dod-005/command.yaml && grep -q 'eligible=true'
+          drift/dod_receipts/OMN-10445/dod-005/command.yaml"
+  - id: "dod-006"
+    description: "OCC GitHub Actions workflows use centralized runner selector variables"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-006/command.yaml && grep
+          -q 'pr_number: 665' drift/dod_receipts/OMN-10445/dod-006/command.yaml && grep -q 'centralized-runner-check:PASS'
+          drift/dod_receipts/OMN-10445/dod-006/command.yaml"
+  - id: "dod-occ-runner-selector-defaults"
+    description: "OCC workflows provide standardized fallback runner selectors for repos without OMNI
+      runner variables"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-occ-runner-selector-defaults/command.yaml
+          && grep -q 'pr_number: 680' drift/dod_receipts/OMN-10445/dod-occ-runner-selector-defaults/command.yaml
+          && grep -q 'commit_sha: \"3e51c9aea289cd921389ca1b7604e33d72643e0a\"' drift/dod_receipts/OMN-10445/dod-occ-runner-selector-defaults/command.yaml
+          && grep -q 'occ-runner-selector-defaults:PASS' drift/dod_receipts/OMN-10445/dod-occ-runner-selector-defaults/command.yaml"
+  - id: "dod-core-runner-selector"
+    description: "omnibase_core CI, stale TODO, receipt, and docs workflows use centralized runner selector
+      variables"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-core-runner-selector/command.yaml
+          && grep -q 'pr_number: 1028' drift/dod_receipts/OMN-10445/dod-core-runner-selector/command.yaml
+          && grep -q 'commit_sha: \"80affd1d65fd5bf1f8468d2e1d117cd62b3d8c96\"' drift/dod_receipts/OMN-10445/dod-core-runner-selector/command.yaml
+          && grep -q 'core-centralized-runner-check:PASS' drift/dod_receipts/OMN-10445/dod-core-runner-selector/command.yaml"
+  - id: "dod-core-ci-occ-eligibility"
+    description: "OCC PR #677 receipt evidence is locally eligible for downstream omnibase_core PR #1028"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-core-ci-occ-eligibility/command.yaml
+          && grep -q 'pr_number: 677' drift/dod_receipts/OMN-10445/dod-core-ci-occ-eligibility/command.yaml
+          && grep -q 'eligible=true' drift/dod_receipts/OMN-10445/dod-core-ci-occ-eligibility/command.yaml"
+  - id: "dod-deploy"
+    description: "Approved post-merge deploy validation command recorded without claiming a live deploy/restart"
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "echo deploy: docker exec omninode-runtime printenv ONEX_ACTIVE_RUNTIME_PACKAGES
+          && echo deploy: docker exec omninode-runtime python -m omnibase_infra.runtime.auto_wiring.discovery"
+  - id: "dod-infra-runner-standardization"
+    description: "omnibase_infra runner fleet standardization tests and live read-only reconciliation
+      proof pass on the current PR #1492 head"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q 'pr_number: 1492' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q 'commit_sha: \"2b121ad2a45cea726b9cc4297513694ab5434a0d\"' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q '21 passed' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q 'DEPLOY GATE PASSED' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q '\"memory_limit\": \"6g\"' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q '\"memory_swap\": \"12g\"' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q '\"expected_runners\": 14' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml
+          && grep -q '\"observed_runners\": 14' drift/dod_receipts/OMN-10445/dod-infra-runner-standardization/command.yaml"
+  - id: "dod-infra-ci-runner-routing"
+    description: "omnibase_infra workflows use centralized trusted/public runner selector variables"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-infra-ci-runner-routing/command.yaml
+          && grep -q 'pr_number: 1492' drift/dod_receipts/OMN-10445/dod-infra-ci-runner-routing/command.yaml
+          && grep -q 'commit_sha: \"af14c72eb781d9c088983c41ad8d9448d7525495\"' drift/dod_receipts/OMN-10445/dod-infra-ci-runner-routing/command.yaml
+          && grep -q 'infra-ci-runner-routing:PASS' drift/dod_receipts/OMN-10445/dod-infra-ci-runner-routing/command.yaml"
+  - id: "dod-infra-occ-eligibility"
+    description: "OCC PR #673 receipt evidence is locally eligible for downstream omnibase_infra PR #1492"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-infra-occ-eligibility/command.yaml
+          && grep -q 'pr_number: 673' drift/dod_receipts/OMN-10445/dod-infra-occ-eligibility/command.yaml
+          && grep -q 'eligible=true' drift/dod_receipts/OMN-10445/dod-infra-occ-eligibility/command.yaml"
+  - id: "dod-infra-ci-occ-eligibility"
+    description: "OCC PR #680 receipt evidence is locally eligible for downstream omnibase_infra PR #1492"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-infra-ci-occ-eligibility/command.yaml
+          && grep -q 'pr_number: 680' drift/dod_receipts/OMN-10445/dod-infra-ci-occ-eligibility/command.yaml
+          && grep -q 'eligible=true' drift/dod_receipts/OMN-10445/dod-infra-ci-occ-eligibility/command.yaml"
+  - id: "dod-claude-runner-selector"
+    description: "omniclaude reusable CR gate workflow uses centralized runner selector variables"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-claude-runner-selector/command.yaml
+          && grep -q 'pr_number: 1506' drift/dod_receipts/OMN-10445/dod-claude-runner-selector/command.yaml
+          && grep -q 'commit_sha: \"7bac6d161c1a8f423233ab6077fbf96d83f407fc\"' drift/dod_receipts/OMN-10445/dod-claude-runner-selector/command.yaml
+          && grep -q 'claude-centralized-runner-check:PASS' drift/dod_receipts/OMN-10445/dod-claude-runner-selector/command.yaml"
+  - id: "dod-claude-occ-eligibility"
+    description: "OCC PR #680 receipt evidence is locally eligible for downstream omniclaude PR #1506"
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-10445/dod-claude-occ-eligibility/command.yaml
+          && grep -q 'pr_number: 680' drift/dod_receipts/OMN-10445/dod-claude-occ-eligibility/command.yaml
+          && grep -q 'eligible=true' drift/dod_receipts/OMN-10445/dod-claude-occ-eligibility/command.yaml"

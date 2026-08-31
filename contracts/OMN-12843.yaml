@@ -1,0 +1,93 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12843"
+title: "M3: policy-based context selection + Context Authority Rule (auditable per-run injection)"
+summary: >-
+  Adds EnumSelectionReason (omnibase_core) and node_context_selection_policy_compute (omnimarket COMPUTE)
+  implementing the Context Authority Rule: every selected context factor carries the typed Authority 5-tuple
+  {factor, source, selection_reason, effectiveness_score, experiment_cohort}. The compute node is stateless/deterministic
+  with no I/O (mirrors node_routing_policy_engine), ranks candidates by M2-resolved measured effectiveness
+  (passed in, never fetched) with ties broken deterministically by stable source id, and stamps each selection
+  with one of five reasons: POLICY_EFFECTIVENESS, POLICY_REQUIRED_FACTOR, EXPERIMENT_ASSIGNMENT, EXPLORATION
+  (reserved for M4), FALLBACK_NO_SCORE. The node REJECTS the hidden-authority case (a candidate justified
+  only by profile declaration with no effectiveness score and no experiment cohort) and REJECTS a forced/arm-fixed
+  candidate with no matching active experiment cohort. The effectiveness_score is None XOR selection_reason
+  == FALLBACK_NO_SCORE invariant is enforced by a model validator (no silent defaults). CONTRACT/NODE/HANDLER
+  only — no Plugin*/engine/router/manager class. Node-private models (single-repo importer; no cross-node
+  private imports). No topic schema, envelope, protocol, or public API change. omniclaude live-wiring
+  of HandlerContextInjection (ticket step #4) is DEFERRED to a follow-up ticket — out of scope for this
+  omnimarket-only slice.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-pr-1289"
+    description: >-
+      omnibase_core PR #1289 adds EnumSelectionReason (StrEnum) next to enum_context_factor.py with exactly
+      five members (POLICY_EFFECTIVENESS, POLICY_REQUIRED_FACTOR, EXPERIMENT_ASSIGNMENT, EXPLORATION,
+      FALLBACK_NO_SCORE). TDD: tests/unit/enums/test_enum_selection_reason.py written RED first (ModuleNotFoundError
+      on the missing module), GREEN after (7 passed). uv run mypy on the new enum module --strict -> Success;
+      ruff format/check clean; pre-commit run --files (74 hooks) -> all Passed, 0 Failed. Evidence anchor:
+      core head 2b76542a477ae34de325a4fe01a5436f1650ced3.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-core-pr-1289/command.yaml"
+          && grep -q '^ticket_id: "OMN-12843"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-core-pr-1289/command.yaml"
+          && grep -q '^pr_number: 1289$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-core-pr-1289/command.yaml"
+  - id: "dod-omnimarket-pr-1319"
+    description: >-
+      omnimarket PR #1319 adds node_context_selection_policy_compute (COMPUTE). TDD: the 5 required tests
+      (test_rejects_hardcoded_factor, test_every_selected_factor_carries_authority_tuple, test_experiment_arm_requires_cohort,
+      test_ranking_uses_effectiveness_not_usage_heuristic, test_selection_round_trip) errored pre-impl
+      on the missing handler module (ModuleNotFoundError during collection), then 5 passed after implementation;
+      plus a golden-chain test. Full suite green (uv run pytest tests/ -m "not kafka and not e2e", no
+      -k) -> 7684 passed, 35 skipped, 0 failed; uv run mypy src/omnimarket/ --strict -> Success (2423
+      files); ruff format/check clean; pre-commit run -> all hooks Passed, 0 Failed (golden-chain-coverage-gate,
+      runtime_profiles gate OMN-12957, dep-health-gate delta-mode exit 0); run_runtime_sweep.py -> 316/316
+      OK; check_node_metadata_dependencies.py -> PASS; dogfood inventory count reconciled 315 -> 316.
+      Evidence anchor: omnimarket head f26df4a7456d9357021aeb320d63c7b8e68d9b63.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-omnimarket-pr-1319/command.yaml"
+          && grep -q '^ticket_id: "OMN-12843"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-omnimarket-pr-1319/command.yaml"
+          && grep -q '^pr_number: 1319$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-omnimarket-pr-1319/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: adds one pure COMPUTE node (no I/O, no DB, no migrations) plus an additive core
+      StrEnum. The node subscribes to a new command topic (onex.cmd.omnimarket.context-selection-policy-requested.v1)
+      and publishes a new terminal event (onex.evt.omnimarket.context-selection-policy-completed.v1);
+      both are contract-declared, no hardcoded topic strings. No contract-interface change (interface_change=false),
+      no protocol/envelope change, no public API route. The node ships in a standard omnimarket image
+      rebuild; runtime registration on the stability-test lane is a follow-up runtime-verify step. No
+      live runtime deploy is performed by this PR; dev/stability/prod lanes are untouched and require
+      no mutation for this change to merge.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-12843"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the OMN-12843 contract and the dod-core-pr-1289
+      / dod-omnimarket-pr-1319 / dod-deploy-assessment receipts that the core and omnimarket PRs' Receipt-Gates
+      resolve via Evidence-Source. Binds by pr_number so the OCC eligibility validator finds a PASS receipt
+      for OMN-12843 on this OCC PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-occ-pr-self/command.yaml"
+          && grep -q '^ticket_id: "OMN-12843"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12843/dod-occ-pr-self/command.yaml"

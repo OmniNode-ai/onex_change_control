@@ -1,0 +1,89 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13553"
+title: "fix(golden-chain): onex skill golden_chain_sweep returns vacuous green (chains_total:0, overall_status:pass)"
+summary: >
+  The canonical skill-dispatch path `onex skill golden_chain_sweep` returned a false green: `overall_status:
+  pass` over `chains_total: 0`. RuntimeLocal builds the request via `GoldenChainSweepRequest()` (only
+  the runtime-injected correlation_id), which defaulted `chains=[]`, and the reducer computed PASS over
+  the empty set (vacuous truth). An operator or CI gate reading that receipt saw "all golden chains healthy"
+  while nothing was validated. Two pure-COMPUTE changes in handler_golden_chain_sweep.py: (1) the request
+  `chains` field now defaults to the packaged `golden_chains.yaml` registry (deterministic config resolution
+  at construction, NOT live runtime I/O — no Kafka, no DB), so the skill-dispatch path validates a real,
+  non-empty chain set; (2) the reducer is fail-closed — an empty validated chain set is `fail`, NEVER
+  `pass`. Pure compute change; no migration, schema, endpoint, env-for-model, or live I/O added.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "Vacuous-green + fail-closed + skill-dispatch-loads-chains tests pass."
+    command: "uv run pytest tests/test_golden_chain_sweep_vacuous_green.py tests/test_golden_chain_golden_chain_sweep.py
+      tests/test_golden_chain_sweep_idle_gate.py tests/test_golden_chain_sweep_registry.py -q"
+  - kind: "manual"
+    description: "Full omnimarket suite stays green."
+    command: "uv run pytest tests/ -q -m 'not kafka'"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-fail-closed"
+    description: >
+      An empty `chains` set (explicit `chains=[]`, or an empty/unreachable registry) is fail-closed: `overall_status`
+      is `fail`, never `pass` — proving zero validated chains can no longer report a vacuous green. Covered
+      by TestVacuousGreenFailClosed (explicit empty + empty-with-idle-gate) and the updated test_empty_chains
+      case.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13553/dod-fail-closed/command.yaml
+          && grep -q '^ticket_id: \"OMN-13553\"$' drift/dod_receipts/OMN-13553/dod-fail-closed/command.yaml
+          && grep -q '^pr_number: 1379$' drift/dod_receipts/OMN-13553/dod-fail-closed/command.yaml"
+  - id: "dod-skill-dispatch-loads-chains"
+    description: >
+      The exact skill-dispatch payload (`GoldenChainSweepRequest(correlation_id=...)`, no projected_rows
+      — what RuntimeLocal builds for `onex skill golden_chain_sweep`) now (a) loads >0 chains from the
+      packaged registry (chains_total == 13) and (b) returns `fail` (every chain TIMEOUTs with no rows),
+      NOT a vacuous pass. Covered by TestSkillDispatchLoadsChains and the updated test_runtime_injected_correlation_id_validates
+      case.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13553/dod-skill-dispatch-loads-chains/command.yaml
+          && grep -q '^ticket_id: \"OMN-13553\"$' drift/dod_receipts/OMN-13553/dod-skill-dispatch-loads-chains/command.yaml
+          && grep -q '^pr_number: 1379$' drift/dod_receipts/OMN-13553/dod-skill-dispatch-loads-chains/command.yaml"
+  - id: "dod-suite-green"
+    description: >
+      Full omnimarket pytest suite green with the corrected behavior (8539 passed, 63 skipped, 9 kafka
+      deselected). The two pre-existing tests that encoded the vacuous-pass bug (test_empty_chains, test_runtime_injected_correlation_id_validates)
+      were updated to assert the fail-closed + registry-default behavior.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13553/dod-suite-green/command.yaml
+          && grep -q '^ticket_id: \"OMN-13553\"$' drift/dod_receipts/OMN-13553/dod-suite-green/command.yaml
+          && grep -q '^pr_number: 1379$' drift/dod_receipts/OMN-13553/dod-suite-green/command.yaml"
+  - id: "dod-deploy"
+    description: >
+      Deploy-gate evidence: pure-COMPUTE change to node_golden_chain_sweep's request model default and
+      reducer status computation, plus tests. No live I/O is introduced (the registry read is the node's
+      own packaged static config, consumed at request construction — no Kafka publish, no DB poll). No
+      migration, schema, endpoint, or env-for-model change. No live deploy performed by this PR; the dev-lane
+      behavior change is observable on the next ordinary redeploy.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13553/dod-deploy/command.yaml &&
+          grep -q '^ticket_id: \"OMN-13553\"$' drift/dod_receipts/OMN-13553/dod-deploy/command.yaml &&
+          grep -q '^pr_number: 1379$' drift/dod_receipts/OMN-13553/dod-deploy/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: >
+      This OCC PR (contract + four DoD receipts) is open against onex_change_control, pairing the omnimarket
+      fix PR #1379. Self-referential evidence that the OCC receipt PR exists and is the Evidence-Source
+      for the feature PR's Receipt Gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13553/dod-occ-pr-self/command.yaml
+          && grep -q '^ticket_id: \"OMN-13553\"$' drift/dod_receipts/OMN-13553/dod-occ-pr-self/command.yaml"

@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13479"
+title: "test(OMN-13479): extend refusal-not-pass real-dispatch test to code_generation + research"
+summary: >-
+  OCC evidence for the omnimarket test-only PR that extends the OMN-13409 refusal-not-pass invariant from
+  the summarization/document path to the code_generation and research task classes. New file tests/unit/delegation/test_refusal_not_pass_codegen_research_omn13479.py
+  drives the FULL real dispatch chain (orchestrator FSM -> routing reducer -> inference effect -> quality
+  gate -> terminal) with the OMN-13470 judge-adequacy combine ACTIVE for code_generation, asserting that
+  a genuine refusal / inadequate answer still terminates as quality_gate_passed=false with a non-pass
+  terminal classification and never emits delegation-completed. No handler-isolation shortcut; no production
+  code change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-codegen-research-cases-added"
+    description: >-
+      Real-dispatch-path test cases for code_generation AND research refusals/inadequate answers were
+      added asserting quality_gate_passed=false and a non-pass terminal classification. TestCodeGenerationRefusalRealDispatchPath
+      drives code_generation through routing(cheap_cloud/glm-5.2)->inference->quality-gate->orchestrator;
+      TestResearchRefusalRealDispatchPath drives research through routing(local/Qwen3.6-35B-A3B)->inference->quality-gate->orchestrator.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'code_generation' contracts/OMN-13479.yaml"
+  - id: "dod-judge-combine-active"
+    description: >-
+      The OMN-13470 judge combine is ACTIVE for code_generation: the quality-gate hop runs handle_async
+      with a RecordedJudgeReplayAdapter (a response captured from a real z.ai GLM call, pinned to the
+      concrete model id, returning adequacy 0.9). The test asserts the judge verdict event is emitted
+      AND that a refusal/inadequate answer still fails with fail_category=fail_deterministic and score_source
+      != combined — proving the deterministic hard floor blocks before any judge combine, so a high judge
+      score cannot mask a refusal.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'judge' contracts/OMN-13479.yaml"
+  - id: "dod-no-handler-isolation-shortcut"
+    description: >-
+      No handler-isolation shortcut: every hop is the REAL handler (HandlerRoutingIntent, HandlerInferenceIntent,
+      HandlerQualityGateIntent, HandlerDelegationWorkflow); only the outbound httpx provider call is patched
+      to inject the candidate body (the same substitution boundary the OMN-13409 suite uses). Routing
+      resolution is real, off a self-contained bifrost contract pointed to by BIFROST_CONTRACT_PATH.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'real dispatch' contracts/OMN-13479.yaml"
+  - id: "dod-runs-green-in-ci"
+    description: >-
+      Runs green in CI. The new 20-case file passes; the full delegation unit suite (415 passed, 1 skipped)
+      and the full omnimarket suite (8733 passed, 63 skipped) pass with no regressions. ruff format +
+      ruff check clean; mypy --strict clean on the new test file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c 'green in CI' contracts/OMN-13479.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR, which carries the central contracts/OMN-13479.yaml consumed
+      by the omnimarket test PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13479\"$' contracts/OMN-13479.yaml"

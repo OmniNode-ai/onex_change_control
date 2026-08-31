@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13581"
+title: "fix(OMN-13581): deploy-runtime.sh layers the lane overlay on all compose invocations"
+summary: >
+  deploy-runtime.sh invoked every docker compose call with only -f docker-compose.infra.yml, never layering
+  the lane overlay (docker-compose.<lane>.yml). The base infra compose hardcodes container_name omnibase-infra-redpanda
+  (the DEV name) and the dev network, so warm_broker_topic_provisioning's 'up redpanda' step recreated
+  redpanda as the DEV-named container on any non-dev lane, collided with the live dev broker, got a Docker
+  hash prefix, and landed in 'created' -- destroying the lane's own correctly-named broker (the ~3-day
+  stability outage). The fix adds resolve_lane_overlay_filename()/resolve_compose_file_args(), which derive
+  the lane from the compose project suffix and layer the matching overlay onto infra.yml for stability-test/prod/judge
+  projects; unknown non-dev projects fail closed. All compose call sites and operator-facing print/summary
+  paths route through the resolver.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Lane-overlay layering tests pass on deploy-runtime.sh"
+    command: "cd omnibase_infra && uv run pytest tests/scripts/test_deploy_runtime_lane_overlay.py -v"
+  - kind: "tests"
+    description: "Full deploy-runtime.sh script test suite stays green"
+    command: "cd omnibase_infra && uv run pytest tests/scripts/ -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >
+      omnibase_infra PR adds resolve_lane_overlay_filename()/resolve_compose_file_args() and routes all
+      6 compose call sites plus the print/summary paths through the resolver. Local proof: lane-overlay
+      suite -> 8 passed; full deploy-runtime script suite -> 179 passed; shellcheck clean.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13581/dod-001/command.yaml && grep
+          -q '^ticket_id: \"OMN-13581\"$' drift/dod_receipts/OMN-13581/dod-001/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "OCC PR carrying this OMN-13581 contract and downstream receipts."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13581/dod-occ-pr-self/command.yaml
+          && grep -q '^ticket_id: \"OMN-13581\"$' drift/dod_receipts/OMN-13581/dod-occ-pr-self/command.yaml"
+  - id: "dod-deploy-gate"
+    description: "Deploy-gate evidence: the fix is a deploy-script change; correctness is proven by the
+      lane-overlay tests + shellcheck, and the live recovery used the documented overlay-layered recreate."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13581/dod-deploy-gate/command.yaml
+          && grep -q 'shellcheck' drift/dod_receipts/OMN-13581/dod-deploy-gate/command.yaml"

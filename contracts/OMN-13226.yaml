@@ -1,0 +1,94 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13226"
+title: "GitHub Action publisher for onex.evt.github.pr-merged.v1"
+summary: >-
+  T2 of OMN-13008 (merge-triggered worktree reaper). Adds a GitHub Action that, on every PR merge, thin-publishes
+  onex.evt.github.pr-merged.v1 {repo, branch, pr_number, ticket, merged_at} to the canonical event bus,
+  modelled exactly on the OMN-8917 runtime-rebuild-trigger publisher (same SASL_SSL Kafka transport, KAFKA_BOOTSTRAP_SERVERS
+  resolved from the runner Infisical environment). The new workflow .github/workflows/pr-merged-publisher.yml
+  fires on pull_request:closed with merged==true; the new thin publisher scripts/publish_pr_merged_event.py
+  produces the event; the topic is registered as PR_MERGED_TOPIC_V1 in src/omnimarket/events/topics.py
+  and declared in the node_pr_merged_projection contract.yaml subscribe_topics so the topic registry and
+  node-drift gate stay green. F3 broker fork (plan §6): repo workflows run on cloud (ubuntu-latest) runners,
+  so the publisher emits via SASL_SSL to the Confluent-backed canonical bus exactly like OMN-8917; the
+  T3 projection node (OMN-13227) bridges/materializes onto the .201 lane so GET /projection/onex.evt.github.pr-merged.v1
+  is served at :3002 for the T4 reaper.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "topics"
+  - "events"
+evidence_requirements:
+  - kind: "tests"
+    description: "Unit tests assert the publisher emits the correct topic + payload shape via a mocked
+      Producer."
+    command: "uv run pytest tests/unit/scripts/test_publish_pr_merged_event.py -q"
+  - kind: "tests"
+    description: "Golden-chain contract tests verify topic naming and the projection contract subscribe_topics."
+    command: "uv run pytest tests/test_golden_chain_pr_merged_projection.py -q"
+  - kind: "ci"
+    description: "pre-commit run --all-files passes all hooks."
+    command: "pre-commit run --all-files"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001-publisher-implementation"
+    description: >-
+      omnimarket PR #1264 — adds .github/workflows/pr-merged-publisher.yml (on pull_request:closed, if
+      merged==true) and scripts/publish_pr_merged_event.py (thin SASL_SSL Kafka producer modelled on OMN-8917
+      trigger_rebuild_on_merge.py) emitting onex.evt.github.pr-merged.v1 with {repo, branch, pr_number,
+      ticket, merged_at}. Topic registered as PR_MERGED_TOPIC_V1 in src/omnimarket/events/topics.py and
+      declared in node_pr_merged_projection contract.yaml subscribe_topics. Publisher unit tests + golden-chain
+      contract tests pass; pre-commit clean.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13226/dod-001-publisher-implementation/command.yaml
+          && grep -q '^pr_number: 1264$' drift/dod_receipts/OMN-13226/dod-001-publisher-implementation/command.yaml
+  - id: "dod-002-deploy-evidence"
+    description: >-
+      Bus publish evidence for the canonical topic. The publisher emits onex.evt.github.pr-merged.v1 to
+      the canonical bus; the equivalent operator probe is `rpk topic produce onex.evt.github.pr-merged.v1`
+      against the lane broker. This receipt records the deploy/produce surface so the downstream deploy-gate
+      (runtime-path detection) finds cited deploy evidence. The publisher GHA step is the deploy surface;
+      no .201 container rebuild is required for T2 (the T3 projection node is OMN-13227).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13226/dod-002-deploy-evidence/command.yaml &&
+          grep -q 'rpk topic produce' drift/dod_receipts/OMN-13226/dod-002-deploy-evidence/command.yaml
+  - id: "dod-003-publisher-reroute"
+    description: >-
+      Follow-up (omnimarket PR #1270): the T2 publisher could not reach the bus because the workflow ran
+      on ubuntu-latest where KAFKA_BOOTSTRAP_SERVERS is an unprovisioned (empty) secret, so every merge
+      hit 'KAFKA_BOOTSTRAP_SERVERS is not set' and exited 1 — reddening every merge. Re-routes .github/workflows/pr-merged-publisher.yml
+      to the self-hosted omnibase-ci runner via the canonical OMNI_RUNNER_SELECTOR_V1 pattern (trusted
+      non-fork merges -> self-hosted; fork PRs -> ubuntu-latest), matching omnibase_infra pr-merged-event.yml;
+      the runner sources KAFKA_BOOTSTRAP_SERVERS from ~/.omnibase/.env (local lane Redpanda broker). Makes
+      scripts/publish_pr_merged_event.py transport-flexible and env-resolved: plaintext for the local
+      lane broker (no SASL), SASL_SSL when SASL creds are present; no hardcoded broker/IP; topic resolved
+      from canonical PR_MERGED_TOPIC_V1 (topics.py). The no-broker path now skips gracefully (exit 0)
+      with a loud warning instead of exit 1, so a misconfig is visible but does not red every merge. Unit
+      tests assert publish on the canonical topic + payload for both SASL and plaintext transports and
+      graceful exit-0 skip when KAFKA_BOOTSTRAP_SERVERS is unset; pre-commit clean.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13226/dod-003-publisher-reroute/command.yaml
+          && grep -q '^pr_number: 1270$' drift/dod_receipts/OMN-13226/dod-003-publisher-reroute/command.yaml
+  - id: "pr-occ-binding"
+    description: >-
+      OCC self-binding receipt for this central evidence PR. Binds a PASS receipt directly to the onex_change_control
+      evidence PR so the OCC receipt-gate eligibility check (pr_ticket_mismatch) finds a receipt bound
+      to the OCC PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13226/pr-occ-binding/command.yaml

@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13160"
+title: "Refactor delegation dispatch to canonical effect handler + projection (delete bespoke ports)"
+summary: >-
+  The local `onex delegate` standalone-CLI path used to news-up the bespoke DirectCurlDelegationDispatchPort
+  (port_direct_curl_dispatch.py) as the zero-arg fallback in HandlerDelegateSkill. That port owned three
+  responsibilities outside the canonical CONTRACT/NODE/HANDLER architecture: the curl transport, hand-rolled
+  bifrost config loading (_load_bifrost_config + _select_backend), and a bespoke sqlite _persist_evidence
+  write. A second port, DirectBridgeDelegationDispatchPort, was dead/unreferenced. omnimarket PR #1229
+  (branch jonah/omn-13160-delegation-canonical-handler, base=dev, head e2079e624aaa329cd60440bedd19defba3584e30)
+  deletes both ports and replaces them with a composition of canonical surfaces: (1) routing/delegation_backend_resolution.py
+  resolves model_id + COMPLETE endpoint_ref from the bifrost contract + overlay before the effect; (2)
+  node_llm_delegation_call_effect/handlers/transport.py owns the runtime-profile-selected transport (curl
+  on local_macos_claude_hooks, httpx elsewhere) and posts the resolved endpoint_url VERBATIM (carries
+  OMN-12815/OMN-13159 doctrine into the handler); (3) projection/sqlite_database.py runs the SAME canonical
+  HandlerProjectionDelegation in-process for the local CLI evidence tail with a clean additive schema.
+  The new zero-arg fallback port_local_delegation_dispatch.py composes these and owns no direct subprocess/httpx/sqlite
+  I/O. SEQUENCED AFTER omnimarket #1228 (OMN-13159, same file): #1228 merged into dev at 2026-06-15T18:38:30Z
+  (squash b385ca3e); this branch was rebased onto the new dev tip, the modify/delete conflict on port_direct_curl_dispatch.py
+  resolved in favor of the deletion, the pre-replayed base_url_env->endpoint_url_env rename dropped (already
+  in dev via #1228), and #1228's now-orphaned test_directcurl_verbatim_url.py deleted (coverage replaced
+  by the new test_transport_verbatim_url.py). Source refactor only — no DDL, no migration, no live deploy,
+  no restart, no .201 mutation by this PR.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr"
+    description: >-
+      omnimarket PR #1229 (branch jonah/omn-13160-delegation-canonical-handler, base=dev, head e2079e624aaa329cd60440bedd19defba3584e30)
+      deletes the bespoke DirectCurl/DirectBridge delegation dispatch ports and replaces them with a composition
+      of canonical surfaces (routing authority -> canonical effect handler transport -> canonical projection).
+      Verified post-rebase: ruff check + ruff format --check clean; mypy src/omnimarket --strict clean
+      (2351 source files); full suite 7427 passed / 68 skipped / 9 deselected, 0 failed (pytest -m "not
+      kafka", NO -k filter); routing-authority gate PASS (14 backends shape-compliant); backend-secret-discipline
+      gate PASS; node metadata dependency scope PASS; pre-commit all hooks pass on the dev..HEAD diff.
+      Real-run proof in docs/evidence/2026-06-15-delegation-handler/ (correlation_ids ea94c9aa local LAN,
+      a755f27f cloud glm-5.2, 58050951 projection read-back).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-omnimarket-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13160"$' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-omnimarket-pr/command.yaml"
+          && grep -q '^pr_number: 1229$' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-omnimarket-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: this PR is a source refactor of the local delegation dispatch path only. It deletes
+      two bespoke ports and adds three canonical-surface modules + a composing fallback port. It carries
+      NO DDL, NO migration, NO live deploy, NO restart, NO topic mutation, and NO .201 mutation. The local
+      clean-schema sqlite projection target is created on first local `onex delegate` run; it is not a
+      deployed-runtime database change. deploy_pending = false for this PR. Do not claim deployed from
+      this PR.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-deploy-assessment/command.yaml"
+          && grep -q '^ticket_id: "OMN-13160"$' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-deploy-assessment/command.yaml"
+          && grep -q 'No live deploy' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      This OCC PR carries the central OMN-13160 ticket contract and the dod-omnimarket-pr / dod-deploy-assessment
+      / dod-occ-pr receipts that the omnimarket PR #1229 Receipt-Gate resolves via Evidence-Source: OCC#<pr>
+      and Evidence-Ticket: OMN-13160. Contract validates against ModelTicketContract.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-occ-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13160"$' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13160/dod-occ-pr/command.yaml"

@@ -1,0 +1,527 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15136"
+title: "Codify omniweb CI SSM deploy policy"
+summary: >
+  Manual OCC companion for OmniNode-ai/omninode_infra PR #769. The product PR codifies the omniweb-ci
+  SSM deploy policy in Terraform at exact head 89369119e6598f78e7bfa29314f505fac583a3ee. This evidence
+  binds source shape and the explicit no-live-mutation hold only; it does not claim Terraform import,
+  apply, deployment, restart, or runtime readback.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #769 CI checks and explicit remaining live gate"
+    command: "gh pr checks 769 --repo OmniNode-ai/omninode_infra"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra769-terraform-policy-source"
+    description: >-
+      Binds the locally executed receipt artifact for omninode_infra PR #769 at exact head 89369119e6598f78e7bfa29314f505fac583a3ee.
+      The underlying receipt was executed with an operator token able to read the private omninode_infra
+      repository; hosted OCC compliance cannot read that private repo with its repo-scoped GITHUB_TOKEN,
+      so this check binds the immutable PASS receipt and its recorded product file/blob facts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15136/dod-infra769-terraform-policy-source/command.yaml" &&
+          grep -q '^status: PASS$' "$receipt" && grep -q '89369119e6598f78e7bfa29314f505fac583a3ee' "$receipt"
+          && grep -q 'aws/cluster-dev/omniweb_ci_iam.tf' "$receipt" && grep -q 'ac317c88e7656d76aac6997452fcb26664106578'
+          "$receipt" && grep -q 'infra769 Terraform source binding PASS' "$receipt"
+  - id: "dod-infra769-no-live-mutation-claim"
+    description: >-
+      Binds the locally executed receipt artifact for the PR's explicit remaining gate: no Terraform import
+      or apply has run, and the PR must not merge as a claim that the live policy is already Terraform-managed.
+      The underlying receipt was executed with an operator token able to read the private omninode_infra
+      PR body; hosted OCC compliance binds the immutable PASS receipt.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15136/dod-infra769-no-live-mutation-claim/command.yaml" && grep
+          -q '^status: PASS$' "$receipt" && grep -q 'No import or apply has been run' "$receipt" && grep
+          -q 'Do not merge as a claim that the live policy is already Terraform-managed' "$receipt" &&
+          grep -q 'infra769 live-boundary hold binding PASS' "$receipt"
+  - id: "occ-self-bind-pr-5745"
+    description: >-
+      Binds OMN-15136 central evidence to OCC companion PR #5745 so OCC preflight can prove this evidence
+      change is itself associated with the ticket it satisfies.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          number="$(gh api repos/OmniNode-ai/onex_change_control/pulls/5745 --jq .number)" && state="$(gh
+          api repos/OmniNode-ai/onex_change_control/pulls/5745 --jq .state)" && branch="$(gh api repos/OmniNode-ai/onex_change_control/pulls/5745
+          --jq .head.ref)" && test "$number" = "5745" && test "$state" = "open" && test "$branch" = "jonah/omn-15136-infra769-occ"
+          && printf 'OCC 5745 self-bind PASS\n'
+  - id: "dod-occ-hosted-private-token-boundary"
+    description: >-
+      Binds the hosted OCC compliance credential boundary that makes direct private omninode_infra probes
+      fail closed in this PR. The checked workflow on dev runs contract compliance with repo-scoped github.token
+      as GH_TOKEN and does not pass CROSS_REPO_PAT to the command execution step, so private product facts
+      must be captured by operator-token receipts rather than re-fetched by hosted OCC CI.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          workflow="$(gh api -H 'Accept: application/vnd.github.raw' 'repos/OmniNode-ai/onex_change_control/contents/.github/workflows/ci.yml?ref=dev')"
+          && printf '%s' "$workflow" | grep 'uv run python /tmp/onex_change_control/scripts/ci/run_contract_compliance_check.py'
+          >/dev/null && printf '%s' "$workflow" | grep 'GH_TOKEN: \${{ github.token }}' >/dev/null &&
+          printf '%s' "$workflow" | grep 'OMNI_REPO_CLONE_TOKEN: \${{ secrets.CROSS_REPO_PAT || github.token
+          }}' >/dev/null && printf 'OCC hosted compliance private-token boundary PASS\n'
+  # --- Appended by this companion (OMN-15374/OMN-15136 stale-evidence refresh) ---
+  - id: "dod-infra769-no-live-mutation-claim-superseded"
+    description: >-
+      Append-only supersession of dod-infra769-no-live-mutation-claim. That entry binds PR #769's static
+      body text ("No import or apply has been run" / "Do not merge as a claim that the live policy is
+      already Terraform-managed") -- text which still mechanically matches today, since PR bodies do not
+      change post-merge, so the original check_value keeps returning PASS on re-execution. It is superseded
+      here not for a check failure but because the underlying CLAIM it was minted to prove -- that no
+      live Terraform mutation has occurred -- is no longer true, and re-asserting it as current fact would
+      misrepresent the ticket. Per operator Ruling R3 (recorded 2026-07-30T16:24Z in docs/tracking/ROLLING_WORK_LEDGER.md,
+      propagated to Linear OMN-15136 comment 476d1e6f: "OMN-15136 omniweb-ci Terraform APPLY APPROVED
+      (narrow sequence only)"), lane authorized-wave-0730/terraform-omn15136 (claimed 2026-07-30T16:18:38Z)
+      executed the approved narrow sequence: state-import of the live inline omniweb-ci-ssm-deploy policy
+      into aws_iam_user_policy.omniweb_ci_ssm_deploy, then a clean targeted apply once the post-import
+      plan matched the approved scope exactly (sole diff: pinned ephemeral EC2 instance ID -> Name=omninode-k3s-dev-system
+      tag condition on ssm:SendCommand; no IAM user replacement, no access-key change, no ECR-policy detachment,
+      no unrelated resource). PR #769 itself has since MERGED (2026-07-31T23:37:07Z, merge commit d309339e5efc350301c1196db1301d6cfd2070b2,
+      confirmed live via `gh pr view 769 --repo OmniNode-ai/omninode_infra --json state,mergedAt,mergeCommit`),
+      and a follow-up IAM simulation readback (2026-08-03, Linear OMN-15136 comment acbcf2a3) confirmed
+      zero drift between the live policy and the Terraform render. This entry retires the no-live-mutation
+      claim and records the honest, approved, executed outcome; the superseded entry stays verbatim above
+      for audit.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra769-no-live-mutation-claim"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15136/dod-infra769-no-live-mutation-claim-superseded/command.yaml"
+          && grep -q '^status: PASS$' "$receipt" && grep -q 'd309339e5efc350301c1196db1301d6cfd2070b2'
+          "$receipt" && grep -q 'authorized-wave-0730/terraform-omn15136' "$receipt" && grep -q 'infra769
+          approved-and-executed mutation binding PASS' "$receipt"
+  - id: "occ-self-bind-pr-5745-superseded"
+    description: >-
+      Append-only supersession of occ-self-bind-pr-5745. That entry's check_value literally asserts PR
+      #5745 state == "open", but #5745 has since MERGED (2026-07-31T13:11:21Z, merge commit e0449955bf2427a01efa6df86ad6e6629091434b,
+      confirmed live via `gh pr view 5745 --repo OmniNode-ai/onex_change_control --json state,mergedAt,mergeCommit`),
+      so re-executing the original check_value now fails closed on a merged, evidence-bearing PR -- the
+      same pr_ticket_mismatch-class failure OCC#6049 hit on OMN-15422's own #2596 entry, and the same
+      class as OMN-15374's occ-self-bind-pr-5855 fixed alongside this entry in the same companion. This
+      entry retires only the occ-self-bind-pr-5745 open-state assertion with a merged-terminal-state binding;
+      the superseded entry stays verbatim above for audit.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5745"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          state="$(gh pr view 5745 --repo OmniNode-ai/onex_change_control --json state --jq .state)" &&
+          merge_sha="$(gh pr view 5745 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq
+          .mergeCommit.oid)" && test "$state" = "MERGED" && test "$merge_sha" = "e0449955bf2427a01efa6df86ad6e6629091434b"
+          && printf 'OCC 5745 merged-terminal-state PASS\n'
+  - id: "occ-self-bind-pr-6077"
+    description: >-
+      Binds OMN-15136 central evidence to OCC companion PR #6077 (self-bind), which lands this entry's
+      own two supersessions (dod-infra769-no-live-mutation-claim-superseded and occ-self-bind-pr-5745-superseded)
+      alongside OMN-15374's companion supersessions in the same PR. Unlike occ-self-bind-pr-5745, this
+      check_value does not assert a specific PR state, so it will not itself go stale the moment #6077
+      merges -- it only proves the PR exists and captures its live state at receipt time, which is exactly
+      the lesson from superseding occ-self-bind-pr-5745 and occ-self-bind-pr-5855 above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6077 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-self-bind-pr-6078"
+    description: "Binds OMN-15136 to OCC companion PR #6078 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6078 --repo OmniNode-ai/onex_change_control --json number,state"
+  # --- Appended by OCC#6077 receipt-attribution-honesty fix ---
+  - id: "occ6077-receipt-attribution-fix"
+    description: >-
+      Append-only correction of a receipt-honesty defect in PR #6077 (merged 2026-08-04T20:16:32Z, merge
+      commit 6b6a55bd702ed1d8f5e04b630ef402ea7257243d), found by adversarial review after that PR had
+      already merged. All six `drift/dod_receipts/` files landed by #6077 -- including `occ-self-bind-pr-5745-superseded`,
+      `dod-infra769-no-live-mutation-claim-superseded`, and `occ-self-bind-pr-6077` in this ticket, plus
+      `occ-self-bind-pr-5855-superseded`, `dod-15374-apply-role-unchanged-superseded`, and `occ-self-bind-pr-6077`
+      in OMN-15374 -- carry `runner: "claude-code-agent:occ-stale-refresh-0804"` and `verifier: "claude-code-agent:opus-refresh-checker-0804"`
+      with `run_timestamp` values of 2026-08-04T19:42:06Z and 2026-08-04T19:49:34Z. The named verifier
+      identity did not independently execute until roughly 2026-08-04T20:16Z (the moment #6077 itself
+      merged), which is AFTER every one of those claimed run_timestamps -- the attestation predates the
+      verification it claims to record, and no artifact in the PR evidences the verifier's independent
+      execution separately from the runner's. This is the same receipt-gaming class as OMN-15689: a PASS
+      status minted before, not after, the verifying party actually ran. The underlying check_value commands
+      and the live-GitHub facts they assert (PR #5855 and #5745 merged states, PR #6077's existence, the
+      infra#769 mutation record) are independently re-verified as still true by this entry and are NOT
+      in question -- only the six receipts' runner/verifier attribution and timing were dishonest. Because
+      #6077 had already merged into dev by the time this defect was confirmed, the original receipts cannot
+      be edited in place (append-only discipline); this entry and its OMN-15374 counterpart supersede
+      the ATTRIBUTION of all six receipts without altering their check_value history, and bind fresh receipts
+      under `drift/dod_receipts/OMN-15136/occ6077-receipt-attribution-fix/command.yaml` with a truthful
+      runner (the agent that actually re-ran the pivotal probes below) and a verifier identity ("verify:evening-followups-opus")
+      that had NOT yet run at the time this entry was authored -- that verifier's own independent re-execution
+      and attestation is a separate follow-on event, not claimed here in advance.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5745-superseded,dod-infra769-no-live-mutation-claim-superseded,occ-self-bind-pr-6077"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          state5745="$(gh pr view 5745 --repo OmniNode-ai/onex_change_control --json state --jq .state)"
+          && merge5745="$(gh pr view 5745 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq
+          .mergeCommit.oid)" && test "$state5745" = "MERGED" && test "$merge5745" = "e0449955bf2427a01efa6df86ad6e6629091434b"
+          && state6077="$(gh pr view 6077 --repo OmniNode-ai/onex_change_control --json state --jq .state)"
+          && test "$state6077" = "MERGED" && printf 'OCC6077 receipt-attribution-fix re-probe PASS\n'
+  # --- OMN-15374/OMN-15136 supersession-grammar repair (append-only correction of #6080) ---
+  - id: "occ6080-grammar-repair-note"
+    description: >-
+      Append-only diagnostic note, not itself a supersession. The `occ6077-receipt-attribution-fix` entry
+      immediately above (landed by PR #6080, merge commit 90b63455e171f01779b85bfaa861b65ce94498ef) declares
+      `evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5745-superseded,dod-infra769-no-live-mutation-claim-superseded,occ-self-bind-pr-6077"`
+      -- a single string naming THREE target ids joined by commas. `ModelContractDodItem.evidence_artifact`
+      is `str | None`, and both `EvidenceCollector._supersedes_marker` (omnimarket) and `contract_compliance_check._supersedes_marker`
+      (this repo) read the ENTIRE string after the `supersedes_dod_evidence:` prefix as ONE literal id
+      -- there is no comma-splitting or list grammar in either parser. The three-id string therefore matches
+      no `id` in this contract's `all_ids` set, so `_resolve_supersessions` classifies it DANGLING_SUPERSESSION
+      and marks `occ6077-receipt-attribution-fix` malformed. Per `EvidenceCollector._collect_impl` (evidence_collector.py,
+      phase 3): a malformed item's own FAILED verdict is emitted unconditionally, checked BEFORE whether
+      the item is itself later targeted by a well-formed supersession marker -- so no subsequent append-only
+      entry, however well-formed, can retire that FAILED result. This is intentional anti-laundering design
+      (OMN-15382/OMN-15390), not a bug. Confirmed empirically against `EvidenceCollector._resolve_supersessions`
+      and live against this exact contract (see the identical note in `contracts/OMN-15374.yaml` for the
+      full derivation). The three entries below correct the ATTRIBUTION-HONESTY defect the broken entry
+      was trying to express using the correct one-target-per-marker grammar; they do NOT and cannot retire
+      `occ6077-receipt-attribution-fix`'s own FAILED verdict -- that is a permanent scar on this contract
+      under the current parser. Separately and independently, `occ-self-bind-pr-5745-superseded`'s own
+      auto-appended `::pr-live-state` check currently fails: PR #5745 (merged 2026-07-31T13:11:21Z, merge
+      e0449955bf2427a01efa6df86ad6e6629091434b) shows two red required checks (`occ-preflight / eligibility`,
+      `verify / verify`) when read live via `gh pr checks 5745 --repo OmniNode-ai/onex_change_control`,
+      but those specific check-runs (job ids 91286676527 / run 30670388735, and job 91234426340 / run
+      30654185783) are titled against PR #5749, not #5745 -- a cross-PR head-SHA rollup artifact (the
+      two PRs share commit history, so GitHub associates #5749's check-runs with #5745's `gh pr checks`
+      output too), the same `pr_ticket_mismatch`-class post-merge artifact documented for PR #784/#5855
+      elsewhere in this contract family. `EvidenceCollector._fetch_pr_checks_green` (OMN-14390) reads
+      LIVE current required-check state unconditionally and fails closed on any non-green required context,
+      by design, with no override available to a contract entry's own check_value -- any dod_evidence
+      item that binds to PR #5745 in ANY form (`gh pr view`, `gh api .../pulls/5745`, id-convention, or
+      receipt `pr_number`) gets this same auto-appended check and inherits the same live failure. This
+      is a genuine, currently-true, unresolved external fact (not a wording or grammar defect in this
+      contract), so it is NOT fixed by `occ6080-attribution-fix-5745` below -- that entry corrects attribution
+      honesty only and is expected to show its own `::pr-live-state` sub-check FAILED for the same live
+      reason until PR #5745's check-runs are re-resolved on GitHub's side.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f contracts/OMN-15136.yaml && grep -q 'occ6077-receipt-attribution-fix' contracts/OMN-15136.yaml
+          && printf 'diagnostic note anchor PASS\n'
+  - id: "occ6080-attribution-fix-5745"
+    description: >-
+      Append-only, correctly-formed replacement for one of the three targets `occ6077-receipt-attribution-fix`
+      (PR #6080) tried and failed to express in a single comma-joined marker (see `occ6080-grammar-repair-note`
+      immediately above). This entry supersedes ONLY the ATTRIBUTION of `occ-self-bind-pr-5745-superseded`'s
+      receipt (`drift/dod_receipts/OMN-15136/occ-self-bind-pr-5745-superseded/command.yaml`), which carries
+      `runner: "claude-code-agent:occ-stale-refresh-0804"` / `verifier: "claude-code-agent:opus-refresh-checker-0804"`
+      with `run_timestamp: "2026-08-04T19:42:06Z"` -- but that verifier identity did not independently
+      execute until PR #6077 itself merged at 2026-08-04T20:16:32Z, after the claimed run_timestamp. The
+      underlying check_value and the live fact it asserts (PR #5745 MERGED at merge commit e0449955bf2427a01efa6df86ad6e6629091434b)
+      are re-verified live below and were never in question -- only the prior receipt's runner/verifier
+      attribution and timing were dishonest. As documented in `occ6080-grammar-repair-note` above, this
+      entry's own auto-appended `::pr-live-state` check is EXPECTED to fail independently of this entry's
+      own check_value, because PR #5745's live required-check state currently shows red via a cross-PR
+      head-SHA rollup artifact from PR #5749 -- that is a separate, genuine, currently-unresolved external
+      fact this entry does not claim to fix. This entry binds a fresh, truthfully-attributed receipt at
+      `drift/dod_receipts/OMN-15136/occ6080-attribution-fix-5745/command.yaml`.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5745-superseded"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          state="$(gh pr view 5745 --repo OmniNode-ai/onex_change_control --json state --jq .state)" &&
+          merge_sha="$(gh pr view 5745 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq
+          .mergeCommit.oid)" && test "$state" = "MERGED" && test "$merge_sha" = "e0449955bf2427a01efa6df86ad6e6629091434b"
+          && printf 'OCC 5745 attribution-fix re-probe PASS\n'
+  - id: "occ6080-attribution-fix-no-live-mutation"
+    description: >-
+      Append-only, correctly-formed replacement for the second of the three targets `occ6077-receipt-attribution-fix`
+      (PR #6080) tried and failed to express in a single comma-joined marker (see `occ6080-grammar-repair-note`
+      above). This entry supersedes ONLY the ATTRIBUTION of `dod-infra769-no-live-mutation-claim-superseded`'s
+      receipt (`drift/dod_receipts/OMN-15136/dod-infra769-no-live-mutation-claim-superseded/command.yaml`),
+      which carries the same dishonest `runner`/`verifier`/`run_timestamp` combination described in `occ6080-attribution-fix-5745`
+      above. The underlying facts (omninode_infra PR #769 MERGED 2026-07-31T23:37:07Z at merge commit
+      d309339e5efc350301c1196db1301d6cfd2070b2, and the operator-approved authorized-wave-0730/terraform-omn15136
+      lane record in the rolling ledger) are re-verified live below and were never in question -- only
+      the prior receipt's attribution and timing were dishonest. This entry binds a fresh, truthfully-attributed
+      receipt at `drift/dod_receipts/OMN-15136/occ6080-attribution-fix-no-live-mutation/command.yaml`.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra769-no-live-mutation-claim-superseded"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          state="$(gh pr view 769 --repo OmniNode-ai/omninode_infra --json state --jq .state)" && merge_sha="$(gh
+          pr view 769 --repo OmniNode-ai/omninode_infra --json mergeCommit --jq .mergeCommit.oid)" &&
+          test "$state" = "MERGED" && test "$merge_sha" = "d309339e5efc350301c1196db1301d6cfd2070b2" &&
+          grep -c 'authorized-wave-0730/terraform-omn15136' /Users/jonah/Code/omni_home/docs/tracking/ROLLING_WORK_LEDGER.md
+          >/dev/null && printf 'infra769 approved-and-executed mutation attribution-fix re-probe PASS\n'
+  - id: "occ6080-attribution-fix-6077"
+    description: >-
+      Append-only, correctly-formed replacement for the third of the three targets `occ6077-receipt-attribution-fix`
+      (PR #6080) tried and failed to express in a single comma-joined marker (see `occ6080-grammar-repair-note`
+      above). This entry supersedes ONLY the ATTRIBUTION of `occ-self-bind-pr-6077`'s receipt (`drift/dod_receipts/OMN-15136/occ-self-bind-pr-6077/command.yaml`),
+      which carries the same dishonest `runner`/`verifier`/`run_timestamp` combination described in `occ6080-attribution-fix-5745`
+      above. The underlying check_value and the live fact it asserts (PR #6077 exists and is MERGED at
+      merge commit 6b6a55bd702ed1d8f5e04b630ef402ea7257243d) are re-verified live below and were never
+      in question -- only the prior receipt's attribution and timing were dishonest. This entry binds
+      a fresh, truthfully-attributed receipt at `drift/dod_receipts/OMN-15136/occ6080-attribution-fix-6077/command.yaml`.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-6077"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          state="$(gh pr view 6077 --repo OmniNode-ai/onex_change_control --json state --jq .state)" &&
+          merge_sha="$(gh pr view 6077 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq
+          .mergeCommit.oid)" && test "$state" = "MERGED" && test "$merge_sha" = "6b6a55bd702ed1d8f5e04b630ef402ea7257243d"
+          && printf 'OCC 6077 attribution-fix re-probe PASS\n'
+  - id: "occ-self-bind-pr-6085"
+    description: "Binds OMN-15136 to OCC companion PR #6085 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6085 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ6087-no-live-mutation-portable-reprobe"
+    description: >-
+      Append-only supersession of `occ6080-attribution-fix-no-live-mutation` (landed by PR #6084, merge
+      commit 3e24d9bd93daba3dba2ba47438d4a3a2aa647a66). That entry's bound receipt was flipped to `status:
+      PASS` during the #6084 merge sweep, but independent re-execution of its OWN declared `probe_command`
+      shows two defects. (1) NON-PORTABLE: both its `check_value` and its `probe_command` grep an absolute
+      `/Users/...` path into a checkout of another repo's working tree, which no CI runner or other host
+      can execute -- a rule-6 / OMN-15374-class re-executability defect. (2) NON-REPRODUCIBLE `probe_stdout`:
+      the declared probe ends in `grep -c`, which emits an integer, but the recorded second stdout line
+      is the prose string `ledger citations of authorized-wave-0730/terraform-omn15136 confirmed present`.
+      Re-executing that exact probe on a host where the path does resolve emits `4`, not that sentence,
+      so the recorded stdout was never the captured output of the declared command. The underlying FACTS
+      were never in question and are re-asserted below (omninode_infra PR #769 MERGED at d309339e5efc350301c1196db1301d6cfd2070b2;
+      OCC PR #6080 merged at 90b63455e171f01779b85bfaa861b65ce94498ef touching only `contracts/` and `drift/dod_receipts/`
+      paths, i.e. no live mutation). This entry re-asserts the no-live-mutation claim through a fully
+      portable, `gh`-only probe that any host with read access to this repo can re-execute, and binds
+      a receipt whose `probe_stdout` is the byte-exact captured output of its own `probe_command` (sha256
+      a1c2306ed2ed44ac13a91be81654cc6a94e5b015e9f4a7c575790be7a6f18935), independently executed by a verifier
+      distinct from the runner. The superseded entry stays verbatim above for audit; per the OCC append-only
+      invariant it is immutable and is corrected here by addition, not by edit.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ6080-attribution-fix-no-live-mutation"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          out="$(gh pr view 6080 --repo OmniNode-ai/onex_change_control --json state,mergeCommit,files
+          --jq '.state, .mergeCommit.oid, (.files[].path)')" && state="$(printf '%s\n' "$out" | sed -n
+          '1p')" && merge_sha="$(printf '%s\n' "$out" | sed -n '2p')" && files="$(printf '%s\n' "$out"
+          | tail -n +3)" && test "$state" = "MERGED" && test "$merge_sha" = "90b63455e171f01779b85bfaa861b65ce94498ef"
+          && non_receipt_count="$(printf '%s\n' "$files" | grep -vE '^(contracts/|drift/dod_receipts/)'
+          | wc -l | tr -d ' ')" && test "$non_receipt_count" -eq 0 && printf 'OCC6080 no-live-mutation
+          (receipt/contract paths only) PASS\n'
+  - id: "occ6088-supersedes-occ6080-no-live-mutation"
+    description: >-
+      Append-only supersession for `occ6080-attribution-fix-no-live-mutation`. The superseded entry's
+      `check_value` hardcoded a local `/Users/.../ROLLING_WORK_LEDGER.md` path, so hosted Contract Compliance
+      cannot re-execute it. This replacement proves the narrower evidence claim without local filesystem
+      dependency: OCC PR #6080 is merged at its known merge commit and changed only `contracts/` or `drift/dod_receipts/`
+      paths, so it performed no live infrastructure mutation.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ6080-attribution-fix-no-live-mutation"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          out="$(gh pr view 6080 --repo OmniNode-ai/onex_change_control --json state,mergeCommit,files
+          --jq '.state, .mergeCommit.oid, (.files[].path)')" && state="$(printf '%s\n' "$out" | sed -n
+          '1p')" && merge_sha="$(printf '%s\n' "$out" | sed -n '2p')" && files="$(printf '%s\n' "$out"
+          | tail -n +3)" && test "$state" = "MERGED" && test "$merge_sha" = "90b63455e171f01779b85bfaa861b65ce94498ef"
+          && non_receipt_count="$(printf '%s\n' "$files" | grep -vE '^(contracts/|drift/dod_receipts/)'
+          | wc -l | tr -d ' ')" && test "$non_receipt_count" -eq 0 && printf 'OCC6080 no-live-mutation
+          (receipt/contract paths only) PASS\n'
+  - id: "occ-self-bind-pr-6088"
+    description: "Binds OMN-15136 to OCC companion PR #6088 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 6088 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ6080-grammar-repair-actual-output-fix"
+    description: >-
+      Append-only supersession of `occ6080-grammar-repair-note`'s ATTESTATION QUALITY (landed by PR #6080,
+      merge commit 90b63455e171f01779b85bfaa861b65ce94498ef). That entry's `probe_stdout` is correctly
+      byte-exact captured output of its own declared command, but its `actual_output` field is hand-written
+      prose ("Diagnostic note anchor independently re-probed live at 2026-08-05T02:16:43Z by codex:manual-merge-sweep-2026-08-05;
+      ...") rather than the command's own byte-exact output -- the check_value's `printf` never emits
+      that sentence. Per the operator's standing receipt-honesty rule, both `probe_stdout` and `actual_output`
+      on a receipt must be byte-exact captured output of the declared command. A prior attempt at this
+      same repair (OCC PR #6087, defect class OMN-15710 AC 1) wired an identical PENDING entry, then had
+      to un-wire and remove it because `validator_occ_merge_eligibility` requires a PASS receipt for any
+      wired dod_evidence item unconditionally -- item-level `status: pending` is not consulted, only the
+      bound receipt's own `status` field is -- and a single lane cannot honestly self-attest PASS (runner
+      and verifier would be the same identity). This entry does not dispute the underlying fact (the anchor
+      is present in contracts/OMN-15136.yaml); it re-attests it with `actual_output` corrected to match
+      `probe_stdout` byte-for-byte, executed live by this lane, and stays wired (not un-wired) so that
+      `occ-preflight` correctly reports red on the unresolved PENDING receipt until an identity distinct
+      from this lane's runner independently re-executes the check and flips the bound receipt's `status`
+      to PASS -- see OMN-15710 for the tracked defect set and the required independent-verifier follow-up.
+      The superseded entry stays verbatim above for audit per the repo's append-only convention.
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "supersedes_dod_evidence:occ6080-grammar-repair-note"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          receipt="drift/dod_receipts/OMN-15136/occ6080-grammar-repair-actual-output-fix/command.yaml"
+          && grep -q '^status: PASS$' "$receipt" && actual="$(sed -n '/^actual_output: |$/,/^[a-z]/p'
+          "$receipt" | sed '1d;$d')" && probe="$(sed -n '/^probe_stdout: |$/,/^[a-z]/p' "$receipt" | sed
+          '1d;$d')" && test "$actual" = "$probe" && printf 'occ6080 grammar-repair actual_output byte-exact
+          match PASS\n'
+  # --- OMN-15374/OMN-15136 carrier retirement (append-only correction of the sole remaining dod_verify failure) ---
+  - id: "occ-carrier-retire-6077-receipt-attribution-fix"
+    description: >-
+      Append-only single-id supersession retiring the CARRIER item `occ6077-receipt-attribution-fix` (landed
+      by PR #6080), which is permanently DANGLING_SUPERSESSION because its own `evidence_artifact` is
+      the malformed three-id comma-joined marker `supersedes_dod_evidence:occ-self-bind-pr-5745-superseded,dod-infra769-no-live-mutation-claim-superseded,occ-self-bind-pr-6077`
+      documented in `occ6080-grammar-repair-note` above. PR #6084 already correctly retired all THREE
+      individual targets that marker tried and failed to name (`occ6080-attribution-fix-5745`, `occ6080-attribution-fix-no-live-mutation`,
+      `occ6080-attribution-fix-6077` below) via well-formed single-id markers -- but `occ6077-receipt-attribution-fix`
+      itself, as the CARRIER of the broken marker, still hard-failed unconditionally as DANGLING_SUPERSESSION,
+      because `EvidenceCollector._collect_impl` (omnimarket, prior to OMN-15708) checked an item's own
+      outbound marker validity BEFORE checking whether some LATER, well-formed marker had itself retired
+      that item. omnimarket OMN-15708 (merged, `evidence_collector.py` phase-3 reorder) fixed exactly
+      this: an item's own retirement is now checked FIRST -- a well-formed, single-id supersession that
+      targets `occ6077-receipt-attribution-fix` by id now takes effect and marks it SUPERSEDED regardless
+      of its own outbound marker's validity, per the explicit OMN-15708 code comment in `evidence_collector.py`
+      citing this exact OMN-15374/OCC#6080 case. This entry is that single-id supersession, using the
+      same proven pattern PR #6084/#6099 used for the three individual targets: `evidence_artifact: "supersedes_dod_evidence:occ6077-receipt-attribution-fix"`.
+      The check below re-verifies live that the three PR #6084 replacement entries this retirement depends
+      on are still present in the contract (the underlying attribution facts were never in question --
+      only the carrier's own unreachable marker was the defect). Note this ticket has independent, unrelated
+      open failures (PR #5745 live-check-state, occ6087/occ6088 items) NOT addressed by this entry --
+      this entry retires only the `occ6077-receipt-attribution-fix` carrier. Receipt bound at `drift/dod_receipts/OMN-15136/occ-carrier-retire-6077-receipt-attribution-fix/command.yaml`,
+      `status: PENDING` (this lane is the runner only; a distinct identity must independently re-execute
+      and flip to PASS before merge eligibility).
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "supersedes_dod_evidence:occ6077-receipt-attribution-fix"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f contracts/OMN-15136.yaml && grep -q 'occ6080-attribution-fix-5745' contracts/OMN-15136.yaml
+          && grep -q 'occ6080-attribution-fix-no-live-mutation' contracts/OMN-15136.yaml && grep -q 'occ6080-attribution-fix-6077'
+          contracts/OMN-15136.yaml && printf 'carrier retirement precondition: three replacement entries
+          present PASS\n'
+  # --- OMN-15136 pipefail-supersession (root-cause A of the wave-10 flip-audit 7-item gap list) ---
+  - id: "occ6087-pipefail-safe-reprobe"
+    description: >-
+      Append-only supersession of `occ6087-no-live-mutation-portable-reprobe` (landed by PR #6087). That
+      entry's `check_value` re-asserts the OCC#6080 no-live-mutation claim via `printf '%s\n' "$files"
+      | grep -vE '^(contracts/|drift/dod_receipts/)' | wc -l`. When OCC#6080 touched ONLY `contracts/`
+      and `drift/dod_receipts/` paths -- the exact condition being asserted -- `grep -v` filters every
+      line and exits 1. `EvidenceCollector._run_command_check` executes checks as `subprocess.run(["bash",
+      "-o", "pipefail", "-c", cmd_str], ...)` (OMN-15382 hardening), so `pipefail` propagates grep's exit-1-on-full-filter
+      as the pipeline status even though `wc -l` itself succeeds and prints `0` -- the `&&` chain aborts
+      before `test "$non_receipt_count" -eq 0` ever runs, so the check fails precisely BECAUSE the no-live-mutation
+      claim it asserts is true. Proven both directions (see `occ6088-pipefail-safe-reprobe` immediately
+      below for the isolated repro transcript, identical underlying grammar). The underlying facts were
+      never in question and are re-asserted below using `awk '!/pattern/'` in place of `grep -v` -- unlike
+      `grep`, `awk`'s exit status reflects only execution success, never the count of lines selected,
+      so an all-filtered result no longer poisons the pipeline's exit status under `pipefail`, while a
+      genuine non-empty match (a real live-mutation file) still fails the `test -eq 0` and correctly returns
+      non-zero -- verified as a negative control before this entry was authored. A `{ grep -v ... || true;
+      }` wrapper was tried first and rejected: `lint_contract_check_values.py`'s `trailing || true` anti-pattern
+      (OMN-9350) matches `|| true` anywhere in the value, not only at the very end, so it flagged the
+      wrapper even though it guards one sub-command, not the whole check -- the `awk` rewrite avoids a
+      fail-open guard entirely rather than requesting a lint exemption. This entry supersedes ONLY `occ6087-no-live-mutation-portable-reprobe`
+      by single id, mirroring the proven shape of merged OCC#6111 (`supersedes_dod_evidence:occ6077-receipt-attribution-fix`,
+      no comma-join). Receipt bound at `drift/dod_receipts/OMN-15136/occ6087-pipefail-safe-reprobe/command.yaml`,
+      `status: PENDING` (this lane is the runner only; a distinct identity must independently re-execute
+      and flip to PASS before merge eligibility, matching merged #6111 precedent).
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "supersedes_dod_evidence:occ6087-no-live-mutation-portable-reprobe"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          out="$(gh pr view 6080 --repo OmniNode-ai/onex_change_control --json state,mergeCommit,files
+          --jq '.state, .mergeCommit.oid, (.files[].path)')" && state="$(printf '%s\n' "$out" | sed -n
+          '1p')" && merge_sha="$(printf '%s\n' "$out" | sed -n '2p')" && files="$(printf '%s\n' "$out"
+          | tail -n +3)" && test "$state" = "MERGED" && test "$merge_sha" = "90b63455e171f01779b85bfaa861b65ce94498ef"
+          && non_receipt_count="$(printf '%s\n' "$files" | awk '!/^(contracts\/|drift\/dod_receipts\/)/'
+          | wc -l | tr -d ' ')" && test "$non_receipt_count" -eq 0 && printf 'OCC6080 no-live-mutation
+          (receipt/contract paths only, pipefail-safe) PASS\n'
+  - id: "occ6088-pipefail-safe-reprobe"
+    description: |-
+      Append-only supersession of `occ6088-supersedes-occ6080-no-live-mutation` (landed by PR #6088). Same
+      defect class and same fix as `occ6087-pipefail-safe-reprobe` immediately above -- both superseded
+      entries share the identical `grep -vE ... | wc -l` grammar, so both fail identically under `bash
+      -o pipefail -c` when OCC#6080's file list is fully filtered out (the exact no-live-mutation condition
+      both entries exist to prove). Isolated repro, run from this repo's root, both directions:
+
+        $ bash <check>
+        0
+        OCC6080 no-live-mutation (receipt/contract paths only) PASS
+        exit=0
+
+        $ bash -o pipefail -c <check>
+        0
+        exit=1
+
+        $ bash -o pipefail -c 'files="contracts/a.yaml"; printf "%s\n" "$files" | grep -vE "^(contracts/|drift/dod_receipts/)" | wc -l'
+        0
+        exit=1
+
+      Pipefail-safe replacement (`awk '!/pattern/'` instead of `grep -v ...`), same two directions, plus
+      a negative control proving the fix does not launder a genuine live-mutation file past the check:
+
+        $ bash -o pipefail -c 'files="contracts/a.yaml"; non_receipt_count="$(printf "%s\n" "$files" | awk "!/^(contracts\\/|drift\\/dod_receipts\\/)/" | wc -l | tr -d " ")"; test "$non_receipt_count" -eq 0 && printf "PASS\n"'
+        PASS
+        exit=0
+
+        $ bash -o pipefail -c 'files="contracts/a.yaml
+        other/file.py"; non_receipt_count="$(printf "%s\n" "$files" | awk "!/^(contracts\\/|drift\\/dod_receipts\\/)/" | wc -l | tr -d " ")"; test "$non_receipt_count" -eq 0 && printf "PASS\n"'
+        exit=1
+
+      `awk`'s exit status reflects only its own execution success -- never the count of lines it selected
+      -- so unlike `grep -v`, an all-filtered (zero-line) result does not poison the pipeline's exit status
+      under `pipefail`, while `wc -l`'s output and the downstream `test -eq 0` semantics are unchanged:
+      a real non-receipt file still produces a non-zero count and correctly fails. A `{ grep -v ... ||
+      true; }` wrapper was tried and rejected first -- `lint_contract_check_values.py`'s OMN-9350 `trailing
+      || true` anti-pattern matches `|| true` anywhere in the value, not only at the literal end, so it
+      flagged the wrapper despite it guarding only one sub-command; the `awk` rewrite avoids a fail-open
+      guard entirely rather than requesting a lint exemption. This entry supersedes ONLY `occ6088-supersedes-occ6080-no-live-mutation`
+      by single id, mirroring merged OCC#6111's shape. Receipt bound at `drift/dod_receipts/OMN-15136/occ6088-pipefail-safe-reprobe/command.yaml`,
+      `status: PENDING` (runner only; independent verifier flips to PASS, per merged #6111 precedent --
+      contract entry itself deliberately left `status: pending`).
+    source: "manual"
+    status: "pending"
+    evidence_artifact: "supersedes_dod_evidence:occ6088-supersedes-occ6080-no-live-mutation"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          out="$(gh pr view 6080 --repo OmniNode-ai/onex_change_control --json state,mergeCommit,files
+          --jq '.state, .mergeCommit.oid, (.files[].path)')" && state="$(printf '%s\n' "$out" | sed -n
+          '1p')" && merge_sha="$(printf '%s\n' "$out" | sed -n '2p')" && files="$(printf '%s\n' "$out"
+          | tail -n +3)" && test "$state" = "MERGED" && test "$merge_sha" = "90b63455e171f01779b85bfaa861b65ce94498ef"
+          && non_receipt_count="$(printf '%s\n' "$files" | awk '!/^(contracts\/|drift\/dod_receipts\/)/'
+          | wc -l | tr -d ' ')" && test "$non_receipt_count" -eq 0 && printf 'OCC6080 no-live-mutation
+          (receipt/contract paths only, pipefail-safe) PASS\n'

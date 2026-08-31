@@ -1,0 +1,337 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15239"
+title: "Plain (non-card) per-tick decide() path has no bounded semantic retry — receipt contract for the
+  already-merged steel fix (false-Backlog reconciliation)"
+summary: >-
+  OMN-15239 is a false-Backlog ticket, not unbuilt work. The defect — `LLMPilot.decide()` calling `llm/effect.py`'s
+  `consume_llm_completion` exactly ONCE per tick with no retry, so a single `LlmSemanticError` (`invalid_action_parameters`)
+  escaped `match/runner.py`'s tick-loop catch (which handles only `LlmCompletionBoundaryError` and `LlmSemanticExhaustedError`)
+  and killed the whole match/seed — was fixed on jonahgabriel/steel_onslaught `main` in PR #225, squash
+  merge commit 23a88d09051565270f76cade8bc7b685cd790f38, merged 2026-07-27T13:58:25Z, while the Linear
+  ticket held a single Backlog stateHistory entry throughout. The ticket's Fix section is exactly what
+  landed: mirror `programming.py`'s bounded reprompt in the plain `decide()` path so exhaustion surfaces
+  as the classified, catchable `LlmSemanticExhaustedError`, plus the dated pre-registration amendment
+  the ticket required before any re-run. This contract is the receipt surface for the dod_verify path;
+  it makes no status change and adjudicates nothing beyond the acceptance items named below. Distinct
+  from OMN-15535/OMN-15240, which fixed the delegation-CLI stdout/stderr diagnostics on the transport
+  side and never touched the pilot decide path. Every check is pinned to the immutable merge SHA, is hosted-runnable,
+  and was executed GREEN at authoring time, then RED-proven by repointing the pinned ref at the merge
+  commit's first parent 491c52a76d90324e557f7638b7fb7312ca54057a.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: "ENRICHED"
+evidence_requirements:
+  - kind: "ci"
+    description: >-
+      steel PR #225 is merged on jonahgabriel/steel_onslaught main at squash commit 23a88d09, and the
+      post-merge main CI run on that lineage is green.
+    command: "gh pr view 225 --repo jonahgabriel/steel_onslaught --json state,mergeCommit"
+  - kind: "manual"
+    description: >-
+      Immutable GitHub content probes bind each acceptance item to steel merge SHA 23a88d09051565270f76cade8bc7b685cd790f38.
+    command: "See drift/dod_receipts/OMN-15239/dod-omn15239-*/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn15239-pr-225-merged-at-23a88d09"
+    description: >-
+      Binding item. steel PR #225 is MERGED with merge commit exactly 23a88d09051565270f76cade8bc7b685cd790f38.
+      State and SHA are asserted together in a single equality so closed-unmerged, still-open, and re-landed-elsewhere
+      each yield a mismatch. This establishes binding, not correctness — the substantive proof is the
+      items below. The `--repo` flag and the PR number sit in the SAME shell clause so the dod_verify
+      collector's same-clause `_hardcoded_pr_bindings_in_value` extraction resolves (jonahgabriel/steel_onslaught,
+      225) rather than falling back to `_DEFAULT_GITHUB_ORG` (OmniNode-ai), which would resolve nothing
+      for this personal repo.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          state="$(gh pr view 225 --repo jonahgabriel/steel_onslaught --json state,mergeCommit --jq '.state + " " + (.mergeCommit.oid // "none")')" && test "$state" = "MERGED 23a88d09051565270f76cade8bc7b685cd790f38"
+  - id: "dod-omn15239-bare-semantic-error-no-longer-escapes"
+    description: >-
+      AC1 — the root defect is closed at its exact site: a bare `LlmSemanticError` raised by `consume_llm_completion`
+      under the live `raise` failure policy no longer propagates past `LLMPilot.decide`. Asserted structurally
+      in `src/steel_onslaught/llm/pilot.py` at the merge SHA: a dedicated `except LlmSemanticError as
+      exc:` handler exists (it must precede the pre-existing broad `except Exception as exc:` to have
+      any effect), it is gated on `if self._failure_policy == "raise":`, and it hands off to the bounded
+      loop via the verbatim `return self._reprompt_or_terminate(observation, request, first_error=exc)`.
+      Grepping only for the word "retry" would pass against a comment; this asserts the executed control-flow
+      edge. A regression that deletes the handler, or that keeps it but drops the handoff, fails this
+      check.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && grep -qF 'except LlmSemanticError as exc:' "$f" && grep -qF 'return self._reprompt_or_terminate(observation, request, first_error=exc)' "$f" && grep -qF 'if self._failure_policy == "raise":' "$f" && rm -f "$f"
+  - id: "dod-omn15239-exhaustion-raises-catchable"
+    description: >-
+      AC2 — exhaustion surfaces as the type the tick loop already catches, carrying the diagnosis. At
+      the merge SHA `pilot.py` raises `LlmSemanticExhaustedError(` with all four keyword arguments the
+      runner's `provider_semantic_failure` terminal consumes: `seat=observation.mech_id,`, `semantic_failure_code=last_error.code,`,
+      `attempts=total_attempts,`, `provider_id=self._provider_id,`. The `attempts` and `provider_id` legs
+      are load-bearing rather than decorative: a raise that omitted them would still be catchable but
+      would erase which provider exhausted and after how many tries, which is precisely the diagnosis
+      the 20/30-skipped battery lacked. `LlmSemanticExhaustedError` is also asserted to be imported from
+      `schemas`, so this cannot pass against a locally-shadowed name.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && grep -qF 'raise LlmSemanticExhaustedError(' "$f" && grep -qF 'seat=observation.mech_id,' "$f" && grep -qF 'semantic_failure_code=last_error.code,' "$f" && grep -qF 'attempts=total_attempts,' "$f" && grep -qF 'provider_id=self._provider_id,' "$f" && grep -qF 'LlmSemanticExhaustedError,' "$f" && rm -f "$f"
+  - id: "dod-omn15239-budget-shared-with-card-mode"
+    description: >-
+      AC3 — the retry budget is the SAME constant card mode owns, not a second constant that can silently
+      drift from it. Three legs at the merge SHA, two positive and one negative. Positive: `pilot.py`
+      imports `from steel_onslaught.llm.programming import _DEFAULT_SEMANTIC_RETRY_LIMIT` and defaults
+      the new keyword-only parameter to it verbatim (`semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,`).
+      Negative: `pilot.py` defines NO module-level `_DEFAULT_SEMANTIC_RETRY_LIMIT` of its own (asserted
+      with a start-of-line anchor). The negative leg is the discriminator between "the ticket's stated
+      mirror-card-mode requirement was met" and "a lookalike retry loop with an independently-drifting
+      budget was bolted on". The bound is also asserted to be validated rather than trusted: `raise ValueError("semantic_retry_limit
+      must not be negative")` rejects a negative budget, which would otherwise silently degrade to zero
+      attempts and reintroduce the original single-shot defect.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && grep -qF 'from steel_onslaught.llm.programming import _DEFAULT_SEMANTIC_RETRY_LIMIT' "$f" && grep -qF 'semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,' "$f" && grep -qF 'raise ValueError("semantic_retry_limit must not be negative")' "$f" && ! grep -qE '^_DEFAULT_SEMANTIC_RETRY_LIMIT' "$f" && rm -f "$f"
+  - id: "dod-omn15239-repair-preserves-boundary"
+    description: >-
+      AC4 — the new loop does not swallow the two things it must not. At the merge SHA the repair loop
+      in `pilot.py` re-raises `LlmCompletionBoundaryError` unchanged (provider length/timeout boundaries
+      keep their own distinct terminal path and are never converted into a semantic-exhaustion terminal),
+      and each repair attempt is a real provider completion built by `_build_repair_request`, which annotates
+      the SAME model with the exact rejection (`correction = self._correction_note(error)`) and pins `"temperature":
+      0.0,` for the repair. Separately, `src/steel_onslaught/match/composition.py` threads `provider_id=selection.provider_id,`
+      into the pilot so the exhaustion error can name a real provider instead of `None`. Without the composition
+      leg the `provider_id` asserted in the item above would be structurally present but permanently null
+      in live matches.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          f="$(mktemp)" && g="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/llm/pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$f" && gh api 'repos/jonahgabriel/steel_onslaught/contents/src/steel_onslaught/match/composition.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$g" && grep -qF 'except LlmCompletionBoundaryError:' "$f" && grep -qF 'def _build_repair_request(' "$f" && grep -qF 'correction = self._correction_note(error)' "$f" && grep -qF '"temperature": 0.0,' "$f" && grep -qF 'provider_id=selection.provider_id,' "$g" && rm -f "$f" "$g"
+  - id: "dod-omn15239-tests-exhaustion-and-recovery"
+    description: >-
+      AC5 — both polarities are covered by executed tests, not just the failure one. Asserted by full
+      signature at the merge SHA. In `tests/llm/test_llm_pilot.py`: `test_omn15239_semantic_exhaustion_raises_llm_semantic_exhausted_not_bare_semantic_error`
+      (the exact type-substitution the tick-loop catch depends on) and `test_omn15239_transient_semantic_failure_recovers_within_bounds`
+      (the happy path — a single slip self-corrects and `decide` returns a decision rather than raising;
+      without this leg a "fix" that always exhausts would pass). In `tests/match/test_runner.py`, two
+      `@pytest.mark.integration` tests drive the real `MatchRunner` tick loop end to end: `test_plain_decide_semantic_exhaustion_reaches_provider_semantic_failure_terminal`
+      and `test_plain_decide_transient_semantic_failure_recovers_and_match_keeps_playing`. The runner-level
+      pair is what makes this a seam claim rather than two independent unit suites: the unit tests prove
+      the pilot raises the classified type, the runner tests prove the tick loop actually catches it and
+      reaches the terminal.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          t="$(mktemp)" && r="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/llm/test_llm_pilot.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$t" && gh api 'repos/jonahgabriel/steel_onslaught/contents/tests/match/test_runner.py?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$r" && grep -qF 'def test_omn15239_semantic_exhaustion_raises_llm_semantic_exhausted_not_bare_semantic_error()' "$t" && grep -qF 'def test_omn15239_transient_semantic_failure_recovers_within_bounds() -> None:' "$t" && grep -qF 'def test_plain_decide_semantic_exhaustion_reaches_provider_semantic_failure_terminal() -> None:' "$r" && grep -qF 'def test_plain_decide_transient_semantic_failure_recovers_and_match_keeps_playing() -> None:' "$r" && rm -f "$t" "$r"
+  - id: "dod-omn15239-dated-prereg-amendment"
+    description: >-
+      AC6 — the ticket's explicit "Requires a dated prereg amendment before any re-run" clause is discharged,
+      in BOTH lanes of the OMN-15172 salience pair rather than only the lane where the defect was observed.
+      At the merge SHA both `contracts_data/overlays/foundry_60_asym_v1_salience_prominent_delegation.yaml`
+      and `contracts_data/overlays/foundry_60_asym_v1_salience_default_delegation.yaml` carry a dated
+      `AMENDMENT (2026-07-27` header note naming OMN-15239. The PROMINENT overlay's note is additionally
+      asserted to state the no-hypothesis-change property verbatim (`are UNCHANGED`) and to record that
+      it landed `BEFORE any acceptance re-run of either lane` — an amendment that silently altered the
+      hypothesis, primary statistic, or decision bands would be a pre-registration violation, not a discharge,
+      so the unchanged-clause assertion is the substantive half of this check.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          p="$(mktemp)" && d="$(mktemp)" && gh api 'repos/jonahgabriel/steel_onslaught/contents/contracts_data/overlays/foundry_60_asym_v1_salience_prominent_delegation.yaml?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$p" && gh api 'repos/jonahgabriel/steel_onslaught/contents/contracts_data/overlays/foundry_60_asym_v1_salience_default_delegation.yaml?ref=23a88d09051565270f76cade8bc7b685cd790f38' --jq .content | base64 -d > "$d" && grep -qF 'AMENDMENT (2026-07-27' "$p" && grep -qF 'AMENDMENT (2026-07-27' "$d" && grep -qF 'OMN-15239' "$p" && grep -qF 'OMN-15239' "$d" && grep -qF 'are UNCHANGED' "$p" && grep -qF 'BEFORE any acceptance re-run of either lane' "$p" && rm -f "$p" "$d"
+  - id: "occ-self-bind-pr-5759"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15239 to its OCC evidence PR #5759 so occ-preflight
+      eligibility can resolve a PASS receipt for this ticket against this PR. It adjudicates nothing about
+      the work and flips no Linear status; the falsifiable evidence is the merge-SHA-pinned items above.
+      Mirrors the occ-self-bind-pr-5756 / occ-self-bind-pr-5544 precedent.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5759 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-onex_change_control-pr-5763"
+    description: "Binding stamp: binds OMN-15239 to source PR OmniNode-ai/onex_change_control#5763."
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5763 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "occ-self-bind-pr-5764"
+    description: "Binds OMN-15239 to OCC companion PR #5764 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5764 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn15239-pr-225-merged-at-23a88d09-guardcompat"
+    description: >-
+      Executor-compatibility correction of the binding item dod-omn15239-pr-225-merged-at-23a88d09, APPENDED
+      under OCC append-only doctrine rather than edited in place: a merged dod_evidence entry is immutable
+      (validator_occ_append_only) and its receipt pins the entry hash, so an in-place rewrite both trips
+      the append-only gate and staleness-invalidates the receipt binding. Root cause: node_dod_verify
+      shape-guards a check_value BEFORE executing it (evidence_collector._invalid_check_value_reason)
+      by tokenizing with shlex.split(posix=True), which is NOT $()-aware. The superseded original embedded
+      the jq program .state + " " + (.mergeCommit.oid // "none") inside a double-quoted command substitution,
+      so the jq program's inner double quotes closed the outer one and the guard landed on the fragment
+      " + (.mergeCommit.oid // none)')" as the command name; that fragment contains a slash, so the guard
+      took its relative-script-path branch, found no executable, and returned INVALID_CHECK_VALUE_NOT_A_COMMAND
+      without ever running the command. A FALSE RED against a command that exits 0 in a real shell — the
+      binding fact never changed — but a hard FAIL on the verdict, which made dod_verify return status=failed
+      (9 verified / 1 failed / 10 total) for this ticket. This replacement splits the single two-field
+      query into two single-field queries so each --jq filter is a bare path expression carrying no quote
+      characters, leaving `test` as the first shlex token. Semantics preserved exactly: BOTH the state
+      MERGED AND the exact merge SHA 23a88d09051565270f76cade8bc7b685cd790f38 are asserted, so closed-unmerged,
+      still-open, and re-landed-elsewhere each still yield a mismatch. The PR number and --repo stay in
+      the SAME shell clause so the collector's same-clause _hardcoded_pr_bindings_in_value extraction
+      resolves (jonahgabriel/steel_onslaught, 225) instead of falling back to _DEFAULT_GITHUB_ORG (OmniNode-ai),
+      which resolves nothing for this personal repo. Shape mirrors the merged dod-omn15490-pr-237-merged-at-e3dbd017-guardcompat
+      precedent (OCC #5760), which the runner executed and returned verified.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn15239-pr-225-merged-at-23a88d09"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 225 --repo jonahgabriel/steel_onslaught --json mergeCommit --jq .mergeCommit.oid)" = "23a88d09051565270f76cade8bc7b685cd790f38" && test "$(gh pr view 225 --repo jonahgabriel/steel_onslaught --json state --jq .state)" = "MERGED"
+  - id: "occ-self-bind-pr-5763"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15239 to OCC evidence PR #5763 — the append-only
+      supersession PR that corrects the executor-incompatible binding check_values — so occ-preflight
+      eligibility can resolve a PASS receipt for this ticket against THIS PR. Its absence is why #5763
+      failed occ-preflight with reason=pr_ticket_mismatch ("no PASS receipt for one or more tickets binds
+      to PR #5763 or one of its commit SHAs"): the pre-existing occ-self-bind-pr-5759 stamp binds only
+      the EARLIER PR, and eligibility is evaluated per-PR, not per-ticket-ever. The sibling repair PR
+      #5760 carried the analogous occ-self-bind-pr-5760 stamp and passed; this one omitted it. Both stamps
+      stand — a ticket may be bound by more than one OCC PR over its life. It adjudicates nothing about
+      the work and flips no Linear status; the falsifiable evidence is the merge-SHA-pinned items above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5763 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "occ-self-bind-pr-5767"
+    description: >-
+      Binding stamp, not substantive proof: binds OMN-15239 to OCC evidence PR #5767, the PR that actually
+      carries the guard-compatible binding checks to dev. Required because occ-preflight eligibility is
+      evaluated PER-PR: it demands a PASS receipt bound to THIS PR number or one of its head SHAs, and
+      every pre-existing stamp on this ticket binds an earlier PR (#5756/#5759 merged, #5763 CLOSED UNMERGED
+      at 2026-07-31T21:42:59Z after a force-push, its branch deleted). Without this entry #5767 fails
+      occ-preflight and verify with reason=pr_ticket_mismatch — "no PASS receipt for one or more tickets
+      binds to PR #5767 or one of its commit SHAs" — which is the third recurrence of that same failure
+      mode in this ticket's OCC lineage (#5763 hit it, and the auto-generated dod-OmniNode-ai-onex_change_control-pr-5763
+      stamp on dev binds a PR that will never merge). All prior stamps are left untouched under append-only
+      doctrine; a ticket may be bound by more than one OCC PR over its life. This adjudicates nothing
+      about the steel work and flips no Linear status; the falsifiable evidence is the merge-SHA-pinned
+      guardcompat items above.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 5767 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-omn15239-retire-autobind-stamp-occ5763"
+    description: >-
+      Retires dod-OmniNode-ai-onex_change_control-pr-5763, APPENDED under OCC append-only doctrine rather
+      than edited in place: a merged dod_evidence entry is immutable (validator_occ_append_only, OMN-13962)
+      and merged receipts pin the per-entry hash, so an in-place rewrite trips the gate AND staleness-invalidates
+      the receipt binding. Why the retired item can never pass: it is a binding stamp whose only check
+      is `gh pr view 5763 --repo OmniNode-ai/onex_change_control ...`, and node_dod_verify derives a live-PR
+      binding from that same-clause pin (EvidenceCollector._resolve_pr_bindings tier 2) and appends a
+      synthetic `::pr-live-state` assertion that is VERIFIED only when the bound PR is MERGED with green
+      required checks (_verify_live_pr, fail-closed). OCC #5763 was force-pushed by a second actor and
+      then CLOSED UNMERGED at 2026-07-31T21:42:59Z with its head branch deleted, so that assertion reads
+      "PR not merged (state=CLOSED); required checks not green" and cannot ever clear. Measured impact
+      before this retirement, reproduced against onex_change_control@origin/dev with default contract
+      resolution: OMN-15239 status=failed, 18 checks / 16 verified / 2 failed / 1 superseded — both failures
+      being this stamp and the sibling retired by the next item. Authorship, stated precisely because
+      the two producers differ: THIS entry is genuinely machine-authored — the OCC autobind companion
+      #5764 (merged 2026-07-31T21:28:48Z) stamped the then-current source PR 14 minutes before it closed.
+      The autobind path stamps a PR before that PR is known to merge and has no watcher that retires the
+      stamp if it later closes unmerged; that generic defect (both producers, plus the prior 2026-07-15
+      occurrence on OMN-13899/#1845 tracked in OMN-13906) is filed as OMN-15599 and is NOT closed by this
+      per-instance repair. Corrected binding fact asserted here, which is the fact the retired stamp existed
+      to record: the work #5763 was carrying landed instead as OCC #5767, squash-merged at c669b18c5144733668063f5ff8b988d10b32b7b4.
+      This check pins BOTH that exact merge SHA AND state MERGED, so a closed, still-open, or re-landed-elsewhere
+      carrier each yield a mismatch — RED-proven at authoring time by repointing the same shape at an
+      all-zero SHA (exit 1). The `--repo` flag and the PR number sit in the SAME shell clause so the collector
+      binds (OmniNode-ai/onex_change_control, 5767) at tier 2 and the appended live-state check probes
+      the merged carrier, rather than falling through to the receipt-carrier tier (OMN-15465 class). Executor
+      shape mirrors the merged dod-omn15239-pr-225-merged-at-23a88d09-guardcompat precedent: `test` is
+      the first shlex token and no $() contains an embedded quote character, so the pre-execution shape
+      guard (evidence_collector._invalid_check_value_reason, shlex.split(posix=True)) cannot mis-branch
+      — the OMN-15535 INVALID_CHECK_VALUE_NOT_A_COMMAND class. Supersession semantics: the retired entry
+      stays verbatim for audit and resolves to status=superseded at runtime; this removes a FALSE red
+      (this ticket IS bound to a merged OCC PR) and manufactures no green, since the retired item's own
+      claim is re-asserted here against the carrier that actually merged, and this item must itself VERIFY
+      for the retirement to take effect at all (_supersession_is_in_effect, OMN-15390 anti-laundering).
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-onex_change_control-pr-5763"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 5767 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq .mergeCommit.oid)" = "c669b18c5144733668063f5ff8b988d10b32b7b4" && test "$(gh pr view 5767 --repo OmniNode-ai/onex_change_control --json state --jq .state)" = "MERGED"
+  - id: "dod-omn15239-retire-selfbind-stamp-occ5763"
+    description: >-
+      Retires occ-self-bind-pr-5763 — the second of the two entries on this contract bound to OCC #5763,
+      which CLOSED UNMERGED at 2026-07-31T21:42:59Z — under the same append-only supersession mechanism,
+      same permanently-failing `::pr-live-state` root cause, and same falsifiable replacement as the entry
+      above. ATTRIBUTION CORRECTION, recorded in the governance artifact because that is the durable surface
+      and the erroneous claim was made about THIS entry: occ-self-bind-pr-5763 was NOT emitted by the
+      OCC autobind automation. It was hand-authored by the wave-3 repair lane in commit da47c2e43c54118a452c59ba08c0bfbd6ee7b72e
+      (2026-07-31T21:38:11Z, branch jonah/omn-15488-guardcompat-binding-checks) to clear an occ-preflight
+      pr_ticket_mismatch on #5763. #5763 then closed unmerged 4m48s later; the same lane's next commit
+      d6200e79bd50c7e0766ec46e39217d529ef1e3f6 (21:50:06Z) recorded that closure verbatim in its own entry
+      text while retaining the now-dead stamp, which reached dev inside #5767 at 21:55:19Z. At the moment
+      #5763 closed, this entry had never merged and was therefore still freely removable — the append-only
+      gate did not protect it, and Codex's in-flight alternative 344b88ec4e5f10b9faf491526512aeb88253ed5a
+      (21:52:29Z) did exactly that, renaming the self-bind rows from #5763 to #5767 — so the failure was
+      avoidable, not structural. The lane's own report and its Linear comments nonetheless attributed
+      this entry to the autobind path; that was wrong, and the wave-3 adversarial verifier corrected it
+      on OMN-15488 (comment a35c501c) and OMN-15239 (comment 8e47fdb5). Only the sibling stamp retired
+      by the previous item is genuinely automation-authored. The structural half of the defect — that
+      occ-preflight eligibility is evaluated PER-PR (validator_occ_merge_eligibility._receipt_bound_to_pr)
+      and therefore requires every new OCC PR to mint a PR-bound artifact BEFORE that PR is known to merge,
+      with no compensating retirement when the claim turns out false — is real and is filed as OMN-15599;
+      this entry does not claim to close it. Falsifiable content is identical to the entry above and is
+      the fact this stamp existed to record: the OCC PR that actually carried this ticket's guard-compatible
+      binding repair to dev is #5767, squash-merged at c669b18c5144733668063f5ff8b988d10b32b7b4, asserted
+      here as BOTH the exact merge SHA AND state MERGED, RED-proven against an all-zero SHA at authoring
+      time. Note that occ-self-bind-pr-5767, already live on this contract, independently asserts the
+      same carrier; this item is the retirement vehicle, and per _supersession_is_in_effect it retires
+      nothing unless it verifies in its own right.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-5763"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 5767 --repo OmniNode-ai/onex_change_control --json mergeCommit --jq .mergeCommit.oid)" = "c669b18c5144733668063f5ff8b988d10b32b7b4" && test "$(gh pr view 5767 --repo OmniNode-ai/onex_change_control --json state --jq .state)" = "MERGED"
+  - id: "occ-self-bind-pr-5779"
+    description: >-
+      Binding stamp: binds OMN-15239 to OCC companion PR #5779, which carries the nine net-new *.supersede.0001.yaml
+      receipt-supersession records that repair the dead OCC#5763 bindings and the OMN-15535 stale merge-SHA
+      citation. Falsifiable, not a bare existence probe: the check asserts that PR #5779 carries exactly
+      nine files whose names end in command.supersede.0001.yaml, so a PR that dropped or padded that set
+      fails.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 5779 --repo OmniNode-ai/onex_change_control --json files --jq .files[].path | grep -c command.supersede.0001.yaml)" = 9

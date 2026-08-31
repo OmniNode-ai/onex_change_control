@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13476"
+title: "feat: extract delegation escalation/tier decision into a stateless COMPUTE node"
+summary: >-
+  Track A W4 of the delegation-orchestrator decomposition (epic OMN-13471). The escalate-or-terminate
+  decision — whether to escalate and to which tier — was inlined twice in HandlerDelegationWorkflow (the
+  inference-error branch and the quality-gate-fail branch), both applying the same precedence rules. Extracts
+  that single decision into node_delegation_escalation_decision_compute, a NodeCompute archetype (contract.yaml
+  + HandlerEscalationDecision implementing a pure handle(request) -> result, stateless + deterministic
+  + zero I/O). The orchestrator now resolves the config-dependent inputs — the next eligible tier and
+  the precise no-higher-tier reason, which read routing_tiers.yaml and the task-class contract — and DELEGATES
+  the verdict via a new _decide_escalation helper. Behavior preserved exactly: the COMPUTE checks retryability,
+  budget, current-tier identifiability, and ladder exhaustion in the same order the inline branches did,
+  including the OMN-13167 precise no-higher-tier reason and the OMN-13140 escalation-proof emission. Tiers/providers/models
+  are resolved upstream from the routing contract+overlay and arrive as plain values — never from env.
+  Shared decision request/result models live in omnimarket.routing so both the COMPUTE and the orchestrator
+  import them without a cross-node model reach-in. Purely intra-omnimarket change; no core wire DTO changes.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-001"
+    description: >-
+      15 TDD-first unit tests in src/omnimarket/nodes/node_delegation_escalation_decision_compute/tests/test_handler_escalation_decision.py
+      cover the contract's escalation cases against HandlerEscalationDecision: tier-ladder progression
+      (quality-gate-fail -> escalate to next tier; multi-rung advance), max-attempts -> terminate (budget
+      check precedes tier resolution), refusal/non-retryable -> terminate with supplied reason (precedes
+      budget + tier), ladder-exhaustion -> terminate with precise no_higher_tier reason, current-tier-unknown
+      -> terminate, determinism + frozen-model purity, and the result-model escalate/terminate invariant.
+      All 15 PASS. The full delegation unit suite (370 tests) PASSES unchanged, proving behavior preserved
+      through the relocation.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13476/dod-001/command.yaml"
+  - id: "dod-002"
+    description: >-
+      Canonical 3-primitive arch: COMPUTE contract.yaml declares node_type compute / node_archetype compute
+      / purity pure / runtime_profiles [main]; runtime sweep classifies 322/322 entry points OK; metadata
+      dependency scope PASS; mypy --strict clean on all changed files; the cross-node-reach-in guard PASSES
+      (shared models in omnimarket.routing, not reached into either node's models package); ruff format
+      + check clean; full pre-commit fleet green on all changed files.
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q 'PASS' drift/dod_receipts/OMN-13476/dod-002/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Self-binding receipt for this OCC PR which carries the central contract consumed by the omnimarket
+      PR Receipt Gate via Evidence-Source.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -c '^ticket_id: \"OMN-13476\"$' contracts/OMN-13476.yaml"

@@ -1,0 +1,72 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13167"
+title: "Delegation runtime: precise no-higher-tier terminal reason for test/research task classes"
+summary: >
+  The night autonomous runtime permutation matrix (2026-06-16) found test (dev lane, CID 122998c5) and
+  research (stability-test lane, CID 31c0cf4e) delegation cells dead-end: the quality gate fails with
+  fallback_to_claude=true but no usable higher tier is reached, terminating with a bare no_higher_tier_available
+  that names neither the exhausted task-class escalation policy nor the missing tier. Both task classes
+  declare the closed-set policy local -> cheap_cloud -> claude (OMN-13157); in the dev/stability-test
+  lanes the claude tier (cli-codex backend) was unconfigured, so next_eligible_tier correctly returned
+  None once the configured tiers were exhausted, but the orchestrator emitted only the opaque token. Fix
+  adds describe_no_higher_tier_available() to the routing authority and emits it as terminal_failure_reason
+  at both no-higher-tier sites (gate-result and inference-error paths). The string names the exhausted
+  policy (task class + declared closed-set tier_order), the current tier, and each higher tier with the
+  precise skip reason (excluded, cloud_routing_blocked, above_pricing_ceiling, no_routable_backend_for_task),
+  behind the stable NO_HIGHER_TIER_REASON_TOKEN prefix so it stays machine-keyable for projections. When
+  a higher tier IS configured, escalation advances to it unchanged (verified: test/research reach claude
+  when cli-codex is configured). Code-only handler change to omnimarket; no topic schema, envelope, or
+  contract API change.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      Focused tests verify test/research tier policies (claude reachable when configured; claude is the
+      declared ceiling), the diagnostic string names the exhausted policy and missing tier under the frontier-unconfigured
+      lane shape, and an end-to-end orchestrator path (local -> cheap_cloud -> dead-end) asserts the precise
+      terminal_failure_reason rather than the bare token.
+    command: "uv run pytest tests/unit/delegation/test_delegation_tier_escalation.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1248"
+    description: >
+      omnimarket PR #1248 adds describe_no_higher_tier_available() to handler_delegation_routing.py and
+      wires it into both orchestrator no-higher-tier sites in handler_delegation_workflow.py, so the terminal_failure_reason
+      names the exhausted task-class policy and the unusable higher tiers instead of the bare no_higher_tier_available
+      token. Evidence anchor: omnimarket head commit 9dcb2821622840f11a6fcff5c5b0342d6116d3ca.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13167/dod-omnimarket-pr-1248/command.yaml
+          && grep -q '^pr_number: 1248$' drift/dod_receipts/OMN-13167/dod-omnimarket-pr-1248/command.yaml
+          && grep -q 'passed' drift/dod_receipts/OMN-13167/dod-omnimarket-pr-1248/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy assessment: this is a code-only routing/escalation handler change in omnimarket with no runtime
+      topology, topic schema, envelope, or contract API change. The terminal-event emission path is the
+      existing delegation-failed projection path already wired on the runtime lanes; reaching live effect
+      requires a standard image rebuild that ships omnimarket on the dev/stability-test runtime, a gated
+      deploy under user approval (HARD gate). No live deploy is performed by this PR. The fresh runtime
+      re-verification (terminal event + correlation-trace projection rows for test/research with the precise
+      reason) is captured after that gated rebuild. The receipt check_value carries the deploy keyword
+      for the deploy-gate.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13167/dod-deploy-assessment/command.yaml
+          && grep -q '^pr_number: 1248$' drift/dod_receipts/OMN-13167/dod-deploy-assessment/command.yaml
+          && grep -q 'No live deploy' drift/dod_receipts/OMN-13167/dod-deploy-assessment/command.yaml"
+  - id: "dod-occ-pr-2704"
+    description: "onex_change_control PR #2704 (dev) carries the OMN-13167 central contract and receipt
+      evidence; this self-binding receipt makes the OCC PR satisfy its own OCC eligibility check."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13167/dod-occ-pr-2704/command.yaml
+          && grep -q '^pr_number: 2704$' drift/dod_receipts/OMN-13167/dod-occ-pr-2704/command.yaml"

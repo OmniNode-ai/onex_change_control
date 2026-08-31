@@ -1,0 +1,72 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13816
+title: "fix(OMN-13816): harden state-coverage-gate — require the state literal inside an assert referencing
+  non-constant handler/contract output (AST-level)"
+summary: >
+  The omnimarket state-coverage-gate (required CI check, the marketed "enforcement backbone" for node-backed
+  skills) was defeatable by tautological/vacuous coverage tests. scripts/validate_state_coverage.py _state_covered()
+  was a regex presence check (['"]<state>['"] or .<state>) over concatenated node test text — it returned
+  covered=True for bare `assert "active"`, attribute self-equality `x.foo == x.foo`, docstring/comment
+  mentions, and even import module paths (`from omnimarket.review... import` matched a `review` state
+  via `.review`). This ticket replaces the regex with an AST-level check: a state literal (string constant,
+  or `EnumX.STATE` attribute for identifier states) counts as covered only when it appears in a genuine
+  assertion context, never as a bare-literal assert, a self-tautology / constant-only comparison, or a
+  docstring/comment. Test files are parsed per-file (not concatenated) since each carries `from __future__
+  import annotations`. Behaviour-neutral on every real node (old vs new diverge on zero of the Wave 3/5/7/10
+  nodes); the only classification change is node_pr_review_fsm_reducer's `review` state (previously a
+  false-positive via an import-path substring), now correctly uncovered and grandfathered into the baseline
+  alongside its 8 already-baselined siblings. Repo: OmniNode-ai/omnimarket, PR #1556.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: dod-001
+    description: >
+      The full scripts/validate_state_coverage.py unit suite passes (26/26) on the feature branch, including
+      11 new AST-hardening tests: rejection of bare-literal assert, literal/name/attribute self-equality,
+      docstring-only, comment-only, and import-path forms; plus genuine-positive controls (comparison,
+      enum-in-for-loop iterable, assertEqual call, per-file __future__ imports).
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13816/dod-001/command.yaml"
+  - id: dod-002
+    description: >
+      Full-run gate parity: `validate_state_coverage.py --check-all` on the same repo HEAD introduces
+      0 new FAIL vs the pre-change (old-logic) baseline (346 nodes; before 0 failed / 250 warned / 96
+      passed). Old-vs-new coverage classification diverges on ZERO of the Wave 3/5/7/10 nodes (OMN-13782/13783/13784/13785)
+      in both strict and non-strict mode — no real coverage regressed. The AST check correctly rejects
+      the three canonical vacuous forms (bare-literal, self-equality, docstring/comment) while keeping
+      `assert result.state == "active"` covered.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13816/dod-002/command.yaml"
+  - id: dod-003
+    description: >
+      Local quality gates are clean on the feature branch: `mypy --strict` on the gate script reports
+      no issues; `ruff format` + `ruff check --fix` clean; the full omnimarket test suite (`uv run pytest
+      tests/ -m "not kafka"`) is 11199 passed / 52 skipped, with the only 4 failures being pre-existing
+      live-Postgres integration tests (tests/test_datasource_postgres.py, psycopg2.connect localhost:5436)
+      unrelated to this change.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13816/dod-003/command.yaml"
+  - id: dod-occ-self
+    description: >
+      This onex_change_control PR carries the central OMN-13816 contract and PASS receipts required by
+      the downstream omnimarket PR #1556 Receipt Gate and OCC preflight eligibility check.
+    source: generated
+    checks:
+      - check_type: command
+        check_value: >
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13816/dod-occ-self/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''

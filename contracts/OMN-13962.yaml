@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13962"
+title: "Wire validator_occ_append_only as a REQUIRED OCC CI gate (enforce the append-only invariant)"
+summary: >-
+  A prior release shipped validator_occ_append_only (per-entry hashing + append-only: existing dod_evidence
+  entries are immutable; any M/D/R/C of a merged receipt file under drift/dod_receipts/<TICKET>/ is a
+  violation) but wired it into no OCC CI job, leaving the invariant advisory. This PR adds an append-only-gate
+  job to onex_change_control/.github/workflows/ci.yml, mirroring honesty-gate: it pins omnibase_core by
+  source ref (OCC's installed omnibase-core is capped <0.46.0 and predates the validator), resolves the
+  tickets touched from changed contract/receipt paths, diffs against the merge-base (the CLI uses a two-dot
+  diff, so merge-base avoids mis-flagging base-ahead receipts as deletions), and invokes the validator
+  per ticket with a hard fail on any violation. The job is added to ci-summary.needs so it gates merge
+  via the required CI Summary check (CLAUDE.md rule #5: enforcement, not detection). The pre-commit hook
+  variant is deferred to a separate dep decision (lifting the deliberate <0.46.0 omnibase-core cap). This
+  is a CI-configuration change only; no runtime deploy, restart, docker exec, rpk topic produce, AWS mutation,
+  or live cluster mutation was performed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-ci-append-only-gate"
+    description: >-
+      The append-only-gate job enforces the append-only invariant. Functional smoke test against this
+      OCC tree (an existing ticket's merged receipts): modifying a merged receipt FAILS the validator
+      (RECEIPT_FILE_MUTATED, exit 1); a clean / net-new-only tree PASSES (exit 0); revert restores PASS.
+      The job is present in ci.yml and listed in ci-summary.needs so it is required. Workflow YAML parses;
+      ticket-id extraction verified over mixed contract/receipt/non-matching paths.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13962/dod-ci-append-only-gate/command.yaml"
+  - id: "dod-occ-self"
+    description: >-
+      OCC self-binding: this onex_change_control PR carries the OMN-13962 contract + receipts. The self
+      receipt pins one of this PR's commits so occ-preflight resolves a PASS receipt bound to this PR
+      without pre-guessing the PR number.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13962/dod-occ-self/command.yaml"

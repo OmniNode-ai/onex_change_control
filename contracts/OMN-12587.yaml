@@ -1,0 +1,164 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-12587"
+title: "SEA stability-test lane delegation overlay returns a real bus (live-pass + 7-task regression unblock)"
+summary: >
+  Implement the stability-test lane delegation overlay whose bus_bootstrap_factory returns a REAL ProtocolInferenceBus
+  connected to the delegation runtime, so SEA --agent on the stability lane wires a real bus instead of
+  fail-closing. Relates to OMN-12586 (the typed delegation bootstrap contract overlay): the repo-default
+  factory is a deliberate fail-closed placeholder and STAYS fail-closed; this ticket adds a LANE-SPECIFIC
+  overlay (src/contracts/delegation_bootstrap_overlay.stability-test.yaml) selecting a new real factory
+  (src/pipeline/delegation_bus_stability.build_stability_delegation_inference_bus). The factory returns
+  a StabilityDelegationBus whose publish_and_wait round-trips one inference request/response over the
+  canonical omnibase_infra Kafka transport: publish the typed inference-request envelope to onex.cmd.omnibase-infra.delegation-inference-request.v1
+  and block until the correlated onex.evt.omnibase-infra.inference-response.v1 arrives (matched on correlation_id),
+  modeled on omnimarket _CodexDispatchBusAdapter. The sync publish_and_wait (the shape SEA InProcessEventBus
+  already exposes) bridges to the async transport via asyncio. Connection params come from the environment:
+  KAFKA_BOOTSTRAP_SERVERS (fail-fast, no silent localhost fallback) and KAFKA_API_VERSION (default 2.8.0;
+  auto fails the .201 metadata bootstrap and 3.x is rejected by aiokafka; aiokafka 0.14 accepts the api_version
+  kwarg). The transport is injectable so the unit suite exercises the round-trip without a live broker.
+  Selection is via the sanctioned pointer bridge: SEA_DELEGATION_BUS_BOOTSTRAP points at the stability
+  overlay file path. All OMN-12586 authority fields are preserved (overlay_id, overlay_version, contract_hash
+  sha256-bound + tamper-detected, allowed_command_set, validity window valid_from/valid_until, revocation_behavior
+  fail_closed) with the same fail-fast validation, and the selected overlay identity/hash/lane/bootstrap-topic/producer-identity/source-SHA
+  are emitted into SEA run evidence via the existing live-command preflight. No raw httpx LLM path is
+  introduced (Kafka transport), so the OMN-12608 SEA inference-architecture guard stays green. Code PR
+  only (onex-self-extending-agent PR #201 against dev); no live runtime mutation in this PR. The live
+  stability run is the next gated step.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >
+      The default overlay still fail-closes with DelegationBusRuntimeNotWiredError; the stability overlay's
+      factory returns a publish_and_wait-capable object wired to the stability connection params with
+      the transport injected/mocked (no live broker); selection via SEA_DELEGATION_BUS_BOOTSTRAP resolves
+      the stability overlay; and the OMN-12586 authority validation (validity window / revocation) still
+      holds. Full suite green with no -k filter.
+    command: >-
+      uv run pytest tests/ -v
+  - kind: "manual"
+    description: >
+      The live stability run (next gated step) wires the real bus: SEA_DELEGATION_BUS_BOOTSTRAP pointed
+      at the stability overlay, KAFKA_BOOTSTRAP_SERVERS=192.168.86.201:39092, KAFKA_API_VERSION=2.8.0,
+      under the brew interpreter (macOS LAN grant, CLAUDE.md Rule 11).
+    command: >-
+      KAFKA_BOOTSTRAP_SERVERS=192.168.86.201:39092 KAFKA_API_VERSION=2.8.0 SEA_DELEGATION_BUS_BOOTSTRAP=src/contracts/delegation_bootstrap_overlay.stability-test.yaml
+      /opt/homebrew/bin/python3.13 -m src --agent
+dod_evidence:
+  - id: "dod-sea-stability-overlay-pr-201"
+    description: >
+      onex-self-extending-agent PR #201 adds the stability-test lane delegation bus factory (src/pipeline/delegation_bus_stability.py)
+      returning a real ProtocolInferenceBus wired to the .201 stability broker, and the lane-specific
+      overlay (src/contracts/delegation_bootstrap_overlay.stability-test.yaml) that selects it, while
+      the repo-default overlay stays fail-closed. Proven green by the fail-closed-default and real-bus-stability
+      unit tests (transport injected, no live broker), mypy --strict, ruff, and pre-commit (incl. the
+      OMN-12608 inference-architecture guard).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-stability-overlay-pr-201/command.yaml"
+          && grep -q '^pr_number: 201$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-stability-overlay-pr-201/command.yaml"
+          && grep -q '^commit_sha: "d6f7e7645baa939b691dbee8a5b2bd30495a01ce"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-stability-overlay-pr-201/command.yaml"
+  - id: "dod-sea-live-unblock-pr-202"
+    description: >
+      onex-self-extending-agent PR #202 lands the fix that truly unblocks SEA live delegation, found by
+      a live proof on the stability-test lane. DEFECT 1: _KafkaStabilityTransport.close() called EventBusKafka.stop()
+      (no such method; EventBusKafka exposes close()), crashing every live delegation round-trip at teardown
+      — fixed to close(), with a REAL-API regression test that constructs a real EventBusKafka and asserts
+      the adapter only calls methods that exist on it (fails on the old stop() code, closes the stub-hides-API-drift
+      gap). DEFECT 2: the model registry pinned local inference at localhost:8000 (unreachable off-host),
+      skipping Track-B — added the documented SEA_LOCAL_INFERENCE_BASE_URL env seam that rewrites local_vllm
+      endpoint hosts (path/cloud preserved; explicit overlay endpoint wins). DEFECT 3: the delegation
+      effect appends /v1/chat/completions to intent.base_url but SEA endpoints declare the full URL (404
+      double-path) — InferenceClient.infer now normalizes base_url to its origin. Proven green by the
+      new unit tests, full pytest (no -k), mypy --strict, ruff, and pre-commit (incl. the OMN-12608 inference-architecture
+      guard + OMN-12609 architecture-verdict).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-live-unblock-pr-202/command.yaml"
+          && grep -q '^pr_number: 202$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-live-unblock-pr-202/command.yaml"
+          && grep -q '^commit_sha: "a4a2236eaeef69481e16dafc100be6e7db20c119"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-live-unblock-pr-202/command.yaml"
+  - id: "dod-sea-live-delegation-reproof"
+    description: >
+      Live re-proof (WITH the committed fix) of one delegation inference round-trip on the stability-test
+      lane, inference pointed at the .201 vLLM (192.168.86.201:8000, Qwen3.6-35B-A3B), under the brew
+      interpreter (CLAUDE.md Rule 11). The real CLI seam (registry endpoint -> InferenceClient -> real
+      StabilityDelegationBus -> .201 broker -> live node_llm_delegation_call_effect -> .201 vLLM) returned
+      correlation_id 4095e6d6-ea09-4d2f-a7ac-5d9d1b5db387 on response topic onex.evt.omnibase-infra.inference-response.v1
+      (request topic onex.cmd.omnibase-infra.delegation-inference-request.v1), model_used=Qwen3.6-35B-A3B,
+      real token usage, error='', real model output. The transport completed start/arm/publish/await/close()
+      — the old stop() would have crashed at teardown.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-live-delegation-reproof/command.yaml"
+          && grep -q 'correlation_id=4095e6d6-ea09-4d2f-a7ac-5d9d1b5db387' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-live-delegation-reproof/command.yaml"
+  - id: "dod-occ-self-bind"
+    description: >
+      OCC PR carries the OMN-12587 central contract + receipts and binds to itself so the OCC-first merge-eligibility
+      gate can verify the evidence is present on the OCC head before merge.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-self-bind/command.yaml"
+          && grep -q '^pr_number: 2106$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-self-bind/command.yaml"
+  - id: "dod-occ-pr-2104"
+    description: "onex_change_control PR #2104 carries the central evidence update for OMN-12587 PR #202."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-pr-2104/command.yaml"
+          && grep -q '^pr_number: 2104$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-pr-2104/command.yaml"
+  - id: "dod-sea-finding1-loop-aware-pr-203"
+    description: >
+      onex-self-extending-agent PR #203 fixes SEA Finding 1: StabilityDelegationBus.publish_and_wait did
+      `return asyncio.run(self._round_trip(...))`. When SEA runs via --agent, the ADK invokes the InferenceClient
+      (and thus publish_and_wait) from inside its already-running event loop, so asyncio.run() raised
+      RuntimeError: asyncio.run() cannot be called from a running event loop BEFORE any Kafka I/O. The
+      shipped tests missed it because they call publish_and_wait from a plain sync context (no running
+      loop). Fix: publish_and_wait is now loop-aware via _run_round_trip — with no running loop it owns
+      the loop via asyncio.run as before; when a loop is already running it runs _round_trip to completion
+      in a dedicated single-worker ThreadPoolExecutor thread with its own event loop and propagates the
+      result/exception. The sync ProtocolInferenceBus surface, the timeout, and the close() lifecycle
+      are preserved. Proven RED->GREEN by a new regression class (TestPublishAndWaitFromRunningLoop) that
+      calls the sync publish_and_wait from inside asyncio.run(_invoke_like_adk_does()) via the injected
+      transport seam (RED with the real RuntimeError on pre-fix HEAD; GREEN after). Full suite green with
+      no -k filter (1340 passed, 15 skipped), mypy --strict clean, ruff clean, pre-commit pass (incl.
+      the OMN-12608 inference-architecture guard).
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-finding1-loop-aware-pr-203/command.yaml"
+          && grep -q '^pr_number: 203$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-finding1-loop-aware-pr-203/command.yaml"
+          && grep -q '^commit_sha: "e0350d84f6a35e94ceb9761ff32578c8b0164e4b"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-sea-finding1-loop-aware-pr-203/command.yaml"
+  - id: "dod-occ-self-bind-finding1"
+    description: >
+      This OCC PR carries the OMN-12587 central contract update + the SEA Finding-1 loop-aware receipt
+      and binds to itself so the OCC-first merge-eligibility gate can verify the evidence is present on
+      the OCC head before merge.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-self-bind-finding1/command.yaml"
+          && grep -q '^pr_number: 2109$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-12587/dod-occ-self-bind-finding1/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

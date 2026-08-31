@@ -1,0 +1,42 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13001"
+title: "Make llm_call_metrics the contract-owned per-call write model for projection_llm_cost"
+summary: >
+  Fix a read/write-model split in omnimarket's LLM cost projection. The deployed runtime writer (node_projection_llm_cost
+  handler_llm_cost.LlmCostProjectionRunner) wrote llm_cost_aggregates with a drifted column set that no
+  longer matched the deployed table, so it landed nothing and never wrote llm_call_metrics (the dashboard
+  read model). This change makes llm_call_metrics the contract-owned per-call write model, deletes the
+  drifted llm_cost_aggregates write (owned by node_projection_cost_summary), retires the standalone consumer
+  into an idempotent backfill entrypoint, and adds a real-dispatch-path test plus a schema-parity ratchet
+  so the column-drift class cannot silently recur.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+dod_evidence:
+  - id: "dod-omnimarket-pr-1183"
+    description: >
+      omnimarket PR #1183 declares llm_call_metrics as the projection_llm_cost write model, ports the
+      per-call insert into the contract-owned handler path (ON CONFLICT (input_hash) DO NOTHING), deletes
+      the drifted llm_cost_aggregates write, retires consumer.py into backfill_llm_call_metrics, and adds
+      the real-dispatch and schema-parity tests.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13001/dod-omnimarket-pr-1183/command.yaml
+          && grep -q '^pr_number: 1183$' drift/dod_receipts/OMN-13001/dod-omnimarket-pr-1183/command.yaml
+          && grep -q '^ticket_id: \"OMN-13001\"$' drift/dod_receipts/OMN-13001/dod-omnimarket-pr-1183/command.yaml"
+  - id: "dod-occ-pr"
+    description: >
+      This OCC PR carries the OMN-13001 central contract and the dod receipts that omnimarket PR #1183
+      resolves via Evidence-Source: OCC#2529.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13001/dod-occ-pr/command.yaml &&
+          grep -q '^pr_number: 2529$' drift/dod_receipts/OMN-13001/dod-occ-pr/command.yaml && grep -q
+          '^ticket_id: \"OMN-13001\"$' drift/dod_receipts/OMN-13001/dod-occ-pr/command.yaml"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""

@@ -1,0 +1,250 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14492"
+title: "feat(OMN-14492): classify DLQ/no-dispatcher drops with validation detail"
+summary: >-
+  Central OCC evidence for omnibase_infra PR #2314. The product PR distinguishes a true no-dispatcher
+  wiring gap from a type-scoped dispatcher whose event_model rejects malformed publisher payloads, records
+  the real validation detail in dispatch results and DLQ envelopes, and adds a quarantine fallback for
+  projection-handler errors with no declared dlq_topics.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "events"
+  - "topics"
+  - "public_api"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-infra-pr-2314-product-head"
+    description: >-
+      Product-observing verification for omnibase_infra PR #2314 at head 7e305a3ba83b78b82a94248545f3980c38118e8f.
+      The proof reads PR metadata and changed files from GitHub and checks the DLQ failure-class enum,
+      dispatch matcher/runtime changes, DLQ wiring, and focused regression tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=7e305a3ba83b78b82a94248545f3980c38118e8f;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'feat(OMN-14492): classify DLQ/no-dispatcher drops as publisher_malformed vs no_dispatcher with
+          real ValidationError detail' "$d/pr.txt" && for p in src/omnibase_infra/enums/enum_dlq_failure_class.py
+          src/omnibase_infra/runtime/message_dispatch_engine.py src/omnibase_infra/runtime/auto_wiring/handler_wiring.py
+          src/omnibase_infra/runtime/event_bus_subcontract_wiring.py src/omnibase_infra/event_bus/mixin_kafka_dlq.py
+          tests/unit/runtime/test_message_dispatch_engine_type_scoping.py tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py
+          tests/unit/runtime/auto_wiring/test_dispatcher_route_coverage_omn14488.py; do grep -Fq "$p"
+          "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'publisher_malformed' "$d/src/omnibase_infra/enums/enum_dlq_failure_class.py"
+          && grep -Fq 'validation_detail' "$d/src/omnibase_infra/runtime/message_dispatch_engine.py" &&
+          grep -Fq 'PayloadTypeMatcher' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'failure_class' "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq
+          'validation_detail' "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq 'serialization_fallback'
+          "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq 'TestDlqFailureClassification'
+          "$d/tests/unit/runtime/test_message_dispatch_engine_type_scoping.py" && grep -Fq 'build_dlq_topic("quarantine")'
+          "$d/tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py"
+  - id: "dod-infra-pr-2314-local-verification"
+    description: >-
+      Verification evidence recorded in the omnibase_infra PR #2314 body. The PR body records 5628 passing
+      focused tests, ruff format/check, mypy on changed source files, and pre-commit over changed files.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=7e305a3ba83b78b82a94248545f3980c38118e8f;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("5628 passed")) and (.body | contains("ruff format"))
+          and (.body | contains("uv run mypy")) and (.body | contains("pre-commit run")) and (.body |
+          contains("failure_class")) and (.body | contains("quarantine-fallback"))' | grep -qx true
+  - id: "dod-infra-pr-2314-deploy-scope"
+    description: >-
+      Runtime-surface audit for omnibase_infra PR #2314. The PR changes runtime dispatch/DLQ classification
+      source and unit tests. It does not change Dockerfiles, compose manifests, deploy scripts, migrations,
+      or systemd units. No live deploy or restart was performed by this merge lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=7e305a3ba83b78b82a94248545f3980c38118e8f;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -Fxq src/omnibase_infra/runtime/message_dispatch_engine.py && gh pr diff
+          "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq src/omnibase_infra/event_bus/mixin_kafka_dlq.py
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
+  - id: "dod-occ-self-bind-pr-4201"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4201. Verifies the PR is on the expected
+      OMN-14492 evidence branch and contains the initial evidence commit e79b8f73d55d58312aa2cc92897bf394d95a143b.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4201; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14492-occ-infra-2314;
+          INITIAL_EVIDENCE_COMMIT=e79b8f73d55d58312aa2cc92897bf394d95a143b; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-infra-pr-2314-c7c9-product-head"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-product-head"
+    description: >-
+      Current-head product-observing verification for omnibase_infra PR #2314 at head c7c9dfee6f1b183f38a24535020b2cbfeebab0af
+      after the projection-terminal integration test repair. The proof reads PR metadata and changed files
+      from GitHub, checks the DLQ failure-class runtime markers, and verifies the integration test now
+      asserts the quarantine DLQ behavior for projection failures.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=c7c9dfee6f1b183f38a24535020b2cbfeebab0af;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'feat(OMN-14492): classify DLQ/no-dispatcher drops as publisher_malformed vs no_dispatcher with
+          real ValidationError detail' "$d/pr.txt" && for p in src/omnibase_infra/enums/enum_dlq_failure_class.py
+          src/omnibase_infra/runtime/message_dispatch_engine.py src/omnibase_infra/runtime/auto_wiring/handler_wiring.py
+          src/omnibase_infra/runtime/event_bus_subcontract_wiring.py src/omnibase_infra/event_bus/mixin_kafka_dlq.py
+          tests/unit/runtime/test_message_dispatch_engine_type_scoping.py tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py
+          tests/unit/runtime/auto_wiring/test_dispatcher_route_coverage_omn14488.py tests/integration/projectors/test_projection_terminal_event_emission.py;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq 'publisher_malformed' "$d/src/omnibase_infra/enums/enum_dlq_failure_class.py"
+          && grep -Fq 'validation_detail' "$d/src/omnibase_infra/runtime/message_dispatch_engine.py" &&
+          grep -Fq 'PayloadTypeMatcher' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'failure_class' "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq
+          'serialization_fallback' "$d/src/omnibase_infra/event_bus/mixin_kafka_dlq.py" && grep -Fq 'TestDlqFailureClassification'
+          "$d/tests/unit/runtime/test_message_dispatch_engine_type_scoping.py" && grep -Fq 'build_dlq_topic("quarantine")'
+          "$d/tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py" && grep -Fq 'quarantine_fallback'
+          "$d/tests/integration/projectors/test_projection_terminal_event_emission.py" && grep -Fq 'consumer_error'
+          "$d/tests/integration/projectors/test_projection_terminal_event_emission.py"
+  - id: "dod-infra-pr-2314-c7c9-local-verification"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-local-verification"
+    description: >-
+      Current-head verification evidence recorded in the omnibase_infra PR #2314 body after the c7c9dfee
+      repair. The PR body records the original broad proof plus focused post-repair pytest, ruff, and
+      pre-commit evidence for the integration test update.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=c7c9dfee6f1b183f38a24535020b2cbfeebab0af;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("5628 passed")) and (.body | contains("Post-repair
+          verification (head c7c9dfee)")) and (.body | contains("test_projection_terminal_event_emission.py::test_terminal_event_not_emitted_when_projection_fails"))
+          and (.body | contains("3 passed")) and (.body | contains("ruff format --check")) and (.body
+          | contains("ruff check")) and (.body | contains("pre-commit passed without bypass"))' | grep
+          -qx true
+  - id: "dod-infra-pr-2314-c7c9-deploy-scope"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-deploy-scope"
+    description: >-
+      Current-head deploy-scope audit for omnibase_infra PR #2314 after the c7c9dfee test-only repair.
+      The product PR remains source/test-only and does not change Dockerfiles, compose manifests, deploy
+      scripts, migrations, or systemd units. No live deploy or restart was performed by this merge lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=c7c9dfee6f1b183f38a24535020b2cbfeebab0af;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -Fxq tests/integration/projectors/test_projection_terminal_event_emission.py
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
+  - id: "dod-occ-self-bind-pr-4203"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4203. Verifies the PR is on the expected
+      OMN-14492 c7c9 supplement branch and contains the initial supplement evidence commit 3bc38c3691c8ab124de8a1effc7c4d2b950608d6.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4203; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14492-occ-infra-2314-c7c9;
+          INITIAL_EVIDENCE_COMMIT=3bc38c3691c8ab124de8a1effc7c4d2b950608d6; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"
+  - id: "dod-infra-pr-2314-1b71-product-head"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-c7c9-product-head"
+    description: >-
+      Current-head product-observing verification for omnibase_infra PR #2314 at head 1b71f9b7a2cda95607d690abbe6563696cc04792
+      after CodeRabbit review hardening. The proof reads PR metadata and changed files from GitHub, checks
+      the DLQ failure-class runtime markers, and verifies the review-hardening markers for sanitized validation
+      detail, non-swallowing matcher exceptions, and generated DLQ correlation fallback.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=1b71f9b7a2cda95607d690abbe6563696cc04792;
+          d="$(mktemp -d)" && gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,baseRefName,files,title
+          --jq '.headRefOid + "\n" + .baseRefName + "\n" + .title + "\n" + ((.files | map(.path)) | join("\n"))'
+          > "$d/pr.txt" && grep -Fq "$PRODUCT_HEAD" "$d/pr.txt" && grep -Fxq dev "$d/pr.txt" && grep -Fq
+          'feat(OMN-14492): classify DLQ/no-dispatcher drops as publisher_malformed vs no_dispatcher with
+          real ValidationError detail' "$d/pr.txt" && for p in src/omnibase_infra/runtime/message_dispatch_engine.py
+          src/omnibase_infra/runtime/auto_wiring/handler_wiring.py tests/unit/runtime/test_message_dispatch_engine_type_scoping.py
+          tests/unit/runtime/auto_wiring/test_handler_wiring_db_injection.py tests/integration/projectors/test_projection_terminal_event_emission.py;
+          do grep -Fq "$p" "$d/pr.txt" && mkdir -p "$d/$(dirname "$p")" && gh api "repos/${PRODUCT_REPO}/contents/${p}?ref=${PRODUCT_HEAD}"
+          --jq .content | base64 --decode > "$d/$p"; done && grep -Fq '_sanitize_validation_detail' "$d/src/omnibase_infra/runtime/message_dispatch_engine.py"
+          && grep -Fq 'sanitize_error_message' "$d/src/omnibase_infra/runtime/message_dispatch_engine.py"
+          && grep -Fq 'matched = bool(matcher(payload))' "$d/src/omnibase_infra/runtime/message_dispatch_engine.py"
+          && ! grep -Fq 'a raising matcher means "not my type"' "$d/src/omnibase_infra/runtime/message_dispatch_engine.py"
+          && grep -Fq 'except ValidationError as exc' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py"
+          && grep -Fq 'str(uuid4())' "$d/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py" &&
+          grep -Fq 'quarantine_fallback' "$d/tests/integration/projectors/test_projection_terminal_event_emission.py"
+  - id: "dod-infra-pr-2314-1b71-local-verification"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-c7c9-local-verification"
+    description: >-
+      Current-head verification evidence recorded in the omnibase_infra PR #2314 body after the 1b71f9b7
+      review hardening. The PR body records ruff format/check, focused pytest with 49 passing tests, and
+      pre-commit passing without bypass for the review repair commit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=1b71f9b7a2cda95607d690abbe6563696cc04792;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid,body --jq '.headRefOid
+          == "'$PRODUCT_HEAD'" and (.body | contains("Post-review hardening verification (head 1b71f9b7)"))
+          and (.body | contains("message_dispatch_engine.py")) and (.body | contains("handler_wiring.py"))
+          and (.body | contains("49 passed")) and (.body | contains("pre-commit passed without bypass"))'
+          | grep -qx true
+  - id: "dod-infra-pr-2314-1b71-deploy-scope"
+    evidence_artifact: "supersedes_dod_evidence:dod-infra-pr-2314-c7c9-deploy-scope"
+    description: >-
+      Current-head deploy-scope audit for omnibase_infra PR #2314 after the 1b71f9b7 review-hardening
+      repair. The product PR remains source/test-only and does not change Dockerfiles, compose manifests,
+      deploy scripts, migrations, or systemd units. No live deploy or restart was performed by this merge
+      lane.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          PRODUCT_PR_NUMBER=2314; PRODUCT_REPO=OmniNode-ai/omnibase_infra; PRODUCT_HEAD=1b71f9b7a2cda95607d690abbe6563696cc04792;
+          gh pr view "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --json headRefOid --jq '.headRefOid ==
+          "'$PRODUCT_HEAD'"' | grep -qx true && gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO"
+          --name-only | grep -Fxq src/omnibase_infra/runtime/message_dispatch_engine.py && gh pr diff
+          "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -Fxq src/omnibase_infra/runtime/auto_wiring/handler_wiring.py
+          && ! gh pr diff "$PRODUCT_PR_NUMBER" --repo "$PRODUCT_REPO" --name-only | grep -qE '(^|/)(Dockerfile|docker-compose[^/]*|compose[^/]*|deploy|migrations|systemd)(/|$)'
+  - id: "dod-occ-self-bind-pr-4205"
+    description: >-
+      OCC companion self-binding for onex_change_control PR #4205. Verifies the PR is on the expected
+      OMN-14492 1b71 supplement branch and contains the initial supplement evidence commit 2bd05719159700f10fd459f25b7250c1d618fa38.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          OCC_PR_NUMBER=4205; OCC_REPO=OmniNode-ai/onex_change_control; OCC_BRANCH=jonah/omn-14492-occ-infra-2314-1b71;
+          INITIAL_EVIDENCE_COMMIT=2bd05719159700f10fd459f25b7250c1d618fa38; gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}"
+          --jq '.head.ref == "'$OCC_BRANCH'" and ((.state == "open") or (.state == "closed" and .merged_at
+          != null))' | grep -qx true && gh api "repos/${OCC_REPO}/pulls/${OCC_PR_NUMBER}/commits" --paginate
+          --jq '.[].sha' | grep -Fx "$INITIAL_EVIDENCE_COMMIT"

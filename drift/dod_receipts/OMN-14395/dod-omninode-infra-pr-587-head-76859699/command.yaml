@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-14395"
+evidence_item_id: "dod-omninode-infra-pr-587-head-76859699"
+check_type: "command"
+check_value: >-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-14395/dod-omninode-infra-pr-587-head-76859699/command.yaml
+  && grep -q '^pr_number: 587$' drift/dod_receipts/OMN-14395/dod-omninode-infra-pr-587-head-76859699/command.yaml
+  && grep -q '7685969918a294c75052b5df389e4e02e9e70915' drift/dod_receipts/OMN-14395/dod-omninode-infra-pr-587-head-76859699/command.yaml
+status: PASS
+run_timestamp: "2026-07-12T00:22:51Z"
+commit_sha: "7685969918a294c75052b5df389e4e02e9e70915"
+runner: "fix-14395"
+verifier: "verify-14395"
+pr_number: 587
+probe_command: >-
+  RED-before: git show origin/dev:scripts/validate_prod_promotion_grant.py > scripts/validate_prod_promotion_grant.py
+  && uv run pytest tests/scripts/test_validate_prod_promotion_grant.py -q -k 'stale_expired_entry_does_not_shadow
+  or stale_consumed_entry_does_not_shadow or stale_self_granted_entry_does_not_shadow or fail_closed_preserved_when_no_matching'
+  ; GREEN-after: git checkout scripts/validate_prod_promotion_grant.py && uv run pytest tests/scripts/test_validate_prod_promotion_grant.py
+  -q && uv run pytest tests/k8s/test_deploy_onex_prod_grant_gate.py -q
+probe_stdout: |
+  RED (origin/dev first-match-wins resolver + the 4 new tests): 4 failed, 28 deselected in 0.05s
+    FAILED TestResolveGrantForDigest::test_stale_expired_entry_does_not_shadow_fresh_valid_entry
+    FAILED TestResolveGrantForDigest::test_stale_consumed_entry_does_not_shadow_fresh_valid_entry
+    FAILED TestResolveGrantForDigest::test_stale_self_granted_entry_does_not_shadow_fresh_valid_entry
+    FAILED TestResolveGrantForDigest::test_fail_closed_preserved_when_no_matching_entry_is_valid
+  GREEN (PR head 7685969) tests/scripts/test_validate_prod_promotion_grant.py: 32 passed in 0.04s
+  GREEN (PR head 7685969) the 4 new tests only: 4 passed, 28 deselected in 0.02s
+  GREEN (PR head 7685969) tests/k8s/test_deploy_onex_prod_grant_gate.py: 9 passed in 0.10s
+actual_output: >-
+  PASS: omninode_infra#587 head 7685969918a294c75052b5df389e4e02e9e70915 changes resolve_grant_for_digest
+  from first-match-wins to evaluating every matching (prod, image_digest) entry, so a stale EXPIRED/CONSUMED/SELF_GRANTED
+  entry can no longer shadow a valid re-grant and wrongly BLOCK a legitimate promotion. RED-before / GREEN-after
+  was reproduced independently by a verifier that did not implement the change: the 4 new regression tests
+  all fail against the origin/dev first-match-wins resolver and all pass at the PR head. The fail-closed
+  invariant was probed directly and holds — the per-entry acceptance predicate in the new _resolve_single_entry
+  helper is identical to the prior inline checks (consumed, approved_by != requested_by, absolute expires_at),
+  the runtime_lane and image_digest filter still gates which entries are resolved at all, and _decide
+  still maps only RESOLVED to exit 0. The new ALLOW set is a strict superset of the old that admits only
+  entries independently satisfying every gate, so the change can fix a false BLOCK but cannot introduce
+  a false PASS.
+exit_code: 0
+branch: "jonah/omn-14395-grant-resolver-stale-match"
+contract_sha256: "sha256:5f3d5068c4eb365f38d8afdc96e8ea2dc0be51e1bb87ec6d8dfb297f676c08ac"

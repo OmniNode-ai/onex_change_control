@@ -1,0 +1,74 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13120"
+title: "version-skew CI gate for live daemon venv shared-package pin drift"
+summary: >-
+  Committable half of OMN-13120 (epic OMN-13119): a version-skew gate that detects shared-package pin
+  drift between the LIVE plugin daemon venv (CLAUDE_PLUGIN_DATA/.venv, default ~/.claude/plugins/data/onex-omninode-tools/.venv)
+  and the canonical omniclaude/uv.lock pins. Two drift modes are caught: (1) lock drift — uv.lock changed
+  but the live venv was never rebuilt, detected by comparing sha256(uv.lock) against the lockfile-hash
+  field of the venv .built-from marker; (2) in-place pin drift — a shared package in the live venv mutated
+  to a version uv.lock does not pin, detected by comparing installed versions against the resolved lock
+  pins. The live venv is built --no-dev, so the lock is a superset and lock-only (dev/platform) packages
+  are NOT flagged as drift. Per CLAUDE.md Rule 5 (enforcement, not detection) the gate ships as BOTH a
+  pre-commit hook and a required CI status check. CI has no live daemon venv so the gate runs in lock-consistency
+  mode (parse the canonical lock, prove the 249-package pin set resolves) — never a silent no-op. The
+  live daemon venv was also rebuilt off brew python3.13 via repair-plugin-venv.sh (Rule 11) and confirmed
+  in sync with origin/dev uv.lock.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Unit tests prove the gate detects lock drift, in-place pin drift, and the --no-dev superset invariant,
+      and that lock-consistency mode passes with no live venv.
+    command: "uv run pytest tests/scripts/test_check_daemon_venv_skew.py -q"
+  - kind: "ci"
+    description: >-
+      The gate is wired as a required CI status check (daemon-venv-skew-gate.yml) and a pre-commit hook
+      (check-daemon-venv-skew) — enforcement, not detection.
+    command: "bash .pre-commit-hooks/check-daemon-venv-skew.sh"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omniclaude-pr"
+    description: >-
+      omniclaude PR #1759 (branch jonah/omn-13120-venv-skew-gate, base=dev, head 45ec4632f1e72ced45214b30ef982c2ce9f254b0).
+      Ships scripts/check_daemon_venv_skew.py (stdlib-only validator), .pre-commit-hooks/check-daemon-venv-skew.sh,
+      .github/workflows/daemon-venv-skew-gate.yml, the .pre-commit-config.yaml registration, and tests/scripts/test_check_daemon_venv_skew.py
+      (13 tests). 13/13 PASS; mypy --strict clean on changed files; ruff clean; full non-integration suite
+      GREEN (10984 passed); pre-commit (incl. the new gate) passes; the gate passes against the freshly-rebuilt
+      live daemon venv.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13120/dod-omniclaude-pr/command.yaml"
+          && grep -q '^ticket_id: "OMN-13120"$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13120/dod-omniclaude-pr/command.yaml"
+  - id: "dod-occ-pr"
+    description: >-
+      Paired OCC receipt PR in onex_change_control (this PR) carries the contract + PASS receipts for
+      OMN-13120 with Evidence-Source 45ec4632f1e72ced45214b30ef982c2ce9f254b0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13120/dod-occ-pr/command.yaml"
+  - id: "dod-deploy-assessment"
+    description: >-
+      Deploy assessment: deploy_pending = false-by-design. The change is CI/pre-commit tooling only —
+      a new stdlib validator, a wrapper, a workflow, a pre-commit registration, and tests. No new Kafka
+      topics, no schema/migration changes, no container image changes, no API surface changes, no .201
+      mutation. No standalone live deploy is required. Do not claim a live deploy was performed. The live
+      daemon venv rebuild (repair-plugin-venv.sh) is a local runtime action, not a server deploy.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-13120/dod-deploy-assessment/command.yaml"

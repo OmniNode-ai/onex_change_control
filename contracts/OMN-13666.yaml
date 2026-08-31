@@ -1,0 +1,58 @@
+---
+schema_version: '1.0.0'
+ticket_id: OMN-13666
+title: 'Runtime entrypoint: secondary-DB schema-fingerprint stamp failure is non-fatal (primary stays
+  fatal)'
+summary: >-
+  The runtime image entrypoint (docker/entrypoint-runtime.sh) stamps schema fingerprints into db_metadata
+  per-DB before starting the kernel. In prod, the runtime DB user lacks write permission on the omniintelligence
+  (secondary, non-owned) database's db_metadata table, so its stamp failed with "permission denied for
+  table db_metadata"; after 5 attempts the entrypoint exited 1 and the container crash-looped, holding
+  all 7 onex-prod runtime deployments at 0/1. The runtime's OWN database (omnibase_infra) stamps fine.
+  This fix introduces a principled required-vs-best-effort stamp policy in the entrypoint: the PRIMARY/owned
+  DB (omnibase_infra) stamp stays REQUIRED — a failure after retries aborts boot loudly (exit 1) so a
+  NULL/stale-fingerprint kernel never starts — while a SECONDARY/non-owned DB (omniintelligence) stamp
+  is BEST-EFFORT — a failure logs a clear WARNING and boot proceeds (exit 0). No DB GRANT is added (operator
+  chose the entrypoint-policy route). No gate is weakened.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: >-
+      Behavioral tests execute the real entrypoint with a stubbed python: a primary-DB stamp failure aborts
+      boot (exit 1), a secondary-DB stamp failure warns and boot proceeds (exit 0); plus static source
+      guards and shellcheck-clean.
+    command: 'uv run pytest tests/unit/docker/test_runtime_entrypoint_stamp_tolerance.py -q'
+  - kind: ci
+    description: CI pipeline green on PR
+    command: 'gh pr checks <PR> --repo OmniNode-ai/omnibase_infra'
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: "dod-infra-pr-2124-head"
+    description: >-
+      omnibase_infra PR #2124 carries the OMN-13666 runtime entrypoint required-vs-best-effort schema-fingerprint
+      stamp policy at the recorded head SHA, targeting dev.
+    source: "manual"
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13666/dod-infra-pr-2124-head/command.yaml"'
+  - id: "dod-infra-pr-2124-local-gates"
+    description: >-
+      Focused behavioral entrypoint tests, static guards, shellcheck, and the full unit suite passed for
+      the required/optional stamp policy.
+    source: "manual"
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13666/dod-infra-pr-2124-local-gates/command.yaml"'
+  - id: "dod-occ-pr-self"
+    description: >-
+      onex_change_control PR #3216 carries the OMN-13666 contract and receipts binding omnibase_infra
+      PR #2124.
+    source: "manual"
+    checks:
+      - check_type: command
+        check_value: 'grep -q ''^status: PASS$'' "${CONTRACT_REPO_DIR:-.}/drift/dod_receipts/OMN-13666/dod-occ-pr-self/command.yaml"'

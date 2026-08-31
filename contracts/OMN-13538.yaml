@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13538"
+title: "Sweep nodes no longer false-clean — share $OMNI_HOME default-scope resolution into handlers"
+summary: >
+  Fixes the systemic sweep false-clean defect (Rule 5: an enforcement gate that silently passes is worse
+  than no gate). On the operator-canonical no-arg dispatch path (cd <repo> && uv run onex skill <name>
+  -> RuntimeLocal dispatch), the coverage_sweep, aislop_sweep, gap_compute, and duplication_sweep nodes
+  scanned 0 repos and returned status=clean / findings=[] because each node's default repo set and repo-name->path
+  resolution lived only in __main__.py, which the dispatch handler never executes. A new shared leaf module
+  omnimarket.nodes.sweep_scope owns the canonical $OMNI_HOME default repo set + resolver, imported by
+  both __main__ and the dispatch handlers so they scan identically. Fail-loud contract: empty AND unresolvable
+  scope -> status=error / raise, never clean. This is the NODE-HANDLER default-scope side, distinct from
+  the registry/field side (OMN-13511) and the merged compliance_sweep fix (OMN-13514).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "New dispatch-scope resolution tests plus updated gap golden-chain default-scope test
+      pass."
+    command: "uv run pytest tests/test_sweep_dispatch_scope_resolution.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnimarket-pr-1363"
+    description: "omnimarket PR #1363 adds the shared sweep_scope module, resolves $OMNI_HOME default
+      scope in coverage_sweep / aislop_sweep / gap_compute / duplication_sweep handlers, makes empty+unresolvable
+      scope fail loud (status=error / raise), and adds dispatch-scope resolution tests."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13538/dod-omnimarket-pr-1363/command.yaml"
+  - id: "dod-deploy-no-runtime-impact"
+    description: "Pure node-handler default-scope code change exercised on the in-process RuntimeLocal
+      dispatch path; no live deploy, runtime process restart, broker topic mutation, or schema migration
+      required before merge."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13538/dod-deploy-no-runtime-impact/command.yaml"
+  - id: "dod-occ-pr-self"
+    description: "OCC self-binding receipt for the central evidence PR carrying the OMN-13538 contract
+      and receipts."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "grep -q '^status: PASS$' drift/dod_receipts/OMN-13538/dod-occ-pr-self/command.yaml"

@@ -1,0 +1,386 @@
+# SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+"""CI validator: arch-handler-contract-compliance.
+
+Scans all node directories in a repo for handler contract compliance
+violations. Exits non-zero if any new (non-allowlisted) violation is found.
+
+Usage:
+    uv run python -m onex_change_control.validators.arch_handler_contract_compliance \
+        --repo-root . --allowlist-path arch-handler-contract-compliance-allowlist.yaml
+
+    # Generate initial allowlist from current violations
+    uv run python -m onex_change_control.validators.arch_handler_contract_compliance \
+        --repo-root . --generate-allowlist
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import pathlib
+import sys
+from typing import TYPE_CHECKING, Any
+
+import yaml
+from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
+from onex_change_control.models.model_allowlisted_handler import ModelAllowlistedHandler
+from onex_change_control.models.model_script_exception import ModelScriptException
+from onex_change_control.scanners.handler_contract_compliance import cross_reference
+
+logger = logging.getLogger(__name__)
+
+
+def _find_node_dirs(repo_root: Path) -> list[Path]:
+    """Find all node directories (containing contract.yaml or handlers/)."""
+    src_dir = repo_root / "src"
+    if not src_dir.exists():
+        return []
+
+    node_dirs: list[Path] = []
+    for nodes_dir in src_dir.rglob("nodes"):
+        if not nodes_dir.is_dir():
+            continue
+        for child in sorted(nodes_dir.iterdir()):
+            if child.is_dir() and child.name.startswith("node_"):
+                handlers_dir = child / "handlers"
+                if handlers_dir.exists():
+                    node_dirs.append(child)
+
+    return node_dirs
+
+
+# Directory names that are never freestanding source (vendored, cached, tests).
+_FREESTANDING_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".repowise",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        "tests",
+        "test",
+    }
+)
+
+
+def _is_node_governed_module(python_file: Path) -> bool:
+    """Return True if the file is already governed by the node-contract scanner.
+
+    That scanner audits handler modules under ``node_*/handlers/`` and the
+    declarative ``node.py`` directly under a ``node_*`` directory. Both are
+    excluded from the freestanding scan to avoid double-counting.
+    """
+    parts = python_file.parts
+    for index, part in enumerate(parts[:-1]):
+        if part == "handlers" and index >= 1 and parts[index - 1].startswith("node_"):
+            return True
+    if python_file.name != "node.py":
+        return False
+    return python_file.parent.name.startswith("node_")
+
+
+def _find_freestanding_modules(repo_root: Path) -> list[Path]:
+    """Enumerate ``src/**/*.py`` modules not governed by the node scanner.
+
+    Excludes node handler modules and declarative ``node.py`` files (governed
+    by the node scanner), test directories, vendored / cache directories, and
+    ``__init__.py`` package markers. The remaining set is the freestanding code
+    the node scanner is structurally blind to.
+    """
+    src_dir = repo_root / "src"
+    if not src_dir.exists():
+        return []
+
+    modules: list[Path] = []
+    for python_file in src_dir.rglob("*.py"):
+        if python_file.name == "__init__.py":
+            continue
+        if any(part in _FREESTANDING_SKIP_DIRS for part in python_file.parts):
+            continue
+        if _is_node_governed_module(python_file):
+            continue
+        modules.append(python_file)
+
+    return sorted(modules)
+
+
+def _load_allowlist(allowlist_path: Path) -> dict[str, list[str]]:
+    """Load allowlist YAML, returning handler_path -> list of violation types."""
+    if not allowlist_path.exists():
+        return {}
+
+    with allowlist_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        return {}
+
+    result: dict[str, list[str]] = {}
+    for entry in data.get("allowlisted_handlers", []) or []:
+        path = entry.get("path", "")
+        violations = entry.get("violations", [])
+        if path:
+            result[path] = violations
+
+    return result
+
+
+def validate_allowlist_tickets(allowlist_path: Path) -> list[str]:
+    """Return one error string per ``allowlisted_handlers`` entry with a bad ticket.
+
+    OMN-11878: every entry must carry a real ``OMN-####`` tracking ticket
+    (``ModelAllowlistedHandler.ticket``, pattern ``^OMN-\\d+$``). A malformed or
+    placeholder ticket (e.g. ``'# migration pending'``) — or a missing ticket —
+    is reported here, never silently accepted. Fail-closed: an unparseable
+    entry is also reported rather than skipped.
+    """
+    if not allowlist_path.exists():
+        return []
+
+    with allowlist_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        return []
+
+    errors: list[str] = []
+    for entry in data.get("allowlisted_handlers", []) or []:
+        path = (
+            entry.get("path", "<missing path>")
+            if isinstance(entry, dict)
+            else "<malformed entry>"
+        )
+        try:
+            ModelAllowlistedHandler.model_validate(entry)
+        except ValidationError as exc:
+            reasons = "; ".join(err["msg"] for err in exc.errors()) or str(exc)
+            errors.append(f"{allowlist_path.name}: {path}: {reasons}")
+
+    return errors
+
+
+def _load_scripts_baseline(allowlist_path: Path) -> frozenset[str]:
+    """Load the frozen ``scripts/**`` baseline from an allowlist YAML.
+
+    The ``allowlisted_scripts:`` section lists pre-existing ``scripts/**`` files
+    frozen as debt under the deny-new policy (OMN-14475). Returns the set of
+    repo-relative paths. Burn-down only: entries are removed when a script is
+    converted to a node or annotated, never appended for a new script.
+    """
+    if not allowlist_path.exists():
+        return frozenset()
+
+    with allowlist_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        return frozenset()
+
+    paths: set[str] = set()
+    for entry in data.get("allowlisted_scripts", []) or []:
+        if isinstance(entry, dict):
+            path = entry.get("path", "")
+            if path:
+                paths.add(str(path))
+        elif isinstance(entry, str):
+            paths.add(entry)
+
+    return frozenset(paths)
+
+
+def _load_scripts_exceptions(
+    registry_path: Path,
+) -> dict[tuple[str, str], ModelScriptException]:
+    """Load the CODEOWNERS-approved ``scripts_exceptions.yaml`` registry.
+
+    This is the ONLY way a NEW ``scripts/**`` file may land under the deny-new
+    policy (OMN-14475). The registry is a single central file resolved from
+    onex_change_control@main in CI (mirroring ``skip_token_approvals.yaml``) so
+    a downstream PR cannot self-add an entry; the gate is CODEOWNERS review on a
+    separate @main PR. ``approved_by`` records the reviewer's login but is
+    advisory, not code-enforced (no ``approved_by != author`` check here — that
+    check exists only in ``validate_prod_promotion_grants.py`` for prod grants).
+
+    Returns a dict keyed by ``(repo, path)`` -> ``ModelScriptException``.
+    Malformed entries are skipped (fail-closed: a bad entry grants nothing).
+    """
+    if not registry_path.exists():
+        return {}
+
+    with registry_path.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        return {}
+
+    result: dict[tuple[str, str], ModelScriptException] = {}
+    for entry in data.get("entries", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            exception = ModelScriptException.model_validate(entry)
+        except ValidationError:
+            # A malformed registry entry grants no exception (fail-closed).
+            continue
+        result[(exception.repo, exception.path)] = exception
+
+    return result
+
+
+def _infer_repo_name(repo_root: Path) -> str:
+    """Infer repository name from the repo root directory."""
+    src_dir = repo_root / "src"
+    if src_dir.exists():
+        for child in src_dir.iterdir():
+            if child.is_dir() and not child.name.startswith("."):
+                return child.name
+    return repo_root.name
+
+
+def _write(msg: str) -> None:
+    """Write a line to stdout (CI output)."""
+    sys.stdout.write(msg + "\n")
+
+
+def run_scan(
+    repo_root: Path,
+    allowlist_path: Path | None = None,
+    *,
+    generate_allowlist: bool = False,
+    output_json: bool = False,
+) -> int:
+    """Run the handler contract compliance scan.
+
+    Returns:
+        Exit code: 0 if clean, 1 if violations found.
+    """
+    repo_name = _infer_repo_name(repo_root)
+    node_dirs = _find_node_dirs(repo_root)
+
+    if not node_dirs:
+        _write(f"No node directories found in {repo_root}")
+        return 0
+
+    # Load allowlist
+    allowlist = _load_allowlist(allowlist_path) if allowlist_path else {}
+    allowlisted_paths = frozenset(allowlist.keys())
+
+    # Scan all nodes
+    all_results = []
+    for node_dir in node_dirs:
+        results = cross_reference(
+            node_dir=node_dir,
+            repo=repo_name,
+            allowlisted_paths=allowlisted_paths,
+        )
+        all_results.extend(results)
+
+    if generate_allowlist:
+        _output_allowlist(all_results)
+        return 0
+
+    if output_json:
+        json_output = [r.model_dump(mode="json") for r in all_results]
+        _write(json.dumps(json_output, indent=2))
+
+    # Count violations
+    new_violations = [r for r in all_results if r.violations and not r.allowlisted]
+
+    compliant = sum(
+        1
+        for r in all_results
+        if not r.violations and r.verdict == EnumComplianceVerdict.COMPLIANT
+    )
+    allowlisted_count = sum(1 for r in all_results if r.allowlisted)
+    total = len(all_results)
+
+    _write(f"\n=== Handler Contract Compliance: {repo_name} ===")
+    _write(f"Total handlers: {total}")
+    _write(f"Compliant: {compliant}")
+    _write(f"Allowlisted: {allowlisted_count}")
+    _write(f"New violations: {len(new_violations)}")
+
+    if new_violations:
+        _write("\n--- New violations (not allowlisted) ---")
+        for r in new_violations:
+            _write(f"\n  {r.handler_path}")
+            _write(f"    Verdict: {r.verdict}")
+            for detail in r.violation_details:
+                _write(f"    - {detail}")
+        return 1
+
+    return 0
+
+
+def _output_allowlist(
+    results: list[Any],
+) -> None:
+    """Output current violations as allowlist YAML."""
+    entries = []
+    for r in results:
+        if r.violations:
+            entries.append(
+                {
+                    "path": r.handler_path,
+                    "violations": [str(v) for v in r.violations],
+                    "ticket": "# migration pending",
+                }
+            )
+
+    allowlist = {"allowlisted_handlers": entries}
+    _write(yaml.dump(allowlist, default_flow_style=False, sort_keys=False))
+
+
+def main() -> None:
+    """CLI entry point."""
+    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser(
+        description="Handler contract compliance validator"
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=pathlib.Path,
+        required=True,
+        help="Repository root path",
+    )
+    parser.add_argument(
+        "--allowlist-path",
+        type=pathlib.Path,
+        default=None,
+        help="Path to allowlist YAML",
+    )
+    parser.add_argument(
+        "--generate-allowlist",
+        action="store_true",
+        help="Output current violations as allowlist",
+    )
+    parser.add_argument(
+        "--json",
+        dest="output_json",
+        action="store_true",
+        help="Output JSON report",
+    )
+
+    args = parser.parse_args()
+    exit_code = run_scan(
+        repo_root=args.repo_root,
+        allowlist_path=args.allowlist_path,
+        generate_allowlist=args.generate_allowlist,
+        output_json=args.output_json,
+    )
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

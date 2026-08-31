@@ -1,0 +1,121 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-13663"
+title: "Projection exposure⇄column drift validator + wire as pre-commit hook + required CI gate"
+summary: >-
+  OMN-13663 (T4, epic OMN-13659) makes the cost_tier_name class of bug self-detecting. Root cause: delegation_events.cost_tier_name
+  existed in DDL (omnimarket migration 0018, ALTER TABLE ADD COLUMN) but was OMITTED from the node_projection_delegation
+  decisions.v1 projection_api exposure column list, so the tier silently dropped at the projection boundary
+  and the dashboard fell back to a model-name regex; no gate reconciled exposures against source columns.
+  Fix: a projection exposure⇄column drift validator shipped in omnibase_core (the canonical validator
+  repo, PR #1350) that reconciles every projection node contract.yaml's projection_api.exposures against
+  the materialized columns of the table/view each exposure reads from (DDL extracted from the node's own
+  migrations: CREATE TABLE / ALTER TABLE ADD COLUMN / CREATE [OR REPLACE] VIEW). EXISTENCE drift (an exposure
+  references a column its table/view does not materialize -> the projection query fails at runtime) is
+  always blocking. OMISSION drift (a materialized identity/tier/cost column surfaced by no exposure --
+  the cost_tier_name class) is enforced via --fail-on-omission against an annotated ratchet baseline.
+  omnimarket PR #1464 wires the validator as a pre-commit hook AND a blocking "Projection Exposure Drift
+  Gate" CI job over omnimarket's projection node contracts (Operating Rule #5: detection without enforcement
+  is ignored). omnimarket PRs #1466/#1467 follow up by re-pinning both enforcement surfaces from the transient
+  feature-branch SHA to the permanent omnibase_core dev merge SHA after #1350 landed (#1466 was closed
+  unmerged; #1467 is the live replacement). Cross-repo install mirrors the Canonical Inference / URL Authority
+  gates (a pinned git dependency on omnibase_core). Product PRs: omnibase_core #1350, omnimarket #1464,
+  omnimarket #1467.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-core-pr-1350"
+    description: >-
+      omnibase_core PR #1350 ships the check-projection-exposure-drift validator (omnibase_core.validators.projection_exposure_drift)
+      + severity/kind enums + finding model + 18 unit tests + an exported .pre-commit-hooks.yaml hook
+      id. The validator's string/comment-aware SQL pass extracts base-table columns (CREATE TABLE + ALTER
+      TABLE ADD COLUMN) and view output columns, runs the EXISTENCE check (blocking) over precise base-table
+      columns and the OMISSION heuristic over identity/tier/cost keywords. Proven safe against the full
+      real omnimarket projection-contract corpus (EXIT 0, 0 false existence errors); 3 parser false-positive
+      classes were found and fixed during the retro-scan before they could block legitimate PRs. The probe
+      re-runs the validator unit suite and proves 18 passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13663/dod-core-pr-1350/command.yaml && grep
+          -q '^pr_number: 1350$' drift/dod_receipts/OMN-13663/dod-core-pr-1350/command.yaml && grep -q
+          '18 passed' drift/dod_receipts/OMN-13663/dod-core-pr-1350/command.yaml
+  - id: "dod-omnimarket-pr-1464"
+    description: >-
+      omnimarket PR #1464 wires the validator as a pre-commit hook (remote omnibase_core repo block, id
+      check-projection-exposure-drift) AND a blocking "Projection Exposure Drift Gate" CI job that runs
+      python -m omnibase_core.validators.projection_exposure_drift src --fail-on-omission --allowlist
+      .projection-exposure-allowlist.yaml over omnimarket's projection node contracts. The allowlist grandfathers
+      3 pre-existing legitimate omissions (cost_measurement_source, llm_call_id, last_correlation_id)
+      as an annotated ratchet baseline. The "Projection Exposure Drift Gate" CI job reports green on the
+      PR; the wired pre-commit hook resolves the cross-repo pin (clones+builds omnibase_core@5bf8592e)
+      and Passes. RETRO-CHECK: run against the pre-G2 contract (parent of OMN-13649 PR #1458, before cost_tier_name
+      was added to the exposures) reproduces the omission warning for delegation_events.cost_tier_name
+      (silent projection-boundary drop) and exits 1 with --fail-on-omission, proving the gate would have
+      BLOCKED the original bug.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1464/command.yaml &&
+          grep -q '^pr_number: 1464$' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1464/command.yaml
+          && grep -q 'cost_tier_name' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1464/command.yaml
+  - id: "dod-omnimarket-pr-1466"
+    description: >-
+      omnimarket PR #1466 re-pins the Projection Exposure Drift Gate workflow and the matching pre-commit
+      hook from the transient omnibase_core feature-branch SHA used by #1464 to the permanent omnibase_core
+      dev merge SHA from #1350. The validator behavior is unchanged; this keeps the enforcement surface
+      resolvable after the feature branch is deleted while preserving the same gate and hook.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1466/command.yaml &&
+          grep -q '^pr_number: 1466$' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1466/command.yaml
+          && grep -q '541b411618d941efdd72e10421454f0dab56d817' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1466/command.yaml
+  - id: "dod-omnimarket-pr-1467"
+    description: >-
+      omnimarket PR #1467 is the live replacement for closed PR #1466. It re-pins the Projection Exposure
+      Drift Gate workflow and matching pre-commit hook from transient omnibase_core feature-branch SHA
+      5bf8592ec3e222ae196ac75292ba0d01caf78dfd to permanent omnibase_core dev merge SHA 0c69dff015b6f83365d4b0247d8b3230516276ae.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1467/command.yaml &&
+          grep -q '^pr_number: 1467$' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1467/command.yaml
+          && grep -q '31a240466b1a2427f6063e44462b3eecf90af8fb' drift/dod_receipts/OMN-13663/dod-omnimarket-pr-1467/command.yaml
+  - id: "dod-no-deploy"
+    description: >-
+      CI/pre-commit wiring + a new validator module in omnibase_core only -- no runtime node changes,
+      no live deploy, no .201 mutation. The omnimarket change is static CI YAML + pre-commit config +
+      an allowlist YAML; the core change adds a new validator module + tests. No dev lane runtime restart
+      is required; the validator is a PR-time/static gate, not a runtime node.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13663/dod-no-deploy/command.yaml
+  - id: "dod-occ-self"
+    description: >-
+      Self-binding OCC eligibility receipt for this onex_change_control PR. Carries the OMN-13663 contract
+      and DoD receipts onto dev and binds the OCC evidence PR with a PASS receipt whose pr_number is this
+      PR's number, satisfying validator_occ_merge_eligibility.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-13663/dod-occ-self/command.yaml && grep -q '^pr_number:
+          3203$' drift/dod_receipts/OMN-13663/dod-occ-self/command.yaml
