@@ -386,4 +386,167 @@
 # leaving them in place fails that test for EVERY subsequent PR to `main`.
 # Pruning them removes authorization and grants none; a future promotion needs
 # a fresh, CODEOWNERS-approved, digest-pinned entry as it always did.
-entries: []
+# ---------------------------------------------------------------------------
+# GRANT REQUEST (OMN-16753) — PREP ONLY, staged by an agent lane on
+# 2026-08-31T23:22Z. THIS PR MUST NOT BE MERGED BY ANY AGENT. It becomes
+# effective only when a human operator lands it on `onex_change_control@main`
+# — that CODEOWNERS-gated merge is the anti-self-issue anchor an agent
+# structurally cannot complete (OMN-13418). The merge IS the approval act.
+#
+# THIS IS A RE-STAGE, NOT A NEW REQUEST. It restores the authorization that
+# OCC#7418 carried (grant-7ebd7674 / grant-7013b49e, batch-404af076), which
+# was approved and merged 2026-08-28T19:39Z, was NEVER CONSUMED, lapsed at its
+# own `expires_at: 2026-08-30T16:00:00Z`, and was pruned on 2026-08-30 by the
+# OMN-13424 at-rest invariant (see the PRUNED note directly above). The image
+# digests are byte-identical to that grant's; only the grant_ids, the batch id
+# and `expires_at` are new. Nothing about the promotion's target changed.
+#
+# THE PROD-DISPATCH HOLD IS IN FORCE AND MERGING THIS DOES NOT LIFT IT.
+# The 2026-08-31 week-plan reconciliation §2.6 left the hold standing on the
+# stated ground that "the pipeline it would authorise has never completed
+# green." That ground has weakened but is not gone; §"WHAT CHANGED SINCE THE
+# LAST ATTEMPT" below is the honest account. A grant is a digest-scoped
+# authorization, not a decision to dispatch. Both are the operator's.
+#
+# WHAT THIS AUTHORIZES: exactly one gated `deploy-onex-prod.yml` dispatch, run
+# from `refs/heads/main` with `deploy_target=onex-api` AND
+# `reclaim_api_hostname=true` AND `commit_sha=8a4ebe6919a52f8de272fb908e90866e8514e3cd`
+# in the SAME run. `include_onex_public` stays FALSE — that is a different
+# lane, a different anchor and a different grants file (OMN-16702 /
+# `grants/staging_namespace_grants.yaml`); folding it in here would widen one
+# authorization across two namespaces.
+#
+# WHY THOSE INPUTS ARE COUPLED, mechanically and not by convention.
+# `omninode_infra#1044`'s "Validate reclaim_api_hostname input" step refuses
+# `reclaim_api_hostname=true` unless `deploy_target` is `onex-api` or `all`,
+# precisely so `api.omninode.ai` can only ever be pointed at an onex-api digest
+# this gate has already cleared. Promotion and hostname reclaim ride one
+# dispatch or neither happens.
+#
+# WHAT THE PROMOTION ACTUALLY FIXES (OMN-16753). Both public-cluster
+# namespaces run `omnicloud/core@sha256:b4c32554…`, a 2026-03-30 build whose
+# OpenAPI document declares 22 paths and contains NO gateway-attach surface —
+# no `/v1/auth/gateway-token`, no `/v1/gateway/{attach,detach,heartbeat}`, no
+# `/v1/workflows*`. A beta customer on `api.omninode.ai` cannot complete the
+# connect path at all. Verified in-pod 2026-08-31 on BOTH namespaces (22 and
+# 22), asserted from `/openapi.json` and never from a status code: that build
+# answers 401 on `POST /v1/auth/gateway-token` because auth middleware runs
+# before routing, so a 401 is not evidence a route exists.
+#
+# The OMN-16620 ingress cutover ALONE closes none of that: it moves the host
+# from one 22-route build to another 22-route build. The image advance is the
+# fix; the reclaim is what makes it customer-visible. Entry 2 is the image
+# advance and the `reclaim_api_hostname` input is the visibility half.
+#
+# `sha256:bc95b9bc…` PROVEN, not asserted. The image was pulled and its own
+# OpenAPI document rendered offline (`app.openapi()`): 42 paths, containing all
+# five OMN-16753 AC1 routes. Stated honestly, 42 is a strict SUBSET of the 45
+# `dev.api.omninode.ai` serves; the three it lacks are
+# `/admin/tenants/clients/reconcile`, `/admin/tenants/{tenant_id}/clients/reconcile`
+# (OMN-16959) and `/v1/projections/hook-events/by-correlation` (OMN-17205) —
+# all dev-lineage-only, none of them gateway-attach.
+#
+# WHY THIS DIGEST AND NOT A NEWER ONE. It is the newest `main`-LINEAGE image
+# that exists in ECR (`main-sha-8a4ebe6`, pushed 2026-08-28). `main` HEAD
+# `16725bdd` is a promotion squash with no build at all (OMN-16801 /
+# OMN-14996), and every image newer than `bc95b9bc` is dev-lineage;
+# `deploy-onex-prod.yml` refuses any dispatch whose ref is not
+# `refs/heads/main`, so a dev-lineage digest is not dispatchable here.
+#
+# TWO ENTRIES, BOTH MECHANICALLY REQUIRED — unchanged from OCC#7418's finding.
+# `deploy-onex-prod.yml` runs the OMN-14209 grant gate TWICE on a
+# `deploy_target=onex-api` dispatch:
+#   * "Enforce prod-promotion grant — runtime image" carries NO `if:` guard and
+#     resolves `RUNTIME_IMAGE_REF` from `k8s/onex-prod/runtime/kustomization.yaml`,
+#     which pins `sha256:13c96028…` on omninode_infra `main` AND `dev`, and
+#     which the live `onex-prod/omninode-runtime` Deployment is ALREADY running
+#     (read back 2026-08-31 via SSM). Entry 1 is therefore a same-digest
+#     authorization: it changes no runtime workload, it only lets the
+#     unconditional gate resolve. Without it the dispatch BLOCKS at the first
+#     gate before ever reaching the onex-api one.
+#   * "Enforce prod-promotion grant — onex-api image" (`if: deploy_target !=
+#     'runtime-only'`) resolves the digest for the dispatched `commit_sha` out
+#     of ECR. Entry 2 covers `sha256:bc95b9bc…`, the real promotion.
+#
+# WHAT CHANGED SINCE THE LAST ATTEMPT — the material the approver should weigh.
+#   * The last onex-api-targeted dispatch, run 33209359978 (2026-08-28T20:42Z,
+#     dispatcher `daniyalabbas96`), died on the "Advisory lock quiesce gate".
+#     `omninode_infra#1052` fixed that gate's capture semantics and reached
+#     `main` via #1053 at 2026-08-28T21:55Z — 73 minutes AFTER that run. It has
+#     never been retried. Re-run read-only against the live prod pod on
+#     2026-08-31: `kubectl exec -n onex-prod <pod> -c onex-api -- python -c
+#     "...pg_locks...classid=0"` -> exit 0, stdout `0`, stderr empty. The gate
+#     would pass today.
+#   * The reclaim's own preconditions are live-satisfied: `onex-prod/onex-api`
+#     Ingress exists (created 2026-08-27T21:14:33Z) and
+#     `Certificate/onex-prod/onex-api-tls` is `Ready=True`, `notAfter
+#     2026-11-25T20:16:25Z`. The OMN-16756 orphan-Secret hazard did NOT
+#     materialise: cert-manager created a controlling Certificate CR and
+#     overwrote the Secret in place rather than adopting expired material, so
+#     no `kubectl delete secret onex-api-tls` step is needed or wanted.
+#   * Post-deploy gate check 8 (tenant-event outbox flusher, OMN-16105) is the
+#     leg that has killed the best run to date (33117155819). It looks for a
+#     startup/per-cycle marker in the last 10m of `onex-api` logs, so it can
+#     only pass on a dispatch that actually RESTARTS `onex-api` against a build
+#     that HAS the outbox subsystem. `deploy_target=onex-api` restarts the pod,
+#     and `bc95b9bc` contains `d67ef5a` (OMN-16027, the durable tenant-event
+#     outbox) as an ancestor. This dispatch shape is the first one for which
+#     check 8 can pass. That is a reasoned expectation, not a guarantee — the
+#     workflow has never completed green in its recorded history (OMN-16757
+#     leg 2, still UNMET), and the approver should read this as "the known
+#     blocker is cleared", not as "this run will be green".
+#
+# `approved_by` BELOW IS A PROPOSAL, NOT AN APPROVAL. As staged, the PR author
+# and `approved_by` are both `jonahgabriel`, which is self-approval on this
+# file's own header rule. That is disclosed here rather than claimed away; the
+# CODEOWNERS approver confirms or replaces it at merge time. It is a real login
+# and not a placeholder for the reason OCC#7213 recorded: the consumer
+# (`omninode_infra/scripts/validate_prod_promotion_grant.py`, OMN-14209)
+# enforces `approved_by != requested_by` against `github.actor`, so a synthetic
+# placeholder would compare unequal to EVERY dispatcher and would silently
+# disable the only mechanical anti-self-approval check on this path.
+#
+# ANTI-SELF-APPROVAL IS SATISFIED ON THE DISPATCHER SIDE, NOT HERE. Nothing
+# about this file's review satisfies the consumer's check; only the dispatching
+# actor differing from `approved_by` does. With the staged value, the
+# `workflow_dispatch` actor MUST be `daniyalabbas96` (admin on
+# `OmniNode-ai/omninode_infra`, the identity that dispatched 33117155819 and
+# 33209359978). If `approved_by` is changed at merge time, re-derive the
+# permitted dispatcher from the new value.
+#
+# `expires_at: 2026-09-02T16:00:00Z` IS A PROPOSAL (~41h from staging). The
+# approver may shorten it before merging; merging is approving. If it lapses
+# unmerged the OMN-13424 at-rest invariant will fail CI for every subsequent
+# PR to `main` and this block must be pruned and re-staged, exactly as
+# OCC#7731 did for the OMN-16702 lane. `requested_by` is deliberately not a
+# YAML field — the requester is the agent lane named at the top of this block.
+#
+# NOTHING IS PRUNED BY THIS PR: `main` is already at rest (`entries: []`).
+# ---------------------------------------------------------------------------
+entries:
+  - grant_id: grant-430f6321-7ad4-46dd-9938-030a272681a1
+    runtime_lane: prod
+    image_digest: sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6
+    promotion_batch_id: batch-c465ba57-1510-4c7d-957b-e266dfe0dc8a
+    approved_by: jonahgabriel
+    expires_at: "2026-09-02T16:00:00Z"
+    created_at: "2026-08-31T23:22:49Z"
+    reason: >-
+      OMN-16753 re-stage. Same-digest authorization for the onex-prod runtime image sha256:13c96028, which
+      k8s/onex-prod/runtime/kustomization.yaml pins on both main and dev and which onex-prod/omninode-runtime
+      is already running (read back live 2026-08-31). Required because deploy-onex-prod.yml's "Enforce
+      prod-promotion grant -- runtime image" step carries no if: guard and blocks every dispatch before
+      the onex-api gate is reached. Authorizes no runtime workload change.
+  - grant_id: grant-43f9a8d8-0f42-498e-a32d-eaf09c51d7c5
+    runtime_lane: prod
+    image_digest: sha256:bc95b9bc5a1860dd666ecea4e82e278ff4ddb2d08da5d280ba8472b7041309ab
+    promotion_batch_id: batch-c465ba57-1510-4c7d-957b-e266dfe0dc8a
+    approved_by: jonahgabriel
+    expires_at: "2026-09-02T16:00:00Z"
+    created_at: "2026-08-31T23:22:49Z"
+    reason: >-
+      OMN-16753 re-stage. Promote onex-prod/onex-api from omnicloud/core@sha256:b4c32554 (a 2026-03-30
+      build serving 22 OpenAPI paths with no gateway-attach surface) to @sha256:bc95b9bc (main-sha-8a4ebe6,
+      42 paths including /v1/auth/gateway-token and /v1/gateway/{attach,detach,heartbeat} and /v1/workflows,
+      rendered offline from the image itself), and reclaim api.omninode.ai for onex-prod in the same dispatch.
+      Byte-identical target to the never-consumed grant-7013b49e from OCC#7418.
