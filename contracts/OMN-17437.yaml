@@ -63,33 +63,39 @@ dod_evidence:
           -q --no-cov -p no:cacheprovider
   - id: "dod-occ-main-requires-codeowner-review"
     description: >-
-      Live API readback of the enforcement surface itself, which is the only evidence OMN-17437 AC-1 accepts
-      (a settings-page screenshot is explicitly rejected). Queries `repository.branchProtectionRules`
-      for `pattern: main` and errors unless the rule reports `requiresApprovingReviews: true`, `requiresCodeOwnerReviews:
-      true`, `dismissesStaleReviews: true` and `requireLastPushApproval: true`. It goes RED against the
-      pre-change state, which returned `requiresApprovingReviews: false`, `requiresCodeOwnerReviews: false`,
-      `requiredApprovingReviewCount: null` and had no `required_pull_request_reviews` object at all in
-      the REST representation. The PUT was built by round-tripping the captured BEFORE object so the whole-resource
-      replace could not silently drop an existing control; all 23 required status-check contexts, `enforce_admins`,
-      `required_linear_history` and `required_conversation_resolution` are byte-identical across the change
-      and only `required_pull_request_reviews` was added. DIVERGENCE FROM AC-1, STATED DELIBERATELY: `requiredApprovingReviewCount`
-      is 0, not >= 1. A count of 1 is branch-wide and would additionally freeze routine non-governance
-      traffic on main (migration inventory repairs, workflow backports) that no code owner owns, on a
-      branch whose only writer is a one-member team. Count 0 with `require_code_owner_reviews: true` gates
-      exactly the CODEOWNERS-covered paths — `grants/prod_promotion_grants.yaml` and `allowlists/skip_token_approvals.yaml`
-      — which is the surface this ticket is about. That enforcement claim is asserted here from the API
-      only; the behavioural proof (a PR touching the grant file reporting `reviewDecision: REVIEW_REQUIRED`)
-      is deliberately deferred until AFTER this PR lands, because running it earlier would mean opening
-      a grant-registry PR while main's auto-merge hole is still open. If that probe shows count 0 is not
-      enforced, the count escalates to 1 and this entry is superseded.
+      Assertion over the operator-scope branch-protection readbacks captured at the moment of the change
+      and committed verbatim under `evidence/OMN-17437/`. Proves three separate claims: (1) the BEFORE
+      state carried no `required_pull_request_reviews` object at all — the finding this ticket rests on;
+      (2) the AFTER state enables `require_code_owner_reviews`, `dismiss_stale_reviews` and `require_last_push_approval`,
+      so the CODEOWNERS entry `grants/prod_promotion_grants.yaml @OmniNode-ai/platform-leads` is now an
+      enforced merge requirement rather than an auto-request; and (3) the change was strictly ADDITIVE
+      — all 23 required status-check contexts, `strict`, `enforce_admins`, `required_linear_history`,
+      `required_conversation_resolution`, `allow_force_pushes`, `allow_deletions`, `block_creations`,
+      `lock_branch` and `allow_fork_syncing` all round-tripped unchanged. Claim (3) is the one that most
+      needs a test: `PUT /repos/:owner/:repo/branches/:branch/protection` replaces the WHOLE protection
+      resource, so a hand-written body silently drops every control it omits. Red->green proof captured
+      locally against both legs: substituting the BEFORE readback as the AFTER file fails with "AFTER
+      readback has no required_pull_request_reviews", and deleting a single status-check context from
+      the AFTER readback fails with "required status-check contexts changed; the PUT was not additive.
+      before=23 after=22". SCOPE LIMIT, STATED RATHER THAN GLOSSED: this check reads the RECORDED readback,
+      not the live setting. It cannot read the live setting, and neither can any CI check in this repo
+      — `repository.branchProtectionRules` and `repos/:owner/:repo/branches/main/protection` both require
+      admin scope, and the workflow `GITHUB_TOKEN` does not have it; a live query from CI returns `FORBIDDEN`,
+      which is how the first revision of this entry failed the Contract Compliance Check. The live proof
+      is the operator-scope readback in this entry's receipt `probe_stdout`. DIVERGENCE FROM AC-1, STATED
+      DELIBERATELY: `requiredApprovingReviewCount` is 0, not >= 1. A count of 1 is branch-wide and would
+      additionally freeze routine non-governance traffic on main (migration inventory repairs, workflow
+      backports such as #6614) that no code owner owns, on a branch whose only writer is a one-member
+      team. Count 0 with `require_code_owner_reviews: true` gates exactly the CODEOWNERS-covered paths
+      — `grants/prod_promotion_grants.yaml` and `allowlists/skip_token_approvals.yaml` — which is the
+      surface this ticket is about. The behavioural proof (a PR touching the grant file reporting `reviewDecision:
+      REVIEW_REQUIRED`) is deliberately sequenced after this PR lands, because running it earlier would
+      mean opening a grant-registry PR while the leg-2 auto-merge hole is still open. If that probe shows
+      count 0 is not enforced, the count escalates to 1.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
-          gh api graphql -f query='{repository(owner:"OmniNode-ai",name:"onex_change_control"){branchProtectionRules(first:20){nodes{pattern
-          requiresApprovingReviews requiredApprovingReviewCount requiresCodeOwnerReviews dismissesStaleReviews
-          requireLastPushApproval}}}}' --jq '.data.repository.branchProtectionRules.nodes[] | select(.pattern=="main")
-          | if (.requiresApprovingReviews == true and .requiresCodeOwnerReviews == true and .dismissesStaleReviews
-          == true and .requireLastPushApproval == true) then "PASS" else error("onex_change_control@main
-          does not require code-owner approving review") end'
+          test -f evidence/OMN-17437/occ-main-protection-before.json && test -f evidence/OMN-17437/occ-main-protection-after.json
+          && uv run pytest tests/ci/test_occ_main_protection_evidence.py -q --no-cov -p no:cacheprovider
