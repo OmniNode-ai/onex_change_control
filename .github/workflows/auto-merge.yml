@@ -18,6 +18,16 @@
 # re-triggers on the next `check_suite` completion event when the preflight
 # check finishes. On merge_group events the gate re-evaluates against the
 # current OCC main SHA (no cached PR-pass accepted).
+#
+# OMN-16117 / OMN-17437: governance-path exclusion. Arming is additionally
+# blocked, fail-closed, on any PR whose diff touches
+# `grants/prod_promotion_grants.yaml` or `allowlists/skip_token_approvals.yaml`.
+# OMN-16117 installed that step on `dev` only; grant PRs never target `dev`
+# (every merged one targeted `main`), and `pull_request` events resolve the
+# workflow from the PR's merge ref, so main-based grant PRs ran the
+# unprotected copy of this file. OMN-17437 ports it here. The invariant is
+# pinned by tests/ci/test_auto_merge_governance_exclusion.py, which asserts it
+# on every branch that serves grant-PR traffic — not on `dev` alone.
 name: Auto-Merge
 
 on:
@@ -142,11 +152,60 @@ jobs:
             echo "defer=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # OMN-16117 / OMN-17437: Governance-path exclusion. A PR whose diff
+      # touches a governance file must never be armed for auto-merge,
+      # regardless of actor identity or occ-preflight outcome. Fail-closed:
+      # if the changed-file set cannot be resolved from the GitHub API, that
+      # is treated identically to "touches a governance file" (excluded) --
+      # never as "safe to arm". The pure decision logic (and the
+      # None-vs-empty-list distinction between "undetermined" and "genuinely
+      # touches nothing") lives in scripts/ci/check_governance_paths.py and
+      # is unit-tested there.
+      #
+      # OMN-17437: this step existed only on `dev` until now. Grant PRs never
+      # target `dev` -- every merged prod-promotion grant PR targeted `main`,
+      # and for `pull_request` events GitHub resolves the workflow from the
+      # PR's merge ref, so main-based grant PRs ran the unprotected copy.
+      - name: Check governance-path exclusion
+        id: governance_gate
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.actor == 'jonahgabriel'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # NOTE: --paginate cannot be combined with --jq here (gh emits one
+          # JSON array PER PAGE, so a >100-file PR would silently produce
+          # multiple concatenated JSON documents and --jq would only see the
+          # first page). Fetch raw pages, then `jq -s` (slurp) combines
+          # however many page-documents were emitted into one array before
+          # flattening to filenames -- correct for both the 1-page and
+          # multi-page case.
+          if changed_files_json="$(gh api "repos/${GH_REPO}/pulls/${PR}/files" --paginate 2>/dev/null | jq -c -s '[.[][].filename]')" \
+            && [ -n "$changed_files_json" ]; then
+            :
+          else
+            echo "::warning::Could not resolve the changed-file set for PR #${PR} via the GitHub API; failing closed (OMN-16117)."
+            changed_files_json="null"
+          fi
+
+          result="$(python3 scripts/ci/check_governance_paths.py check --changed-files-json "$changed_files_json")"
+          echo "governance-path check: ${result}"
+
+          if [ "$result" = "exclude" ]; then
+            echo "::warning::PR #${PR} touches a governance file (or its changed-file set could not be determined) — auto-merge will NOT be armed (OMN-16117)."
+            echo "exclude=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exclude=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Enable auto-merge
         if: >-
           steps.resolve.outputs.skip != 'true' &&
           steps.resolve.outputs.actor == 'jonahgabriel' &&
-          steps.occ_gate.outputs.defer != 'true'
+          steps.occ_gate.outputs.defer != 'true' &&
+          steps.governance_gate.outputs.exclude != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
