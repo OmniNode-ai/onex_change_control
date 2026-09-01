@@ -2401,6 +2401,7 @@ def main(  # noqa: C901, PLR0912, PLR0915
             inventory_path = _temp_inventory_path(args.commit_sha_inventory)
         except ValueError as exc:
             parser.error(str(exc))
+            return 2
         if not paths:
             paths = sorted(Path(args.receipts_root).rglob("*.yaml"))
         return _write_commit_sha_inventory(inventory_path, paths, commit_sha_resolver)

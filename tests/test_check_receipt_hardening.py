@@ -11,8 +11,8 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import pytest
 import yaml
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
 from omnibase_core.validation.validator_receipt_gate import (
@@ -27,9 +27,6 @@ from scripts.validation.check_receipt_hardening import (
     check_receipt_file,
     main,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 POST_CUTOFF_TS = "2026-06-12T03:00:00+00:00"
 PRE_CUTOFF_TS = "2026-06-11T23:59:59+00:00"
@@ -1364,6 +1361,41 @@ def test_commit_sha_inventory_is_temp_only_and_resumable(
             "sha": FULL_LOCAL_SHA,
         }
     ]
+
+
+def test_commit_sha_inventory_invalid_output_stops_before_inventory_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalid output path terminates before the inventory writer can run."""
+
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    writer_called = False
+
+    def inventory_writer(*_args: object, **_kwargs: object) -> int:
+        nonlocal writer_called
+        writer_called = True
+        return 0
+
+    monkeypatch.setattr(
+        check_receipt_hardening, "_write_commit_sha_inventory", inventory_writer
+    )
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                str(receipt),
+                "--commit-sha-inventory",
+                str(Path.cwd() / "outside-system-temp.json"),
+            ]
+        )
+
+    assert writer_called is False
 
 
 def test_explicit_inventory_defaults_to_corpus_with_one_resolver_session(
