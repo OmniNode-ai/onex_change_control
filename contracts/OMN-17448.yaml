@@ -1,8 +1,16 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-17448"
-title: "Autobind OCC evidence for OMN-17448"
-summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #1125."
+title: "The .201 dev lane runs ZERO standalone projection writers, and node_projection_tenant_registry
+  has a writer on NO lane"
+summary: >-
+  The shared kernel subscribes every *ProjectionRunner contract's topics and then returns None before
+  dispatch (deliberate, OMN-15905: a runner owns its own consume loop and DB pool). Without a dedicated
+  writer process the consumer takes every message, commits every offset, and writes nothing -- no DLQ
+  record, no terminal event, no ERROR log. OMN-15905 shipped the dedicated writers for onex-dev k8s; nothing
+  mirrored them onto compose, so the .201 dev lane ran zero of them, and node_projection_tenant_registry
+  had a deployed writer on no lane at all. This ticket adds the writers on both lanes and gives the runtime
+  health surface a third dimension that can see the state (attached, lag 0, DLQ-free, writing nothing).
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -20,6 +28,47 @@ emergency_bypass:
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-deploy-omn17448-ledger-module"
+    description: >-
+      Deploy-gate probe declaration, checked hermetically against the product PR head. The runtime image
+      built from OmniNode-ai/omnibase_infra#3107 must carry the wiring-seam ledger module that the projection_write_path
+      health dimension reads; the post-deploy live probe is the same import from the running runtime container.
+      The pinned content read goes RED if the merge head lacks that module.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/projection_dispatch_ledger.py?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
+          --jq .content | base64 -d | python3 -c 'import sys; text=sys.stdin.read(); raise SystemExit(0
+          if "def dispatch_skipped_projections" in text else 1)'
+  - id: "dod-deploy-omn17448-writer-running"
+    description: >-
+      Deploy-gate probe declaration, checked hermetically against the product PR head. The dev-lane compose
+      overlay must declare the standalone tenant-registry writer and run the handler module's own entrypoint;
+      the post-deploy live probe is the same service resolved as a running container. The pinned content
+      read goes RED if the merge head lacks that writer wiring.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.dev-lane.yml?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
+          --jq .content | base64 -d | python3 -c 'import sys; text=sys.stdin.read(); raise SystemExit(0
+          if "omnimarket.nodes.node_projection_tenant_registry.handlers.handler_tenant_registry_projection"
+          in text else 1)'
+  - id: "dod-deploy-omn17448-mirror-row"
+    description: >-
+      Deploy-gate probe declaration, checked hermetically against the product PR head. Runtime health
+      must expose the projection_write_path dimension that catches the historical state where tenant_registry_mirror
+      had zero rows while its consumer group was stable at lag zero. The post-deploy live probe remains
+      a database read for a non-zero mirror row; the pinned content read goes RED if the merge head lacks
+      the health dimension that makes the condition observable.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/health/projection_liveness.py?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
+          --jq .content | base64 -d | python3 -c 'import sys; text=sys.stdin.read(); raise SystemExit(0
+          if "projection_write_path" in text else 1)'
   - id: "dod-OmniNode-ai-omninode_infra-pr-1125"
     description: "PR #1125 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
     source: "generated"
