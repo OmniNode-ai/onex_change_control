@@ -250,16 +250,15 @@ same fix:
 
 Both are the same defect at the mechanism level: nothing resolves
 ``commit_sha`` against a repository at all. ``_commit_sha_existence_violations``
-closes it with a resolver that tries, in order: (1) local remote-tracking
-reachability in the current checkout (fast, no network — the common case,
-since ``commit_sha`` on an OCC-hosted receipt is implicitly an OCC commit
-unless the receipt documents a check against a product repo); (2) the
-GitHub API against OCC, covering a shallow/incomplete local checkout; (3) a
-cross-repo fallback when a ``repos/<owner>/<repo>/`` citation is recoverable
-from the receipt's own probe text (2026-07-30 finding: ``commit_sha`` itself
-carries no repo attribution, so a product-repo binding is only recoverable
-this way). Unresolvable by all three, or no way to tell which repo to ask,
-is a hard FAIL — this is a proof surface, not a best-effort lookup.
+closes it with a resolver that builds one local remote-tracking index only as
+a cacheable hint, then confirms every valid claim through GitHub's commits API
+against OCC and, after an OCC 404 only, a trusted product-repo hint from
+the contract-bound ``check_value``/``probe_command`` fields. Tracking refs can
+be stale and pre-commit must not fetch, so they never prove remote
+reachability. A 200 response is accepted only when its JSON object carries the
+exact requested full ``sha``. ``actual_output`` is free-form narrative and
+cannot select a repository. Unresolvable claims are receipt defects;
+unavailable API evidence is a distinct hard failure, not a best-effort pass.
 
 Deliberately **not** a full-corpus shrink-only baseline (the
 ``SUPERSESSION_BASELINE_PATH``/``CONTRACT_ABS_PATH_BASELINE_PATH`` pattern):
@@ -277,7 +276,8 @@ forward via the same append-only supersession path every other rule in this
 file already honors (``_supersession_candidates`` /
 ``_valid_supersession_replacement``) — nothing new was required for that.
 
-Exit codes: 0 = all enforced receipts clean; 1 = violations found.
+Exit codes: 0 = all enforced receipts clean; 1 = definitive receipt defects;
+2 = commit-resolution infrastructure unavailable.
 """
 
 from __future__ import annotations
@@ -285,9 +285,11 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from functools import cache, lru_cache
 from pathlib import Path
@@ -300,6 +302,13 @@ from omnibase_core.validation.validator_receipt_gate import (
     ContractEntryNotFoundError,
     compute_contract_entry_sha256,
     compute_contract_sha256,
+)
+
+from onex_change_control.validation.commit_sha_resolver import (
+    CommitShaResolution,
+    CommitShaResolver,
+    EnumCommitShaOutcome,
+    is_full_commit_sha,
 )
 
 if TYPE_CHECKING:
@@ -784,18 +793,18 @@ _DEFAULT_COMMIT_SHA_REPO = "OmniNode-ai/onex_change_control"
 # which reuse the SAME probe_command text). commit_sha itself carries no
 # repo attribution (2026-07-30 ticket finding): for an OCC self-bind receipt
 # it is implicitly this repo; for a receipt documenting a check against a
-# PRODUCT repo, this embedded pattern in check_value/probe_command/
-# actual_output is the only recoverable hint of which repo to resolve it
-# against. An initial narrower version of this pattern (URL-path form only)
-# produced a real false-positive class against the audit — see PR body.
+# PRODUCT repo, a contract-bound check_value/probe_command citation is the
+# only recoverable hint of which repo to resolve it against. ``actual_output``
+# is intentionally excluded: it is free-form narrative rather than a bound
+# command/proof field and must never select the resolution repository.
 _REPO_HINT_RE = re.compile(
-    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/|--repo[= ]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b"
+    r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/|"
+    r"--repo[= ]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b"
 )
 
 # Fail-open guard (found in adversarial verification of this rule, 2026-08-19,
 # same day as the initial widening above): an unrestricted _REPO_HINT_RE match
-# lets ANY "<owner>/<repo>" string appearing anywhere in free-form probe text
-# — including actual_output narrative, which is not machine-generated —
+# lets ANY "<owner>/<repo>" string appearing in a non-authoritative field
 # resolve a commit_sha against an attacker-choosable repo. Demonstrated live:
 # probe text mentioning "--repo torvalds/linux" makes any real Linux kernel
 # commit hash resolve as "real", regardless of what the receipt is actually
@@ -837,49 +846,6 @@ def _after_omn_15461_cutoff(run_timestamp: datetime) -> bool:
     return ts >= OMN_15461_CUTOFF
 
 
-def _commit_reachable_from_remote(sha: str) -> bool:
-    """True iff ``sha`` is reachable from a remote-tracking ref in the current
-    working directory's git checkout (assumed to be onex_change_control).
-
-    Local existence is NOT sufficient — a commit can be a real object in the
-    authoring worktree's store (``git cat-file -e`` succeeds) without ever
-    having been pushed (the ``.200`` patch-transfer bug shape: the gate host
-    mints a *different* commit object via ``git am``, only that one is ever
-    pushed, and the receipt keeps citing the local one). ``git branch -r
-    --contains <sha>`` only returns non-empty when the commit is reachable
-    from an actual remote-tracking branch, which requires it to have been
-    fetched from a real push — the property this gate needs, not local
-    object existence.
-    """
-    result = subprocess.run(  # noqa: S603
-        ["git", "branch", "-r", "--contains", sha],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0 and bool(result.stdout.strip())
-
-
-def _commit_exists_via_github_api(sha: str, repo: str) -> bool:
-    """True iff ``sha`` resolves via the GitHub API for ``repo``.
-
-    Fallback for :func:`_commit_reachable_from_remote`: a shallow or
-    incomplete local checkout can lack the remote-tracking history to
-    correctly answer that check even for a genuinely pushed commit, so a
-    local-only "not found" is not trustworthy on its own — this asks GitHub
-    directly, the same authoritative oracle
-    ``validator_evidence_commit_binding_cli.py`` already uses for the
-    sibling ``Evidence-Commit`` trailer (OMN-15111).
-    """
-    result = subprocess.run(  # noqa: S603
-        ["gh", "api", f"repos/{repo}/commits/{sha}"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
 # The `occ-evidence-source-autobind` verifier's standard item-id shape,
 # e.g. "dod-OmniNode-ai-omnimarket-pr-2087" or its "-ci" cohort sibling.
 # Falls back to this when neither probe-text pattern in _REPO_HINT_RE
@@ -891,17 +857,17 @@ _ITEM_ID_REPO_RE = re.compile(r"^dod-OmniNode-ai-([A-Za-z0-9_.-]+)-pr-\d+")
 def _repo_hint(receipt: ModelDodReceipt) -> str | None:
     """Best-effort extraction of a cross-repo citation embedded in probe text.
 
-    Returns the first ``<owner>/<repo>`` match from ``check_value``,
-    ``probe_command``, or ``actual_output`` (in that order) that is also a
-    member of :data:`_KNOWN_REPO_HINTS`; if none of them embeds a recognized
-    one, falls back to the autobind ``evidence_item_id`` naming convention
+    Returns the first ``<owner>/<repo>`` match from the contract-bound
+    ``check_value`` or ``probe_command`` (in that order) that is also a member
+    of :data:`_KNOWN_REPO_HINTS`; if neither embeds a recognized one, falls
+    back to the autobind ``evidence_item_id`` naming convention
     (see :data:`_ITEM_ID_REPO_RE`), which is itself checked against the same
     allowlist. ``None`` if nothing recognized matches. An unrecognized
     ``<owner>/<repo>`` string is deliberately NOT returned — see
     :data:`_KNOWN_REPO_HINTS`'s comment for why an unrestricted match is a
     fail-open hole, not a helpful fallback.
     """
-    for field_name in ("check_value", "probe_command", "actual_output"):
+    for field_name in ("check_value", "probe_command"):
         value = getattr(receipt, field_name, None)
         if not isinstance(value, str):
             continue
@@ -917,55 +883,43 @@ def _repo_hint(receipt: ModelDodReceipt) -> str | None:
     return None
 
 
-def _commit_sha_resolves(
-    receipt: ModelDodReceipt,
-    *,
-    local_reachable: Callable[[str], bool] = _commit_reachable_from_remote,
-    remote_exists: Callable[[str, str], bool] = _commit_exists_via_github_api,
-) -> bool:
-    """Default production resolver: same-repo fast path, then cross-repo fallback.
+def _commit_sha_repositories(receipt: ModelDodReceipt) -> tuple[str, ...]:
+    """Return trusted resolution repositories in authoritative order."""
 
-    Order: (1) local remote-tracking reachability against the current OCC
-    checkout — fast, no network, covers the overwhelming common case; (2)
-    GitHub API against OCC directly — covers a shallow/incomplete local
-    checkout; (3) GitHub API against a repo named by an embedded
-    ``repos/<owner>/<repo>/`` hint in the receipt's own probe text, for a
-    receipt that genuinely documents a check against a product repo. No
-    resolution and no usable hint is a hard FAIL.
-    """
-    sha = receipt.commit_sha
-    if local_reachable(sha):
-        return True
-    if remote_exists(sha, _DEFAULT_COMMIT_SHA_REPO):
-        return True
     hint = _repo_hint(receipt)
-    if hint is not None and hint != _DEFAULT_COMMIT_SHA_REPO:
-        return remote_exists(sha, hint)
-    return False
+    if hint is None or hint == _DEFAULT_COMMIT_SHA_REPO:
+        return (_DEFAULT_COMMIT_SHA_REPO,)
+    return (_DEFAULT_COMMIT_SHA_REPO, hint)
 
 
 def _commit_sha_existence_violations(
     receipt: ModelDodReceipt,
-    *,
-    resolver: Callable[[ModelDodReceipt], bool] | None = None,
+    resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
 ) -> list[str]:
-    """Return COMMIT_SHA_EXISTS violation fragments (empty = clean or exempt).
+    """Return definitive SHA receipt defects, collecting infra separately.
 
     Gated on ``OMN_15461_CUTOFF``, not ``HARDENING_CUTOFF`` or retroactively
     baselined — see the module docstring for why a full-corpus baseline was
     deliberately not built.
 
-    ``resolver`` defaults to the module-level :func:`_commit_sha_resolves`,
-    looked up fresh on every call (not bound as a plain default argument) so
-    tests can ``monkeypatch`` it without threading an explicit override
-    through every caller in the shared ``_receipt_binding_violations`` core.
+    ``resolver`` is the invocation-owned session shared by base and
+    replacement validation. It is passed explicitly so its local index,
+    bounded REST budget, and caches cannot reset per receipt.
     """
     if not _after_omn_15461_cutoff(receipt.run_timestamp):
         return []
-    if resolver is None:
-        resolver = _commit_sha_resolves
-    if resolver(receipt):
+    result = resolver.resolve(receipt.commit_sha, _commit_sha_repositories(receipt))
+    if result.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE:
         return []
+    if result.outcome is EnumCommitShaOutcome.UNAVAILABLE:
+        infrastructure_diagnostics.append(_commit_sha_unavailable_message(result))
+        return []
+    if result.outcome is EnumCommitShaOutcome.INVALID:
+        return [
+            f"[COMMIT_SHA_FORMAT] commit_sha {receipt.commit_sha!r} must be a "
+            "full 40-character hexadecimal commit SHA."
+        ]
     return [
         f"[COMMIT_SHA_EXISTS] commit_sha {receipt.commit_sha!r} does not "
         "resolve to a real, remote-reachable commit — it is fabricated, "
@@ -979,6 +933,28 @@ def _commit_sha_existence_violations(
         "receipt with an unresolvable commit_sha is immutable and can only "
         "be corrected via a net-new .supersede.<NNNN>.yaml record."
     ]
+
+
+def _commit_sha_unavailable_message(result: CommitShaResolution) -> str:
+    """Render an operator diagnostic without a receipt-defect label."""
+
+    metadata = [
+        f"repo={result.repo or _DEFAULT_COMMIT_SHA_REPO}",
+        f"sha={result.sha}",
+    ]
+    if result.status_code is not None:
+        metadata.append(f"http_status={result.status_code}")
+    if result.reset_at is not None:
+        metadata.append(f"rate_limit_reset={result.reset_at}")
+    if result.retry_after is not None:
+        metadata.append(f"retry_after={result.retry_after}")
+    if result.detail is not None:
+        metadata.append(f"detail={result.detail}")
+    return (
+        "[INFRASTRUCTURE_UNAVAILABLE] commit SHA resolution unavailable ("
+        + ", ".join(metadata)
+        + ")"
+    )
 
 
 def _supersession_candidates(receipt_path: Path) -> list[Path]:
@@ -1040,7 +1016,10 @@ def _contract_hash_violation(
 
 
 def _receipt_binding_violations(
-    receipt: ModelDodReceipt, contracts_dir: Path
+    receipt: ModelDodReceipt,
+    contracts_dir: Path,
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
 ) -> list[str]:
     """Return contract-binding + verifier violation fragments for one receipt.
 
@@ -1086,13 +1065,20 @@ def _receipt_binding_violations(
 
     violations.extend(_absolute_path_violations(receipt))
     violations.extend(_stdout_emittability_violations(receipt))
-    violations.extend(_commit_sha_existence_violations(receipt))
+    violations.extend(
+        _commit_sha_existence_violations(
+            receipt, commit_sha_resolver, infrastructure_diagnostics
+        )
+    )
 
     return violations
 
 
 def _valid_supersession_replacement(
-    receipt_path: Path, contracts_dir: Path
+    receipt_path: Path,
+    contracts_dir: Path,
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
 ) -> tuple[bool, list[str]]:
     """Return whether a sibling supersession cleanly replaces receipt_path.
 
@@ -1119,6 +1105,20 @@ def _valid_supersession_replacement(
         if not isinstance(replacement, dict):
             errors.append(f"{candidate}: supersession has no mapping replacement")
             continue
+        replacement_sha = replacement.get("commit_sha")
+        replacement_run_timestamp = _coerce_timestamp(replacement.get("run_timestamp"))
+        if (
+            replacement_run_timestamp is not None
+            and _after_omn_15461_cutoff(replacement_run_timestamp)
+            and isinstance(replacement_sha, str)
+            and not is_full_commit_sha(replacement_sha)
+        ):
+            errors.append(
+                f"{candidate}: replacement [COMMIT_SHA_FORMAT] commit_sha "
+                f"{replacement_sha!r} must be a full 40-character hexadecimal "
+                "commit SHA."
+            )
+            continue
         try:
             receipt = ModelDodReceipt.model_validate(replacement)
         except ValidationError as exc:
@@ -1126,22 +1126,28 @@ def _valid_supersession_replacement(
                 f"{candidate}: replacement fails ModelDodReceipt validation: {exc}"
             )
             continue
-
-        violations = _receipt_binding_violations(receipt, contracts_dir)
+        violations = _receipt_binding_violations(
+            receipt, contracts_dir, commit_sha_resolver, infrastructure_diagnostics
+        )
         if violations:
             errors.extend(f"{candidate}: replacement {v}" for v in violations)
             continue
         return True, []
-
     return False, errors
 
 
 def _validate_hardened_receipt(
-    receipt_path: Path, receipt: ModelDodReceipt, contracts_dir: Path
+    receipt_path: Path,
+    receipt: ModelDodReceipt,
+    contracts_dir: Path,
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
 ) -> list[str]:
     return [
         f"{receipt_path}: {fragment}"
-        for fragment in _receipt_binding_violations(receipt, contracts_dir)
+        for fragment in _receipt_binding_violations(
+            receipt, contracts_dir, commit_sha_resolver, infrastructure_diagnostics
+        )
     ]
 
 
@@ -1416,7 +1422,9 @@ def _cohort_members(path: Path) -> tuple[Path, ...]:
 
 
 @cache
-def _repaired_targets(item_dir: Path, contracts_dir: Path) -> frozenset[str]:
+def _repaired_targets(  # noqa: C901
+    item_dir: Path, contracts_dir: Path
+) -> frozenset[str]:
     """Paths in ``item_dir`` cured by a net-new, itself-clean repair record.
 
     Merged receipts are immutable, so a mis-paired supersession is repaired by
@@ -1749,7 +1757,7 @@ def write_supersession_baseline(
         "#\n"
         "# Each entry is `<supersession path>::<rules>` where the rules are:\n"
         "#   S1  distinctness  — byte-identical replacement.check_value shared with\n"
-        "#                       another item's supersession minted in the same cohort\n"
+        "#                       another item's supersession minted in the same cohort\n"  # noqa: E501
         "#   S2  family binding — replacement.check_value references nothing the\n"
         "#                       superseded item's own contract entry declares\n"
         "#\n"
@@ -1899,6 +1907,42 @@ def check_supersession_wiring(
     )
 
 
+def check_commit_sha_wiring(precommit_yaml: Path, ci_yaml: Path) -> list[str]:
+    """Assert the bounded resolver cannot silently lose its one-run wiring."""
+
+    try:
+        precommit_text = precommit_yaml.read_text()
+        ci_text = ci_yaml.read_text()
+    except OSError as exc:
+        return [f"could not read commit-SHA wiring inputs: {exc}"]
+
+    failures: list[str] = []
+    for required in (
+        "id: check-receipt-hardening",
+        "check_receipt_hardening.py --staged",
+        "pass_filenames: false",
+        "require_serial: true",
+    ):
+        if required not in precommit_text:
+            failures.append(
+                f"{precommit_yaml} is missing receipt-hardening wiring: {required}"
+            )
+    for required in (
+        "fetch-depth: 0",
+        "git diff --name-only -z --diff-filter=ACMRT",
+        '--paths-file0 "$changed_paths_file"',
+    ):
+        if required not in ci_text:
+            failures.append(
+                f"{ci_yaml} is missing bounded changed-mode wiring: {required}"
+            )
+    if "corpus_receipts" in ci_text or "expected violations" in ci_text:
+        failures.append(
+            f"{ci_yaml} retains prohibited full-corpus hardening self-check/masking"
+        )
+    return failures
+
+
 def _check_supersession_summary_registration(
     job: dict[str, object],
     job_id: str,
@@ -1958,8 +2002,14 @@ def check_receipt_file(
     receipt_path: Path,
     contracts_dir: Path,
     supersession_baseline: frozenset[str] | None = None,
+    commit_sha_resolver: CommitShaResolver | None = None,
+    infrastructure_diagnostics: list[str] | None = None,
 ) -> list[str]:
     """Return violation strings for one receipt file (empty = clean)."""
+    resolver = commit_sha_resolver or CommitShaResolver()
+    infrastructure = (
+        infrastructure_diagnostics if infrastructure_diagnostics is not None else []
+    )
     if ".supersede." in receipt_path.name:
         return check_supersession_file(
             receipt_path,
@@ -1983,7 +2033,7 @@ def check_receipt_file(
         return []
 
     superseded, supersession_errors = _valid_supersession_replacement(
-        receipt_path, contracts_dir
+        receipt_path, contracts_dir, resolver, infrastructure
     )
     if superseded:
         return []
@@ -1992,18 +2042,32 @@ def check_receipt_file(
 
     receipt, error = _validate_receipt_model(receipt_path, raw)
     if error is not None:
+        raw_sha = raw.get("commit_sha")
+        if (
+            run_ts >= OMN_15461_CUTOFF
+            and isinstance(raw_sha, str)
+            and not is_full_commit_sha(raw_sha)
+        ):
+            return [
+                f"{receipt_path}: [COMMIT_SHA_FORMAT] commit_sha {raw_sha!r} "
+                "must be a full 40-character hexadecimal commit SHA."
+            ]
         return [error]
     if receipt is None:
         return [f"{receipt_path}: receipt validation returned no model"]
 
-    return _validate_hardened_receipt(receipt_path, receipt, contracts_dir)
+    return _validate_hardened_receipt(
+        receipt_path, receipt, contracts_dir, resolver, infrastructure
+    )
 
 
-def _check_staged_file(
+def _check_staged_file(  # noqa: PLR0913
     path: Path,
     contracts_dir: Path,
     supersession_baseline: frozenset[str],
     contract_abs_path_baseline: frozenset[str],
+    commit_sha_resolver: CommitShaResolver,
+    infrastructure_diagnostics: list[str],
 ) -> list[str]:
     """Route one staged file to the contract- or receipt-shaped check (OMN-15710).
 
@@ -2013,10 +2077,162 @@ def _check_staged_file(
     """
     if path.as_posix().startswith(f"{contracts_dir.as_posix()}/"):
         return check_contract_file(path, contract_abs_path_baseline)
-    return check_receipt_file(path, contracts_dir, supersession_baseline)
+    return check_receipt_file(
+        path,
+        contracts_dir,
+        supersession_baseline,
+        commit_sha_resolver,
+        infrastructure_diagnostics,
+    )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _read_paths_file0(path: Path) -> list[Path]:
+    """Read a NUL-delimited path file without interpreting embedded newlines."""
+
+    payload = path.read_bytes()
+    return [Path(os.fsdecode(item)) for item in payload.split(b"\0") if item]
+
+
+def _discover_staged_paths() -> tuple[list[Path], str | None]:
+    """Discover relevant staged paths in one NUL-safe Git invocation."""
+
+    try:
+        result = subprocess.run(
+            [  # noqa: S607
+                "git",
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--diff-filter=ACMRT",
+                "--",
+                "drift/dod_receipts",
+                "contracts",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        return [], f"staged-path discovery could not start: {exc}"
+    if result.returncode != 0:
+        return [], f"staged-path discovery exited {result.returncode}"
+    return [
+        Path(os.fsdecode(item)) for item in result.stdout.split(b"\0") if item
+    ], None
+
+
+def _effective_check_path(path: Path) -> Path:
+    """Keep the established per-path supersession semantics unchanged."""
+
+    return path
+
+
+def _temp_inventory_path(value: str) -> Path:
+    """Permit operator inventory output only below the platform temp root."""
+
+    output = Path(value).resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    try:
+        output.relative_to(temp_root)
+    except ValueError as exc:
+        message = (
+            "--commit-sha-inventory must point below the system temporary directory"
+        )
+        raise ValueError(message) from exc
+    return output
+
+
+def _inventory_source_commit() -> str | None:
+    """Return the working source commit without making any network request."""
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _inventory_receipt_models(paths: list[Path]) -> list[tuple[Path, ModelDodReceipt]]:
+    """Extract post-cutoff base and replacement receipt claims from paths."""
+
+    models: list[tuple[Path, ModelDodReceipt]] = []
+    for path in paths:
+        try:
+            raw = yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        candidate = raw.get("replacement") if ".supersede." in path.name else raw
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            receipt = ModelDodReceipt.model_validate(candidate)
+        except ValidationError:
+            continue
+        if _after_omn_15461_cutoff(receipt.run_timestamp):
+            models.append((path, receipt))
+    return models
+
+
+def _write_commit_sha_inventory(
+    output_path: Path,
+    paths: list[Path],
+    resolver: CommitShaResolver,
+) -> int:
+    """Write a bounded, resumable inventory outside the repository tree."""
+
+    claims: dict[tuple[str, str], dict[str, object]] = {}
+    for path, receipt in _inventory_receipt_models(paths):
+        for repo in _commit_sha_repositories(receipt):
+            key = (repo, receipt.commit_sha)
+            claim = claims.setdefault(
+                key,
+                {"repo": repo, "sha": receipt.commit_sha, "paths": []},
+            )
+            claim_paths = claim["paths"]
+            if isinstance(claim_paths, list):
+                claim_paths.append(path.as_posix())
+
+    inventory_claims: list[dict[str, object]] = []
+    incomplete = False
+    for repo, sha in sorted(claims):
+        local = resolver.local_resolution(sha)
+        resolved = resolver.resolve(sha, (repo,))
+        pending_remote = resolved.outcome is EnumCommitShaOutcome.UNAVAILABLE
+        incomplete = incomplete or pending_remote
+        claim = claims[(repo, sha)]
+        claim["local_outcome"] = local.outcome.value
+        claim["remote_outcome"] = (
+            "NOT_ATTEMPTED"
+            if pending_remote and not resolved.attempted_remote
+            else resolved.outcome.value
+        )
+        claim["pending_remote"] = pending_remote
+        claim["reset_at"] = resolved.reset_at
+        claim["retry_after"] = resolved.retry_after
+        inventory_claims.append(claim)
+
+    payload = {
+        "source_commit": _inventory_source_commit(),
+        "rest_budget": resolver.rest_budget,
+        "remote_calls": resolver.remote_calls,
+        "complete": not incomplete,
+        "claims": inventory_claims,
+    }
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return 2 if incomplete else 0
+
+
+def main(  # noqa: C901, PLR0912, PLR0915
+    argv: list[str] | None = None,
+) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Receipt hardening gate: staged DoD receipts produced on/after "
@@ -2026,6 +2242,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "files", nargs="*", help="Receipt YAML paths (from pre-commit)."
+    )
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="Discover relevant staged paths once with git diff --cached -z.",
+    )
+    parser.add_argument(
+        "--paths-file0",
+        help="NUL-delimited changed-path file produced by CI.",
+    )
+    parser.add_argument(
+        "--commit-sha-rest-budget",
+        type=int,
+        default=64,
+        help="Maximum GitHub commit API calls for this invocation (default: 64).",
+    )
+    parser.add_argument(
+        "--commit-sha-inventory",
+        help=(
+            "Operator-only: write a bounded commit-SHA resolution inventory below "
+            "the system temporary directory."
+        ),
     )
     parser.add_argument(
         "--contracts-dir",
@@ -2070,9 +2308,19 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--check-commit-sha-wiring",
+        action="store_true",
+        help="Assert bounded commit-SHA hook and CI changed-mode wiring.",
+    )
+    parser.add_argument(
         "--ci-yaml",
         default=".github/workflows/ci.yml",
         help="Workflow file inspected by --check-supersession-wiring.",
+    )
+    parser.add_argument(
+        "--precommit-yaml",
+        default=".pre-commit-config.yaml",
+        help="Pre-commit config inspected by --check-commit-sha-wiring.",
     )
     parser.add_argument(
         "--contract-abs-path-baseline",
@@ -2085,6 +2333,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    if args.staged and args.paths_file0:
+        parser.error("--staged and --paths-file0 are mutually exclusive")
     contracts_dir = Path(args.contracts_dir)
     baseline_path = Path(args.supersession_baseline)
     contract_abs_path_baseline = load_contract_abs_path_baseline(
@@ -2110,23 +2360,81 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SUPERSESSION BINDING WIRING GATE PASSED ({ci_yaml})")
         return 0
 
+    if args.check_commit_sha_wiring:
+        failures = check_commit_sha_wiring(
+            Path(args.precommit_yaml), Path(args.ci_yaml)
+        )
+        if failures:
+            print("COMMIT SHA WIRING GATE FAILED:")
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print("COMMIT SHA WIRING GATE PASSED")
+        return 0
+
     if args.supersession_corpus:
         return run_supersession_corpus(
             Path(args.receipts_root), contracts_dir, baseline_path
         )
 
     supersession_baseline = load_supersession_baseline(baseline_path)
+    try:
+        commit_sha_resolver = CommitShaResolver(rest_budget=args.commit_sha_rest_budget)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.staged:
+        paths, discovery_error = _discover_staged_paths()
+        if discovery_error is not None:
+            print(f"Receipt hardening infrastructure unavailable: {discovery_error}")
+            return 2
+    elif args.paths_file0:
+        try:
+            paths = _read_paths_file0(Path(args.paths_file0))
+        except OSError as exc:
+            print(f"Receipt hardening infrastructure unavailable: {exc}")
+            return 2
+    else:
+        paths = [Path(file_arg) for file_arg in args.files]
+
+    if args.commit_sha_inventory:
+        try:
+            inventory_path = _temp_inventory_path(args.commit_sha_inventory)
+        except ValueError as exc:
+            parser.error(str(exc))
+            return 2
+        if not paths:
+            paths = sorted(Path(args.receipts_root).rglob("*.yaml"))
+        return _write_commit_sha_inventory(inventory_path, paths, commit_sha_resolver)
+
     all_violations: list[str] = []
-    for file_arg in args.files:
-        path = Path(file_arg)
+    infrastructure_diagnostics: list[str] = []
+    seen_effective_paths: set[Path] = set()
+    for path in paths:
         if not path.is_file():
             continue  # deleted/renamed paths are not this gate's concern
+        effective_path = _effective_check_path(path)
+        if effective_path in seen_effective_paths:
+            continue
+        seen_effective_paths.add(effective_path)
         all_violations.extend(
             _check_staged_file(
-                path, contracts_dir, supersession_baseline, contract_abs_path_baseline
+                effective_path,
+                contracts_dir,
+                supersession_baseline,
+                contract_abs_path_baseline,
+                commit_sha_resolver,
+                infrastructure_diagnostics,
             )
         )
 
+    if infrastructure_diagnostics:
+        print("Receipt hardening infrastructure unavailable:\n")
+        for diagnostic in dict.fromkeys(infrastructure_diagnostics):
+            print(f"  {diagnostic}")
+        print(
+            "\nNo receipt defect was asserted while commit resolution was unavailable."
+        )
+        return 2
     if all_violations:
         print(f"Receipt hardening gate: {len(all_violations)} violation(s):\n")
         for violation in all_violations:

@@ -7,14 +7,19 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from typing import TYPE_CHECKING
+import json
+import os
+import subprocess
+from pathlib import Path
 
+import pytest
 import yaml
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
 from omnibase_core.validation.validator_receipt_gate import (
     compute_contract_entry_sha256,
 )
 
+from onex_change_control.validation.commit_sha_resolver import CommitShaResolver
 from scripts.validation import check_receipt_hardening
 from scripts.validation.check_receipt_hardening import (
     DENYLISTED_VERIFIERS,
@@ -22,11 +27,6 @@ from scripts.validation.check_receipt_hardening import (
     check_receipt_file,
     main,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    import pytest
 
 POST_CUTOFF_TS = "2026-06-12T03:00:00+00:00"
 PRE_CUTOFF_TS = "2026-06-11T23:59:59+00:00"
@@ -49,6 +49,8 @@ PRE_OMN15710_CUTOFF_TS = "2026-07-31T23:59:59+00:00"
 # subprocess/network calls in a unit test).
 POST_OMN15461_CUTOFF_TS = "2026-08-19T13:00:00+00:00"
 PRE_OMN15461_CUTOFF_TS = "2026-08-19T11:00:00+00:00"
+FULL_LOCAL_SHA = "c" * 40
+FULL_REMOTE_SHA = "8" * 40
 
 # OMN-15459 (S2 family binding): a supersession replacement must reference an
 # anchor the item it supersedes actually declares. The two wrappers below exist
@@ -948,6 +950,41 @@ def _receipt_model(**overrides: object) -> ModelDodReceipt:
     return ModelDodReceipt.model_validate(data)
 
 
+def _commit_resolver(
+    *,
+    local_shas: frozenset[str] = frozenset(),
+    remote_statuses: dict[tuple[str, str], int] | None = None,
+    rest_budget: int = 64,
+) -> CommitShaResolver:
+    """Build a no-network resolver fake for hardening-flow tests."""
+
+    statuses = remote_statuses or {}
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(
+                command, 0, stdout="\n".join(local_shas), stderr=""
+            )
+        endpoint = command[-1]
+        endpoint_parts = endpoint.split("/")
+        repo = "/".join(endpoint_parts[1:3])
+        sha = endpoint_parts[-1]
+        # A local origin ref is deliberately only an inventory hint in
+        # production.  This fake still supplies a matching mocked REST body
+        # for those known-good fixture SHAs so hardening-flow tests stay
+        # network-free while exercising the authoritative confirmation path.
+        status = statuses.get((repo, sha), 200 if sha in local_shas else 404)
+        body = json.dumps({"sha": sha}) if status == 200 else "{}"
+        return subprocess.CompletedProcess(
+            command,
+            0 if status == 200 else 1,
+            stdout=f"HTTP/2 {status}\n\n{body}",
+            stderr="",
+        )
+
+    return CommitShaResolver(rest_budget=rest_budget, runner=runner)
+
+
 def test_pre_omn15461_cutoff_receipt_with_bad_sha_is_exempt(tmp_path: Path) -> None:
     """Legacy migration debt: a pre-cutoff receipt is not retro-blocked."""
     contract = _write_contract(tmp_path)
@@ -970,11 +1007,8 @@ def test_commit_sha_local_only_never_pushed_fails() -> None:
     receipt = _receipt_model(commit_sha="e658ec5d368fbecfa878c3ca0f427cdb385addb9")
     violations = check_receipt_hardening._commit_sha_existence_violations(
         receipt,
-        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
-            r,
-            local_reachable=lambda _sha: False,
-            remote_exists=lambda _sha, _repo: False,
-        ),
+        _commit_resolver(),
+        [],
     )
     assert len(violations) == 1
     assert "[COMMIT_SHA_EXISTS]" in violations[0]
@@ -985,18 +1019,11 @@ def test_commit_sha_prefix_plausible_fabrication_fails() -> None:
     """RED — OCC#6725 (2026-08-19): a hallucinated SHA sharing a real 10-hex
     prefix with a genuine commit before diverging. A well-formed-hex regex
     cannot distinguish this from a real SHA; only resolution can."""
-    fabricated = "3f35bfa939ddb6da0000000000000000000000"
-    real = "3f35bfa939ebf85e0000000000000000000000"
-
-    def fake_remote_exists(sha: str, _repo: str) -> bool:
-        return sha == real  # only the REAL commit resolves, not the prefix-match
+    fabricated = "3" * 40
 
     receipt = _receipt_model(commit_sha=fabricated)
     violations = check_receipt_hardening._commit_sha_existence_violations(
-        receipt,
-        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
-            r, local_reachable=lambda _sha: False, remote_exists=fake_remote_exists
-        ),
+        receipt, _commit_resolver(), []
     )
     assert len(violations) == 1
     assert "[COMMIT_SHA_EXISTS]" in violations[0]
@@ -1006,41 +1033,30 @@ def test_commit_sha_prefix_plausible_fabrication_fails() -> None:
 def test_commit_sha_nonexistent_cross_repo_fails() -> None:
     """RED — commit_sha does not exist in the hinted cross-repo, either."""
     receipt = _receipt_model(
-        commit_sha="0000000000000000000000000000000000dead",
+        commit_sha=("0" * 36) + "dead",
         check_value="gh api repos/OmniNode-ai/omnimarket/commits/HEAD",
     )
     violations = check_receipt_hardening._commit_sha_existence_violations(
-        receipt,
-        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
-            r,
-            local_reachable=lambda _sha: False,
-            remote_exists=lambda _sha, _repo: False,
-        ),
+        receipt, _commit_resolver(), []
     )
     assert len(violations) == 1
     assert "[COMMIT_SHA_EXISTS]" in violations[0]
 
 
-def test_commit_sha_local_reachable_passes() -> None:
-    """GREEN — genuine, pushed commit resolves via the local fast path."""
-    receipt = _receipt_model(commit_sha="c6879b0abc1234567890abcdef1234567890abc")
+def test_commit_sha_local_hint_still_requires_remote_confirmation() -> None:
+    """GREEN — a local origin hint remains clean only after mocked REST confirmation."""
+    receipt = _receipt_model(commit_sha=FULL_LOCAL_SHA)
     violations = check_receipt_hardening._commit_sha_existence_violations(
         receipt,
-        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
-            r,
-            local_reachable=lambda _sha: True,
-            remote_exists=lambda _sha, _repo: False,
-        ),
+        _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA})),
+        [],
     )
     assert violations == []
 
 
 def test_commit_sha_cross_repo_hint_resolves_passes() -> None:
     """GREEN — commit_sha belongs to a product repo, resolved via the embedded hint."""
-    real_omnimarket_sha = "8b66eaa3123456789abcdef1234567890abcdef"
-
-    def fake_remote_exists(sha: str, repo: str) -> bool:
-        return repo == "OmniNode-ai/omnimarket" and sha == real_omnimarket_sha
+    real_omnimarket_sha = FULL_REMOTE_SHA
 
     receipt = _receipt_model(
         commit_sha=real_omnimarket_sha,
@@ -1050,20 +1066,18 @@ def test_commit_sha_cross_repo_hint_resolves_passes() -> None:
     )
     violations = check_receipt_hardening._commit_sha_existence_violations(
         receipt,
-        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
-            r, local_reachable=lambda _sha: False, remote_exists=fake_remote_exists
+        _commit_resolver(
+            remote_statuses={("OmniNode-ai/omnimarket", real_omnimarket_sha): 200}
         ),
+        [],
     )
     assert violations == []
 
 
-def test_commit_sha_resolver_defaults_to_module_level_and_is_monkeypatchable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_commit_sha_resolver_is_threaded_through_receipt_validation(
+    tmp_path: Path,
 ) -> None:
-    """The resolver default is a fresh lookup (not a bound default arg), so
-    check_receipt_file's full call chain is monkeypatchable end-to-end
-    without threading an explicit override through every intermediate
-    caller."""
+    """One caller-owned resolver reaches the complete receipt validation path."""
     contract = _write_contract(tmp_path)
     receipt_path = _write_receipt(
         tmp_path,
@@ -1073,16 +1087,17 @@ def test_commit_sha_resolver_defaults_to_module_level_and_is_monkeypatchable(
             commit_sha="badc0ffee0000000000000000000000000000000",
         ),
     )
-    monkeypatch.setattr(
-        check_receipt_hardening, "_commit_sha_resolves", lambda _receipt: False
+    sha = "badc0ffee0000000000000000000000000000000"
+    violations = check_receipt_file(
+        receipt_path, tmp_path / "contracts", commit_sha_resolver=_commit_resolver()
     )
-    violations = check_receipt_file(receipt_path, tmp_path / "contracts")
     assert any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
 
-    monkeypatch.setattr(
-        check_receipt_hardening, "_commit_sha_resolves", lambda _receipt: True
+    violations = check_receipt_file(
+        receipt_path,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(local_shas=frozenset({sha})),
     )
-    violations = check_receipt_file(receipt_path, tmp_path / "contracts")
     assert not any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
 
 
@@ -1141,15 +1156,19 @@ def test_repo_hint_rejects_unrecognized_repo() -> None:
     assert check_receipt_hardening._repo_hint(receipt) is None
 
 
-def test_repo_hint_rejects_unrecognized_repo_in_actual_output() -> None:
-    """actual_output is free-form narrative, not machine-generated — an even
-    wider surface for an incidental/adversarial '<owner>/<repo>' mention
-    than check_value/probe_command. Same rejection applies."""
+def test_repo_hint_rejects_actual_output_narrative_injection() -> None:
+    """A recognized repo in free-form actual_output cannot redirect lookup."""
     receipt = _receipt_model(
         check_value="uv run pytest tests/ -q",
-        actual_output="See also repos/some-attacker/evilrepo/commits/deadbeef.",
+        actual_output=(
+            "Narrative only: repos/OmniNode-ai/omnimarket/commits/"
+            f"{FULL_REMOTE_SHA} was allegedly checked."
+        ),
     )
     assert check_receipt_hardening._repo_hint(receipt) is None
+    assert check_receipt_hardening._commit_sha_repositories(receipt) == (
+        "OmniNode-ai/onex_change_control",
+    )
 
 
 def test_repo_hint_skips_unrecognized_match_to_find_a_recognized_one() -> None:
@@ -1170,34 +1189,18 @@ def test_commit_sha_resolver_does_not_bypass_via_unrecognized_repo_hint() -> Non
     locally or in OCC) paired with probe text naming an unrelated real repo
     must still FAIL — the unrecognized hint must not let remote_exists get
     called against it at all."""
-    calls: list[str] = []
-
-    def tracking_remote_exists(_sha: str, repo: str) -> bool:
-        calls.append(repo)
-        # Simulate: this SHA genuinely exists in torvalds/linux (it does, in
-        # reality), but that must never be consulted for an unrecognized repo.
-        return repo == "torvalds/linux"
-
     receipt = _receipt_model(
-        commit_sha="1da177e4c3f41524e886b7f1b8a0c1fc7321cac",
+        commit_sha="1" * 40,
         check_value="gh pr view 1 --repo torvalds/linux --json number",
     )
     violations = check_receipt_hardening._commit_sha_existence_violations(
-        receipt,
-        resolver=lambda r: check_receipt_hardening._commit_sha_resolves(
-            r,
-            local_reachable=lambda _sha: False,
-            remote_exists=tracking_remote_exists,
-        ),
+        receipt, _commit_resolver(), []
     )
     assert len(violations) == 1
     assert "[COMMIT_SHA_EXISTS]" in violations[0]
-    assert "torvalds/linux" not in calls
 
 
-def test_commit_sha_existence_superseded_receipt_is_excused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_commit_sha_existence_superseded_receipt_is_excused(tmp_path: Path) -> None:
     """A merged receipt with a bad commit_sha is correctable via the same
     append-only supersession path every other rule in this file already
     honors — no new mechanism required."""
@@ -1215,7 +1218,7 @@ def test_commit_sha_existence_superseded_receipt_is_excused(
     replacement_data = _receipt_data(
         contract_sha256=_contract_sha(contract),
         run_timestamp=POST_OMN15461_CUTOFF_TS,
-        commit_sha="c6879b0abc1234567890abcdef1234567890abc",
+        commit_sha=FULL_LOCAL_SHA,
     )
     supersede_path = receipt_dir / "command.supersede.0001.yaml"
     supersede_path.write_text(
@@ -1228,13 +1231,256 @@ def test_commit_sha_existence_superseded_receipt_is_excused(
         )
     )
 
-    # Patch the resolver so the REPLACEMENT's commit_sha (a real-looking SHA)
-    # resolves, while anything else (e.g. the base's bad SHA) does not.
-    real_sha = "c6879b0abc1234567890abcdef1234567890abc"
+    # The replacement resolves while the immutable base remains unavailable.
+    real_sha = FULL_LOCAL_SHA
+    base_violations = check_receipt_file(
+        base_path,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(local_shas=frozenset({real_sha})),
+    )
+    assert base_violations == [], base_violations
+
+
+def test_main_returns_two_for_unavailable_without_receipt_defect_wording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         check_receipt_hardening,
-        "_commit_sha_resolves",
-        lambda r: r.commit_sha == real_sha,
+        "CommitShaResolver",
+        lambda **_kwargs: _commit_resolver(
+            remote_statuses={("OmniNode-ai/onex_change_control", FULL_LOCAL_SHA): 429}
+        ),
     )
-    base_violations = check_receipt_file(base_path, tmp_path / "contracts")
-    assert base_violations == [], base_violations
+
+    assert (
+        main([str(receipt.relative_to(tmp_path)), "--contracts-dir", "contracts"]) == 2
+    )
+    output = capsys.readouterr().out
+    assert "[INFRASTRUCTURE_UNAVAILABLE]" in output
+    assert "[COMMIT_SHA_EXISTS]" not in output
+    assert "[COMMIT_SHA_FORMAT]" not in output
+
+
+def test_paths_file0_preserves_newline_path_and_staged_discovery_is_nul_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    newline_path = Path("drift/dod_receipts/OMN-13060/dod-001/command\nname.yaml")
+    receipt_path = tmp_path / newline_path
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(yaml.safe_dump(_receipt_data(run_timestamp=PRE_CUTOFF_TS)))
+    paths_file = tmp_path / "changed.paths0"
+    paths_file.write_bytes(os.fsencode(newline_path) + b"\0")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["--paths-file0", str(paths_file), "--contracts-dir", "contracts"]) == 0
+    assert check_receipt_hardening._read_paths_file0(paths_file) == [newline_path]
+
+
+def test_staged_discovery_uses_one_nul_delimited_git_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"contracts/OMN-17501.yaml\0drift/dod_receipts/a\nfile.yaml\0",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    paths, error = check_receipt_hardening._discover_staged_paths()
+
+    assert error is None
+    assert paths == [
+        Path("contracts/OMN-17501.yaml"),
+        Path("drift/dod_receipts/a\nfile.yaml"),
+    ]
+    assert calls == [
+        [
+            "git",
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMRT",
+            "--",
+            "drift/dod_receipts",
+            "contracts",
+        ]
+    ]
+
+
+def test_commit_sha_wiring_static_check_passes_for_repository_config() -> None:
+    assert main(["--check-commit-sha-wiring"]) == 0
+
+
+def test_commit_sha_inventory_is_temp_only_and_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    output = tmp_path / "commit-sha-inventory.json"
+    monkeypatch.setattr(
+        check_receipt_hardening,
+        "CommitShaResolver",
+        lambda **_kwargs: _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA})),
+    )
+
+    assert main([str(receipt), "--commit-sha-inventory", str(output)]) == 0
+    inventory = yaml.safe_load(output.read_text())
+    assert inventory["complete"] is True
+    assert inventory["claims"] == [
+        {
+            "local_outcome": "REACHABLE_LOCAL",
+            "paths": [receipt.as_posix()],
+            "pending_remote": False,
+            "remote_outcome": "REACHABLE_REMOTE",
+            "repo": "OmniNode-ai/onex_change_control",
+            "reset_at": None,
+            "retry_after": None,
+            "sha": FULL_LOCAL_SHA,
+        }
+    ]
+
+
+def test_commit_sha_inventory_invalid_output_stops_before_inventory_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invalid output path terminates before the inventory writer can run."""
+
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    writer_called = False
+
+    def inventory_writer(*_args: object, **_kwargs: object) -> int:
+        nonlocal writer_called
+        writer_called = True
+        return 0
+
+    monkeypatch.setattr(
+        check_receipt_hardening, "_write_commit_sha_inventory", inventory_writer
+    )
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                str(receipt),
+                "--commit-sha-inventory",
+                str(Path.cwd() / "outside-system-temp.json"),
+            ]
+        )
+
+    assert writer_called is False
+
+
+def test_explicit_inventory_defaults_to_corpus_with_one_resolver_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corpus truth is opt-in and deduplicates repeated commit claims.
+
+    The pre-commit hook deliberately remains ``--staged`` even under
+    ``pre-commit --all-files``.  An operator must instead invoke the explicit
+    inventory command when a bounded whole-corpus reconciliation is required.
+    """
+    first = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    duplicate = first.with_name("command-duplicate.yaml")
+    duplicate.write_text(first.read_text())
+    output = tmp_path / "commit-sha-corpus-inventory.json"
+    instances: list[CommitShaResolver] = []
+
+    def resolver_factory(**_kwargs: object) -> CommitShaResolver:
+        resolver = _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA}))
+        instances.append(resolver)
+        return resolver
+
+    monkeypatch.setattr(check_receipt_hardening, "CommitShaResolver", resolver_factory)
+
+    assert (
+        main(
+            [
+                "--receipts-root",
+                str(tmp_path / "drift" / "dod_receipts"),
+                "--commit-sha-inventory",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    inventory = yaml.safe_load(output.read_text())
+    assert len(instances) == 1
+    assert instances[0].remote_calls == 1
+    assert inventory["remote_calls"] == 1
+    assert inventory["claims"][0]["paths"] == sorted(
+        [first.as_posix(), duplicate.as_posix()]
+    )
+
+
+def test_commit_sha_inventory_marks_budget_skipped_claims_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inventory resumes after a bounded run rather than implying completion."""
+    first = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            run_timestamp=POST_OMN15461_CUTOFF_TS,
+            commit_sha=FULL_LOCAL_SHA,
+        ),
+    )
+    second = first.with_name("command-second.yaml")
+    second.write_text(
+        yaml.safe_dump(
+            _receipt_data(
+                run_timestamp=POST_OMN15461_CUTOFF_TS,
+                commit_sha="d" * 40,
+            )
+        )
+    )
+    output = tmp_path / "commit-sha-inventory-budget.json"
+    monkeypatch.setattr(
+        check_receipt_hardening, "_inventory_source_commit", lambda: "mocked"
+    )
+
+    exit_code = check_receipt_hardening._write_commit_sha_inventory(
+        output,
+        [first, second],
+        _commit_resolver(rest_budget=1),
+    )
+
+    inventory = yaml.safe_load(output.read_text())
+    assert exit_code == 2
+    assert inventory["complete"] is False
+    assert inventory["source_commit"] == "mocked"
+    assert inventory["remote_calls"] == 1
+    assert inventory["claims"][1]["pending_remote"] is True
+    assert inventory["claims"][1]["remote_outcome"] == "NOT_ATTEMPTED"
