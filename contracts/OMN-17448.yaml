@@ -1,104 +1,142 @@
 ---
-schema_version: "1.0.0"
-ticket_id: "OMN-17448"
-title: "The .201 dev lane runs ZERO standalone projection writers, and node_projection_tenant_registry
-  has a writer on NO lane"
-summary: >-
-  The shared kernel subscribes every *ProjectionRunner contract's topics and then returns None before
-  dispatch (deliberate, OMN-15905: a runner owns its own consume loop and DB pool). Without a dedicated
+schema_version: 1.0.0
+ticket_id: OMN-17448
+title: The .201 dev lane runs ZERO standalone projection writers, and node_projection_tenant_registry
+  has a writer on NO lane
+summary: 'The shared kernel subscribes every *ProjectionRunner contract''s topics and then returns None
+  before dispatch (deliberate, OMN-15905: a runner owns its own consume loop and DB pool). Without a dedicated
   writer process the consumer takes every message, commits every offset, and writes nothing -- no DLQ
   record, no terminal event, no ERROR log. OMN-15905 shipped the dedicated writers for onex-dev k8s; nothing
   mirrored them onto compose, so the .201 dev lane ran zero of them, and node_projection_tenant_registry
   had a deployed writer on no lane at all. This ticket adds the writers on both lanes and gives the runtime
-  health surface a third dimension that can see the state (attached, lag 0, DLQ-free, writing nothing).
+  health surface a third dimension that can see the state (attached, lag 0, DLQ-free, writing nothing).'
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
-  - kind: "ci"
-    description: "PR #1125 product diff scope present"
-    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
-  - kind: "tests"
-    description: |-
-      Behavior proof for PR #1125 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omninode_infra`.
-    command: |-
-      uv run pytest tests/k8s/test_managed_kafka_rollout_roster.py tests/k8s/test_onex_dev_managed_postgres_networkpolicy.py -q
+  - kind: ci
+    description: 'PR #1125 product diff scope present'
+    command: gh pr view ${PR_NUMBER} --repo ${REPO} --json files
+  - kind: tests
+    description: 'Behavior proof for PR #1125 on OmniNode-ai/omninode_infra, derived from the PR''s own
+      diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`,
+      executed at cwd `${OMNI_HOME}/omninode_infra`.'
+    command: uv run pytest tests/k8s/test_managed_kafka_rollout_roster.py tests/k8s/test_onex_dev_managed_postgres_networkpolicy.py
+      -q
 emergency_bypass:
   enabled: false
-  justification: ""
-  follow_up_ticket_id: ""
+  justification: ''
+  follow_up_ticket_id: ''
 dod_evidence:
-  - id: "dod-deploy-omn17448-ledger-module"
-    description: >-
-      Deploy-gate probe declaration, checked hermetically against the product PR head. The runtime image
-      built from OmniNode-ai/omnibase_infra#3107 must carry the wiring-seam ledger module that the projection_write_path
-      health dimension reads; the post-deploy live probe is the same import from the running runtime container.
-      The pinned content read goes RED if the merge head lacks that module.
-    source: "manual"
+  - id: dod-live-omn17448-writer-process
+    description: 'LIVE deploy probe on the .201 dev lane: the standalone tenant-registry projection writer
+      is a RUNNING process executing the handler module''s own __main__ entrypoint. Manifest presence
+      is deliberately NOT what this asserts -- the pre-fix failure mode IS a subscribed-but-undispatched
+      projection that reports healthy, so the probe asserts the process and its command. execution_scope
+      local_done_gate (OMN-15392): a hosted CI runner has no route to .201 and no docker daemon, so this
+      is evidence for the local Done gate and is NOT_EVALUATED in CI rather than blocking it (OMN-14051).
+      Ran 2026-09-01T08:37Z: exit 0, stdout `true omnimarket.nodes.node_projection_tenant_registry.handlers.handler_tenant_registry_projection`.'
+    source: manual
+    execution_scope: local_done_gate
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/projection_dispatch_ledger.py?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
+      - check_type: command
+        check_value: docker exec ${RUNTIME_CONTAINER:-omninode-runtime} true && docker inspect omnimarket-projection-tenant-registry-writer
+          --format '{{.State.Running}} {{index .Config.Cmd 2}}' | grep -qx 'true omnimarket.nodes.node_projection_tenant_registry.handlers.handler_tenant_registry_projection'
+  - id: dod-live-omn17448-mirror-row-from-bus
+    description: 'LIVE deploy probe on the .201 dev lane: tenant_registry_mirror holds a row written by
+      the standalone writer from a TENANT_CREATED consumed off onex.tenant.events -- not inserted by hand,
+      and retained rather than cleaned up. Before this change the relation sat at 0 rows while its consumer
+      group reported Stable at LAG 0 over well-formed events, so a non-zero count is exactly the fact
+      that was previously unobtainable. execution_scope local_done_gate (OMN-15392) for the same reason
+      as the sibling probe. Ran 2026-09-01T08:37Z: exit 0, count 1, row tenant_slug=''beta-omn16976-probe''
+      tenant_uuid=16976000-0000-4000-8000-0000000000aa source_event_id=53ab869c-f144-559c-467a-76ef7960370c.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -tAc 'select
+          count(*) from tenant_registry_mirror' | tr -d ' ' | grep -qxE '[1-9][0-9]*'
+  - id: dod-live-omn17448-delegation-rows-from-bus
+    description: 'LIVE deploy probe on the .201 dev lane: delegation_events holds rows written end-to-end
+      by the standalone delegation writer off the live bus, up from 0 immediately before this deploy.
+      execution_scope local_done_gate (OMN-15392). Ran 2026-09-01T08:37Z: exit 0, count 155; newest rows
+      correlation_id=afc18ea6-99ca-4ab3-9368-a3e492d33642 and 4e237579-5efa-4865-889c-91765b935204, both
+      written 08:35:13Z. Recorded honestly: the writer is NOT fully caught up -- it is fail-closed at
+      delegate-skill-completed.v1 offset 161 (LAG 2) on a retained event whose tenant slug has no mirror
+      row and no TENANT_CREATED on the topic, refusing to invent an identity and leaving the offset uncommitted
+      (OMN-16804 AC3). That is OMN-17446''s defect demonstrated live; no backfill was built to clear it.'
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -tAc 'select
+          count(*) from delegation_events' | tr -d ' ' | grep -qxE '[1-9][0-9]*'
+  - id: dod-deploy-omn17448-ledger-module
+    description: Deploy-gate probe declaration, checked hermetically against the product PR head. The
+      runtime image built from OmniNode-ai/omnibase_infra#3107 must carry the wiring-seam ledger module
+      that the projection_write_path health dimension reads; the post-deploy live probe is the same import
+      from the running runtime container. The pinned content read goes RED if the merge head lacks that
+      module.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/projection_dispatch_ledger.py?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
           --jq .content | base64 -d | python3 -c 'import sys; text=sys.stdin.read(); raise SystemExit(0
           if "def dispatch_skipped_projections" in text else 1)'
-  - id: "dod-deploy-omn17448-writer-running"
-    description: >-
-      Deploy-gate probe declaration, checked hermetically against the product PR head. The dev-lane compose
-      overlay must declare the standalone tenant-registry writer and run the handler module's own entrypoint;
-      the post-deploy live probe is the same service resolved as a running container. The pinned content
-      read goes RED if the merge head lacks that writer wiring.
-    source: "manual"
+  - id: dod-deploy-omn17448-writer-running
+    description: Deploy-gate probe declaration, checked hermetically against the product PR head. The
+      dev-lane compose overlay must declare the standalone tenant-registry writer and run the handler
+      module's own entrypoint; the post-deploy live probe is the same service resolved as a running container.
+      The pinned content read goes RED if the merge head lacks that writer wiring.
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.dev-lane.yml?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.dev-lane.yml?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
           --jq .content | base64 -d | python3 -c 'import sys; text=sys.stdin.read(); raise SystemExit(0
           if "omnimarket.nodes.node_projection_tenant_registry.handlers.handler_tenant_registry_projection"
           in text else 1)'
-  - id: "dod-deploy-omn17448-mirror-row"
-    description: >-
-      Deploy-gate probe declaration, checked hermetically against the product PR head. Runtime health
-      must expose the projection_write_path dimension that catches the historical state where tenant_registry_mirror
+  - id: dod-deploy-omn17448-mirror-row
+    description: Deploy-gate probe declaration, checked hermetically against the product PR head. Runtime
+      health must expose the projection_write_path dimension that catches the historical state where tenant_registry_mirror
       had zero rows while its consumer group was stable at lag zero. The post-deploy live probe remains
       a database read for a non-zero mirror row; the pinned content read goes RED if the merge head lacks
       the health dimension that makes the condition observable.
-    source: "manual"
+    source: manual
     checks:
-      - check_type: "command"
-        check_value: >-
-          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/health/projection_liveness.py?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
+      - check_type: command
+        check_value: gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/health/projection_liveness.py?ref=8e40b1c5e8cdab395c6488e0f6423f61d745225a
           --jq .content | base64 -d | python3 -c 'import sys; text=sys.stdin.read(); raise SystemExit(0
           if "projection_write_path" in text else 1)'
-  - id: "dod-OmniNode-ai-omninode_infra-pr-1125"
+  - id: dod-OmniNode-ai-omninode_infra-pr-1125
     description: "PR #1125 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
-    source: "generated"
+    source: generated
     checks:
-      - check_type: "command"
-        check_value: "gh pr view 1125 --repo OmniNode-ai/omninode_infra --json number,state"
-  - id: "dod-OmniNode-ai-omninode_infra-pr-1125-ci"
+      - check_type: command
+        check_value: gh pr view 1125 --repo OmniNode-ai/omninode_infra --json number,state
+  - id: dod-OmniNode-ai-omninode_infra-pr-1125-ci
     description: "PR #1125 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
-    source: "generated"
+    source: generated
     checks:
-      - check_type: "command"
-        check_value: "gh pr view 1125 --repo OmniNode-ai/omninode_infra --json files"
-  - id: "dod-occ-diff-derived-behavior-proof"
+      - check_type: command
+        check_value: gh pr view 1125 --repo OmniNode-ai/omninode_infra --json files
+  - id: dod-occ-diff-derived-behavior-proof
     description: "PR #1125 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
-    source: "generated"
-    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1125"
+    source: generated
+    evidence_artifact: supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1125
     checks:
-      - check_type: "test_passes"
-        check_value: |-
-          uv run pytest tests/k8s/test_managed_kafka_rollout_roster.py tests/k8s/test_onex_dev_managed_postgres_networkpolicy.py -q
-        cwd: "${OMNI_HOME}/omninode_infra"
-  - id: "occ-self-bind-pr-7934"
+      - check_type: test_passes
+        check_value: uv run pytest tests/k8s/test_managed_kafka_rollout_roster.py tests/k8s/test_onex_dev_managed_postgres_networkpolicy.py
+          -q
+        cwd: ${OMNI_HOME}/omninode_infra
+  - id: occ-self-bind-pr-7934
     description: "OCC companion PR #7934 — self-bind for OMN-17448 (OMN-14650)."
-    source: "generated"
+    source: generated
     checks:
-      - check_type: "command"
-        check_value: "gh pr view 7934 --repo OmniNode-ai/onex_change_control --json number,state"
-  - id: "occ-self-bind-pr-7935"
-    description: "Binds OMN-17448 to OCC companion PR #7935 (self-bind)."
-    source: "generated"
+      - check_type: command
+        check_value: gh pr view 7934 --repo OmniNode-ai/onex_change_control --json number,state
+  - id: occ-self-bind-pr-7935
+    description: 'Binds OMN-17448 to OCC companion PR #7935 (self-bind).'
+    source: generated
     checks:
-      - check_type: "command"
-        check_value: "gh pr view 7935 --repo OmniNode-ai/onex_change_control --json number,state"
+      - check_type: command
+        check_value: gh pr view 7935 --repo OmniNode-ai/onex_change_control --json number,state
