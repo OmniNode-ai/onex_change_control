@@ -1,8 +1,16 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-17448"
-title: "Autobind OCC evidence for OMN-17448"
-summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #1125."
+title: "The .201 dev lane runs ZERO standalone projection writers, and node_projection_tenant_registry
+  has a writer on NO lane"
+summary: >-
+  The shared kernel subscribes every *ProjectionRunner contract's topics and then returns None before
+  dispatch (deliberate, OMN-15905: a runner owns its own consume loop and DB pool). Without a dedicated
+  writer process the consumer takes every message, commits every offset, and writes nothing -- no DLQ
+  record, no terminal event, no ERROR log. OMN-15905 shipped the dedicated writers for onex-dev k8s; nothing
+  mirrored them onto compose, so the .201 dev lane ran zero of them, and node_projection_tenant_registry
+  had a deployed writer on no lane at all. This ticket adds the writers on both lanes and gives the runtime
+  health surface a third dimension that can see the state (attached, lag 0, DLQ-free, writing nothing).
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -20,6 +28,40 @@ emergency_bypass:
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-deploy-omn17448-ledger-module"
+    description: >-
+      Deploy probe (falsifiable, live surface). The DEPLOYED .201 dev-lane runtime image must carry the
+      new wiring-seam ledger this ticket adds. It is the module the projection_write_path health dimension
+      reads, so an image without it silently returns the pre-fix behaviour: HEALTHY with a projection
+      that writes nothing. Goes RED against any image built before this change.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c 'import omnibase_infra.runtime.projection_dispatch_ledger
+          as m; assert callable(m.dispatch_skipped_projections)'"
+  - id: "dod-deploy-omn17448-writer-running"
+    description: >-
+      Deploy probe (falsifiable, live surface). The standalone tenant-registry writer must be a RUNNING
+      process on the .201 dev lane, executing the handler module's own __main__ entrypoint. This is the
+      whole fix: the manifest existing proves nothing, because the pre-fix failure mode is a subscribed-but-undispatched
+      projection that reports healthy. Goes RED on any lane where the writer was never created or has
+      exited.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "docker inspect omnimarket-projection-tenant-registry-writer --format '{{.State.Running}}
+          {{index .Config.Cmd 2}}' | grep -qx 'true omnimarket.nodes.node_projection_tenant_registry.handlers.handler_tenant_registry_projection'"
+  - id: "dod-deploy-omn17448-mirror-row"
+    description: >-
+      Deploy probe (falsifiable, live surface). The end-state this ticket exists to produce: tenant_registry_mirror
+      holds at least one row on the deployed .201 dev lane, written by the standalone writer from a TENANT_CREATED
+      event consumed off onex.tenant.events. Before this change the relation sat at 0 rows while its consumer
+      group reported Stable at LAG 0, so a non-zero count is exactly the fact that was previously unobtainable.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "docker exec omnibase-infra-postgres psql -U postgres -d omnidash_analytics -tAc
+          'select count(*) from tenant_registry_mirror' | tr -d ' ' | grep -qxE '[1-9][0-9]*'"
   - id: "dod-OmniNode-ai-omninode_infra-pr-1125"
     description: "PR #1125 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
     source: "generated"
