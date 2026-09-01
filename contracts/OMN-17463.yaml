@@ -1,0 +1,105 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17463"
+title: "feat(infra): govern RSD verified first-effect ledger deployment"
+summary: "Prospective governance for the reviewed omnibase_infra branch codex/infra-durable-stager-dev-4a27
+  at commits 7a631f0471f1985ed8cfd6d5c743bc93e884fcc1 and 72dad5585495e0866d0048e5bfb5cc7663c6da00; neither
+  commit is deployed or authorization to execute effects."
+
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+
+evidence_requirements:
+  - kind: "tests"
+    description: "Run the focused contract, ingress, PostgreSQL adapter, and migration tests from the
+      reviewed omnibase_infra commit chain before proposing a release."
+    command: "uv run pytest tests/unit/contracts/test_protocol_ownership.py tests/unit/runtime/test_rsd_verified_first_effect_grant_ingress.py
+      tests/unit/runtime/first_effect_ledger/test_adapter_postgres.py tests/unit/migrations/test_105_verified_first_effect_grant_ledger_sql.py
+      -q"
+  - kind: "manual"
+    description: "Any future staging must be execute-disabled-first, overlay-bound, and limited to a verified-ledger
+      canary; it must not create a broker publish attempt or execute a queue effect."
+  - kind: "manual"
+    description: "A later rollback must restore the previously approved immutable image SHA and demonstrate
+      that no verified grant crossed into an effect-producing path; this contract records no such deployment
+      or verification today."
+
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+
+dod_evidence:
+  - id: "dod-reviewed-commit-chain"
+    description: "The proposed implementation is restricted to the reviewed two-commit omnibase_infra
+      chain; the second commit may change only the named ownership-contract test relative to the first."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "git merge-base --is-ancestor 7a631f0471f1985ed8cfd6d5c743bc93e884fcc1 72dad5585495e0866d0048e5bfb5cc7663c6da00
+          && changed_paths=\"$(git diff --name-only 7a631f0471f1985ed8cfd6d5c743bc93e884fcc1 72dad5585495e0866d0048e5bfb5cc7663c6da00)\"
+          && grep -qx tests/unit/contracts/test_protocol_ownership.py <<< \"$changed_paths\""
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-reviewed-ledger-boundary"
+    description: "The reviewed ledger migration must retain its stated no-publisher/no-broker boundary,
+      so a governance-only admission cannot be mistaken for first-effect authorization."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "git show 7a631f0471f1985ed8cfd6d5c743bc93e884fcc1:docker/migrations/forward/105_create_verified_first_effect_grant_ledger.sql
+          | rg -F 'There is no publisher or broker operation in this schema.'"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-focused-reviewed-tests"
+    description: "The reviewed contract, ingress, PostgreSQL adapter, and migration tests must pass from
+      the declared omnibase_infra commit before any release proposal."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/contracts/test_protocol_ownership.py tests/unit/runtime/test_rsd_verified_first_effect_grant_ingress.py
+          tests/unit/runtime/first_effect_ledger/test_adapter_postgres.py tests/unit/migrations/test_105_verified_first_effect_grant_ledger_sql.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-live-disabled-canary"
+    description: "At an authorized later staging gate, the overlay must keep execution disabled and prove
+      that the verified-grant ledger relation is present without granting a broker operation. This probe
+      is pending and must not be run for contract admission."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -ceu ': "${RSD_VERIFIED_LEDGER_DSN:?approved contract overlay must supply ledger DSN}";
+          : "${RSD_VERIFIED_LEDGER_EXECUTE_ENABLED:?approved contract overlay must supply execute flag}";
+          test "$RSD_VERIFIED_LEDGER_EXECUTE_ENABLED" = false; psql "$RSD_VERIFIED_LEDGER_DSN" -X -v ON_ERROR_STOP=1
+          -Atqc "SELECT to_regclass(\$\$public.first_effect_verified_grant_ledger\$\$) = \$\$public.first_effect_verified_grant_ledger\$\$;"
+          | grep -qx t
+  - id: "dod-live-rollback-reconciliation"
+    description: "At an authorized later rollback gate, the overlay must prove execution remains disabled
+      and the reconciled runtime SHA equals the prior approved SHA. A mismatch is a rollback failure;
+      this pending probe is not deployment evidence."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "bash -ceu ': \"${RSD_VERIFIED_LEDGER_EXECUTE_ENABLED:?approved contract overlay
+          must supply execute flag}\"; : \"${RSD_VERIFIED_LEDGER_REMOTE_SHA:?approved contract overlay
+          must supply reconciled runtime SHA}\"; : \"${RSD_VERIFIED_LEDGER_PREVIOUS_APPROVED_SHA:?approved
+          contract overlay must supply previous approved SHA}\"; test \"$RSD_VERIFIED_LEDGER_EXECUTE_ENABLED\"
+          = false; test \"$RSD_VERIFIED_LEDGER_REMOTE_SHA\" = \"$RSD_VERIFIED_LEDGER_PREVIOUS_APPROVED_SHA\"'"
+
+# Scope fence: governance only, not a deployment. The approved source is exactly
+# the two commits named above. No unreviewed source, fallback queue, publisher,
+# broker call, or effect execution is authorized. Any future rollout is
+# contract-overlay-only and must preserve the reviewed ledger's no-publisher
+# boundary until a separately governed enabling change is accepted.
