@@ -313,6 +313,7 @@ EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
     # validate-validator-requirements.yml -- unconditional
     "Enforce validator-requirements.yaml (OMN-13299)",
     "call / validate-docs",  # docs-validate.yml -- unconditional
+    "kb-doc-gate / kb-doc-gate",  # kb-doc-gate.yml -- unconditional
     "CI Naming Convention",  # omni-standards-compliance.yml -- unconditional
     # doctrine-coverage.yml: the job itself is unconditional (`if:
     # !cancelled()`); this PR also removes the base_ref!='dev' clause that
