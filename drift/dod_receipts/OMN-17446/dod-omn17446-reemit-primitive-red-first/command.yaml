@@ -1,0 +1,68 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17446"
+evidence_item_id: "dod-omn17446-reemit-primitive-red-first"
+check_type: "command"
+check_value: |-
+  python -m pytest tests/test_omn_17446_tenant_created_reemit.py -q
+status: PASS
+run_timestamp: "2026-09-01T10:52:00Z"
+commit_sha: "ebb60deafb5835c0addbab8d84aaf4bb5b9097c4"
+branch: "jonah/omn-17446-tenant-created-reemit"
+pr_number: 7957
+runner: "claude-code"
+verifier: "occ-interim-manual-verify"
+contract_entry_sha256: "sha256:6776ece48885276fa4e008fc5b3a460930bba73c26d98dd2ec1d4bba46d62cdd"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/commits/ebb60deafb5835c0addbab8d84aaf4bb5b9097c4 --jq .sha >/dev/null &&
+  cd ${OMNI_HOME}/omni_worktrees/OMN-17446/omninode_infra/docker/onex-api &&
+  python -m pytest tests/test_omn_17446_tenant_created_reemit.py -q
+probe_stdout: |-
+  18 passed in 0.52s
+  exit=0
+exit_code: 0
+actual_output: |-
+  PASS: 18 tests, all green at the PR head. RED-first is real and was captured before the module
+  existed: the identical invocation returned "15 failed in 0.16s", every failure
+  "ModuleNotFoundError: No module named 'tenant_event_reemit'", and the three CLI tests were added
+  after. The suite does not stub the logic under test -- it drives the real
+  tenant_creation.build_tenant_created_envelope, the real list_tenants_query status derivation, and
+  the real refusal path, against a recording fake repository that reports back exactly which
+  statements were issued.
+
+  What each property proves, and why it is load-bearing:
+
+  UUID PRESERVATION. The emitted envelope carries the authoritative tenants.tenant_id in all three
+  places it appears (envelope.tenant_id, payload.tenant.tenant_id, metadata.tags.tenant_id), asserted
+  against the four live UUIDs read off the onex-dev registry. A second test asserts agreement with
+  every slug pinned in the consumer-side closed legacy map. This is not defensive: the write-path
+  resolver treats mirror/legacy-map disagreement as a HARD RAISE, so a re-emit that minted a fresh
+  identity for 'omninode' or 'beta-business-proof' would convert two currently-resolving tenants into
+  hard failures -- including the tenant the post-deploy business proof itself runs as.
+
+  ENVELOPE SHAPE EQUALITY. Field-for-field equality against build_tenant_created_envelope, the same
+  builder both create paths call, with only envelope_id/correlation_id/timestamp permitted to differ
+  (they are default_factory fields and differ between two real creates too) -- and those three are
+  still asserted present and well-formed. A separate test pins payload["tenant"]'s key set against the
+  consumer's extra="forbid" model, so producer drift fails in this repo's own suite rather than days
+  later as a mirror row the projection refused.
+
+  FAIL-CLOSED, PROVEN BY READBACK NOT BY THE RAISE. Empty, whitespace-only, duplicate, and
+  unknown-slug allowlists each refuse -- and each assertion reads back that ZERO outbox rows were
+  written and that the transaction never committed, so "refused" means "nothing was enqueued" rather
+  than "an exception was thrown somewhere". A partial emit would half-populate the relation a
+  migration's USING clause resolves against, which reads as caught-up and is not.
+
+  NO PRODUCER OF ITS OWN. A static read of the module source asserts it constructs no KafkaProducer,
+  so it cannot publish outside the transaction and outside the flusher's ordering -- the fail-open
+  path the durable outbox replaced.
+
+  SCOPE, HELD STRUCTURALLY. A signature test asserts tenant_slugs is required and that no set-valued
+  parameter (all_tenants / everything / include_all) exists, and a source test asserts no --all,
+  --every or --include-all CLI flag exists. That is what excludes the operator-deferred external
+  tenant: by the absence of any way to express "all", not by a denylist entry a later edit could drop.
+  The CLI tests additionally pin that a dispatch with a forgotten input exits 2 having touched
+  nothing, and that a durable-but-unpublished enqueue exits 1 rather than reporting success for an
+  event that never reached the topic.
+
+  runner claude-code != verifier occ-interim-manual-verify.
