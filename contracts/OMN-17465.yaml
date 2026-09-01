@@ -1,0 +1,110 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17465"
+title: "Phase B adoption: activate lease-enforcing pre-push hook and retire legacy queue after verified
+  Phase A"
+summary: "Phase B adoption only: after OMN-17462 canonical PASS receipts, execute-disabled protected-artifact
+  readback, and explicit enablement authorization, activate the lease-enforcing pre-push hook and propose
+  legacy retirement. NOT YET DEPLOYED."
+
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+
+evidence_requirements:
+  - kind: "manual"
+    description: "OMN-17462 canonical PASS receipts, immutable protected-artifact SHA readback, execute_enabled=false
+      verification, restricted-principal noninterference, and backup/rollback manifest are hard dependencies
+      before any Phase B adoption action."
+  - kind: "tests"
+    description: "Before hook activation, focused tests must prove failed-closed dependency readback,
+      inactive-hook behavior before enablement, and activation only after the Phase A receipt/SHA prerequisites
+      are satisfied."
+  - kind: "manual"
+    description: "Before legacy deletion, bounded dedicated-broker evidence must prove enqueue, claim,
+      acknowledgement, idempotency, retry/lease expiry, durable audit correlation, zero legacy traffic,
+      zero unresolved legacy work, and no remaining legacy producer or consumer."
+  - kind: "manual"
+    description: "Rollback must immediately restore execute_enabled=false and the previous approved artifact/configuration,
+      preserve forensic data and the legacy path, and prove restored SHA plus noninterference with every
+      excluded store."
+
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+
+dod_evidence:
+  - id: "dod-phase-a-receipt-dependency"
+    description: "Phase B remains blocked unless the canonical PASS receipts for every named Phase A gate
+      exist; receipt absence or a non-PASS status fails closed before hook activation."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "rg -F 'status: PASS' drift/dod_receipts/OMN-17462/dod-phase-a-scope-fence/command.yaml
+          drift/dod_receipts/OMN-17462/dod-phase-a-reproducible-entrypoint/command.yaml drift/dod_receipts/OMN-17462/dod-phase-a-disabled-principal/command.yaml
+          drift/dod_receipts/OMN-17462/dod-phase-a-sha-backup-readback/command.yaml"
+  - id: "dod-phase-a-artifact-readback"
+    description: "Phase B must compare the live reconciled artifact SHA to the Phase A protected artifact
+      SHA and reject a mismatch, dirty tree, branch, tag, or unpinned image. This pending probe is not
+      authority to enable or execute."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "bash -ceu ': \"${RSD_PUSH_LANE_REMOTE_SHA:?approved contract overlay must supply
+          reconciled remote SHA}\"; : \"${RSD_PUSH_LANE_PROTECTED_ARTIFACT_SHA:?approved contract overlay
+          must supply protected artifact SHA}\"; test \"$RSD_PUSH_LANE_REMOTE_SHA\" = \"$RSD_PUSH_LANE_PROTECTED_ARTIFACT_SHA\"'"
+  - id: "dod-pre-push-adoption-gate"
+    description: "Before activation, the adoption implementation must demonstrate that its lease-enforcing
+      pre-push hook remains inactive until the Phase A dependency readback and explicit enablement receipt
+      both succeed."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest -q"
+  - id: "dod-legacy-retirement-noninterference"
+    description: "At an authorized later retirement stage, the overlay must prove zero legacy traffic
+      and unresolved work before deletion, while the restricted broker principal still has no CONNECT
+      privilege outside rsd_push_lanes. This pending probe does not authorize deletion."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -ceu ': "${RSD_PUSH_LANE_BROKER_DSN:?approved contract overlay must supply broker DSN}";
+          : "${RSD_PUSH_LANE_LEGACY_INGRESS_COUNT:?approved contract overlay must supply reconciled legacy
+          ingress count}"; : "${RSD_PUSH_LANE_LEGACY_EGRESS_COUNT:?approved contract overlay must supply
+          reconciled legacy egress count}"; : "${RSD_PUSH_LANE_LEGACY_UNRESOLVED_COUNT:?approved contract
+          overlay must supply reconciled unresolved count}"; test "$RSD_PUSH_LANE_LEGACY_INGRESS_COUNT"
+          = 0; test "$RSD_PUSH_LANE_LEGACY_EGRESS_COUNT" = 0; test "$RSD_PUSH_LANE_LEGACY_UNRESOLVED_COUNT"
+          = 0; psql "$RSD_PUSH_LANE_BROKER_DSN" -X -v ON_ERROR_STOP=1 -Atqc "SELECT current_database()
+          = \$\$rsd_push_lanes\$\$ AND NOT EXISTS (SELECT 1 FROM pg_database WHERE datname <> \$\$rsd_push_lanes\$\$
+          AND has_database_privilege(current_user, datname, \$\$CONNECT\$\$));" | grep -qx t
+  - id: "dod-phase-b-rollback"
+    description: "At an authorized rollback gate, execute must be disabled and the exact prior approved
+      artifact must be restored; mismatch blocks retirement and retains the legacy path. This pending
+      probe is not deployment evidence."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "bash -ceu ': \"${RSD_PUSH_LANE_EXECUTE_ENABLED:?approved contract overlay must supply
+          execute flag}\"; : \"${RSD_PUSH_LANE_REMOTE_SHA:?approved contract overlay must supply reconciled
+          remote SHA}\"; : \"${RSD_PUSH_LANE_PREVIOUS_APPROVED_SHA:?approved contract overlay must supply
+          previous approved SHA}\"; test \"$RSD_PUSH_LANE_EXECUTE_ENABLED\" = false; test \"$RSD_PUSH_LANE_REMOTE_SHA\"
+          = \"$RSD_PUSH_LANE_PREVIOUS_APPROVED_SHA\"'"
+
+# Phase B scope fence: no hook activation, queue execution, or legacy deletion
+# may occur before OMN-17462 receipts/readback and separate enablement. The
+# Infisical database, delegation omnibase_infra, and every pre-existing
+# database, schema, role, queue, and service remain excluded.
