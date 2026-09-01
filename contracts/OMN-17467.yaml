@@ -1,0 +1,91 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17467"
+title: "Compile-only Codex preflight fails closed for invalid targets"
+summary: >-
+  Compile-only Codex preflight now resolves the target node contract and validates the stamped payload
+  against its declared input model before reporting a compiled request. Invalid payloads and missing,
+  malformed, unreadable, or input-model-unresolvable contracts return typed failures rather than an ok=true
+  compiled envelope or a default terminal fallback. A valid request remains compile-only and does not
+  start the event bus. This evidence covers the product source and local checks only; it does not claim
+  a deployment, restart, runtime readback, or generic Pattern-B subscriber.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "public_api"
+  - "protocols"
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused Codex runtime-client regressions prove invalid and unresolvable compile-only requests fail
+      closed, valid requests remain compiled and bus-free, and native routes remain intact.
+    command: "uv run pytest tests/test_codex_runtime_client.py -q"
+  - kind: "ci"
+    description: >-
+      Format, lint, and whitespace checks are clean for the changed runtime-client source and its focused
+      regression tests.
+    command: >-
+      uv run ruff format --check src/omnimarket/adapters/codex/runtime_client.py tests/test_codex_runtime_client.py
+      && uv run ruff check src/omnimarket/adapters/codex/runtime_client.py tests/test_codex_runtime_client.py
+      && git diff --check origin/dev...HEAD
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-focused-compile-preflight-tests"
+    description: >-
+      Focused Codex runtime-client tests cover payload_invalid and contract_unresolvable outcomes for
+      compile-only requests, valid recall compilation, no event-bus startup, and preserved native routing.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_codex_runtime_client.py -q"
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17467/omnimarket"
+  - id: "dod-static-compile-preflight-quality"
+    description: >-
+      Ruff format and lint checks pass for the two changed Python files, and git diff --check reports
+      no whitespace errors in the candidate product diff.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run ruff format --check src/omnimarket/adapters/codex/runtime_client.py tests/test_codex_runtime_client.py
+          && uv run ruff check src/omnimarket/adapters/codex/runtime_client.py tests/test_codex_runtime_client.py
+          && git diff --check origin/dev...HEAD
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17467/omnimarket"
+  - id: "dod-independent-compile-preflight-review"
+    description: >-
+      Independent review checks the candidate diff for fail-closed compile-only behavior, typed errors,
+      contract-route preservation, and the explicit no-event-bus/no-deploy boundary; git diff --check
+      is its reproducible integrity probe rather than behavioral evidence on its own.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "git diff --check origin/dev...HEAD"
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17467/omnimarket"
+  - id: "dod-hosted-compile-preflight-source"
+    description: >-
+      A hosted-and-local fixed-SHA source probe reads the candidate runtime client outside this OCC PR
+      and confirms the new typed payload-validation failure marker at the exact product path. It does
+      not assert a deployment, runtime readback, or product-PR state.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/adapters/codex/runtime_client.py?ref=594f01a4fe27abeea7b7db50cb7925763f5cb321"
+          --jq .content | uv run python -c "import base64, sys; raise SystemExit(0 if b'Target node payload
+          failed compile-only model validation.' in base64.b64decode(sys.stdin.read()) else 1)"
+  - id: "occ-self-bind-pr-7988"
+    description: >-
+      Binds OMN-17467 to OCC companion PR #7988 so the central eligibility gate can resolve a PASS receipt
+      for this in-repository evidence change.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          env -u GITHUB_TOKEN gh pr view 7988 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid,url,baseRefName
