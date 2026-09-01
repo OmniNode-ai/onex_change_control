@@ -34,9 +34,10 @@ protection.
 `test_grant_pr_base_refs_all_carry_the_exclusion` is the **cross-branch** drift
 catcher: for every branch in :data:`GRANT_PR_BASE_BRANCHES` it applies the same
 invariant to that branch's `.github/workflows/auto-merge.yml`, so a governance
-change landed on one base branch alone leaves the other one red. The branch this
-checkout is destined for is read from the working tree rather than from its ref
-— on an open PR the fix is in the tree, not yet on the ref, and a refs-only
+change landed on one base branch alone leaves the other one red. A branch this
+checkout is destined for — one that is an ancestor of HEAD, or the PR base
+GitHub Actions publishes — is read from the working tree rather than from its
+ref: on an open PR the fix is in the tree, not yet on the ref, and a refs-only
 check would require the change to be merged before it could merge. Every other
 branch is read out of the local git object store; one that is not present there
 is reported and skipped rather than silently passing, since OCC's `test` CI job
@@ -138,40 +139,43 @@ def _assert_exclusion_invariant(text: str, origin: str) -> None:
         )
 
 
-def _base_branch_under_edit() -> str | None:
-    """Return the grant-PR base branch this checkout is destined for, if known.
+def _worktree_is_authority_for(branch: str) -> bool:
+    """Is this checkout what ``branch`` becomes once the change lands?
 
     For that one branch the **working tree** is the authority, not the committed
     ref: on an open PR the fix is in the tree and not yet on the ref, and a
     cross-branch check that read only refs would demand the change already be
     merged before it could merge.
 
-    Resolution order: the PR base branch GitHub Actions publishes, then the
-    branch's own upstream. Returns None when neither is available, in which case
-    every branch is checked from its ref.
+    Under GitHub Actions the PR's base branch is published directly. Otherwise
+    the question is answered structurally — this checkout is destined for
+    ``branch`` exactly when ``branch`` is an ancestor of HEAD. Do NOT use
+    ``@{upstream}`` here: once a feature branch has been pushed, its upstream is
+    itself, not its base, so upstream-based resolution silently reports "no
+    branch under edit" and the check then demands the fix already be on the ref.
     """
     github_base = os.environ.get("GITHUB_BASE_REF", "").strip()
     if github_base:
-        return github_base
+        return branch == github_base
 
-    upstream = subprocess.run(
-        [
-            _GIT,
-            "-C",
-            str(REPO_ROOT),
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if upstream.returncode != 0:
-        return None
-    name: str = upstream.stdout.strip()
-    return name.split("/", 1)[1] if name.startswith("origin/") else name or None
+    for candidate in (f"refs/remotes/origin/{branch}", f"refs/heads/{branch}"):
+        probe = subprocess.run(
+            [
+                _GIT,
+                "-C",
+                str(REPO_ROOT),
+                "merge-base",
+                "--is-ancestor",
+                candidate,
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if probe.returncode == 0:
+            return True
+    return False
 
 
 def _read_blob(ref: str, relpath: str) -> str | None:
@@ -265,11 +269,10 @@ def test_grant_pr_base_refs_all_carry_the_exclusion() -> None:
     This is the test that makes OMN-16117's failure mode non-repeatable — a fix
     landed on one base branch alone leaves the other red here.
     """
-    under_edit = _base_branch_under_edit()
     unresolved: list[str] = []
     checked: list[str] = []
     for branch in GRANT_PR_BASE_BRANCHES:
-        if branch == under_edit:
+        if _worktree_is_authority_for(branch):
             # This checkout is what `branch` becomes once the change lands, so
             # the tree — not the ref — is the authority for it.
             _assert_exclusion_invariant(
