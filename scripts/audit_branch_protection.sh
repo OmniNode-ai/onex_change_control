@@ -11,11 +11,12 @@
 # invisible.
 #
 # Per-branch checks (run for main AND dev):
-#   1. Approving reviews are NOT enforced (solo dev — required reviews block PRs).
-#      Judged via GraphQL `requiresApprovingReviews` (authoritative), NOT the
-#      REST `required_pull_request_reviews` object. REST can report a phantom
-#      `required_approving_review_count` even when reviews are not actually
-#      enforced, which would false-fail dev; GraphQL reports the true state.
+#   1. Approving reviews are NOT enforced (solo dev — required reviews block PRs),
+#      except on the explicitly review-gated main repos below. Judged via
+#      GraphQL (authoritative), NOT the REST `required_pull_request_reviews`
+#      object. REST can report a phantom `required_approving_review_count` even
+#      when reviews are not actually enforced, which would false-fail dev;
+#      GraphQL reports the true state.
 #   2. Required status checks are correct for the branch's ROLE:
 #      - Ordinary PR-merge branches (all dev branches; main on repos that are
 #        not release-synced) must require "CI Summary".
@@ -127,6 +128,12 @@ RELEASE_SYNCED_MAIN_REPOS=(
 # next release sync rather than protect anything.
 MAIN_AUDIT_EXEMPT_REPOS=(omnibase_compat)
 
+# Main branches where code-owner review is the deliberate anti-self-issue
+# anchor for a sensitive governance file. These repos are not release-synced:
+# their main branches retain ordinary required-context checks, but this review
+# requirement overrides the solo-dev invariant above.
+REVIEW_GATED_MAIN_REPOS=(onex_change_control)
+
 # Active repos that accept ticketed PRs must directly require the Receipt Gate.
 # Do not treat CI Summary as an implicit substitute; the branch protection rule
 # must expose the canonical `verify / verify` context so drift is visible.
@@ -179,6 +186,16 @@ is_release_synced_main() {
 is_main_audit_exempt() {
   local repo="$1"
   for p in "${MAIN_AUDIT_EXEMPT_REPOS[@]}"; do
+    if [[ "$p" == "$repo" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_review_gated_main() {
+  local repo="$1"
+  for p in "${REVIEW_GATED_MAIN_REPOS[@]}"; do
     if [[ "$p" == "$repo" ]]; then
       return 0
     fi
@@ -329,32 +346,52 @@ check_branch() {
     return
   }
 
-  # 1. Approving reviews must NOT be enforced (GraphQL-authoritative — avoids
-  #    the REST required_pull_request_reviews phantom that false-fails dev).
+  # 1. Review enforcement is GraphQL-authoritative. Ordinary branches retain
+  #    the solo-dev invariant; explicitly review-gated mains require both
+  #    approving and code-owner reviews.
   TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-  local requires_reviews
-  # NOTE: do not use `first // "unknown"` — jq's `//` treats a boolean `false`
-  # as empty, which would collapse the (valid) "reviews not enforced" answer
-  # into "unknown". Branch on array length instead so false != missing.
-  requires_reviews=$(printf '%s' "$gql_rules" | jq -r --arg b "$branch" '
-    [ .data.repository.branchProtectionRules.nodes[]?
-      | select(.pattern == $b)
-      | .requiresApprovingReviews ]
-    | if length == 0 then "unknown" else (.[0] | tostring) end
-  ' 2>/dev/null || echo "unknown")
-  if [[ "$requires_reviews" == "false" ]]; then
-    echo "    [${branch}] PASS: approving reviews not enforced (GraphQL requiresApprovingReviews=false)"
-    emit_jsonl "$repo" "$branch" "reviews_not_enforced" "PASS" "requiresApprovingReviews=false"
-  elif [[ "$requires_reviews" == "true" ]]; then
-    echo "    [${branch}] FAIL: approving reviews are enforced (blocks solo-dev merges)"
-    emit_jsonl "$repo" "$branch" "reviews_not_enforced" "FAIL" "requiresApprovingReviews=true"
-    REPO_OK=false
-    FAILURES=$((FAILURES + 1))
+  if [[ "$branch" == "main" ]] && is_review_gated_main "$repo"; then
+    local review_state
+    review_state=$(printf '%s' "$gql_rules" | jq -r --arg b "$branch" '
+      [ .data.repository.branchProtectionRules.nodes[]?
+        | select(.pattern == $b)
+        | "\(.requiresApprovingReviews | tostring):\(.requiresCodeOwnerReviews | tostring)" ]
+      | if length == 0 then "unknown" else .[0] end
+    ' 2>/dev/null || echo "unknown")
+    if [[ "$review_state" == "true:true" ]]; then
+      echo "    [${branch}] PASS: approving and code-owner reviews are enforced (review-gated main)"
+      emit_jsonl "$repo" "$branch" "reviews_required" "PASS" "requiresApprovingReviews=true; requiresCodeOwnerReviews=true"
+    else
+      echo "    [${branch}] FAIL: review-gated main requires approving and code-owner reviews (GraphQL state=${review_state})"
+      emit_jsonl "$repo" "$branch" "reviews_required" "FAIL" "requiresApprovingReviews/requiresCodeOwnerReviews=${review_state}"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+    fi
   else
-    # GraphQL rule not found for this branch (or GraphQL unavailable). Do NOT
-    # fall back to the phantom-prone REST count. Surface as a non-failing WARN.
-    echo "    [${branch}] WARN: could not determine review enforcement via GraphQL (no matching rule)"
-    emit_jsonl "$repo" "$branch" "reviews_not_enforced" "WARN" "GraphQL rule unavailable"
+    local requires_reviews
+    # NOTE: do not use `first // "unknown"` — jq's `//` treats a boolean `false`
+    # as empty, which would collapse the (valid) "reviews not enforced" answer
+    # into "unknown". Branch on array length instead so false != missing.
+    requires_reviews=$(printf '%s' "$gql_rules" | jq -r --arg b "$branch" '
+      [ .data.repository.branchProtectionRules.nodes[]?
+        | select(.pattern == $b)
+        | .requiresApprovingReviews ]
+      | if length == 0 then "unknown" else (.[0] | tostring) end
+    ' 2>/dev/null || echo "unknown")
+    if [[ "$requires_reviews" == "false" ]]; then
+      echo "    [${branch}] PASS: approving reviews not enforced (GraphQL requiresApprovingReviews=false)"
+      emit_jsonl "$repo" "$branch" "reviews_not_enforced" "PASS" "requiresApprovingReviews=false"
+    elif [[ "$requires_reviews" == "true" ]]; then
+      echo "    [${branch}] FAIL: approving reviews are enforced (blocks solo-dev merges)"
+      emit_jsonl "$repo" "$branch" "reviews_not_enforced" "FAIL" "requiresApprovingReviews=true"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+    else
+      # GraphQL rule not found for this branch (or GraphQL unavailable). Do NOT
+      # fall back to the phantom-prone REST count. Surface as a non-failing WARN.
+      echo "    [${branch}] WARN: could not determine review enforcement via GraphQL (no matching rule)"
+      emit_jsonl "$repo" "$branch" "reviews_not_enforced" "WARN" "GraphQL rule unavailable"
+    fi
   fi
 
   # 2. Required status checks — role-dependent.
@@ -453,7 +490,7 @@ check_repo() {
   # expansions — they must stay literal inside the single-quoted query.
   # shellcheck disable=SC2016
   gql_rules=$(gh api graphql \
-    -f query='query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ branchProtectionRules(first:50){ nodes{ pattern requiresApprovingReviews } } } }' \
+    -f query='query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ branchProtectionRules(first:50){ nodes{ pattern requiresApprovingReviews requiresCodeOwnerReviews } } } }' \
     -f owner="$ORG" -f name="$repo" 2>&1) || gql_rules=""
 
   # ---------- Per-branch checks (main + dev) ----------

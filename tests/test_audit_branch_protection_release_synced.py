@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""Behavioural tests for ``scripts/audit_branch_protection.sh`` (OMN-17186).
+"""Behavioural tests for ``scripts/audit_branch_protection.sh`` (OMN-17491).
 
 Background
 ----------
@@ -26,7 +26,10 @@ now satisfy BOTH halves of the replacement protection:
    identity).
 
 These tests drive the real script with a stubbed ``gh`` on ``PATH``, so they
-exercise the shell logic rather than restating it.
+exercise the shell logic rather than restating it. OMN-17491 adds an explicit
+exception for ``onex_change_control`` ``main``: that governance branch must
+retain both approving and code-owner review enforcement. Ordinary repositories
+continue to assert the solo-dev invariant.
 
 RED/GREEN
 ---------
@@ -47,8 +50,12 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUDIT_SCRIPT = REPO_ROOT / "scripts" / "audit_branch_protection.sh"
@@ -78,8 +85,37 @@ _GQL_RULES = {
         "repository": {
             "branchProtectionRules": {
                 "nodes": [
-                    {"pattern": "main", "requiresApprovingReviews": False},
-                    {"pattern": "dev", "requiresApprovingReviews": False},
+                    {
+                        "pattern": "main",
+                        "requiresApprovingReviews": False,
+                        "requiresCodeOwnerReviews": False,
+                    },
+                    {
+                        "pattern": "dev",
+                        "requiresApprovingReviews": False,
+                        "requiresCodeOwnerReviews": False,
+                    },
+                ]
+            }
+        }
+    }
+}
+
+_GQL_REVIEW_GATED_MAIN = {
+    "data": {
+        "repository": {
+            "branchProtectionRules": {
+                "nodes": [
+                    {
+                        "pattern": "main",
+                        "requiresApprovingReviews": True,
+                        "requiresCodeOwnerReviews": True,
+                    },
+                    {
+                        "pattern": "dev",
+                        "requiresApprovingReviews": False,
+                        "requiresCodeOwnerReviews": False,
+                    },
                 ]
             }
         }
@@ -171,10 +207,11 @@ def _fixtures(
     repo: str,
     protection: dict[str, object],
     rulesets: list[dict[str, object]],
+    gql_rules: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     base = f"repos/OmniNode-ai/{repo}"
     fx: dict[str, object] = {
-        "graphql": _GQL_RULES,
+        "graphql": gql_rules if gql_rules is not None else _GQL_RULES,
         f"{base}/branches/main/protection": protection,
         f"{base}/branches/dev/protection": _PROTECTION_CI_SUMMARY,
         base: _REPO_SETTINGS,
@@ -286,6 +323,50 @@ def test_ordinary_repo_still_requires_ci_summary_on_main(tmp_path: Path) -> None
     )
     assert failing.returncode == 1, failing.stdout + failing.stderr
     assert '"CI Summary" not found in required status checks' in failing.stdout
+
+
+@pytest.mark.unit
+def test_review_gated_occ_main_requires_approving_and_code_owner_reviews(
+    tmp_path: Path,
+) -> None:
+    """The OCC governance main keeps ordinary checks plus review enforcement."""
+    result = _run_audit(
+        tmp_path,
+        "onex_change_control",
+        _fixtures(
+            "onex_change_control",
+            _PROTECTION_CI_SUMMARY,
+            [_RULESET_MERGE_QUEUE_DISABLED],
+            gql_rules=_GQL_REVIEW_GATED_MAIN,
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "approving and code-owner reviews are enforced" in result.stdout
+
+
+@pytest.mark.unit
+def test_review_gated_occ_main_fails_without_code_owner_reviews(
+    tmp_path: Path,
+) -> None:
+    """Approving reviews without the code-owner gate are insufficient."""
+    gql_rules = json.loads(json.dumps(_GQL_REVIEW_GATED_MAIN))
+    gql_rules["data"]["repository"]["branchProtectionRules"]["nodes"][0][
+        "requiresCodeOwnerReviews"
+    ] = False
+    result = _run_audit(
+        tmp_path,
+        "onex_change_control",
+        _fixtures(
+            "onex_change_control",
+            _PROTECTION_CI_SUMMARY,
+            [_RULESET_MERGE_QUEUE_DISABLED],
+            gql_rules=gql_rules,
+        ),
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (
+        "review-gated main requires approving and code-owner reviews" in result.stdout
+    )
 
 
 @pytest.mark.unit
