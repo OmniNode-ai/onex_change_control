@@ -1,0 +1,48 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-17446
+title: tenant_registry_mirror can never hold the historical tenants — its only source is a time-retained
+  topic and no re-announcement path exists
+summary: 'tenant_registry_mirror is the relation both the write-path tenant resolver and migration 0034''s
+  USING join resolve identity against, and it is populated from exactly one source: onex.tenant.events
+  at 168h retention. Four synthetic historical tenants were created before that window, so their TENANT_CREATED
+  is unreadable, the mirror can never hold them, and the resolver refuses them permanently. The create-path
+  emitter has exactly one call site, inside the tenant-create transaction, and creating requires a free
+  slug — so there was no sanctioned way to make a lifecycle event flow for a tenant that already exists.
+  This ticket adds that primitive as the third sibling of tenant_topics_backfill and tenant_client_reconcile:
+  a standalone, idempotent, ops-only re-trigger of enqueue_tenant_event carrying build_tenant_created_envelope,
+  UUID-preserving and fail-closed, with no customer-plane surface.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: 'PR #1127 product diff scope present'
+    command: gh pr view ${PR_NUMBER} --repo ${REPO} --json files
+  - kind: tests
+    description: 'Behavior proof for PR #1127 on OmniNode-ai/omninode_infra, derived from the PR''s own
+      diff: the test target it adds. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`,
+      executed at cwd `${OMNI_HOME}/omninode_infra/docker/onex-api`.'
+    command: python -m pytest tests/test_omn_17446_tenant_created_reemit.py -q
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn17446-reemit-primitive-red-first
+    description: 'RED-first behavior proof for the re-emit primitive, run hermetically against the PR
+      head. 18 tests covering the four load-bearing properties, every one of which failed with ModuleNotFoundError
+      before the module existed: UUID preservation (the emitted event carries the authoritative tenants.tenant_id,
+      and agrees with every slug pinned in the consumer-side closed legacy map — disagreement is a hard
+      raise in the resolver, not a preference); field-for-field envelope equality against tenant_creation.build_tenant_created_envelope,
+      the same builder both create paths call, with only the three default_factory per-emission identifiers
+      permitted to differ; fail-closed refusal of an empty, blank, duplicate, or unknown-slug allowlist
+      BEFORE any enqueue, asserted by reading back that zero rows were written and the transaction never
+      committed; and a static assertion that the module constructs no producer of its own, so it cannot
+      bypass the outbox. Also asserts the absence of any set-valued input — there is no "all tenants"
+      mode in the signature or the CLI, which is what structurally excludes the operator-deferred tenant
+      rather than relying on a denylist a later edit could drop.'
+    source: manual
+    checks:
+      - check_type: command
+        check_value: python -m pytest tests/test_omn_17446_tenant_created_reemit.py -q
