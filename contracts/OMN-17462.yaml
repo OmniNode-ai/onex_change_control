@@ -1,0 +1,95 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17462"
+title: "Governed cutover: dedicated PostgreSQL push-lane broker with execute-disabled-first rollout"
+summary: "Phase A bootstrap only: add reproducible broker/client/install/build/test and protected-artifact
+  deployment surfaces for the dedicated rsd_push_lanes PostgreSQL lane, preserving legacy source and leaving
+  both execution and the new pre-push enforcement inactive. NOT YET DEPLOYED."
+
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+
+evidence_requirements:
+  - kind: "tests"
+    description: "The Phase A implementation must provide reproducible broker/client install, build, and
+      focused test entrypoints that reject SQLite or file-queue configuration and fail closed without
+      the typed contract overlay."
+  - kind: "manual"
+    description: "Before a protected artifact is deployed, the Phase A provision/deploy entrypoint must
+      capture a backup manifest, pin one immutable source/artifact SHA, bind the restricted principal,
+      and retain legacy source with the new pre-push hook inactive."
+  - kind: "manual"
+    description: "Phase A ends only after an execute_enabled=false deployment readback proves exact SHA
+      reconciliation, restricted-principal noninterference, and no enqueue, claim, lease, dispatch, consumer,
+      or legacy retirement."
+  - kind: "manual"
+    description: "Activation of the lease-enforcing pre-push hook and any legacy retirement are explicitly
+      excluded from Phase A and require child ticket OMN-17465, canonical Phase A PASS receipts, and separate
+      enablement authorization."
+
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+
+dod_evidence:
+  - id: "dod-phase-a-scope-fence"
+    description: "The Phase A central contract must preserve legacy source and explicitly forbid hook
+      activation, legacy deletion, queue execution, and deployment evidence at contract admission."
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: "rg -F 'Phase A bootstrap only' contracts/OMN-17462.yaml"
+  - id: "dod-phase-a-reproducible-entrypoint"
+    description: "Before a release proposal, the implementing repository must expose one reproducible
+      contract-overlay-only entrypoint that builds the broker/client artifact, provisions only the dedicated
+      lane, deploys the exact protected artifact execute-disabled, and runs focused tests without activating
+      the pre-push hook."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest -q"
+  - id: "dod-phase-a-disabled-principal"
+    description: "At an authorized Phase A verification stage, the overlay must prove execute_enabled=false
+      and that the bound principal connects only to rsd_push_lanes, with no CONNECT privilege on any other
+      database. This pending probe is not authority to deploy or execute a queue."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          bash -ceu ': "${RSD_PUSH_LANE_BROKER_DSN:?approved contract overlay must supply broker DSN}";
+          : "${RSD_PUSH_LANE_EXECUTE_ENABLED:?approved contract overlay must supply execute flag}"; test
+          "$RSD_PUSH_LANE_EXECUTE_ENABLED" = false; psql "$RSD_PUSH_LANE_BROKER_DSN" -X -v ON_ERROR_STOP=1
+          -Atqc "SELECT current_database() = \$\$rsd_push_lanes\$\$ AND has_database_privilege(current_user,
+          \$\$rsd_push_lanes\$\$, \$\$CONNECT\$\$) AND NOT EXISTS (SELECT 1 FROM pg_database WHERE datname
+          <> \$\$rsd_push_lanes\$\$ AND has_database_privilege(current_user, datname, \$\$CONNECT\$\$));"
+          | grep -qx t
+  - id: "dod-phase-a-sha-backup-readback"
+    description: "At an authorized Phase A verification stage, a nonempty backup manifest and exact protected-artifact
+      SHA readback are mandatory; any mismatch blocks progression to OMN-17465. This pending probe is
+      not deployment evidence."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "bash -ceu ': \"${RSD_PUSH_LANE_BACKUP_MANIFEST:?approved contract overlay must supply
+          backup manifest}\"; : \"${RSD_PUSH_LANE_EXECUTE_ENABLED:?approved contract overlay must supply
+          execute flag}\"; : \"${RSD_PUSH_LANE_REMOTE_SHA:?approved contract overlay must supply reconciled
+          remote SHA}\"; : \"${RSD_PUSH_LANE_PROTECTED_ARTIFACT_SHA:?approved contract overlay must supply
+          protected artifact SHA}\"; test -s \"$RSD_PUSH_LANE_BACKUP_MANIFEST\"; test \"$RSD_PUSH_LANE_EXECUTE_ENABLED\"
+          = false; test \"$RSD_PUSH_LANE_REMOTE_SHA\" = \"$RSD_PUSH_LANE_PROTECTED_ARTIFACT_SHA\"'"
+
+# Phase A scope fence: only the dedicated rsd_push_lanes PostgreSQL lane is in
+# scope. No SQLite, file, shared-schema, fallback, or shadow queue is allowed.
+# The Infisical database, delegation omnibase_infra, and every pre-existing
+# database, schema, role, queue, and service are excluded. Phase B hook
+# activation and legacy retirement belong solely to OMN-17465.
