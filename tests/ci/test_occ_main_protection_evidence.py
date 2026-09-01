@@ -18,7 +18,8 @@ So this test verifies the **recorded** readbacks committed under
 the change:
 
 * the BEFORE state genuinely had no review requirement at all;
-* the AFTER state requires code-owner review;
+* the AFTER state requires code-owner review, and does NOT enable the
+  branch-wide controls that would freeze main outright;
 * nothing else moved — every other control, and all 23 required status-check
   contexts, round-tripped unchanged.
 
@@ -52,8 +53,22 @@ AFTER = EVIDENCE_DIR / "occ-main-protection-after.json"
 _REQUIRED_REVIEW_CONTROLS = (
     "require_code_owner_reviews",
     "dismiss_stale_reviews",
-    "require_last_push_approval",
 )
+
+#: Controls that must stay OFF, with the reason they are off.
+#:
+#: `require_last_push_approval` is deliberately disabled and measured, not
+#: assumed. It was enabled in the first revision of this change and observed to
+#: block **every** PR into `main` branch-wide — including PRs touching no
+#: CODEOWNERS-covered path at all — because it requires the most recent push to
+#: be approved by someone other than whoever pushed it, independently of
+#: `required_approving_review_count` and independently of code ownership. With
+#: it on, PR #7939 sat `mergeStateStatus: BLOCKED` with all 38 checks green and
+#: `reviewDecision: ""`; setting it off flipped the same PR to `CLEAN` with no
+#: other change. Leaving it on would freeze routine non-governance traffic on
+#: `main`, which is a different and much broader policy than "the grants path
+#: requires code-owner review".
+_MUST_STAY_DISABLED = ("require_last_push_approval",)
 
 #: Boolean-valued controls that must be identical BEFORE and AFTER. Each is
 #: represented as `{"enabled": bool}` in the REST protection resource.
@@ -100,6 +115,13 @@ def test_after_state_requires_code_owner_review() -> None:
     )
     missing = [c for c in _REQUIRED_REVIEW_CONTROLS if reviews.get(c) is not True]
     assert not missing, f"review controls not enabled on main: {missing}"
+
+    over_broad = [c for c in _MUST_STAY_DISABLED if reviews.get(c) is not False]
+    assert not over_broad, (
+        f"branch-wide review controls enabled on main: {over_broad}. These block "
+        "every PR regardless of code ownership, which freezes routine "
+        "non-governance traffic instead of gating the grants path."
+    )
 
 
 @pytest.mark.unit
