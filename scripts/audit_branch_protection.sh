@@ -16,6 +16,10 @@
 #      REST `required_pull_request_reviews` object. REST can report a phantom
 #      `required_approving_review_count` even when reviews are not actually
 #      enforced, which would false-fail dev; GraphQL reports the true state.
+#      EXCEPTION — REVIEW-GATED main (REVIEW_GATED_MAIN_REPOS, OMN-17437):
+#      on onex_change_control main the invariant inverts — code-owner review
+#      MUST be enforced (it is the grant registry's anti-self-issue anchor),
+#      and its absence is the failure.
 #   2. Required status checks are correct for the branch's ROLE:
 #      - Ordinary PR-merge branches (all dev branches; main on repos that are
 #        not release-synced) must require "CI Summary".
@@ -127,6 +131,26 @@ RELEASE_SYNCED_MAIN_REPOS=(
 # next release sync rather than protect anything.
 MAIN_AUDIT_EXEMPT_REPOS=(omnibase_compat)
 
+# ──────────────────────────────────────────────────────────────────────
+# REVIEW-GATED main (OMN-17437)
+# ──────────────────────────────────────────────────────────────────────
+# onex_change_control main is the prod-promotion grant registry boundary.
+# OMN-17437 (landed via OCC#7939, 2026-09-01) made the grant merge
+# mechanically gated: branch protection on OCC main now REQUIRES
+# code-owner review (requiresApprovingReviews=true,
+# requiresCodeOwnerReviews=true, requiredApprovingReviewCount=0), so
+# grants/prod_promotion_grants.yaml cannot merge without a CODEOWNERS
+# approval — the anti-self-issue anchor that omni_home/CLAUDE.md rules
+# 2a/12 assert. The review count stays 0, so paths without a CODEOWNERS
+# owner (release/evidence merges) still flow without human review —
+# solo-dev throughput is preserved everywhere except the grant registry.
+#
+# Consequence for this guard: the check-1 solo-dev assertion ("approving
+# reviews must NOT be enforced") INVERTS on these mains. Enforcement here
+# is the invariant, and its ABSENCE is the drift — losing it silently
+# reopens the agent self-issue path OMN-17437 closed.
+REVIEW_GATED_MAIN_REPOS=(onex_change_control)
+
 # Active repos that accept ticketed PRs must directly require the Receipt Gate.
 # Do not treat CI Summary as an implicit substitute; the branch protection rule
 # must expose the canonical `verify / verify` context so drift is visible.
@@ -179,6 +203,16 @@ is_release_synced_main() {
 is_main_audit_exempt() {
   local repo="$1"
   for p in "${MAIN_AUDIT_EXEMPT_REPOS[@]}"; do
+    if [[ "$p" == "$repo" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_review_gated_main() {
+  local repo="$1"
+  for p in "${REVIEW_GATED_MAIN_REPOS[@]}"; do
     if [[ "$p" == "$repo" ]]; then
       return 0
     fi
@@ -329,10 +363,16 @@ check_branch() {
     return
   }
 
-  # 1. Approving reviews must NOT be enforced (GraphQL-authoritative — avoids
-  #    the REST required_pull_request_reviews phantom that false-fails dev).
+  # 1. Review enforcement (GraphQL-authoritative — avoids the REST
+  #    required_pull_request_reviews phantom that false-fails dev).
+  #    Two roles, opposite invariants:
+  #      - ordinary branches: approving reviews must NOT be enforced
+  #        (solo dev — required reviews block PRs);
+  #      - REVIEW-GATED main (REVIEW_GATED_MAIN_REPOS, OMN-17437): code-owner
+  #        review MUST be enforced — it is the grant registry's
+  #        anti-self-issue anchor, and its absence is the drift.
   TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-  local requires_reviews
+  local requires_reviews requires_codeowner
   # NOTE: do not use `first // "unknown"` — jq's `//` treats a boolean `false`
   # as empty, which would collapse the (valid) "reviews not enforced" answer
   # into "unknown". Branch on array length instead so false != missing.
@@ -342,7 +382,26 @@ check_branch() {
       | .requiresApprovingReviews ]
     | if length == 0 then "unknown" else (.[0] | tostring) end
   ' 2>/dev/null || echo "unknown")
-  if [[ "$requires_reviews" == "false" ]]; then
+  requires_codeowner=$(printf '%s' "$gql_rules" | jq -r --arg b "$branch" '
+    [ .data.repository.branchProtectionRules.nodes[]?
+      | select(.pattern == $b)
+      | .requiresCodeOwnerReviews ]
+    | if length == 0 then "unknown" else (.[0] | tostring) end
+  ' 2>/dev/null || echo "unknown")
+  if [[ "$branch" == "main" ]] && is_review_gated_main "$repo"; then
+    if [[ "$requires_reviews" == "true" && "$requires_codeowner" == "true" ]]; then
+      echo "    [main] PASS: review-gated main — code-owner review enforced (OMN-17437 grant-registry anchor)"
+      emit_jsonl "$repo" "main" "review_gated_main_enforced" "PASS" "requiresApprovingReviews=true requiresCodeOwnerReviews=true"
+    elif [[ "$requires_reviews" == "unknown" ]]; then
+      echo "    [main] WARN: could not determine review enforcement via GraphQL (no matching rule)"
+      emit_jsonl "$repo" "main" "review_gated_main_enforced" "WARN" "GraphQL rule unavailable"
+    else
+      echo "    [main] FAIL: review-gated main — code-owner review NOT enforced (requiresApprovingReviews=${requires_reviews}, requiresCodeOwnerReviews=${requires_codeowner}); the OMN-17437 anti-self-issue gate on the grant registry has regressed"
+      emit_jsonl "$repo" "main" "review_gated_main_enforced" "FAIL" "requiresApprovingReviews=${requires_reviews} requiresCodeOwnerReviews=${requires_codeowner}"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+    fi
+  elif [[ "$requires_reviews" == "false" ]]; then
     echo "    [${branch}] PASS: approving reviews not enforced (GraphQL requiresApprovingReviews=false)"
     emit_jsonl "$repo" "$branch" "reviews_not_enforced" "PASS" "requiresApprovingReviews=false"
   elif [[ "$requires_reviews" == "true" ]]; then
@@ -453,7 +512,7 @@ check_repo() {
   # expansions — they must stay literal inside the single-quoted query.
   # shellcheck disable=SC2016
   gql_rules=$(gh api graphql \
-    -f query='query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ branchProtectionRules(first:50){ nodes{ pattern requiresApprovingReviews } } } }' \
+    -f query='query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ branchProtectionRules(first:50){ nodes{ pattern requiresApprovingReviews requiresCodeOwnerReviews } } } }' \
     -f owner="$ORG" -f name="$repo" 2>&1) || gql_rules=""
 
   # ---------- Per-branch checks (main + dev) ----------

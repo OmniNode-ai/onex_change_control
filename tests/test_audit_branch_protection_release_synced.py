@@ -317,3 +317,159 @@ def test_release_synced_and_exempt_sets_are_disjoint() -> None:
     exempt = _array("MAIN_AUDIT_EXEMPT_REPOS")
     assert synced, "release-synced set must not be empty"
     assert not (synced & exempt), f"repo in both sets: {sorted(synced & exempt)}"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# REVIEW-GATED main (OMN-17437) — onex_change_control's main carries the
+# prod-promotion grant registry, and OCC#7939 (2026-09-01) enforced
+# code-owner review there as the anti-self-issue anchor. Check 1 inverts
+# for repos in REVIEW_GATED_MAIN_REPOS: review enforcement is the
+# invariant, and its absence is the drift.
+#
+# RED/GREEN: test_review_gated_main_passes_when_codeowner_review_enforced
+# is RED against the pre-OMN-17437 script (it failed with "approving
+# reviews are enforced (blocks solo-dev merges)" — omni_home PR #252,
+# run 33506245341 attempt 8) and passes only with the inversion in place.
+# ─────────────────────────────────────────────────────────────────────────
+
+REVIEW_GATED_REPO = "onex_change_control"
+
+_GQL_RULES_OCC_GATED = {
+    "data": {
+        "repository": {
+            "branchProtectionRules": {
+                "nodes": [
+                    {
+                        "pattern": "main",
+                        "requiresApprovingReviews": True,
+                        "requiresCodeOwnerReviews": True,
+                    },
+                    {
+                        "pattern": "dev",
+                        "requiresApprovingReviews": False,
+                        "requiresCodeOwnerReviews": False,
+                    },
+                ]
+            }
+        }
+    }
+}
+
+
+def _gql_occ(*, main_reviews: bool, main_codeowner: bool) -> dict[str, object]:
+    return {
+        "data": {
+            "repository": {
+                "branchProtectionRules": {
+                    "nodes": [
+                        {
+                            "pattern": "main",
+                            "requiresApprovingReviews": main_reviews,
+                            "requiresCodeOwnerReviews": main_codeowner,
+                        },
+                        {
+                            "pattern": "dev",
+                            "requiresApprovingReviews": False,
+                            "requiresCodeOwnerReviews": False,
+                        },
+                    ]
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.unit
+def test_review_gated_main_passes_when_codeowner_review_enforced(
+    tmp_path: Path,
+) -> None:
+    """RED before OMN-17437: enforced reviews on OCC main failed check 1."""
+    fx = _fixtures(
+        REVIEW_GATED_REPO,
+        _PROTECTION_CI_SUMMARY,
+        [_RULESET_MERGE_QUEUE_DISABLED],
+    )
+    fx["graphql"] = _GQL_RULES_OCC_GATED
+    result = _run_audit(tmp_path, REVIEW_GATED_REPO, fx, branches="main,dev")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "review-gated main — code-owner review enforced" in result.stdout
+    # The solo-dev inversion is main-only: dev keeps the original assertion.
+    assert "[dev] PASS: approving reviews not enforced" in result.stdout
+    assert "blocks solo-dev merges" not in result.stdout
+
+
+@pytest.mark.unit
+def test_review_gated_main_fails_when_gate_absent(tmp_path: Path) -> None:
+    """No review requirement on OCC main = the self-issue path is open."""
+    fx = _fixtures(
+        REVIEW_GATED_REPO,
+        _PROTECTION_CI_SUMMARY,
+        [_RULESET_MERGE_QUEUE_DISABLED],
+    )
+    fx["graphql"] = _gql_occ(main_reviews=False, main_codeowner=False)
+    result = _run_audit(tmp_path, REVIEW_GATED_REPO, fx)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "code-owner review NOT enforced" in result.stdout
+
+
+@pytest.mark.unit
+def test_review_gated_main_fails_without_codeowner_flag(tmp_path: Path) -> None:
+    """Blanket approving reviews without the CODEOWNERS flag is not the
+    OMN-17437 anchor — the grant registry path is what must be gated."""
+    fx = _fixtures(
+        REVIEW_GATED_REPO,
+        _PROTECTION_CI_SUMMARY,
+        [_RULESET_MERGE_QUEUE_DISABLED],
+    )
+    fx["graphql"] = _gql_occ(main_reviews=True, main_codeowner=False)
+    result = _run_audit(tmp_path, REVIEW_GATED_REPO, fx)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "code-owner review NOT enforced" in result.stdout
+
+
+@pytest.mark.unit
+def test_ordinary_repo_reviews_enforced_still_fails(tmp_path: Path) -> None:
+    """The inversion is scoped to REVIEW_GATED_MAIN_REPOS: every other
+    repo keeps the solo-dev assertion that reviews are NOT enforced."""
+    fx = _fixtures(
+        ORDINARY_REPO,
+        _PROTECTION_CI_SUMMARY,
+        [_RULESET_MERGE_QUEUE_DISABLED],
+    )
+    fx["graphql"] = {
+        "data": {
+            "repository": {
+                "branchProtectionRules": {
+                    "nodes": [
+                        {
+                            "pattern": "main",
+                            "requiresApprovingReviews": True,
+                            "requiresCodeOwnerReviews": True,
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    result = _run_audit(tmp_path, ORDINARY_REPO, fx)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "approving reviews are enforced (blocks solo-dev merges)" in result.stdout
+
+
+@pytest.mark.unit
+def test_review_gated_set_is_disjoint_from_release_synced_and_exempt() -> None:
+    """A review-gated main is a PR-merge target; it cannot simultaneously be
+    release-synced (no PRs) or unaudited."""
+    text = AUDIT_SCRIPT.read_text()
+
+    def _array(name: str) -> set[str]:
+        start = text.index(f"{name}=(")
+        end = text.index(")", start)
+        return set(text[start + len(name) + 2 : end].split())
+
+    gated = _array("REVIEW_GATED_MAIN_REPOS")
+    synced = _array("RELEASE_SYNCED_MAIN_REPOS")
+    exempt = _array("MAIN_AUDIT_EXEMPT_REPOS")
+    assert gated, "review-gated set must not be empty"
+    assert not (gated & synced), f"repo in both sets: {sorted(gated & synced)}"
+    assert not (gated & exempt), f"repo in both sets: {sorted(gated & exempt)}"
