@@ -93,7 +93,7 @@ jobs:
       - name: Evaluate evidence-only predicate
         id: predicate
         env:
-          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || '' }}
           BEFORE_SHA: ${{ github.event.before || '' }}
         run: |
           set -euo pipefail
@@ -1367,33 +1367,42 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
-      - name: Run receipt honesty scan on changed receipts
+      - name: Enforce full receipt honesty persistent-debt ratchet
         env:
-          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
           BEFORE_SHA: ${{ github.event.before || '' }}
+          GH_TOKEN: ${{ github.token }}
           PYTHONPATH: ${{ github.workspace }}/omnibase_core_source/src
         run: |
           set -euo pipefail
-          changed_file_list=/tmp/changed_receipts.txt
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "merge_group" ]]; then
-            base_ref="${BASE_REF#refs/heads/}"
-            git fetch origin "$base_ref" --no-tags
-            git diff --name-only "origin/${base_ref}"...HEAD -- 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
-          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            git diff --name-only "$BEFORE_SHA"...HEAD -- 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
-          else
-            git ls-files 'drift/dod_receipts/**/*.yaml' > "$changed_file_list"
+
+          # The locked core scanner includes superseded receipt bases. OMN-17495 therefore records and
+          # enforces truthful persistent debt, rather than claiming this first migration control burns down
+          # active supersession debt. The base below is mandatory: it prevents a PR from growing the ledger.
+          default_branch=""
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" && "${GITHUB_EVENT_NAME}" != "merge_group" ]] && \
+             [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            # New branches, force-push sentinels, and manual dispatch have no usable before SHA. Resolve
+            # the repository's live default branch rather than assuming `dev`: hotfix/default-branch
+            # changes must still produce an event-correct, ancestor-verified merge-base. Any API/fetch/
+            # merge-base failure is a hard failure under set -e, never an omitted monotonicity check.
+            default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')"
+            if [[ -z "$default_branch" || ! "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "::error::Could not resolve a canonical repository default branch"
+              exit 1
+            fi
           fi
-          if [[ ! -s "$changed_file_list" ]]; then
-            echo "RECEIPT HONESTY GATE PASSED: no changed receipt YAML files"
-            exit 0
-          fi
-          echo "Changed receipt files:"
-          cat "$changed_file_list"
-          mapfile -t changed_receipts < "$changed_file_list"
-          uv run python -m omnibase_core.validation.validator_receipt_honesty \
-            --receipts-dir drift/dod_receipts \
-            "${changed_receipts[@]}"
+          # The corpus command owns canonical base resolution.  Do not pass a
+          # caller-selected SHA: it derives the event-correct merge base itself.
+          uv run python -m onex_change_control.validation.receipt_honesty_ratchet --corpus \
+            --event-name "$GITHUB_EVENT_NAME" \
+            --pr-base-ref "$PR_BASE_REF" \
+            --merge-group-base-ref "$MERGE_GROUP_BASE_REF" \
+            --before-sha "$BEFORE_SHA" \
+            --default-branch "$default_branch"
+          uv run pytest tests/unit/validation/test_receipt_honesty_ratchet.py -q
+          uv run python -m onex_change_control.validation.receipt_honesty_ratchet --check-wiring
 
   append-only-gate:
     permissions:

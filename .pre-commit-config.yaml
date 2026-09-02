@@ -382,15 +382,26 @@ repos:
   - repo: local
     hooks:
       - id: check-receipt-honesty
-        name: Receipt Honesty Gate (OMN-12791)
+        name: Receipt Honesty fast identity gate (OMN-17495)
         description: >
-          Scan drift/dod_receipts/ for gamed probes: no-op echo PASS receipts, deferral language in PASS
-          output, self-attestation, fake human verifiers, and deploy-keyword evidence backed only by echo.
-          Exit 1 on any violation.
-        entry: uv run python -m omnibase_core.validation.validator_receipt_honesty
+          Fast changed-receipt counterpart of the authoritative receipt-honesty ledger. The locked core
+          validator remains the rule engine; historical findings pass only when their exact path, rule,
+          raw-byte SHA-256, and origin blob OID match the immutable ledger.
+        entry: uv run python -m onex_change_control.validation.receipt_honesty_ratchet --changed --index
         language: system
         files: ^drift/dod_receipts/.*\.yaml$
         pass_filenames: true
+        stages: [pre-commit]
+
+      # OMN-17495. The core scanner intentionally includes superseded receipt bases, so its live findings
+      # are persistent debt, not a claimed active-supersession burn-down. This full, unbatched hook is the
+      # authority: it verifies the frozen-origin ledger, exact live identity equality, and base monotonicity.
+      - id: receipt-honesty-corpus-ratchet
+        name: Receipt Honesty corpus ratchet (OMN-17495)
+        entry: uv run python -m onex_change_control.validation.receipt_honesty_ratchet --corpus
+        language: system
+        pass_filenames: false
+        always_run: true
         stages: [pre-commit]
 
       - id: check-contract-substance-floor
@@ -514,13 +525,15 @@ repos:
       # Escape hatch: add '# skip-token-allowed: <receipt-id>' with a traceable approval receipt.
       - id: reject-deploy-gate-skip-token
         name: Reject skip-gate bypass tokens (OMN-10414)
-        entry: .pre-commit-hooks/reject-deploy-gate-skip-token.sh
+        # This hook derives candidates internally, so pre-commit's `exclude`
+        # cannot apply. Pass the legacy exemption expression to the hook.
+        entry: >-
+          .pre-commit-hooks/reject-deploy-gate-skip-token.sh --exclude-regex '^(tests/.*fixtures/|contracts/(OMN-10414|OMN-10417|OMN-10967)\.yaml|drift/dod_receipts/OMN-10414/dod-004/command\.yaml)$'
         language: script
-        pass_filenames: true
+        pass_filenames: false
         always_run: true
+        require_serial: true
         stages: [pre-commit]
-        exclude: >-
-          ^(tests/.*fixtures/|contracts/(OMN-10414|OMN-10417|OMN-10967)\.yaml|drift/dod_receipts/OMN-10414/dod-004/command\.yaml)$
       - id: reject-deploy-gate-skip-token-commit-msg
         name: Reject skip-gate bypass tokens in commit messages (OMN-10414)
         entry: .pre-commit-hooks/reject-deploy-gate-skip-token.sh

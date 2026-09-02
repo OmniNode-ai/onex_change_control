@@ -25,7 +25,9 @@
 #   This is NOT a free-text bypass — it requires a traceable approval receipt.
 #
 # Usage:
-#   Invoked by pre-commit with staged filenames as arguments.
+#   Invoked by pre-commit without filenames; it derives the staged/PR surface.
+#   --exclude-regex <ERE>  Exempt matching paths in normal pre-commit mode.
+#                         This is supplied explicitly by .pre-commit-config.yaml.
 #   --self-test       Run synthetic self-tests and exit.
 #   --check-pr-body <PR_NUMBER>   Also scan live PR body via gh cli.
 
@@ -38,6 +40,35 @@ ALLOWLIST_PATTERN='#[[:space:]]*[Ss][Kk][Ii][Pp]-[Tt][Oo][Kk][Ee][Nn]-[Aa][Ll][L
 
 RULE_REF="CLAUDE.md Rule #10 + docs/plans/2026-04-30-gate-collapse-fix.md Task 8"
 TICKET_REF="OMN-10414"
+
+# Pre-commit does not apply its `exclude` setting to an always-run hook with
+# pass_filenames:false. Keep those exemptions as explicit hook arguments so the
+# hook applies them to the internally derived candidate set. Flags are consumed
+# before the legacy manual, self-test, and commit-message modes below.
+EXCLUDE_REGEXES=()
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --exclude-regex)
+            if [[ "$#" -lt 2 ]]; then
+                echo "ERROR: --exclude-regex requires an extended regular expression." >&2
+                exit 1
+            fi
+            EXCLUDE_REGEXES+=("$2")
+            shift 2
+            ;;
+        --exclude-regex=*)
+            EXCLUDE_REGEXES+=("${1#*=}")
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Self-test mode
@@ -181,59 +212,37 @@ if [[ "${GIT_HOOK_STAGE:-}" == "commit-msg" || "$#" -eq 1 && "${1:-}" == *COMMIT
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Normal mode: scan staged files passed as arguments.
-# Read staged blobs from the index (git show :$file) rather than the working
-# tree to prevent bypass via working-tree edits after git add.
-# Only scan file types that could plausibly be PR bodies or ticket contracts:
-# markdown, yaml, yml, txt, md. Python/shell source that discusses skip tokens
-# (docs, tests, validators) should not be blocked by this hook.
+# Manual mode: explicit filenames retain the legacy staged-blob behavior for
+# direct troubleshooting. Production pre-commit mode does not enter this path;
+# it has no filenames after parsing the explicit exclusion arguments above.
 # ──────────────────────────────────────────────────────────────────────────────
 FOUND_VIOLATION=0
 
-# CI runs pre-commit with --all-files, which includes historical contracts that
-# intentionally document removed skip-token forms. Enforce the current PR/staged
-# surface instead of re-litigating legacy evidence that predates this hook.
-base_ref="${GITHUB_BASE_REF:-main}"
-if ! git rev-parse --verify "origin/${base_ref}" >/dev/null 2>&1; then
-    git fetch --no-tags --depth=1 origin "${base_ref}:refs/remotes/origin/${base_ref}" >/dev/null 2>&1 || true
-fi
-changed_files="$(
-    {
-        git diff --cached --name-only 2>/dev/null || true
-        if git rev-parse --verify "origin/${base_ref}" >/dev/null 2>&1; then
-            git diff --name-only "origin/${base_ref}...HEAD" 2>/dev/null || true
-        fi
-    } | sort -u
-)"
-
-for file in "$@"; do
-    if [[ "$file" != /* ]] && [[ -n "$changed_files" ]] && ! grep -Fxq -- "$file" <<< "$changed_files"; then
-        continue
-    fi
+scan_file() {
+    local file="$1"
 
     # Restrict to PR-body-like file types to avoid false positives on source/test files
     case "$file" in
         *.md|*.yaml|*.yml|*.txt) ;;
-        *) continue ;;
+        *) return ;;
     esac
 
-    # Read the staged blob from the index. Fall back to the working-tree file
-    # only when the path is not in the index (e.g. self-test temp files, deleted
-    # paths). This prevents a working-tree edit after `git add` from hiding a
-    # staged bypass token while keeping self-test and edge-case behaviour intact.
+    # Direct invocation is a manual/self-test convenience: prefer the staged
+    # blob, then permit a local file. Normal pre-commit mode intentionally has
+    # no working-tree fallback; see scan_normal_precommit_surface below.
     if git cat-file -e ":$file" 2>/dev/null; then
         staged_content="$(git show ":$file")"
     elif [[ -f "$file" ]]; then
-        staged_content="$(cat "$file")"
+        staged_content="$(<"$file")"
     else
-        continue
+        return
     fi
 
     if grep -qiE "$SKIP_PATTERN" <<< "$staged_content"; then
         # Check for explicit allowlist receipt in the staged content (also case-insensitive)
         if grep -qiE "$ALLOWLIST_PATTERN" <<< "$staged_content"; then
             echo "WARNING: [skip-*] token found in $file but explicit approval receipt present — allowed." >&2
-            continue
+            return
         fi
 
         echo "ERROR: $file contains a [skip-*] bypass token." >&2
@@ -245,6 +254,217 @@ for file in "$@"; do
         echo "  Ticket: $TICKET_REF" >&2
         FOUND_VIOLATION=1
     fi
+}
+
+# Explicit filenames are reserved for manual invocation and the built-in
+# self-test. Pre-commit sets pass_filenames:false, so production execution
+# reaches scan_normal_precommit_surface exactly once.
+if [[ "$#" -gt 0 ]]; then
+    for file in "$@"; do
+        scan_file "$file"
+    done
+    exit "$FOUND_VIOLATION"
+fi
+
+# CI runs pre-commit with --all-files, which includes historical contracts that
+# intentionally document removed skip-token forms. The hook therefore derives a
+# bounded candidate set from the staged index plus the current branch surface.
+# It then makes one index-wide Git grep call and intersects those NUL-safe paths
+# in Bash. The number of Git subprocesses is constant with respect to path
+# count; there is no cat-file/show/grep loop for individual files.
+
+resolve_base_ref() {
+    local upstream_ref=""
+    local default_ref=""
+    local explicit_ref="${GITHUB_BASE_REF:-}"
+
+    if [[ -n "$explicit_ref" ]]; then
+        case "$explicit_ref" in
+            origin/*)
+                printf '%s\n' "$explicit_ref"
+                ;;
+            refs/remotes/origin/*)
+                printf 'origin/%s\n' "${explicit_ref#refs/remotes/origin/}"
+                ;;
+            refs/heads/*)
+                printf 'origin/%s\n' "${explicit_ref#refs/heads/}"
+                ;;
+            *)
+                printf 'origin/%s\n' "$explicit_ref"
+                ;;
+        esac
+        return 0
+    fi
+
+    if upstream_ref="$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"; then
+        if [[ -n "$upstream_ref" ]]; then
+            printf '%s\n' "$upstream_ref"
+            return 0
+        fi
+    fi
+
+    if default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"; then
+        if [[ "$default_ref" == origin/* ]]; then
+            printf '%s\n' "$default_ref"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+is_excluded_path() {
+    local candidate_path="$1"
+    local exclusion_regex=""
+
+    for exclusion_regex in "${EXCLUDE_REGEXES[@]}"; do
+        if [[ "$candidate_path" =~ $exclusion_regex ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Candidate and match membership are keyed by literal paths.  Linear array
+# scans here would turn an adversarial all-files scan with many matching paths
+# into O(matches² + matches*candidates) work. Associative arrays keep both
+# operations constant-time per record while the ordered matched_paths array
+# preserves deterministic diagnostic order.
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "ERROR: reject-deploy-gate-skip-token.sh requires Bash 4+ for bounded path membership." >&2
+    exit 1
+fi
+declare -A candidate_paths=()
+declare -A matched_seen=()
+declare -A matched_skip=()
+declare -A matched_allowlist=()
+matched_paths=()
+
+add_match() {
+    local matched_path="$1"
+    local matched_line="$2"
+    local has_skip=0
+    local has_allowlist=0
+    local nocasematch_was_set=0
+
+    if shopt -q nocasematch; then
+        nocasematch_was_set=1
+    fi
+    shopt -s nocasematch
+    [[ "$matched_line" =~ $SKIP_PATTERN ]] && has_skip=1
+    [[ "$matched_line" =~ $ALLOWLIST_PATTERN ]] && has_allowlist=1
+    if [[ "$nocasematch_was_set" -eq 1 ]]; then
+        shopt -s nocasematch
+    else
+        shopt -u nocasematch
+    fi
+
+    if [[ -n "${matched_seen["$matched_path"]+present}" ]]; then
+        (( has_skip )) && matched_skip["$matched_path"]=1
+        (( has_allowlist )) && matched_allowlist["$matched_path"]=1
+        return 0
+    fi
+
+    matched_seen["$matched_path"]=1
+    matched_paths+=("$matched_path")
+    matched_skip["$matched_path"]="$has_skip"
+    matched_allowlist["$matched_path"]="$has_allowlist"
+}
+
+if ! scan_directory="$(mktemp -d "${TMPDIR:-/tmp}/skip-token-scan.XXXXXX")"; then
+    echo "ERROR: could not create a temporary scan directory; refusing to skip token enforcement." >&2
+    exit 1
+fi
+trap 'rm -rf "$scan_directory"' EXIT
+
+staged_paths_file="$scan_directory/staged-paths"
+branch_paths_file="$scan_directory/branch-paths"
+grep_matches_file="$scan_directory/grep-matches"
+
+if ! base_ref="$(resolve_base_ref)"; then
+    echo "ERROR: could not resolve PR base from GITHUB_BASE_REF, branch upstream, or origin/HEAD; refusing to skip token enforcement." >&2
+    exit 1
+fi
+if ! base_oid="$(git rev-parse --verify --quiet --end-of-options "${base_ref}^{commit}")"; then
+    echo "ERROR: resolved PR base ${base_ref} is unavailable locally; refusing to skip token enforcement." >&2
+    exit 1
+fi
+if ! git merge-base "$base_oid" HEAD >/dev/null; then
+    echo "ERROR: resolved PR base ${base_ref} (${base_oid}) has no common ancestor with HEAD; refusing to make an ambiguous scan." >&2
+    exit 1
+fi
+
+# Do not fetch from a hook. A missing remote-tracking base or unrelated history
+# is insufficient evidence for a bounded scan and fails closed above. A moved
+# base with a common ancestor is valid for Git's base...HEAD comparison.
+if ! git diff --cached --name-only -z > "$staged_paths_file"; then
+    echo "ERROR: could not read staged changed paths; refusing to skip token enforcement." >&2
+    exit 1
+fi
+if ! git diff --name-only -z "${base_oid}...HEAD" > "$branch_paths_file"; then
+    echo "ERROR: could not read paths changed from ${base_ref}; refusing to skip token enforcement." >&2
+    exit 1
+fi
+
+while IFS= read -r -d '' candidate_path; do
+    candidate_paths["$candidate_path"]=1
+done < "$staged_paths_file"
+while IFS= read -r -d '' candidate_path; do
+    candidate_paths["$candidate_path"]=1
+done < "$branch_paths_file"
+
+# This is the only production content scan. -z emits filename, line number,
+# and line content with NUL separators for the first two fields, so newline
+# filenames remain literal Bash array elements. Exit 1 means no match; every
+# other Git failure must stop the blocking hook.
+git_grep_status=0
+if git grep --cached -z -n -i -E \
+    -e "$SKIP_PATTERN" \
+    -e "$ALLOWLIST_PATTERN" \
+    -- '*.md' '*.yaml' '*.yml' '*.txt' > "$grep_matches_file"; then
+    :
+else
+    git_grep_status=$?
+    if [[ "$git_grep_status" -ne 1 ]]; then
+        echo "ERROR: could not read indexed skip-token candidates; refusing to skip token enforcement." >&2
+        exit 1
+    fi
+fi
+
+while IFS= read -r -d '' matched_path; do
+    if ! IFS= read -r -d '' matched_line_number || [[ ! "$matched_line_number" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: indexed skip-token scan returned malformed output; refusing to skip token enforcement." >&2
+        exit 1
+    fi
+    matched_line=""
+    if ! IFS= read -r matched_line && [[ -z "$matched_line" ]]; then
+        echo "ERROR: indexed skip-token scan returned incomplete output; refusing to skip token enforcement." >&2
+        exit 1
+    fi
+    add_match "$matched_path" "$matched_line"
+done < "$grep_matches_file"
+
+for matched_path in "${matched_paths[@]}"; do
+    if [[ -z "${candidate_paths["$matched_path"]+present}" ]] || is_excluded_path "$matched_path"; then
+        continue
+    fi
+    if [[ "${matched_skip["$matched_path"]}" -eq 0 ]]; then
+        continue
+    fi
+    if [[ "${matched_allowlist["$matched_path"]}" -eq 1 ]]; then
+        echo "WARNING: [skip-*] token found in $matched_path but explicit approval receipt present — allowed." >&2
+        continue
+    fi
+
+    echo "ERROR: $matched_path contains a [skip-*] bypass token." >&2
+    echo "  Per $RULE_REF, bypass is not permitted without explicit user approval." >&2
+    echo "  Fix the gate properly:" >&2
+    echo "    1. Add dod_evidence with type: no_deployable_artifact (preferred)" >&2
+    echo "    2. For receipt-gate: add Evidence-Source + Evidence-Ticket to PR body and push OCC contract+receipts" >&2
+    echo "    3. If truly exceptional, add '# skip-token-allowed: <receipt-id>' with a traceable approval receipt" >&2
+    echo "  Ticket: $TICKET_REF" >&2
+    FOUND_VIOLATION=1
 done
 
 exit "$FOUND_VIOLATION"

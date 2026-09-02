@@ -1271,6 +1271,141 @@ def test_main_returns_two_for_unavailable_without_receipt_defect_wording(
     assert "[COMMIT_SHA_FORMAT]" not in output
 
 
+def test_changed_supersession_alone_validates_replacement_commit(
+    tmp_path: Path,
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True)
+    base = receipt_dir / "command.yaml"
+    base.write_text(
+        yaml.safe_dump(_receipt_data(contract_sha256=_contract_sha(contract)))
+    )
+    supersession = receipt_dir / "command.supersede.0002.yaml"
+    supersession.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha="not-a-full-sha",
+                ),
+            }
+        )
+    )
+
+    violations = check_receipt_file(
+        supersession,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(),
+    )
+    assert any("[COMMIT_SHA_FORMAT]" in violation for violation in violations), (
+        violations
+    )
+
+
+def test_highest_supersession_never_falls_back_to_lower_clean_sibling(
+    tmp_path: Path,
+) -> None:
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True)
+    base = receipt_dir / "command.yaml"
+    base.write_text(
+        yaml.safe_dump(_receipt_data(contract_sha256=_contract_sha(contract)))
+    )
+    lower = receipt_dir / "command.supersede.0001.yaml"
+    lower.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha=FULL_LOCAL_SHA,
+                ),
+            }
+        )
+    )
+    higher = receipt_dir / "command.supersede.0002.yaml"
+    higher.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha="not-a-full-sha",
+                ),
+            }
+        )
+    )
+
+    violations = check_receipt_file(
+        base,
+        tmp_path / "contracts",
+        commit_sha_resolver=_commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA})),
+    )
+    assert any(higher.as_posix() in violation for violation in violations)
+    assert any("[COMMIT_SHA_FORMAT]" in violation for violation in violations), (
+        violations
+    )
+
+
+def test_chained_supersession_fails_closed_for_base_and_chain_record(
+    tmp_path: Path,
+) -> None:
+    """A higher token may not evade direct-sibling authority through a chain."""
+    contract = _write_contract(tmp_path)
+    receipt_dir = tmp_path / "drift" / "dod_receipts" / "OMN-13060" / "dod-001"
+    receipt_dir.mkdir(parents=True)
+    base = receipt_dir / "command.yaml"
+    base.write_text(
+        yaml.safe_dump(_receipt_data(contract_sha256=_contract_sha(contract)))
+    )
+    direct = receipt_dir / "command.supersede.0001.yaml"
+    direct.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": base.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha=FULL_LOCAL_SHA,
+                ),
+            }
+        )
+    )
+    chained = receipt_dir / "command.supersede.0001.supersede.0002.yaml"
+    chained.write_text(
+        yaml.safe_dump(
+            {
+                "supersedes": direct.as_posix(),
+                "replacement": _receipt_data(
+                    contract_sha256=_contract_sha(contract),
+                    run_timestamp=POST_OMN15461_CUTOFF_TS,
+                    commit_sha="not-a-full-sha",
+                ),
+            }
+        )
+    )
+
+    resolver = _commit_resolver(local_shas=frozenset({FULL_LOCAL_SHA}))
+    for target in (base, chained):
+        violations = check_receipt_file(
+            target,
+            tmp_path / "contracts",
+            commit_sha_resolver=resolver,
+        )
+        assert any("[SUPERSESSION_CHAIN]" in violation for violation in violations), (
+            violations
+        )
+        assert any(chained.as_posix() in violation for violation in violations), (
+            violations
+        )
+
+
 def test_paths_file0_preserves_newline_path_and_staged_discovery_is_nul_safe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
