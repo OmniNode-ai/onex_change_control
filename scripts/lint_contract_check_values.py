@@ -447,8 +447,10 @@ def _fail_open_zero_count_violation(value: str) -> str | None:
        form is itself SIGPIPE-fragile once ``$body`` is large enough: `grep
        -qF` exits at the first match and closes its stdin, `printf`'s blocked
        `write()` is then killed by SIGPIPE, and the compliance runner's `bash
-       -o pipefail -c` (see `docs/CHECK_TYPES.md`) surfaces that as exit 141
-       for a chain in which every assertion actually passed. A here-string
+       -o pipefail -c` (see the knowledge base's `dod-check-types.md`:
+       https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-check-types.md)
+       surfaces that as exit 141 for a chain in which every assertion actually
+       passed. A here-string
        has no pipe stage at all, so it cannot be killed this way regardless
        of size or match position. See OMN-16916 (OMN-15772 discovered this
        measuring its own merged item, commit 4c48f4b40).

@@ -25,7 +25,7 @@ messages say.
    exists on the target base branch — i.e. a modification or deletion of a
    pre-existing OCC contract/receipt file, not a net-new one. This mirrors
    the OCC Append-Only Gate enforced elsewhere in this repo (see
-   `docs/standards/receipt_hashing_and_supersession.md`): receipts are
+   `https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/receipt-hashing-and-supersession.md`): receipts are
    append-only, and an import path is not an exception to that rule. A
    *new* receipt file is fine; touching one that is already merged is not.
 

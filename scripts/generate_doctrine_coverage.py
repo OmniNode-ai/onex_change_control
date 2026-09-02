@@ -9,7 +9,7 @@ For each clause, checks whether the declared ci_gate job name exists in
   ADVISORY  — job exists but clause coverage field says 'advisory'
   UNCOVERED — no ci_gate declared or job not found
 
-Writes docs/standards/doctrine_coverage.md.
+Prints the coverage matrix to stdout (never writes a markdown file; OMN-16615).
 
 Exit code 1 if an enforcement regression is detected (a clause whose
 coverage was previously ENFORCED now has no matching CI job).
@@ -176,9 +176,11 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run",
         action="store_true",
         default=False,
-        help="Print output without writing file",
+        help="Deprecated no-op retained for CI call-site compatibility; output is "
+        "always printed to stdout, never written to a markdown file (OMN-16615).",
     )
     args = parser.parse_args(argv)
+    _ = args.dry_run  # retained for backward-compatible CLI surface only
 
     repo_root = (
         args.repo_root
@@ -191,12 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     job_names = _collect_job_names(workflows_dir)
     markdown, effective = generate_coverage_table(clauses, job_names)
 
-    if args.dry_run:
-        print(markdown)
-    else:
-        out_path = repo_root / "docs" / "standards" / "doctrine_coverage.md"
-        out_path.write_text(markdown)
-        print(f"Written: {out_path}")
+    print(markdown)
 
     regressions = _detect_regression(clauses, effective)
     if args.check_regression and regressions:

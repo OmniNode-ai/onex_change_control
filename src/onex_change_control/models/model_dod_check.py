@@ -63,7 +63,8 @@ class ModelDodCheck(BaseModel):
     this entry's name. The hosted gate checks out one repo, so a cross-repo
     ``cwd`` belongs to an item declaring
     ``execution_scope: local_done_gate`` (OMN-15392). Authoring reference:
-    ``docs/CHECK_TYPES.md``.
+    the knowledge base's ``dod-check-types.md``
+    (https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-check-types.md).
 
     OMN-10078: replaces the brittle ``cd ${OMNI_HOME}/<repo> && `` shell
     prefix introduced as a temporary fix in OMN-10049 / PR #448.

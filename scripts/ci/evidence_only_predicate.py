@@ -50,7 +50,8 @@ _EVIDENCE_ONLY_PATTERNS: tuple[re.Pattern[str], ...] = (
     # subdirectory or nesting depth is evidence.
     re.compile(r"^contracts/(v1/)?[^/]+\.ya?ml$"),
     # drift/dod_receipts/<TICKET>/<ITEM_ID>/<run_timestamp>.yaml (the
-    # canonical receipt location, docs/RECEIPT_LOCATIONS.md) at any depth,
+    # canonical receipt location, see the knowledge base's
+    # reference/dod-receipt-locations.md) at any depth,
     # including *.supersede.<N>.yaml correction files.
     re.compile(r"^drift/dod_receipts/.+\.ya?ml$"),
 )

@@ -73,8 +73,9 @@ P6  DUAL-BINDING EXECUTION
     parameterized fixture axis actually wired: ``both`` must show BOTH a
     ``[mock]`` and a ``[real]`` collected variant of the same case body. The
     convention is one fixture axis, never duplicated test bodies — see
-    ``docs/standards/DUAL_BINDING_CASES.md``. A ``both`` case with only one leg
-    wired is RED.
+    the knowledge base's ``dual-binding-cases.md``
+    (``https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dual-binding-cases.md``).
+    A ``both`` case with only one leg wired is RED.
 
 Exit codes: 0 clean, 1 findings, 2 usage error.
 """

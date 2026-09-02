@@ -1454,10 +1454,43 @@ def test_staged_discovery_uses_one_nul_delimited_git_call(
             "-z",
             "--diff-filter=ACMRT",
             "--",
-            "drift/dod_receipts",
-            "contracts",
+            "drift/dod_receipts/**/*.yaml",
+            "drift/dod_receipts/**/*.yml",
+            "contracts/*.yaml",
+            "contracts/*.yml",
         ]
     ]
+
+
+def test_staged_discovery_pathspecs_match_the_hook_files_pattern() -> None:
+    r"""Discovery must not be wider than the pre-commit ``files:`` that selects it.
+
+    OMN-16615 regression. The pathspecs used to be the bare directories, so a
+    non-YAML artifact staged under drift/dod_receipts/ — a .md evidence summary
+    beside its command.yaml — was routed into the receipt parser and hard-failed
+    the gate with "unreadable receipt YAML", despite the hook's own
+    ``files: ^(drift/dod_receipts/.*\.yaml|contracts/.*\.yaml)$`` never
+    selecting it. Discovery is now suffix-scoped to match.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(subprocess, "run", fake_run)
+        check_receipt_hardening._discover_staged_paths()
+
+    pathspecs = calls[0][calls[0].index("--") + 1 :]
+    assert pathspecs, "discovery must pass explicit pathspecs, not scan the whole tree"
+    assert all(spec.endswith((".yaml", ".yml")) for spec in pathspecs), (
+        f"every pathspec must be suffix-scoped to YAML, got {pathspecs}"
+    )
+    assert any(spec.startswith("drift/dod_receipts/") for spec in pathspecs)
+    assert any(spec.startswith("contracts/") for spec in pathspecs)
 
 
 def test_commit_sha_wiring_static_check_passes_for_repository_config() -> None:

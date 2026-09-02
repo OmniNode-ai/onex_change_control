@@ -2153,7 +2153,19 @@ def _read_paths_file0(path: Path) -> list[Path]:
 
 
 def _discover_staged_paths() -> tuple[list[Path], str | None]:
-    """Discover relevant staged paths in one NUL-safe Git invocation."""
+    r"""Discover relevant staged paths in one NUL-safe Git invocation.
+
+    The pathspecs are suffix-scoped to ``*.yaml`` / ``*.yml`` on purpose, and
+    match this checker's own pre-commit ``files:`` pattern
+    (``^(drift/dod_receipts/.*\.yaml|contracts/.*\.yaml)$``) exactly. Before
+    OMN-16615 the pathspecs were the bare directories, so discovery was WIDER
+    than the declared scope: any non-YAML artifact staged under either tree —
+    a ``.md`` evidence summary sitting beside its ``command.yaml``, say — was
+    routed into the receipt parser and hard-failed the gate with "unreadable
+    receipt YAML", even though the hook that invokes this checker would never
+    have selected that file. A receipt is always ``<check_type>.yaml`` and a
+    contract is always ``<ticket>.yaml``; nothing else in these trees is one.
+    """
 
     try:
         result = subprocess.run(
@@ -2165,8 +2177,10 @@ def _discover_staged_paths() -> tuple[list[Path], str | None]:
                 "-z",
                 "--diff-filter=ACMRT",
                 "--",
-                "drift/dod_receipts",
-                "contracts",
+                "drift/dod_receipts/**/*.yaml",
+                "drift/dod_receipts/**/*.yml",
+                "contracts/*.yaml",
+                "contracts/*.yml",
             ],
             capture_output=True,
             check=False,

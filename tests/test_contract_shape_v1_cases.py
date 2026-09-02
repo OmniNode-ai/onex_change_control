@@ -339,6 +339,37 @@ def test_identity_block_divergence(binding: str) -> None:
     (when its receipts were minted); the landed file is the f6197f0b3 in-place
     rewrite. Identity must be RED, with a diff, and identity-blind: the same
     human authored both commits.
+
+    EMBED_AT_ACC18C627 / REWRITE_AT_F6197F0B3 (tests/fixtures/contract_shape_v1/)
+    are verbatim byte copies of contracts/OMN-15413.yaml at two real commits:
+      - OMN-15413.at-acc18c627.embed.yaml.txt: acc18c627f8450693f8a169cab26d2d9e87f7898
+        (2026-08-02 07:16:10 -0700, "evidence(OMN-15413,OMN-15421): add 20 PASS
+        receipts from live check execution") — the contract as it stood when its
+        receipts were minted, i.e. what a ticket body would have embedded.
+      - OMN-15413.at-f6197f0b3.rewrite.yaml.txt:
+        f6197f0b3560533e46db0ce540feb3a3120c235a (2026-08-02 07:19:20 -0700,
+        "fix(OMN-15413): repair executable OCC evidence") — the in-place
+        rewrite that landed 3 minutes later.
+    This test replays exactly that pair and requires the identity leg to go RED
+    with a unified diff.
+
+    The fixtures' `.txt` suffix is load-bearing: they must stay byte-identical to
+    their commits, and a `.yaml` suffix would put them under yamlfmt (which
+    reflows and can inject the OMN-15479 contamination sentinel) and under
+    validate-string-versions (which rejects their historical
+    `schema_version: "1.0.0"`). Reformatting would destroy the divergence this
+    test measures. Verify at any time:
+        diff <(git show acc18c627:contracts/OMN-15413.yaml) \\
+             tests/fixtures/contract_shape_v1/OMN-15413.at-acc18c627.embed.yaml.txt
+        diff <(git show f6197f0b3:contracts/OMN-15413.yaml) \\
+             tests/fixtures/contract_shape_v1/OMN-15413.at-f6197f0b3.rewrite.yaml.txt
+
+    Separately, tests/fixtures/contract_shape_v1/conformant/ is a miniature repo
+    the gate evaluates end to end: a v1 contract at
+    conformant/contracts/v1/OMN-99999.yaml, its seam schema, and a real case
+    module the gate collects through `pytest --collect-only`. tests/conftest.py
+    excludes that module from the outer suite via `collect_ignore_glob` — it is
+    data the gate collects, not a test of this repo.
     """
     assert binding == "mock"
     embed = EMBED_AT_ACC18C627.read_text(encoding="utf-8")
