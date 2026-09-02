@@ -852,21 +852,18 @@ def _after_omn_15461_cutoff(run_timestamp: datetime) -> bool:
 # matches (a receipt whose own check_value carries no repo-identifying
 # text at all — audit found this shape too, alongside the flag-form gap).
 _ITEM_ID_REPO_RE = re.compile(r"^dod-OmniNode-ai-([A-Za-z0-9_.-]+)-pr-\d+")
+_PRODUCT_REF_SHA_RE = re.compile(r"(?:/commits/|[?&]ref=)([0-9a-fA-F]{40})\b")
 
 
-def _repo_hint(receipt: ModelDodReceipt) -> str | None:
-    """Best-effort extraction of a cross-repo citation embedded in probe text.
+def _repo_hints(receipt: ModelDodReceipt) -> frozenset[str]:
+    """Return every trusted repository cited by contract-bound receipt fields.
 
-    Returns the first ``<owner>/<repo>`` match from the contract-bound
-    ``check_value`` or ``probe_command`` (in that order) that is also a member
-    of :data:`_KNOWN_REPO_HINTS`; if neither embeds a recognized one, falls
-    back to the autobind ``evidence_item_id`` naming convention
-    (see :data:`_ITEM_ID_REPO_RE`), which is itself checked against the same
-    allowlist. ``None`` if nothing recognized matches. An unrecognized
-    ``<owner>/<repo>`` string is deliberately NOT returned — see
-    :data:`_KNOWN_REPO_HINTS`'s comment for why an unrestricted match is a
-    fail-open hole, not a helpful fallback.
+    ``actual_output`` is intentionally excluded: it is free-form narrative,
+    not a contract-bound proof field. An unrecognized candidate is noise, not
+    an authority signal. The caller must reject multiple trusted candidates
+    rather than choosing one by textual order.
     """
+    hints: set[str] = set()
     for field_name in ("check_value", "probe_command"):
         value = getattr(receipt, field_name, None)
         if not isinstance(value, str):
@@ -874,22 +871,71 @@ def _repo_hint(receipt: ModelDodReceipt) -> str | None:
         for match in _REPO_HINT_RE.finditer(value):
             candidate = match.group(1) or match.group(2)
             if candidate in _KNOWN_REPO_HINTS:
-                return candidate
+                hints.add(candidate)
+    if hints:
+        return frozenset(hints)
     id_match = _ITEM_ID_REPO_RE.match(receipt.evidence_item_id)
     if id_match is not None:
         candidate = f"OmniNode-ai/{id_match.group(1)}"
         if candidate in _KNOWN_REPO_HINTS:
-            return candidate
+            return frozenset({candidate})
+    return frozenset()
+
+
+def _repo_hint(receipt: ModelDodReceipt) -> str | None:
+    """Return the sole trusted repository hint, if the receipt has one."""
+
+    hints = _repo_hints(receipt)
+    return next(iter(hints)) if len(hints) == 1 else None
+
+
+def _product_ref_binds_commit(receipt: ModelDodReceipt, repo: str) -> bool:
+    """Require an exposed full product ref to name this receipt's commit SHA.
+
+    A product command that exposes only a PR number has no commit ref to bind
+    here. When it does expose one or more full SHA refs, the receipt SHA must
+    be among them. This permits a deliberate red comparator alongside the
+    green product head without silently accepting an unrelated receipt SHA.
+    """
+    receipt_sha = receipt.commit_sha.lower()
+    exposed_shas: set[str] = set()
+    for field_name in ("check_value", "probe_command"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str) or repo not in value:
+            continue
+        exposed_shas.update(
+            match.group(1).lower() for match in _PRODUCT_REF_SHA_RE.finditer(value)
+        )
+    return not exposed_shas or receipt_sha in exposed_shas
+
+
+def _repository_authority_violation(receipt: ModelDodReceipt) -> str | None:
+    """Return a deterministic-authority violation before network resolution."""
+    hints = _repo_hints(receipt)
+    if len(hints) > 1:
+        return (
+            "[COMMIT_SHA_REPOSITORY] multiple trusted product repository hints "
+            f"{sorted(hints)!r}; receipt authority is ambiguous and must be "
+            "made singular in check_value/probe_command."
+        )
+    if len(hints) == 1:
+        repo = next(iter(hints))
+        if repo != _DEFAULT_COMMIT_SHA_REPO and not _product_ref_binds_commit(
+            receipt, repo
+        ):
+            return (
+                "[COMMIT_SHA_REPOSITORY] product command/ref exposes a full SHA "
+                "that does not bind receipt commit_sha; rerun against the exact "
+                "product artifact."
+            )
     return None
 
 
 def _commit_sha_repositories(receipt: ModelDodReceipt) -> tuple[str, ...]:
-    """Return trusted resolution repositories in authoritative order."""
+    """Return the one deterministic authority for a receipt commit claim."""
 
     hint = _repo_hint(receipt)
-    if hint is None or hint == _DEFAULT_COMMIT_SHA_REPO:
-        return (_DEFAULT_COMMIT_SHA_REPO,)
-    return (_DEFAULT_COMMIT_SHA_REPO, hint)
+    return (hint,) if hint is not None else (_DEFAULT_COMMIT_SHA_REPO,)
 
 
 def _commit_sha_existence_violations(
@@ -909,6 +955,9 @@ def _commit_sha_existence_violations(
     """
     if not _after_omn_15461_cutoff(receipt.run_timestamp):
         return []
+    authority_violation = _repository_authority_violation(receipt)
+    if authority_violation is not None:
+        return [authority_violation]
     result = resolver.resolve(receipt.commit_sha, _commit_sha_repositories(receipt))
     if result.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE:
         return []

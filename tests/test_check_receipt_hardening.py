@@ -985,6 +985,32 @@ def _commit_resolver(
     return CommitShaResolver(rest_budget=rest_budget, runner=runner)
 
 
+def _recording_commit_resolver(
+    statuses: dict[tuple[str, str], int],
+) -> tuple[CommitShaResolver, list[str]]:
+    """Build a no-network resolver and retain every GitHub authority queried."""
+
+    queried_repos: list[str] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        endpoint_parts = command[-1].split("/")
+        repo = "/".join(endpoint_parts[1:3])
+        sha = endpoint_parts[-1]
+        queried_repos.append(repo)
+        status = statuses[(repo, sha)]
+        body = json.dumps({"sha": sha}) if status == 200 else "{}"
+        return subprocess.CompletedProcess(
+            command,
+            0 if status == 200 else 1,
+            stdout=f"HTTP/2 {status}\n\n{body}",
+            stderr="",
+        )
+
+    return CommitShaResolver(runner=runner), queried_repos
+
+
 def test_pre_omn15461_cutoff_receipt_with_bad_sha_is_exempt(tmp_path: Path) -> None:
     """Legacy migration debt: a pre-cutoff receipt is not retro-blocked."""
     contract = _write_contract(tmp_path)
@@ -1055,9 +1081,13 @@ def test_commit_sha_local_hint_still_requires_remote_confirmation() -> None:
 
 
 def test_commit_sha_cross_repo_hint_resolves_passes() -> None:
-    """GREEN — commit_sha belongs to a product repo, resolved via the embedded hint."""
+    """GREEN — trusted product authority is queried before OCC."""
     real_omnimarket_sha = FULL_REMOTE_SHA
-
+    resolver, queried_repos = _recording_commit_resolver(
+        {
+            ("OmniNode-ai/omnimarket", real_omnimarket_sha): 200,
+        }
+    )
     receipt = _receipt_model(
         commit_sha=real_omnimarket_sha,
         probe_command=(
@@ -1066,12 +1096,121 @@ def test_commit_sha_cross_repo_hint_resolves_passes() -> None:
     )
     violations = check_receipt_hardening._commit_sha_existence_violations(
         receipt,
-        _commit_resolver(
-            remote_statuses={("OmniNode-ai/omnimarket", real_omnimarket_sha): 200}
-        ),
+        resolver,
         [],
     )
     assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_product_authority_404_is_missing_without_occ_fallback() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnimarket", FULL_REMOTE_SHA): 404}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+@pytest.mark.parametrize("status", [422, 403, 429])
+def test_product_authority_unavailable_never_falls_back_to_occ(status: int) -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnimarket", FULL_REMOTE_SHA): status}
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    assert diagnostics[0].startswith("[INFRASTRUCTURE_UNAVAILABLE]")
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_product_authority_timeout_never_falls_back_to_occ() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    queried_repos: list[str] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        queried_repos.append("/".join(command[-1].split("/")[1:3]))
+        raise subprocess.TimeoutExpired(command, timeout=1)
+
+    diagnostics: list[str] = []
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, CommitShaResolver(runner=runner), diagnostics
+    )
+
+    assert violations == []
+    assert diagnostics[0].startswith("[INFRASTRUCTURE_UNAVAILABLE]")
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_no_trusted_product_authority_uses_occ() -> None:
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/onex_change_control", FULL_REMOTE_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _receipt_model(commit_sha=FULL_REMOTE_SHA), resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/onex_change_control"]
+
+
+def test_product_ref_must_bind_receipt_commit_sha() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            "gh api repos/OmniNode-ai/omnimarket/contents/file.py?ref=" + "a" * 40
+        ),
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_conflicting_trusted_product_repositories_fail_closed() -> None:
+    receipt = _receipt_model(
+        check_value="gh pr view 1 --repo OmniNode-ai/omnimarket --json number",
+        probe_command="gh pr view 2 --repo OmniNode-ai/omnibase_compat --json number",
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
 
 
 def test_commit_sha_resolver_is_threaded_through_receipt_validation(
