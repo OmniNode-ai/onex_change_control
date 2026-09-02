@@ -8,21 +8,26 @@ from __future__ import annotations
 import base64
 import hashlib
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
+from onex_change_control.scripts import check_cross_repo_subject as cross_repo_cli
 from onex_change_control.scripts.check_cross_repo_subject import _load_mapping
 from onex_change_control.validation.cross_repo_subject import (
     ApiResponse,
+    CrossRepoReceipt,
+    CrossRepoReceiptSupersession,
     CrossRepoStatus,
     CrossRepoSubject,
     CrossRepoSubjectResolver,
     CrossRepoValidationResult,
     _compute_contract_entry_sha256,
     _parse_http_response,
+    parse_canonical_receipt,
     validate_offline,
 )
 
@@ -559,3 +564,326 @@ def test_call_budget_is_hard_bound() -> None:
     assert result.status is CrossRepoStatus.FAIL
     assert result.api_calls == 1
     assert len(transport.calls) == 1
+
+
+def _v2_receipt() -> dict[str, object]:
+    subject = _subject()
+    subject.pop("artifact_sha256")
+    subject.update(
+        {
+            "schema_version": "occ-cross-repo-subject/v2",
+            "ticket_id": "OMN-17486",
+            "evidence_item_id": "dod-canonical-request-binding",
+            "check_type": "test_passes",
+            "check_value": "true",
+            "artifact_source": {
+                "repository": PRODUCT,
+                "commit_sha": HEAD_SHA,
+                "path": "evidence/trusted.txt",
+                "artifact_sha256": ARTIFACT_DIGEST,
+            },
+        }
+    )
+    return {
+        "schema_version": "2.0.0",
+        "ticket_id": "OMN-17486",
+        "evidence_item_id": "dod-canonical-request-binding",
+        "check_type": "test_passes",
+        "check_value": "true",
+        "status": "PASS",
+        "run_timestamp": "2026-09-02T00:00:00Z",
+        "commit_sha": HEAD_SHA,
+        "runner": "trusted-runner",
+        "verifier": "independent-verifier",
+        "probe_command": "true",
+        "probe_stdout": "PASS",
+        "contract_sha256": CONTRACT_FILE_DIGEST,
+        "contract_entry_sha256": CONTRACT_ENTRY_DIGEST,
+        "pr_number": 123,
+        "cross_repo_subject": subject,
+    }
+
+
+def _v2_fixtures() -> FixtureTransport:
+    transport = _fixtures()
+    transport.responses[
+        f"repos/OmniNode-ai/omnibase_infra/contents/evidence/trusted.txt?ref={HEAD_SHA}"
+    ] = _json(
+        {
+            "path": "evidence/trusted.txt",
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(ARTIFACT).decode(),
+        }
+    )
+    transport.responses[
+        f"repos/OmniNode-ai/onex_change_control/compare/{OCC_SHA}...dev"
+    ] = _json(
+        {
+            "status": "ahead",
+            "base_commit": {"sha": OCC_SHA},
+            "merge_base_commit": {"sha": OCC_SHA},
+        }
+    )
+    contract_response = transport.responses[
+        "repos/OmniNode-ai/onex_change_control/contents/contracts/OMN-17486.yaml?ref="
+        + OCC_SHA
+    ]
+    payload = __import__("json").loads(contract_response.body)
+    assert isinstance(payload, dict)
+    payload["type"] = "file"
+    transport.responses[
+        "repos/OmniNode-ai/onex_change_control/contents/contracts/OMN-17486.yaml?ref="
+        + OCC_SHA
+    ] = _json(payload)
+    return transport
+
+
+@pytest.mark.unit
+def test_v2_receipt_is_the_only_cross_repo_embedding_and_requires_full_bindings() -> (
+    None
+):
+    valid = parse_canonical_receipt(_v2_receipt())
+    assert isinstance(valid, CrossRepoReceipt)
+    for field_name, value in (
+        ("schema_version", "1.0.0"),
+        ("status", "FAIL"),
+        ("check_type", "command"),
+        ("check_value", "false"),
+        ("commit_sha", HEAD_SHA.replace("b", "a")),
+        ("contract_sha256", "sha256:" + "0" * 64),
+    ):
+        invalid = _v2_receipt()
+        invalid[field_name] = value
+        with pytest.raises(
+            ValueError, match=r"invalid canonical receipt|does not match|permitted only"
+        ):
+            parse_canonical_receipt(invalid)
+
+    v1 = _v2_receipt()
+    v1["schema_version"] = "1.0.0"
+    with pytest.raises(ValueError, match="only on canonical receipt schema v2"):
+        parse_canonical_receipt(v1)
+
+
+@pytest.mark.unit
+def test_v2_receipt_requires_exact_subject_ids_and_check_value() -> None:
+    for field_name, value in (
+        ("ticket_id", "OMN-99999"),
+        ("evidence_item_id", "other"),
+        ("check_type", "command"),
+        ("check_value", "false"),
+    ):
+        invalid = _v2_receipt()
+        invalid["cross_repo_subject"] = dict(invalid["cross_repo_subject"])  # type: ignore[arg-type]
+        subject = invalid["cross_repo_subject"]
+        assert isinstance(subject, dict)
+        subject[field_name] = value
+        with pytest.raises(
+            ValueError, match=r"invalid canonical receipt|does not match"
+        ):
+            parse_canonical_receipt(invalid)
+
+    weak = _v2_receipt()
+    weak["check_type"] = "file_exists"
+    weak["cross_repo_subject"] = dict(weak["cross_repo_subject"])  # type: ignore[arg-type]
+    weak_subject = weak["cross_repo_subject"]
+    assert isinstance(weak_subject, dict)
+    weak_subject["check_type"] = "file_exists"
+    with pytest.raises(ValueError, match="invalid canonical receipt"):
+        parse_canonical_receipt(weak)
+
+
+@pytest.mark.unit
+def test_online_fetches_artifact_itself_and_checks_type_and_digest() -> None:
+    transport = _v2_fixtures()
+    result = CrossRepoSubjectResolver(transport=transport).resolve_receipt(
+        _v2_receipt()
+    )
+    assert result.status is CrossRepoStatus.PASS
+    assert any("contents/evidence/trusted.txt?ref=" in path for path in transport.calls)
+
+    for object_type in ("symlink", "submodule"):
+        transport = _v2_fixtures()
+        path = (
+            "repos/OmniNode-ai/omnibase_infra/contents/evidence/trusted.txt?ref="
+            + HEAD_SHA
+        )
+        transport.responses[path] = _json(
+            {
+                "path": "evidence/trusted.txt",
+                "type": object_type,
+                "encoding": "base64",
+                "content": base64.b64encode(ARTIFACT).decode(),
+            }
+        )
+        result = CrossRepoSubjectResolver(transport=transport).resolve_receipt(
+            _v2_receipt()
+        )
+        assert result.status is CrossRepoStatus.FAIL
+
+    transport = _v2_fixtures()
+    path = (
+        f"repos/OmniNode-ai/omnibase_infra/contents/evidence/trusted.txt?ref={HEAD_SHA}"
+    )
+    transport.responses[path] = _json(
+        {
+            "path": "evidence/trusted.txt",
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(b"tampered").decode(),
+        }
+    )
+    result = CrossRepoSubjectResolver(transport=transport).resolve_receipt(
+        _v2_receipt()
+    )
+    assert result.status is CrossRepoStatus.FAIL
+
+
+@pytest.mark.unit
+def test_online_contract_requires_file_type_and_reachable_ancestor() -> None:
+    transport = _v2_fixtures()
+    path = (
+        "repos/OmniNode-ai/onex_change_control/contents/"
+        "contracts/OMN-17486.yaml?ref=" + OCC_SHA
+    )
+    payload = __import__("json").loads(transport.responses[path].body)
+    assert isinstance(payload, dict)
+    payload["type"] = "symlink"
+    transport.responses[path] = _json(payload)
+    assert (
+        CrossRepoSubjectResolver(transport=transport)
+        .resolve_receipt(_v2_receipt())
+        .status
+        is CrossRepoStatus.FAIL
+    )
+
+    transport = _v2_fixtures()
+    reachability = f"repos/OmniNode-ai/onex_change_control/compare/{OCC_SHA}...dev"
+    transport.responses[reachability] = _json(
+        {
+            "status": "diverged",
+            "base_commit": {"sha": OCC_SHA},
+            "merge_base_commit": {"sha": "e" * 40},
+        }
+    )
+    assert (
+        CrossRepoSubjectResolver(transport=transport)
+        .resolve_receipt(_v2_receipt())
+        .status
+        is CrossRepoStatus.FAIL
+    )
+
+
+@pytest.mark.unit
+def test_global_retry_is_used_at_most_once() -> None:
+    class RetryTransport(FixtureTransport):
+        retries = 0
+
+        def request(
+            self, path: str, *, headers: dict[str, str], timeout: float
+        ) -> ApiResponse:
+            if self.retries == 0:
+                self.retries += 1
+                self.calls.append(path)
+                return ApiResponse(429, {"retry-after": "0"}, b"{}")
+            return super().request(path, headers=headers, timeout=timeout)
+
+    transport = RetryTransport(_v2_fixtures().responses)
+    result = CrossRepoSubjectResolver(
+        transport=transport, sleep=lambda _: None
+    ).resolve_receipt(_v2_receipt())
+    assert result.status is CrossRepoStatus.PASS
+    assert result.api_calls == 8
+
+    transport = _v2_fixtures()
+    transport.responses["repos/OmniNode-ai/omnibase_infra/pulls/123"] = ApiResponse(
+        429, {"retry-after": "0"}, b"{}"
+    )
+    result = CrossRepoSubjectResolver(
+        transport=transport, sleep=lambda _: None
+    ).resolve_receipt(_v2_receipt())
+    assert result.status is CrossRepoStatus.FAIL
+    assert result.api_calls == 2
+
+
+@pytest.mark.unit
+def test_local_receipt_loader_rejects_symlink_and_deep_input(tmp_path: Path) -> None:
+    target = tmp_path / "target.yaml"
+    target.write_text("schema_version: '1.0.0'\n", encoding="utf-8")
+    link = tmp_path / "link.yaml"
+    link.symlink_to(target)
+    assert cross_repo_cli._read_bounded(link, 1024) is None
+
+    raw: object = {}
+    for _ in range(65):
+        raw = [raw]
+    with pytest.raises(ValueError, match="nesting-depth"):
+        parse_canonical_receipt(raw)
+
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+    with pytest.raises(ValueError, match=r"schema_version|recursion"):
+        parse_canonical_receipt(cyclic)
+
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("schema_version: '1.0.0'\n", encoding="utf-8")
+    args = cross_repo_cli._parser().parse_args(["--offline", str(outside)])
+    with pytest.raises(ValueError, match="escapes canonical root"):
+        cross_repo_cli._receipt_paths(args)
+
+
+@pytest.mark.unit
+def test_v2_supersession_model_does_not_validate_superseded_base() -> None:
+    replacement = _v2_receipt()
+    record = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-17486",
+        "evidence_item_id": "dod-canonical-request-binding",
+        "check_type": "test_passes",
+        "supersedes": (
+            "drift/dod_receipts/OMN-17486/dod-canonical-request-binding/"
+            "test_passes.yaml"
+        ),
+        "reason": "rebind immutable artifact",
+        "superseder": "independent-verifier",
+        "created_at": datetime.now(UTC),
+        "replacement": replacement,
+    }
+    parsed = CrossRepoReceiptSupersession.model_validate(record)
+    assert parsed.replacement is not None
+
+
+@pytest.mark.unit
+def test_effective_receipt_resolution_skips_invalid_superseded_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "drift" / "dod_receipts"
+    key_dir = root / "OMN-17486" / "dod-canonical-request-binding"
+    key_dir.mkdir(parents=True)
+    base = key_dir / "test_passes.yaml"
+    base.write_text("not: [valid receipt", encoding="utf-8")
+    replacement = _v2_receipt()
+    supersession = key_dir / "test_passes.supersede.0001.yaml"
+    supersession.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-17486",
+                "evidence_item_id": "dod-canonical-request-binding",
+                "check_type": "test_passes",
+                "supersedes": (
+                    "drift/dod_receipts/OMN-17486/dod-canonical-request-binding/"
+                    "test_passes.yaml"
+                ),
+                "reason": "rebind immutable artifact",
+                "superseder": "independent-verifier",
+                "created_at": datetime.now(UTC),
+                "replacement": replacement,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cross_repo_cli, "_RECEIPT_ROOT", root)
+    effective = cross_repo_cli._effective_receipts([base, supersession])
+    assert effective == [(supersession, replacement)]
