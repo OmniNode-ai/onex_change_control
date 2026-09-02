@@ -259,7 +259,7 @@ See [SECURITY.md](SECURITY.md) for how to report vulnerabilities.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for contribution guidelines.
 
 ## License
 

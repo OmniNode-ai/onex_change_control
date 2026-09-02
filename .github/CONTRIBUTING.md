@@ -138,4 +138,4 @@ See `omni_home/CLAUDE.md` for the full PR checklist.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [MIT License](../LICENSE).
