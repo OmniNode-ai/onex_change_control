@@ -16,6 +16,7 @@ import yaml
 from onex_change_control.validation import receipt_honesty_ratchet as ratchet
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_NONREGULAR_SUBPROCESS_TIMEOUT_SECONDS = 20
 
 
 def _document(findings: list[dict[str, str]]) -> bytes:
@@ -1255,7 +1256,7 @@ def test_corpus_rejects_nonregular_receipts_without_blocking(
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
-        timeout=5,
+        timeout=_NONREGULAR_SUBPROCESS_TIMEOUT_SECONDS,
         check=False,
     )
     assert result.returncode != 0

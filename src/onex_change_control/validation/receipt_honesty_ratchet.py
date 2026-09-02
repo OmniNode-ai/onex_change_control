@@ -62,6 +62,7 @@ _ORIGIN_COMMIT = "65a2adbba8a3c4f6cc57c1c7250480bfb708fac0"
 _BOOTSTRAP_BASE_COMMIT = "b2293819e69a3bf4b58107bd2b951f3a45cc377f"
 _SEED_FINDING_COUNT = 1142
 _SEED_RECEIPT_PATH_COUNT = 1055
+_CANONICAL_RECEIPT_PATH_PARTS = 5
 _SCANNER_LIMITATION = (
     "The locked core scanner includes superseded receipt bases. This ledger is "
     "a truthful persistent-debt migration control, not a burn-down claim; "
@@ -1051,26 +1052,79 @@ def _require_staged_addition(
         raise RatchetError(msg)
 
 
-def _assert_no_staged_receipt_changes(repo_root: Path, base_commit: str) -> None:
-    """Forbid any historical receipt mutation in the one-time ledger genesis."""
+def _declared_evidence_ids_from_index(
+    repo_root: Path, ticket_id: str
+) -> frozenset[str]:
+    """Return DoD evidence ids declared by the proposed contract tree."""
+    contract_path = PurePosixPath("contracts") / f"{ticket_id}.yaml"
+    try:
+        raw = _git(repo_root, "show", f":{contract_path.as_posix()}")
+    except RatchetError:
+        return frozenset()
+    try:
+        document = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        msg = f"receipt-honesty genesis contract is malformed: :{contract_path}"
+        raise RatchetError(msg) from exc
+    if not isinstance(document, dict):
+        return frozenset()
+    evidence = document.get("dod_evidence")
+    if not isinstance(evidence, list):
+        return frozenset()
+    ids: set[str] = set()
+    for item in evidence:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            ids.add(item["id"])
+    return frozenset(ids)
+
+
+def _is_declared_receipt_addition(repo_root: Path, path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    if (
+        len(parts) != _CANONICAL_RECEIPT_PATH_PARTS
+        or parts[:2] != _RECEIPTS_RELPATH.parts
+    ):
+        return False
+    ticket_id = parts[2]
+    evidence_id = parts[3]
+    filename = parts[4]
+    if not filename.endswith((".yaml", ".yml")):
+        return False
+    return evidence_id in _declared_evidence_ids_from_index(repo_root, ticket_id)
+
+
+def _assert_only_declared_staged_receipt_additions(
+    repo_root: Path, base_commit: str
+) -> None:
+    """Forbid historical receipt mutation while allowing declared new receipts."""
     raw = _git(
         repo_root,
         "diff",
         "--cached",
-        "--name-only",
+        "--name-status",
         "--no-renames",
         "-z",
         base_commit,
         "--",
         _RECEIPTS_RELPATH.as_posix(),
     )
-    paths = [
-        record.decode("utf-8", errors="strict") for record in raw.split(b"\0") if record
-    ]
-    if paths:
+    records = [record for record in raw.split(b"\0") if record]
+    if len(records) % 2:
+        msg = "unreadable staged receipt-honesty receipt diff"
+        raise RatchetError(msg)
+    rejected: list[str] = []
+    for raw_status, raw_path in zip(records[::2], records[1::2], strict=True):
+        status = raw_status.decode("ascii", errors="strict")
+        path = raw_path.decode("utf-8", errors="strict")
+        if status == "A" and _is_declared_receipt_addition(repo_root, path):
+            continue
+        rejected.append(f"{status}\t{path}")
+    if rejected:
         msg = (
-            "receipt-honesty genesis forbids historical receipt changes; "
-            f"found {len(paths)} staged path(s), sample: {', '.join(paths[:5])}"
+            "receipt-honesty genesis forbids historical receipt changes; only "
+            "new receipts for DoD ids declared in the proposed contract tree "
+            f"are allowed. Found {len(rejected)} rejected path(s), sample: "
+            f"{', '.join(rejected[:5])}"
         )
         raise RatchetError(msg)
 
@@ -1223,7 +1277,7 @@ def _assert_controlled_genesis(
     committed_genesis = _assert_genesis_history_context(repo_root, base_commit)
     _require_staged_addition(repo_root, base_commit, _BASELINE_RELPATH, "ledger")
     _require_staged_addition(repo_root, base_commit, _CONTRACT_RELPATH, "contract")
-    _assert_no_staged_receipt_changes(repo_root, base_commit)
+    _assert_only_declared_staged_receipt_additions(repo_root, base_commit)
     if committed_genesis:
         _require_index_matches_head(
             repo_root, _BASELINE_RELPATH, "receipt-honesty baseline"
