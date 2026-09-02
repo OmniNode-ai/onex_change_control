@@ -51,12 +51,10 @@ from omnibase_core.validation.validator_receipt_honesty import (
     scan_receipts_directory,
 )
 
-_TICKET = "OMN-17495"
 _MODULE = "onex_change_control.validation.receipt_honesty_ratchet"
 _BASELINE_RELPATH = PurePosixPath(
     ".onex_ratchets/omn_17495_receipt_honesty_baseline.yaml"
 )
-_CONTRACT_RELPATH = PurePosixPath("contracts/OMN-17495.yaml")
 _RECEIPTS_RELPATH = PurePosixPath("drift/dod_receipts")
 _ORIGIN_COMMIT = "65a2adbba8a3c4f6cc57c1c7250480bfb708fac0"
 _BOOTSTRAP_BASE_COMMIT = "b2293819e69a3bf4b58107bd2b951f3a45cc377f"
@@ -1004,322 +1002,16 @@ def _assert_live_equals_baseline(
     raise RatchetError("\n".join(reports))
 
 
-def _index_diff_statuses(
-    repo_root: Path, base_commit: str, path: PurePosixPath
-) -> tuple[tuple[str, str], ...]:
-    """Return exact staged path statuses against ``base_commit`` without renames.
-
-    The authoritative gate runs against Git's index: before a local commit this
-    is precisely the proposed commit tree, and in CI checkout it is HEAD.  A
-    working-tree-only file can therefore never satisfy the genesis exception.
-    """
-    raw = _git(
-        repo_root,
-        "diff",
-        "--cached",
-        "--name-status",
-        "--no-renames",
-        "-z",
-        base_commit,
-        "--",
-        path.as_posix(),
-    )
-    records = [record for record in raw.split(b"\0") if record]
-    if len(records) % 2:
-        msg = f"unreadable staged receipt-honesty diff for {path}"
-        raise RatchetError(msg)
-    statuses: list[tuple[str, str]] = []
-    for status, raw_path in zip(records[::2], records[1::2], strict=True):
-        try:
-            statuses.append((status.decode("ascii"), raw_path.decode("utf-8")))
-        except UnicodeDecodeError as exc:
-            msg = f"unreadable staged receipt-honesty diff for {path}"
-            raise RatchetError(msg) from exc
-    return tuple(statuses)
-
-
-def _require_staged_addition(
-    repo_root: Path, base_commit: str, path: PurePosixPath, label: str
-) -> None:
-    """Require exactly one literal added file in the current proposed tree."""
-    expected = (("A", path.as_posix()),)
-    actual = _index_diff_statuses(repo_root, base_commit, path)
-    if actual != expected:
-        msg = (
-            f"receipt-honesty genesis requires {label} to be a newly staged "
-            f"literal addition against base {base_commit}; got {actual!r}"
-        )
-        raise RatchetError(msg)
-
-
-def _declared_evidence_ids_from_index(
-    repo_root: Path, ticket_id: str
-) -> frozenset[str]:
-    """Return DoD evidence ids declared by the proposed contract tree."""
-    contract_path = PurePosixPath("contracts") / f"{ticket_id}.yaml"
-    try:
-        raw = _git(repo_root, "show", f":{contract_path.as_posix()}")
-    except RatchetError:
-        return frozenset()
-    try:
-        document = yaml.safe_load(raw.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
-        msg = f"receipt-honesty genesis contract is malformed: :{contract_path}"
-        raise RatchetError(msg) from exc
-    if not isinstance(document, dict):
-        return frozenset()
-    evidence = document.get("dod_evidence")
-    if not isinstance(evidence, list):
-        return frozenset()
-    ids: set[str] = set()
-    for item in evidence:
-        if isinstance(item, dict) and isinstance(item.get("id"), str):
-            ids.add(item["id"])
-    return frozenset(ids)
-
-
-def _is_declared_receipt_addition(repo_root: Path, path: str) -> bool:
-    parts = PurePosixPath(path).parts
-    if (
-        len(parts) != _CANONICAL_RECEIPT_PATH_PARTS
-        or parts[:2] != _RECEIPTS_RELPATH.parts
-    ):
-        return False
-    ticket_id = parts[2]
-    evidence_id = parts[3]
-    filename = parts[4]
-    if not filename.endswith((".yaml", ".yml")):
-        return False
-    return evidence_id in _declared_evidence_ids_from_index(repo_root, ticket_id)
-
-
-def _assert_only_declared_staged_receipt_additions(
-    repo_root: Path, base_commit: str
-) -> None:
-    """Forbid historical receipt mutation while allowing declared new receipts."""
-    raw = _git(
-        repo_root,
-        "diff",
-        "--cached",
-        "--name-status",
-        "--no-renames",
-        "-z",
-        base_commit,
-        "--",
-        _RECEIPTS_RELPATH.as_posix(),
-    )
-    records = [record for record in raw.split(b"\0") if record]
-    if len(records) % 2:
-        msg = "unreadable staged receipt-honesty receipt diff"
-        raise RatchetError(msg)
-    rejected: list[str] = []
-    for raw_status, raw_path in zip(records[::2], records[1::2], strict=True):
-        status = raw_status.decode("ascii", errors="strict")
-        path = raw_path.decode("utf-8", errors="strict")
-        if status == "A" and _is_declared_receipt_addition(repo_root, path):
-            continue
-        rejected.append(f"{status}\t{path}")
-    if rejected:
-        msg = (
-            "receipt-honesty genesis forbids historical receipt changes; only "
-            "new receipts for DoD ids declared in the proposed contract tree "
-            f"are allowed. Found {len(rejected)} rejected path(s), sample: "
-            f"{', '.join(rejected[:5])}"
-        )
-        raise RatchetError(msg)
-
-
-def _validate_genesis_contract(raw: bytes, source: str) -> None:
-    """Bind the exceptional first ledger introduction to its own ticket contract."""
-    try:
-        document = yaml.safe_load(raw.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
-        msg = f"receipt-honesty genesis contract is malformed: {source}"
-        raise RatchetError(msg) from exc
-    if not isinstance(document, dict) or document.get("ticket_id") != _TICKET:
-        msg = (
-            "receipt-honesty genesis contract must declare exact ticket identity "
-            f"{_TICKET}: {source}"
-        )
-        raise RatchetError(msg)
-
-
-def _history_touches(
-    repo_root: Path, revision_range: str, path: PurePosixPath
-) -> tuple[str, ...]:
-    """Return at most two path-touching commits; enough to prove exact cardinality."""
-    return tuple(
-        item
-        for item in _git(
-            repo_root,
-            "log",
-            "-n",
-            "2",
-            "--format=%H",
-            revision_range,
-            "--",
-            path.as_posix(),
-        )
-        .decode("ascii", errors="strict")
-        .splitlines()
-        if item
-    )
-
-
-def _assert_genesis_history_context(repo_root: Path, base_commit: str) -> bool:
-    """Reject caller-selected and delete/re-add histories before first introduction.
-
-    ``enforce_corpus`` normalizes ``base_commit`` before it reaches this check;
-    repeat the ancestry facts here because this is the sole exceptional path.
-    The base must descend the fixed bootstrap commit, not merely the older
-    receipt origin, so an arbitrary pre-bootstrap comparison cannot reopen it.
-    The bounded history checks distinguish local staged genesis (no path commits
-    after base) from CI's one committed initial addition. Both authorization
-    surfaces must have the same history: a prior appearance, multiple touches,
-    a mismatch, or a later edit all fail closed.
-    """
-    head = _head_commit(repo_root)
-    if not _is_ancestor(repo_root, _BOOTSTRAP_BASE_COMMIT, base_commit):
-        msg = (
-            "receipt-honesty genesis base must descend from fixed bootstrap base "
-            f"{_BOOTSTRAP_BASE_COMMIT}; got {base_commit}"
-        )
-        raise RatchetError(msg)
-    if not _is_ancestor(repo_root, base_commit, head):
-        msg = (
-            "receipt-honesty genesis base is not the normalized current ancestor "
-            f"of HEAD: base={base_commit}, head={head}"
-        )
-        raise RatchetError(msg)
-    paths = ((_BASELINE_RELPATH, "ledger"), (_CONTRACT_RELPATH, "contract"))
-    for path, label in paths:
-        prior = _history_touches(
-            repo_root, f"{_BOOTSTRAP_BASE_COMMIT}..{base_commit}", path
-        )
-        if prior:
-            msg = (
-                "receipt-honesty genesis is forbidden because the "
-                f"{label} path appeared in committed history before "
-                f"missing-ledger base {base_commit}: {prior[0]}"
-            )
-            raise RatchetError(msg)
-    introduced = {
-        label: _history_touches(repo_root, f"{base_commit}..{head}", path)
-        for path, label in paths
-    }
-    if all(not touches for touches in introduced.values()):
-        # A feature branch may legitimately contain unrelated commits ahead of
-        # origin/HEAD before it stages the two authorization surfaces locally.
-        return False
-    if len(introduced["ledger"]) != 1 or not introduced["contract"]:
-        msg = (
-            "receipt-honesty genesis requires exactly one committed ledger "
-            "introduction and at least one contract introduction between base "
-            "and HEAD; found "
-            + ", ".join(
-                f"{label}={len(touches)}" for label, touches in introduced.items()
-            )
-        )
-        raise RatchetError(msg)
-    if introduced["ledger"][0] not in introduced["contract"]:
-        msg = (
-            "receipt-honesty genesis requires ledger and contract introduction in "
-            "the same committed change"
-        )
-        raise RatchetError(msg)
-    return True
-
-
-def _require_index_matches_head(
-    repo_root: Path, path: PurePosixPath, label: str
-) -> None:
-    """CI genesis cannot use a dirty index to alter its one committed introduction."""
-    if _GIT_EXECUTABLE is None:
-        msg = f"Git executable is unavailable for {label} HEAD/index validation"
-        raise RatchetError(msg)
-    result = subprocess.run(  # noqa: S603 -- fixed Git plumbing
-        [
-            _GIT_EXECUTABLE,
-            "diff",
-            "--cached",
-            "--quiet",
-            "HEAD",
-            "--",
-            path.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        return
-    detail = result.stderr.decode("utf-8", errors="replace").strip()
-    msg = f"{label} staged index differs from HEAD during committed genesis"
-    if detail:
-        msg = f"{msg}: {detail}"
-    raise RatchetError(msg)
-
-
-def _assert_controlled_genesis(
-    repo_root: Path,
-    baseline: Baseline,
-    base_commit: str,
-    origin: frozenset[FindingIdentity],
-) -> None:
-    """Permit exactly the first ledger introduction, and nothing ledger-like after it.
-
-    A missing base ledger is not enough.  The ledger and its OMN-17495 contract
-    must both be literal additions in the current index, receipts must be
-    untouched, and the live, schema-validated ledger must equal the immutable
-    origin census.  Once any comparison base contains the ledger, this function
-    is unreachable and ordinary two-way equality/monotonicity applies.
-    """
-    committed_genesis = _assert_genesis_history_context(repo_root, base_commit)
-    _require_staged_addition(repo_root, base_commit, _BASELINE_RELPATH, "ledger")
-    _require_staged_addition(repo_root, base_commit, _CONTRACT_RELPATH, "contract")
-    _assert_only_declared_staged_receipt_additions(repo_root, base_commit)
-    if committed_genesis:
-        _require_index_matches_head(
-            repo_root, _BASELINE_RELPATH, "receipt-honesty baseline"
-        )
-    indexed_ledger = _require_worktree_matches_index(
-        repo_root, _BASELINE_RELPATH, "receipt-honesty baseline"
-    )
-    indexed_baseline = parse_baseline(
-        indexed_ledger, f":{_BASELINE_RELPATH.as_posix()}"
-    )
-    if baseline != indexed_baseline:
-        msg = "receipt-honesty baseline changed after working-tree validation"
-        raise RatchetError(msg)
-    indexed_contract = _require_worktree_matches_index(
-        repo_root, _CONTRACT_RELPATH, "receipt-honesty genesis contract"
-    )
-    _validate_genesis_contract(indexed_contract, f":{_CONTRACT_RELPATH.as_posix()}")
-    if (
-        len(baseline.findings) != _SEED_FINDING_COUNT
-        or len({item.path for item in baseline.findings}) != _SEED_RECEIPT_PATH_COUNT
-    ):
-        msg = "bootstrap baseline does not carry the exact immutable 1142/1055 census"
-        raise RatchetError(msg)
-    if baseline.identities != origin:
-        msg = (
-            "bootstrap baseline is not exactly the immutable origin finding "
-            "identity set"
-        )
-        raise RatchetError(msg)
-
-
 def _assert_base_monotonic(
     repo_root: Path,
     baseline: Baseline,
     base_commit: str,
-    origin: frozenset[FindingIdentity],
 ) -> None:
-    """Forbid ledger growth; narrowly permit one controlled ledger genesis."""
+    """Forbid ledger growth and require every comparison base to carry the ledger."""
     committed_baseline = _baseline_at_commit(repo_root, base_commit)
     if committed_baseline is None:
-        _assert_controlled_genesis(repo_root, baseline, base_commit, origin)
-        return
+        msg = "receipt-honesty bootstrap sealed: base must contain ledger"
+        raise RatchetError(msg)
 
     _validate_provenance(repo_root, committed_baseline)
     growth = baseline.identities - committed_baseline.identities
@@ -1343,7 +1035,7 @@ def enforce_corpus(repo_root: Path, request: CiBaseRequest | None = None) -> Non
     if baseline != indexed_baseline:
         msg = "receipt-honesty baseline changed after working-tree validation"
         raise RatchetError(msg)
-    origin = _validate_provenance(repo_root, baseline)
+    _validate_provenance(repo_root, baseline)
     live = current_identities(repo_root)
     _assert_live_equals_baseline(live, baseline)
     normalized_base = (
@@ -1351,7 +1043,7 @@ def enforce_corpus(repo_root: Path, request: CiBaseRequest | None = None) -> Non
         if request is not None
         else resolve_local_base(repo_root)
     )
-    _assert_base_monotonic(repo_root, baseline, normalized_base, origin)
+    _assert_base_monotonic(repo_root, baseline, normalized_base)
     sys.stdout.write(
         "RECEIPT HONESTY RATCHET PASSED: "
         f"{len(live)} findings across "

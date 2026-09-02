@@ -180,7 +180,6 @@ def test_base_ledger_growth_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> Non
             _REPO_ROOT,
             ratchet.Baseline((base_identity, grown_identity)),
             "a" * 40,
-            frozenset(),
         )
 
 
@@ -523,19 +522,10 @@ def test_wiring_is_live_and_anti_removal_anchor_is_green() -> None:
     assert ratchet.main(["--check-wiring", "--repo-root", str(_REPO_ROOT)]) == 0
 
 
-def _contract_document(ticket_id: str = "OMN-17495") -> str:
-    return yaml.safe_dump({"ticket_id": ticket_id}, sort_keys=False)
-
-
-def _temporary_genesis_repo(
-    tmp_path: Path,
-    *,
-    baseline_raw: bytes,
-    ticket_id: str = "OMN-17495",
-    stage_ledger: bool = True,
-    stage_receipt: bool = False,
+def _missing_ledger_base_with_staged_attempt(
+    tmp_path: Path, attempt: str
 ) -> tuple[Path, str]:
-    repo = tmp_path / "genesis"
+    repo = tmp_path / attempt
     subprocess.run(
         ["git", "init", "--initial-branch", "main", str(repo)],
         check=True,
@@ -547,506 +537,63 @@ def _temporary_genesis_repo(
     _git_command(repo, "add", "proof.txt")
     _git_command(repo, "commit", "-m", "base")
     base = _git_command(repo, "rev-parse", "HEAD")
-
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    ledger.parent.mkdir()
-    ledger.write_bytes(baseline_raw)
-    contract = repo / "contracts" / "OMN-17495.yaml"
-    contract.parent.mkdir()
-    contract.write_text(_contract_document(ticket_id), encoding="utf-8")
-    if stage_ledger:
-        _git_command(repo, "add", str(ledger.relative_to(repo)))
-    _git_command(repo, "add", str(contract.relative_to(repo)))
-    if stage_receipt:
-        receipt = repo / "drift" / "dod_receipts" / "OMN-1" / "changed.yaml"
-        receipt.parent.mkdir(parents=True)
-        receipt.write_text("status: changed\n", encoding="utf-8")
-        _git_command(repo, "add", str(receipt.relative_to(repo)))
-    return repo, base
-
-
-def _small_genesis_constants(monkeypatch: pytest.MonkeyPatch) -> Any:
-    identity = _identity()
-    monkeypatch.setattr(ratchet, "_SEED_FINDING_COUNT", 1)
-    monkeypatch.setattr(ratchet, "_SEED_RECEIPT_PATH_COUNT", 1)
-    return identity
-
-
-def _isolate_genesis_index_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep temporary-repository index tests independent of immutable OCC history."""
-    monkeypatch.setattr(ratchet, "_assert_genesis_history_context", lambda *_args: None)
-
-
-@pytest.mark.unit
-def test_controlled_genesis_allows_only_staged_omn_17495_ledger(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    identity = _small_genesis_constants(monkeypatch)
-    _isolate_genesis_index_checks(monkeypatch)
-    raw = _document([identity.as_mapping()])
-    repo, base = _temporary_genesis_repo(tmp_path, baseline_raw=raw)
-    baseline = ratchet.load_baseline(repo)
-
-    ratchet._assert_controlled_genesis(repo, baseline, base, frozenset({identity}))
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("scenario", "expected"),
-    [
-        (
-            {"stage_ledger": False, "stage_receipt": False, "ticket_id": "OMN-17495"},
-            "newly staged literal addition",
-        ),
-        (
-            {"stage_ledger": True, "stage_receipt": True, "ticket_id": "OMN-17495"},
-            "forbids historical receipt changes",
-        ),
-        (
-            {"stage_ledger": True, "stage_receipt": False, "ticket_id": "OMN-99999"},
-            "exact ticket identity",
-        ),
-    ],
-)
-def test_controlled_genesis_rejects_invalid_index_or_ticket(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    scenario: dict[str, object],
-    expected: str,
-) -> None:
-    identity = _small_genesis_constants(monkeypatch)
-    _isolate_genesis_index_checks(monkeypatch)
-    raw = _document([identity.as_mapping()])
-    repo, base = _temporary_genesis_repo(
-        tmp_path,
-        baseline_raw=raw,
-        ticket_id=str(scenario["ticket_id"]),
-        stage_ledger=bool(scenario["stage_ledger"]),
-        stage_receipt=bool(scenario["stage_receipt"]),
-    )
-    baseline = ratchet.load_baseline(repo)
-
-    with pytest.raises(ratchet.RatchetError, match=expected):
-        ratchet._assert_controlled_genesis(repo, baseline, base, frozenset({identity}))
-
-
-@pytest.mark.unit
-def test_controlled_genesis_rejects_malformed_wrong_origin_and_copied_entries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    identity = _small_genesis_constants(monkeypatch)
-    _isolate_genesis_index_checks(monkeypatch)
-    malformed_repo, _base = _temporary_genesis_repo(
-        tmp_path / "malformed", baseline_raw=b"findings: [\n"
-    )
-    with pytest.raises(ratchet.RatchetError, match=r"root keys|malformed"):
-        ratchet.load_baseline(malformed_repo)
-
-    wrong_origin = yaml.safe_load(_document([identity.as_mapping()]))
-    wrong_origin["origin_commit"] = "a" * 40
-    origin_repo, _base = _temporary_genesis_repo(
-        tmp_path / "origin",
-        baseline_raw=yaml.safe_dump(wrong_origin, sort_keys=False).encode(),
-    )
-    with pytest.raises(ratchet.RatchetError, match="origin_commit"):
-        ratchet.load_baseline(origin_repo)
-
-    copied = _identity(path="drift/dod_receipts/OMN-2/dod-001/command.yaml")
-    copied_repo, copied_base = _temporary_genesis_repo(
-        tmp_path / "copied", baseline_raw=_document([copied.as_mapping()])
-    )
-    with pytest.raises(ratchet.RatchetError, match="not exactly the immutable origin"):
-        ratchet._assert_controlled_genesis(
-            copied_repo,
-            ratchet.load_baseline(copied_repo),
-            copied_base,
-            frozenset({identity}),
-        )
-
-
-@pytest.mark.unit
-def test_base_with_existing_ledger_cannot_reenter_genesis(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    identity = _small_genesis_constants(monkeypatch)
-    repo, _base = _temporary_genesis_repo(
-        tmp_path, baseline_raw=_document([identity.as_mapping()])
-    )
-    _git_command(repo, "commit", "-m", "introduce ledger")
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    _git_command(repo, "rm", str(ledger.relative_to(repo)))
-    ledger.parent.mkdir(exist_ok=True)
-    ledger.write_bytes(_document([identity.as_mapping()]))
-    _git_command(repo, "add", str(ledger.relative_to(repo)))
-    base = _git_command(repo, "rev-parse", "HEAD")
-    called = False
-
-    def _forbid_genesis(*_args: Any, **_kwargs: Any) -> None:
-        nonlocal called
-        called = True
-        raise AssertionError
-
-    monkeypatch.setattr(ratchet, "_assert_controlled_genesis", _forbid_genesis)
-    monkeypatch.setattr(
-        ratchet,
-        "_validate_provenance",
-        lambda _root, _baseline: frozenset({identity}),
-    )
-    ratchet._assert_base_monotonic(
-        repo,
-        ratchet.load_baseline(repo),
-        base,
-        frozenset({identity}),
-    )
-    assert called is False
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("target", ["ledger", "contract"])
-def test_controlled_genesis_rejects_valid_worktree_over_malicious_staged_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
-) -> None:
-    identity = _small_genesis_constants(monkeypatch)
-    _isolate_genesis_index_checks(monkeypatch)
-    valid_ledger = _document([identity.as_mapping()])
-    repo, base = _temporary_genesis_repo(tmp_path, baseline_raw=valid_ledger)
-    if target == "ledger":
-        ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-        copied = _identity(path="drift/dod_receipts/OMN-2/dod-001/command.yaml")
-        ledger.write_bytes(_document([copied.as_mapping()]))
-        _git_command(repo, "add", str(ledger.relative_to(repo)))
-        ledger.write_bytes(valid_ledger)
-    else:
-        contract = repo / "contracts" / "OMN-17495.yaml"
-        contract.write_text(_contract_document("OMN-99999"), encoding="utf-8")
-        _git_command(repo, "add", str(contract.relative_to(repo)))
-        contract.write_text(_contract_document(), encoding="utf-8")
-
-    with pytest.raises(ratchet.RatchetError, match="working tree differs from staged"):
-        ratchet._assert_controlled_genesis(
-            repo,
-            ratchet.load_baseline(repo),
-            base,
-            frozenset({identity}),
-        )
-
-
-@pytest.mark.unit
-def test_genesis_history_context_rejects_prebootstrap_or_nonlinear_base(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    base = "a" * 40
-    head = "b" * 40
-    monkeypatch.setattr(ratchet, "_head_commit", lambda _root: head)
-    seen: list[str] = []
-
-    def _after_origin_but_before_bootstrap(
-        _root: Path, ancestor: str, _descendant: str
-    ) -> bool:
-        seen.append(ancestor)
-        # This models a caller-selected base after 65a but before b229.
-        return ancestor == ratchet._ORIGIN_COMMIT
-
-    monkeypatch.setattr(ratchet, "_is_ancestor", _after_origin_but_before_bootstrap)
-    with pytest.raises(ratchet.RatchetError, match="must descend from fixed bootstrap"):
-        ratchet._assert_genesis_history_context(_REPO_ROOT, base)
-    assert seen == [ratchet._BOOTSTRAP_BASE_COMMIT]
-
-    def _only_bootstrap_is_ancestor(
-        _root: Path, ancestor: str, _descendant: str
-    ) -> bool:
-        return ancestor == ratchet._BOOTSTRAP_BASE_COMMIT
-
-    monkeypatch.setattr(ratchet, "_is_ancestor", _only_bootstrap_is_ancestor)
-    with pytest.raises(ratchet.RatchetError, match="normalized current ancestor"):
-        ratchet._assert_genesis_history_context(_REPO_ROOT, base)
-
-
-@pytest.mark.unit
-def test_genesis_history_context_rejects_ledger_deleted_before_missing_base(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "deleted-ledger-history"
-    subprocess.run(
-        ["git", "init", "--initial-branch", "main", str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
-    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
-    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
-    _git_command(repo, "add", "proof.txt")
-    _git_command(repo, "commit", "-m", "base")
-    bootstrap = _git_command(repo, "rev-parse", "HEAD")
-    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", bootstrap)
     ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
     ledger.parent.mkdir()
     ledger.write_bytes(_document([]))
     _git_command(repo, "add", str(ledger.relative_to(repo)))
-    _git_command(repo, "commit", "-m", "add ledger")
-    _git_command(repo, "rm", str(ledger.relative_to(repo)))
-    _git_command(repo, "commit", "-m", "delete ledger")
-    missing_base = _git_command(repo, "rev-parse", "HEAD")
-    assert ratchet._baseline_at_commit(repo, missing_base) is None
-
-    monkeypatch.setattr(ratchet, "_is_ancestor", lambda *_args: True)
-    with pytest.raises(ratchet.RatchetError, match="appeared in committed history"):
-        ratchet._assert_genesis_history_context(repo, missing_base)
-
-
-@pytest.mark.unit
-def test_genesis_rejects_add_delete_staged_readd_after_selected_base(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "staged-readd-history"
-    subprocess.run(
-        ["git", "init", "--initial-branch", "main", str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
-    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
-    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
-    _git_command(repo, "add", "proof.txt")
-    _git_command(repo, "commit", "-m", "base")
-    selected_base = _git_command(repo, "rev-parse", "HEAD")
-    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", selected_base)
-    identity = _small_genesis_constants(monkeypatch)
-    raw = _document([identity.as_mapping()])
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    ledger.parent.mkdir()
-    ledger.write_bytes(raw)
     contract = repo / "contracts" / "OMN-17495.yaml"
     contract.parent.mkdir()
-    contract.write_text(_contract_document(), encoding="utf-8")
-    _git_command(
-        repo, "add", str(ledger.relative_to(repo)), str(contract.relative_to(repo))
+    contract.write_text(
+        "ticket_id: OMN-17495\ndod_evidence:\n  - id: dod-sealed\n",
+        encoding="utf-8",
     )
-    _git_command(repo, "commit", "-m", "add ledger")
-    _git_command(repo, "rm", str(ledger.relative_to(repo)))
-    _git_command(repo, "commit", "-m", "delete ledger")
-    ledger.parent.mkdir(exist_ok=True)
-    ledger.write_bytes(raw)
-    _git_command(repo, "add", str(ledger.relative_to(repo)))
-
-    with pytest.raises(ratchet.RatchetError, match="exactly one committed"):
-        ratchet._assert_controlled_genesis(
-            repo,
-            ratchet.load_baseline(repo),
-            selected_base,
-            frozenset({identity}),
-        )
-
-
-@pytest.mark.unit
-def test_genesis_allows_one_committed_ci_introduction_with_clean_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "committed-genesis"
-    subprocess.run(
-        ["git", "init", "--initial-branch", "main", str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
-    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
-    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
-    _git_command(repo, "add", "proof.txt")
-    _git_command(repo, "commit", "-m", "base")
-    base = _git_command(repo, "rev-parse", "HEAD")
-    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", base)
-    identity = _small_genesis_constants(monkeypatch)
-    raw = _document([identity.as_mapping()])
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    ledger.parent.mkdir()
-    ledger.write_bytes(raw)
-    contract = repo / "contracts" / "OMN-17495.yaml"
-    contract.parent.mkdir()
-    contract.write_text(_contract_document(), encoding="utf-8")
-    _git_command(
-        repo, "add", str(ledger.relative_to(repo)), str(contract.relative_to(repo))
-    )
-    _git_command(repo, "commit", "-m", "introduce ledger")
-
-    ratchet._assert_controlled_genesis(
-        repo,
-        ratchet.load_baseline(repo),
-        base,
-        frozenset({identity}),
-    )
-
-
-@pytest.mark.unit
-def test_genesis_allows_contract_only_repair_after_committed_introduction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "committed-contract-repair"
-    subprocess.run(
-        ["git", "init", "--initial-branch", "main", str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
-    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
-    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
-    _git_command(repo, "add", "proof.txt")
-    _git_command(repo, "commit", "-m", "base")
-    base = _git_command(repo, "rev-parse", "HEAD")
-    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", base)
-    identity = _small_genesis_constants(monkeypatch)
-    raw = _document([identity.as_mapping()])
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    ledger.parent.mkdir()
-    ledger.write_bytes(raw)
-    contract = repo / "contracts" / "OMN-17495.yaml"
-    contract.parent.mkdir()
-    contract.write_text(_contract_document(), encoding="utf-8")
-    _git_command(
-        repo, "add", str(ledger.relative_to(repo)), str(contract.relative_to(repo))
-    )
-    _git_command(repo, "commit", "-m", "introduce ledger and contract")
-    contract.write_text(_contract_document() + "\n", encoding="utf-8")
     _git_command(repo, "add", str(contract.relative_to(repo)))
-    _git_command(repo, "commit", "-m", "repair contract evidence")
-
-    ratchet._assert_controlled_genesis(
-        repo,
-        ratchet.load_baseline(repo),
-        base,
-        frozenset({identity}),
-    )
-
-
-@pytest.mark.unit
-def test_genesis_allows_unrelated_feature_history_before_local_staging(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = tmp_path / "unrelated-local-genesis"
-    subprocess.run(
-        ["git", "init", "--initial-branch", "main", str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
-    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
-    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
-    _git_command(repo, "add", "proof.txt")
-    _git_command(repo, "commit", "-m", "base")
-    base = _git_command(repo, "rev-parse", "HEAD")
-    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", base)
-    identity = _small_genesis_constants(monkeypatch)
-    (repo / "unrelated.txt").write_text("feature work\n", encoding="utf-8")
-    _git_command(repo, "add", "unrelated.txt")
-    _git_command(repo, "commit", "-m", "unrelated feature work")
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    ledger.parent.mkdir()
-    ledger.write_bytes(_document([identity.as_mapping()]))
-    contract = repo / "contracts" / "OMN-17495.yaml"
-    contract.parent.mkdir()
-    contract.write_text(_contract_document(), encoding="utf-8")
-    _git_command(
-        repo, "add", str(ledger.relative_to(repo)), str(contract.relative_to(repo))
-    )
-
-    ratchet._assert_controlled_genesis(
-        repo,
-        ratchet.load_baseline(repo),
-        base,
-        frozenset({identity}),
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("history_kind", ["receipt", "contract"])
-def test_genesis_rejects_receipt_or_one_authorization_surface_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, history_kind: str
-) -> None:
-    repo = tmp_path / history_kind
-    subprocess.run(
-        ["git", "init", "--initial-branch", "main", str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
-    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
-    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
-    _git_command(repo, "add", "proof.txt")
-    _git_command(repo, "commit", "-m", "base")
-    base = _git_command(repo, "rev-parse", "HEAD")
-    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", base)
-    identity = _small_genesis_constants(monkeypatch)
-    if history_kind == "receipt":
-        receipt = repo / "drift" / "dod_receipts" / "OMN-1" / "history.yaml"
+    if attempt == "declared-receipt":
+        receipt = (
+            repo
+            / "drift"
+            / "dod_receipts"
+            / "OMN-17495"
+            / "dod-sealed"
+            / "command.yaml"
+        )
         receipt.parent.mkdir(parents=True)
-        receipt.write_text("status: historical\n", encoding="utf-8")
+        receipt.write_text("status: PASS\n", encoding="utf-8")
         _git_command(repo, "add", str(receipt.relative_to(repo)))
-    else:
-        contract = repo / "contracts" / "OMN-17495.yaml"
-        contract.parent.mkdir()
-        contract.write_text(_contract_document(), encoding="utf-8")
-        _git_command(repo, "add", str(contract.relative_to(repo)))
-    _git_command(repo, "commit", "-m", f"historical {history_kind}")
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    ledger.parent.mkdir()
-    ledger.write_bytes(_document([identity.as_mapping()]))
-    contract = repo / "contracts" / "OMN-17495.yaml"
-    if not contract.exists():
-        contract.parent.mkdir(exist_ok=True)
-        contract.write_text(_contract_document(), encoding="utf-8")
-    _git_command(
-        repo, "add", str(ledger.relative_to(repo)), str(contract.relative_to(repo))
-    )
-
-    expected = (
-        "forbids historical receipt changes"
-        if history_kind == "receipt"
-        else "exactly one committed"
-    )
-    with pytest.raises(ratchet.RatchetError, match=expected):
-        ratchet._assert_controlled_genesis(
-            repo,
-            ratchet.load_baseline(repo),
-            base,
-            frozenset({identity}),
-        )
+    return repo, base
 
 
 @pytest.mark.unit
-def test_genesis_rejects_contract_introduced_in_different_committed_change(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("attempt", ["declared-contract", "declared-receipt"])
+def test_missing_ledger_base_is_sealed_despite_staged_genesis_attempt(
+    tmp_path: Path, attempt: str
 ) -> None:
-    repo = tmp_path / "split-contract-genesis"
-    subprocess.run(
-        ["git", "init", "--initial-branch", "main", str(repo)],
-        check=True,
-        capture_output=True,
-    )
-    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
-    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
-    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
-    _git_command(repo, "add", "proof.txt")
-    _git_command(repo, "commit", "-m", "base")
-    base = _git_command(repo, "rev-parse", "HEAD")
-    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", base)
-    identity = _small_genesis_constants(monkeypatch)
-    contract = repo / "contracts" / "OMN-17495.yaml"
-    contract.parent.mkdir()
-    contract.write_text(_contract_document(), encoding="utf-8")
-    _git_command(repo, "add", str(contract.relative_to(repo)))
-    _git_command(repo, "commit", "-m", "introduce contract")
-    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
-    ledger.parent.mkdir()
-    ledger.write_bytes(_document([identity.as_mapping()]))
-    _git_command(repo, "add", str(ledger.relative_to(repo)))
-    _git_command(repo, "commit", "-m", "introduce ledger")
+    repo, base = _missing_ledger_base_with_staged_attempt(tmp_path, attempt)
+    assert ratchet._baseline_at_commit(repo, base) is None
+    with pytest.raises(
+        ratchet.RatchetError, match="bootstrap sealed: base must contain ledger"
+    ):
+        ratchet._assert_base_monotonic(repo, ratchet.Baseline(()), base)
 
-    with pytest.raises(ratchet.RatchetError, match="same committed change"):
-        ratchet._assert_controlled_genesis(
-            repo,
-            ratchet.load_baseline(repo),
-            base,
-            frozenset({identity}),
-        )
+
+@pytest.mark.unit
+def test_ledger_containing_base_uses_normal_non_growth_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = _identity()
+    baseline = ratchet.Baseline((identity,))
+    validated: list[ratchet.Baseline] = []
+
+    def record_provenance(
+        _root: Path, value: ratchet.Baseline
+    ) -> frozenset[ratchet.FindingIdentity]:
+        validated.append(value)
+        return frozenset({identity})
+
+    monkeypatch.setattr(ratchet, "_baseline_at_commit", lambda *_args: baseline)
+    monkeypatch.setattr(ratchet, "_validate_provenance", record_provenance)
+    ratchet._assert_base_monotonic(_REPO_ROOT, baseline, "a" * 40)
+    assert validated == [baseline]
 
 
 @pytest.mark.unit
