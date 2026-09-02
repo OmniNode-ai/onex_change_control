@@ -78,6 +78,7 @@ COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     ): "occ-companion-effect / Publish occ-companion-effect command",
     ("guards.yml", "pr-title"): "pr-title / check-title",
     ("docs-validate.yml", "call"): "call / validate-docs",
+    ("kb-doc-gate.yml", "kb-doc-gate"): "kb-doc-gate / kb-doc-gate",
     (
         "guards.yml",
         "required-check-skip-guard",
