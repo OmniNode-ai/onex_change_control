@@ -49,8 +49,46 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _HTTP_STATUS_RE = re.compile(r"^HTTP/\S+\s+(\d{3})\b")
 _HTTP_OK = 200
 _MISSING_HTTP_STATUS = 404
+
+# OMN-17502: GitHub's ``GET /repos/{owner}/{repo}/commits/{ref}`` does NOT
+# answer 404 when a well-formed 40-hex SHA is simply absent from the
+# repository. It answers **422** with the body
+# ``{"message": "No commit found for SHA: <sha>"}`` — 404 is reserved for a
+# repository that is missing or invisible to the token. Treating 422 as an
+# unclassified error made "this SHA is not in THIS repo" indistinguishable from
+# an outage, and because an unavailable outcome is terminal for the session,
+# the OCC-first / product-repo-hint fallback the caller documents could never
+# be reached: every autobind receipt carrying a PRODUCT repository's head SHA
+# failed closed on the first probe. Observed live 2026-09-02 on OCC#8018,
+# whose omninode_infra head SHA returns exactly that 422 against OCC.
+#
+# The widening is deliberately narrow. Only 422 responses whose body message
+# is GitHub's own "no commit found" sentence are read as MISSING; any other
+# 422 (a real validation error) still halts the session fail-closed.
+_SHA_ABSENT_HTTP_STATUS = 422
+_SHA_ABSENT_MESSAGE_RE = re.compile(r"^No commit found for SHA\b", re.IGNORECASE)
 _INVALID_BUDGET_MESSAGE = "rest_budget must be non-negative"
 _INVALID_TIMEOUT_MESSAGE = "timeout_seconds must be positive"
+
+
+def _is_sha_absent_body(body: str) -> bool:
+    """Return whether a 422 body is GitHub's "commit is not in this repo" answer.
+
+    Only the API's own sentence counts. A 422 whose body is unparseable, has no
+    ``message``, or carries a different message is a real validation error and
+    must keep halting the session fail-closed (OMN-17502).
+    """
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    message = payload.get("message")
+    return (
+        isinstance(message, str) and _SHA_ABSENT_MESSAGE_RE.match(message) is not None
+    )
 
 
 def is_full_commit_sha(value: str) -> bool:
@@ -275,7 +313,9 @@ class CommitShaResolver:
                 retry_after=retry_after,
                 attempted_remote=True,
             )
-        elif status_code == _MISSING_HTTP_STATUS:
+        elif status_code == _MISSING_HTTP_STATUS or (
+            status_code == _SHA_ABSENT_HTTP_STATUS and _is_sha_absent_body(body)
+        ):
             resolution = CommitShaResolution(
                 EnumCommitShaOutcome.MISSING,
                 sha,
