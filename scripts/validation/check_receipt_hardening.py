@@ -252,8 +252,12 @@ Both are the same defect at the mechanism level: nothing resolves
 ``commit_sha`` against a repository at all. ``_commit_sha_existence_violations``
 closes it with a resolver that builds one local remote-tracking index only as
 a cacheable hint, then confirms every valid claim through GitHub's commits API
-against OCC and, after an OCC 404 only, a trusted product-repo hint from
-the contract-bound ``check_value``/``probe_command`` fields. Tracking refs can
+against OCC and, after a definitive OCC miss only, a trusted product-repo
+hint from the contract-bound ``check_value``/``probe_command`` fields. A
+definitive miss is an HTTP 404, or the HTTP 422 ``No commit found for SHA``
+answer this endpoint actually returns for a well-formed absent SHA — the
+overwhelmingly common case here, since a product-repo commit is never an OCC
+commit (OMN-17513). Tracking refs can
 be stale and pre-commit must not fetch, so they never prove remote
 reachability. A 200 response is accepted only when its JSON object carries the
 exact requested full ``sha``. ``actual_output`` is free-form narrative and

@@ -92,7 +92,14 @@ def test_stale_local_origin_ref_cannot_override_remote_missing() -> None:
     assert len(runner.calls) == 2
 
 
-def test_only_http_404_is_a_definitive_missing_result() -> None:
+def test_a_422_without_the_absent_commit_message_is_still_unavailable() -> None:
+    """A 422 of unknown cause stays fail-closed and terminal (OMN-17513).
+
+    The OMN-17513 narrowing keys on GitHub's exact "No commit found for SHA"
+    body. Every other 422 keeps the old UNAVAILABLE classification, including
+    the session halt that spares the second lookup a process.
+    """
+
     runner = FakeRunner(
         lambda command: _completed(command, status=1, stdout=_http(422))
     )
@@ -105,6 +112,111 @@ def test_only_http_404_is_a_definitive_missing_result() -> None:
     assert first.status_code == 422
     assert second.outcome is EnumCommitShaOutcome.UNAVAILABLE
     assert len(runner.calls) == 1
+
+
+def _absent_commit_body(sha: str) -> str:
+    return json.dumps(
+        {
+            "message": f"No commit found for SHA: {sha}",
+            "documentation_url": (
+                "https://docs.github.com/rest/commits/commits#get-a-commit"
+            ),
+            "status": "422",
+        }
+    )
+
+
+def test_http_422_no_commit_found_is_a_definitive_missing_result() -> None:
+    """The live shape for "this SHA is not in this repo" (OMN-17513)."""
+
+    runner = FakeRunner(
+        lambda command: _completed(
+            command, status=1, stdout=_http(422, body=_absent_commit_body(FULL_SHA))
+        )
+    )
+
+    resolution = CommitShaResolver(runner=runner).remote_resolution(
+        "OmniNode-ai/onex_change_control", FULL_SHA
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.MISSING
+    assert resolution.status_code == 422
+
+
+def test_absent_in_occ_continues_to_the_trusted_product_repo_hint() -> None:
+    """The regression OMN-17513 fixes, end to end through ``resolve``.
+
+    A machine-minted cross-repo companion cites a PRODUCT-repo commit, so the
+    first repository tried (OCC) always answers 422 "No commit found for SHA".
+    Before the fix that halted the session and the product-repo hint was never
+    reached.
+    """
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        if "OmniNode-ai/onex_change_control" in command[-1]:
+            return _completed(
+                command,
+                status=1,
+                stdout=_http(422, body=_absent_commit_body(FULL_SHA)),
+            )
+        return _completed(command, stdout=_http(200))
+
+    runner = FakeRunner(handler)
+    resolution = CommitShaResolver(runner=runner).resolve(
+        FULL_SHA, ("OmniNode-ai/onex_change_control", "OmniNode-ai/omniweb")
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+    assert resolution.repo == "OmniNode-ai/omniweb"
+
+
+def test_absent_in_every_repo_is_missing_not_unavailable() -> None:
+    """Absent everywhere is a real receipt defect, not an infra excuse."""
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return _completed(command, stdout="")
+        return _completed(
+            command, status=1, stdout=_http(422, body=_absent_commit_body(FULL_SHA))
+        )
+
+    runner = FakeRunner(handler)
+    resolution = CommitShaResolver(runner=runner).resolve(
+        FULL_SHA, ("OmniNode-ai/onex_change_control", "OmniNode-ai/omniweb")
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.MISSING
+    assert len([call for call in runner.calls if call[0] == "gh"]) == 2
+
+
+def test_422_naming_a_different_sha_is_not_definitive() -> None:
+    """The message must name the SHA that was actually requested."""
+
+    runner = FakeRunner(
+        lambda command: _completed(
+            command, status=1, stdout=_http(422, body=_absent_commit_body(OTHER_SHA))
+        )
+    )
+
+    resolution = CommitShaResolver(runner=runner).remote_resolution(
+        "OmniNode-ai/onex_change_control", FULL_SHA
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.UNAVAILABLE
+
+
+def test_422_with_an_unparseable_body_is_not_definitive() -> None:
+    runner = FakeRunner(
+        lambda command: _completed(command, status=1, stdout=_http(422, body="<html>"))
+    )
+
+    resolution = CommitShaResolver(runner=runner).remote_resolution(
+        "OmniNode-ai/onex_change_control", FULL_SHA
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.UNAVAILABLE
 
 
 def test_remote_request_keeps_json_body_and_has_no_silent_flag() -> None:

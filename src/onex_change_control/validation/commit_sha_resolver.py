@@ -49,6 +49,28 @@ _FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _HTTP_STATUS_RE = re.compile(r"^HTTP/\S+\s+(\d{3})\b")
 _HTTP_OK = 200
 _MISSING_HTTP_STATUS = 404
+
+# OMN-17513 — `GET /repos/{owner}/{repo}/commits/{sha}` does NOT answer 404 for
+# a well-formed SHA that is simply absent from that repository. It answers 422
+# with a body of exactly:
+#
+#     {"message": "No commit found for SHA: <sha>", ...}
+#
+# That is a DEFINITIVE answer, not an infrastructure failure, and classifying it
+# as UNAVAILABLE broke the whole point of resolving against several repositories
+# in order: `resolve` continues to the next trusted repository only on a
+# definitive MISSING, and treats any UNAVAILABLE as terminal for the session. So
+# every machine-minted cross-repo evidence companion — whose receipt cites a
+# PRODUCT-repo commit and is therefore always absent from OCC, the first
+# repository tried — halted on the first lookup, never reached its trusted
+# product-repo hint, and failed the gate closed with a diagnostic that named no
+# real defect. Verified live on OmniNode-ai/onex_change_control#8030 and #8032.
+#
+# Only this exact shape is definitive. A 422 WITHOUT that message is a genuine
+# "unprocessable" answer of unknown cause and stays UNAVAILABLE — the narrowness
+# is the safety property, so do not widen this to "any 422".
+_NO_COMMIT_HTTP_STATUS = 422
+_NO_COMMIT_MESSAGE_PREFIX = "no commit found for sha"
 _INVALID_BUDGET_MESSAGE = "rest_budget must be non-negative"
 _INVALID_TIMEOUT_MESSAGE = "timeout_seconds must be positive"
 
@@ -63,6 +85,30 @@ def _normalize_full_commit_sha(value: str) -> str:
     """Return the canonical lowercase spelling of a previously validated SHA."""
 
     return value.lower()
+
+
+def _is_absent_commit_response(status_code: int, body: str, sha: str) -> bool:
+    """Return whether a response definitively says this SHA is not in the repo.
+
+    True only for GitHub's HTTP 422 "No commit found for SHA: <sha>" answer for
+    the SHA that was actually requested (OMN-17513). Any other 422 — a different
+    message, an unparseable body, or a message naming a different SHA — is not
+    definitive and must keep its UNAVAILABLE, fail-closed classification.
+    """
+
+    if status_code != _NO_COMMIT_HTTP_STATUS:
+        return False
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    message = payload.get("message")
+    if not isinstance(message, str):
+        return False
+    normalized = message.strip().lower()
+    return normalized.startswith(_NO_COMMIT_MESSAGE_PREFIX) and sha in normalized
 
 
 class CommitShaResolver:
@@ -144,7 +190,9 @@ class CommitShaResolver:
         The local origin index is built once only to retain an inventory hint;
         it does not avoid REST confirmation because stale tracking refs are
         not evidence of current remote reachability. A definitive ``MISSING``
-        can continue to a later, trusted repository hint. Any remote
+        can continue to a later, trusted repository hint -- an HTTP 404, or the
+        HTTP 422 ``No commit found for SHA`` answer this endpoint actually
+        returns for a well-formed absent SHA (OMN-17513). Any remote
         ``UNAVAILABLE`` is terminal for this session: later remote claims
         receive the cached fail-closed condition without another process or
         retry.
@@ -275,7 +323,9 @@ class CommitShaResolver:
                 retry_after=retry_after,
                 attempted_remote=True,
             )
-        elif status_code == _MISSING_HTTP_STATUS:
+        elif status_code == _MISSING_HTTP_STATUS or _is_absent_commit_response(
+            status_code, body, sha
+        ):
             resolution = CommitShaResolution(
                 EnumCommitShaOutcome.MISSING,
                 sha,
