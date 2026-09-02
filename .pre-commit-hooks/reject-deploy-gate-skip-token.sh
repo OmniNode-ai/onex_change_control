@@ -28,6 +28,12 @@
 #   Invoked by pre-commit without filenames; it derives the staged/PR surface.
 #   --exclude-regex <ERE>  Exempt matching paths in normal pre-commit mode.
 #                         This is supplied explicitly by .pre-commit-config.yaml.
+#   Local base policy: defaults to origin/dev, the repository integration branch.
+#     For a declared stacked or promotion exception, configure the exact base:
+#     git config --local branch.<feature-branch>.onexSkipTokenBase origin/<base-branch>
+#   CI supplies ONEX_SKIP_TOKEN_EVENT and ONEX_SKIP_TOKEN_BASE from the checked
+#     GitHub event payload. That authoritative base takes precedence; an absent,
+#     malformed, zero-before, or forced-push base fails closed.
 #   --self-test       Run synthetic self-tests and exit.
 #   --check-pr-body <PR_NUMBER>   Also scan live PR body via gh cli.
 
@@ -40,6 +46,11 @@ ALLOWLIST_PATTERN='#[[:space:]]*[Ss][Kk][Ii][Pp]-[Tt][Oo][Kk][Ee][Nn]-[Aa][Ll][L
 
 RULE_REF="CLAUDE.md Rule #10 + docs/plans/2026-04-30-gate-collapse-fix.md Task 8"
 TICKET_REF="OMN-10414"
+
+# .github/workflows/guards.yml non-dev-base-guard makes dev the integration
+# branch. Main promotion and declared stacked PRs are explicit exceptions, so
+# neither a feature branch's upstream nor origin/HEAD is evidence of a base.
+INTEGRATION_BASE_REF="origin/dev"
 
 # Pre-commit does not apply its `exclude` setting to an always-run hook with
 # pass_filenames:false. Keep those exemptions as explicit hook arguments so the
@@ -69,6 +80,11 @@ while [[ "$#" -gt 0 ]]; do
             ;;
     esac
 done
+
+# Path identity must remain byte/case exact.  The content recognizers below
+# temporarily enable nocasematch, but no inherited shell option may turn path
+# membership, deduplication, or exclusions into case-insensitive comparisons.
+shopt -u nocasematch
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Self-test mode
@@ -274,43 +290,113 @@ fi
 # count; there is no cat-file/show/grep loop for individual files.
 
 resolve_base_ref() {
-    local upstream_ref=""
-    local default_ref=""
+    local event_name="${ONEX_SKIP_TOKEN_EVENT:-}"
+    local event_base="${ONEX_SKIP_TOKEN_BASE:-}"
+    local push_forced="${ONEX_SKIP_TOKEN_PUSH_FORCED:-false}"
     local explicit_ref="${GITHUB_BASE_REF:-}"
+    local current_branch=""
+    local configured_ref=""
+    local resolved_ref=""
 
-    if [[ -n "$explicit_ref" ]]; then
-        case "$explicit_ref" in
-            origin/*)
-                printf '%s\n' "$explicit_ref"
-                ;;
-            refs/remotes/origin/*)
-                printf 'origin/%s\n' "${explicit_ref#refs/remotes/origin/}"
-                ;;
-            refs/heads/*)
-                printf 'origin/%s\n' "${explicit_ref#refs/heads/}"
-                ;;
+    if [[ -n "$event_name" ]]; then
+        case "$event_name" in
+            pull_request|push|merge_group|workflow_dispatch) ;;
             *)
-                printf 'origin/%s\n' "$explicit_ref"
+                echo "ERROR: unsupported authoritative skip-token event '$event_name'; refusing to infer a base." >&2
+                return 1
                 ;;
         esac
+        if [[ -z "$event_base" ]]; then
+            echo "ERROR: $event_name requires an explicit base; refusing to infer a detached or integration base." >&2
+            return 1
+        fi
+        if [[ "$event_name" == "push" && "$push_forced" == "true" ]]; then
+            echo "ERROR: forced push has no safe before-to-HEAD scan; refusing to infer a base." >&2
+            return 1
+        fi
+        if [[ "$event_name" == "push" && "$event_base" =~ ^0{40}$ ]]; then
+            echo "ERROR: push all-zero before SHA has no parent history; refusing to infer a base." >&2
+            return 1
+        fi
+        if ! resolved_ref="$(normalize_base_ref "$event_base")"; then
+            echo "ERROR: $event_name supplied a malformed authoritative base; refusing to infer a base." >&2
+            return 1
+        fi
+        printf '%s\n' "$resolved_ref"
         return 0
     fi
 
-    if upstream_ref="$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"; then
-        if [[ -n "$upstream_ref" ]]; then
-            printf '%s\n' "$upstream_ref"
-            return 0
+    if [[ -n "$explicit_ref" ]]; then
+        # GitHub supplies this from the actual PR metadata. Keep CI's
+        # authoritative path at the five-Git-call budget; local branch
+        # identity is deliberately not inferred in this path.
+        if ! normalize_base_ref "$explicit_ref"; then
+            echo "ERROR: GITHUB_BASE_REF is malformed; refusing to infer a base." >&2
+            return 1
         fi
+        return 0
     fi
 
-    if default_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"; then
-        if [[ "$default_ref" == origin/* ]]; then
-            printf '%s\n' "$default_ref"
-            return 0
+    current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [[ -z "$current_branch" ]]; then
+        echo "ERROR: detached HEAD has no local branch base configuration; set GITHUB_BASE_REF to the PR base." >&2
+        return 1
+    fi
+    if configured_ref="$(git config --get "branch.${current_branch}.onexSkipTokenBase" 2>/dev/null)"; then
+        if ! resolved_ref="$(normalize_base_ref "$configured_ref")"; then
+            echo "ERROR: configured local skip-token base is malformed; refusing to infer a base." >&2
+            return 1
         fi
+    else
+        resolved_ref="$INTEGRATION_BASE_REF"
+    fi
+    if [[ -n "$current_branch" && "$resolved_ref" == "origin/$current_branch" && "$resolved_ref" != "$INTEGRATION_BASE_REF" ]]; then
+        echo "ERROR: resolved base $resolved_ref is this feature branch; use its integration, promotion, or declared stacked PR base instead." >&2
+        return 1
     fi
 
-    return 1
+    printf '%s\n' "$resolved_ref"
+}
+
+normalize_base_ref() {
+    local supplied_ref="$1"
+    local normalized_ref=""
+    local normalized_branch=""
+
+    if [[ -z "$supplied_ref" || "$supplied_ref" =~ [[:space:]] ]]; then
+        return 1
+    fi
+
+    case "$supplied_ref" in
+        [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+            printf '%s\n' "$supplied_ref"
+            return 0
+            ;;
+        origin/*)
+            normalized_ref="$supplied_ref"
+            ;;
+        refs/remotes/origin/*)
+            normalized_ref="origin/${supplied_ref#refs/remotes/origin/}"
+            ;;
+        refs/heads/*)
+            normalized_ref="origin/${supplied_ref#refs/heads/}"
+            ;;
+        *)
+            normalized_ref="origin/$supplied_ref"
+            ;;
+    esac
+
+    normalized_branch="${normalized_ref#origin/}"
+    # A remote's symbolic HEAD is mutable repository metadata, not a branch or
+    # versioned object. Reject its direct and rev-parse-expression aliases
+    # before any Git scan. The remaining rejects are invalid branch syntax or
+    # revision operators that could turn an otherwise fixed branch into a
+    # mutable pseudo-base (for example origin/HEAD^).
+    if [[ "$normalized_branch" == "HEAD" || "$normalized_branch" == *".."* || "$normalized_branch" == *"//"* || "$normalized_branch" == /* || "$normalized_branch" == */ || "$normalized_branch" == .* || "$normalized_branch" == *. || "$normalized_branch" == "@" || "$normalized_branch" == *"@{"* || "$normalized_branch" == *"^"* || "$normalized_branch" == *"~"* || "$normalized_branch" == *":"* || "$normalized_branch" == *"?"* || "$normalized_branch" == *"*"* || "$normalized_branch" == *"["* || "$normalized_branch" == *"\\"* ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$normalized_ref"
 }
 
 is_excluded_path() {
@@ -326,20 +412,50 @@ is_excluded_path() {
     return 1
 }
 
-# Candidate and match membership are keyed by literal paths.  Linear array
-# scans here would turn an adversarial all-files scan with many matching paths
-# into O(matches² + matches*candidates) work. Associative arrays keep both
-# operations constant-time per record while the ordered matched_paths array
-# preserves deterministic diagnostic order.
-if (( BASH_VERSINFO[0] < 4 )); then
-    echo "ERROR: reject-deploy-gate-skip-token.sh requires Bash 4+ for bounded path membership." >&2
-    exit 1
-fi
-declare -A candidate_paths=()
-declare -A matched_seen=()
-declare -A matched_skip=()
-declare -A matched_allowlist=()
+# Candidate and match membership are keyed by byte-exact literal paths. Bash
+# 3.2 has no associative arrays, so encode each path as a hex-only variable
+# suffix and use Bash builtins for a constant-time marker lookup. This stays
+# O(M + N) in match/candidate records without per-path subprocesses, works
+# under macOS's system Bash, and retains the ordered array for diagnostics.
+LC_ALL=C
+PATH_KEY=""
+PATH_MARKER_NAME=""
 matched_paths=()
+
+build_path_key() {
+    local path="$1"
+    local path_index=0
+    local path_byte=""
+    local path_byte_hex=""
+
+    PATH_KEY=""
+    for ((path_index = 0; path_index < ${#path}; path_index++)); do
+        path_byte="${path:path_index:1}"
+        printf -v path_byte_hex '%02x' "'$path_byte"
+        PATH_KEY="${PATH_KEY}${path_byte_hex}"
+    done
+}
+
+build_path_marker_name() {
+    local marker_kind="$1"
+    local path="$2"
+
+    build_path_key "$path"
+    PATH_MARKER_NAME="omn17496_${marker_kind}_${PATH_KEY}"
+}
+
+mark_path() {
+    build_path_marker_name "$1" "$2"
+    printf -v "$PATH_MARKER_NAME" '%s' "1"
+}
+
+path_is_marked() {
+    build_path_marker_name "$1" "$2"
+    # PATH_MARKER_NAME has a fixed prefix and a hex-only suffix, so this
+    # indirect expansion is safe for literal paths including whitespace and
+    # newlines. The '-' default is required under set -u for absent markers.
+    eval "[[ \${${PATH_MARKER_NAME}-} == 1 ]]"
+}
 
 add_match() {
     local matched_path="$1"
@@ -360,16 +476,24 @@ add_match() {
         shopt -u nocasematch
     fi
 
-    if [[ -n "${matched_seen["$matched_path"]+present}" ]]; then
-        (( has_skip )) && matched_skip["$matched_path"]=1
-        (( has_allowlist )) && matched_allowlist["$matched_path"]=1
+    if path_is_marked "matched_seen" "$matched_path"; then
+        if (( has_skip )); then
+            mark_path "matched_skip" "$matched_path"
+        fi
+        if (( has_allowlist )); then
+            mark_path "matched_allowlist" "$matched_path"
+        fi
         return 0
     fi
 
-    matched_seen["$matched_path"]=1
+    mark_path "matched_seen" "$matched_path"
     matched_paths+=("$matched_path")
-    matched_skip["$matched_path"]="$has_skip"
-    matched_allowlist["$matched_path"]="$has_allowlist"
+    if (( has_skip )); then
+        mark_path "matched_skip" "$matched_path"
+    fi
+    if (( has_allowlist )); then
+        mark_path "matched_allowlist" "$matched_path"
+    fi
 }
 
 if ! scan_directory="$(mktemp -d "${TMPDIR:-/tmp}/skip-token-scan.XXXXXX")"; then
@@ -383,7 +507,7 @@ branch_paths_file="$scan_directory/branch-paths"
 grep_matches_file="$scan_directory/grep-matches"
 
 if ! base_ref="$(resolve_base_ref)"; then
-    echo "ERROR: could not resolve PR base from GITHUB_BASE_REF, branch upstream, or origin/HEAD; refusing to skip token enforcement." >&2
+    echo "ERROR: could not resolve an authoritative event or local policy base; refusing to skip token enforcement." >&2
     exit 1
 fi
 if ! base_oid="$(git rev-parse --verify --quiet --end-of-options "${base_ref}^{commit}")"; then
@@ -408,10 +532,10 @@ if ! git diff --name-only -z "${base_oid}...HEAD" > "$branch_paths_file"; then
 fi
 
 while IFS= read -r -d '' candidate_path; do
-    candidate_paths["$candidate_path"]=1
+    mark_path "candidate" "$candidate_path"
 done < "$staged_paths_file"
 while IFS= read -r -d '' candidate_path; do
-    candidate_paths["$candidate_path"]=1
+    mark_path "candidate" "$candidate_path"
 done < "$branch_paths_file"
 
 # This is the only production content scan. -z emits filename, line number,
@@ -446,13 +570,13 @@ while IFS= read -r -d '' matched_path; do
 done < "$grep_matches_file"
 
 for matched_path in "${matched_paths[@]}"; do
-    if [[ -z "${candidate_paths["$matched_path"]+present}" ]] || is_excluded_path "$matched_path"; then
+    if ! path_is_marked "candidate" "$matched_path" || is_excluded_path "$matched_path"; then
         continue
     fi
-    if [[ "${matched_skip["$matched_path"]}" -eq 0 ]]; then
+    if ! path_is_marked "matched_skip" "$matched_path"; then
         continue
     fi
-    if [[ "${matched_allowlist["$matched_path"]}" -eq 1 ]]; then
+    if path_is_marked "matched_allowlist" "$matched_path"; then
         echo "WARNING: [skip-*] token found in $matched_path but explicit approval receipt present — allowed." >&2
         continue
     fi

@@ -17,6 +17,13 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   merge_group:
   workflow_dispatch:
+    inputs:
+      skip_token_base:
+        description: >-
+          Authoritative branch or 40-hex commit base for the skip-token scan.
+          Required because a dispatch checkout has no PR base payload.
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -157,6 +164,17 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
+    # The skip-token hook scans the current branch surface from this explicit
+    # event base. Never let detached CI HEAD infer origin/dev or an empty diff:
+    # pull_request has a PR base branch, push has its before object ID,
+    # merge_group has a synthetic merge base object ID, and dispatch requires
+    # a human-supplied branch/object ID. The hook rejects new-branch all-zero
+    # before SHAs and forced pushes because neither proves a safe scan base.
+    env:
+      ONEX_SKIP_TOKEN_EVENT: ${{ github.event_name }}
+      ONEX_SKIP_TOKEN_BASE: >-
+        ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.event_name == 'push' && github.event.before || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'workflow_dispatch' && inputs.skip_token_base || '' }}
+      ONEX_SKIP_TOKEN_PUSH_FORCED: ${{ github.event_name == 'push' && github.event.forced || false }}
     steps:
       - uses: actions/checkout@v7
         with:

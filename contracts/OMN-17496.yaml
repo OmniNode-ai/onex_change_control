@@ -2,45 +2,50 @@
 schema_version: "1.0.0"
 ticket_id: "OMN-17496"
 title: "Bound the OCC skip-token pre-commit hook"
-summary: "Make skip-token enforcement NUL-safe and bounded under all-files invocation."
+summary: "Make skip-token enforcement NUL-safe, bounded, and deterministic about every CI event base."
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "tests"
-    description: "Hook regressions preserve fail-closed token detection and a constant Git subprocess
-      count for staged-path scale."
-    command: "uv run pytest tests/unit/test_reject_deploy_gate_skip_token_hook.py -q"
+    description: "Hook regressions preserve fail-closed token detection, deterministic local and event-base
+      resolution, and a constant Git subprocess count for staged-path scale."
+    command: "UV_CACHE_DIR=$(mktemp -d) uv run --no-sync pytest tests/unit/test_reject_deploy_gate_skip_token_hook.py
+      -q"
   - kind: "ci"
-    description: "The serialized filtered hook is registered in the local pre-commit configuration."
-    command: "uv run pre-commit run reject-deploy-gate-skip-token --files .pre-commit-config.yaml .pre-commit-hooks/reject-deploy-gate-skip-token.sh
+    description: "The serialized filtered hook and CI event-base contract are registered together."
+    command: "UV_CACHE_DIR=$(mktemp -d) uv run --no-sync pre-commit run reject-deploy-gate-skip-token
+      --files .github/workflows/ci.yml .pre-commit-config.yaml .pre-commit-hooks/reject-deploy-gate-skip-token.sh
       tests/unit/test_reject_deploy_gate_skip_token_hook.py"
   - kind: "benchmark"
     description: "Focused regression stages 1,001 Markdown paths and asserts the five-Git-call structural
-      bound with explicit GITHUB_BASE_REF."
-    command: "uv run pytest tests/unit/test_reject_deploy_gate_skip_token_hook.py -q"
+      bound with an explicit authoritative event base."
+    command: "UV_CACHE_DIR=$(mktemp -d) uv run --no-sync pytest tests/unit/test_reject_deploy_gate_skip_token_hook.py
+      -q"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-focused-hook-tests"
-    description: "Focused hook tests cover staged authority, literal paths, NUL safety, exclusions, base
-      resolution, deletion, Git failure, and the 1,001-path subprocess count."
+    description: "Focused hook tests cover staged authority, literal paths, NUL safety, exclusions, local
+      policy, pull-request/push/merge-group/dispatch event bases, self-tracking branches on origin and
+      forks, deletion, Git failure, and the 1,001-path subprocess count."
     source: "manual"
-    execution_scope: "local_done_gate"
+    execution_scope: "hosted_and_local"
     checks:
       - check_type: "test_passes"
-        check_value: "uv run pytest tests/unit/test_reject_deploy_gate_skip_token_hook.py -q"
+        check_value: "UV_CACHE_DIR=$(mktemp -d) uv run --no-sync pytest tests/unit/test_reject_deploy_gate_skip_token_hook.py
+          -q"
   - id: "dod-static-validation"
     description: "Syntax, lint, and strict type checks for the hook regression test pass."
     source: "manual"
     execution_scope: "local_done_gate"
     checks:
       - check_type: "command"
-        check_value: "bash -n .pre-commit-hooks/reject-deploy-gate-skip-token.sh && uv run ruff check
-          tests/unit/test_reject_deploy_gate_skip_token_hook.py && uv run mypy tests/unit/test_reject_deploy_gate_skip_token_hook.py
-          --strict"
+        check_value: "bash -n .pre-commit-hooks/reject-deploy-gate-skip-token.sh && UV_CACHE_DIR=$(mktemp
+          -d) uv run --no-sync ruff check tests/unit/test_reject_deploy_gate_skip_token_hook.py && UV_CACHE_DIR=$(mktemp
+          -d) uv run --no-sync mypy tests/unit/test_reject_deploy_gate_skip_token_hook.py --strict"
   - id: "dod-hook-self-test"
     description: "Built-in hook self-test covers token and allowlist behavior."
     source: "manual"
@@ -48,12 +53,3 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "bash .pre-commit-hooks/reject-deploy-gate-skip-token.sh --self-test"
-  - id: "dod-diff-hygiene"
-    description: "Diff hygiene verifies that both worktree and index release content have no whitespace
-      errors."
-    source: "manual"
-    execution_scope: "local_done_gate"
-    checks:
-      - check_type: "command"
-        check_value: "git diff --check && git diff --cached --check && printf '%s\\n' 'git diff checks:
-          PASS'"

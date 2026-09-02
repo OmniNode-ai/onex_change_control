@@ -17,6 +17,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOK = REPO_ROOT / ".pre-commit-hooks" / "reject-deploy-gate-skip-token.sh"
 PRE_COMMIT_CONFIG = REPO_ROOT / ".pre-commit-config.yaml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 EXCLUSION_REGEX = (
     r"^(tests/.*fixtures/|contracts/(OMN-10414|OMN-10417|OMN-10967)\.yaml|"
     r"drift/dod_receipts/OMN-10414/dod-004/command\.yaml)$"
@@ -41,13 +42,14 @@ def _run_hook(
     working_directory: Path,
     *arguments: str | Path,
     environment: dict[str, str] | None = None,
+    interpreter: str = "bash",
 ) -> subprocess.CompletedProcess[str]:
     """Run the hook with the supplied direct or configured arguments."""
     run_environment = os.environ.copy()
     if environment is not None:
         run_environment.update(environment)
     return subprocess.run(
-        ["bash", str(HOOK), *(str(argument) for argument in arguments)],
+        [interpreter, str(HOOK), *(str(argument) for argument in arguments)],
         capture_output=True,
         check=False,
         cwd=working_directory,
@@ -60,18 +62,25 @@ def _run_normal_hook(
     working_directory: Path,
     *,
     environment: dict[str, str] | None = None,
+    interpreter: str = "bash",
 ) -> subprocess.CompletedProcess[str]:
     """Run the zero-filename production path with its configured exemptions."""
     return _run_hook(
         working_directory,
         *_configured_hook_arguments(),
         environment=environment,
+        interpreter=interpreter,
     )
 
 
 def _git(path: Path, *arguments: str) -> None:
     """Run a checked Git command in an isolated test repository."""
     subprocess.run(["git", *arguments], check=True, cwd=path)
+
+
+def _git_output(path: Path, *arguments: str) -> str:
+    """Return a checked Git command's stripped stdout in an isolated repository."""
+    return subprocess.check_output(["git", *arguments], cwd=path, text=True).strip()
 
 
 def _init_git_repository(
@@ -86,6 +95,9 @@ def _init_git_repository(
     _git(path, "init", "-q")
     _git(path, "config", "user.email", "test@example.invalid")
     _git(path, "config", "user.name", "OMN-17496 test")
+    # The test repositories commit and push synthetic fixtures. Never allow a
+    # caller's global hooksPath to execute ambient hooks in those subprocesses.
+    _git(path, "config", "core.hooksPath", os.devnull)
     _git(path, "commit", "--allow-empty", "-qm", "initial")
     _git(path, "branch", "-M", "main")
     _git(path, "remote", "add", "origin", str(remote))
@@ -294,10 +306,26 @@ def test_normal_mode_preserves_allowlist_and_configured_exemptions(
 
 
 @pytest.mark.unit
-def test_normal_mode_uses_upstream_without_a_literal_branch_fallback(
+def test_normal_mode_path_membership_remains_case_sensitive(tmp_path: Path) -> None:
+    """A matching lowercase indexed path cannot match a clean uppercase candidate."""
+    _init_git_repository(
+        tmp_path,
+        dev_baseline_files={"foo.md": "[skip-deploy-gate: baseline token]\n"},
+    )
+    _stage_file(tmp_path, "Foo.md", "ordinary staged evidence\n")
+
+    result = _run_normal_hook(tmp_path, environment={"GITHUB_BASE_REF": "dev"})
+
+    assert result.returncode == 0, result.stderr
+    assert "foo.md contains a [skip-*] bypass token." not in result.stderr
+    assert "shopt -u nocasematch" in HOOK.read_text()
+
+
+@pytest.mark.unit
+def test_normal_mode_uses_versioned_integration_base_without_upstream_inference(
     tmp_path: Path,
 ) -> None:
-    """A dev-tracking feature branch works without assuming main or dev names."""
+    """Ordinary local commits use the repository's declared integration base."""
     _init_git_repository(tmp_path)
     _stage_file(tmp_path, "upstream.md", "[skip-deploy-gate: upstream target]\n")
 
@@ -306,29 +334,110 @@ def test_normal_mode_uses_upstream_without_a_literal_branch_fallback(
     assert result.returncode == 1
     assert "upstream.md contains a [skip-*] bypass token." in result.stderr
     source = HOOK.read_text()
-    assert "GITHUB_BASE_REF:-main" not in source
+    assert 'INTEGRATION_BASE_REF="origin/dev"' in source
     assert "git fetch" not in source
+    assert "refs/remotes/origin/HEAD" not in source
 
 
 @pytest.mark.unit
-def test_normal_mode_uses_origin_head_when_upstream_is_unavailable(
+def test_normal_mode_scans_committed_changes_after_origin_self_tracking(
     tmp_path: Path,
 ) -> None:
-    """origin/HEAD is the final explicit resolver fallback, not a branch literal."""
+    """A pushed feature's own upstream never excludes its committed changes."""
     _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "self-tracking.md", "[skip-deploy-gate: enforce]\n")
+    _git(tmp_path, "commit", "-qm", "committed feature token")
+    _git(tmp_path, "push", "-qu", "origin", "feature")
+    _git(tmp_path, "branch", "--set-upstream-to=origin/feature", "feature")
+    _stage_file(tmp_path, "later-clean.md", "ordinary later developer commit\n")
+
+    result = _run_normal_hook(tmp_path)
+
+    assert result.returncode == 1
+    assert "self-tracking.md contains a [skip-*] bypass token." in result.stderr
+
+
+@pytest.mark.unit
+def test_normal_mode_scans_committed_changes_after_fork_self_tracking(
+    tmp_path: Path,
+) -> None:
+    """Self-tracking is unsafe on every remote name, not only origin."""
+    _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "fork-self-tracking.md", "[skip-deploy-gate: enforce]\n")
+    _git(tmp_path, "commit", "-qm", "committed fork feature token")
+    _git(tmp_path, "remote", "add", "fork", str(tmp_path / "origin.git"))
+    _git(tmp_path, "push", "-qu", "fork", "feature")
+    _stage_file(tmp_path, "later-clean.md", "ordinary later developer commit\n")
+
+    result = _run_normal_hook(tmp_path)
+
+    assert result.returncode == 1
+    assert "fork-self-tracking.md contains a [skip-*] bypass token." in result.stderr
+
+
+@pytest.mark.unit
+def test_normal_mode_ignores_origin_head_when_upstream_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    """Remote default is not proof of a feature's PR target branch."""
+    _init_git_repository(tmp_path, divergent_main_and_dev=True)
     _git(tmp_path, "branch", "--unset-upstream")
     _git(
         tmp_path,
         "symbolic-ref",
         "refs/remotes/origin/HEAD",
-        "refs/remotes/origin/dev",
+        "refs/remotes/origin/main",
     )
-    _stage_file(tmp_path, "origin-head.md", "[skip-deploy-gate: fallback]\n")
+    _stage_file(tmp_path, "origin-head.md", "ordinary staged evidence\n")
+
+    result = _run_normal_hook(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "dev-only.md contains" not in result.stderr
+
+
+@pytest.mark.unit
+def test_normal_mode_honors_documented_per_branch_base_configuration(
+    tmp_path: Path,
+) -> None:
+    """Declared stacked or promotion bases use local branch configuration."""
+    _init_git_repository(tmp_path, divergent_main_and_dev=True)
+    _git(tmp_path, "config", "branch.feature.onexSkipTokenBase", "origin/main")
+    _stage_file(tmp_path, "configured-base.md", "ordinary staged evidence\n")
 
     result = _run_normal_hook(tmp_path)
 
     assert result.returncode == 1
-    assert "origin-head.md contains a [skip-*] bypass token." in result.stderr
+    assert "dev-only.md contains a [skip-*] bypass token." in result.stderr
+
+
+@pytest.mark.unit
+def test_normal_mode_rejects_a_self_referential_local_base(tmp_path: Path) -> None:
+    """A local branch configuration cannot name the feature itself."""
+    _init_git_repository(tmp_path)
+    _git(tmp_path, "config", "branch.feature.onexSkipTokenBase", "origin/feature")
+    _stage_file(tmp_path, "ordinary.md", "ordinary staged evidence\n")
+
+    result = _run_normal_hook(tmp_path)
+
+    assert result.returncode == 1
+    assert "resolved base origin/feature is this feature branch" in result.stderr
+
+
+@pytest.mark.unit
+def test_normal_mode_works_with_system_bash_and_restricted_path(tmp_path: Path) -> None:
+    """The O(M + N) literal-path map works with macOS Bash 3.2 provisioning."""
+    _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "restricted-path.md", "[skip-deploy-gate: enforce]\n")
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={"GITHUB_BASE_REF": "dev", "PATH": "/usr/bin:/bin"},
+        interpreter="/bin/bash",
+    )
+
+    assert result.returncode == 1
+    assert "restricted-path.md contains a [skip-*] bypass token." in result.stderr
 
 
 @pytest.mark.unit
@@ -411,6 +520,29 @@ def test_normal_mode_fails_closed_on_a_git_subprocess_error(tmp_path: Path) -> N
 
 
 @pytest.mark.unit
+def test_local_policy_base_resolution_has_a_seven_git_call_budget(
+    tmp_path: Path,
+) -> None:
+    """Local base configuration adds only branch and config lookups."""
+    _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "ordinary.md", "ordinary indexed evidence\n")
+    git_log, environment = _instrument_git_calls(tmp_path)
+
+    result = _run_normal_hook(tmp_path, environment=environment)
+
+    assert result.returncode == 0, result.stderr
+    assert [call.split()[0] for call in git_log.read_text().splitlines()] == [
+        "symbolic-ref",
+        "config",
+        "rev-parse",
+        "merge-base",
+        "diff",
+        "diff",
+        "grep",
+    ]
+
+
+@pytest.mark.unit
 def test_1001_matching_staged_paths_use_exactly_five_git_subprocesses(
     tmp_path: Path,
 ) -> None:
@@ -443,3 +575,177 @@ def test_1001_matching_staged_paths_use_exactly_five_git_subprocesses(
         "grep",
     ]
     assert len(git_calls) == 5
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("event_name", "base_ref"),
+    [
+        ("pull_request", "dev"),
+        ("push", "sha"),
+        ("merge_group", "sha"),
+        ("workflow_dispatch", "dev"),
+    ],
+)
+def test_authoritative_event_bases_scan_committed_changes(
+    tmp_path: Path, event_name: str, base_ref: str
+) -> None:
+    """Every CI event supplies an explicit base, including verified SHA forms."""
+    _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "committed.md", "[skip-deploy-gate: enforce]\n")
+    _git(tmp_path, "commit", "-qm", "committed skip token")
+    resolved_base = (
+        _git_output(tmp_path, "rev-parse", "origin/dev")
+        if base_ref == "sha"
+        else base_ref
+    )
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={
+            "ONEX_SKIP_TOKEN_EVENT": event_name,
+            "ONEX_SKIP_TOKEN_BASE": resolved_base,
+            "ONEX_SKIP_TOKEN_PUSH_FORCED": "false",
+        },
+    )
+
+    assert result.returncode == 1
+    assert "committed.md contains a [skip-*] bypass token." in result.stderr
+
+
+@pytest.mark.unit
+def test_authoritative_commit_base_is_not_prefixed_as_an_origin_branch(
+    tmp_path: Path,
+) -> None:
+    """A merge-group or push event can provide a verified base object ID."""
+    _init_git_repository(tmp_path, divergent_main_and_dev=True)
+    main_base = _git_output(tmp_path, "rev-parse", "origin/main")
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={
+            "ONEX_SKIP_TOKEN_EVENT": "merge_group",
+            "ONEX_SKIP_TOKEN_BASE": main_base,
+        },
+    )
+
+    assert result.returncode == 1
+    assert "dev-only.md contains a [skip-*] bypass token." in result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "base_ref",
+    [
+        "HEAD",
+        "origin/HEAD",
+        "refs/remotes/origin/HEAD",
+        "refs/heads/HEAD",
+        "origin/HEAD^",
+        "origin/HEAD~1",
+        " origin/HEAD",
+        "origin/HEAD\t",
+    ],
+)
+def test_workflow_dispatch_rejects_mutable_or_malformed_head_bases_before_scan(
+    tmp_path: Path, base_ref: str
+) -> None:
+    """Dispatch accepts only fixed branch names or 40-hex object IDs."""
+    _init_git_repository(tmp_path)
+    git_log, environment = _instrument_git_calls(tmp_path)
+    environment.update(
+        {
+            "ONEX_SKIP_TOKEN_EVENT": "workflow_dispatch",
+            "ONEX_SKIP_TOKEN_BASE": base_ref,
+        }
+    )
+
+    result = _run_normal_hook(tmp_path, environment=environment)
+
+    assert result.returncode == 1
+    assert "workflow_dispatch supplied a malformed authoritative base" in result.stderr
+    assert not git_log.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("base_ref", ["origin/HEAD", " origin/HEAD", "origin/HEAD^"])
+def test_github_base_ref_rejects_mutable_or_malformed_head_aliases_before_scan(
+    tmp_path: Path, base_ref: str
+) -> None:
+    """The local explicit GITHUB_BASE_REF route cannot select origin/HEAD."""
+    _init_git_repository(tmp_path)
+    git_log, environment = _instrument_git_calls(tmp_path)
+    environment["GITHUB_BASE_REF"] = base_ref
+
+    result = _run_normal_hook(tmp_path, environment=environment)
+
+    assert result.returncode == 1
+    assert "GITHUB_BASE_REF is malformed" in result.stderr
+    assert not git_log.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "base_ref", ["origin/HEAD", "refs/heads/HEAD", "origin/HEAD~1"]
+)
+def test_local_config_rejects_mutable_or_malformed_head_aliases_before_scan(
+    tmp_path: Path, base_ref: str
+) -> None:
+    """A declared local base remains a fixed branch, never a remote default."""
+    _init_git_repository(tmp_path)
+    _git(tmp_path, "config", "branch.feature.onexSkipTokenBase", base_ref)
+    git_log, environment = _instrument_git_calls(tmp_path)
+
+    result = _run_normal_hook(tmp_path, environment=environment)
+
+    assert result.returncode == 1
+    assert "configured local skip-token base is malformed" in result.stderr
+    assert [call.split()[0] for call in git_log.read_text().splitlines()] == [
+        "symbolic-ref",
+        "config",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("event_name", "base_ref", "forced", "error"),
+    [
+        ("push", "", "false", "requires an explicit base"),
+        ("push", "0" * 40, "false", "all-zero before SHA"),
+        ("push", "dev", "true", "forced push"),
+        ("merge_group", "not a valid ref", "false", "malformed"),
+        ("workflow_dispatch", "", "false", "requires an explicit base"),
+    ],
+)
+def test_authoritative_event_base_missing_or_unsafe_fails_closed(
+    tmp_path: Path, event_name: str, base_ref: str, forced: str, error: str
+) -> None:
+    """CI event metadata never falls through to a detached or integration base."""
+    _init_git_repository(tmp_path)
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={
+            "ONEX_SKIP_TOKEN_EVENT": event_name,
+            "ONEX_SKIP_TOKEN_BASE": base_ref,
+            "ONEX_SKIP_TOKEN_PUSH_FORCED": forced,
+        },
+    )
+
+    assert result.returncode == 1
+    assert error in result.stderr
+
+
+@pytest.mark.unit
+def test_ci_workflow_declares_an_event_base_for_every_precommit_trigger() -> None:
+    """The detached CI checkout cannot rely on local branch resolution."""
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in workflow
+    assert "skip_token_base:" in workflow
+    assert "ONEX_SKIP_TOKEN_EVENT:" in workflow
+    assert "ONEX_SKIP_TOKEN_BASE:" in workflow
+    assert "github.event.pull_request.base.ref" in workflow
+    assert "github.event.before" in workflow
+    assert "github.event.merge_group.base_sha" in workflow
+    assert "inputs.skip_token_base" in workflow
