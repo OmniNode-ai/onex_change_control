@@ -92,7 +92,13 @@ def test_stale_local_origin_ref_cannot_override_remote_missing() -> None:
     assert len(runner.calls) == 2
 
 
-def test_only_http_404_is_a_definitive_missing_result() -> None:
+def test_unclassified_422_is_not_a_definitive_missing_result() -> None:
+    """A 422 that is NOT GitHub's "no commit found" answer still halts.
+
+    OMN-17502 widened MISSING to cover the one 422 the commits endpoint uses to
+    say "this SHA is not in this repository". Every other 422 is a real
+    validation error and must keep the session fail-closed.
+    """
     runner = FakeRunner(
         lambda command: _completed(command, status=1, stdout=_http(422))
     )
@@ -105,6 +111,68 @@ def test_only_http_404_is_a_definitive_missing_result() -> None:
     assert first.status_code == 422
     assert second.outcome is EnumCommitShaOutcome.UNAVAILABLE
     assert len(runner.calls) == 1
+
+
+def test_github_sha_absent_422_is_missing_and_lets_the_next_repo_answer() -> None:
+    """OMN-17502: a product SHA absent from OCC must not halt the session.
+
+    GitHub answers 422 — not 404 — when a well-formed 40-hex SHA is absent from
+    the repository. Before this, that made "not in THIS repo" indistinguishable
+    from an outage, and because UNAVAILABLE is terminal for the session, the
+    trusted product-repo hint could never be consulted: every autobind receipt
+    carrying a product repository's head SHA failed closed on the first probe
+    (observed live on OCC#8018, 2026-09-02).
+    """
+
+    def handler(command: list[str]) -> subprocess.CompletedProcess[str]:
+        if command[0] != "gh":
+            return _completed(command, stdout="")
+        if "repos/OmniNode-ai/onex_change_control/commits/" in command[-1]:
+            return _completed(
+                command,
+                status=1,
+                stdout=_http(
+                    422,
+                    body=json.dumps(
+                        {"message": f"No commit found for SHA: {FULL_SHA}"}
+                    ),
+                ),
+            )
+        return _completed(command, stdout=_http(200))
+
+    runner = FakeRunner(handler)
+    resolution = CommitShaResolver(runner=runner).resolve(
+        FULL_SHA,
+        ("OmniNode-ai/onex_change_control", "OmniNode-ai/omninode_infra"),
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+    assert resolution.repo == "OmniNode-ai/omninode_infra"
+    gh_calls = [call for call in runner.calls if call[0] == "gh"]
+    assert [call[-1] for call in gh_calls] == [
+        f"repos/OmniNode-ai/onex_change_control/commits/{FULL_SHA}",
+        f"repos/OmniNode-ai/omninode_infra/commits/{FULL_SHA}",
+    ]
+
+
+def test_sha_absent_422_without_a_hint_stays_missing_not_unavailable() -> None:
+    """The single-repo case is a receipt defect, not an infrastructure outage."""
+    runner = FakeRunner(
+        lambda command: _completed(
+            command,
+            status=1,
+            stdout=_http(
+                422,
+                body=json.dumps({"message": f"No commit found for SHA: {FULL_SHA}"}),
+            ),
+        )
+    )
+    resolver = CommitShaResolver(runner=runner)
+
+    resolution = resolver.remote_resolution("OmniNode-ai/onex_change_control", FULL_SHA)
+
+    assert resolution.outcome is EnumCommitShaOutcome.MISSING
+    assert resolution.status_code == 422
 
 
 def test_remote_request_keeps_json_body_and_has_no_silent_flag() -> None:
