@@ -84,5 +84,5 @@ dir). Stamp: `uv run onex spdx fix src tests scripts`; spec:
 
 ## Key docs
 
-- Full docs live in the [knowledge base](https://github.com/OmniNode-ai/knowledge-base) — [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md), [OCC Decision Log](https://github.com/OmniNode-ai/knowledge-base/blob/main/adrs/onex-change-control-decision-log.md)
+- Full docs live in the [knowledge base](https://github.com/OmniNode-ai/knowledge-base) — [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md), [OCC Decision Log](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-decision-log.md)
 - [DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md), [Versioning Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md), [Authoring Governance YAML Artifacts](https://github.com/OmniNode-ai/knowledge-base/blob/main/guides/authoring-governance-yaml-artifacts.md)
