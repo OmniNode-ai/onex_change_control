@@ -131,7 +131,7 @@ uv run check-schema-purity --warn-only
 3. Wire it in `.github/workflows/ci.yml` as a CI gate.
 4. Add a pre-commit hook entry if it should run locally on commit.
 
-See [docs/README.md](docs/README.md) for the full governance workflow index.
+See [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md) in the knowledge base for the full governance workflow index.
 
 ### Generated Ticket Review: Validate Existing Contracts
 
@@ -186,7 +186,7 @@ onex_change_control/
 
 **Key design principle**: Schema modules are **pure** (no I/O, no env reads, no time calls). `check-schema-purity` enforces this in CI.
 
-See [docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md](docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md) for the full enforcement model.
+See [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md) in the knowledge base for the full enforcement model.
 
 ---
 
@@ -228,18 +228,21 @@ uv run onex spdx fix --check src tests scripts
 
 ## Documentation Map
 
+Full documentation — design, policy, reference, runbooks, and decision records — lives in
+the [OmniNode knowledge base](https://github.com/OmniNode-ai/knowledge-base) (public) and
+[knowledge-base-internal](https://github.com/OmniNode-ai/knowledge-base-internal) (internal
+process docs). This repo keeps only agent-configuration and repo-scoped files:
+
 | Document | Purpose |
 |----------|---------|
-| [docs/README.md](docs/README.md) | Full docs index — start here |
-| [docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md](docs/design/DESIGN_DRIFT_CONTROL_SYSTEM.md) | Enforcement model, phases, invariants |
-| [docs/design/DECISION_LOG.md](docs/design/DECISION_LOG.md) | Architectural decisions and rationale (D-001 through D-008+) |
-| [docs/VERSIONING_POLICY.md](docs/VERSIONING_POLICY.md) | Schema immutability and SemVer rules |
-| [docs/TEMPLATE_GUIDE.md](docs/TEMPLATE_GUIDE.md) | How to author YAML artifacts from templates |
-| [docs/EVAL_FRAMEWORK.md](docs/EVAL_FRAMEWORK.md) | A/B evaluation framework architecture |
-| [docs/RECEIPT_LOCATIONS.md](docs/RECEIPT_LOCATIONS.md) | DoD receipt location (canonical: `drift/dod_receipts/`) |
+| [Drift Control System](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/drift-control-system.md) | Enforcement model, phases, invariants |
+| [OCC Decision Log](https://github.com/OmniNode-ai/knowledge-base/blob/main/adrs/onex-change-control-decision-log.md) | Architectural decisions and rationale (D-001 through D-008+) |
+| [Versioning Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md) | Schema immutability and SemVer rules |
+| [Authoring Governance YAML Artifacts](https://github.com/OmniNode-ai/knowledge-base/blob/main/guides/authoring-governance-yaml-artifacts.md) | How to author YAML artifacts from templates |
+| [ONEX Baseline Evaluation Framework](https://github.com/OmniNode-ai/knowledge-base/blob/main/architecture/onex-baseline-evaluation-framework.md) | A/B evaluation framework architecture |
+| [DoD Receipt Locations](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md) | DoD receipt location (canonical: `drift/dod_receipts/`) |
 | [CLAUDE.md](CLAUDE.md) | Developer context and conventions |
-| [AGENT.md](AGENT.md) | LLM navigation guide |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide |
+| [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) | Contribution guide |
 | [SECURITY.md](SECURITY.md) | Security policy |
 
 ---

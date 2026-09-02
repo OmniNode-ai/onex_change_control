@@ -2,7 +2,7 @@
 
 ## Overview
 
-`onex_change_control` is the governance and enforcement hub for the ONEX platform. Contributions here affect every downstream repo that consumes schemas, CLI tools, or enforcement policies. Take extra care with schema changes — breaking changes require a major version bump per [docs/VERSIONING_POLICY.md](docs/VERSIONING_POLICY.md).
+`onex_change_control` is the governance and enforcement hub for the ONEX platform. Contributions here affect every downstream repo that consumes schemas, CLI tools, or enforcement policies. Take extra care with schema changes — breaking changes require a major version bump per [VERSIONING_POLICY.md](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md).
 
 ---
 
@@ -107,7 +107,7 @@ Purity is enforced by `uv run check-schema-purity` in CI.
    check-<name> = "onex_change_control.scripts.check_<name>:main"
    ```
 3. Wire in `.github/workflows/ci.yml` as a required gate.
-4. Add to [docs/README.md](docs/README.md) workflow index.
+4. Add to [README.md](../README.md) knowledge base pointer.
 5. Write tests in `tests/`.
 
 ---
@@ -116,7 +116,7 @@ Purity is enforced by `uv run check-schema-purity` in CI.
 
 Schema changes affect every downstream consumer. Before changing a schema:
 
-1. Read [docs/VERSIONING_POLICY.md](docs/VERSIONING_POLICY.md).
+1. Read [VERSIONING_POLICY.md](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/onex-change-control-versioning-policy.md).
 2. Determine if the change is breaking (requires major version bump) or non-breaking.
 3. Update `pyproject.toml` `[project] version` accordingly.
 4. Re-export JSON schemas: the CI determinism check will fail if schemas are stale.
