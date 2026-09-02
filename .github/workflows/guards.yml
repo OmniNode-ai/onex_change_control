@@ -54,10 +54,11 @@
 # share one trigger shape (different `pull_request` `types:`, different
 # `branches:` filters, some with/without `merge_group`). This file's `on:`
 # block is the UNION of all nine; each job below carries an explicit `if:`
-# that reproduces its OWN original file's narrower trigger scope exactly, so
-# a guard that only used to fire on `[opened, synchronize, reopened]` does
-# NOT start firing on `edited` or `ready_for_review` events post-consolidation,
-# and vice versa. `occ-autobind` / `occ-companion-effect` need no added `if:`
+# that reproduces its OWN original file's narrower trigger scope exactly. The
+# reviewed exception is the two external contexts asserted by CI Summary:
+# their job-level action lists include `ready_for_review`, so they execute on
+# the admission transition instead of surfacing as skipped external-context
+# failures. `occ-autobind` / `occ-companion-effect` need no added `if:`
 # -- their existing `if: needs.<guard>.outputs.should_publish == 'true'`
 # already gates them correctly, since a skipped upstream guard's output is
 # empty and the comparison evaluates false.
@@ -364,8 +365,9 @@ jobs:
 
   # ===========================================================================
   # From dep-provenance-gate.yml (OMN-13873). Trigger scope preserved:
-  # pull_request types [opened, synchronize, reopened], branches [main, dev],
-  # plus merge_group.
+  # pull_request types [opened, synchronize, reopened, ready_for_review],
+  # branches [main, dev], plus merge_group. `ready_for_review` is required
+  # because CI Summary asserts this external context on the admission run.
   #
   # This job is a REQUIRED STATUS CHECK. The job name "Dep Provenance Gate"
   # must match branch protection rules -- unchanged here.
@@ -374,7 +376,7 @@ jobs:
     name: Dep Provenance Gate
     if: >-
       (github.event_name == 'pull_request' &&
-        contains(fromJSON('["opened","synchronize","reopened"]'), github.event.action) &&
+        contains(fromJSON('["opened","synchronize","reopened","ready_for_review"]'), github.event.action) &&
         (github.base_ref == 'main' || github.base_ref == 'dev')) ||
       github.event_name == 'merge_group'
     runs-on: >-
@@ -468,14 +470,16 @@ jobs:
 
   # ===========================================================================
   # From non-dev-base-guard.yml (OMN-13021, retro A-6). Trigger scope
-  # preserved: pull_request types [opened, edited, synchronize], no branch
-  # filter, no merge_group -- identical to main-target-guard's own scope.
+  # preserved: pull_request types [opened, edited, synchronize,
+  # ready_for_review], no branch filter, no merge_group. The admission action
+  # is the reviewed exception to the former scope because CI Summary asserts
+  # this external context on that run.
   # ===========================================================================
   non-dev-base-guard:
     name: non-dev-base-guard
     if: >-
       github.event_name == 'pull_request' &&
-      contains(fromJSON('["opened","edited","synchronize"]'), github.event.action)
+      contains(fromJSON('["opened","edited","synchronize","ready_for_review"]'), github.event.action)
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&

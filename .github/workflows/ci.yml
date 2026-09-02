@@ -2051,6 +2051,39 @@ jobs:
           set -euo pipefail
           uv run validate-staging-namespace-grants --file grants/staging_namespace_grants.yaml
 
+  validate-pre-execution-action-authorizations:
+    name: validate-pre-execution-action-authorizations
+    # OMN-17462: a separate anchor for bounded, execute-disabled action
+    # authorization. It must not be folded into prod or staging grants: it
+    # binds an OCC contract commit/digest, one action/source/artifact, and the
+    # exact database/schema/service/principal target. Unconditional so an
+    # authorization-anchor change cannot be hidden behind a zone shortcut.
+    runs-on: >-
+      ${{
+        (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # An active authorization must hash the contract blob at its exact
+          # immutable OCC commit, not merely at the PR tip.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate pre-execution action authorization anchor (OMN-17462)
+        run: |
+          set -euo pipefail
+          uv run validate-pre-execution-action-authorizations --file grants/pre_execution_action_authorizations.yaml
+
   check-platform-leads-review-tripwire:
     name: check-platform-leads-review-tripwire
     # OMN-14445: validate-prod-promotion-grants' approved_by != PR-author check
