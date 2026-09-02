@@ -55,34 +55,46 @@ dod_evidence:
           gh pr view 80 --repo OmniNode-ai/knowledge-base-internal --json state --jq .state | grep -qx
           MERGED
   - id: "dod-occ-residual-markdown-is-only-the-allowed-set"
-    description: "Zero tracked markdown outside the operator-ruled allowed set remains in this repo. Falsifiable:
-      regrowing any doc under docs/, standards/ or anywhere else fails this count."
+    description: "Zero tracked markdown outside this repo's kb-doc-gate allowed set remains. The set is
+      the validator default (root README/CLAUDE/CHANGELOG/SECURITY plus .github/**) plus the one repo-specific
+      interlock entry drift/dod_receipts/**, which exists because the required OCC Append-Only Gate forbids
+      deleting or renaming a merged receipt artifact. Falsifiable: regrowing any doc under docs/, standards/,
+      evidence/ or anywhere else fails this count."
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
-          git ls-files '*.md' | awk '!/^(README|CLAUDE|CHANGELOG|SECURITY)\.md$|^\.github\// { bad=1;
-          print } END { exit bad }' && printf 'PASS\n'
+          git ls-files '*.md' | awk '!/^(README|CLAUDE|CHANGELOG|SECURITY)\.md$|^\.github\/|^drift\/dod_receipts\// {
+          bad=1; print } END { exit bad }' && printf 'PASS\n'
   - id: "dod-occ-readme-points-at-the-knowledge-base"
     description: "The root README carries a Documentation section naming both knowledge-base repos as
-      the single home for this repo's docs — the signposting role the deleted pointer stubs used to hold."
+      the single home for this repo's docs — the signposting role the deleted pointer stubs used to hold
+      — AND the destination it links to actually exists on knowledge-base main. The second leg reads a
+      path outside this PR's own diff on purpose: a check that only greps text the same change wrote proves
+      the author wrote it, not that the pointer resolves."
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
           grep -qF 'https://github.com/OmniNode-ai/knowledge-base-internal' README.md && grep -qF 'https://github.com/OmniNode-ai/knowledge-base)'
-          README.md && grep -qx '## Documentation' README.md
+          README.md && grep -qx '## Documentation' README.md && gh api repos/OmniNode-ai/knowledge-base/contents/reference/onex-change-control-decision-log.md?ref=main
+          --jq .name | grep -qx onex-change-control-decision-log.md
   - id: "dod-occ-kb-doc-gate-flipped-to-strict"
     description: "The gate is in strict mode on both surfaces: the repo-root .kb-doc-gate.yaml (which
-      always wins) and the thin caller's mode input (set to match so the two never read as disagreeing)."
+      always wins) and the thin caller's mode input (set to match so the two never read as disagreeing),
+      AND the SHA the caller pins in omniclaude really carries the validator the gate resolves. The third
+      leg reads a path outside this PR's own diff on purpose — a stale or wrong pin makes the whole gate
+      exit 2 'THE GATE DID NOT RUN', which no amount of grepping this repo would catch."
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
           grep -qx 'mode: strict' .kb-doc-gate.yaml && grep -qE '^ +mode: strict$' .github/workflows/kb-doc-gate.yml
+          && gh api repos/OmniNode-ai/omniclaude/contents/scripts/kb_doc_gate.py?ref=a78b103e55f1ad595572ecde6ea818c2c585f025
+          --jq .name | grep -qx kb_doc_gate.py
   - id: "dod-occ-no-live-code-cites-a-deleted-doc"
     description: "No file under src/, scripts/ or .github/ still cites a document this wave deleted. Scoped
       to live code deliberately: contracts/, drift/ and evidence/ are immutable historical receipts whose
@@ -95,3 +107,10 @@ dod_evidence:
         check_value: >-
           ! grep -rInE 'docs/(CHECK_TYPES|RECEIPT_LOCATIONS|TEMPLATE_GUIDE|VERSIONING_POLICY|EVAL_FRAMEWORK|INDEX|README)\.md|docs/standards/|docs/policy/|docs/governance/|docs/runbooks/|docs/design/'
           src scripts .github
+  - id: "occ-self-bind-pr-8054"
+    description: "Binds OMN-16615 to this OCC doc-scrub PR #8054 (self-bind)."
+    source: "generated"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8054 --repo OmniNode-ai/onex_change_control --json number,state"
