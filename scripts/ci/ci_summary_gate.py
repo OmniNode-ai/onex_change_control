@@ -127,6 +127,11 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # SKIPPABLE for any precondition.
     "merge-hold-gate / evaluate",
     "Contract Shape v1 (OMN-15669)",
+    # OMN-17486: cross-repository subjects are merge-eligible only after the
+    # separate online resolver has completed successfully. Its offline
+    # pre-commit counterpart deliberately reports UNEVALUATED and is never a
+    # substitute for this required CI context.
+    "Cross-Repository Receipt Subject (online)",
 )
 
 # ---------------------------------------------------------------------------

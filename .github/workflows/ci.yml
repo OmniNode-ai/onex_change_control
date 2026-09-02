@@ -292,6 +292,33 @@ jobs:
             exit 1
           fi
 
+  cross-repo-subject-online:
+    name: Cross-Repository Receipt Subject (online)
+    # OMN-17486: this is intentionally a separate online-required context.
+    # The pre-commit hook validates shape/digests without a network and emits
+    # UNEVALUATED; that state can never satisfy this job or CI Summary.
+    needs: [pre-commit]
+    if: always()
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Resolve cross-repository receipt subjects online
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run python -m onex_change_control.scripts.check_cross_repo_subject --online --all-receipts
+
   type-check:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
     # Pre-commit hook runs mypy only on changed files (pre-push stage), while this job
