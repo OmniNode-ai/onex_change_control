@@ -263,10 +263,12 @@ def _merge_base_for_branch(repo_root: Path, branch: str) -> str:
 
 
 def _resolve_local_tracking_ref(repo_root: Path) -> str:
-    """Resolve only the repository default branch, without fetching or guessing.
+    """Resolve only the repository default branch, without guessing.
 
     A feature branch can track itself after its first push, so ``@{upstream}``
     is not authoritative for corpus monotonicity.  Only origin/HEAD is accepted.
+    Shallow CI checkouts may omit that symbolic ref, so hydrate it from the
+    remote's declared HEAD and then revalidate the exact ref.
     """
     if _GIT_EXECUTABLE is None:
         msg = "Git executable is unavailable for local receipt-honesty base resolution"
@@ -292,7 +294,31 @@ def _resolve_local_tracking_ref(repo_root: Path) -> str:
         if detail:
             msg = f"{msg}: {detail}"
         raise RatchetError(msg)
+    set_head = subprocess.run(  # noqa: S603 -- fixed Git plumbing
+        [_GIT_EXECUTABLE, "remote", "set-head", "origin", "--auto"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    if set_head.returncode == 0:
+        retry = subprocess.run(  # noqa: S603 -- fixed Git plumbing
+            [
+                _GIT_EXECUTABLE,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"{candidate}^{{commit}}",
+            ],
+            cwd=repo_root,
+            capture_output=True,
+            check=False,
+        )
+        if retry.returncode == 0:
+            return candidate
     msg = "local receipt-honesty base requires refs/remotes/origin/HEAD"
+    detail = set_head.stderr.decode("utf-8", errors="replace").strip()
+    if detail:
+        msg = f"{msg}; git remote set-head origin --auto failed: {detail}"
     raise RatchetError(msg)
 
 
@@ -1131,16 +1157,17 @@ def _assert_genesis_history_context(repo_root: Path, base_commit: str) -> bool:
         # A feature branch may legitimately contain unrelated commits ahead of
         # origin/HEAD before it stages the two authorization surfaces locally.
         return False
-    if any(len(touches) != 1 for touches in introduced.values()):
+    if len(introduced["ledger"]) != 1 or not introduced["contract"]:
         msg = (
-            "receipt-honesty genesis requires exactly one committed introduction "
-            "for both ledger and contract between base and HEAD; found "
+            "receipt-honesty genesis requires exactly one committed ledger "
+            "introduction and at least one contract introduction between base "
+            "and HEAD; found "
             + ", ".join(
                 f"{label}={len(touches)}" for label, touches in introduced.items()
             )
         )
         raise RatchetError(msg)
-    if introduced["ledger"] != introduced["contract"]:
+    if introduced["ledger"][0] not in introduced["contract"]:
         msg = (
             "receipt-honesty genesis requires ledger and contract introduction in "
             "the same committed change"
@@ -1200,9 +1227,6 @@ def _assert_controlled_genesis(
     if committed_genesis:
         _require_index_matches_head(
             repo_root, _BASELINE_RELPATH, "receipt-honesty baseline"
-        )
-        _require_index_matches_head(
-            repo_root, _CONTRACT_RELPATH, "receipt-honesty genesis contract"
         )
     indexed_ledger = _require_worktree_matches_index(
         repo_root, _BASELINE_RELPATH, "receipt-honesty baseline"

@@ -876,6 +876,47 @@ def test_genesis_allows_one_committed_ci_introduction_with_clean_index(
 
 
 @pytest.mark.unit
+def test_genesis_allows_contract_only_repair_after_committed_introduction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "committed-contract-repair"
+    subprocess.run(
+        ["git", "init", "--initial-branch", "main", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    _git_command(repo, "config", "user.email", "ratchet@example.invalid")
+    _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
+    (repo / "proof.txt").write_text("base\n", encoding="utf-8")
+    _git_command(repo, "add", "proof.txt")
+    _git_command(repo, "commit", "-m", "base")
+    base = _git_command(repo, "rev-parse", "HEAD")
+    monkeypatch.setattr(ratchet, "_BOOTSTRAP_BASE_COMMIT", base)
+    identity = _small_genesis_constants(monkeypatch)
+    raw = _document([identity.as_mapping()])
+    ledger = repo / ".onex_ratchets" / "omn_17495_receipt_honesty_baseline.yaml"
+    ledger.parent.mkdir()
+    ledger.write_bytes(raw)
+    contract = repo / "contracts" / "OMN-17495.yaml"
+    contract.parent.mkdir()
+    contract.write_text(_contract_document(), encoding="utf-8")
+    _git_command(
+        repo, "add", str(ledger.relative_to(repo)), str(contract.relative_to(repo))
+    )
+    _git_command(repo, "commit", "-m", "introduce ledger and contract")
+    contract.write_text(_contract_document() + "\n", encoding="utf-8")
+    _git_command(repo, "add", str(contract.relative_to(repo)))
+    _git_command(repo, "commit", "-m", "repair contract evidence")
+
+    ratchet._assert_controlled_genesis(
+        repo,
+        ratchet.load_baseline(repo),
+        base,
+        frozenset({identity}),
+    )
+
+
+@pytest.mark.unit
 def test_genesis_allows_unrelated_feature_history_before_local_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1063,6 +1104,51 @@ def test_local_corpus_base_uses_origin_head_not_feature_upstream(
 
     assert _git_command(repo, "rev-parse", "@{upstream}") != dev
     assert ratchet.resolve_local_base(repo) == dev
+
+
+@pytest.mark.unit
+def test_local_corpus_base_hydrates_missing_origin_head_from_remote_default(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+    )
+    seed = tmp_path / "seed"
+    subprocess.run(
+        ["git", "init", "--initial-branch", "dev", str(seed)],
+        check=True,
+        capture_output=True,
+    )
+    _git_command(seed, "config", "user.email", "ratchet@example.invalid")
+    _git_command(seed, "config", "user.name", "Receipt Ratchet Test")
+    (seed / "proof.txt").write_text("dev\n", encoding="utf-8")
+    _git_command(seed, "add", "proof.txt")
+    _git_command(seed, "commit", "-m", "dev base")
+    dev = _git_command(seed, "rev-parse", "HEAD")
+    _git_command(seed, "remote", "add", "origin", str(remote))
+    _git_command(seed, "push", "-u", "origin", "dev")
+    _git_command(seed, "push", "origin", "dev:feature")
+    subprocess.run(
+        ["git", "symbolic-ref", "HEAD", "refs/heads/dev"],
+        cwd=remote,
+        check=True,
+        capture_output=True,
+    )
+
+    checkout = tmp_path / "checkout"
+    subprocess.run(
+        ["git", "clone", "--branch", "feature", str(remote), str(checkout)],
+        check=True,
+        capture_output=True,
+    )
+    _git_command(checkout, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+
+    assert ratchet.resolve_local_base(checkout) == dev
+    assert (
+        _git_command(checkout, "symbolic-ref", "refs/remotes/origin/HEAD")
+        == "refs/remotes/origin/dev"
+    )
 
 
 @pytest.mark.unit
