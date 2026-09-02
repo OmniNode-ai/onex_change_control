@@ -51,8 +51,10 @@ _LEGACY_RECEIPT_CUTOFF: date = date(2026, 6, 1)
 
 Mirrors ``scripts/check_dod_compliance._LEGACY_RECEIPT_CUTOFF``; both call
 sites must move together. After this date the legacy
-``.evidence/<TICKET>/dod_report.json`` shape is rejected outright. See
-``docs/RECEIPT_LOCATIONS.md`` for the migration path.
+``.evidence/<TICKET>/dod_report.json`` shape is rejected outright. See the
+knowledge base's ``dod-receipt-locations.md``
+(``https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md``)
+for the migration path.
 """
 
 _CRON_SCRIPT_NAMES = ("cron-closeout.sh", "cron-buildloop.sh")
@@ -223,8 +225,9 @@ def check_receipt_exists(
 
     Mirror of ``scripts/check_dod_compliance.check_receipt_exists`` for the
     structured-output (``run_dod_sweep``) path. See that function's docstring
-    and ``docs/RECEIPT_LOCATIONS.md`` for the reconciliation contract
-    (OMN-9791, hard cutoff ``_LEGACY_RECEIPT_CUTOFF``).
+    and the knowledge base's ``dod-receipt-locations.md``
+    (``https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md``)
+    for the reconciliation contract (OMN-9791, hard cutoff ``_LEGACY_RECEIPT_CUTOFF``).
 
     Args:
         ticket_id: Linear ticket identifier.

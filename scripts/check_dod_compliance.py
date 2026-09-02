@@ -55,8 +55,9 @@ Legacy receipt location deprecated 2026-04-26 and removed 2026-06-01:
 
 Before the cutoff the gate accepts both shapes, normalising legacy presence to
 PASS-with-warning. On or after the cutoff the gate fails closed when only the
-legacy receipt is present. See ``docs/RECEIPT_LOCATIONS.md`` for the migration
-path.
+legacy receipt is present. See the knowledge base's ``dod-receipt-locations.md``
+(``https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/dod-receipt-locations.md``)
+for the migration path.
 """
 
 if TYPE_CHECKING:
