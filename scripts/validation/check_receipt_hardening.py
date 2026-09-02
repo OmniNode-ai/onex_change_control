@@ -965,6 +965,55 @@ def _supersession_candidates(receipt_path: Path) -> list[Path]:
     return sorted(receipt_path.parent.glob(f"{stem}.supersede.*{receipt_path.suffix}"))
 
 
+def _active_supersession_candidate(receipt_path: Path) -> Path | None:
+    """Select the highest numeric direct supersession for ``receipt_path``.
+
+    A lower clean record must never mask a newer broken record: the receipt
+    supersession model resolves the highest numeric token as authoritative.
+    """
+
+    target = receipt_path.as_posix()
+    matches: list[tuple[int, Path]] = []
+    for candidate in _supersession_candidates(receipt_path):
+        token = _supersede_token(candidate)
+        data = _load_mapping(candidate)
+        if token is None or not token.isdigit() or data is None:
+            continue
+        if data.get("supersedes") == target:
+            matches.append((int(token), candidate))
+    return max(matches, default=(0, None), key=lambda item: item[0])[1]
+
+
+def _chained_supersession_errors(receipt_path: Path) -> list[str]:
+    """Reject supersession-of-supersession records until chains are resolved.
+
+    The active-record rule is defined only for direct siblings of a base
+    receipt. Accepting a record that supersedes another supersession would let
+    a higher token escape that selection and silently bypass its replacement
+    validation. Fail closed instead of guessing a transitive authority model.
+    """
+
+    paths = [receipt_path]
+    paths.extend(
+        sorted(receipt_path.parent.glob(f"{receipt_path.stem}.supersede.*.yaml"))
+    )
+    errors: list[str] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        data = _load_mapping(path)
+        supersedes = data.get("supersedes") if data is not None else None
+        if isinstance(supersedes, str) and ".supersede." in Path(supersedes).name:
+            errors.append(
+                f"{path}: [SUPERSESSION_CHAIN] supersession chains are "
+                "unsupported and fail closed; supersedes must name the base "
+                "receipt, not another .supersede. record."
+            )
+    return errors
+
+
 def _contract_hash_violation(
     receipt: ModelDodReceipt, contract_path: Path
 ) -> str | None:
@@ -1087,53 +1136,49 @@ def _valid_supersession_replacement(
     receipt under ``replacement``. This gate should validate the authoritative
     replacement instead of requiring mutation of the immutable base receipt.
     """
-    candidates = _supersession_candidates(receipt_path)
-    if not candidates:
+    chain_errors = _chained_supersession_errors(receipt_path)
+    if chain_errors:
+        return False, chain_errors
+    candidate = _active_supersession_candidate(receipt_path)
+    if candidate is None:
         return False, []
 
-    target = receipt_path.as_posix()
     errors: list[str] = []
-    for candidate in candidates:
-        try:
-            raw = yaml.safe_load(candidate.read_text())
-        except (OSError, yaml.YAMLError) as exc:
-            errors.append(f"{candidate}: unreadable supersession YAML: {exc}")
-            continue
-        if not isinstance(raw, dict) or raw.get("supersedes") != target:
-            continue
-        replacement = raw.get("replacement")
-        if not isinstance(replacement, dict):
-            errors.append(f"{candidate}: supersession has no mapping replacement")
-            continue
-        replacement_sha = replacement.get("commit_sha")
-        replacement_run_timestamp = _coerce_timestamp(replacement.get("run_timestamp"))
-        if (
-            replacement_run_timestamp is not None
-            and _after_omn_15461_cutoff(replacement_run_timestamp)
-            and isinstance(replacement_sha, str)
-            and not is_full_commit_sha(replacement_sha)
-        ):
-            errors.append(
-                f"{candidate}: replacement [COMMIT_SHA_FORMAT] commit_sha "
-                f"{replacement_sha!r} must be a full 40-character hexadecimal "
-                "commit SHA."
-            )
-            continue
-        try:
-            receipt = ModelDodReceipt.model_validate(replacement)
-        except ValidationError as exc:
-            errors.append(
-                f"{candidate}: replacement fails ModelDodReceipt validation: {exc}"
-            )
-            continue
-        violations = _receipt_binding_violations(
-            receipt, contracts_dir, commit_sha_resolver, infrastructure_diagnostics
-        )
-        if violations:
-            errors.extend(f"{candidate}: replacement {v}" for v in violations)
-            continue
-        return True, []
-    return False, errors
+    try:
+        raw = yaml.safe_load(candidate.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return False, [f"{candidate}: unreadable supersession YAML: {exc}"]
+    if not isinstance(raw, dict):
+        return False, [f"{candidate}: supersession YAML is not a mapping"]
+    replacement = raw.get("replacement")
+    if not isinstance(replacement, dict):
+        return False, [f"{candidate}: supersession has no mapping replacement"]
+    replacement_sha = replacement.get("commit_sha")
+    replacement_run_timestamp = _coerce_timestamp(replacement.get("run_timestamp"))
+    if (
+        replacement_run_timestamp is not None
+        and _after_omn_15461_cutoff(replacement_run_timestamp)
+        and isinstance(replacement_sha, str)
+        and not is_full_commit_sha(replacement_sha)
+    ):
+        return False, [
+            f"{candidate}: replacement [COMMIT_SHA_FORMAT] commit_sha "
+            f"{replacement_sha!r} must be a full 40-character hexadecimal commit SHA."
+        ]
+    try:
+        receipt = ModelDodReceipt.model_validate(replacement)
+    except ValidationError as exc:
+        return False, [
+            f"{candidate}: replacement fails ModelDodReceipt validation: {exc}"
+        ]
+
+    violations = _receipt_binding_violations(
+        receipt, contracts_dir, commit_sha_resolver, infrastructure_diagnostics
+    )
+    if violations:
+        errors.extend(f"{candidate}: replacement {v}" for v in violations)
+        return False, errors
+    return True, []
 
 
 def _validate_hardened_receipt(
@@ -1998,7 +2043,7 @@ def _check_supersession_summary_registration(
     return failures
 
 
-def check_receipt_file(
+def check_receipt_file(  # noqa: C901
     receipt_path: Path,
     contracts_dir: Path,
     supersession_baseline: frozenset[str] | None = None,
@@ -2011,11 +2056,25 @@ def check_receipt_file(
         infrastructure_diagnostics if infrastructure_diagnostics is not None else []
     )
     if ".supersede." in receipt_path.name:
-        return check_supersession_file(
+        violations = check_supersession_file(
             receipt_path,
             contracts_dir,
             supersession_baseline if supersession_baseline is not None else frozenset(),
         )
+        chain_errors = _chained_supersession_errors(receipt_path)
+        if chain_errors:
+            violations.extend(chain_errors)
+            return violations
+        raw = _load_mapping(receipt_path)
+        supersedes = raw.get("supersedes") if raw is not None else None
+        if isinstance(supersedes, str):
+            target = receipt_path.parent / Path(supersedes).name
+            if _active_supersession_candidate(target) == receipt_path:
+                _, replacement_errors = _valid_supersession_replacement(
+                    target, contracts_dir, resolver, infrastructure
+                )
+                violations.extend(replacement_errors)
+        return violations
 
     try:
         raw = yaml.safe_load(receipt_path.read_text())
@@ -2122,9 +2181,20 @@ def _discover_staged_paths() -> tuple[list[Path], str | None]:
 
 
 def _effective_check_path(path: Path) -> Path:
-    """Keep the established per-path supersession semantics unchanged."""
+    """Deduplicate base/supersession input to its active validation target."""
 
-    return path
+    if ".supersede." in path.name:
+        raw = _load_mapping(path)
+        supersedes = raw.get("supersedes") if raw is not None else None
+        if isinstance(supersedes, str):
+            target = path.parent / Path(supersedes).name
+            active = _active_supersession_candidate(target)
+            if active == path:
+                return active
+        # A lower supersession remains an explicit target so its S1/S2 rules
+        # are still checked; it simply cannot validate its replacement.
+        return path
+    return _active_supersession_candidate(path) or path
 
 
 def _temp_inventory_path(value: str) -> Path:
