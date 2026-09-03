@@ -5,9 +5,10 @@
 """Fail-closed gate for canonical cross-repository receipt subjects.
 
 The online lane consumes only effective receipts from the append-only receipt
-store. A v2 receipt is parsed in full before any GitHub request; the resolver
-then obtains the immutable evidence artifact itself from the exact repository,
-full SHA, and bounded path recorded in that receipt.
+store. A v2 receipt with a nested v1 metadata subject is parsed in full before
+any GitHub request; the resolver then obtains the immutable evidence artifact
+itself from the exact repository, canonical top-level commit SHA, and bounded
+path recorded in that receipt.
 """
 
 from __future__ import annotations

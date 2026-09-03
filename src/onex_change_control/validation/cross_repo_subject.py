@@ -61,7 +61,6 @@ OCC_REPOSITORY = f"{OCC_OWNER}/{OCC_NAME}"
 OCC_REMOTE = f"https://github.com/{OCC_REPOSITORY}.git"
 CONTRACT_PATH = "contracts/OMN-17486.yaml"
 SUBJECT_SCHEMA_VERSION = "occ-cross-repo-subject/v1"
-SUBJECT_SCHEMA_VERSION_V2 = "occ-cross-repo-subject/v2"
 SUBJECT_PURPOSE = "evidence_only"
 MAX_HTTP_BODY_BYTES = 2_097_152
 MAX_CONTRACT_BYTES = 1_048_576
@@ -190,46 +189,27 @@ class PullRequestSubject(BaseModel):
 
 
 class RevisionSubject(BaseModel):
-    """The immutable revision used as the provenance of a receipt."""
+    """The remote revision kind selected by the canonical receipt commit."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     kind: Literal["head", "merge_commit"]
-    sha: str
-
-    @field_validator("sha")
-    @classmethod
-    def _validate_sha(cls, value: str) -> str:
-        if _SHA_RE.fullmatch(value) is None:
-            raise ValueError("SHA must be exactly 40 lowercase hexadecimal characters")
-        return value
 
 
 class ContractSource(BaseModel):
-    """Immutable OCC contract bytes and digest bindings."""
+    """Immutable OCC contract location; receipt fields own its digests."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     repository: RepositoryIdentity
     commit_sha: str
     path: str = Field(min_length=1, max_length=512)
-    file_sha256: str
-    entry_sha256: str
 
     @field_validator("commit_sha")
     @classmethod
     def _validate_commit_sha(cls, value: str) -> str:
         if _SHA_RE.fullmatch(value) is None:
             raise ValueError("contract commit SHA must be exactly 40 lowercase hex")
-        return value
-
-    @field_validator("file_sha256", "entry_sha256")
-    @classmethod
-    def _validate_digest(cls, value: str) -> str:
-        if _SHA256_RE.fullmatch(value) is None:
-            raise ValueError(
-                "digest must be sha256:<64 lowercase hexadecimal characters>"
-            )
         return value
 
     @field_validator("path")
@@ -241,21 +221,13 @@ class ContractSource(BaseModel):
 
 
 class ArtifactSource(BaseModel):
-    """Immutable product-repository location of the evidence artifact."""
+    """Immutable product-repository artifact location and digest."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     repository: RepositoryIdentity
-    commit_sha: str
     path: str = Field(min_length=1, max_length=512)
     artifact_sha256: str
-
-    @field_validator("commit_sha")
-    @classmethod
-    def _validate_commit_sha(cls, value: str) -> str:
-        if _SHA_RE.fullmatch(value) is None:
-            raise ValueError("artifact commit SHA must be exactly 40 lowercase hex")
-        return value
 
     @field_validator("artifact_sha256")
     @classmethod
@@ -281,32 +253,18 @@ class ArtifactSource(BaseModel):
         return value
 
 
-class CrossRepoSubjectV2(BaseModel):
-    """Canonical cross-repository subject carried by a v2 receipt.
+class CrossRepoSubject(BaseModel):
+    """A v1 evidence-only subject containing remote metadata only.
 
-    v1 remains available for reading old standalone design fixtures, but it is
-    intentionally not accepted by :class:`CrossRepoReceipt`. Embedding the
-    subject in this receipt model makes all identity and binding fields part of
-    one validated object instead of an untrusted side channel.
+    Canonical receipt identity and contract bindings deliberately do not live
+    here.  The containing :class:`CrossRepoReceipt` owns those values and the
+    resolver receives them directly from that receipt.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    schema_version: Literal["occ-cross-repo-subject/v2"]
+    schema_version: Literal["occ-cross-repo-subject/v1"]
     purpose: Literal["evidence_only"]
-    ticket_id: Literal["OMN-17486"]
-    evidence_item_id: str = Field(min_length=1, max_length=200)
-    check_type: Literal[
-        "test_exists",
-        "test_passes",
-        "file_exists",
-        "grep",
-        "command",
-        "endpoint",
-        "behavior_proven",
-        "semantic_grading",
-    ]
-    check_value: str = Field(min_length=1, max_length=10_000)
     repository: RepositoryIdentity
     pull_request: PullRequestSubject
     revision: RevisionSubject
@@ -320,59 +278,70 @@ class CrossRepoSubjectV2(BaseModel):
                 f"{PRODUCT_REPOSITORY} is supported"
             )
         if self.pull_request.repository != self.repository:
-            raise ValueError("PR repository must equal the explicit PR repository")
+            raise ValueError("PR repository must equal the cross-repo repository")
         if self.pull_request.base.repository_identity != self.repository:
             raise ValueError("PR base repository must be the allowlisted product repo")
-        if self.pull_request.head.repository_identity != self.repository:
-            raise ValueError("fork PR heads are not permitted by the v2 product policy")
+        if (
+            self.pull_request.head.github_owner != PRODUCT_OWNER
+            or self.pull_request.head.github_name != PRODUCT_NAME
+        ):
+            raise ValueError("fork PR heads are not permitted by the v1 product policy")
+        if self.pull_request.head.canonical_remote != PRODUCT_REMOTE:
+            raise ValueError(
+                "PR head canonical_remote must be the allowlisted product repo"
+            )
         if self.artifact_source.repository != self.repository:
             raise ValueError("artifact repository must be the allowlisted product repo")
-        if self.artifact_source.commit_sha != self.revision.sha:
-            raise ValueError("artifact commit SHA must equal the receipt revision SHA")
         if self.contract_source.repository != _occ_identity():
             raise ValueError(
                 "contract_source repository must be the canonical OCC repository"
             )
-        if self.revision.kind == "merge_commit":
-            if self.pull_request.state != "MERGED":
-                raise ValueError("merge_commit revision requires a MERGED PR")
-            if self.revision.sha != self.pull_request.merge_commit_sha:
-                raise ValueError("merge_commit revision must equal merge_commit_sha")
-        elif self.revision.sha != self.pull_request.head.sha:
-            raise ValueError("head revision must equal the explicit PR head SHA")
 
 
 class CrossRepoReceipt(ModelDodReceipt):
     """Canonical v2 receipt for an immutable cross-repository evidence run."""
 
     schema_version: Literal["2.0.0"]
-    cross_repo_subject: CrossRepoSubjectV2
+    ticket_id: Literal["OMN-17486"]
+    evidence_item_id: str = Field(min_length=1, max_length=200)
+    check_type: Literal[
+        "test_exists",
+        "test_passes",
+        "file_exists",
+        "grep",
+        "command",
+        "endpoint",
+        "behavior_proven",
+        "semantic_grading",
+    ]
+    check_value: str = Field(min_length=1, max_length=10_000)
+    commit_sha: str
+    contract_sha256: str
+    contract_entry_sha256: str
+    cross_repo_subject: CrossRepoSubject
+
+    @field_validator("commit_sha")
+    @classmethod
+    def _validate_commit_sha(cls, value: str) -> str:
+        if _SHA_RE.fullmatch(value) is None:
+            raise ValueError(
+                "commit_sha must be exactly 40 lowercase hexadecimal characters"
+            )
+        return value
+
+    @field_validator("contract_sha256", "contract_entry_sha256")
+    @classmethod
+    def _validate_contract_digest(cls, value: str) -> str:
+        if _SHA256_RE.fullmatch(value) is None:
+            raise ValueError(
+                "contract digest must be sha256:<64 lowercase hexadecimal characters>"
+            )
+        return value
 
     @model_validator(mode="after")
     def enforce_cross_repo_invariants(self) -> CrossRepoReceipt:
-        subject = self.cross_repo_subject
         if self.status is not EnumReceiptStatus.PASS:
             raise ValueError("cross-repository receipts must have status PASS")
-        if self.ticket_id != subject.ticket_id:
-            raise ValueError("receipt ticket_id does not match cross-repo subject")
-        if self.evidence_item_id != subject.evidence_item_id:
-            raise ValueError(
-                "receipt evidence_item_id does not match cross-repo subject"
-            )
-        if self.check_type != subject.check_type:
-            raise ValueError("receipt check_type does not match cross-repo subject")
-        if self.check_value != subject.check_value:
-            raise ValueError("receipt check_value does not match cross-repo subject")
-        if self.commit_sha != subject.revision.sha:
-            raise ValueError("receipt commit_sha does not match subject revision")
-        if self.contract_sha256 != subject.contract_source.file_sha256:
-            raise ValueError("receipt contract_sha256 does not match subject binding")
-        if self.contract_entry_sha256 != subject.contract_source.entry_sha256:
-            raise ValueError(
-                "receipt contract_entry_sha256 does not match subject binding"
-            )
-        if self.pr_number is not None and self.pr_number != subject.pull_request.number:
-            raise ValueError("receipt pr_number does not match subject PR")
         return self
 
 
@@ -428,58 +397,6 @@ class CrossRepoReceiptSupersession(BaseModel):
 
 
 CanonicalReceipt = ModelDodReceipt | CrossRepoReceipt
-
-
-class CrossRepoSubject(BaseModel):
-    """The versioned, evidence-only cross-repository subject."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    schema_version: Literal["occ-cross-repo-subject/v1"]
-    purpose: Literal["evidence_only"]
-    repository: RepositoryIdentity
-    pull_request: PullRequestSubject
-    revision: RevisionSubject
-    contract_source: ContractSource
-    artifact_sha256: str
-
-    @field_validator("artifact_sha256")
-    @classmethod
-    def _validate_artifact_digest(cls, value: str) -> str:
-        if _SHA256_RE.fullmatch(value) is None:
-            raise ValueError("artifact_sha256 must be sha256:<64 lowercase hex>")
-        return value
-
-    def model_post_init(self, __context: Any) -> None:
-        if self.repository != _product_identity():
-            raise ValueError(
-                "cross-repo product repository is not allowlisted; only "
-                f"{PRODUCT_REPOSITORY} is supported"
-            )
-        if self.pull_request.repository != self.repository:
-            raise ValueError("PR repository must equal the cross-repo repository")
-        if self.pull_request.base.repository_identity != self.repository:
-            raise ValueError("PR base repository must be the allowlisted product repo")
-        if (
-            self.pull_request.head.github_owner != PRODUCT_OWNER
-            or self.pull_request.head.github_name != PRODUCT_NAME
-        ):
-            raise ValueError("fork PR heads are not permitted by the v1 product policy")
-        if self.pull_request.head.canonical_remote != PRODUCT_REMOTE:
-            raise ValueError(
-                "PR head canonical_remote must be the allowlisted product repo"
-            )
-        if self.contract_source.repository != _occ_identity():
-            raise ValueError(
-                "contract_source repository must be the canonical OCC repository"
-            )
-        if self.revision.kind == "merge_commit":
-            if self.pull_request.state != "MERGED":
-                raise ValueError("merge_commit revision requires a MERGED PR")
-            if self.revision.sha != self.pull_request.merge_commit_sha:
-                raise ValueError("merge_commit revision must equal merge_commit_sha")
-        elif self.revision.sha != self.pull_request.head.sha:
-            raise ValueError("head revision must equal the explicit PR head SHA")
 
 
 def _product_identity() -> RepositoryIdentity:
@@ -672,6 +589,8 @@ def _check_local_digests(
     subject: CrossRepoSubject,
     *,
     evidence_item_id: str | None,
+    contract_sha256: str | None,
+    contract_entry_sha256: str | None,
     contract_bytes: bytes | None,
     artifact_bytes: bytes | None,
 ) -> tuple[str, ...]:
@@ -683,8 +602,10 @@ def _check_local_digests(
             errors.append("contract_bytes must be bytes")
         elif len(contract_bytes) > MAX_CONTRACT_BYTES:
             errors.append("contract bytes exceed the 1 MiB bound")
-        elif _sha256_prefixed(contract_bytes) != subject.contract_source.file_sha256:
-            errors.append("contract file digest does not match the subject")
+        elif contract_sha256 is None:
+            errors.append("contract_sha256 must be supplied with contract bytes")
+        elif _sha256_prefixed(contract_bytes) != contract_sha256:
+            errors.append("contract file digest does not match the receipt")
         else:
             try:
                 data = yaml.safe_load(contract_bytes)
@@ -700,17 +621,24 @@ def _check_local_digests(
                     f"contract YAML/entry digest could not be computed: {exc}"
                 )
             else:
-                if (
+                if evidence_item_id is not None and contract_entry_sha256 is None:
+                    errors.append(
+                        "contract_entry_sha256 must be supplied with contract bytes"
+                    )
+                elif (
                     evidence_item_id is not None
-                    and actual != subject.contract_source.entry_sha256
+                    and contract_entry_sha256 is not None
+                    and actual != contract_entry_sha256
                 ):
-                    errors.append("contract entry digest does not match the subject")
+                    errors.append("contract entry digest does not match the receipt")
     if artifact_bytes is not None:
         if not isinstance(artifact_bytes, bytes):
             errors.append("artifact_bytes must be bytes")
         elif len(artifact_bytes) > MAX_ARTIFACT_BYTES:
             errors.append("artifact bytes exceed the 1 MiB bound")
-        elif _sha256_prefixed(artifact_bytes) != subject.artifact_sha256:
+        elif (
+            _sha256_prefixed(artifact_bytes) != subject.artifact_source.artifact_sha256
+        ):
             errors.append("artifact digest does not match the subject")
     return tuple(errors)
 
@@ -719,6 +647,8 @@ def validate_offline(
     raw_subject: object,
     *,
     evidence_item_id: str | None = None,
+    contract_sha256: str | None = None,
+    contract_entry_sha256: str | None = None,
     contract_bytes: bytes | None = None,
     artifact_bytes: bytes | None = None,
 ) -> CrossRepoValidationResult:
@@ -739,6 +669,8 @@ def validate_offline(
     errors = _check_local_digests(
         subject,
         evidence_item_id=evidence_item_id,
+        contract_sha256=contract_sha256,
+        contract_entry_sha256=contract_entry_sha256,
         contract_bytes=contract_bytes,
         artifact_bytes=artifact_bytes,
     )
@@ -823,6 +755,11 @@ class CrossRepoSubjectResolver:
         raw_subject: CrossRepoSubject | object,
         *,
         evidence_item_id: str,
+        check_type: str,
+        check_value: str,
+        commit_sha: str,
+        contract_sha256: str,
+        contract_entry_sha256: str,
         artifact_bytes: bytes,
         contract_bytes: bytes | None = None,
     ) -> CrossRepoValidationResult:
@@ -847,6 +784,8 @@ class CrossRepoSubjectResolver:
         local_errors = _check_local_digests(
             subject,
             evidence_item_id=evidence_item_id,
+            contract_sha256=contract_sha256,
+            contract_entry_sha256=contract_entry_sha256,
             contract_bytes=contract_bytes,
             artifact_bytes=artifact_bytes,
         )
@@ -856,6 +795,11 @@ class CrossRepoSubjectResolver:
         return self._resolve_subject(
             subject,
             evidence_item_id=evidence_item_id,
+            check_type=check_type,
+            check_value=check_value,
+            commit_sha=commit_sha,
+            contract_sha256=contract_sha256,
+            contract_entry_sha256=contract_entry_sha256,
             artifact_bytes=artifact_bytes,
             strict_api_objects=False,
         )
@@ -886,21 +830,23 @@ class CrossRepoSubjectResolver:
         try:
             subject = receipt.cross_repo_subject
             self._verify_pr(subject)
-            self._verify_commit(subject.revision.sha)
-            self._verify_pr_membership(subject, subject.revision.sha)
-            artifact = self._fetch_artifact(subject)
+            self._verify_revision(subject, receipt.commit_sha)
+            self._verify_commit(receipt.commit_sha)
+            self._verify_pr_membership(subject, receipt.commit_sha)
+            artifact = self._fetch_artifact(subject, receipt.commit_sha)
             if _sha256_prefixed(artifact) != subject.artifact_source.artifact_sha256:
                 raise ResolutionFailure("immutable artifact digest did not match")
             fetched_contract = self._fetch_contract(subject, strict_api_object=True)
             self._verify_contract_bytes(
-                subject,
                 receipt.evidence_item_id,
                 fetched_contract,
+                expected_contract_sha256=receipt.contract_sha256,
+                expected_contract_entry_sha256=receipt.contract_entry_sha256,
                 expected_check_type=receipt.check_type,
                 expected_check_value=receipt.check_value,
             )
             if subject.revision.kind == "merge_commit":
-                self._verify_merge_ancestry(subject)
+                self._verify_merge_ancestry(subject, receipt.commit_sha)
         except (ResolutionFailure, ValidationError, ValueError) as exc:
             return CrossRepoValidationResult(
                 CrossRepoStatus.FAIL, (str(exc),), api_calls=self._calls
@@ -912,6 +858,11 @@ class CrossRepoSubjectResolver:
         subject: CrossRepoSubject,
         *,
         evidence_item_id: str,
+        check_type: str,
+        check_value: str,
+        commit_sha: str,
+        contract_sha256: str,
+        contract_entry_sha256: str,
         artifact_bytes: bytes,
         strict_api_objects: bool,
     ) -> CrossRepoValidationResult:
@@ -919,27 +870,37 @@ class CrossRepoSubjectResolver:
             local_errors = _check_local_digests(
                 subject,
                 evidence_item_id=evidence_item_id,
+                contract_sha256=contract_sha256,
+                contract_entry_sha256=contract_entry_sha256,
                 contract_bytes=None,
                 artifact_bytes=artifact_bytes,
             )
             if local_errors:
                 return CrossRepoValidationResult(CrossRepoStatus.FAIL, local_errors)
             self._verify_pr(subject)
-            self._verify_commit(subject.revision.sha)
-            self._verify_pr_membership(subject, subject.revision.sha)
+            self._verify_revision(subject, commit_sha)
+            self._verify_commit(commit_sha)
+            self._verify_pr_membership(subject, commit_sha)
             fetched_contract = self._fetch_contract(
                 subject, strict_api_object=strict_api_objects
             )
-            self._verify_contract_bytes(subject, evidence_item_id, fetched_contract)
+            self._verify_contract_bytes(
+                evidence_item_id,
+                fetched_contract,
+                expected_contract_sha256=contract_sha256,
+                expected_contract_entry_sha256=contract_entry_sha256,
+                expected_check_type=check_type,
+                expected_check_value=check_value,
+            )
             if subject.revision.kind == "merge_commit":
-                self._verify_merge_ancestry(subject)
+                self._verify_merge_ancestry(subject, commit_sha)
         except (ResolutionFailure, ValidationError) as exc:
             return CrossRepoValidationResult(
                 CrossRepoStatus.FAIL, (str(exc),), api_calls=self._calls
             )
         return CrossRepoValidationResult(CrossRepoStatus.PASS, api_calls=self._calls)
 
-    def _verify_pr(self, subject: CrossRepoSubject | CrossRepoSubjectV2) -> None:
+    def _verify_pr(self, subject: CrossRepoSubject) -> None:
         payload = self._json_get(
             f"repos/{PRODUCT_REPOSITORY}/pulls/{subject.pull_request.number}",
             immutable=False,
@@ -983,6 +944,22 @@ class CrossRepoSubjectResolver:
         elif observed_merge != declared.merge_commit_sha:
             raise ResolutionFailure("GitHub merge commit did not match the subject")
 
+    def _verify_revision(self, subject: CrossRepoSubject, commit_sha: str) -> None:
+        """Bind the canonical receipt commit to the declared PR revision kind."""
+
+        if (
+            subject.revision.kind == "head"
+            and commit_sha != subject.pull_request.head.sha
+        ):
+            raise ResolutionFailure("receipt commit SHA did not match the PR head")
+        if (
+            subject.revision.kind == "merge_commit"
+            and commit_sha != subject.pull_request.merge_commit_sha
+        ):
+            raise ResolutionFailure(
+                "receipt commit SHA did not match the PR merge commit"
+            )
+
     def _verify_commit(self, sha: str) -> None:
         payload = self._json_get(
             f"repos/{PRODUCT_REPOSITORY}/git/commits/{quote(sha, safe='')}",
@@ -993,9 +970,7 @@ class CrossRepoSubjectResolver:
         if payload.get("sha") != sha:
             raise ResolutionFailure("revision SHA was not returned by the product repo")
 
-    def _verify_pr_membership(
-        self, subject: CrossRepoSubject | CrossRepoSubjectV2, sha: str
-    ) -> None:
+    def _verify_pr_membership(self, subject: CrossRepoSubject, sha: str) -> None:
         payload = self._json_get(
             f"repos/{PRODUCT_REPOSITORY}/commits/{quote(sha, safe='')}/pulls",
             immutable=True,
@@ -1016,13 +991,13 @@ class CrossRepoSubjectResolver:
                 return
         raise ResolutionFailure("revision is not a member of the declared product PR")
 
-    def _fetch_artifact(self, subject: CrossRepoSubjectV2) -> bytes:
+    def _fetch_artifact(self, subject: CrossRepoSubject, commit_sha: str) -> bytes:
         """Fetch the exact immutable artifact named by a v2 subject."""
 
         source = subject.artifact_source
         payload = self._json_get(
             f"repos/{source.repository.full_name}/contents/"
-            f"{quote(source.path, safe='/')}?ref={quote(source.commit_sha, safe='')}",
+            f"{quote(source.path, safe='/')}?ref={quote(commit_sha, safe='')}",
             immutable=True,
         )
         if not isinstance(payload, dict):
@@ -1058,7 +1033,7 @@ class CrossRepoSubjectResolver:
         return data
 
     def _fetch_contract(
-        self, subject: CrossRepoSubject | CrossRepoSubjectV2, *, strict_api_object: bool
+        self, subject: CrossRepoSubject, *, strict_api_object: bool
     ) -> bytes:
         source = subject.contract_source
         self._verify_contract_commit(source.commit_sha)
@@ -1140,15 +1115,15 @@ class CrossRepoSubjectResolver:
 
     def _verify_contract_bytes(
         self,
-        subject: CrossRepoSubject | CrossRepoSubjectV2,
         evidence_item_id: str,
         data: bytes,
         *,
+        expected_contract_sha256: str,
+        expected_contract_entry_sha256: str,
         expected_check_type: str | None = None,
         expected_check_value: str | None = None,
     ) -> None:
-        source = subject.contract_source
-        if _sha256_prefixed(data) != source.file_sha256:
+        if _sha256_prefixed(data) != expected_contract_sha256:
             raise ResolutionFailure("immutable contract file digest did not match")
         try:
             parsed = yaml.safe_load(data)
@@ -1187,13 +1162,10 @@ class CrossRepoSubjectResolver:
             raise ResolutionFailure(
                 f"immutable contract could not be parsed: {exc}"
             ) from exc
-        if actual != source.entry_sha256:
+        if actual != expected_contract_entry_sha256:
             raise ResolutionFailure("immutable contract entry digest did not match")
 
-    def _verify_merge_ancestry(
-        self, subject: CrossRepoSubject | CrossRepoSubjectV2
-    ) -> None:
-        merge_sha = subject.revision.sha
+    def _verify_merge_ancestry(self, subject: CrossRepoSubject, merge_sha: str) -> None:
         durable_base = subject.pull_request.base.sha
         payload = self._json_get(
             f"repos/{PRODUCT_REPOSITORY}/compare/{quote(merge_sha, safe='')}...{quote(durable_base, safe='')}",
@@ -1425,7 +1397,6 @@ __all__ = [
     "CrossRepoReceipt",
     "CrossRepoStatus",
     "CrossRepoSubject",
-    "CrossRepoSubjectV2",
     "CrossRepoSubjectResolver",
     "CrossRepoValidationResult",
     "CONTRACT_PATH",
@@ -1440,7 +1411,6 @@ __all__ = [
     "RevisionSubject",
     "PullRequestSubject",
     "SUBJECT_SCHEMA_VERSION",
-    "SUBJECT_SCHEMA_VERSION_V2",
     "SUBJECT_PURPOSE",
     "parse_canonical_receipt",
     "validate_offline",

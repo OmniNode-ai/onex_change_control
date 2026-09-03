@@ -67,13 +67,23 @@ CONTRACT_ENTRY_DIGEST = _compute_contract_entry_sha256(
 ARTIFACT_DIGEST = f"sha256:{hashlib.sha256(ARTIFACT).hexdigest()}"
 
 
+def _canonical_values(*, commit_sha: str = HEAD_SHA) -> dict[str, str]:
+    return {
+        "evidence_item_id": "dod-canonical-request-binding",
+        "check_type": "test_passes",
+        "check_value": "true",
+        "commit_sha": commit_sha,
+        "contract_sha256": CONTRACT_FILE_DIGEST,
+        "contract_entry_sha256": CONTRACT_ENTRY_DIGEST,
+    }
+
+
 def _ref(repo: dict[str, str], ref: str, sha: str) -> dict[str, object]:
     return {**repo, "ref": ref, "sha": sha}
 
 
 def _subject(*, state: str = "OPEN", kind: str = "head") -> dict[str, object]:
     merge = None if state == "OPEN" else MERGE_SHA
-    revision_sha = HEAD_SHA if kind == "head" else MERGE_SHA
     return {
         "schema_version": "occ-cross-repo-subject/v1",
         "purpose": "evidence_only",
@@ -86,15 +96,17 @@ def _subject(*, state: str = "OPEN", kind: str = "head") -> dict[str, object]:
             "state": state,
             "merge_commit_sha": merge,
         },
-        "revision": {"kind": kind, "sha": revision_sha},
+        "revision": {"kind": kind},
         "contract_source": {
             "repository": OCC,
             "commit_sha": OCC_SHA,
             "path": "contracts/OMN-17486.yaml",
-            "file_sha256": CONTRACT_FILE_DIGEST,
-            "entry_sha256": CONTRACT_ENTRY_DIGEST,
         },
-        "artifact_sha256": ARTIFACT_DIGEST,
+        "artifact_source": {
+            "repository": PRODUCT,
+            "path": "evidence/trusted.txt",
+            "artifact_sha256": ARTIFACT_DIGEST,
+        },
     }
 
 
@@ -186,6 +198,8 @@ def test_valid_subject_is_offline_unevaluated_without_network() -> None:
     result = validate_offline(
         _subject(),
         evidence_item_id="dod-canonical-request-binding",
+        contract_sha256=CONTRACT_FILE_DIGEST,
+        contract_entry_sha256=CONTRACT_ENTRY_DIGEST,
         contract_bytes=CONTRACT,
         artifact_bytes=ARTIFACT,
     )
@@ -273,7 +287,7 @@ def test_open_subject_resolves_with_exact_identity_and_bounded_calls() -> None:
     transport = _fixtures()
     result = CrossRepoSubjectResolver(transport=transport).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.PASS
@@ -286,7 +300,7 @@ def test_merged_subject_requires_merge_ancestry_and_validates_squash_commit() ->
     transport = _fixtures(merged=True)
     result = CrossRepoSubjectResolver(transport=transport).resolve(
         _subject(state="MERGED", kind="merge_commit"),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(commit_sha=MERGE_SHA),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.PASS
@@ -301,7 +315,7 @@ def test_wrong_repo_sha_and_stale_head_are_rejected() -> None:
     )
     result = CrossRepoSubjectResolver(transport=transport).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -319,7 +333,7 @@ def test_wrong_repo_sha_and_stale_head_are_rejected() -> None:
     )
     result = CrossRepoSubjectResolver(transport=transport).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -333,7 +347,7 @@ def test_missing_membership_and_unrelated_ancestry_fail_closed() -> None:
     ] = _json([])
     result = CrossRepoSubjectResolver(transport=transport).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -350,7 +364,7 @@ def test_missing_membership_and_unrelated_ancestry_fail_closed() -> None:
     )
     result = CrossRepoSubjectResolver(transport=transport).resolve(
         _subject(state="MERGED", kind="merge_commit"),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(commit_sha=MERGE_SHA),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -367,7 +381,7 @@ def test_transport_status_never_becomes_pass(status: int) -> None:
         transport=transport, sleep=lambda _: None
     ).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -387,7 +401,7 @@ def test_timeout_and_malformed_json_are_unavailable() -> None:
 
     result = CrossRepoSubjectResolver(transport=TimeoutTransport()).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -399,7 +413,7 @@ def test_timeout_and_malformed_json_are_unavailable() -> None:
     )
     result = CrossRepoSubjectResolver(transport=transport).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -420,7 +434,7 @@ def test_response_after_deadline_and_malformed_envelope_fail_closed() -> None:
         transport=AdvancingTransport(), monotonic=lambda: clock[0]
     ).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -435,7 +449,7 @@ def test_response_after_deadline_and_malformed_envelope_fail_closed() -> None:
 
     result = CrossRepoSubjectResolver(transport=MalformedTransport()).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -446,6 +460,8 @@ def test_artifact_and_contract_digest_mismatches_fail_offline() -> None:
     result = validate_offline(
         _subject(),
         evidence_item_id="dod-canonical-request-binding",
+        contract_sha256=CONTRACT_FILE_DIGEST,
+        contract_entry_sha256=CONTRACT_ENTRY_DIGEST,
         contract_bytes=b"wrong",
         artifact_bytes=b"wrong",
     )
@@ -458,12 +474,11 @@ def test_artifact_and_contract_digest_mismatches_fail_offline() -> None:
 def test_wrong_contract_ticket_and_non_bytes_fail_closed() -> None:
     wrong_contract = CONTRACT.replace(b"OMN-17486", b"OMN-99999")
     raw = _subject()
-    source = raw["contract_source"]
-    assert isinstance(source, dict)
-    source["file_sha256"] = f"sha256:{hashlib.sha256(wrong_contract).hexdigest()}"
     result = validate_offline(
         raw,
         evidence_item_id="dod-canonical-request-binding",
+        contract_sha256=f"sha256:{hashlib.sha256(wrong_contract).hexdigest()}",
+        contract_entry_sha256=CONTRACT_ENTRY_DIGEST,
         contract_bytes=wrong_contract,
         artifact_bytes=ARTIFACT,
     )
@@ -472,6 +487,8 @@ def test_wrong_contract_ticket_and_non_bytes_fail_closed() -> None:
 
     result = validate_offline(
         _subject(),
+        contract_sha256=CONTRACT_FILE_DIGEST,
+        contract_entry_sha256=CONTRACT_ENTRY_DIGEST,
         contract_bytes="not bytes",  # type: ignore[arg-type]
         artifact_bytes=ARTIFACT,
     )
@@ -490,7 +507,7 @@ def test_generic_transport_exception_becomes_bounded_failure() -> None:
 
     result = CrossRepoSubjectResolver(transport=BrokenTransport()).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -558,7 +575,7 @@ def test_call_budget_is_hard_bound() -> None:
     transport = _fixtures()
     result = CrossRepoSubjectResolver(transport=transport, max_calls=1).resolve(
         _subject(),
-        evidence_item_id="dod-canonical-request-binding",
+        **_canonical_values(),
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.FAIL
@@ -568,20 +585,9 @@ def test_call_budget_is_hard_bound() -> None:
 
 def _v2_receipt() -> dict[str, object]:
     subject = _subject()
-    subject.pop("artifact_sha256")
     subject.update(
         {
-            "schema_version": "occ-cross-repo-subject/v2",
-            "ticket_id": "OMN-17486",
-            "evidence_item_id": "dod-canonical-request-binding",
-            "check_type": "test_passes",
-            "check_value": "true",
-            "artifact_source": {
-                "repository": PRODUCT,
-                "commit_sha": HEAD_SHA,
-                "path": "evidence/trusted.txt",
-                "artifact_sha256": ARTIFACT_DIGEST,
-            },
+            "schema_version": "occ-cross-repo-subject/v1",
         }
     )
     return {
@@ -640,58 +646,119 @@ def _v2_fixtures() -> FixtureTransport:
 
 
 @pytest.mark.unit
-def test_v2_receipt_is_the_only_cross_repo_embedding_and_requires_full_bindings() -> (
-    None
-):
+def test_v2_receipt_uses_canonical_top_level_identity() -> None:
     valid = parse_canonical_receipt(_v2_receipt())
     assert isinstance(valid, CrossRepoReceipt)
-    for field_name, value in (
-        ("schema_version", "1.0.0"),
-        ("status", "FAIL"),
-        ("check_type", "command"),
-        ("check_value", "false"),
-        ("commit_sha", HEAD_SHA.replace("b", "a")),
-        ("contract_sha256", "sha256:" + "0" * 64),
-    ):
-        invalid = _v2_receipt()
-        invalid[field_name] = value
-        with pytest.raises(
-            ValueError, match=r"invalid canonical receipt|does not match|permitted only"
-        ):
-            parse_canonical_receipt(invalid)
+    subject = valid.cross_repo_subject
+    assert set(subject.model_dump()) == {
+        "schema_version",
+        "purpose",
+        "repository",
+        "pull_request",
+        "revision",
+        "contract_source",
+        "artifact_source",
+    }
 
-    v1 = _v2_receipt()
-    v1["schema_version"] = "1.0.0"
+    invalid_version = _v2_receipt()
+    invalid_version["schema_version"] = "1.0.0"
     with pytest.raises(ValueError, match="only on canonical receipt schema v2"):
-        parse_canonical_receipt(v1)
+        parse_canonical_receipt(invalid_version)
 
 
 @pytest.mark.unit
-def test_v2_receipt_requires_exact_subject_ids_and_check_value() -> None:
+@pytest.mark.parametrize(
+    ("location", "field_name"),
+    [
+        ("subject", "ticket_id"),
+        ("subject", "evidence_item_id"),
+        ("subject", "check_type"),
+        ("subject", "check_value"),
+        ("revision", "sha"),
+        ("contract_source", "file_sha256"),
+        ("contract_source", "entry_sha256"),
+        ("artifact_source", "commit_sha"),
+    ],
+)
+def test_removed_nested_authority_fields_are_forbidden(
+    location: str, field_name: str
+) -> None:
+    invalid = _v2_receipt()
+    subject = invalid["cross_repo_subject"]
+    assert isinstance(subject, dict)
+    target = subject if location == "subject" else subject[location]
+    assert isinstance(target, dict)
+    target[field_name] = "spoofed"
+    with pytest.raises(ValueError, match="invalid canonical receipt"):
+        parse_canonical_receipt(invalid)
+
+
+@pytest.mark.unit
+def test_top_level_mismatches_are_resolved_against_remote_bindings() -> None:
     for field_name, value in (
-        ("ticket_id", "OMN-99999"),
         ("evidence_item_id", "other"),
         ("check_type", "command"),
         ("check_value", "false"),
+        ("commit_sha", "a" * 40),
+        ("contract_sha256", "sha256:" + "0" * 64),
+        ("contract_entry_sha256", "sha256:" + "0" * 64),
     ):
         invalid = _v2_receipt()
-        invalid["cross_repo_subject"] = dict(invalid["cross_repo_subject"])  # type: ignore[arg-type]
+        invalid[field_name] = value
+        parsed = parse_canonical_receipt(invalid)
+        assert isinstance(parsed, CrossRepoReceipt)
+        result = CrossRepoSubjectResolver(transport=_v2_fixtures()).resolve_receipt(
+            parsed
+        )
+        assert result.status is CrossRepoStatus.FAIL
+
+
+@pytest.mark.unit
+def test_receipt_schema_and_model_have_the_same_nested_authority_boundary() -> None:
+    import jsonschema
+
+    schema = yaml.safe_load(Path("schemas/occ_receipt_v2.schema.yaml").read_bytes())
+    jsonschema.Draft202012Validator.check_schema(schema)
+    valid = _v2_receipt()
+    jsonschema.validate(valid, schema)
+    assert isinstance(parse_canonical_receipt(valid), CrossRepoReceipt)
+
+    for location, field_name in (
+        ("subject", "evidence_item_id"),
+        ("revision", "sha"),
+        ("contract_source", "file_sha256"),
+        ("artifact_source", "commit_sha"),
+    ):
+        invalid = _v2_receipt()
         subject = invalid["cross_repo_subject"]
         assert isinstance(subject, dict)
-        subject[field_name] = value
-        with pytest.raises(
-            ValueError, match=r"invalid canonical receipt|does not match"
-        ):
+        target = subject if location == "subject" else subject[location]
+        assert isinstance(target, dict)
+        target[field_name] = "spoofed"
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+        with pytest.raises(ValueError, match="invalid canonical receipt"):
             parse_canonical_receipt(invalid)
 
-    weak = _v2_receipt()
-    weak["check_type"] = "file_exists"
-    weak["cross_repo_subject"] = dict(weak["cross_repo_subject"])  # type: ignore[arg-type]
-    weak_subject = weak["cross_repo_subject"]
-    assert isinstance(weak_subject, dict)
-    weak_subject["check_type"] = "file_exists"
-    with pytest.raises(ValueError, match="invalid canonical receipt"):
-        parse_canonical_receipt(weak)
+
+@pytest.mark.unit
+def test_nested_v1_schema_and_pydantic_discriminate_versions() -> None:
+    import jsonschema
+
+    schema = yaml.safe_load(
+        Path("schemas/occ_cross_repo_subject_v1.schema.yaml").read_bytes()
+    )
+    subject = _subject()
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(subject, schema)
+    CrossRepoSubject.model_validate(subject)
+
+    invalid = dict(subject)
+    invalid["schema_version"] = "occ-cross-repo-subject/v2"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(invalid, schema)
+    with pytest.raises(ValidationError):
+        CrossRepoSubject.model_validate(invalid)
 
 
 @pytest.mark.unit
