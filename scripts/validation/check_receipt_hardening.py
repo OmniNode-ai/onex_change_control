@@ -276,6 +276,63 @@ forward via the same append-only supersession path every other rule in this
 file already honors (``_supersession_candidates`` /
 ``_valid_supersession_replacement``) — nothing new was required for that.
 
+REPOSITORY AUTHORITY IS RESOLVED PER CITATION (OMN-17558)
+---------------------------------------------------------
+``_repo_hints`` UNIONS every trusted-repo reference across ``check_value``
+and ``probe_command``, and OCC#8075 made a union of size > 1 a hard
+``[COMMIT_SHA_REPOSITORY]`` refusal. That refusal is correct in principle —
+picking one of several candidate repositories by textual order is the
+fail-open hazard this rule exists to close — but as written it froze every
+ticket in the fleet at ONE product PR.
+
+Mechanism. When a ticket takes a second product PR, the OCC autobind mints
+one ``<check_type>.supersede.<consumer-pr>.yaml`` per already-bound evidence
+item. In every one of those records two required rules pull in opposite
+directions:
+
+* ``S2`` family binding (above) REQUIRES ``replacement.check_value`` to keep
+  referencing the SUPERSEDED item — i.e. to keep naming that item's own
+  repository;
+* the replacement's ``commit_sha`` is the NEW consumer PR's head, and only
+  ``probe_command`` names that PR's repository.
+
+Two trusted hints, unconditionally, on every second-consumer supersede.
+Proven live on both shapes, and both companions closed unmerged:
+
+* ``OCC#8099`` (OMN-17549) — consumers ``omnimarket#2274`` then
+  ``omnibase_infra#3148``; CI ``Pre-commit`` run 33716058544 reported hints
+  ``['OmniNode-ai/omnibase_infra', 'OmniNode-ai/omnimarket']``.
+* ``OCC#8105`` (OMN-17695) — consumers ``omnibase_infra#3148`` then
+  ``omnibase_infra#3151``, i.e. BOTH IN THE SAME REPOSITORY, and still
+  ambiguous: the ``occ-self-bind-*`` entry's ``check_value`` is inherently
+  ``onex_change_control``-scoped (``gh pr view <occ-pr> --repo
+  OmniNode-ai/onex_change_control``) while its ``probe_command`` names the
+  product consumer. So this was never a cross-repo-only defect.
+
+The fix keeps the refusal and adds evidence-based disambiguation, in
+``_repo_authority``: when — and only when — a receipt cites more than one
+trusted repository, the authority is the repository whose OWN command
+segment binds one of the receipt's own identifiers, in a fixed two-tier
+order: (1) ``commit_sha`` itself, via ``repos/<owner>/<repo>/commits/<sha>``
+or ``?ref=<sha>``; failing that, (2) the receipt's declared ``pr_number``,
+via ``gh pr <cmd> <n>`` or ``repos/<owner>/<repo>/pulls/<n>``. Citations are
+segment-scoped (``_repo_citations`` splits on unquoted ``;|&`` exactly as
+``_trusted_terminal_segment`` does), so a ref SHA in one command does not
+attach to a repository named in another. A tier matching two or more trusted
+repositories is still ambiguous and refuses immediately — it does NOT fall
+through to the weaker tier — and ``actual_output`` remains excluded.
+
+This is strictly a relaxation of the ambiguity refusal and of nothing else.
+Every other property is untouched: a candidate must still appear in a
+contract-bound ``check_value``/``probe_command`` field AND be in
+``_KNOWN_REPO_HINTS`` before it can be considered at all (so probe text
+naming ``torvalds/linux`` is still not an authority, with or without a
+matching ``pr_number``), ``_product_ref_binds_commit`` still applies to the
+selected repository, and the selected repository must still return the exact
+``commit_sha`` from the GitHub commits API. Nothing that previously passed
+now passes on weaker evidence; only receipts that previously could not pass
+at all can now resolve.
+
 Exit codes: 0 = all enforced receipts clean; 1 = definitive receipt defects;
 2 = commit-resolution infrastructure unavailable.
 """
@@ -882,11 +939,121 @@ def _repo_hints(receipt: ModelDodReceipt) -> frozenset[str]:
     return frozenset()
 
 
-def _repo_hint(receipt: ModelDodReceipt) -> str | None:
-    """Return the sole trusted repository hint, if the receipt has one."""
+# A PR citation embedded in probe text: the ``gh pr <subcommand> <n>`` CLI
+# form and the ``repos/<owner>/<repo>/pulls/<n>`` REST form. Used ONLY to
+# decide which of SEVERAL already-trusted repositories a receipt's own
+# declared ``pr_number`` binds to — never to admit a repository that
+# ``_KNOWN_REPO_HINTS`` does not already trust (OMN-17558).
+_PR_REF_RE = re.compile(r"\bpr\s+[a-z][a-z-]*\s+(\d+)\b|/pulls/(\d+)\b")
+
+
+class _RepoCitation(NamedTuple):
+    """One trusted-repo reference plus the SHAs/PRs in its own command segment.
+
+    Segment-scoped, so ``gh api repos/<A>/contents/x?ref=<sha> | grep -c y &&
+    gh pr view <n> --repo <B>`` attributes ``<sha>`` to A and ``<n>`` to B
+    rather than pooling both against the whole field.
+    """
+
+    repo: str
+    shas: frozenset[str]
+    pr_numbers: frozenset[int]
+
+
+def _repo_citations(receipt: ModelDodReceipt) -> tuple[_RepoCitation, ...]:
+    """Return every trusted-repo citation found in contract-bound probe fields.
+
+    Same two fields, same trust list and same ``actual_output`` exclusion as
+    ``_repo_hints`` — this only adds *where inside the field* each reference
+    sits, which is what makes disambiguation evidence rather than word order.
+    """
+    citations: list[_RepoCitation] = []
+    for field_name in ("check_value", "probe_command"):
+        value = getattr(receipt, field_name, None)
+        if not isinstance(value, str):
+            continue
+        for segment in _split_top_level(value, ";|&"):
+            repos = {
+                candidate
+                for match in _REPO_HINT_RE.finditer(segment)
+                if (candidate := (match.group(1) or match.group(2)))
+                in _KNOWN_REPO_HINTS
+            }
+            if not repos:
+                continue
+            shas = frozenset(
+                match.group(1).lower()
+                for match in _PRODUCT_REF_SHA_RE.finditer(segment)
+            )
+            pr_numbers = frozenset(
+                int(match.group(1) or match.group(2))
+                for match in _PR_REF_RE.finditer(segment)
+            )
+            citations.extend(
+                _RepoCitation(repo, shas, pr_numbers) for repo in sorted(repos)
+            )
+    return tuple(citations)
+
+
+def _repo_authority(receipt: ModelDodReceipt) -> str | None:
+    """Return the single trusted repository this receipt's commit_sha lives in.
+
+    One hint stays one authority. When a receipt cites MORE than one trusted
+    repository, the authority is decided by which citation actually binds
+    this receipt's own identifiers, in a fixed two-tier order — never by
+    textual position, and never by widening the trusted set:
+
+    1. a citation whose own segment names ``commit_sha`` itself
+       (``repos/<repo>/commits/<sha>`` or ``?ref=<sha>``) — a direct
+       assertion about where the commit lives;
+    2. failing that, a citation whose own segment names the receipt's
+       declared ``pr_number`` (``gh pr <cmd> <n>`` / ``/pulls/<n>``) — the
+       PR whose head this ``commit_sha`` is.
+
+    A tier that matches two or more trusted repositories is ambiguous and
+    returns ``None`` immediately; it does NOT fall through to the weaker
+    tier. ``None`` means the caller fails closed exactly as before.
+
+    WHY (OMN-17558). The union in ``_repo_hints`` made a whole class of
+    well-formed receipts permanently unresolvable: the OCC autobind mints one
+    ``.supersede.<consumer-pr>.yaml`` per already-bound evidence item when a
+    ticket takes a SECOND product PR, and in every one of those the S2 family
+    binding (OMN-15459, ``_supersession_binding_violations``) REQUIRES
+    ``replacement.check_value`` to keep naming the superseded item's own repo,
+    while ``probe_command`` names the new consumer PR's repo. Two trusted
+    hints, always. Proven live on both shapes: OCC#8099 (consumers
+    ``omnimarket#2274`` then ``omnibase_infra#3148`` — cross-repo) and
+    OCC#8105 (consumers ``omnibase_infra#3148`` then ``omnibase_infra#3151``
+    — SAME repo, still ambiguous via the ``occ-self-bind-*`` entry whose
+    ``check_value`` is inherently onex_change_control-scoped). Both closed
+    unmerged; every ticket in the fleet was frozen at one product PR.
+
+    This is strictly a RELAXATION of the ambiguity refusal added in OCC#8075,
+    and only of that: nothing that previously passed now passes on weaker
+    evidence. The fail-open hazard OCC#8075 closed — free-form text choosing
+    an attacker-supplied repository — is untouched, because a candidate must
+    still appear in a contract-bound ``check_value``/``probe_command`` field
+    AND be in ``_KNOWN_REPO_HINTS`` before it can be disambiguated at all,
+    and the chosen repository must still return the exact commit from the
+    GitHub commits API.
+    """
 
     hints = _repo_hints(receipt)
-    return next(iter(hints)) if len(hints) == 1 else None
+    if len(hints) <= 1:
+        return next(iter(hints), None)
+
+    citations = _repo_citations(receipt)
+    receipt_sha = receipt.commit_sha.lower()
+    sha_bound = {c.repo for c in citations if receipt_sha in c.shas}
+    if sha_bound:
+        return next(iter(sha_bound)) if len(sha_bound) == 1 else None
+
+    if receipt.pr_number is not None:
+        pr_bound = {c.repo for c in citations if receipt.pr_number in c.pr_numbers}
+        if pr_bound:
+            return next(iter(pr_bound)) if len(pr_bound) == 1 else None
+
+    return None
 
 
 def _product_ref_binds_commit(receipt: ModelDodReceipt, repo: str) -> bool:
@@ -911,31 +1078,37 @@ def _product_ref_binds_commit(receipt: ModelDodReceipt, repo: str) -> bool:
 
 def _repository_authority_violation(receipt: ModelDodReceipt) -> str | None:
     """Return a deterministic-authority violation before network resolution."""
-    hints = _repo_hints(receipt)
-    if len(hints) > 1:
-        return (
-            "[COMMIT_SHA_REPOSITORY] multiple trusted product repository hints "
-            f"{sorted(hints)!r}; receipt authority is ambiguous and must be "
-            "made singular in check_value/probe_command."
-        )
-    if len(hints) == 1:
-        repo = next(iter(hints))
-        if repo != _DEFAULT_COMMIT_SHA_REPO and not _product_ref_binds_commit(
-            receipt, repo
-        ):
+    repo = _repo_authority(receipt)
+    if repo is None:
+        hints = _repo_hints(receipt)
+        if len(hints) > 1:
             return (
-                "[COMMIT_SHA_REPOSITORY] product command/ref exposes a full SHA "
-                "that does not bind receipt commit_sha; rerun against the exact "
-                "product artifact."
+                "[COMMIT_SHA_REPOSITORY] multiple trusted product repository hints "
+                f"{sorted(hints)!r}, and no single one of them is bound to this "
+                "receipt's own identifiers: name commit_sha in its repository's "
+                "own command segment (repos/<owner>/<repo>/commits/<sha> or "
+                "?ref=<sha>), or name the receipt's pr_number there (gh pr view "
+                "<n> --repo <owner>/<repo> or repos/<owner>/<repo>/pulls/<n>). "
+                "Receipt authority is ambiguous and must be made singular in "
+                "check_value/probe_command."
             )
+        return None
+    if repo != _DEFAULT_COMMIT_SHA_REPO and not _product_ref_binds_commit(
+        receipt, repo
+    ):
+        return (
+            "[COMMIT_SHA_REPOSITORY] product command/ref exposes a full SHA "
+            "that does not bind receipt commit_sha; rerun against the exact "
+            "product artifact."
+        )
     return None
 
 
 def _commit_sha_repositories(receipt: ModelDodReceipt) -> tuple[str, ...]:
     """Return the one deterministic authority for a receipt commit claim."""
 
-    hint = _repo_hint(receipt)
-    return (hint,) if hint is not None else (_DEFAULT_COMMIT_SHA_REPO,)
+    authority = _repo_authority(receipt)
+    return (authority,) if authority is not None else (_DEFAULT_COMMIT_SHA_REPO,)
 
 
 def _commit_sha_existence_violations(
