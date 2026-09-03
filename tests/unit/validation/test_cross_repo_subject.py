@@ -762,6 +762,33 @@ def test_nested_v1_schema_and_pydantic_discriminate_versions() -> None:
 
 
 @pytest.mark.unit
+def test_pr_merge_commit_optionality_matches_schema_and_model() -> None:
+    import jsonschema
+
+    schema = yaml.safe_load(Path("schemas/occ_receipt_v2.schema.yaml").read_bytes())
+
+    open_receipt = _v2_receipt()
+    open_subject = open_receipt["cross_repo_subject"]
+    assert isinstance(open_subject, dict)
+    open_pr = open_subject["pull_request"]
+    assert isinstance(open_pr, dict)
+    del open_pr["merge_commit_sha"]
+    jsonschema.validate(open_receipt, schema)
+    assert isinstance(parse_canonical_receipt(open_receipt), CrossRepoReceipt)
+
+    merged_receipt = _v2_receipt()
+    merged_subject = merged_receipt["cross_repo_subject"]
+    assert isinstance(merged_subject, dict)
+    merged_pr = merged_subject["pull_request"]
+    assert isinstance(merged_pr, dict)
+    merged_pr["state"] = "MERGED"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(merged_receipt, schema)
+    with pytest.raises(ValueError, match="invalid canonical receipt"):
+        parse_canonical_receipt(merged_receipt)
+
+
+@pytest.mark.unit
 def test_online_fetches_artifact_itself_and_checks_type_and_digest() -> None:
     transport = _v2_fixtures()
     result = CrossRepoSubjectResolver(transport=transport).resolve_receipt(
