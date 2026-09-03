@@ -322,16 +322,35 @@ attach to a repository named in another. A tier matching two or more trusted
 repositories is still ambiguous and refuses immediately — it does NOT fall
 through to the weaker tier — and ``actual_output`` remains excluded.
 
-This is strictly a relaxation of the ambiguity refusal and of nothing else.
-Every other property is untouched: a candidate must still appear in a
-contract-bound ``check_value``/``probe_command`` field AND be in
-``_KNOWN_REPO_HINTS`` before it can be considered at all (so probe text
-naming ``torvalds/linux`` is still not an authority, with or without a
-matching ``pr_number``), ``_product_ref_binds_commit`` still applies to the
-selected repository, and the selected repository must still return the exact
-``commit_sha`` from the GitHub commits API. Nothing that previously passed
-now passes on weaker evidence; only receipts that previously could not pass
-at all can now resolve.
+The SAME contradiction has a second surface, on receipts that cite only ONE
+repository and so never reach the ambiguity branch. There the S2-mandated
+inherited ``check_value`` pins a ``?ref=``/``/commits/`` SHA to the FIRST
+consumer's artifact while the replacement's ``commit_sha`` is the SECOND
+consumer's head, and ``_product_ref_binds_commit`` refuses. Measured live on
+OCC#8109 (OMN-17292, 2nd consumer ``omnibase_infra#3153``), which fails with
+nine violations: eight ambiguity refusals plus one of this second class on
+``dod-OmniNode-ai-omnibase_infra-pr-3075/command.supersede.3153.yaml``
+(``?ref=021a590f...`` against ``commit_sha: 792c0014...``). That branch is
+therefore relaxed too, but ONLY for a supersession ``replacement`` — the flag
+is threaded from ``_valid_supersession_replacement``, never inferred — and
+only when the same repository is also cited in a segment naming the receipt's
+own ``pr_number``. Base receipts keep the strict rule byte-for-byte.
+
+Both relaxations are of the refusal only. Every other property is untouched:
+a candidate must still appear in a contract-bound
+``check_value``/``probe_command`` field AND be in ``_KNOWN_REPO_HINTS`` before
+it can be considered at all (so probe text naming ``torvalds/linux`` is still
+not an authority, with or without a matching ``pr_number``), and the selected
+repository must still return the exact ``commit_sha`` from the GitHub commits
+API. Nothing that previously passed now passes on weaker evidence; only
+receipts that previously could not pass at all can now resolve.
+
+Documented residual: a supersession replacement may cite a product artifact at
+an older ref while claiming a newer ``commit_sha``. That is the declared
+semantic of the merged-path re-bind (the record's own ``reason`` says it
+re-binds a prior entry to a new product PR *without editing the merged base
+receipt*), not a laundering channel — the inherited probe text is preserved
+verbatim rather than rewritten, and the commit must still exist remotely.
 
 Exit codes: 0 = all enforced receipts clean; 1 = definitive receipt defects;
 2 = commit-resolution infrastructure unavailable.
@@ -1056,13 +1075,56 @@ def _repo_authority(receipt: ModelDodReceipt) -> str | None:
     return None
 
 
-def _product_ref_binds_commit(receipt: ModelDodReceipt, repo: str) -> bool:
+def _pr_bound_citation(receipt: ModelDodReceipt, repo: str) -> bool:
+    """True when ``repo`` is cited in a segment naming this receipt's pr_number."""
+
+    if receipt.pr_number is None:
+        return False
+    return any(
+        citation.repo == repo and receipt.pr_number in citation.pr_numbers
+        for citation in _repo_citations(receipt)
+    )
+
+
+def _product_ref_binds_commit(
+    receipt: ModelDodReceipt,
+    repo: str,
+    *,
+    is_supersession_replacement: bool = False,
+) -> bool:
     """Require an exposed full product ref to name this receipt's commit SHA.
 
     A product command that exposes only a PR number has no commit ref to bind
     here. When it does expose one or more full SHA refs, the receipt SHA must
     be among them. This permits a deliberate red comparator alongside the
     green product head without silently accepting an unrelated receipt SHA.
+
+    ONE exception, and only for a supersession ``replacement`` (OMN-17558).
+    A merged-path second-consumer supersede (OMN-14623) re-binds a prior
+    evidence item to a NEW product PR *without editing the merged base
+    receipt*, and the S2 family binding (OMN-15459) REQUIRES the replacement
+    to keep referencing the superseded item's own declared check — which is
+    pinned to the FIRST consumer's artifact ref. Its ``commit_sha`` is the
+    SECOND consumer's head. Demanding the inherited ref expose that head puts
+    S2 and this rule in direct contradiction and makes the record
+    unsatisfiable; measured live on OCC#8109 (OMN-17292, 2nd consumer
+    ``omnibase_infra#3153``), whose
+    ``dod-OmniNode-ai-omnibase_infra-pr-3075/command.supersede.3153.yaml``
+    carries ``?ref=021a590f...`` (the pr-3075 artifact) against
+    ``commit_sha: 792c0014...`` (the #3153 head) and fails here.
+
+    So on a replacement, an exposed ref that does not name ``commit_sha`` is
+    accepted only when the SAME repository is also cited in a segment naming
+    the receipt's own ``pr_number`` — i.e. the record itself identifies the
+    consumer PR whose head that ``commit_sha`` is. Base receipts keep the
+    strict rule unchanged.
+
+    Documented residual: a supersession replacement may therefore cite a
+    product artifact at an older ref while claiming a newer ``commit_sha``.
+    That is the declared semantic of the merged-path re-bind, not a laundering
+    channel — the probe text is preserved verbatim rather than rewritten, the
+    PR citation is contract-bound, and the ``commit_sha`` must still resolve
+    in the authority repository through the GitHub commits API.
     """
     receipt_sha = receipt.commit_sha.lower()
     exposed_shas: set[str] = set()
@@ -1073,10 +1135,14 @@ def _product_ref_binds_commit(receipt: ModelDodReceipt, repo: str) -> bool:
         exposed_shas.update(
             match.group(1).lower() for match in _PRODUCT_REF_SHA_RE.finditer(value)
         )
-    return not exposed_shas or receipt_sha in exposed_shas
+    if not exposed_shas or receipt_sha in exposed_shas:
+        return True
+    return is_supersession_replacement and _pr_bound_citation(receipt, repo)
 
 
-def _repository_authority_violation(receipt: ModelDodReceipt) -> str | None:
+def _repository_authority_violation(
+    receipt: ModelDodReceipt, *, is_supersession_replacement: bool = False
+) -> str | None:
     """Return a deterministic-authority violation before network resolution."""
     repo = _repo_authority(receipt)
     if repo is None:
@@ -1094,7 +1160,7 @@ def _repository_authority_violation(receipt: ModelDodReceipt) -> str | None:
             )
         return None
     if repo != _DEFAULT_COMMIT_SHA_REPO and not _product_ref_binds_commit(
-        receipt, repo
+        receipt, repo, is_supersession_replacement=is_supersession_replacement
     ):
         return (
             "[COMMIT_SHA_REPOSITORY] product command/ref exposes a full SHA "
@@ -1115,6 +1181,8 @@ def _commit_sha_existence_violations(
     receipt: ModelDodReceipt,
     resolver: CommitShaResolver,
     infrastructure_diagnostics: list[str],
+    *,
+    is_supersession_replacement: bool = False,
 ) -> list[str]:
     """Return definitive SHA receipt defects, collecting infra separately.
 
@@ -1128,7 +1196,9 @@ def _commit_sha_existence_violations(
     """
     if not _after_omn_15461_cutoff(receipt.run_timestamp):
         return []
-    authority_violation = _repository_authority_violation(receipt)
+    authority_violation = _repository_authority_violation(
+        receipt, is_supersession_replacement=is_supersession_replacement
+    )
     if authority_violation is not None:
         return [authority_violation]
     result = resolver.resolve(receipt.commit_sha, _commit_sha_repositories(receipt))
@@ -1291,6 +1361,8 @@ def _receipt_binding_violations(
     contracts_dir: Path,
     commit_sha_resolver: CommitShaResolver,
     infrastructure_diagnostics: list[str],
+    *,
+    is_supersession_replacement: bool = False,
 ) -> list[str]:
     """Return contract-binding + verifier violation fragments for one receipt.
 
@@ -1338,7 +1410,10 @@ def _receipt_binding_violations(
     violations.extend(_stdout_emittability_violations(receipt))
     violations.extend(
         _commit_sha_existence_violations(
-            receipt, commit_sha_resolver, infrastructure_diagnostics
+            receipt,
+            commit_sha_resolver,
+            infrastructure_diagnostics,
+            is_supersession_replacement=is_supersession_replacement,
         )
     )
 
@@ -1395,7 +1470,11 @@ def _valid_supersession_replacement(
         ]
 
     violations = _receipt_binding_violations(
-        receipt, contracts_dir, commit_sha_resolver, infrastructure_diagnostics
+        receipt,
+        contracts_dir,
+        commit_sha_resolver,
+        infrastructure_diagnostics,
+        is_supersession_replacement=True,
     )
     if violations:
         errors.extend(f"{candidate}: replacement {v}" for v in violations)
