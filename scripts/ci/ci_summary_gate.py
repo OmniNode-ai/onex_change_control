@@ -101,6 +101,9 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # the label), so this stays STRICT, not SKIPPABLE. Matches the exact
     # behavior of the needs-based aggregator it replaces.
     "Pre-commit",
+    # OMN-17582: online-only cross-repository subject resolver. Offline
+    # validation is explicitly UNEVALUATED and cannot satisfy this gate.
+    "Cross-Repository Receipt Subject (online)",
     # Deliberately unconditional (no needs/if) per their own ci.yml headers --
     # a defense that only runs when its own trigger files change is a defense
     # that never runs (OMN-14416 lesson), so both scan the whole tree/corpus
