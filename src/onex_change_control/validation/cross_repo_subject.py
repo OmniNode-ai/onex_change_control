@@ -745,6 +745,17 @@ def parse_canonical_receipt(
         raise ValueError("cross-repository receipts must use nested PR identity only")
     if receipt.commit_sha != view.revision_sha:
         raise ValueError("receipt commit_sha must equal subject revision.sha")
+    if receipt.contract_sha256 is None or receipt.contract_entry_sha256 is None:
+        raise ValueError("cross-repository receipts require both contract digests")
+    if receipt.contract_sha256 != view.contract_file_sha256:
+        raise ValueError(
+            "receipt contract_sha256 must equal subject contract_source.file_sha256"
+        )
+    if receipt.contract_entry_sha256 != view.contract_entry_sha256:
+        raise ValueError(
+            "receipt contract_entry_sha256 must equal subject "
+            "contract_source.entry_sha256"
+        )
     return ParsedCrossRepoReceipt(receipt, subject)
 
 
@@ -922,6 +933,16 @@ class CrossRepoSubjectResolver:
             if receipt.contract_sha256 is None or receipt.contract_entry_sha256 is None:
                 raise ValueError(
                     "cross-repository receipts require both contract digests"
+                )
+            if receipt.contract_sha256 != view.contract_file_sha256:
+                raise ValueError(
+                    "receipt contract_sha256 must equal subject "
+                    "contract_source.file_sha256"
+                )
+            if receipt.contract_entry_sha256 != view.contract_entry_sha256:
+                raise ValueError(
+                    "receipt contract_entry_sha256 must equal subject "
+                    "contract_source.entry_sha256"
                 )
             if artifact_bytes is not None:
                 if not isinstance(artifact_bytes, bytes):
