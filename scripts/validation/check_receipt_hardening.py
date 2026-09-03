@@ -386,6 +386,10 @@ from onex_change_control.validation.commit_sha_resolver import (
     EnumCommitShaOutcome,
     is_full_commit_sha,
 )
+from onex_change_control.validation.cross_repo_subject import (
+    ParsedCrossRepoReceipt,
+    parse_canonical_receipt,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1553,6 +1557,18 @@ def _validate_receipt_model(
     receipt_path: Path, raw: dict[str, object]
 ) -> tuple[ModelDodReceipt | None, str | None]:
     """Validate a receipt across old/new omnibase_core receipt schemas."""
+    if "cross_repo_subject" in raw or raw.get("schema_version") == "2.0.0":
+        try:
+            parsed = parse_canonical_receipt(raw)
+        except (RuntimeError, ValidationError, ValueError) as exc:
+            return (
+                None,
+                f"{receipt_path}: receipt fails canonical receipt validation: {exc}",
+            )
+        return (
+            parsed.receipt if isinstance(parsed, ParsedCrossRepoReceipt) else parsed,
+            None,
+        )
     try:
         return ModelDodReceipt.model_validate(raw), None
     except ValidationError as exc:
@@ -1572,6 +1588,15 @@ def _validate_receipt_model(
             )
         object.__setattr__(receipt, "contract_entry_sha256", contract_entry_sha256)
         return receipt, None
+
+
+def _parse_receipt_candidate(raw: dict[str, object]) -> ModelDodReceipt:
+    """Parse legacy receipts or unwrap the canonical v2 subject receipt."""
+
+    if "cross_repo_subject" in raw or raw.get("schema_version") == "2.0.0":
+        parsed = parse_canonical_receipt(raw)
+        return parsed.receipt if isinstance(parsed, ParsedCrossRepoReceipt) else parsed
+    return ModelDodReceipt.model_validate(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -2558,8 +2583,13 @@ def _inventory_receipt_models(paths: list[Path]) -> list[tuple[Path, ModelDodRec
         if not isinstance(candidate, dict):
             continue
         try:
-            receipt = ModelDodReceipt.model_validate(candidate)
-        except ValidationError:
+            parsed = _parse_receipt_candidate(candidate)
+            receipt = (
+                parsed.receipt
+                if isinstance(parsed, ParsedCrossRepoReceipt)
+                else parsed
+            )
+        except (RuntimeError, ValidationError, ValueError):
             continue
         if _after_omn_15461_cutoff(receipt.run_timestamp):
             models.append((path, receipt))

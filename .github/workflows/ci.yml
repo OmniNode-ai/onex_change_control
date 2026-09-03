@@ -292,6 +292,39 @@ jobs:
             exit 1
           fi
 
+  cross-repo-subject-online:
+    name: Cross-Repository Receipt Subject (online)
+    # OMN-17582: only this online mode can produce PASS for a
+    # cross-repository subject. Fixed product/OCC identities and the bounded
+    # immutable GitHub snapshot are enforced by the resolver; the token is
+    # read-only. always() prevents pre-commit failure from becoming a silent
+    # skipped/non-result gate.
+    needs: [pre-commit]
+    if: always()
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Resolve subjects against immutable GitHub state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run python -m onex_change_control.scripts.check_cross_repo_subject --online --all-receipts
+
   type-check:
     # Note: This job runs mypy separately from pre-commit for full codebase checking.
     # Pre-commit hook runs mypy only on changed files (pre-push stage), while this job
