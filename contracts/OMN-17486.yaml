@@ -1,0 +1,85 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17486"
+title: "Implement governed PostgreSQL atomic one-time action-authorization claims"
+summary: "Parent OMN-17463; blocks execute-disabled OMN-17462 bootstrap. Governs migration 108 and the
+  overlay-configured local PostgreSQL claim client/Unix RPC; authorizes no live database change, action,
+  activation, registry entry, receipt, or deployment."
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+evidence_requirements:
+  - kind: "tests"
+    description: "Product evidence must prove canonical request binding, one-time atomic PostgreSQL 16
+      claims, restricted database access, restart persistence, expiry/mismatch outcomes, and overlay-only
+      local RPC behavior."
+  - kind: "manual"
+    description: "This implementation remains execute-disabled and default-deny. Any migration application,
+      deployment, authorization entry, or consumer activation requires separately governed operator evidence."
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-registry-empty-and-default-deny"
+    description: "The canonical OMN-17462 registry is empty and valid, so this contract cannot itself
+      authorize an action, deployment, receipt, or execute-enabled consumer."
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: "grep -Eq '^entries:[[:space:]]*\\[\\][[:space:]]*$' grants/pre_execution_action_authorizations.yaml
+          && uv run validate-pre-execution-action-authorizations --file grants/pre_execution_action_authorizations.yaml"
+  - id: "dod-migration-108-boundary-and-fingerprint"
+    description: "Migration 108 owns only action_authorization_claim, uses narrow owner and claim roles,
+      revokes public and table access, retains history on backout, and is included in the verified migration
+      fingerprint."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    status: "pending"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/migrations/test_action_authorization_nonce_claim_sql.py
+          tests/unit/runtime/action_authorization_claim/test_restricted_principal.py -q && uv run python
+          scripts/check_schema_fingerprint.py verify"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-canonical-claim-deadline-and-cancellation"
+    description: "Canonical request fields bind to an immutable digest; claim outcomes remain typed and
+      fail closed; one absolute deadline cancels stalled work without retrying the attempted claim."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    status: "pending"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/runtime/action_authorization_claim/test_request_binding.py
+          tests/unit/runtime/action_authorization_claim/test_adapter_postgres.py tests/unit/runtime/action_authorization_claim/test_client_and_cli.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-postgres16-acl-concurrency-and-restart"
+    description: "A disposable PostgreSQL 16 instance proves restricted-role ACLs, one winner under concurrent
+      claims, durable already-consumed/expired/mismatch outcomes, and the same result after adapter restart."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    status: "pending"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/runtime/action_authorization_claim/test_postgres16_acl.py
+          tests/integration/runtime/action_authorization_claim/test_postgres16_concurrency.py tests/integration/runtime/action_authorization_claim/test_postgres16_restart.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-overlay-only-local-interface"
+    description: "The bootstrap interface accepts only an explicit typed overlay, rejects fallback authority,
+      limits its Unix RPC surface to claim, and enforces the restricted principal and socket boundary
+      before payload handling."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    status: "pending"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/runtime/action_authorization_claim/test_overlay_bootstrap.py
+          tests/unit/runtime/action_authorization_claim/test_local_claim_interface.py tests/unit/runtime/action_authorization_claim/test_restricted_principal.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
