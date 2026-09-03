@@ -296,12 +296,22 @@ class CrossRepoSubject(BaseModel):
             raise ValueError(
                 "contract_source repository must be the canonical OCC repository"
             )
+        if self.pull_request.state == "OPEN" and self.revision.kind != "head":
+            raise ValueError("OPEN PRs require a head revision")
+        if self.pull_request.state == "MERGED" and self.revision.kind != "merge_commit":
+            raise ValueError("MERGED PRs require a merge_commit revision")
 
 
 class CrossRepoReceipt(ModelDodReceipt):
     """Canonical v2 receipt for an immutable cross-repository evidence run."""
 
     schema_version: Literal["2.0.0"]
+    # ``ModelDodReceipt.pr_number`` is a generic same-repository correlation
+    # field. A cross-repository receipt already carries the immutable remote
+    # PR number in its subject; accepting another numeric value here would
+    # create a second, unenforceable authority. Keep only the null shape so
+    # the inherited field cannot carry an ignored identity claim.
+    pr_number: None = None
     ticket_id: Literal["OMN-17486"]
     evidence_item_id: str = Field(min_length=1, max_length=200)
     check_type: Literal[
@@ -801,7 +811,7 @@ class CrossRepoSubjectResolver:
             contract_sha256=contract_sha256,
             contract_entry_sha256=contract_entry_sha256,
             artifact_bytes=artifact_bytes,
-            strict_api_objects=False,
+            strict_api_objects=True,
         )
 
     def resolve_receipt(

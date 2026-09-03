@@ -169,11 +169,19 @@ def _fixtures(*, merged: bool = False) -> FixtureTransport:
         + OCC_SHA: _json(
             {
                 "path": "contracts/OMN-17486.yaml",
+                "type": "file",
                 "encoding": "base64",
                 "content": base64.b64encode(CONTRACT).decode(),
             }
         ),
     }
+    responses[f"repos/OmniNode-ai/onex_change_control/compare/{OCC_SHA}...dev"] = _json(
+        {
+            "status": "ahead",
+            "base_commit": {"sha": OCC_SHA},
+            "merge_base_commit": {"sha": OCC_SHA},
+        }
+    )
     if merged:
         responses[
             f"repos/OmniNode-ai/omnibase_infra/compare/{MERGE_SHA}...{BASE_SHA}"
@@ -291,8 +299,8 @@ def test_open_subject_resolves_with_exact_identity_and_bounded_calls() -> None:
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.PASS
-    assert result.api_calls == 5
-    assert len(transport.calls) == 5
+    assert result.api_calls == 6
+    assert len(transport.calls) == 6
 
 
 @pytest.mark.unit
@@ -304,7 +312,7 @@ def test_merged_subject_requires_merge_ancestry_and_validates_squash_commit() ->
         artifact_bytes=ARTIFACT,
     )
     assert result.status is CrossRepoStatus.PASS
-    assert result.api_calls == 6
+    assert result.api_calls == 7
 
 
 @pytest.mark.unit
@@ -605,7 +613,6 @@ def _v2_receipt() -> dict[str, object]:
         "probe_stdout": "PASS",
         "contract_sha256": CONTRACT_FILE_DIGEST,
         "contract_entry_sha256": CONTRACT_ENTRY_DIGEST,
-        "pr_number": 123,
         "cross_repo_subject": subject,
     }
 
@@ -670,6 +677,7 @@ def test_v2_receipt_uses_canonical_top_level_identity() -> None:
 @pytest.mark.parametrize(
     ("location", "field_name"),
     [
+        ("root", "pr_number"),
         ("subject", "ticket_id"),
         ("subject", "evidence_item_id"),
         ("subject", "check_type"),
@@ -686,7 +694,11 @@ def test_removed_nested_authority_fields_are_forbidden(
     invalid = _v2_receipt()
     subject = invalid["cross_repo_subject"]
     assert isinstance(subject, dict)
-    target = subject if location == "subject" else subject[location]
+    target = (
+        invalid
+        if location == "root"
+        else (subject if location == "subject" else subject[location])
+    )
     assert isinstance(target, dict)
     target[field_name] = "spoofed"
     with pytest.raises(ValueError, match="invalid canonical receipt"):
@@ -724,6 +736,7 @@ def test_receipt_schema_and_model_have_the_same_nested_authority_boundary() -> N
     assert isinstance(parse_canonical_receipt(valid), CrossRepoReceipt)
 
     for location, field_name in (
+        ("root", "pr_number"),
         ("subject", "evidence_item_id"),
         ("revision", "sha"),
         ("contract_source", "file_sha256"),
@@ -732,7 +745,11 @@ def test_receipt_schema_and_model_have_the_same_nested_authority_boundary() -> N
         invalid = _v2_receipt()
         subject = invalid["cross_repo_subject"]
         assert isinstance(subject, dict)
-        target = subject if location == "subject" else subject[location]
+        target = (
+            invalid
+            if location == "root"
+            else (subject if location == "subject" else subject[location])
+        )
         assert isinstance(target, dict)
         target[field_name] = "spoofed"
         with pytest.raises(jsonschema.ValidationError):
@@ -759,6 +776,39 @@ def test_nested_v1_schema_and_pydantic_discriminate_versions() -> None:
         jsonschema.validate(invalid, schema)
     with pytest.raises(ValidationError):
         CrossRepoSubject.model_validate(invalid)
+
+
+@pytest.mark.unit
+def test_nested_schema_and_model_reject_same_boundary_shapes() -> None:
+    import jsonschema
+
+    schema = yaml.safe_load(
+        Path("schemas/occ_cross_repo_subject_v1.schema.yaml").read_bytes()
+    )
+    for location, value in (
+        (("pull_request", "base", "ref"), "   "),
+        (("pull_request", "base", "ref"), "\t"),
+        (("artifact_source", "path"), "evidence/"),
+        (("artifact_source", "path"), "evidence/\t"),
+    ):
+        invalid = _subject()
+        target: object = invalid
+        for key in location[:-1]:
+            assert isinstance(target, dict)
+            target = target[key]
+        assert isinstance(target, dict)
+        target[location[-1]] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+        with pytest.raises(ValidationError):
+            CrossRepoSubject.model_validate(invalid)
+
+    for state, kind in (("OPEN", "merge_commit"), ("MERGED", "head")):
+        invalid = _subject(state=state, kind=kind)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+        with pytest.raises(ValidationError):
+            CrossRepoSubject.model_validate(invalid)
 
 
 @pytest.mark.unit
@@ -851,6 +901,23 @@ def test_online_contract_requires_file_type_and_reachable_ancestor() -> None:
         .status
         is CrossRepoStatus.FAIL
     )
+
+    transport = _fixtures()
+    path = (
+        "repos/OmniNode-ai/onex_change_control/contents/"
+        "contracts/OMN-17486.yaml?ref=" + OCC_SHA
+    )
+    payload = __import__("json").loads(transport.responses[path].body)
+    assert isinstance(payload, dict)
+    payload["type"] = "symlink"
+    payload["target"] = "other.yaml"
+    transport.responses[path] = _json(payload)
+    result = CrossRepoSubjectResolver(transport=transport).resolve(
+        _subject(),
+        **_canonical_values(),
+        artifact_bytes=ARTIFACT,
+    )
+    assert result.status is CrossRepoStatus.FAIL
 
     transport = _v2_fixtures()
     reachability = f"repos/OmniNode-ai/onex_change_control/compare/{OCC_SHA}...dev"
