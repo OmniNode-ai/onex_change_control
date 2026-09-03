@@ -1213,6 +1213,359 @@ def test_conflicting_trusted_product_repositories_fail_closed() -> None:
     assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
 
 
+# ---------------------------------------------------------------------------
+# OMN-17558 — a ticket must be able to carry a SECOND product PR. The autobind
+# mints one `.supersede.<consumer-pr>.yaml` per already-bound evidence item; in
+# every one of those the S2 family binding (OMN-15459) pins `check_value` to
+# the SUPERSEDED item's repo while `probe_command` cites the NEW consumer PR's
+# repo. Unioning hints across the two fields makes that shape permanently
+# ambiguous. Fixtures below are the byte-exact field triples from the two live
+# companions this defect closed: OCC#8099 (OMN-17549, consumers omnimarket#2274
+# then omnibase_infra#3148) and OCC#8105 (OMN-17695, consumers
+# omnibase_infra#3148 then omnibase_infra#3151 — SAME repo, so this is not a
+# cross-repo-only defect).
+# ---------------------------------------------------------------------------
+
+OMN17558_CONSUMER_SHA = "9550d0844c98cecda127b9910e39187a024978d2"
+OMN17558_SUPERSEDED_SHA = "69f6e0738e5ff412cfacd51b89e3a8786d520aed"
+
+
+def test_second_consumer_supersede_same_repo_resolves_against_consumer_pr_repo() -> (
+    None
+):
+    """OCC#8105 shape: an `occ-self-bind-*` supersede, both consumers in one repo.
+
+    `check_value` MUST keep naming onex_change_control (S2 family binding to
+    the superseded OCC self-bind entry); `probe_command` names the new
+    consumer PR. The receipt's own `pr_number` picks the authority.
+    """
+    receipt = _receipt_model(
+        commit_sha=OMN17558_CONSUMER_SHA,
+        evidence_item_id="occ-self-bind-pr-8104",
+        check_value=(
+            "gh pr view 8104 --repo OmniNode-ai/onex_change_control --json number,state"
+        ),
+        probe_command=(
+            "gh pr view 3151 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        pr_number=3151,
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", OMN17558_CONSUMER_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_second_consumer_supersede_cross_repo_resolves_against_consumer_pr_repo() -> (
+    None
+):
+    """OCC#8099 shape: 1st consumer omnimarket#2274, 2nd consumer infra#3148.
+
+    `check_value` still probes the omnimarket artifact at the omnimarket ref
+    it was minted against; the commit_sha is the omnibase_infra consumer head.
+    """
+    receipt = _receipt_model(
+        commit_sha=OMN17558_CONSUMER_SHA,
+        evidence_item_id="dod-OmniNode-ai-omnimarket-pr-2274",
+        check_value=(
+            "gh api repos/OmniNode-ai/omnimarket/contents/tests/chains/"
+            f"test_event_chain_gate_projection_write.py?ref={OMN17558_SUPERSEDED_SHA} "
+            "--jq '.content' | base64 -d | grep -c "
+            "'def test_a_write_that_produces_no_row_fails_closed'"
+        ),
+        probe_command=(
+            "gh pr view 3148 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        pr_number=3148,
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", OMN17558_CONSUMER_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_commit_sha_bound_citation_outranks_pr_bound_citation() -> None:
+    """A citation naming the commit itself is a stronger authority than one
+    naming only the PR number: `repos/<repo>/commits/<commit_sha>` asserts
+    where the commit lives, `gh pr view <n> --repo <repo>` asserts only where
+    a PR lives."""
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        check_value=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA} --jq .sha"
+        ),
+        probe_command=(
+            "gh pr view 7 --repo OmniNode-ai/omnibase_compat --json number,state"
+        ),
+        pr_number=7,
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnimarket", FULL_REMOTE_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnimarket"]
+
+
+def test_pr_number_matching_two_trusted_repositories_still_fails_closed() -> None:
+    """Disambiguation is evidence, not a tie-break. When the receipt's own
+    pr_number matches a citation in BOTH trusted repos, authority is still
+    ambiguous and the gate must refuse rather than pick one."""
+    receipt = _receipt_model(
+        check_value="gh pr view 5 --repo OmniNode-ai/omnimarket --json number",
+        probe_command="gh pr view 5 --repo OmniNode-ai/omnibase_compat --json number",
+        pr_number=5,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_commit_sha_bound_in_two_trusted_repositories_still_fails_closed() -> None:
+    """Same rule at the stronger tier: two repos each citing this commit_sha
+    is ambiguous, and must NOT silently fall through to the weaker
+    pr_number tier."""
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        check_value=(
+            f"gh api repos/OmniNode-ai/omnimarket/commits/{FULL_REMOTE_SHA} --jq .sha"
+        ),
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_compat/commits/{FULL_REMOTE_SHA} "
+            "--jq .sha && gh pr view 9 --repo OmniNode-ai/omnibase_compat "
+            "--json number"
+        ),
+        pr_number=9,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_pr_number_does_not_widen_the_trusted_repository_set() -> None:
+    """Adversarial: an untrusted repo cited alongside a matching pr_number is
+    still not an authority — disambiguation only ever *narrows* the already
+    trusted hint set."""
+    receipt = _receipt_model(
+        commit_sha="1" * 40,
+        check_value="gh pr view 11 --repo torvalds/linux --json number",
+        probe_command="gh pr view 11 --repo torvalds/linux --json number",
+        pr_number=11,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_EXISTS]" in violations[0]
+
+
+OMN17558_SUPERSEDED_ARTIFACT_SHA = "021a590f0e8b48a27f7dfe9de2347823527ce39a"
+OMN17558_SECOND_CONSUMER_HEAD = "792c001497e69715302600f401f96871a136534c"
+
+
+def _omn17558_inherited_ref_receipt(**overrides: object) -> ModelDodReceipt:
+    """OCC#8109 shape: one repo, inherited ref pinned to the FIRST consumer.
+
+    Byte-exact fields from
+    drift/dod_receipts/OMN-17292/dod-OmniNode-ai-omnibase_infra-pr-3075/
+    command.supersede.3153.yaml on the OCC#8109 branch.
+    """
+    data: dict[str, object] = {
+        "commit_sha": OMN17558_SECOND_CONSUMER_HEAD,
+        "evidence_item_id": "dod-OmniNode-ai-omnibase_infra-pr-3075",
+        "check_value": (
+            "gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/"
+            "check_omnimarket_contract_pin_advance.py?ref="
+            f"{OMN17558_SUPERSEDED_ARTIFACT_SHA} --jq '.content' | base64 -d | "
+            "grep -c 'def _load_compare'"
+        ),
+        "probe_command": (
+            "gh pr view 3153 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        "pr_number": 3153,
+    }
+    data.update(overrides)
+    return _receipt_model(**data)
+
+
+def test_supersede_replacement_may_keep_the_superseded_artifact_ref() -> None:
+    """S2 pins the inherited check_value to the first consumer's artifact while
+    the replacement's commit_sha is the second consumer's head. Requiring the
+    inherited ref to expose that head makes the record unsatisfiable."""
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", OMN17558_SECOND_CONSUMER_HEAD): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _omn17558_inherited_ref_receipt(),
+        resolver,
+        [],
+        is_supersession_replacement=True,
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_base_receipt_still_must_bind_the_exposed_product_ref() -> None:
+    """The relaxation is scoped to a supersession replacement and is threaded
+    from _valid_supersession_replacement — never inferred. The identical
+    receipt validated as a BASE receipt still fails."""
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _omn17558_inherited_ref_receipt(), _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_supersede_replacement_without_a_pr_bound_citation_still_fails() -> None:
+    """The escape requires the record to identify the consumer PR whose head
+    the commit_sha is. A replacement whose pr_number matches no citation of
+    the authority repository gets no relief."""
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _omn17558_inherited_ref_receipt(pr_number=9999),
+        _commit_resolver(),
+        [],
+        is_supersession_replacement=True,
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+def test_supersession_replacement_flag_reaches_the_binding_path(
+    tmp_path: Path,
+) -> None:
+    """End-to-end through check_receipt_file: the same OCC#8109 shape, filed as
+    a real .supersede.<NNNN>.yaml sibling of its base, validates clean — the
+    flag reaches _product_ref_binds_commit through the real call chain, not
+    only when passed by hand. The base-receipt direction is asserted by
+    test_base_receipt_still_must_bind_the_exposed_product_ref."""
+    inherited_check = (
+        "gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/"
+        "check_omnimarket_contract_pin_advance.py?ref="
+        f"{OMN17558_SUPERSEDED_ARTIFACT_SHA} --jq '.content' | base64 -d | "
+        "grep -c 'def _load_compare'"
+    )
+    # S2 family binding (OMN-15459) is a separate, still-enforced rule: the
+    # replacement must reference the superseded item's OWN declared check. The
+    # merged-path supersede satisfies it by inheriting that check verbatim, so
+    # the fixture contract declares exactly it.
+    contract = _write_entry_contract(
+        tmp_path,
+        {
+            "ticket_id": "OMN-13060",
+            "schema_version": "1.0.0",
+            "title": "test contract",
+            "dod_evidence": [
+                {
+                    "id": "dod-001",
+                    "summary": "first item",
+                    "checks": [
+                        {"check_type": "command", "check_value": inherited_check}
+                    ],
+                }
+            ],
+        },
+    )
+    contract_sha = _contract_sha(contract)
+    replacement = _receipt_data(
+        run_timestamp=POST_OMN15461_CUTOFF_TS,
+        contract_sha256=contract_sha,
+        commit_sha=OMN17558_SECOND_CONSUMER_HEAD,
+        check_value=inherited_check,
+        probe_command=(
+            "gh pr view 3153 --repo OmniNode-ai/omnibase_infra "
+            "--json number,state,headRefName"
+        ),
+        probe_stdout='{"number":3153,"state":"OPEN"}',
+        pr_number=3153,
+    )
+    base_path = _write_receipt(tmp_path, dict(replacement))
+    supersede_path = base_path.parent / "command.supersede.3153.yaml"
+    supersede_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0.0",
+                "ticket_id": "OMN-13060",
+                "evidence_item_id": "dod-001",
+                "check_type": "command",
+                "supersedes": base_path.as_posix(),
+                "reason": (
+                    "2nd consumer OmniNode-ai/omnibase_infra#3153 re-binds prior "
+                    "entry dod-001 to this product PR without editing the merged "
+                    "base receipt (OMN-14623 merged-path supersede)."
+                ),
+                "superseder": "occ-evidence-source-autobind",
+                "created_at": POST_OMN15461_CUTOFF_TS,
+                "replacement": replacement,
+            }
+        )
+    )
+    resolver = _commit_resolver(
+        remote_statuses={
+            ("OmniNode-ai/omnibase_infra", OMN17558_SECOND_CONSUMER_HEAD): 200
+        }
+    )
+
+    assert (
+        check_receipt_hardening.check_receipt_file(
+            supersede_path, tmp_path / "contracts", commit_sha_resolver=resolver
+        )
+        == []
+    )
+
+
+def test_actual_output_narrative_cannot_supply_a_pr_bound_authority() -> None:
+    """`actual_output` is free-form narrative and is excluded from citation
+    parsing exactly as it is from hint extraction."""
+    receipt = _receipt_model(
+        check_value="gh pr view 1 --repo OmniNode-ai/omnimarket --json number",
+        probe_command="gh pr view 2 --repo OmniNode-ai/omnibase_compat --json number",
+        actual_output=(
+            "Narrative only: gh pr view 3 --repo OmniNode-ai/omnimarket said OPEN."
+        ),
+        pr_number=3,
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
 def test_commit_sha_resolver_is_threaded_through_receipt_validation(
     tmp_path: Path,
 ) -> None:
@@ -1240,19 +1593,21 @@ def test_commit_sha_resolver_is_threaded_through_receipt_validation(
     assert not any("[COMMIT_SHA_EXISTS]" in v for v in violations), violations
 
 
-def test_repo_hint_extracts_owner_repo_from_probe_fields() -> None:
+def test_repo_authority_extracts_owner_repo_from_probe_fields() -> None:
     receipt = _receipt_model(
         check_value="gh api repos/OmniNode-ai/omnibase_infra/commits/abc123"
     )
-    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omnibase_infra"
+    assert (
+        check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omnibase_infra"
+    )
 
 
-def test_repo_hint_returns_none_when_absent() -> None:
+def test_repo_authority_returns_none_when_absent() -> None:
     receipt = _receipt_model(check_value="uv run pytest tests/ -q")
-    assert check_receipt_hardening._repo_hint(receipt) is None
+    assert check_receipt_hardening._repo_authority(receipt) is None
 
 
-def test_repo_hint_extracts_from_gh_cli_repo_flag() -> None:
+def test_repo_authority_extracts_from_gh_cli_repo_flag() -> None:
     """The occ-evidence-source-autobind verifier's standard probe shape —
     found live in the 2026-08-19 bounded audit, initially missed by a
     narrower URL-path-only version of the hint regex (a real false-positive
@@ -1260,10 +1615,12 @@ def test_repo_hint_extracts_from_gh_cli_repo_flag() -> None:
     receipt = _receipt_model(
         check_value="gh pr view 903 --repo OmniNode-ai/omninode_infra --json number"
     )
-    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omninode_infra"
+    assert (
+        check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omninode_infra"
+    )
 
 
-def test_repo_hint_falls_back_to_autobind_item_id() -> None:
+def test_repo_authority_falls_back_to_autobind_item_id() -> None:
     """A cohort sibling (e.g. dod-occ-evidence-admissibility-validator) can
     carry no repo-identifying text of its own; when the item's OWN id
     follows the autobind naming convention, that is used instead."""
@@ -1271,18 +1628,18 @@ def test_repo_hint_falls_back_to_autobind_item_id() -> None:
         evidence_item_id="dod-OmniNode-ai-omnimarket-pr-2087",
         check_value="uv run pytest tests/test_evidence_admissibility.py -q",
     )
-    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omnimarket"
+    assert check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omnimarket"
 
 
-def test_repo_hint_item_id_without_repo_pattern_returns_none() -> None:
+def test_repo_authority_item_id_without_repo_pattern_returns_none() -> None:
     receipt = _receipt_model(
         evidence_item_id="dod-occ-evidence-admissibility-validator",
         check_value="uv run pytest tests/test_evidence_admissibility.py -q",
     )
-    assert check_receipt_hardening._repo_hint(receipt) is None
+    assert check_receipt_hardening._repo_authority(receipt) is None
 
 
-def test_repo_hint_rejects_unrecognized_repo() -> None:
+def test_repo_authority_rejects_unrecognized_repo() -> None:
     """Adversarial (found in independent verification, 2026-08-19): an
     unrestricted hint match would let free-form probe/narrative text name
     ANY repo — including one this org has no relationship to — and have a
@@ -1292,10 +1649,10 @@ def test_repo_hint_rejects_unrecognized_repo() -> None:
     receipt = _receipt_model(
         check_value="gh pr view 1 --repo torvalds/linux --json number"
     )
-    assert check_receipt_hardening._repo_hint(receipt) is None
+    assert check_receipt_hardening._repo_authority(receipt) is None
 
 
-def test_repo_hint_rejects_actual_output_narrative_injection() -> None:
+def test_repo_authority_rejects_actual_output_narrative_injection() -> None:
     """A recognized repo in free-form actual_output cannot redirect lookup."""
     receipt = _receipt_model(
         check_value="uv run pytest tests/ -q",
@@ -1304,15 +1661,15 @@ def test_repo_hint_rejects_actual_output_narrative_injection() -> None:
             f"{FULL_REMOTE_SHA} was allegedly checked."
         ),
     )
-    assert check_receipt_hardening._repo_hint(receipt) is None
+    assert check_receipt_hardening._repo_authority(receipt) is None
     assert check_receipt_hardening._commit_sha_repositories(receipt) == (
         "OmniNode-ai/onex_change_control",
     )
 
 
-def test_repo_hint_skips_unrecognized_match_to_find_a_recognized_one() -> None:
+def test_repo_authority_skips_unrecognized_match_to_find_a_recognized_one() -> None:
     """A candidate repo mentioned earlier in the text that is NOT recognized
-    must not shadow a genuine, recognized hint appearing later — _repo_hint
+    must not shadow a genuine, recognized hint appearing later — _repo_authority
     scans every candidate in a field, not just the first."""
     receipt = _receipt_model(
         check_value=(
@@ -1320,7 +1677,7 @@ def test_repo_hint_skips_unrecognized_match_to_find_a_recognized_one() -> None:
             "gh pr view 42 --repo OmniNode-ai/omnimarket --json number"
         )
     )
-    assert check_receipt_hardening._repo_hint(receipt) == "OmniNode-ai/omnimarket"
+    assert check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omnimarket"
 
 
 def test_commit_sha_resolver_does_not_bypass_via_unrecognized_repo_hint() -> None:
