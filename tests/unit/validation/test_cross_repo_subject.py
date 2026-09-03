@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 import yaml
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from onex_change_control.scripts.check_cross_repo_subject import main as subject_cli
 from onex_change_control.validation.cross_repo_subject import (
@@ -480,6 +481,15 @@ def test_static_subject_schema_is_strict_and_matches_fixture() -> None:
         Path("schemas/occ_receipt_v2.schema.yaml").read_text()
     )
     Draft202012Validator.check_schema(receipt_schema)
+    registry = Registry().with_resources(
+        [
+            (schema["$id"], Resource.from_contents(schema)),
+            (receipt_schema["$id"], Resource.from_contents(receipt_schema)),
+        ]
+    )
+    Draft202012Validator(receipt_schema, registry=registry).validate(
+        _receipt(_subject())
+    )
 
 
 def test_online_v2_fails_closed_when_core_subject_model_is_unreleased() -> None:
@@ -505,6 +515,32 @@ def test_v2_receipt_requires_core_subject_and_binds_commit() -> None:
     receipt["commit_sha"] = BASE_SHA
     with pytest.raises(ValueError, match="commit_sha"):
         parse_canonical_receipt(receipt, subject_model=FakeSubjectModel)
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("contract_sha256", "contract_source.file_sha256"),
+        ("contract_entry_sha256", "contract_source.entry_sha256"),
+    ],
+)
+def test_online_v2_rejects_receipt_subject_contract_digest_mismatch(
+    field: str, expected: str
+) -> None:
+    subject = _subject()
+    subject["contract_source"]["entry_sha256"] = _compute_contract_entry_sha256(
+        _contract_data(), "dod-cross-repo-resolver"
+    )
+    receipt = _receipt(subject)
+    receipt[field] = f"sha256:{'0' * 64}"
+    transport = FakeTransport(_api_responses(subject))
+    resolver = CrossRepoSubjectResolver(
+        transport=transport, subject_model=FakeSubjectModel
+    )
+    result = resolver.resolve_receipt(receipt)
+    assert result.status is CrossRepoStatus.FAIL
+    assert expected in " ".join(result.details)
+    assert transport.calls == []
 
 
 def test_offline_cli_reports_valid_v2_as_unevaluated(tmp_path: Path) -> None:
