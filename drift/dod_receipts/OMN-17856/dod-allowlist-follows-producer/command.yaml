@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17856"
+evidence_item_id: "dod-allowlist-follows-producer"
+check_type: "command"
+check_value: "uv run check-imperative-contracts --repo-root <omnimarket OMN-17772 worktree> --allowlists-dir
+  <onex_change_control>/allowlists --scan-freestanding, run twice over the identical omnimarket tree:
+  once with allowlists/omnimarket.yaml taken from onex_change_control origin/dev, once with this branch's
+  file"
+status: PASS
+run_timestamp: "2026-09-04T07:10:05Z"
+commit_sha: 88dc93abd5a5f0e1bcccb035f0df171a48039f25
+runner: "row0-g2-work-events-bus-back-resume"
+verifier: "imperative-contract-guard-ci"
+probe_command: >-
+  uv run check-imperative-contracts --repo-root <omnimarket OMN-17772 worktree at 224ed2baf4dd856c6dec36f5eb1c3fd2c892f497>
+  --allowlists-dir <allowlists dir> --scan-freestanding
+probe_stdout: |
+  BEFORE (allowlists/omnimarket.yaml from onex_change_control origin/dev), exit 1:
+    repo         nodes handlers  clean baseline  live nonlive
+    omnimarket     386      501    263      223     1      51
+    Blocking LIVE freestanding imperative violations:
+    - src/omnimarket/projection/snapshot_publisher.py: hybrid (live)
+      - L140 [live] raw Kafka client 'AIOKafkaProducer' bypasses injected event bus
+
+  AFTER (this branch's allowlists/omnimarket.yaml), exit 0:
+    repo         nodes handlers  clean baseline  live nonlive
+    omnimarket     386      501    263      224     0      51
+    (no "Blocking LIVE freestanding imperative violations" section is printed at all)
+
+  The identical omnimarket tree is scanned both times. live moves 1 -> 0, baseline moves
+  223 -> 224 (exactly one entry, the one this PR adds), nonlive is unchanged at 51 and the
+  non-live smell list is byte-identical, so no other violation is unmasked or masked.
+
+  Relocation, not a new sanction, read out of OmniNode-ai/omnimarket at the exact commit the
+  guard ran against (224ed2baf4dd856c6dec36f5eb1c3fd2c892f497), which is the contract's own
+  admissible check pair and is reproduced here verbatim:
+    gh api .../snapshot_publisher.py?ref=224ed2ba --jq .content | base64 -d
+      | grep -c 'producer = AIOKafkaProducer('        -> 1
+    gh api .../runner.py?ref=224ed2ba --jq .content | base64 -d
+      | grep -c 'self._consumer = AIOKafkaConsumer(' -> 1
+    gh api .../runner.py?ref=224ed2ba --jq .content | base64 -d
+      | grep -c 'AIOKafkaProducer('                  -> 0
+  One producer construction, in the new file. One consumer construction, still in runner.py.
+  ZERO producer constructions left in runner.py -- which is what makes this a move rather than
+  an addition, and it is the third line, not an assertion. (That third command exits 1 on a
+  zero count, so it is recorded here rather than bound as a contract check, which must exit 0.)
+
+  WHO VERIFIED WHAT, stated exactly rather than implied. The BEFORE half was produced
+  independently of this lane: omnimarket#2291 CI run 33845053893 (job 100935008190,
+  imperative-contract-guard / Imperative Contract Guard) printed the identical single
+  blocking line and the identical baseline 223 / live 1 row, against onex_change_control
+  origin/dev's allowlist, before this branch existed. The AFTER half is this lane's local
+  run and is re-verified by that same guard on omnimarket#2291 once this PR merges to dev,
+  which is OMN-17856 AC2. The verifier named above is that guard, not this lane.
+actual_output: >-
+  PASS: OMN-17856 relocates one freestanding_kafka_client entry (ticket OMN-12750) to src/omnimarket/projection/snapshot_publisher.py,
+  taking the omnimarket imperative-contract scan from exit 1 / live 1 to exit 0 / live 0 without unmasking
+  any other violation.
+exit_code: 0
+pr_number: 8171
+branch: "jonah/omn-17856-allowlist-follows-producer"
+contract_sha256: "sha256:258cdff9711e0d3c918104c2d49cde4f03a982781378063564029519ce7a3257"
