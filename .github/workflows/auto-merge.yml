@@ -62,6 +62,46 @@
 # if the changed-file set cannot be determined, it is treated as touching a
 # governance file. The decision logic is unit-tested in
 # scripts/ci/check_governance_paths.py rather than inlined in bash/YAML.
+#
+# OMN-17922 (2026-09-04): BOT-AUTHORED OCC EVIDENCE COMPANIONS ARM TOO.
+# Every OCC evidence companion is authored by the `onexbot-occ-writer`
+# GitHub App (`app/onexbot-occ-writer` via `gh pr view`, `onexbot-occ-writer
+# [bot]` in the event payload) with a title that starts with `evidence(`.
+# Until this change every arming step was gated on `actor == 'jonahgabriel'`,
+# so a CLEAN, zero-red companion sat open with `autoMergeRequest: null` until a
+# human ran `gh pr merge` by hand — and the product PR behind it stayed
+# BLOCKED on its `OCC Companion Merged Gate (OMN-15214)` check meanwhile.
+# Measured live 2026-09-04: occ#8207 (for omnibase_infra#3184) and occ#8208
+# (for omnibase_infra#3185) sat CLEAN 48/22/0 unarmed until hand-armed at
+# 17:55:38Z / 17:56:13Z; occ#8203 (OMN-14888 observation append) likewise.
+# The `Resolve PR and author` step now computes `arm=true` for exactly two
+# author shapes: the `jonahgabriel` human/agent identity (unchanged), and the
+# OCC writer App WHEN the PR title starts with `evidence(`. Every other
+# author, and the App with any other title, stays `arm=false`. The
+# occ-preflight eligibility gate and the OMN-16117 governance-path exclusion
+# run unchanged for both shapes; this widens WHO may be armed, not WHAT.
+# Pinned by tests/ci/test_auto_merge_bot_companion_arming_omn17922.py, which
+# executes this step's own bash under both event paths.
+#
+# OMN-17922 / OMN-17875: THE ARMING TOKEN IS `secrets.CROSS_REPO_PAT`, NOT
+# `secrets.GITHUB_TOKEN`. GitHub completes an armed auto-merge as the identity
+# that armed it, and a GITHUB_TOKEN- or App-token-authored merge fires no
+# `push` (and no `pull_request: closed`) event on `dev` — GitHub's documented
+# Actions-recursion prevention, proven on this org by the OMN-16373 controlled
+# probe (App-token push 38ffe1f4: marker workflow did not fire; jonahgabriel
+# control push fd534b2a: run 32562988366 fired). omnibase_infra#3178 ported
+# omninode_infra's PAT arming for this reason on 2026-09-04 and its own AC3
+# proof PR (omnibase_infra#3181) then produced 4 push-event runs. This repo
+# has three dev workflows a suppressed merge would starve:
+# validate-validator-requirements.yml (push: dev — the OMN-13299 fleet gate),
+# validator-g2-ip-family.yml (push: dev — the G2 validators), and
+# todo-audit-on-merge.yml (pull_request: closed on dev). Because this change
+# is what makes bot companions merge under the arming identity at all, the
+# credential and the actor widening land together. `CROSS_REPO_PAT` is an
+# existing org secret already consumed by ci.yml, evidence-import.yml,
+# nightly-promote.yml and staleness-monitor.yml in this repo; no new
+# credential is minted. Only the two merge-state-MUTATING steps carry it; the
+# read-only resolve step stays on GITHUB_TOKEN.
 name: Auto-Merge
 
 on:
@@ -108,16 +148,19 @@ jobs:
           PR_FROM_DISPATCH: ${{ github.event.inputs.pr_number }}
           CHECK_SUITE_PRS: ${{ toJson(github.event.check_suite.pull_requests) }}
           PR_AUTHOR_FROM_PAYLOAD: ${{ github.event.pull_request.user.login }}
+          PR_TITLE_FROM_PAYLOAD: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
             pull_request|pull_request_review)
               PR="$PR_FROM_PAYLOAD"
               ACTOR="$PR_AUTHOR_FROM_PAYLOAD"
+              TITLE="$PR_TITLE_FROM_PAYLOAD"
               ;;
             workflow_dispatch)
               PR="$PR_FROM_DISPATCH"
               ACTOR="$(gh pr view "$PR" --json author --jq '.author.login')"
+              TITLE="$(gh pr view "$PR" --json title --jq '.title')"
               ;;
             check_suite)
               PR="$(echo "$CHECK_SUITE_PRS" | jq -r 'if type == "array" and length > 0 then .[0].number else empty end')"
@@ -127,6 +170,7 @@ jobs:
                 exit 0
               fi
               ACTOR="$(gh pr view "$PR" --json author --jq '.author.login')"
+              TITLE="$(gh pr view "$PR" --json title --jq '.title')"
               ;;
             *)
               echo "unsupported event: $EVENT_NAME"
@@ -134,9 +178,32 @@ jobs:
               exit 0
               ;;
           esac
+          # OMN-17922: arming-actor decision. Exactly two author shapes arm:
+          #   1. jonahgabriel (unchanged since OMN-6571);
+          #   2. the onexbot-occ-writer App — `app/onexbot-occ-writer` on the
+          #      `gh pr view` path, `onexbot-occ-writer[bot]` in the event
+          #      payload — and ONLY when the title starts with `evidence(`,
+          #      the shape every OCC evidence companion carries.
+          # Any other author, or the App with any other title, does not arm.
+          # This is deliberately not "any Bot": dependabot, github-actions and
+          # any future App stay outside the gate.
+          ARM=false
+          case "$ACTOR" in
+            jonahgabriel)
+              ARM=true
+              ;;
+            app/onexbot-occ-writer|onexbot-occ-writer\[bot\])
+              case "$TITLE" in
+                "evidence("*) ARM=true ;;
+                *) ARM=false ;;
+              esac
+              ;;
+          esac
+          echo "actor=${ACTOR} title=${TITLE} arm=${ARM}"
           {
             echo "pr=$PR"
             echo "actor=$ACTOR"
+            echo "arm=$ARM"
             echo "skip=false"
           } >> "$GITHUB_OUTPUT"
 
@@ -151,7 +218,7 @@ jobs:
       # as a required status check for the merge group itself.
       - name: Check OCC eligibility preflight status
         id: occ_gate
-        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.actor == 'jonahgabriel' && github.event_name != 'merge_group'
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.arm == 'true' && github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -203,7 +270,7 @@ jobs:
       # scripts/ci/check_governance_paths.py and is unit-tested there.
       - name: Check governance-path exclusion
         id: governance_gate
-        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.actor == 'jonahgabriel'
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.arm == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -238,11 +305,16 @@ jobs:
       - name: Enable auto-merge
         if: >-
           steps.resolve.outputs.skip != 'true' &&
-          steps.resolve.outputs.actor == 'jonahgabriel' &&
+          steps.resolve.outputs.arm == 'true' &&
           steps.occ_gate.outputs.defer != 'true' &&
           steps.governance_gate.outputs.exclude != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # OMN-17922 / OMN-17875: MUST be CROSS_REPO_PAT. GitHub completes an
+          # armed auto-merge as the arming identity, and a GITHUB_TOKEN- or
+          # App-token-authored merge fires no push / pull_request:closed event
+          # on dev (OMN-16373 probe). Do not "modernise" this back to
+          # GITHUB_TOKEN or to an onexbot-occ-writer App token.
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ steps.resolve.outputs.pr }}
         run: |
@@ -265,11 +337,15 @@ jobs:
       - name: Enqueue armed PR and verify it entered the queue
         if: >-
           steps.resolve.outputs.skip != 'true' &&
-          steps.resolve.outputs.actor == 'jonahgabriel' &&
+          steps.resolve.outputs.arm == 'true' &&
           steps.occ_gate.outputs.defer != 'true' &&
           steps.governance_gate.outputs.exclude != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # OMN-17922 / OMN-17875: this step mutates merge state (`gh pr
+          # update-branch` pushes onto the PR head; enqueuePullRequest hands
+          # the merge to a queue), so it carries the same non-suppressing
+          # identity as the arming step above.
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ steps.resolve.outputs.pr }}
         run: |
