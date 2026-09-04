@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -123,6 +124,65 @@ def test_detached_head_requires_explicit_event_base(
     monkeypatch.setattr(checker, "_get_current_branch", lambda: "HEAD")
     with pytest.raises(checker.BaseResolutionError, match="HEAD is detached"):
         checker._resolve_base(None)
+
+
+@pytest.mark.unit
+def test_complete_ci_event_binding_supplies_detached_comparison_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ONEX_SEAM_CONTRACT_BASE", "origin/dev")
+    monkeypatch.setenv("ONEX_SEAM_CONTRACT_HEAD_REF", "a" * 40)
+    monkeypatch.setenv("ONEX_SEAM_CONTRACT_TICKET_ID", "jonah/omn-17483-fix")
+
+    assert checker._event_binding_from_environment() == (
+        "origin/dev",
+        "a" * 40,
+        "jonah/omn-17483-fix",
+    )
+
+
+@pytest.mark.unit
+def test_detached_ci_event_binding_reaches_canonical_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ONEX_SEAM_CONTRACT_BASE", "origin/dev")
+    monkeypatch.setenv("ONEX_SEAM_CONTRACT_HEAD_REF", "a" * 40)
+    monkeypatch.setenv("ONEX_SEAM_CONTRACT_TICKET_ID", "jonah/omn-17483-fix")
+    monkeypatch.setattr(checker, "_get_current_branch", lambda: "HEAD")
+    monkeypatch.setattr(
+        checker,
+        "_git_output",
+        _git_output_for("origin/dev", {"origin/dev", "a" * 40}),
+    )
+    monkeypatch.setattr(checker, "_get_changed_files", lambda _base, _head: [])
+
+    assert checker.main([]) == 0
+
+
+@pytest.mark.unit
+def test_partial_ci_event_binding_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ONEX_SEAM_CONTRACT_BASE", "origin/dev")
+
+    with pytest.raises(checker.BaseResolutionError, match="partial seam comparison"):
+        checker._event_binding_from_environment()
+
+
+@pytest.mark.unit
+def test_full_precommit_job_binds_canonical_pr_event_identity() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    )
+    steps = workflow["jobs"]["pre-commit"]["steps"]
+    full_precommit = next(
+        step for step in steps if step.get("name") == "Run full pre-commit"
+    )
+
+    assert full_precommit["env"] == {
+        "ONEX_SEAM_CONTRACT_BASE": "origin/${{ github.base_ref }}",
+        "ONEX_SEAM_CONTRACT_HEAD_REF": "${{ github.sha }}",
+        "ONEX_SEAM_CONTRACT_TICKET_ID": "${{ github.head_ref || github.ref_name }}",
+    }
+    assert "pre-commit run --all-files" in full_precommit["run"]
 
 
 @pytest.mark.unit

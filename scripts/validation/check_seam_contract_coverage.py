@@ -26,6 +26,7 @@ OMN-5388
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -90,6 +91,27 @@ class BaseResolutionError(RuntimeError):
     @classmethod
     def untrusted_base(cls, base: str) -> BaseResolutionError:
         return cls(f"comparison base {base!r} is not a trusted canonical remote target")
+
+    @classmethod
+    def incomplete_event_binding(cls) -> BaseResolutionError:
+        return cls(
+            "CI supplied a partial seam comparison binding; base, immutable head, "
+            "and ticket identity must all be present"
+        )
+
+
+def _event_binding_from_environment() -> tuple[str, str, str] | None:
+    """Return the explicit CI binding, rejecting any incomplete event context."""
+    binding = (
+        os.environ.get("ONEX_SEAM_CONTRACT_BASE", ""),
+        os.environ.get("ONEX_SEAM_CONTRACT_HEAD_REF", ""),
+        os.environ.get("ONEX_SEAM_CONTRACT_TICKET_ID", ""),
+    )
+    if not any(binding):
+        return None
+    if not all(binding):
+        raise BaseResolutionError.incomplete_event_binding()
+    return binding
 
 
 def _get_current_branch() -> str:
@@ -200,9 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        base = _resolve_base(args.base)
+        event_binding = _event_binding_from_environment()
+        event_base, event_head_ref, event_ticket_id = event_binding or (None, None, None)
+        base = _resolve_base(args.base or event_base)
         branch = _get_current_branch()
-        head_ref = args.head_ref or ("HEAD" if branch != "HEAD" else None)
+        head_ref = args.head_ref or event_head_ref or ("HEAD" if branch != "HEAD" else None)
         if head_ref is None:
             raise BaseResolutionError.detached_head_requires_base()
         _git_output(
@@ -224,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     for f in seam_changed:
         print(f"  {f}")
 
-    ticket_id = _extract_ticket_id(args.ticket_id or branch)
+    ticket_id = _extract_ticket_id(args.ticket_id or event_ticket_id or branch)
     if not ticket_id:
         print(f"[ERROR] Cannot establish ticket ID from branch '{branch}'.")
         return 2
