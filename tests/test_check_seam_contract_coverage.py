@@ -186,6 +186,30 @@ def test_full_precommit_job_binds_canonical_pr_event_identity() -> None:
 
 
 @pytest.mark.unit
+def test_seam_coverage_job_uses_pr_head_event_identity() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    )
+    steps = workflow["jobs"]["seam-contract-coverage"]["steps"]
+    base_fetch = next(
+        step for step in steps if step.get("name") == "Fetch base branch for diff"
+    )
+    env = steps[-1]["env"]
+
+    assert (
+        env["BASE"]
+        == "${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD~1' }}"
+    )
+    assert (
+        env["EVENT_HEAD_REF"]
+        == "${{ github.event.pull_request.head.sha || github.sha }}"
+    )
+    assert env["EVENT_TICKET_ID"] == "${{ github.head_ref || github.ref_name }}"
+    assert 'git fetch origin "${{ github.base_ref }}" --no-tags' in base_fetch["run"]
+    assert "--depth=1" not in base_fetch["run"]
+
+
+@pytest.mark.unit
 def test_self_tracking_feature_branch_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
