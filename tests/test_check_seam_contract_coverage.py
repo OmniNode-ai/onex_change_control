@@ -190,7 +190,11 @@ def test_seam_coverage_job_uses_pr_head_event_identity() -> None:
     workflow = yaml.safe_load(
         (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
     )
-    env = workflow["jobs"]["seam-contract-coverage"]["steps"][-1]["env"]
+    steps = workflow["jobs"]["seam-contract-coverage"]["steps"]
+    base_fetch = next(
+        step for step in steps if step.get("name") == "Fetch base branch for diff"
+    )
+    env = steps[-1]["env"]
 
     assert (
         env["BASE"]
@@ -201,6 +205,8 @@ def test_seam_coverage_job_uses_pr_head_event_identity() -> None:
         == "${{ github.event.pull_request.head.sha || github.sha }}"
     )
     assert env["EVENT_TICKET_ID"] == "${{ github.head_ref || github.ref_name }}"
+    assert 'git fetch origin "${{ github.base_ref }}" --no-tags' in base_fetch["run"]
+    assert "--depth=1" not in base_fetch["run"]
 
 
 @pytest.mark.unit
