@@ -16,6 +16,14 @@ evidence_requirements:
       Behavior proof for PR #3141 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_infra`.
     command: |-
       uv run pytest tests/ci/test_candidate_boot_gate_omn17534.py tests/ci/test_incident_replay_omn17534.py -q
+  - kind: "manual"
+    description: >-
+      PENDING post-merge only: a normal onex-lab delivery rerun and rpk topic-capacity snapshot must establish
+      live capacity after the changed overlay is deployed. This companion makes no live delivery, rpk,
+      deploy, restart, or runtime PASS claim.
+    command: >-
+      Follow the normal onex-lab delivery validation lane after deployment; retain its delivery artifact
+      and rpk topic-capacity snapshot with the deployed revision.
 emergency_bypass:
   enabled: false
   justification: ""
@@ -82,3 +90,47 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8212 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1157-pr"
+    description: >-
+      OMN-17534 product PR #1157 is open against dev at the reviewed and published head ffb720597500f126e3c015d679582f99e05375d9;
+      auto-merge remains disabled pending this central companion.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 1157 --repo OmniNode-ai/omninode_infra --json number,state,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest
+          --jq 'if (.number == 1157 and .state == "OPEN" and .headRefName == "jonah/omn-17534-lab-capacity"
+          and .headRefOid == "ffb720597500f126e3c015d679582f99e05375d9" and .baseRefName == "dev" and
+          .baseRefOid == "4fa3f8dbc1e3cea42d3415cbd39b6bf90967b637" and .autoMergeRequest == null) then
+          "OMN-17534 product PR binding verified" else error("OMN-17534 product PR binding drift") end'
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1157-tests"
+    description: >-
+      Product PR #1157 runs the complete onex-lab overlay regression module, including rendered exact-value,
+      arithmetic-headroom, and static negative assertions.
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          cd "$OMNI_HOME/omni_worktrees/OMN-17534/omninode_infra" && actual_head="$(git rev-parse HEAD)"
+          && test "$actual_head" = "ffb720597500f126e3c015d679582f99e05375d9" && printf 'head=%s\n' "$actual_head"
+          && uv run pytest tests/k8s/test_onex_lab_overlay_omn17533.py -q
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1157-render"
+    description: >-
+      Product PR #1157 renders the explicit 1536 partitions-per-shard and 524288 bytes-per-partition Redpanda
+      arguments; their 768 MiB allocation leaves exactly 256 MiB of the retained 1 GiB container memory.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -o errexit -o nounset -o pipefail -c "cd \"\$1\"; actual_head=\"\$(git rev-parse HEAD)\"; test \"\$actual_head\" = \"ffb720597500f126e3c015d679582f99e05375d9\"; printf 'head=%s\\n' \"\$actual_head\"; kubectl kustomize k8s/onex-lab | uv run python -c 'import sys, yaml; docs = list(yaml.safe_load_all(sys.stdin)); args = next(container[\"args\"] for document in docs if document.get(\"kind\") == \"Deployment\" and document.get(\"metadata\", {}).get(\"name\") == \"onex-lab-redpanda\" for container in document[\"spec\"][\"template\"][\"spec\"][\"containers\"] if container[\"name\"] == \"redpanda\"); assert args[2:10] == [\"--mode=dev-container\", \"--smp=1\", \"--memory=1G\", \"--reserve-memory=0M\", \"--set\", \"topic_partitions_per_shard=1536\", \"--set\", \"topic_memory_per_partition=524288\"]; allocation = 1536 * 524288; assert allocation == 805306368; assert 1073741824 - allocation == 268435456; print(\"redpanda_capacity_args=exact\"); print(f\"allocation_bytes={allocation} headroom_bytes={1073741824 - allocation}\")'" bash "$OMNI_HOME/omni_worktrees/OMN-17534/omninode_infra"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1157-push"
+    description: >-
+      The read-only remote-ref query proves only that the reviewed head is published at the exact feature
+      ref. It does not assert local hook results, bypass posture, deploy, delivery, or runtime behavior.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          git ls-remote https://github.com/OmniNode-ai/omninode_infra.git refs/heads/jonah/omn-17534-lab-capacity
+          | awk '$1 == "ffb720597500f126e3c015d679582f99e05375d9" && $2 == "refs/heads/jonah/omn-17534-lab-capacity"
+          { print; found = 1 } END { exit !found }'
