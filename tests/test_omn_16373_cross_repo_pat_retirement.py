@@ -59,11 +59,15 @@ MIGRATED_WORKFLOWS: Final[tuple[str, ...]] = (
 
 #: The only ``secrets.CROSS_REPO_PAT`` reads that may survive, keyed by
 #: ``(workflow file, job id)`` with the exact number of referencing values.
-#: Both live in the tripwire job's step ``env`` (``GH_TOKEN`` and the
-#: ``TOKEN_SOURCE`` diagnostic).
+#: OMN-17922 adds the auto-merge mutating-step residuals because App-token
+#: merges suppress the dev push events that downstream validators depend on.
 SANCTIONED_PAT_READS: Final[dict[tuple[str, str], int]] = {
+    ("auto-merge.yml", "auto-merge"): 2,
     ("ci.yml", "check-platform-leads-review-tripwire"): 2,
 }
+FALLBACK_REQUIRED_PAT_READS: Final[tuple[tuple[str, str], ...]] = (
+    ("ci.yml", "check-platform-leads-review-tripwire"),
+)
 
 _PAT_REFERENCE: Final[str] = "secrets.CROSS_REPO_PAT"
 _SHA_PIN: Final[re.Pattern[str]] = re.compile(
@@ -220,14 +224,17 @@ def test_every_minted_token_is_consumed_in_its_own_job() -> None:
 
 
 @pytest.mark.unit
-def test_sanctioned_residual_still_degrades_to_github_token() -> None:
-    """The one surviving PAT read must fall back to ``github.token``.
+@pytest.mark.parametrize(("workflow_name", "job_id"), FALLBACK_REQUIRED_PAT_READS)
+def test_sanctioned_residual_still_degrades_to_github_token(
+    workflow_name: str, job_id: str
+) -> None:
+    """Read-only residual PAT reads must fall back to ``github.token``.
 
     OMN-16373's terminal step is deleting the org-wide secret. That deletion
-    must degrade this job, not break it: with the secret gone the expression
-    resolves to the empty string and the fallback has to carry the read.
+    must degrade read-only jobs, not break them: with the secret gone the
+    expression resolves to the empty string and the fallback has to carry the
+    read.
     """
-    workflow_name, job_id = next(iter(SANCTIONED_PAT_READS))
     job = _jobs(_load(WORKFLOWS_DIR / workflow_name))[job_id]
     reads = [value for value in _strings(job) if _PAT_REFERENCE in value]
 
