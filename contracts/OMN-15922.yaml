@@ -197,6 +197,76 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6615 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: |-
+      BEHAVIOR-class proof for the OMN-15922 DoD-2 defect, and the first
+      behaviour-proving check this contract has ever carried. Every prior item
+      here is a content read at a pinned ref (proof_class indeterminate) or a
+      `gh pr view` surrogate (non_probative), which is why four consecutive
+      dod_verify draws returned behavior_proving_count=0 while reporting
+      status=verified -- recorded on the ticket 2026-09-04T04:18Z,
+      2026-09-05T02:47Z, 2026-09-05T11:25Z and 2026-09-05T12:08Z, each
+      naming this exact remedy.
+
+
+      What it proves. `onex auth token` refused a genuine provisioned
+      per-tenant machine credential with ONEX_CORE_163_AUTHENTICATION_ERROR
+      minutes after the gateway accepted the identical token at
+      POST /v1/auth/gateway-token with HTTP 200: the client mirror in
+      GatewayTokenMinter._assert_exchange_input_audience asserted bare set
+      equality against {redpanda-events} while the server's real rule
+      (omninode_infra docker/onex-api/gateway_auth.py:130-133 for the sets,
+      :316-320 for the assertions, OMN-16946) is REQUIRED-is-a-subset plus
+      effective-is-a-subset-of-PERMITTED over
+      {redpanda-events, onex-api}. The suite named here contains
+      test_the_p0b_dual_audience_credential_is_accepted_because_the_server_accepts_it,
+      which drives the live audience set ["redpanda-events", "onex-api",
+      "account"] through the real minter and asserts a mint rather than a
+      refusal.
+
+
+      Falsifiable, and measured rather than asserted: restore the equality
+      branch and that test fails; it was RED before the fix on exactly this
+      input (ONEX_CORE_163_AUTHENTICATION_ERROR, exchange_count=0) and GREEN
+      after. The same file also carries the two negative controls the widening
+      requires -- an audience outside PERMITTED and a token missing the broker
+      audience are both still refused -- so a fix that widened past the server
+      rule fails this check too. Executed at cwd ${OMNI_HOME}/omnibase_infra.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/gateway/test_gateway_token_minter.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-input-audience-mirrors-the-server"
+    description: |-
+      Content assertion pinned at the fix head: the client carries the
+      server's TWO constants, not the single equality set it replaced. Reads
+      omnibase_infra back from GitHub and counts both declarations, so a
+      revert to MACHINE_CREDENTIAL_AUDIENCES or a partial port that kept only
+      one of the two sets goes RED. Paired with the behaviour item above
+      rather than standing alone: this one proves the shape is present, that
+      one proves the shape behaves.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/gateway/client/gateway_token_minter.py?ref=18b8eac1c7c04eee1f624ce8642c6b33114e9eab --jq '.content' | base64 -d | grep -c '^EXCHANGE_INPUT_REQUIRED_AUDIENCES: Final\[frozenset\[str\]\] = frozenset(\|^EXCHANGE_INPUT_PERMITTED_AUDIENCES: Final\[frozenset\[str\]\] = frozenset('
+  - id: "dod-fake-holds-server-rule-independently"
+    description: |-
+      The fake onex-api in tests/unit/gateway/conftest.py held the SAME stale
+      equality the client did, which is the mechanical reason a fully green
+      suite sat behind a CLI that could not mint for any real tenant: the
+      stand-in for the server agreed with the client about a refusal the
+      server never makes. It now transcribes the server's two-set rule as its
+      own literals rather than importing the client's constants -- a fake that
+      imports the thing under test can only ever agree with it, and could
+      never catch this class of drift again. Asserted positively on the
+      constants that now exist in the fake.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/gateway/conftest.py?ref=18b8eac1c7c04eee1f624ce8642c6b33114e9eab --jq '.content' | base64 -d | grep -c '^_EXCHANGE_INPUT_REQUIRED_AUDIENCES = frozenset(\|^_EXCHANGE_INPUT_PERMITTED_AUDIENCES = frozenset('
 emergency_bypass:
   enabled: false
   justification: ''
