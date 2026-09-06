@@ -1,0 +1,130 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-17974
+title: Adjudicate runtime-closeout proof matrices before reporting success
+summary: >
+  Correct the existing runtime-closeout receipt and proof-matrix terminal handler at omnimarket PR 2324,
+  source 77064d698f1dacaf02834e691c249c9fcee3a9dc. Invalid or incomplete proof holds; successful recommendations
+  are bounded by the requested canonical matrix; terminal context is explicit and correlation-bound. The
+  required proof_set field changes the serialized event interface. Source tests do not establish deployment,
+  customer acceptance, bus routing, or proof-capacity release. Completion additionally requires the declared
+  installed-runtime readback. Activation remains subject to coordinated producer/readers and disposition
+  of retained incompatible receipts, as required by node contract version 2.0.0.
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - events
+proof_class: live-readback
+evidence_requirements:
+  - kind: tests
+    description: >
+      AC1-3: execute the complete 97-test closeout golden-chain file, including invalid matrices, bounded
+      required/full success, failed phases, explicit context and replay.
+    command: uv run --frozen pytest tests/test_golden_chain_runtime_closeout_orchestrator.py -q
+  - kind: ci
+    description: >
+      AC4: required product lint, typing, contract and CI gates remain enforced. The source-associated
+      independent readiness checks are supplementary observations, not a replacement for Receipt Gate
+      or deployed-system evidence.
+    command: gh pr checks 2324 --repo OmniNode-ai/omnimarket
+  - kind: docs
+    description: >
+      AC5: preserve the merged A4 customer-acceptance and H0 controller-attribution mapping, including
+      its explicit missing bindings and activation holds.
+  - kind: manual
+    description: >
+      After separately authorized rollout, read the source-pinned adjudicator installed in the compose-dev
+      effects container and invoke its proof-terminal entrypoint without publishing commands. An empty
+      full matrix must produce BLOCKED/HOLD. This is installed-code behavior only, not transport or customer
+      acceptance proof.
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: dod-product-source-binding
+    description: Product PR remains bound to the exact reviewed and tested Market source.
+    source: manual
+    status: pending
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2324 --jq '{repo: .head.repo.full_name, sha: .head.sha, base: .base.ref}' | jq -e '.repo == "OmniNode-ai/omnimarket" and .sha == "77064d698f1dacaf02834e691c249c9fcee3a9dc" and .base == "dev"'
+  - id: dod-closeout-golden-chain
+    description: >
+      AC1-3 execute the full changed golden-chain file in the immutable reviewed product checkout. A wrong
+      or modified checkout cannot satisfy this check.
+    source: manual
+    status: pending
+    checks:
+      - check_type: test_passes
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17974/omnimarket"
+        check_value: |-
+          bash -euo pipefail <<'CHECK'
+          gh api repos/OmniNode-ai/omnimarket/commits/77064d698f1dacaf02834e691c249c9fcee3a9dc --jq .sha | grep -Fx 77064d698f1dacaf02834e691c249c9fcee3a9dc
+          test "$(git rev-parse HEAD)" = "77064d698f1dacaf02834e691c249c9fcee3a9dc"
+          test -z "$(git status --porcelain)"
+          env -u PYTHONPATH uv run --frozen pytest tests/test_golden_chain_runtime_closeout_orchestrator.py -q
+          CHECK
+  - id: dod-kickoff-mapping
+    description: >
+      AC5 binds the exact A4/H0 kickoff artifact from the already merged KB PR 163; it does not attest
+      the runtime/customer facts as newly observed.
+    source: manual
+    status: pending
+    checks:
+      - check_type: command
+        check_value: |-
+          gh api 'repos/OmniNode-ai/knowledge-base-internal/contents/beta/tracking/2026-09-05-delivery-chain-kickoff.md?ref=84b59c649c6de17a46843d8786693f71f3ffc065' --jq '{path: .path, sha: .sha}' | jq -e '.path == "beta/tracking/2026-09-05-delivery-chain-kickoff.md" and .sha == "6c22b82fcb30e8c5084adfab9f3b2524d85a9cfc"'
+  - id: dod-deployed-closeout-adjudicator
+    description: >
+      Read-only deploy proof on compose-dev effects: the installed receipt and handler bytes match the
+      reviewed source, proof_set is required, and invoking the installed terminal entrypoint on an empty
+      full matrix returns BLOCKED/HOLD. Requires an actual separately authorized rollout; no PASS is inferred
+      from source tests. No event is published and no deployment, restart or retained-event migration
+      is performed by this probe. Bus routing and full rollout compatibility are not claimed.
+    source: manual
+    status: pending
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: |-
+          bash -euo pipefail <<'CHECK'
+          gh api repos/OmniNode-ai/omnimarket/commits/77064d698f1dacaf02834e691c249c9fcee3a9dc --jq .sha | grep -Fx 77064d698f1dacaf02834e691c249c9fcee3a9dc
+          ssh -T -o BatchMode=yes -o ConnectTimeout=6 192.168.86.201 'docker exec -i -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONOPTIMIZE=0 omninode-runtime-effects uv run --no-sync python -' <<'PY'
+          import asyncio
+          import hashlib
+          import json
+          from pathlib import Path
+          from uuid import UUID
+          from omnibase_core.models.events.model_event_envelope import ModelEventEnvelope
+          import omnimarket.events.runtime_closeout as receipt_module
+          import omnimarket.nodes.node_runtime_closeout_orchestrator.handlers.handler_runtime_closeout_orchestrator as handler_module
+          expected = (
+              (receipt_module, "3b72572b0fcf129399ac4372a4d8520d72d6326a1aa7cf141f39362ab4bcaeb5"),
+              (handler_module, "a7a4be30c678cfc636fb3d40eeea1d6c1d92fee675150b0457900682b9de0b89"),
+          )
+          for module, digest in expected:
+              actual = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+              print(json.dumps({"module": module.__name__, "expected_sha256": digest, "actual_sha256": actual}), flush=True)
+              assert actual == digest, "installed source differs from reviewed Market commit"
+          assert receipt_module.ModelCloseoutReceipt.model_fields["proof_set"].is_required()
+          run_id = UUID("17974000-0000-4000-8000-000000000001")
+          envelope = ModelEventEnvelope(
+              event_type="onex.evt.omnimarket.closeout-proof-matrix-completed.v1",
+              correlation_id=run_id,
+              payload={
+                  "start": {"correlation_id": str(run_id), "runtime_lane": "dev", "proof_set": "full"},
+                  "proof_matrix": {"correlation_id": str(run_id), "cell_verdicts": []},
+              },
+          )
+          output = asyncio.run(handler_module.HandlerRuntimeCloseoutOrchestrator().handle(envelope))
+          assert len(output.events) == 1
+          receipt = output.events[0].payload
+          assert receipt.final_phase is receipt_module.EnumCloseoutPhase.BLOCKED
+          assert receipt.recommendation is receipt_module.EnumCloseoutRecommendation.HOLD
+          assert receipt.correlation_id == run_id
+          assert receipt.proof_set is receipt_module.EnumProofSet.FULL
+          print(json.dumps({"source_commit": "77064d698f1dacaf02834e691c249c9fcee3a9dc", "phase": receipt.final_phase, "recommendation": receipt.recommendation, "proof_set": receipt.proof_set, "published_events": 0}))
+          PY
+          CHECK
