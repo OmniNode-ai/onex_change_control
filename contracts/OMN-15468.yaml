@@ -156,3 +156,99 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8326 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-infra-3225-kernel-applier-differential"
+    description: >
+      omnibase_infra#3225 -- the AC2 residual #2606 and #2790 left open. Those two landed the failure-verdict
+      guard and the payload-verdict status downgrade, but every applier built OUTSIDE handler_wiring lost
+      both contract-derived routing inputs, and service_kernel hand-registered an applier for node_delegate_skill_orchestrator
+      by NAME that took precedence over the contract-derived wiring -- so on the .201 dev lane the guard
+      was structurally inert and 18 of the trailing 25 records on delegate-skill-completed.v1 carried
+      status="failed" with a typed terminal_failure_cause. A REAL content differential, not a PR-state
+      surrogate: it fetches service_kernel.py at BOTH the merge-base 724f01205ab1b70b39ab31d3744f76951da97d37
+      and the PR head 0ae87c3711440e1438976c7f4f5c7b8207b43833 and asserts build_static_result_applier
+      and failure_terminal_topics are ABSENT at base and PRESENT at head, while a direct DispatchResultApplier(
+      construction is PRESENT at base (4 occurrences) and ABSENT at head. Executed both ways; this is
+      the ticket's AC4 RED-before demonstration. Greps files rather than a pipe so an early-exiting grep
+      cannot SIGPIPE the producer into a spurious exit 141.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=724f01205ab1b70b39ab31d3744f76951da97d37' --jq .content | base64 -d > /tmp/omn15468_sk_base.py && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=0ae87c3711440e1438976c7f4f5c7b8207b43833' --jq .content | base64 -d > /tmp/omn15468_sk_head.py && test -s /tmp/omn15468_sk_base.py && test -s /tmp/omn15468_sk_head.py && test "$(grep -cF 'build_static_result_applier' /tmp/omn15468_sk_base.py)" -eq 0 && test "$(grep -cF 'build_static_result_applier' /tmp/omn15468_sk_head.py)" -gt 0 && test "$(grep -cF 'failure_terminal_topics' /tmp/omn15468_sk_base.py)" -eq 0 && test "$(grep -cF 'failure_terminal_topics' /tmp/omn15468_sk_head.py)" -gt 0 && test "$(grep -cF 'DispatchResultApplier(' /tmp/omn15468_sk_base.py)" -gt 0 && test "$(grep -cF 'DispatchResultApplier(' /tmp/omn15468_sk_head.py)" -eq 0
+  - id: "dod-infra-3225-enforcement-gate"
+    description: >
+      Enforcement, not detection. The validator that makes the defect class unreachable -- no direct DispatchResultApplier(...)
+      construction under src/ outside the factory module -- must exist at the PR head AND be wired as
+      BOTH a pre-commit hook and a ci.yml step in the SAME change. Probes all three files at the head
+      SHA. A validator that ships without its two wirings is advisory and gets ignored. Greps files rather
+      than a pipe for the same SIGPIPE reason as the entry above.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/validators/contract_result_applier_construction.py?ref=0ae87c3711440e1438976c7f4f5c7b8207b43833' --jq .content | base64 -d > /tmp/omn15468_validator.py && gh api 'repos/OmniNode-ai/omnibase_infra/contents/.pre-commit-config.yaml?ref=0ae87c3711440e1438976c7f4f5c7b8207b43833' --jq .content | base64 -d > /tmp/omn15468_precommit.yaml && gh api 'repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=0ae87c3711440e1438976c7f4f5c7b8207b43833' --jq .content | base64 -d > /tmp/omn15468_ci.yml && grep -qF 'def scan_source' /tmp/omn15468_validator.py && grep -qF 'id: contract-result-applier-construction' /tmp/omn15468_precommit.yaml && grep -qF 'omnibase_infra.validators.contract_result_applier_construction' /tmp/omn15468_ci.yml
+  - id: "dod-omn-15468-pr-3225-behaviour-focused-suite"
+    description: >
+      BEHAVIOUR proof, executed rather than asserted. The focused suite drives the real factory, the real
+      DispatchResultApplier, a real ModelEventEnvelope JSON round-trip and the real _status_for_terminal_topic
+      over a fixture contract shaped exactly like node_delegate_skill_orchestrator. It asserts a map-miss
+      failure verdict lands on the FAILURE terminal, that a success verdict still lands on completed (the
+      same-contract positive control -- the guard corrects only the false-success direction), that a declared
+      failure CLASS routes by class identity, that the re-routed record reads "failed" after the wire
+      so ok reflects the verdict, and that build_static_result_applier REFUSES to default the failure-terminal
+      answer. It also runs the enforcement gate over the real source tree with a positive control proving
+      the scanner can find a violation. The suite lives in omnibase_infra, so it cannot be a hermetic
+      command here (OMN-14051): the run is recorded in a committed receipt and the check reads that receipt,
+      while a second probe pins the suite's actual content at the PR head so the receipt cannot outlive
+      the tests it names. Recorded result: 9 passed at the merged tip 4346814ab.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-15468/dod-omn-15468-pr-3225-behaviour-focused-suite/command.yaml && grep -q 'evidence_item_id: "dod-omn-15468-pr-3225-behaviour-focused-suite"' drift/dod_receipts/OMN-15468/dod-omn-15468-pr-3225-behaviour-focused-suite/command.yaml && gh api 'repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/test_omn15468_kernel_applier_failure_terminal.py?ref=0ae87c3711440e1438976c7f4f5c7b8207b43833' --jq .content | base64 -d > /tmp/omn15468_suite.py && grep -qF 'def test_map_miss_failure_verdict_lands_on_the_failure_terminal' /tmp/omn15468_suite.py && grep -qF 'def test_success_verdict_still_lands_on_the_success_terminal' /tmp/omn15468_suite.py && grep -qF 'def test_failure_terminal_record_reads_as_failed_after_the_wire' /tmp/omn15468_suite.py && grep -qF 'def test_validator_positive_control' /tmp/omn15468_suite.py
+  - id: "dod-15468-3225-live-lane-failure-routing"
+    description: >
+      The live readback AC2 is actually about, on the surface the defect was measured on: the .201 dev
+      lane (compose project omnibase-infra, broker container omnibase-infra-redpanda), read-only rpk with
+      no consumer group and no mutation. A CI runner has no route to that host, so the probe was run out
+      of band and recorded in a committed receipt; this check reads the receipt. Three assertions were
+      made, in order, each fail-closed. (1) ATTRIBUTION -- the lane's omninode-runtime image carries revision
+      4346814ab3c0, the merge commit of omnibase_infra#3225; a readback off an unpatched lane proves nothing
+      about the fix. (2) THE CLAIM -- among records on onex.evt.omnimarket.delegate-skill-completed.v1
+      timestamped at or after the deploy (2026-09-06T03:22:07Z), ZERO carry a failure verdict; before
+      the deploy that same query returned 18 of the trailing 25. (3) POSITIVE CONTROL -- over the SAME
+      window the declared failure terminal carried 13 records the SAME classifier reads as failure verdicts,
+      so an empty window or a classifier that never fires would have failed the probe rather than reporting
+      a clean zero. An empty result is not evidence of absence. The receipt also records the STATED LIMIT:
+      the success terminal took zero records of any kind in that window, so the zero rests on the positive
+      control and on the focused suite's same-contract success case rather than on a live same-contract
+      success, which could not be produced for a reason unrelated to this fix (OMN-17979).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-15468/dod-15468-3225-live-lane-failure-routing/command.yaml && grep -q 'evidence_item_id: "dod-15468-3225-live-lane-failure-routing"' drift/dod_receipts/OMN-15468/dod-15468-3225-live-lane-failure-routing/command.yaml && grep -qF '4346814ab3c0' drift/dod_receipts/OMN-15468/dod-15468-3225-live-lane-failure-routing/command.yaml && grep -qF 'post-deploy completed records: 0 with failure verdict: 0' drift/dod_receipts/OMN-15468/dod-15468-3225-live-lane-failure-routing/command.yaml && grep -qF 'post-deploy failed-terminal records: 13 classified as failure verdict: 13' drift/dod_receipts/OMN-15468/dod-15468-3225-live-lane-failure-routing/command.yaml
+  - id: "dod-15468-supersedes-occ-self-bind-6705"
+    description: >
+      SUPERSESSION, add-only, for the merged entry occ-self-bind-pr-6705. That entry asserts head-branch
+      state on jonah/omn-15468-verifier-companion, a branch whose PR read MERGED 2026-08-19T04:21:07Z
+      at a35f50cde7ea40217ec12b5ef0f8e9d18bb8a12d. Head-branch check runs are deleted along with the branch,
+      so the entry fails for a reason that is not a product defect and can never become true again --
+      it was the single failed row in the 2026-09-05T20:54Z dod_verify run. Merged entries are immutable
+      (the OCC append-only gate), so it is not edited: this net-new entry asserts the durable terminal
+      fact in its place. Goes RED if PR #6705 is reverted, reopened or renumbered.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 6705 --repo OmniNode-ai/onex_change_control --json number,state,mergeCommit --jq '.number == 6705 and .state == "MERGED" and (.mergeCommit.oid | startswith("a35f50cde7ea40217ec12b5ef0f8e9d18bb8a12d"))' | grep -qx true
+  - id: "occ-self-bind-pr-8342"
+    description: >
+      OCC self-binding entry for PR #8342, the in-repo evidence PR carrying the four omnibase_infra#3225
+      evidence items and the add-only supersession of occ-self-bind-pr-6705. Binds OMN-15468 to this OCC
+      PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself (OMN-14650).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 8342 --repo OmniNode-ai/onex_change_control --json number,state,headRefName --jq '.number == 8342 and .headRefName == "jonah/omn-15468-kernel-applier-companion"' | grep -qx true
