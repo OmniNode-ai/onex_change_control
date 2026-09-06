@@ -1,0 +1,136 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17979"
+title: "Escalated delegate-skill runs terminalize on the success topic again"
+summary: >
+  OCC companion for OmniNode-ai/omnimarket PR #2332. Every delegation that escalated past its first rung
+  was unconstructible at ModelDelegateSkillResponse, because the producer classified a terminal failure
+  cause from a rung the escalation ladder had ABANDONED and then downgraded quality_gate_passed while
+  the accepted rung's score, bar and comparison stayed. delegate-skill-completed.v1 took zero records
+  after 2026-09-06T01:55Z (high-watermark 208). The product PR fixes the producer; the validator is untouched.
+is_seam_ticket: true
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2332 CI checks green"
+    command: "gh pr checks 2332 --repo OmniNode-ai/omnimarket"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-17979-behavior-escalated-success-lane"
+    description: >
+      BEHAVIOUR PROOF. Reads onex.evt.omnimarket.delegate-skill-completed.v1 on the .201 dev lane (compose
+      project omnibase-infra, broker container omnibase-infra-redpanda) from offset 208 -- the high-watermark
+      the topic froze at when the defect took hold -- and requires at least one POST-DEPLOY record whose
+      payload carries status=completed, quality_gate_passed=true and no terminal_failure_cause. That is
+      the field triple omnibase_infra runtime/contract_terminal_events.py resolve_terminal_verdict reads
+      as a SUCCESS verdict. Fail- closed on an empty window: zero records exits 1 with a named reason,
+      because an empty read is indistinguishable from a clean bill of health and is not proof of anything.
+      stderr is captured to a file rather than discarded, so a transport failure is diagnosable instead
+      of silently reading as a clean zero. Executed RED by the evidence author 2026-09-06 before the deploy.
+      rpk read only, no consumer group, no lane mutation.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          rm -f /tmp/omn17979_completed.json /tmp/omn17979_completed.err; timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 "docker exec omnibase-infra-redpanda rpk topic consume onex.evt.omnimarket.delegate-skill-completed.v1 --offset 208 -n 25 --format json" > /tmp/omn17979_completed.json 2> /tmp/omn17979_completed.err; python3 -c '
+          import json,sys
+          raw=open("/tmp/omn17979_completed.json").read()
+          dec=json.JSONDecoder(); i=0; recs=[]
+          while i<len(raw):
+              while i<len(raw) and raw[i] in " \n\r\t": i+=1
+              if i>=len(raw): break
+              try: o,i=dec.raw_decode(raw,i)
+              except ValueError: break
+              recs.append(o)
+          if not recs:
+              print("FAIL: zero records in the window -- an empty read is not proof; stderr is at /tmp/omn17979_completed.err"); sys.exit(1)
+          hits=[]
+          for r in recs:
+              try: p=json.loads(r["value"]).get("payload") or {}
+              except Exception: continue
+              if p.get("status")=="completed" and p.get("quality_gate_passed") is True and p.get("terminal_failure_cause") is None:
+                  hits.append((r.get("offset"),p.get("status"),p.get("quality_gate_passed"),p.get("terminal_failure_cause"),p.get("model_name"),p.get("quality_score"),p.get("required_quality_bar"),p.get("score_vs_required_bar")))
+          print("records read:",len(recs),"matching-verdict records:",len(hits))
+          for row in hits[:5]: print("  ",row)
+          sys.exit(0 if hits else 1)
+          '
+  - id: "dod-17979-negative-control-failure-still-fails"
+    description: >
+      NEGATIVE CONTROL for the entry above. A success-only assertion would also pass if the fix had simply
+      stopped classifying failures at all, so this requires that onex.evt.omnimarket.delegate- skill-failed.v1
+      still carries records whose payload declares a failure verdict -- status failed or timeout, or a
+      non-null terminal_failure_cause -- from offset 30, that topic's high-watermark at the same instant.
+      Also fail-closed on an empty window, with stderr captured. Together the two entries prove the terminal
+      routes by the run's real verdict in BOTH directions rather than having been made uniformly permissive.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          rm -f /tmp/omn17979_failed.json /tmp/omn17979_failed.err; timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 "docker exec omnibase-infra-redpanda rpk topic consume onex.evt.omnimarket.delegate-skill-failed.v1 --offset 30 -n 25 --format json" > /tmp/omn17979_failed.json 2> /tmp/omn17979_failed.err; python3 -c '
+          import json,sys
+          raw=open("/tmp/omn17979_failed.json").read()
+          dec=json.JSONDecoder(); i=0; recs=[]
+          while i<len(raw):
+              while i<len(raw) and raw[i] in " \n\r\t": i+=1
+              if i>=len(raw): break
+              try: o,i=dec.raw_decode(raw,i)
+              except ValueError: break
+              recs.append(o)
+          if not recs:
+              print("FAIL: zero records in the window -- an empty read is not proof; stderr is at /tmp/omn17979_failed.err"); sys.exit(1)
+          hits=[]
+          for r in recs:
+              try: p=json.loads(r["value"]).get("payload") or {}
+              except Exception: continue
+              if p.get("status") in ("failed","timeout") or p.get("terminal_failure_cause") is not None:
+                  hits.append((r.get("offset"),p.get("status"),p.get("quality_gate_passed"),p.get("terminal_failure_cause"),p.get("model_name"),p.get("quality_score"),p.get("required_quality_bar"),p.get("score_vs_required_bar")))
+          print("records read:",len(recs),"matching-verdict records:",len(hits))
+          for row in hits[:5]: print("  ",row)
+          sys.exit(0 if hits else 1)
+          '
+  - id: "dod-17979-producer-seam-regression"
+    description: >
+      HERMETIC REGRESSION, ticket AC3. Drives HandlerDelegateSkill.handle -- the real definition-B entrypoint
+      the node runs -- over a frozen verbatim capture of the live terminal that reproduced the defect
+      (delegation-completed.v1 offset 64, correlation 23c2721b-84d3-498b-803d-1855f4bb5df6). AC3 explicitly
+      rules out a hand-built response, because the producer's own derivation IS the defect. Four cases:
+      the escalated accept constructs and terminalizes as COMPLETED with quality_gate_passed=True and
+      no terminal_failure_cause; the abandoned 404 rung survives onto attempts[] so the evidence is kept;
+      an all-rungs-refused ladder still classifies PROVIDER_QUOTA_EXHAUSTED and still terminalizes as
+      FAILED; and a genuine failure at or above the bar NAMES the criterion it failed, which is AC2 satisfied
+      rather than the validator relaxed. Recorded result: 4 passed. cwd is the ticket worktree per CLAUDE.md
+      rule 9.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        cwd: "${OMNI_HOME}/omni_worktrees/${TICKET_ID}/omnimarket"
+        check_value: |-
+          uv run pytest tests/test_omn17979_escalated_accept_terminal_seam.py -q
+  - id: "dod-17979-validator-not-relaxed"
+    description: >
+      Ticket AC4: the validator must NOT be relaxed to make the producer's current output pass. Probes
+      the product source at PR #2332's exact head b050a030d0f8ea6c4abaeda0eb86f39ccc57d9a8 and requires
+      every clause of the ModelDelegateSkillResponse model validator to be present verbatim -- including
+      the clause that refused this defect -- while the new producer-side guard _ladder_records_an_acceptance
+      IS present. Goes RED if any of the four rules is softened or removed.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/models/delegation/wire/model_delegate_skill_response.py?ref=b050a030d0f8ea6c4abaeda0eb86f39ccc57d9a8' --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'quality-failed response at or above required_quality_bar must' && printf '%s' "$body" | grep -qF 'quality_gate_passed response cannot be below required_quality_bar' && printf '%s' "$body" | grep -qF 'quality_gate_passed response cannot carry failed_acceptance_criteria' && printf '%s' "$body" | grep -qF 'successful delegation cannot carry terminal_failure_cause' && printf '%s' "$body" | grep -qF 'def _ladder_records_an_acceptance'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2332"
+    description: >
+      The product PR landed the producer-side change at both seams. Probes the handler at PR #2332's exact
+      head: the abandoned-rung guard and the criterion-naming branch are both PRESENT.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_delegate_skill_orchestrator/handlers/handler_delegate_skill.py?ref=b050a030d0f8ea6c4abaeda0eb86f39ccc57d9a8' --jq .content | base64 -d)" && printf '%s' "$body" | grep -qF 'terminal_failure_cause:' && printf '%s' "$body" | grep -qF 'score_vs_required_bar is EnumQualityScoreComparison.AT_OR_ABOVE_BAR'
