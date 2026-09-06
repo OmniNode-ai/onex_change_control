@@ -151,6 +151,49 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6777 --repo OmniNode-ai/onex_change_control --json number,state,headRefOid"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1659"
+    description: >
+      PR #1659 on OmniNode-ai/omnibase_core -- adds the SYNC-ONLY recovery path for the release-synced-main
+      policy. The main fast-forward is the last step of release.yml's `release` job, sequenced behind
+      `Publish to PyPI` and `Create GitHub Release`, so when only that step fails (runs 34030901325 for
+      v0.47.4 and 34052816626 for v0.47.5: publish SUCCESS, GitHub Release SUCCESS, `Mint onexbot-occ-writer
+      app token` FAILURE with HTTP 422 because the App installation lacked `workflows: write`) neither
+      a `--failed` re-run nor a `-f tag=` dispatch can complete the pointer move without re-publishing.
+      This PR adds a `sync_main_to_tag` workflow_dispatch input and a `sync-main` job that runs the mint
+      + fast-forward alone, guarded ancestor-of-dev and fast-forward-only. Content-pinned check: fetches
+      release.yml at the PR's base and head SHAs via the GitHub contents API and confirms the sync-only
+      input and job are absent at base and present at head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          base_body="$(gh api "repos/OmniNode-ai/omnibase_core/contents/.github/workflows/release.yml?ref=65079d6541b347c379afd86007f0fa10590f9939"
+          --jq .content | base64 -d)"; head_body="$(gh api "repos/OmniNode-ai/omnibase_core/contents/.github/workflows/release.yml?ref=31f593133362c808b288337a47d7f599c5ff3f35"
+          --jq .content | base64 -d)"; ! printf '%s' "$base_body" | grep -qF 'sync_main_to_tag' && printf
+          '%s' "$head_body" | grep -qF 'sync_main_to_tag' && printf '%s' "$head_body" | grep -qF 'sync-main:'
+          && printf '%s' "$head_body" | grep -qF 'Validate sync tag' && echo "OMN-16289-OMNIBASE_CORE-1659-DIFFERENTIAL-PROBE-PASS:
+          release.yml gains the sync-only sync_main_to_tag dispatch path between base 65079d65 and head
+          31f59313"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3256"
+    description: >
+      PR #3256 on OmniNode-ai/omnibase_infra -- the same sync-only recovery path as omnibase_core#1659,
+      for the release whose sync did not run (run 34037128862 for v0.38.19: publish SUCCESS, GitHub Release
+      SUCCESS, `Mint onexbot-occ-writer app token` FAILURE with HTTP 422). Here a `-f tag=` re-dispatch
+      would additionally re-fire the dependency cascade and re-dispatch the runtime image rebuild, so
+      both of those jobs also gain an explicit `needs.release.result == 'success'` guard. Content-pinned
+      check: fetches release.yml at the PR's base and head SHAs via the GitHub contents API and confirms
+      the sync-only input and job are absent at base and present at head.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          base_body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/release.yml?ref=bc672163b8d04ada98ae59c9dc185a14a41b2432"
+          --jq .content | base64 -d)"; head_body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/release.yml?ref=9ccf4568a982fa62a4cb5246bb5abab98ce48bf3"
+          --jq .content | base64 -d)"; ! printf '%s' "$base_body" | grep -qF 'sync_main_to_tag' && printf
+          '%s' "$head_body" | grep -qF 'sync_main_to_tag' && printf '%s' "$head_body" | grep -qF 'sync-main:'
+          && printf '%s' "$head_body" | grep -qF 'Validate sync tag' && echo "OMN-16289-OMNIBASE_INFRA-3256-DIFFERENTIAL-PROBE-PASS:
+          release.yml gains the sync-only sync_main_to_tag dispatch path between base bc672163 and head
+          9ccf4568"
   - id: "occ-self-bind-pr-6878"
     description: "Binds OMN-16289 to OCC companion PR #6878 (self-bind)."
     source: "generated"
