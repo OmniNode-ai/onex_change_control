@@ -1,0 +1,38 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-15468
+evidence_item_id: "dod-infra-3225-kernel-applier-differential"
+check_type: command
+check_value: "content differential on service_kernel.py at the merge-base and the PR head"
+status: PASS
+run_timestamp: "2026-09-06T06:20:00Z"
+contract_entry_sha256: "sha256:64558bfbaa2bc1928b6353e262a8056c118f61fb704469ec4fe9dbc9c4a91de2"
+commit_sha: "0ae87c3711440e1438976c7f4f5c7b8207b43833"
+runner: "claude:omn15468-failure-verdict-topic-fix"
+verifier: omn15468-live-lane-verifier
+pr_number: 3225
+probe_command: |
+  # Fetches the file at BOTH refs in repos/OmniNode-ai/omnibase_infra and counts three markers.
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=724f01205ab1b70b39ab31d3744f76951da97d37' --jq .content | base64 -d > /tmp/omn15468_sk_base.py
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=0ae87c3711440e1438976c7f4f5c7b8207b43833' --jq .content | base64 -d > /tmp/omn15468_sk_head.py
+  for p in build_static_result_applier failure_terminal_topics 'DispatchResultApplier('; do
+    echo "  $p base=$(grep -cF "$p" /tmp/omn15468_sk_base.py) head=$(grep -cF "$p" /tmp/omn15468_sk_head.py)"
+  done
+probe_stdout: |
+  build_static_result_applier base=0 head=5
+  failure_terminal_topics base=0 head=3
+  DispatchResultApplier( base=4 head=0
+actual_output: |
+  PASS. The AC4 RED-before demonstration, executed both ways against
+  repos/OmniNode-ai/omnibase_infra.
+
+  At the merge-base 724f01205ab1b70b39ab31d3744f76951da97d37 the kernel's applier for
+  node_delegate_skill_orchestrator was constructed directly (DispatchResultApplier( appears 4
+  times) with neither contract-derived routing input present: build_static_result_applier and
+  failure_terminal_topics are both absent, which is exactly why apply_failure_terminal_guard took
+  its len(failure_terminal_topics) != 1 branch, returned the success topic, and logged nothing.
+
+  At the PR head 0ae87c3711440e1438976c7f4f5c7b8207b43833 every one of those constructions is gone
+  (0 occurrences) and both routing inputs are present (5 and 3 occurrences). The guard is now
+  reachable for the contract the live defect was measured on.
+exit_code: 0
