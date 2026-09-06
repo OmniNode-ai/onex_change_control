@@ -2148,3 +2148,72 @@ def test_commit_sha_inventory_marks_budget_skipped_claims_pending(
     assert inventory["remote_calls"] == 1
     assert inventory["claims"][1]["pending_remote"] is True
     assert inventory["claims"][1]["remote_outcome"] == "NOT_ATTEMPTED"
+
+
+# ---------------------------------------------------------------------------
+# OMN-17943 — the shape the omnimarket diff-derived behavior-proof backfill
+# generates must clear this gate with no hand edit.
+# ---------------------------------------------------------------------------
+
+# The generator lives one repo over (omnimarket
+# `scripts/ci/occ_behavior_proof_backfill.py::build_backfill_receipt`) and is
+# not importable here, so its output shape is pinned as a fixture instead. That
+# is the honest limit of this test and worth stating: it proves THIS GATE
+# accepts the shape, not that the generator still emits it. The generator's own
+# suite pins the other half against this gate's regex, restated there with the
+# same citation, so a change on either side fails on one side or the other.
+_BACKFILL_HEAD_SHA = "b" * 40
+_BACKFILL_MERGE_SHA = "c" * 40
+
+
+def _behavior_proof_backfill_receipt(commit_sha: str) -> ModelDodReceipt:
+    """A receipt in the exact shape the OMN-17943 backfill mints."""
+    return _receipt_model(
+        commit_sha=commit_sha,
+        evidence_item_id="dod-occ-diff-derived-behavior-proof",
+        check_type="test_passes",
+        check_value="uv run pytest tests/k8s/test_omn_16558_preflight.py -q",
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omninode_infra/commits/{_BACKFILL_HEAD_SHA}"
+            "/check-runs --paginate --jq "
+            '\'[.check_runs[]|select(.conclusion|IN("success","skipped",'
+            '"neutral")|not)]|length\''
+        ),
+        pr_number=1048,
+    )
+
+
+def test_behavior_proof_backfill_receipt_bound_to_the_probed_head_is_accepted() -> None:
+    """The post-fix generated receipt clears repository authority unedited.
+
+    `commit_sha` is the PR head the recorded check-runs probe actually ran
+    against, so the exposed `/commits/<sha>` segment names it and
+    `_product_ref_binds_commit` is satisfied. This is what makes the backfill
+    landable without a hand commit.
+    """
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omninode_infra", _BACKFILL_HEAD_SHA): 200}
+    )
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _behavior_proof_backfill_receipt(_BACKFILL_HEAD_SHA), resolver, []
+    )
+
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/omninode_infra"]
+
+
+def test_behavior_proof_backfill_receipt_bound_to_the_merge_commit_is_refused() -> None:
+    """Positive control: the PRE-FIX shape is exactly what this gate refused.
+
+    Without this the test above would pass on a gate that accepted anything.
+    The generator wrote the MERGE commit into `commit_sha` while probing the
+    head, and every mint failed here — the only merged output (OCC#8344) needed
+    a hand edit to land.
+    """
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        _behavior_proof_backfill_receipt(_BACKFILL_MERGE_SHA), _commit_resolver(), []
+    )
+
+    assert len(violations) == 1
+    assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
