@@ -232,7 +232,6 @@ uv run onex spdx fix --check src tests scripts
 reference, runbooks and decision records all live there, not here:
 
 - [OmniNode knowledge base](https://github.com/OmniNode-ai/knowledge-base) — public
-- [knowledge-base-internal](https://github.com/OmniNode-ai/knowledge-base-internal) — internal process docs
 
 This repo keeps only its README, agent configuration, changelog, licence, security policy
 and `.github/` templates; a doc that is not one of those belongs in the knowledge base, and
