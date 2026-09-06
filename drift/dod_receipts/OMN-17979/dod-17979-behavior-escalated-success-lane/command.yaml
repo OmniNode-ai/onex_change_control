@@ -1,0 +1,76 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-17979
+evidence_item_id: dod-17979-behavior-escalated-success-lane
+check_type: command
+check_value: |-
+  rm -f /tmp/omn17979_completed.json /tmp/omn17979_completed.err; timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 "docker exec omnibase-infra-redpanda rpk topic consume onex.evt.omnimarket.delegate-skill-completed.v1 --offset 208 -n 25 --format json" > /tmp/omn17979_completed.json 2> /tmp/omn17979_completed.err; python3 -c '
+  import json,sys
+  raw=open("/tmp/omn17979_completed.json").read()
+  dec=json.JSONDecoder(); i=0; recs=[]
+  while i<len(raw):
+      while i<len(raw) and raw[i] in " \n\r\t": i+=1
+      if i>=len(raw): break
+      try: o,i=dec.raw_decode(raw,i)
+      except ValueError: break
+      recs.append(o)
+  if not recs:
+      print("FAIL: zero records in the window -- an empty read is not proof; stderr is at /tmp/omn17979_completed.err"); sys.exit(1)
+  hits=[]
+  for r in recs:
+      try: p=json.loads(r["value"]).get("payload") or {}
+      except Exception: continue
+      if p.get("status")=="completed" and p.get("quality_gate_passed") is True and p.get("terminal_failure_cause") is None:
+          hits.append((r.get("offset"),p.get("status"),p.get("quality_gate_passed"),p.get("terminal_failure_cause"),p.get("model_name"),p.get("quality_score"),p.get("required_quality_bar"),p.get("score_vs_required_bar")))
+  print("records read:",len(recs),"matching-verdict records:",len(hits))
+  for row in hits[:5]: print("  ",row)
+  sys.exit(0 if hits else 1)
+  '
+status: PASS
+run_timestamp: '2026-09-06T15:05:00Z'
+commit_sha: 5d52732e61a0f827ee8bfae2e4626c9d0f3dac7f
+runner: omn17979-delegate-skill-response-wire-model
+verifier: onex-dev-lane-broker-readback
+probe_command: |-
+  rm -f /tmp/omn17979_completed.json /tmp/omn17979_completed.err; timeout 45 ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 "docker exec omnibase-infra-redpanda rpk topic consume onex.evt.omnimarket.delegate-skill-completed.v1 --offset 208 -n 25 --format json" > /tmp/omn17979_completed.json 2> /tmp/omn17979_completed.err; python3 -c '
+  import json,sys
+  raw=open("/tmp/omn17979_completed.json").read()
+  dec=json.JSONDecoder(); i=0; recs=[]
+  while i<len(raw):
+      while i<len(raw) and raw[i] in " \n\r\t": i+=1
+      if i>=len(raw): break
+      try: o,i=dec.raw_decode(raw,i)
+      except ValueError: break
+      recs.append(o)
+  if not recs:
+      print("FAIL: zero records in the window -- an empty read is not proof; stderr is at /tmp/omn17979_completed.err"); sys.exit(1)
+  hits=[]
+  for r in recs:
+      try: p=json.loads(r["value"]).get("payload") or {}
+      except Exception: continue
+      if p.get("status")=="completed" and p.get("quality_gate_passed") is True and p.get("terminal_failure_cause") is None:
+          hits.append((r.get("offset"),p.get("status"),p.get("quality_gate_passed"),p.get("terminal_failure_cause"),p.get("model_name"),p.get("quality_score"),p.get("required_quality_bar"),p.get("score_vs_required_bar")))
+  print("records read:",len(recs),"matching-verdict records:",len(hits))
+  for row in hits[:5]: print("  ",row)
+  sys.exit(0 if hits else 1)
+  '
+probe_stdout: |-
+  records read: 5 matching-verdict records: 5
+     (208, 'completed', True, None, 'Qwen3.6-35B-A3B', 1.0, 0.8, 'at_or_above_bar')
+     (209, 'completed', True, None, 'Qwen3.6-35B-A3B', 1.0, None, None)
+     (210, 'completed', True, None, 'Qwen3.6-35B-A3B', 1.0, 0.8, 'at_or_above_bar')
+     (211, 'completed', True, None, 'Qwen3.6-35B-A3B', 1.0, 0.8, 'at_or_above_bar')
+     (212, 'completed', True, None, 'Qwen3.6-35B-A3B', 1.0, 0.8, 'at_or_above_bar')
+actual_output: 'PASS: onex.evt.omnimarket.delegate-skill-completed.v1 on the .201 dev lane (compose project
+  omnibase-infra) has moved off the frozen high-watermark 208 and taken five post-deploy records, every
+  one of them carrying the SUCCESS-verdict triple status=completed / quality_gate_passed=true / terminal_failure_cause=null
+  that resolve_terminal_verdict reads as True. Offsets 210, 211 and 212 are dispatches this lane drove
+  itself through ''onex delegate --bus kafka'' inside the runtime container after the merged tip was deployed
+  at 2026-09-06T13:34Z. Executed RED by the evidence author before the deploy, when the same window returned
+  zero records and exited 1.'
+exit_code: 0
+duration_ms: 6100
+pr_number: 8391
+branch: jonah/omn-17979-occ-companion
+contract_sha256: sha256:1b9d33e3c97a851ee5990d55687e6dbe4749dc18cf106869815413fd2a7f63be
+contract_entry_sha256: sha256:982174d598fa4306351adce450db46e5aad49fb5faf7fb857a4de9ca702c937b
