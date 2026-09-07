@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17469"
+title: "Add a local non-gating pre-commit hook-event sink"
+summary: "Record local diagnostic hook observations in a private append-only JSONL sink without changing
+  gate execution or verdicts."
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "Focused parser and private local-writer behavior passes at the immutable product PR
+      head."
+    command: "See dod-local-writer-behavior receipt."
+  - kind: "ci"
+    description: "The product change is limited to the local sink module and its focused tests."
+    command: "See dod-product-head-and-scope receipt."
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-local-writer-behavior"
+    description: "Focused tests prove strict verbose-record parsing and local sink safety without asserting
+      authoritative invocation cardinality."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          bash -euo pipefail <<'CHECK'
+          actual_sha="$(gh api repos/OmniNode-ai/omnimarket/commits/98c95a41f46e4cc55ba084d08a98b45f5632b598 --jq .sha)"
+          test "$actual_sha" = "98c95a41f46e4cc55ba084d08a98b45f5632b598"
+          target_root="$(mktemp -d "${TMPDIR:-/tmp}/omn-17469-proof.XXXXXX")"
+          target="$target_root/product"
+          cleanup() {
+            if test -e "$target/.git"; then
+              git worktree remove --force "$target"
+            fi
+            rmdir "$target_root"
+          }
+          trap cleanup EXIT HUP INT TERM
+          git worktree add --detach "$target" "$actual_sha"
+          (
+            cd "$target"
+            test "$(git rev-parse HEAD)" = "$actual_sha"
+            env -u PYTHONPATH -u VIRTUAL_ENV uv run --locked pytest tests/scripts/test_parse_hook_events.py -q
+          )
+          CHECK
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-product-head-and-scope"
+    description: "The remote product head has exactly the local sink module and its tests relative to
+      its immutable PR base."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -euo pipefail <<'CHECK'
+          actual_sha="$(gh api repos/OmniNode-ai/omnimarket/commits/98c95a41f46e4cc55ba084d08a98b45f5632b598 --jq .sha)"
+          test "$actual_sha" = "98c95a41f46e4cc55ba084d08a98b45f5632b598"
+          test "$(git merge-base ae412aa4cbdf8f284277c9e218831aec466a1e40 98c95a41f46e4cc55ba084d08a98b45f5632b598)" = "ae412aa4cbdf8f284277c9e218831aec466a1e40"
+          test "$(git diff --name-only ae412aa4cbdf8f284277c9e218831aec466a1e40...98c95a41f46e4cc55ba084d08a98b45f5632b598)" = "$(printf '%s\n%s' scripts/hooks/parse_hook_events.py tests/scripts/test_parse_hook_events.py)"
+          git diff --check ae412aa4cbdf8f284277c9e218831aec466a1e40...98c95a41f46e4cc55ba084d08a98b45f5632b598
+          printf 'PASS: remote product SHA, immutable base, declared paths, and whitespace check matched\n'
+          CHECK
+        cwd: "${OMNI_HOME}/omnimarket"
