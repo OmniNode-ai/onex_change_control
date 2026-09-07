@@ -1,0 +1,413 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-16753 / OMN-13418: stage a prod-promotion grant as the onexbot-occ-writer
+# GitHub App, so the CODEOWNERS operator who reviews and merges it is not also
+# its author.
+#
+# WHY THIS EXISTS. `grants/prod_promotion_grants.yaml` is the trust anchor the
+# OMN-14209 gate resolves before any prod mutation, and OMN-13418 makes the
+# CODEOWNERS merge of a grant PR *the approval act*. GitHub does not let a user
+# approve their own pull request, so a grant PR opened by the operator is
+# structurally unapprovable by that operator — the anti-self-issue property the
+# gate depends on collapses into a deadlock. Every other bot-authored OCC pull
+# request in this org is opened by a workflow in a DIFFERENT repository
+# (omnibase_infra / omnimarket / omninode_infra, via the omniclaude reusable
+# workflows) that mints an onexbot-occ-writer installation token. None of them
+# can open an arbitrary `hotfix/*` PR against this repo's `main` with
+# caller-supplied grant content. This workflow is that missing path, and
+# nothing more.
+#
+# WHAT IT IS NOT. It authorizes no prod mutation, dispatches no deploy, merges
+# nothing, and lifts no hold. It moves content that already exists on a staging
+# ref in this repository onto a `hotfix/*` branch owned by the App, and opens
+# the pull request as the App. Every required check still gates that PR, and a
+# human CODEOWNERS merge is still the only thing that makes a grant effective.
+#
+# BLAST RADIUS IS BOUNDED BY AN ALLOWLIST, NOT BY TRUST IN THE CALLER.
+# `workflow_dispatch` is already restricted by GitHub to identities with write
+# access here, but write access is not authority to make the App say anything.
+# The staged diff is therefore checked against a path allowlist derived from
+# the `ticket` input before a single byte is committed: the grant registry, the
+# ticket's own contract, and the ticket's own DoD receipts. `.github/**` is
+# refused explicitly and first — the App must never be able to author its own
+# permissions.
+
+name: Stage Prod-Promotion Grant
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: "Ticket the grant is staged under, e.g. OMN-16753"
+        required: true
+        type: string
+      source_ref:
+        description: "Branch/ref ALREADY PUSHED to this repo carrying the staged content (grants + contract + receipts)"
+        required: true
+        type: string
+      branch_slug:
+        description: "Head branch to create, WITHOUT the hotfix/ prefix, e.g. omn-16753-prod-promotion-grant-v2"
+        required: true
+        type: string
+      base_branch:
+        description: "Base branch for the PR (the grant registry the consumer resolves lives on main)"
+        required: true
+        default: "main"
+        type: choice
+        options:
+          - "main"
+          - "dev"
+      pr_title:
+        description: "PR title (must contain the ticket id)"
+        required: true
+        type: string
+      pr_body_b64:
+        description: "base64 of the PR body. Base64 so newlines and gate-parsed literals survive transport unaltered."
+        required: true
+        type: string
+
+# The default GITHUB_TOKEN stays read-only. Every write below is made with the
+# short-lived onexbot-occ-writer installation token, so the identity that
+# authors the branch and the pull request is unambiguous in the audit trail.
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-prod-promotion-grant-${{ github.event.inputs.branch_slug }}
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: Stage grant PR as onexbot-occ-writer
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout onex_change_control
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+
+      # Inputs reach the shell only through `env:`. Interpolating them into a
+      # `run:` body would splice caller-controlled text into the script itself.
+      - name: Validate inputs
+        env:
+          TICKET: ${{ inputs.ticket }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          BRANCH_SLUG: ${{ inputs.branch_slug }}
+          PR_TITLE: ${{ inputs.pr_title }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TICKET" | grep -qE '^OMN-[0-9]+$'; then
+            echo "::error::ticket must match OMN-<digits>, got: ${TICKET}"
+            exit 2
+          fi
+          if ! printf '%s' "$BRANCH_SLUG" | grep -qE '^[a-z0-9][a-z0-9._-]*$'; then
+            echo "::error::branch_slug must be a single lowercase path segment, got: ${BRANCH_SLUG}"
+            exit 2
+          fi
+          if ! printf '%s' "$SOURCE_REF" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*$'; then
+            echo "::error::source_ref is not a plausible git ref: ${SOURCE_REF}"
+            exit 2
+          fi
+          # pr-title-check requires the ticket in the title; failing here is a
+          # clearer signal than a red check on a PR that already exists.
+          if ! printf '%s' "$PR_TITLE" | grep -qF "$TICKET"; then
+            echo "::error::pr_title must contain ${TICKET}"
+            exit 2
+          fi
+
+      - name: Resolve the App's own git identity
+        id: identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          bot_login="${APP_SLUG}[bot]"
+          bot_id="$(gh api "/users/${bot_login}" --jq '.id')"
+          if [ -z "$bot_id" ]; then
+            echo "::error::could not resolve the bot user id for ${bot_login}"
+            exit 3
+          fi
+          echo "bot_login=${bot_login}" >> "$GITHUB_OUTPUT"
+          echo "bot_email=${bot_id}+${bot_login}@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+          echo "Committing and opening the PR as ${bot_login}"
+
+      # The security boundary. A staged ref is caller-controlled content; this
+      # step decides what the App is willing to say with it.
+      - name: Guardrail — staged diff must touch only this ticket's grant surface
+        id: guardrail
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          TICKET: ${{ inputs.ticket }}
+        run: |
+          set -euo pipefail
+          git fetch origin --no-tags "${BASE_BRANCH}" "${SOURCE_REF}"
+          base_sha="$(git rev-parse "origin/${BASE_BRANCH}")"
+          src_sha="$(git rev-parse "origin/${SOURCE_REF}")"
+          echo "base ${BASE_BRANCH}=${base_sha}"
+          echo "source ${SOURCE_REF}=${src_sha}"
+
+          mapfile -t changed < <(git diff --name-only "${base_sha}...${src_sha}")
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "::error::source_ref has no diff against ${BASE_BRANCH} — nothing to stage"
+            exit 4
+          fi
+
+          # Phase 1 carries the grant registry alone. The contract and its
+          # receipts name the PR that does not exist yet, so they are phase 2.
+          grants_paths=()
+          evidence_paths=()
+          violations=0
+          for p in "${changed[@]}"; do
+            case "$p" in
+              .github/*)
+                echo "::error::refused: ${p} — this workflow may never author workflow or config files as the App"
+                violations=1
+                ;;
+              grants/prod_promotion_grants.yaml)
+                grants_paths+=("$p")
+                ;;
+              contracts/"${TICKET}".yaml|drift/dod_receipts/"${TICKET}"/*)
+                evidence_paths+=("$p")
+                ;;
+              *)
+                echo "::error::refused: ${p} is outside the ${TICKET} grant surface (grants/prod_promotion_grants.yaml, contracts/${TICKET}.yaml, drift/dod_receipts/${TICKET}/**)"
+                violations=1
+                ;;
+            esac
+          done
+          if [ "$violations" -ne 0 ]; then
+            exit 4
+          fi
+          if [ "${#grants_paths[@]}" -eq 0 ]; then
+            echo "::error::source_ref changes no grant file — refusing to open an empty grant PR"
+            exit 4
+          fi
+
+          printf '%s\n' "${grants_paths[@]}" > /tmp/stage_grant_content_paths.txt
+          if [ "${#evidence_paths[@]}" -gt 0 ]; then
+            printf '%s\n' "${evidence_paths[@]}" > /tmp/stage_grant_receipt_paths.txt
+          else
+            : > /tmp/stage_grant_receipt_paths.txt
+          fi
+          echo "phase-1 (grant) paths:"; cat /tmp/stage_grant_content_paths.txt
+          echo "phase-2 (evidence) paths:"; cat /tmp/stage_grant_receipt_paths.txt
+          echo "src_sha=${src_sha}" >> "$GITHUB_OUTPUT"
+
+      # Phase 1 commits the grant + contract ONLY. Receipts cite the commit
+      # they attest to and the PR number they self-bind to, neither of which
+      # exists yet — they land in phase 2 once both are real.
+      - name: Phase 1 — commit grant + contract as the App
+        id: phase1
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          BRANCH_SLUG: ${{ inputs.branch_slug }}
+          TICKET: ${{ inputs.ticket }}
+          BOT_LOGIN: ${{ steps.identity.outputs.bot_login }}
+          BOT_EMAIL: ${{ steps.identity.outputs.bot_email }}
+          SRC_SHA: ${{ steps.guardrail.outputs.src_sha }}
+        run: |
+          set -euo pipefail
+          head_branch="hotfix/${BRANCH_SLUG}"
+          git config user.name "$BOT_LOGIN"
+          git config user.email "$BOT_EMAIL"
+          git checkout -B "$head_branch" "origin/${BASE_BRANCH}"
+
+          mapfile -t content < /tmp/stage_grant_content_paths.txt
+          git checkout "$SRC_SHA" -- "${content[@]}"
+
+          # A placeholder that survives into a commit is a silent wrong value.
+          if git grep -nE '__(COMMIT_SHA|PR_NUMBER)__' -- "${content[@]}"; then
+            echo "::error::unsubstituted placeholder in a phase-1 file; those belong only in receipts"
+            exit 5
+          fi
+
+          git add -- "${content[@]}"
+          git commit \
+            -m "chore(${TICKET}): stage the prod-promotion grant for CODEOWNERS approval" \
+            -m "Staged by the Stage Prod-Promotion Grant workflow as ${BOT_LOGIN}, so the CODEOWNERS operator who reviews and merges this PR is not its author (OMN-13418: the merge is the approval act). Authorizes no prod mutation."
+
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${head_branch}" --force-with-lease
+          echo "head_branch=${head_branch}" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open the pull request as the App
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          HEAD_BRANCH: ${{ steps.phase1.outputs.head_branch }}
+          PR_TITLE: ${{ inputs.pr_title }}
+          PR_BODY_B64: ${{ inputs.pr_body_b64 }}
+        run: |
+          set -euo pipefail
+          body_file="$(mktemp)"
+          printf '%s' "$PR_BODY_B64" | base64 -d > "$body_file"
+          if [ ! -s "$body_file" ]; then
+            echo "::error::pr_body_b64 decoded to an empty body"
+            exit 6
+          fi
+          url="$(gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base "${BASE_BRANCH}" \
+            --head "${HEAD_BRANCH}" \
+            --title "${PR_TITLE}" \
+            --body-file "$body_file")"
+          rm -f "$body_file"
+          number="${url##*/}"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "number=${number}" >> "$GITHUB_OUTPUT"
+          echo "Opened ${url}"
+
+      # Needed only by the phase-2 hash mint below, which imports the same
+      # omnibase_core helper the Receipt Hardening Gate uses.
+      - name: Set up uv
+        uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+
+      - name: Sync deps for the receipt hash mint
+        run: uv sync --frozen --group dev
+
+      # Phase 2 resolves the two values that could not exist before the PR did.
+      - name: Phase 2 — commit DoD receipts as the App
+        if: ${{ steps.pr.outputs.number != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TICKET: ${{ inputs.ticket }}
+          SRC_SHA: ${{ steps.guardrail.outputs.src_sha }}
+          HEAD_BRANCH: ${{ steps.phase1.outputs.head_branch }}
+          PHASE1_SHA: ${{ steps.phase1.outputs.commit_sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/stage_grant_receipt_paths.txt ]; then
+            echo "No staged evidence; nothing to do in phase 2."
+            exit 0
+          fi
+          mapfile -t evidence < /tmp/stage_grant_receipt_paths.txt
+          git checkout "$SRC_SHA" -- "${evidence[@]}"
+
+          # The contract's self-bind item and the receipts both name the PR;
+          # the receipts additionally name the grant commit they attest to.
+          # Renaming a path is deliberately NOT supported — a receipt directory
+          # carrying a PR number in its name would have to be created here, and
+          # a workflow that can rename paths as the App is a wider primitive
+          # than this one needs.
+          # A receipt lives at drift/dod_receipts/<ticket>/<evidence_item_id>/,
+          # and the self-bind item id carries the PR number, so the PATH is
+          # templated too and is resolved here alongside the file contents.
+          final=()
+          for f in "${evidence[@]}"; do
+            [ -f "$f" ] || continue
+            target="${f//__PR_NUMBER__/${PR_NUMBER}}"
+            tmp="$(mktemp)"
+            sed -e "s/__COMMIT_SHA__/${PHASE1_SHA}/g" -e "s/__PR_NUMBER__/${PR_NUMBER}/g" "$f" > "$tmp"
+            if [ "$target" != "$f" ]; then
+              mkdir -p "$(dirname "$target")"
+              rm -f "$f"
+              rmdir "$(dirname "$f")" 2>/dev/null || true
+            fi
+            mv "$tmp" "$target"
+            final+=("$target")
+          done
+
+          if grep -rnE '__(COMMIT_SHA|PR_NUMBER)__' -- "${final[@]}"; then
+            echo "::error::a placeholder survived substitution"
+            exit 7
+          fi
+
+          # Mint each receipt's contract_entry_sha256 from the FINAL contract,
+          # using the same helper the Receipt Hardening Gate validates with, so
+          # the two cannot disagree. Hand-authored hashes are the failure mode
+          # this step exists to remove.
+          contract="contracts/${TICKET}.yaml"
+          if [ -f "$contract" ]; then
+            uv run python - "$contract" "${final[@]}" <<'MINT'
+          import pathlib
+          import sys
+
+          import yaml
+          from omnibase_core.validation.validator_receipt_gate import (
+              compute_contract_entry_sha256,
+          )
+
+          contract_path = pathlib.Path(sys.argv[1])
+          contract_data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+
+          for raw in sys.argv[2:]:
+              path = pathlib.Path(raw)
+              if path == contract_path or not path.is_file():
+                  continue
+              text = path.read_text(encoding="utf-8")
+              receipt = yaml.safe_load(text)
+              if not isinstance(receipt, dict) or "evidence_item_id" not in receipt:
+                  continue
+              item_id = str(receipt["evidence_item_id"])
+              # The helper already returns an "sha256:"-prefixed value, and the
+              # Receipt Hardening Gate compares against it verbatim.
+              digest = compute_contract_entry_sha256(contract_data, item_id)
+              lines = text.splitlines(keepends=True)
+              for index, line in enumerate(lines):
+                  if line.startswith("contract_entry_sha256:"):
+                      lines[index] = f'contract_entry_sha256: "{digest}"\n'
+                      break
+              else:
+                  raise SystemExit(f"{path}: no contract_entry_sha256 line to mint")
+              path.write_text("".join(lines), encoding="utf-8")
+              print(f"minted {path} -> {digest}")
+          MINT
+          fi
+
+          git add -A -- "contracts/${TICKET}.yaml" "drift/dod_receipts/${TICKET}"
+          git commit \
+            -m "evidence(${TICKET}): DoD receipts + self-bind for the staged prod-promotion grant" \
+            -m "commit_sha binds to ${PHASE1_SHA}, the grant commit these receipts attest to; the self-bind binds to PR ${PR_NUMBER}."
+          git push origin "HEAD:refs/heads/${HEAD_BRANCH}"
+
+      # Self-reporting is not verification. Read the author back from GitHub
+      # and fail the run if it is not the App — a PR the operator cannot
+      # approve is worse than no PR at all.
+      - name: Verify the PR author is the App
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          BOT_LOGIN: ${{ steps.identity.outputs.bot_login }}
+        run: |
+          set -euo pipefail
+          gh pr view "$PR_NUMBER" --repo "${GITHUB_REPOSITORY}" \
+            --json number,url,author,headRefName,baseRefName,isDraft
+          author="$(gh pr view "$PR_NUMBER" --repo "${GITHUB_REPOSITORY}" --json author --jq '.author.login')"
+          url="$(gh pr view "$PR_NUMBER" --repo "${GITHUB_REPOSITORY}" --json url --jq '.url')"
+          head_ref="$(gh pr view "$PR_NUMBER" --repo "${GITHUB_REPOSITORY}" --json headRefName --jq '.headRefName')"
+          base_ref="$(gh pr view "$PR_NUMBER" --repo "${GITHUB_REPOSITORY}" --json baseRefName --jq '.baseRefName')"
+          bare_login="${BOT_LOGIN%\[bot\]}"
+          if [ "$author" != "$BOT_LOGIN" ] && [ "$author" != "$bare_login" ]; then
+            echo "::error::PR author readback is '${author}', expected '${BOT_LOGIN}'. The operator could not approve this PR."
+            exit 8
+          fi
+          {
+            echo "### Staged prod-promotion grant PR"
+            echo
+            echo "- PR: ${url}"
+            echo "- author: ${author}"
+            echo "- head: ${head_ref}"
+            echo "- base: ${base_ref}"
+            echo
+            echo "No prod mutation was performed. The CODEOWNERS merge is the approval act (OMN-13418)."
+          } >> "$GITHUB_STEP_SUMMARY"
