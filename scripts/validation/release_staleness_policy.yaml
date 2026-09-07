@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# Publishing-repo inventory and staleness policy for
+# scripts/validation/check_release_staleness.py (OMN-18010, deliverable 3).
+#
+# THE PUBLISHING SET
+# ------------------
+# Every repo that ships a package to an index, and therefore CAN carry a
+# release debt. onex_change_control is deliberately absent: it publishes
+# nothing (pypi.org/pypi/onex-change-control/json => 404, with a fake-package
+# negative control also 404 and every real package 200), so it hosts this gate
+# rather than being a subject of it. omnidash, omniweb, omninode_infra and
+# knowledge-base are absent for the same reason -- no release.yml, no index
+# presence.
+#
+# PACKAGED PATHS
+# --------------
+# `packaged_paths` mirrors the release-on-merge trigger's `paths:` filter
+# (omnimarket .github/workflows/release-on-merge.yml and
+# scripts/ci/decide_release_on_merge.py PACKAGED_PREFIXES/PACKAGED_FILES).
+# All eight repos build exactly `packages = ["src/<pkg>"]` under hatchling and
+# carry their own version in uv.lock -- verified by reading each pyproject.toml
+# on 2026-09-07, not assumed -- so the three roots are uniform. omniclaude's
+# `plugins/` tree is NOT packaged (its wheel is `packages = ["src/omniclaude"]`
+# only), so it is correctly not release debt. A docs-only merge never counts.
+#
+# `enforced` IS THE BLAST-RADIUS CONTROL, AND IT IS A RATCHET
+# -----------------------------------------------------------
+# This gate's context is asserted on every onex_change_control PR, and OCC is
+# the evidence-companion repo for the whole org: a red gate here stops every
+# product PR everywhere. Release-on-merge is armed on exactly ONE repo today
+# (omnimarket, proven live twice -- v0.4.20 run 34066508864 and v0.4.21 run
+# 34073404624). Enforcing staleness on the other seven would wedge the org for
+# a condition nobody has a mechanism to clear: on those repos the release is
+# still a manual tag push, so "cut a release" is not something a merging lane
+# can do in response to the red check.
+#
+# So a repo is enforced the moment its automatic release exists. Until then it
+# is measured, printed and counted on EVERY run as STALE_UNENFORCED -- the debt
+# stays visible, which is the whole point of the ticket -- and it is named in
+# .onex_ratchets/omn_18010_release_staleness_unenforced_baseline.yaml, which
+# `--check-roster` and tests/test_check_release_staleness.py hold SHRINK-ONLY.
+# Flipping a repo to enforced=false that is not already in that baseline is a
+# hard failure. Enforcement can only widen.
+#
+# TO ARM A REPO: land its release-on-merge.yml, flip `enforced: true`, drop its
+# deferral fields, and remove its name from the baseline -- in one PR.
+---
+max_age_hours: 24
+
+repos:
+  # ARMED. Release-on-merge landed via omnimarket#2345 / #2353 / #2362 and has
+  # produced two live automatic releases from real source merges to dev.
+  - repo: omnimarket
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: true
+
+  - repo: omnibase_core
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: false
+    deferral_ticket: OMN-18010
+    deferral_reason: "Release-on-merge is not yet ported here (rollout step 2). Releases are still a manual
+      tag push, so a merging lane cannot clear a red check by releasing. Arm together with the enforced
+      flag in the porting PR."
+
+  - repo: omnibase_infra
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: false
+    deferral_ticket: OMN-18010
+    deferral_reason: "Release-on-merge is not yet ported here (rollout step 2). Carries the heaviest post-release
+      job graph of the set (runner-image identity, runtime-rebuild dispatch, dependency cascade), so its
+      port is the most review-sensitive."
+
+  - repo: omnibase_spi
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: false
+    deferral_ticket: OMN-18010
+    deferral_reason: "Release-on-merge is not yet ported here (rollout step 2). allow_auto_merge is false
+      on this repo, so its post-release dev-bump fallback path needs the direct-push leg proven before
+      the trigger is armed."
+
+  - repo: omnibase_compat
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: false
+    deferral_ticket: OMN-18010
+    deferral_reason: "Release-on-merge is not yet ported here (rollout step 2). Deliberately outside the
+      OMN-16289 main-ruleset scope, so its main-sync leg differs from every other repo's and must be ported
+      explicitly rather than copied."
+
+  - repo: omnimemory
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: false
+    deferral_ticket: OMN-18010
+    deferral_reason: "Release-on-merge is not yet ported here (rollout step 2). Its release fans out to
+      a plugin-pin cascade dispatch into omnibase_infra, which must be chained into the same run rather
+      than left to a tag-push trigger."
+
+  - repo: omniintelligence
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: false
+    deferral_ticket: OMN-18010
+    deferral_reason: "Rollout step 3, blocked on a deliberate catch-up release. Arming release-on-merge
+      here would publish roughly three months of accumulated change under a single patch bump; a considered
+      minor release must land first, and only then does enforcement have a reachable green state."
+
+  - repo: omniclaude
+    branch: dev
+    packaged_paths: [src, pyproject.toml, uv.lock]
+    enforced: false
+    deferral_ticket: OMN-18010
+    deferral_reason: "Rollout step 3, blocked on a deliberate catch-up release, for the same reason as
+      omniintelligence: a comparable multi-month backlog of unreleased packaged source that a single patch
+      bump must not swallow."

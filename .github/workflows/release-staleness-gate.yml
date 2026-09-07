@@ -1,0 +1,151 @@
+---
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+
+# release-staleness-gate.yml
+#
+# OMN-18010 deliverable 3 — the dev-vs-tag staleness gate.
+#
+# WHAT FAILED, MEASURED
+# ---------------------
+# A release in this org is a manual, ticket-driven tag push; "Done" is measured
+# at merge; and nothing audits the distance between `dev` and the last tag.
+# omnimarket#2304 merged 2026-09-05 and sat unreleased with its release ticket
+# in Backlog; #2334 did the same; a PRD scoring pass found five landed-but-not-
+# deployed items at once. omniintelligence and omniclaude have each carried
+# roughly three months of unreleased packaged source with no alarm of any kind.
+#
+# WHY THIS IS A GATE AND NOT A REPORT
+# -----------------------------------
+# CLAUDE.md rule 5: detection that is not wired as a blocking check is advisory
+# and gets ignored. This workflow's job context is named in
+# `scripts/ci/ci_summary_gate.py` EXPECTED_EXTERNAL_CONTEXTS, so it is asserted
+# under the `CI Summary` umbrella that `dev` actually requires — reading the
+# live surface first, as OMN-18010 instructs: this branch requires
+# ["CI Summary", "required-check-skip-guard / check-skip-vectors",
+#  "verify / verify", "occ-preflight / eligibility"], so the umbrella IS the
+# enforcement surface here and the context is not appended to
+# required_status_checks directly.
+#
+# THE JOB MUST NEVER SKIP
+# -----------------------
+# `CI Summary`'s L4 layer is success-only: a `skipped` external context fails
+# closed. So this job carries no `if:` and the pull_request trigger carries no
+# `paths:` filter — either would skip the job on an ordinary PR and wedge every
+# merge in the repo. `tests/test_check_release_staleness.py`
+# ::test_gate_workflow_runs_unconditionally_on_pull_request pins that shape.
+#
+# BLAST RADIUS
+# ------------
+# OCC is the evidence-companion repo for the whole org, so a red gate here stops
+# every product PR everywhere. That is why the policy carries a per-repo
+# `enforced` flag: a repo blocks once its automatic release exists, and the
+# other seven are measured and printed on every run but do not fail the build.
+# The roster is shrink-only (.onex_ratchets/), so enforcement can only widen.
+
+name: Release Staleness Gate
+
+on:
+  pull_request: {}
+  schedule:
+    # Daily, offset from the 12:00 promotion staleness monitor so the two do
+    # not contend for the same self-hosted runners.
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+    inputs:
+      max_age_hours:
+        description: "Override the staleness window, in hours"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-staleness-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-staleness:
+    name: release-staleness
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout OCC
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install --disable-pip-version-check "pyyaml>=6.0.2"
+
+      # The App token gives a stable, higher rate limit across the eight
+      # publishing repos. Every one of them is PUBLIC (read back live
+      # 2026-09-07), so the `|| github.token` fallback is sufficient rather
+      # than decorative: a fork PR has no secrets, the mint yields an empty
+      # string, and the default token still reads public tags and commits.
+      # Without that, this required context would be unsatisfiable from a fork
+      # and would wedge exactly the contributors it should not.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+
+      - name: Export GH_TOKEN for gh CLI steps
+        run: echo "GH_TOKEN=${{ steps.app-token.outputs.token || github.token }}" >> "$GITHUB_ENV"
+
+      # Offline half: the policy file's own schema, and the shrink-only ratchet
+      # on the unenforced roster. Runs first and separately so a malformed
+      # policy is reported as a policy error rather than as a network failure.
+      - name: Check the enforcement roster (offline)
+        run: python3 scripts/validation/check_release_staleness.py --check-roster
+
+      - name: Audit dev-vs-tag release staleness
+        env:
+          MAX_AGE_HOURS: ${{ github.event.inputs.max_age_hours }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${MAX_AGE_HOURS:-}" ]; then
+            args+=(--max-age-hours "$MAX_AGE_HOURS")
+          fi
+          # No `2>/dev/null` anywhere in this job, deliberately: a suppressed
+          # error yields zero rows and reads exactly like a clean bill of
+          # health (CLAUDE.md rule 16). The script fails closed on any repo it
+          # cannot read, and auto-runs its own positive control before it is
+          # allowed to report a zero.
+          python3 scripts/validation/check_release_staleness.py "${args[@]}"
+
+      - name: Record the finding table as JSON evidence
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p release-staleness-evidence
+          python3 scripts/validation/check_release_staleness.py --json \
+            > release-staleness-evidence/release_staleness.json || true
+          # `|| true` here and nowhere else: this step exists to capture the
+          # same verdict in machine-readable form for the artifact, and a
+          # second non-zero exit from an already-reported failure must not
+          # mask the real one above.
+
+      - name: Upload staleness evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-staleness-${{ github.run_id }}
+          path: release-staleness-evidence
+          retention-days: 90
+          if-no-files-found: warn
