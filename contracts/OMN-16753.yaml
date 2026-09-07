@@ -45,3 +45,63 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7893 --repo OmniNode-ai/onex_change_control --json number,state"
+  # --- OMN-16753 App-authored grant-staging path (appended; nothing above is modified) ---
+  # A prod-promotion grant is only real once a human CODEOWNERS operator merges it onto
+  # onex_change_control@main — that merge IS the approval act (OMN-13418). Every staging PR
+  # before this was opened by the CODEOWNER themselves (OCC#7418, OCC#7899), and GitHub does
+  # not let an author approve their own pull request, so the review half of the gate could
+  # never actually be exercised. Operator ruling 2026-09-06, firm: the staging PR is to be
+  # opened by the onexbot-occ-writer App. These three items cover that path's tooling and the
+  # OMN-16753 request bundle it renders. Dev-only: no production mutation, no grant registry
+  # change on main, no dispatch of deploy-onex-prod.yml, and no change to any standing
+  # operator restriction on dispatching.
+  - id: "dod-occ-grant-staging-workflow-exists"
+    description: >-
+      .github/workflows/stage-prod-promotion-grant.yml is present on this branch, is a workflow_dispatch
+      workflow, and mints the onexbot-occ-writer App installation token from the org secrets ONEXBOT_OCC_APP_ID
+      / ONEXBOT_OCC_PRIVATE_KEY via actions/create-github-app-token — the same pinned mint shape this
+      repo already uses in nightly-promote.yml and evidence-import.yml. The token is exported only into
+      step env and is never echoed or written to a file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q 'workflow_dispatch:' .github/workflows/stage-prod-promotion-grant.yml && grep -q 'ONEXBOT_OCC_APP_ID'
+          .github/workflows/stage-prod-promotion-grant.yml && grep -q 'ONEXBOT_OCC_PRIVATE_KEY' .github/workflows/stage-prod-promotion-grant.yml
+  - id: "dod-occ-grant-request-bundle-complete"
+    description: >-
+      The OMN-16753 request bundle under .github/prod-promotion-requests/OMN-16753/ carries every file
+      the workflow refuses to run without — manifest.yaml (the asserted approved_by / expires_at / grant
+      ids that dispatch inputs are checked against), entries_block.yaml (the grant entries and their header),
+      occ_contract.yaml (the OCC contract rendered onto the hotfix branch), pr_body.md (the PR body, carrying
+      the main-target-guard hotfix-evidence and backmerge lines), and receipts/ (the three DoD receipts
+      whose probe output was produced against the manifest's values). The workflow fails closed on any
+      missing member and on any dispatch input that disagrees with the manifest — which is what stops
+      a dispatcher staging a different approved_by or expires_at while shipping receipts that attest to
+      the old ones.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f .github/prod-promotion-requests/OMN-16753/manifest.yaml && test -f .github/prod-promotion-requests/OMN-16753/entries_block.yaml
+          && test -f .github/prod-promotion-requests/OMN-16753/occ_contract.yaml && test -f .github/prod-promotion-requests/OMN-16753/pr_body.md
+          && test -d .github/prod-promotion-requests/OMN-16753/receipts
+  - id: "dod-occ-grant-consumer-gate-preproof"
+    description: >-
+      The consumer of the grant registry — omninode_infra scripts/validate_prod_promotion_grant.py (OMN-14209,
+      extended by OMN-17357), the exact script deploy-onex-prod.yml runs — resolved against the file this
+      bundle renders, offline via its own --grants-file path, from an omninode_infra worktree at main
+      bc451167. Two legs. Leg A, with no staging-green report, is how a dispatch would actually run today:
+      all four dispatcher/digest combinations BLOCK on the OMN-17357 staging-green premise, which is evaluated
+      before the grant anchor is read. Leg B supplies a synthetic GREEN report SOLELY to isolate the grant
+      leg — a fixture, labelled as such, that proves nothing about staging — and on it both digests PASS
+      for dispatcher daniyalabbas96 and both BLOCK as self_granted for dispatcher jonahgabriel. Recorded
+      here on dev so the finding is reviewable before any grant PR is opened.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-16753/dod-occ-grant-consumer-gate-preproof/command.yaml
