@@ -241,6 +241,12 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # is touched) must stay visible on the PR's check list -- it must
         # NOT gate CI Summary, which is exactly what SOFT_ALLOWLIST gives it.
         "Governance File Advisory Gate",
+        # public-repo-hygiene.yml (OMN-18016) -- report-mode reusable hygiene
+        # caller. The workflow comments state that the validator records every
+        # finding and exits 0 while pre-existing public-repo residue is cleaned
+        # up. It is an advisory visibility surface for this PR, not a CI Summary
+        # blocker; enforcement happens when the gate flips out of report mode.
+        "public-repo-hygiene",
     }
 )
 
