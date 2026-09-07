@@ -23,13 +23,19 @@ is the App identity (app id 4361937), minted inside GitHub Actions from the org 
 
 Stated plainly rather than implied, because it is the obvious objection: the *content* of this
 request was authored by an agent lane and reviewed as ordinary CI-gated work on `dev` (the
-request bundle at `grants/requests/OMN-16753/` and the workflow that renders it, PR
+request bundle at `.github/prod-promotion-requests/OMN-16753/` and the workflow that renders it, PR
 __WORKFLOW_PR__). This PR is that reviewed bundle rendered onto `main` by the App. The App is
 the author of record and the operator is the approver of record; neither role is being
 laundered through the other, and what changed versus OCC#7899 is that the approval is now
 structurally *possible*.
 
-This PR supersedes OCC#7899, which has been closed.
+This PR supersedes OCC#7899 and OCC#8504, both of which have been closed. OCC#8504 was
+the first App-authored staging of this same authorization; it was rendered from a bundle
+whose contract carried two `dod_evidence` ids over the 50-character `ModelTicketContract`
+cap, so `Validate Contract YAML (OMN-8808)` and the pre-commit hook of the same name both
+failed on it. The ids were shortened on `dev` in OCC#8510 and this PR is the re-render.
+Nothing about the authorization itself changed: the grant ids, the batch id, both image
+digests, `approved_by` and `expires_at` are byte-identical to OCC#8504's.
 
 ## What it authorizes
 
