@@ -123,9 +123,9 @@ If it lapses unmerged, the OMN-13424 at-rest invariant fails CI for every subseq
   [jonahgabriel   bc95b9bc] exit=1 [prod-grant] BLOCKED (self_granted) — self-approval is rejected
   ```
   Full verbatim output is in
-  `drift/dod_receipts/OMN-16753/dod-prod-promotion-grant-consumer-gate-omn16753-app/command.yaml`.
+  `drift/dod_receipts/OMN-16753/dod-grant-consumer-gate-omn16753-app/command.yaml`.
 - **Author identity read back from the API**, not asserted: see
-  `drift/dod_receipts/OMN-16753/dod-prod-promotion-grant-author-identity-omn16753-app/command.yaml`.
+  `drift/dod_receipts/OMN-16753/dod-grant-author-identity-omn16753-app/command.yaml`.
 - **Nothing is pruned by this PR**: `main` is already at rest (`entries: []`).
 
 Refs: OMN-16753, OMN-16620, OMN-16799, OMN-16757, OMN-17357, OMN-13418, OMN-13424
