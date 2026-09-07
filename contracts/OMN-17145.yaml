@@ -1,0 +1,71 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17145"
+title: "occ main maintenance: register the two 2026-09-06 omninode_infra migrations in the main-branch
+  inventory"
+summary: >
+  `src/onex_change_control/boundaries/migration_inventory.yaml` on `main` does not list two migration
+  files that exist on `omninode_infra`'s live `dev` branch — `20260906_gateway_workflows_failure_attribution.sql`
+  and `20260906_tenant_api_keys_unique_active_name.sql`. `Migration Inventory Sync` is a required status
+  check on `main`, and it clones each peer and compares the peer's tree against this inventory, so the
+  two unlisted files fail the check on EVERY `main`-targeting PR regardless of that PR's own diff. This
+  is the fifth recurrence of the same class (OMN-14472, OMN-16109, OMN-16130 and this ticket's own earlier
+  occurrences); the point-of-drift guard that would stop it recurring is OMN-14474 and is still unbuilt,
+  which is stated here rather than implied because this PR does not fix the recurrence, only the current
+  instance. Found because it blocked onex_change_control#8571, the App-authored OMN-16753 prod-promotion
+  grant staging PR, whose own diff touches no migration and no peer repo. `dev`'s copy of the inventory
+  already lists both files; `dev` also carries a newer generated-inventory format whose entries omit the
+  `tables:` key that `main`'s validator still requires, so the two entries are written here in `main`'s
+  own format rather than copied across, and the `tables:` values are read from the migration files themselves.
+  No production system is touched by this change and nothing about the OMN-16753 authorization is altered
+  by it.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "migration_inventory.yaml on this branch lists both 2026-09-06 omninode_infra migrations
+      with the tables each one touches."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-inventory-lists-two-20260906-migrations"
+    description: >-
+      Falsifiable static assertion over the one changed source file. The inventory is read once into a
+      variable and every grep runs against that captured body, per the OMN-15391 Rule D fail-closed form,
+      so a failed read cannot pass as a false positive. It asserts both `- file:` lines and both `tables:`
+      lines, and goes RED if any of the four assertions fails. The `tables:` values are not asserted from
+      the inventory alone: `20260906_gateway_workflows_failure_attribution.sql` runs `ALTER TABLE public.gateway_workflows`
+      and writes `public.migrations_log`, and `20260906_tenant_api_keys_unique_active_name.sql` creates
+      a unique index on `public.tenant_api_keys` and writes `public.migrations_log`. Red->green proof
+      was run locally and is recorded verbatim in the receipt: the same command exits 1 against `origin/main`'s
+      inventory, where neither entry is present, and exits 0 against this branch's.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          inv_body="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)" && printf '%s'
+          "$inv_body" | grep -A1 -F '20260906_gateway_workflows_failure_attribution.sql' | grep -qF 'tables:
+          [gateway_workflows, migrations_log]' && printf '%s' "$inv_body" | grep -A1 -F '20260906_tenant_api_keys_unique_active_name.sql'
+          | grep -qF 'tables: [migrations_log, tenant_api_keys]'
+  - id: "dod-inventory-checker-clean-on-this-branch"
+    description: >-
+      The repo's own `check-migration-inventory` validator — the exact console script the `Migration Inventory
+      Sync` job runs — reports zero ERROR rows against this branch's inventory with the peer clones present
+      on disk. Recorded honestly: one WARNING remains for `omnidash-archived`, which has no clone locally
+      and which the validator treats as degraded validation rather than a blocking error, identically
+      before and after this change. The zero is proven with a positive control rather than reported bare:
+      renaming one of the two new entries to a filename that does not exist made the same command emit
+      both a MISSING_FILE and an UNLISTED_FILE row, so the clean run is a real reading and not a silent
+      no-op. The hosted check_value is the static form above's companion rather than the validator itself,
+      because the validator needs peer repository clones the OCC runner supplies only inside that job.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -q '^status: PASS$' drift/dod_receipts/OMN-17145/dod-inventory-checker-clean-on-this-branch/command.yaml

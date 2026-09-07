@@ -1,0 +1,39 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17145"
+evidence_item_id: "dod-inventory-lists-two-20260906-migrations"
+check_type: "command"
+check_value: |-
+  inv_body="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)" && printf '%s' "$inv_body" | grep -A1 -F '20260906_gateway_workflows_failure_attribution.sql' | grep -qF 'tables: [gateway_workflows, migrations_log]' && printf '%s' "$inv_body" | grep -A1 -F '20260906_tenant_api_keys_unique_active_name.sql' | grep -qF 'tables: [migrations_log, tenant_api_keys]'
+contract_sha256: sha256:160d1b92be582050a4af354f496b8dd118989fb16f188e96d63c5511c7d0ae7b
+contract_entry_sha256: sha256:137f8a1eb6810a2968e912dfdcc6d3dd77b401a9cbfd7bfa1762c85bdc28b7d6
+status: PASS
+run_timestamp: "2026-09-07T10:13:45Z"
+commit_sha: "687625e81356254b07346af0cd59537bf4e3eb02"
+runner: "occ-grant-restage-as-app-lane"
+verifier: "occ-grant-restage-as-app-verifier"
+probe_command: |-
+  # RED, against origin/main's inventory, where neither entry is present:
+  git show origin/main:src/onex_change_control/boundaries/migration_inventory.yaml > /tmp/inv_main.yaml
+  ( inv_body="$(cat /tmp/inv_main.yaml)"; <the check_value greps> ); echo "red_exit=$?"
+  # GREEN, against this branch:
+  ( inv_body="$(cat src/onex_change_control/boundaries/migration_inventory.yaml)"; <the same greps> ); echo "green_exit=$?"
+  # exit status is captured OUTSIDE any pipe, so it is the command's own and not a tail's
+probe_stdout: |-
+  === RED (origin/main inventory) ===
+  red_exit=1
+  === GREEN (this branch) ===
+  green_exit=0
+exit_code: 0
+actual_output: |-
+  PASS: migration_inventory.yaml on this branch lists both 2026-09-06 omninode_infra migrations with the
+  tables each one touches - 20260906_gateway_workflows_failure_attribution.sql with
+  [gateway_workflows, migrations_log] and 20260906_tenant_api_keys_unique_active_name.sql with
+  [migrations_log, tenant_api_keys]. The tables values are read from the migration files themselves, not
+  guessed: the first runs ALTER TABLE public.gateway_workflows and writes public.migrations_log; the
+  second creates a unique index on public.tenant_api_keys and writes public.migrations_log. The assertion
+  is falsifiable and was falsified on purpose: the identical command exits 1 against origin/main, where
+  neither entry exists, which is the state that is failing Migration Inventory Sync on every
+  main-targeting PR today.
+pr_number: 8573
+branch: "hotfix/omn-17145-migration-inventory-sync"
