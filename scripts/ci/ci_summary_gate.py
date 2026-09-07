@@ -327,6 +327,16 @@ EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
     # every dev PR, not skipped). The job's own docs_only skip-with-success
     # design (ci.yml:82-86 equivalent) was already wedge-safe.
     "CodeQL / CodeQL Analysis (python)",
+    # release-staleness-gate.yml (OMN-18010 deliverable 3) -- unconditional:
+    # the workflow's `pull_request:` trigger carries no `branches:`/`paths:`
+    # filter and its single job carries no `if:`, so it reports on every PR.
+    # This entry is the ONLY thing that gives the staleness gate merge-blocking
+    # force -- `dev` requires the `CI Summary` umbrella, not this context
+    # directly -- so deleting it turns the gate back into the detection-only
+    # sweep that CLAUDE.md rule 5 says gets ignored. Pinned from the other
+    # side by tests/test_check_release_staleness.py, whose
+    # test_gate_context_is_asserted_by_ci_summary fails if this entry goes.
+    "release-staleness",
 )
 
 # Contexts that were CONSIDERED for L4 and deliberately NOT enforced, with the
