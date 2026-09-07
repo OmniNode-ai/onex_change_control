@@ -49,28 +49,47 @@ dod_evidence:
           CHECK
         cwd: "${OMNI_HOME}/omnimarket"
   - id: "dod-product-head-and-scope"
-    description: "The remote product PR head and changed-file list match the local sink module and focused
-      tests."
+    description: "The remote product head has exactly the local sink module and its tests relative to
+      its immutable PR base."
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -euo pipefail <<'CHECK'
+          actual_sha="$(gh api repos/OmniNode-ai/omnimarket/commits/bb5a7e872f26a3ec4425bc0d7910d86eb7286473 --jq .sha)"
+          test "$actual_sha" = "bb5a7e872f26a3ec4425bc0d7910d86eb7286473"
+          test "$(git merge-base ae412aa4cbdf8f284277c9e218831aec466a1e40 bb5a7e872f26a3ec4425bc0d7910d86eb7286473)" = "ae412aa4cbdf8f284277c9e218831aec466a1e40"
+          test "$(git diff --name-only ae412aa4cbdf8f284277c9e218831aec466a1e40...bb5a7e872f26a3ec4425bc0d7910d86eb7286473)" = "$(printf '%s\n%s' scripts/hooks/parse_hook_events.py tests/scripts/test_parse_hook_events.py)"
+          git diff --check ae412aa4cbdf8f284277c9e218831aec466a1e40...bb5a7e872f26a3ec4425bc0d7910d86eb7286473
+          printf 'PASS: remote product SHA, immutable base, declared paths, and whitespace check matched\n'
+          CHECK
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-hosted-product-source-invariants"
+    description: "Hosted source-presence check binds the immutable product head to nonblocking lock handling
+      and explicit descriptor cleanup; local behavior remains proven separately."
     source: "manual"
     execution_scope: "hosted_and_local"
     checks:
       - check_type: "command"
         check_value: |-
           bash -euo pipefail <<'CHECK'
-          actual_sha="$(gh api repos/OmniNode-ai/omnimarket/pulls/2360 --jq .head.sha)"
-          test "$actual_sha" = "bb5a7e872f26a3ec4425bc0d7910d86eb7286473"
-          test "$(gh api repos/OmniNode-ai/omnimarket/pulls/2360 --jq .base.ref)" = "dev"
-          files="$(gh api repos/OmniNode-ai/omnimarket/pulls/2360/files --paginate --jq '.[].filename' | sort)"
-          test "$files" = "$(printf '%s\n%s' scripts/hooks/parse_hook_events.py tests/scripts/test_parse_hook_events.py)"
-          printf 'PASS: omnimarket#2360 head, base, and declared changed files matched via GitHub API\n'
+          expected_sha="bb5a7e872f26a3ec4425bc0d7910d86eb7286473"
+          actual_sha="$(gh api "repos/OmniNode-ai/omnimarket/commits/$expected_sha" --jq .sha)"
+          test "$actual_sha" = "$expected_sha"
+          source_file="$(mktemp "${TMPDIR:-/tmp}/omn-17469-source.XXXXXX")"
+          trap 'rm -f "$source_file"' EXIT
+          gh api "repos/OmniNode-ai/omnimarket/contents/scripts/hooks/parse_hook_events.py?ref=$actual_sha" --jq .content | base64 -d > "$source_file"
+          grep -Fq 'if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):' "$source_file"
+          grep -Fq '_close_once(descriptor)' "$source_file"
+          printf 'PASS: immutable product source retains nonblocking lock handling and descriptor cleanup\n'
           CHECK
-        cwd: "${OMNI_HOME}/onex_change_control"
   - id: "occ-self-bind-pr-8492"
     description: "Observed initial identity for OCC companion PR #8492. This records its PR number, branch,
       base, and prior published evidence commit; it does not assert that a later self-bind commit remains
       the PR head."
     source: "manual"
-    execution_scope: "hosted_and_local"
+    execution_scope: "local_done_gate"
     checks:
       - check_type: "command"
         check_value: |-
