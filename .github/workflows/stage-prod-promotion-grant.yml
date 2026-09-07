@@ -1,0 +1,504 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-16753 / OMN-13418: stage a prod-promotion grant on `main` as the
+# onexbot-occ-writer GitHub App.
+#
+# WHY THIS EXISTS. A prod-promotion grant is only real once a human CODEOWNERS
+# operator merges it onto `onex_change_control@main` — that merge IS the
+# approval act (OMN-13418). Every staging PR before this workflow was opened by
+# the CODEOWNER themselves (OCC#7418, OCC#7899), and GitHub does not let an
+# author approve their own pull request, so the review half of the gate could
+# never actually be exercised. Operator ruling, 2026-09-06, firm: the staging
+# PR is to be opened by the App so the CODEOWNER's review and merge is a
+# genuine second party.
+#
+# WHAT IT DOES NOT DO, and cannot. It performs NO production mutation. It does
+# not dispatch `deploy-onex-prod.yml`, it does not merge the PR it opens, and it
+# does not lift any standing operator restriction on dispatching. It creates a
+# branch and a pull request; everything after that is the operator's.
+#
+# WHAT IT WILL NOT LET YOU DO. The request content — the grant entries, the OCC
+# contract, and the DoD receipts carrying verbatim consumer-gate probe output —
+# is NOT supplied through workflow inputs. It is reviewed as ordinary CI-gated
+# work on `dev`, under `.github/prod-promotion-requests/<TICKET>/`, and this workflow only
+# renders it. The few operator-facing values that ARE inputs (`approved_by`,
+# `expires_at`) are checked against that bundle's `manifest.yaml` and the run
+# FAILS on any disagreement, because the bundled receipts attest to probe runs
+# made against those exact values. Shipping a receipt that reads as proof of a
+# value it was never run against is the failure mode this interlock exists to
+# make impossible, not an inconvenience it works around.
+#
+# The App installation token is minted from the org secrets
+# ONEXBOT_OCC_APP_ID / ONEXBOT_OCC_PRIVATE_KEY (visibility: selected; this repo
+# is in the selected set) and is never echoed. Same mint shape as
+# `nightly-promote.yml` and `evidence-import.yml` in this repo.
+
+name: Stage Prod-Promotion Grant
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: "Ticket id whose request bundle to render (grants/requests/<ticket>/)"
+        required: true
+        type: string
+      approved_by:
+        description: "GitHub login proposed as approved_by; MUST match the bundle manifest"
+        required: true
+        type: string
+      expires_at:
+        description: "Absolute UTC expiry (ISO-8601, e.g. 2026-09-09T22:30:00Z); MUST match the bundle manifest"
+        required: true
+        type: string
+      hotfix_evidence:
+        description: "OCC PR number for the main-target-guard hotfix-evidence line (digits only)"
+        required: true
+        type: string
+      backmerge:
+        description: "PR number for the main-target-guard backmerge line (digits only)"
+        required: true
+        type: string
+      workflow_pr:
+        description: "The dev PR that landed this request bundle, for the audit trail (digits only)"
+        required: true
+        type: string
+      branch_suffix:
+        description: "Short slug appended to the hotfix branch name to keep it unique"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage-prod-promotion-grant-${{ inputs.ticket }}
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    name: stage-prod-promotion-grant
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 20
+
+    env:
+      TICKET: ${{ inputs.ticket }}
+      APPROVED_BY: ${{ inputs.approved_by }}
+      EXPIRES_AT: ${{ inputs.expires_at }}
+      HOTFIX_EVIDENCE: ${{ inputs.hotfix_evidence }}
+      BACKMERGE: ${{ inputs.backmerge }}
+      WORKFLOW_PR: ${{ inputs.workflow_pr }}
+      BRANCH_SUFFIX: ${{ inputs.branch_suffix }}
+
+    steps:
+      - name: Checkout OCC (full history; both dev and main are needed)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+          repositories: onex_change_control
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Stage the request bundle outside the work tree
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_dir=".github/prod-promotion-requests/${TICKET}"
+          if [ ! -d "$bundle_dir" ]; then
+            echo "::error::no request bundle at ${bundle_dir} on this ref. The bundle is reviewed on dev; render only what has landed there."
+            exit 1
+          fi
+          for required in manifest.yaml entries_block.yaml occ_contract.yaml pr_body.md receipts; do
+            if [ ! -e "${bundle_dir}/${required}" ]; then
+              echo "::error::request bundle ${bundle_dir} is missing ${required}"
+              exit 1
+            fi
+          done
+          staged="${RUNNER_TEMP}/request-bundle"
+          rm -rf "$staged"
+          mkdir -p "$staged"
+          cp -R "${bundle_dir}/." "$staged/"
+          printf 'staged=%s\n' "$staged" >> "$GITHUB_OUTPUT"
+          echo "Staged $(find "$staged" -type f | wc -l | tr -d ' ') bundle file(s) to RUNNER_TEMP."
+
+      - name: Assert dispatch inputs match the reviewed bundle
+        shell: bash
+        env:
+          STAGED: ${{ steps.bundle.outputs.staged }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, sys, yaml
+          staged = os.environ["STAGED"]
+          m = yaml.safe_load(open(f"{staged}/manifest.yaml", encoding="utf-8"))
+          problems = []
+          for field, env_key in (("ticket_id", "TICKET"), ("approved_by", "APPROVED_BY"), ("expires_at", "EXPIRES_AT")):
+              want, got = str(m.get(field)), os.environ[env_key].strip()
+              if want != got:
+                  problems.append(
+                      f"{field}: dispatch input {got!r} != bundle manifest {want!r}. The bundled receipts "
+                      f"attest to probe runs made against the manifest value; staging a different one would "
+                      f"ship evidence that reads as proof of something never proven."
+                  )
+          for env_key in ("HOTFIX_EVIDENCE", "BACKMERGE", "WORKFLOW_PR"):
+              v = os.environ[env_key].strip()
+              if not v.isdigit():
+                  problems.append(f"{env_key} must be digits only (a PR number), got {v!r}")
+          suffix = os.environ["BRANCH_SUFFIX"].strip()
+          if not suffix or not all(c.isalnum() or c == "-" for c in suffix):
+              problems.append(f"branch_suffix must be non-empty alphanumeric/dash, got {suffix!r}")
+          if problems:
+              for p in problems:
+                  print(f"::error::{p}")
+              sys.exit(1)
+          print("Dispatch inputs agree with the reviewed bundle manifest.")
+          PY
+
+      - name: Create the hotfix branch from main
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ticket_lower="$(printf '%s' "$TICKET" | tr '[:upper:]' '[:lower:]')"
+          branch="hotfix/${ticket_lower}-grant-restage-${BRANCH_SUFFIX}"
+          git fetch origin main --quiet
+          git checkout -B "$branch" origin/main
+          if [ -e "contracts/${TICKET}.yaml" ]; then
+            echo "::error::contracts/${TICKET}.yaml already exists on main; refusing to clobber it."
+            exit 1
+          fi
+          printf 'branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
+          printf 'base_sha=%s\n' "$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Render the grant entries and the OCC contract onto the branch
+        shell: bash
+        env:
+          STAGED: ${{ steps.bundle.outputs.staged }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, pathlib, sys, yaml
+          staged = pathlib.Path(os.environ["STAGED"])
+          ticket = os.environ["TICKET"]
+          m = yaml.safe_load((staged / "manifest.yaml").read_text(encoding="utf-8"))
+
+          grants_path = pathlib.Path("grants/prod_promotion_grants.yaml")
+          current = grants_path.read_text(encoding="utf-8")
+          # The registry is at rest between grants (OMN-13424). Anything else on main
+          # means a live or expired grant is present and this render would silently
+          # drop or duplicate it, so refuse rather than guess.
+          if not current.rstrip().endswith("entries: []"):
+              print("::error::grants/prod_promotion_grants.yaml on main does not end with 'entries: []'; "
+                    "the registry is not at rest. Reconcile it before staging a new grant.")
+              sys.exit(1)
+
+          block = (staged / "entries_block.yaml").read_text(encoding="utf-8")
+          # yamlfmt (this repo's pre-commit) stamps a leading document marker on
+          # the bundled block. Appending that verbatim would start a SECOND YAML
+          # document inside the registry, so strip it before splicing.
+          if block.startswith("---\n"):
+              block = block[4:]
+          block = (block
+                   .replace("__APPROVED_BY__", str(m["approved_by"]))
+                   .replace("__EXPIRES_AT__", str(m["expires_at"]))
+                   .replace("__CREATED_AT__", str(m["created_at"])))
+          if "__" in block.replace("__pycache__", ""):
+              leftovers = sorted({t for t in block.split() if t.startswith("__") and t.endswith("__")})
+              print(f"::error::unsubstituted placeholders remain in entries_block.yaml: {leftovers}")
+              sys.exit(1)
+          rendered = current.rstrip()[: -len("entries: []")] + block
+          grants_path.write_text(rendered, encoding="utf-8")
+
+          parsed = yaml.safe_load(rendered)
+          if set(parsed) != {"entries"} or not isinstance(parsed["entries"], list) or not parsed["entries"]:
+              print("::error::rendered grant file does not parse to a non-empty 'entries' list")
+              sys.exit(1)
+          want_ids = set(m["grant_ids"])
+          got_ids = {e["grant_id"] for e in parsed["entries"]}
+          if want_ids != got_ids:
+              print(f"::error::rendered grant ids {sorted(got_ids)} != manifest {sorted(want_ids)}")
+              sys.exit(1)
+          for e in parsed["entries"]:
+              if e["approved_by"] != m["approved_by"] or e["expires_at"] != m["expires_at"]:
+                  print(f"::error::entry {e['grant_id']} did not render the manifest approved_by/expires_at")
+                  sys.exit(1)
+
+          contract_dest = pathlib.Path("contracts") / f"{ticket}.yaml"
+          contract_dest.parent.mkdir(parents=True, exist_ok=True)
+          # Byte-for-byte copy: the bundled receipts bind to this file's hash.
+          contract_dest.write_bytes((staged / "occ_contract.yaml").read_bytes())
+          print(f"Rendered {len(parsed['entries'])} grant entry(ies) and {contract_dest}.")
+          PY
+
+      - name: Commit and push the grant commit as the App
+        id: grant_commit
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "onexbot-occ-writer[bot]"
+          git config user.email "307849072+onexbot-occ-writer[bot]@users.noreply.github.com"
+          git add "grants/prod_promotion_grants.yaml" "contracts/${TICKET}.yaml"
+          git commit -m "chore(${TICKET}): re-stage the prod-promotion grant for the api.omninode.ai cutover
+
+          Staged by the onexbot-occ-writer App so the CODEOWNERS review and merge
+          is a genuine second party (operator ruling 2026-09-06). PREP ONLY: no
+          production mutation, and landing this does not lift the standing
+          operator restriction on dispatching deploy-onex-prod.yml."
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "HEAD:refs/heads/${BRANCH}"
+          printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Open the pull request as the App
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STAGED: ${{ steps.bundle.outputs.staged }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          set -euo pipefail
+          title="$(python3 -c "import os,yaml;print(yaml.safe_load(open(os.environ['STAGED']+'/manifest.yaml'))['pr_title'])")"
+          body="${RUNNER_TEMP}/pr_body.rendered.md"
+          python3 - <<'PY'
+          import os, pathlib, yaml
+          staged = pathlib.Path(os.environ["STAGED"])
+          m = yaml.safe_load((staged / "manifest.yaml").read_text(encoding="utf-8"))
+          text = (staged / "pr_body.md").read_text(encoding="utf-8")
+          text = (text
+                  .replace("__APPROVED_BY__", str(m["approved_by"]))
+                  .replace("__EXPIRES_AT__", str(m["expires_at"]))
+                  .replace("__HOTFIX_EVIDENCE_NUM__", os.environ["HOTFIX_EVIDENCE"])
+                  .replace("__BACKMERGE_NUM__", os.environ["BACKMERGE"])
+                  .replace("__WORKFLOW_PR__", "#" + os.environ["WORKFLOW_PR"]))
+          leftovers = sorted({t for t in text.split() if t.startswith("__") and t.endswith("__")})
+          if leftovers:
+              raise SystemExit(f"::error::unsubstituted placeholders remain in pr_body.md: {leftovers}")
+          pathlib.Path(os.environ["RUNNER_TEMP"], "pr_body.rendered.md").write_text(text, encoding="utf-8")
+          PY
+          url="$(gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${BRANCH}" \
+                   --title "$title" --body-file "$body")"
+          number="$(gh pr view "$url" --json number --jq .number)"
+          printf 'url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+          printf 'number=%s\n' "$number" >> "$GITHUB_OUTPUT"
+          echo "Opened $url"
+
+      - name: Read back the author identity from the API
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          readback="$(gh pr view "$PR_NUMBER" --repo "${GITHUB_REPOSITORY}" \
+                        --json author,baseRefName,headRefName,number,state,headRefOid)"
+          echo "$readback"
+          author="$(printf '%s' "$readback" | python3 -c 'import json,sys;print(json.load(sys.stdin)["author"]["login"])')"
+          case "$author" in
+            app/onexbot-occ-writer|onexbot-occ-writer\[bot\]) ;;
+            *)
+              echo "::error::PR ${PR_NUMBER} is authored by '${author}', not the onexbot-occ-writer App. The operator ruling this workflow exists to satisfy is not met."
+              exit 1
+              ;;
+          esac
+          {
+            printf 'author=%s\n' "$author"
+            printf 'readback<<OCCEOF\n%s\nOCCEOF\n' "$readback"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Render and push the DoD receipts
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STAGED: ${{ steps.bundle.outputs.staged }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+          GRANT_SHA: ${{ steps.grant_commit.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_AUTHOR: ${{ steps.identity.outputs.author }}
+          PR_READBACK: ${{ steps.identity.outputs.readback }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, pathlib, yaml
+
+
+          def _literal_str(dumper, data):
+              # OMN-15479: yamlfmt rewrites folded/quoted multi-line values and
+              # stamps its `#magic___^_^___line` sentinel into them, which the
+              # contamination ratchet correctly treats as proof the formatter
+              # edited text a verifier authored. A literal block scalar is
+              # preserved verbatim, so evidence written here survives byte-for-byte.
+              if "\n" in data or len(data) > 80:
+                  clean = "\n".join(line.rstrip() for line in data.split("\n"))
+                  return dumper.represent_scalar("tag:yaml.org,2002:str", clean, style="|")
+              return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+          class ReceiptDumper(yaml.SafeDumper):
+              pass
+
+
+          ReceiptDumper.add_representer(str, _literal_str)
+
+          staged = pathlib.Path(os.environ["STAGED"])
+          ticket = os.environ["TICKET"]
+          now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+          grant_sha = os.environ["GRANT_SHA"]
+          pr_number = int(os.environ["PR_NUMBER"])
+          branch = os.environ["BRANCH"]
+
+          dest_root = pathlib.Path("drift/dod_receipts") / ticket
+          dest_root.mkdir(parents=True, exist_ok=True)
+
+          # 1. The bundled receipts: verbatim, with only the four run-scoped fields filled in.
+          for src in sorted((staged / "receipts").glob("*/command.yaml")):
+              text = src.read_text(encoding="utf-8")
+              text = (text
+                      .replace("__RUN_TIMESTAMP__", now)
+                      .replace("__COMMIT_SHA__", grant_sha)
+                      .replace("__PR_NUMBER__", str(pr_number))
+                      .replace("__BRANCH__", branch))
+              leftovers = sorted({t for t in text.split() if t.startswith("__") and t.endswith("__")})
+              if leftovers:
+                  raise SystemExit(f"::error::unsubstituted placeholders in {src}: {leftovers}")
+              out = dest_root / src.parent.name / "command.yaml"
+              out.parent.mkdir(parents=True, exist_ok=True)
+              out.write_text(text, encoding="utf-8")
+              print(f"rendered {out}")
+
+          # 2. The two receipts that can only be produced by this run, because their
+          #    probes are about the PR this run just opened.
+          contract_bytes = (pathlib.Path("contracts") / f"{ticket}.yaml").read_bytes()
+          contract_data = yaml.safe_load(contract_bytes)
+          whole = "sha256:" + hashlib.sha256(contract_bytes).hexdigest()
+
+          def entry_hash(eid: str) -> str:
+              entry = next(i for i in contract_data["dod_evidence"] if i["id"] == eid)
+              canonical = {
+                  "header": {k: contract_data.get(k) for k in ("ticket_id", "schema_version")},
+                  "entry": entry,
+              }
+              blob = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+              return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+          def check_value(eid: str) -> str:
+              return next(i for i in contract_data["dod_evidence"] if i["id"] == eid)["checks"][0]["check_value"].strip()
+
+          readback = os.environ["PR_READBACK"].strip()
+          author = os.environ["PR_AUTHOR"]
+
+          runtime_receipts = {
+              f"dod-prod-promotion-grant-author-identity-{ticket.lower().replace('-', '')}-app": (
+                  f"gh pr view {pr_number} --repo {os.environ['GITHUB_REPOSITORY']} "
+                  "--json author,baseRefName,headRefName",
+                  readback,
+                  f"PASS: PR #{pr_number} is authored by '{author}', the onexbot-occ-writer GitHub App "
+                  "(app id 4361937), read back from the GitHub API by the same run that opened it rather "
+                  "than asserted. This is the structural fix the operator ruled for on 2026-09-06: the two "
+                  "prior stagings of this authorization were opened by the CODEOWNER, and GitHub will not "
+                  "record an approval by a PR's own author, so the review half of the OMN-13418 gate could "
+                  "not be exercised at all. The check is falsifiable - a PR authored by any human login "
+                  "fails it, and this workflow itself fails the run rather than opening one.",
+              ),
+              f"occ-self-bind-pr-{ticket.lower().replace('-', '')}-app": (
+                  f"gh pr view {pr_number} --repo {os.environ['GITHUB_REPOSITORY']} "
+                  "--json number,state,baseRefName,headRefName,headRefOid",
+                  readback,
+                  f"PASS: onex_change_control PR #{pr_number} is the central OCC self-bind for the "
+                  f"{ticket} prod-promotion grant re-stage, OPEN against base main from head {branch}. "
+                  "No agent completes it: the CODEOWNERS merge is the approval act (OMN-13418), and "
+                  "landing it does not lift the standing operator restriction on dispatching "
+                  "deploy-onex-prod.yml.",
+              ),
+          }
+
+          for eid, (probe_command, probe_stdout, actual_output) in runtime_receipts.items():
+              doc = {
+                  "schema_version": "1.0.0",
+                  "ticket_id": ticket,
+                  "evidence_item_id": eid,
+                  "check_type": "command",
+                  "check_value": check_value(eid),
+                  "contract_sha256": whole,
+                  "contract_entry_sha256": entry_hash(eid),
+                  "status": "PASS",
+                  "run_timestamp": now,
+                  "commit_sha": grant_sha,
+                  "runner": f"stage-prod-promotion-grant/{os.environ.get('GITHUB_RUN_ID', 'unknown')}",
+                  "verifier": "onexbot-occ-writer[bot]",
+                  "probe_command": probe_command,
+                  "probe_stdout": probe_stdout + "\n",
+                  "actual_output": actual_output,
+                  "exit_code": 0,
+                  "pr_number": pr_number,
+                  "branch": branch,
+              }
+              out = dest_root / eid / "command.yaml"
+              out.parent.mkdir(parents=True, exist_ok=True)
+              out.write_text(
+                  "---\n"
+                  + yaml.dump(
+                      doc,
+                      Dumper=ReceiptDumper,
+                      sort_keys=False,
+                      default_flow_style=False,
+                      width=4096,
+                      allow_unicode=True,
+                  ),
+                  encoding="utf-8",
+              )
+              print(f"generated {out}")
+          PY
+          git add "drift/dod_receipts/${TICKET}"
+          git commit -m "evidence(${TICKET}): DoD receipts and self-bind for the App-authored grant re-stage
+
+          Receipts bind to commit ${GRANT_SHA} and to PR #${PR_NUMBER}. The
+          author-identity and self-bind receipts carry a live GitHub API readback
+          taken by this run, not an assertion."
+          git push origin "HEAD:refs/heads/${BRANCH}"
+
+      - name: Summarise
+        shell: bash
+        env:
+          PR_URL: ${{ steps.pr.outputs.url }}
+          PR_AUTHOR: ${{ steps.identity.outputs.author }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        run: |
+          {
+            echo "### Prod-promotion grant staged (PREP ONLY)"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| ticket | ${TICKET} |"
+            echo "| pull request | ${PR_URL} |"
+            echo "| author | ${PR_AUTHOR} |"
+            echo "| head | \`${BRANCH}\` |"
+            echo "| base | \`main\` |"
+            echo "| approved_by (proposal) | ${APPROVED_BY} |"
+            echo "| expires_at (proposal) | ${EXPIRES_AT} |"
+            echo ""
+            echo "No production mutation was performed. This run did not dispatch"
+            echo "\`deploy-onex-prod.yml\`, did not merge the pull request, and did not lift"
+            echo "any standing operator restriction on dispatching. The CODEOWNERS merge is"
+            echo "the approval act (OMN-13418)."
+          } >> "$GITHUB_STEP_SUMMARY"
