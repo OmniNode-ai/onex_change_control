@@ -90,6 +90,24 @@ repos:
         files: ^\.github/workflows/ci\.yml$
         pass_filenames: true
         stages: [pre-commit]
+      # OMN-18010 deliverable 3 -- the offline half of the release staleness
+      # gate. The sweep itself is a network probe across eight repos and does
+      # NOT belong in a hook; what belongs here is the file-shaped half: the
+      # policy's schema, and the shrink-only ratchet on the roster of repos
+      # whose staleness does not yet block. Without it, a policy edit that
+      # quietly stops a repo blocking is only caught in CI, minutes later, on
+      # a run whose green result is the very thing being weakened.
+      - id: check-release-staleness-roster
+        name: release staleness enforcement roster is shrink-only (OMN-18010)
+        description: >
+          Validate scripts/validation/release_staleness_policy.yaml against its frozen baseline in .onex_ratchets/.
+          Marking a publishing repo enforced=false that is not already in the baseline is a hard failure:
+          enforcement can only widen. Offline and network-free; the dev-vs-tag sweep runs in release-staleness-gate.yml.
+        entry: uv run python scripts/validation/check_release_staleness.py --check-roster
+        language: system
+        files: ^(scripts/validation/(check_release_staleness\.py|release_staleness_policy\.yaml)|\.onex_ratchets/omn_18010_release_staleness_unenforced_baseline\.yaml)$
+        pass_filenames: false
+        stages: [pre-commit]
 
   # YAML formatting (standard across ecosystem, OMN-4862)
   # Configuration in .yamlfmt file (ecosystem-aligned settings)
@@ -97,14 +115,15 @@ repos:
     rev: v0.21.0
     hooks:
       - id: yamlfmt
-        # .kb-doc-gate.yaml is excluded deliberately (OMN-16615). This repo's
+        # .kb-doc-gate.yaml and .public-repo-hygiene.yaml are excluded
+        # deliberately (OMN-16615 / OMN-18016). This repo's
         # .yamlfmt sets `include_document_start: true`, so yamlfmt prepends a
         # `---` document marker. The kb-doc-gate validator parses its config
         # with a restricted stdlib-only YAML reader that has no document-marker
         # case and rejects the line outright -- `config error: unrecognized
         # line: '---'`, exit 2, THE GATE DID NOT RUN. Formatting this one file
         # therefore disables the gate it configures.
-        exclude: ^(\.github/|templates/|\.kb-doc-gate\.yaml$)
+        exclude: ^(\.github/|templates/|\.kb-doc-gate\.yaml$|\.public-repo-hygiene\.yaml$)
 
   # Essential file formatting (standard across ecosystem)
   - repo: https://github.com/pre-commit/pre-commit-hooks
