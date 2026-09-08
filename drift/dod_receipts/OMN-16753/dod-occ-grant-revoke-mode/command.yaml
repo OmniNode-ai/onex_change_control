@@ -1,0 +1,75 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16753
+evidence_item_id: dod-occ-grant-revoke-mode
+check_type: command
+check_value: uv run pytest tests/test_prod_promotion_grants.py -q
+contract_entry_sha256: sha256:d0cea992c9ba10e00ce77165e41b1e355aa3b5110b051a04b4444016485a1b6b
+status: PASS
+run_timestamp: '2026-09-08T11:31:08Z'
+commit_sha: c08e69ece78850176cecf332ff47baefe91f3b1f
+runner: occ-grant-revoke-via-app-lane
+verifier: occ-grant-revoke-via-app-verifier
+probe_command: |-
+  uv run pytest tests/test_prod_promotion_grants.py -q  # plus ruff check and mypy --strict on the two changed python files
+probe_stdout: |
+  $ uv run pytest tests/test_prod_promotion_grants.py -q
+  ........................................                                 [100%]
+  40 passed in 0.12s
+
+  $ uv run ruff check + mypy --strict on the two changed python files
+  All checks passed!
+  Success: no issues found in 2 source files
+
+  $ # revoke-mode case names, so the four required invariants are nameable
+    test_self_approved_grant_passes_real_validator
+    test_self_approved_missing_field_fails_real_validator
+    test_self_approved_expired_fails_real_validator
+    test_self_approved_bad_digest_fails_real_validator
+    test_self_approved_duplicate_ids_fail_real_validator
+    test_removes_every_named_entry_and_returns_to_rest
+    test_header_bytes_are_identical_after_removal
+    test_removes_only_the_named_entry_and_keeps_the_other_verbatim
+    test_refuses_when_a_named_entry_is_absent
+    test_refuses_when_the_registry_is_already_at_rest
+    test_refuses_when_an_expired_entry_would_remain
+    test_removing_the_expired_entry_too_is_permitted
+    test_refuses_an_empty_grant_id_list
+    test_refuses_duplicate_grant_ids
+    test_result_still_validates_against_the_real_schema_validator
+    test_mode_input_offers_stage_and_revoke_and_defaults_to_stage
+    test_approved_by_and_expires_at_are_not_required_inputs
+    test_revoke_step_delegates_to_the_tested_removal_script
+    test_the_removal_script_is_staged_off_the_dispatch_ref
+    test_the_removal_script_exists_where_the_workflow_stages_it_from
+    test_the_add_only_render_step_is_skipped_in_revoke_mode
+    test_workflow_still_performs_no_prod_mutation
+actual_output: |-
+  PASS: 40 passed, ruff clean, mypy --strict clean.
+
+  The suite moved 18 -> 40 BY ADDITION - no pre-existing case was removed or weakened, and the
+  case names above are the record of that. The four invariants the revoke path is required to hold
+  each have a named case, and each fails if the invariant is dropped:
+
+    removes named entries      test_removes_every_named_entry_and_returns_to_rest
+                               test_removes_only_the_named_entry_and_keeps_the_other_verbatim
+    refuses a missing entry    test_refuses_when_a_named_entry_is_absent
+                               test_refuses_when_the_registry_is_already_at_rest
+    refuses a remaining expiry test_refuses_when_an_expired_entry_would_remain
+                               test_removing_the_expired_entry_too_is_permitted (the refusal is
+                               about what REMAINS, not about what is removed)
+    header byte-identical      test_header_bytes_are_identical_after_removal
+
+  Six further cases pin the workflow wiring itself, because a tested script that nothing calls is
+  not a gate: that mode offers stage|revoke and DEFAULTS TO STAGE (a mis-typed dispatch must not
+  remove grants), that approved_by/expires_at are no longer required inputs, that the add-only
+  splice step is skipped in revoke mode (it refuses unless the registry is already at rest, which
+  is what a revocation is trying to restore), that the removal script is staged off the dispatch
+  ref rather than invoked from a work tree checked out at origin/main which does not carry it, and
+  that the workflow still performs no prod mutation.
+
+  SCOPE, stated so the suite is not over-read: this proves the removal logic and the wiring. It
+  does not run the workflow - that needs an App token and a real main - and it is not an
+  authorization gate. The App-authored run that exercises it end to end is the separate revocation
+  PR against main.
+exit_code: 0
