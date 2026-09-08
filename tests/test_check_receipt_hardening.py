@@ -62,7 +62,21 @@ FULL_REMOTE_SHA = "8" * 40
 # tests/unit/scripts/test_supersession_binding_gate.py.
 ITEM_BOUND_CHECK = "test -s drift/dod_receipts/OMN-13060/dod-001/command.yaml"
 
-CONTRACT_BODY = "ticket_id: OMN-13060\ntitle: test contract\n"
+# OMN-13888: the body DECLARES the ``dod-001`` item every ``_receipt_data``
+# fixture names. It did not before, which made every whole-file-bound fixture
+# an ORPHAN receipt (no contract_entry_sha256 AND no declared entry) — the
+# shape the ORPHAN_BINDING rule refuses. The tests below are about the OTHER
+# rules, so the fixture is corrected rather than exempted; the orphan polarity
+# is covered in tests/unit/scripts/test_orphan_receipt_binding_gate_omn_13888.py.
+CONTRACT_BODY = (
+    "ticket_id: OMN-13060\n"
+    "title: test contract\n"
+    "dod_evidence:\n"
+    "  - id: dod-001\n"
+    "    summary: first item\n"
+    "    checks:\n"
+    "      - check_type: command\n"
+)
 
 # A contract shaped with real dod_evidence entries, for OMN-14411 per-entry
 # hash tests. schema_version is part of the immutable per-entry hash header
