@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 #
-# OMN-16753 / OMN-13418: stage a prod-promotion grant on `main` as the
-# onexbot-occ-writer GitHub App.
+# OMN-16753 / OMN-13418: stage OR revoke a prod-promotion grant on `main` as
+# the onexbot-occ-writer GitHub App.
 #
 # WHY THIS EXISTS. A prod-promotion grant is only real once a human CODEOWNERS
 # operator merges it onto `onex_change_control@main` — that merge IS the
@@ -29,27 +29,62 @@
 # value it was never run against is the failure mode this interlock exists to
 # make impossible, not an inconvenience it works around.
 #
+# REVOCATION IS THE SAME PROCESS, NOT A PARALLEL ONE (`mode: revoke`).
+# Operator ruling, 2026-09-08, firm: revocation is the same file, the same gate
+# and the same lifecycle, so it goes through this same App-authored path. The
+# first revocation attempt was opened by hand under the CODEOWNER's identity
+# precisely because this workflow was add-only — it refuses to render unless the
+# registry already reads `entries: []` — and that hand-opened PR recreated the
+# self-approval deadlock the 2026-09-06 ruling exists to end. `mode: revoke`
+# closes that gap. It reads `revocation/manifest.yaml` from the same ticket
+# bundle, REQUIRES every named entry to be present on `main` (a revocation that
+# silently no-ops on an absent id is indistinguishable from one that worked),
+# removes exactly those entries leaving the header bytes untouched, and REFUSES
+# a result that would leave any expired entry at rest (OMN-13424). The removal
+# logic is `src/onex_change_control/scripts/revoke_prod_promotion_grants.py`,
+# unit-tested in `tests/test_prod_promotion_grants.py`, not an inline heredoc.
+#
+# WHAT REVOKE MODE CHECKS INSTEAD OF THE approved_by/expires_at INTERLOCK.
+# Those two inputs are an honesty interlock for STAGING: the bundled receipts
+# attest to probes run against those exact values. A revocation proposes no
+# approver and no expiry, so both inputs are REFUSED in revoke mode rather than
+# accepted and ignored. What revoke mode requires instead is that the manifest
+# carries the durable consent citation — the ledger file and line of the
+# OPERATOR-CONSENT row authorising the removal — and the operator's words
+# verbatim. That citation is rendered into the PR body, so the authorisation is
+# resolvable after the session that granted it is gone.
+#
 # The App installation token is minted from the org secrets
 # ONEXBOT_OCC_APP_ID / ONEXBOT_OCC_PRIVATE_KEY (visibility: selected; this repo
 # is in the selected set) and is never echoed. Same mint shape as
 # `nightly-promote.yml` and `evidence-import.yml` in this repo.
 
-name: Stage Prod-Promotion Grant
+name: Stage or Revoke Prod-Promotion Grant
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "stage = add the bundle's grant entries to main; revoke = remove the entries named by the bundle's revocation manifest"
+        required: false
+        default: stage
+        type: choice
+        options:
+          - stage
+          - revoke
       ticket:
         description: "Ticket id whose request bundle to render (.github/prod-promotion-requests/<ticket>/)"
         required: true
         type: string
       approved_by:
-        description: "GitHub login proposed as approved_by; MUST match the bundle manifest"
-        required: true
+        description: "STAGE MODE ONLY, and required there: GitHub login proposed as approved_by; MUST match the bundle manifest. Leave EMPTY in revoke mode - a revocation proposes no approver, and supplying one is refused rather than ignored."
+        required: false
+        default: ""
         type: string
       expires_at:
-        description: "Absolute UTC expiry (ISO-8601, e.g. 2026-09-09T22:30:00Z); MUST match the bundle manifest"
-        required: true
+        description: "STAGE MODE ONLY, and required there: absolute UTC expiry (ISO-8601, e.g. 2026-09-09T22:30:00Z); MUST match the bundle manifest. Leave EMPTY in revoke mode."
+        required: false
+        default: ""
         type: string
       hotfix_evidence:
         description: "OCC PR number for the main-target-guard hotfix-evidence line (digits only)"
@@ -82,6 +117,7 @@ jobs:
     timeout-minutes: 20
 
     env:
+      MODE: ${{ inputs.mode }}
       TICKET: ${{ inputs.ticket }}
       APPROVED_BY: ${{ inputs.approved_by }}
       EXPIRES_AT: ${{ inputs.expires_at }}
@@ -119,12 +155,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bundle_dir=".github/prod-promotion-requests/${TICKET}"
+          case "$MODE" in
+            stage)
+              bundle_dir=".github/prod-promotion-requests/${TICKET}"
+              required_files="manifest.yaml entries_block.yaml occ_contract.yaml pr_body.md receipts"
+              ;;
+            revoke)
+              # The revocation bundle is a subdirectory of the SAME ticket bundle,
+              # not a replacement for it: the staging bundle stays as the record of
+              # what was granted, and the revocation sits beside it as the record of
+              # how that grant ended. There is no entries_block.yaml - a revocation
+              # adds no entries, it names the ones to remove.
+              bundle_dir=".github/prod-promotion-requests/${TICKET}/revocation"
+              required_files="manifest.yaml occ_contract.yaml pr_body.md receipts"
+              ;;
+            *)
+              echo "::error::mode must be 'stage' or 'revoke', got '${MODE}'"
+              exit 1
+              ;;
+          esac
           if [ ! -d "$bundle_dir" ]; then
             echo "::error::no request bundle at ${bundle_dir} on this ref. The bundle is reviewed on dev; render only what has landed there."
             exit 1
           fi
-          for required in manifest.yaml entries_block.yaml occ_contract.yaml pr_body.md receipts; do
+          for required in $required_files; do
             if [ ! -e "${bundle_dir}/${required}" ]; then
               echo "::error::request bundle ${bundle_dir} is missing ${required}"
               exit 1
@@ -134,8 +188,22 @@ jobs:
           rm -rf "$staged"
           mkdir -p "$staged"
           cp -R "${bundle_dir}/." "$staged/"
+          # The revocation removal script is staged for the SAME reason the bundle
+          # is: the next step checks the work tree out at origin/main, and `main` is
+          # a long-lived, deliberately divergent branch that does not carry this
+          # script (89 commits main-only, 5445 dev-only at time of writing). The
+          # code that rewrites main's registry therefore comes from the reviewed
+          # dispatch ref, exactly like the workflow file itself does.
+          if [ "$MODE" = "revoke" ]; then
+            revoker="src/onex_change_control/scripts/revoke_prod_promotion_grants.py"
+            if [ ! -f "$revoker" ]; then
+              echo "::error::${revoker} is missing on this ref; revoke mode cannot run."
+              exit 1
+            fi
+            cp "$revoker" "${RUNNER_TEMP}/revoke_prod_promotion_grants.py"
+          fi
           printf 'staged=%s\n' "$staged" >> "$GITHUB_OUTPUT"
-          echo "Staged $(find "$staged" -type f | wc -l | tr -d ' ') bundle file(s) to RUNNER_TEMP."
+          echo "Staged $(find "$staged" -type f | wc -l | tr -d ' ') bundle file(s) from ${bundle_dir} to RUNNER_TEMP (mode=${MODE})."
 
       - name: Assert dispatch inputs match the reviewed bundle
         shell: bash
@@ -144,18 +212,64 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, sys, yaml
+          import os, re, sys, yaml
           staged = os.environ["STAGED"]
+          mode = os.environ["MODE"].strip()
           m = yaml.safe_load(open(f"{staged}/manifest.yaml", encoding="utf-8"))
           problems = []
-          for field, env_key in (("ticket_id", "TICKET"), ("approved_by", "APPROVED_BY"), ("expires_at", "EXPIRES_AT")):
-              want, got = str(m.get(field)), os.environ[env_key].strip()
-              if want != got:
+
+          want_ticket, got_ticket = str(m.get("ticket_id")), os.environ["TICKET"].strip()
+          if want_ticket != got_ticket:
+              problems.append(
+                  f"ticket_id: dispatch input {got_ticket!r} != bundle manifest {want_ticket!r}"
+              )
+
+          if mode == "stage":
+              # The honesty interlock: the bundled receipts carry verbatim probe
+              # output produced against THESE values. Staging a different
+              # approved_by or expires_at would ship evidence that reads as proof
+              # of something never proven.
+              for field, env_key in (("approved_by", "APPROVED_BY"), ("expires_at", "EXPIRES_AT")):
+                  got = os.environ[env_key].strip()
+                  if not got:
+                      problems.append(f"{env_key} is REQUIRED in stage mode and was empty.")
+                      continue
+                  want = str(m.get(field))
+                  if want != got:
+                      problems.append(
+                          f"{field}: dispatch input {got!r} != bundle manifest {want!r}. The bundled receipts "
+                          f"attest to probe runs made against the manifest value; staging a different one would "
+                          f"ship evidence that reads as proof of something never proven."
+                      )
+          else:
+              # A revocation proposes no approver and no expiry. Supplying either is
+              # REFUSED rather than ignored: an input that is silently discarded is
+              # how a dispatcher comes to believe they approved something.
+              for env_key in ("APPROVED_BY", "EXPIRES_AT"):
+                  if os.environ[env_key].strip():
+                      problems.append(
+                          f"{env_key} must be EMPTY in revoke mode; a revocation proposes no "
+                          "approver and no expiry, and accepting the value while ignoring it "
+                          "would misrepresent what this run does."
+                      )
+              grant_ids = m.get("grant_ids")
+              if not isinstance(grant_ids, list) or not grant_ids or not all(isinstance(g, str) and g for g in grant_ids):
+                  problems.append("revocation manifest must carry a non-empty list of string 'grant_ids'.")
+              # Rule 18: authorisation is a durable, citable ledger row, not a claim in
+              # a dispatch prompt. Revoke mode checks the citation is IN THE BUNDLE, so
+              # it is reviewed on dev and rendered into the PR body.
+              citation = str(m.get("consent_citation") or "").strip()
+              if not re.fullmatch(r"[A-Za-z0-9_./-]+:\d+", citation):
                   problems.append(
-                      f"{field}: dispatch input {got!r} != bundle manifest {want!r}. The bundled receipts "
-                      f"attest to probe runs made against the manifest value; staging a different one would "
-                      f"ship evidence that reads as proof of something never proven."
+                      f"consent_citation must be '<path>:<line>' naming the durable OPERATOR-CONSENT "
+                      f"row that authorises this revocation, got {citation!r}."
                   )
+              quote = str(m.get("consent_quote") or "").strip()
+              if not quote:
+                  problems.append(
+                      "consent_quote must carry the operator's words verbatim from the cited row."
+                  )
+
           for env_key in ("HOTFIX_EVIDENCE", "BACKMERGE", "WORKFLOW_PR"):
               v = os.environ[env_key].strip()
               if not v.isdigit():
@@ -167,7 +281,7 @@ jobs:
               for p in problems:
                   print(f"::error::{p}")
               sys.exit(1)
-          print("Dispatch inputs agree with the reviewed bundle manifest.")
+          print(f"Dispatch inputs agree with the reviewed bundle manifest (mode={mode}).")
           PY
 
       - name: Create the hotfix branch from main
@@ -176,17 +290,26 @@ jobs:
         run: |
           set -euo pipefail
           ticket_lower="$(printf '%s' "$TICKET" | tr '[:upper:]' '[:lower:]')"
-          branch="hotfix/${ticket_lower}-grant-restage-${BRANCH_SUFFIX}"
+          if [ "$MODE" = "revoke" ]; then
+            branch="hotfix/${ticket_lower}-grant-revoke-${BRANCH_SUFFIX}"
+          else
+            branch="hotfix/${ticket_lower}-grant-restage-${BRANCH_SUFFIX}"
+          fi
           git fetch origin main --quiet
           git checkout -B "$branch" origin/main
-          if [ -e "contracts/${TICKET}.yaml" ]; then
+          if [ "$MODE" = "stage" ] && [ -e "contracts/${TICKET}.yaml" ]; then
             echo "::error::contracts/${TICKET}.yaml already exists on main; refusing to clobber it."
+            exit 1
+          fi
+          if [ "$MODE" = "revoke" ] && [ ! -e "contracts/${TICKET}.yaml" ]; then
+            echo "::error::contracts/${TICKET}.yaml does not exist on main; there is no staged grant lifecycle here to revoke."
             exit 1
           fi
           printf 'branch=%s\n' "$branch" >> "$GITHUB_OUTPUT"
           printf 'base_sha=%s\n' "$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
 
       - name: Render the grant entries and the OCC contract onto the branch
+        if: inputs.mode != 'revoke'
         shell: bash
         env:
           STAGED: ${{ steps.bundle.outputs.staged }}
@@ -246,6 +369,56 @@ jobs:
           print(f"Rendered {len(parsed['entries'])} grant entry(ies) and {contract_dest}.")
           PY
 
+      - name: Remove the named grant entries and render the OCC contract onto the branch
+        if: inputs.mode == 'revoke'
+        shell: bash
+        env:
+          STAGED: ${{ steps.bundle.outputs.staged }}
+        run: |
+          set -euo pipefail
+          # The removal itself is the in-repo, unit-tested script rather than an
+          # inline heredoc: it is the only part of this workflow with real logic
+          # in it, and its three fail-closed invariants (every named entry must be
+          # present; no expired entry may remain, OMN-13424; the header bytes are
+          # preserved exactly) are what a reviewer needs to be able to test.
+          args_file="${RUNNER_TEMP}/revoke_grant_args.txt"
+          python3 - <<'PY'
+          import os, pathlib, yaml
+          m = yaml.safe_load((pathlib.Path(os.environ["STAGED"]) / "manifest.yaml").read_text(encoding="utf-8"))
+          lines = []
+          for gid in m["grant_ids"]:
+              lines += ["--grant-id", str(gid)]
+          pathlib.Path(os.environ["RUNNER_TEMP"], "revoke_grant_args.txt").write_text(
+              "\n".join(lines) + "\n", encoding="utf-8"
+          )
+          PY
+          GRANT_ARGS=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && GRANT_ARGS+=("$line")
+          done < "$args_file"
+          if [ "${#GRANT_ARGS[@]}" -eq 0 ]; then
+            echo "::error::the revocation manifest named no grant ids."
+            exit 1
+          fi
+          before="$(sha256sum grants/prod_promotion_grants.yaml | cut -d' ' -f1)"
+          python3 "${RUNNER_TEMP}/revoke_prod_promotion_grants.py" \
+            --grants-file grants/prod_promotion_grants.yaml "${GRANT_ARGS[@]}"
+          after="$(sha256sum grants/prod_promotion_grants.yaml | cut -d' ' -f1)"
+          if [ "$before" = "$after" ]; then
+            echo "::error::the registry is byte-unchanged after the revocation; refusing to open a PR that removes nothing."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os, pathlib
+          staged = pathlib.Path(os.environ["STAGED"])
+          ticket = os.environ["TICKET"]
+          contract_dest = pathlib.Path("contracts") / f"{ticket}.yaml"
+          contract_dest.parent.mkdir(parents=True, exist_ok=True)
+          # Byte-for-byte copy: the bundled receipts bind to this file's hash.
+          contract_dest.write_bytes((staged / "occ_contract.yaml").read_bytes())
+          print(f"Rendered {contract_dest} from the reviewed revocation bundle.")
+          PY
+
       - name: Commit and push the grant commit as the App
         id: grant_commit
         shell: bash
@@ -257,12 +430,23 @@ jobs:
           git config user.name "onexbot-occ-writer[bot]"
           git config user.email "307849072+onexbot-occ-writer[bot]@users.noreply.github.com"
           git add "grants/prod_promotion_grants.yaml" "contracts/${TICKET}.yaml"
-          git commit -m "chore(${TICKET}): re-stage the prod-promotion grant for the api.omninode.ai cutover
+          if [ "$MODE" = "revoke" ]; then
+            git commit -m "chore(${TICKET}): revoke the prod-promotion grant entries on operator ruling
+
+          REVOCATION. Removes the grant entries named by the reviewed revocation
+          bundle, leaving every header comment line byte-identical. Authored by
+          the onexbot-occ-writer App because revocation is the same file, the
+          same gate and the same lifecycle as staging (operator ruling
+          2026-09-08). NO PRODUCTION MUTATION: this removes authorization, not
+          workload. Nothing is dispatched, deployed, rolled back or restarted."
+          else
+            git commit -m "chore(${TICKET}): re-stage the prod-promotion grant for the api.omninode.ai cutover
 
           Staged by the onexbot-occ-writer App so the CODEOWNERS review and merge
           is a genuine second party (operator ruling 2026-09-06). PREP ONLY: no
           production mutation, and landing this does not lift the standing
           operator restriction on dispatching deploy-onex-prod.yml."
+          fi
           git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "HEAD:refs/heads/${BRANCH}"
           printf 'sha=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -283,12 +467,20 @@ jobs:
           staged = pathlib.Path(os.environ["STAGED"])
           m = yaml.safe_load((staged / "manifest.yaml").read_text(encoding="utf-8"))
           text = (staged / "pr_body.md").read_text(encoding="utf-8")
-          text = (text
-                  .replace("__APPROVED_BY__", str(m["approved_by"]))
-                  .replace("__EXPIRES_AT__", str(m["expires_at"]))
-                  .replace("__HOTFIX_EVIDENCE_NUM__", os.environ["HOTFIX_EVIDENCE"])
-                  .replace("__BACKMERGE_NUM__", os.environ["BACKMERGE"])
-                  .replace("__WORKFLOW_PR__", "#" + os.environ["WORKFLOW_PR"]))
+          substitutions = {
+              "__HOTFIX_EVIDENCE_NUM__": os.environ["HOTFIX_EVIDENCE"],
+              "__BACKMERGE_NUM__": os.environ["BACKMERGE"],
+              "__WORKFLOW_PR__": "#" + os.environ["WORKFLOW_PR"],
+          }
+          if os.environ["MODE"].strip() == "revoke":
+              substitutions["__CONSENT_CITATION__"] = str(m["consent_citation"])
+              substitutions["__CONSENT_QUOTE__"] = str(m["consent_quote"])
+              substitutions["__GRANT_IDS__"] = ", ".join(f"`{g}`" for g in m["grant_ids"])
+          else:
+              substitutions["__APPROVED_BY__"] = str(m["approved_by"])
+              substitutions["__EXPIRES_AT__"] = str(m["expires_at"])
+          for placeholder, value in substitutions.items():
+              text = text.replace(placeholder, value)
           leftovers = sorted({t for t in text.split() if t.startswith("__") and t.endswith("__")})
           if leftovers:
               raise SystemExit(f"::error::unsubstituted placeholders remain in pr_body.md: {leftovers}")
@@ -407,8 +599,31 @@ jobs:
           readback = os.environ["PR_READBACK"].strip()
           author = os.environ["PR_AUTHOR"]
 
+          mode = os.environ["MODE"].strip()
+          suffix = "revoke" if mode == "revoke" else "app"
+          slug = ticket.lower().replace('-', '')
+          if mode == "revoke":
+              self_bind_note = (
+                  f"PASS: onex_change_control PR #{pr_number} is the central OCC self-bind for the "
+                  f"{ticket} prod-promotion grant REVOCATION, OPEN against base main from head {branch}. "
+                  "It REMOVES authorization; it performs no production mutation of any kind - nothing is "
+                  "dispatched, deployed, rolled back or restarted, and onex-prod keeps running exactly the "
+                  "images it is running now. Unlike the staging PR it reverses, MERGED is the correct "
+                  "terminal state for this one: an open revocation revokes nothing, and the entries stay "
+                  "live on main until it lands. No agent merges it - the CODEOWNERS review is still the "
+                  "act, and the authorising operator consent is cited by file and line in the PR body."
+              )
+          else:
+              self_bind_note = (
+                  f"PASS: onex_change_control PR #{pr_number} is the central OCC self-bind for the "
+                  f"{ticket} prod-promotion grant re-stage, OPEN against base main from head {branch}. "
+                  "No agent completes it: the CODEOWNERS merge is the approval act (OMN-13418), and "
+                  "landing it does not lift the standing operator restriction on dispatching "
+                  "deploy-onex-prod.yml."
+              )
+
           runtime_receipts = {
-              f"dod-grant-author-identity-{ticket.lower().replace('-', '')}-app": (
+              f"dod-grant-author-identity-{slug}-{suffix}": (
                   f"gh pr view {pr_number} --repo {os.environ['GITHUB_REPOSITORY']} "
                   "--json author,baseRefName,headRefName",
                   readback,
@@ -420,15 +635,11 @@ jobs:
                   "not be exercised at all. The check is falsifiable - a PR authored by any human login "
                   "fails it, and this workflow itself fails the run rather than opening one.",
               ),
-              f"occ-self-bind-pr-{ticket.lower().replace('-', '')}-app": (
+              f"occ-self-bind-pr-{slug}-{suffix}": (
                   f"gh pr view {pr_number} --repo {os.environ['GITHUB_REPOSITORY']} "
                   "--json number,state,baseRefName,headRefName,headRefOid",
                   readback,
-                  f"PASS: onex_change_control PR #{pr_number} is the central OCC self-bind for the "
-                  f"{ticket} prod-promotion grant re-stage, OPEN against base main from head {branch}. "
-                  "No agent completes it: the CODEOWNERS merge is the approval act (OMN-13418), and "
-                  "landing it does not lift the standing operator restriction on dispatching "
-                  "deploy-onex-prod.yml.",
+                  self_bind_note,
               ),
           }
 
@@ -470,11 +681,19 @@ jobs:
               print(f"generated {out}")
           PY
           git add "drift/dod_receipts/${TICKET}"
-          git commit -m "evidence(${TICKET}): DoD receipts and self-bind for the App-authored grant re-stage
+          if [ "$MODE" = "revoke" ]; then
+            git commit -m "evidence(${TICKET}): DoD receipts and self-bind for the App-authored grant revocation
 
           Receipts bind to commit ${GRANT_SHA} and to PR #${PR_NUMBER}. The
           author-identity and self-bind receipts carry a live GitHub API readback
           taken by this run, not an assertion."
+          else
+            git commit -m "evidence(${TICKET}): DoD receipts and self-bind for the App-authored grant re-stage
+
+          Receipts bind to commit ${GRANT_SHA} and to PR #${PR_NUMBER}. The
+          author-identity and self-bind receipts carry a live GitHub API readback
+          taken by this run, not an assertion."
+          fi
           git push origin "HEAD:refs/heads/${BRANCH}"
 
       - name: Summarise
@@ -485,17 +704,24 @@ jobs:
           BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
           {
-            echo "### Prod-promotion grant staged (PREP ONLY)"
+            if [ "$MODE" = "revoke" ]; then
+              echo "### Prod-promotion grant REVOKED (authorization removed, no workload touched)"
+            else
+              echo "### Prod-promotion grant staged (PREP ONLY)"
+            fi
             echo ""
             echo "| field | value |"
             echo "| --- | --- |"
+            echo "| mode | ${MODE} |"
             echo "| ticket | ${TICKET} |"
             echo "| pull request | ${PR_URL} |"
             echo "| author | ${PR_AUTHOR} |"
             echo "| head | \`${BRANCH}\` |"
             echo "| base | \`main\` |"
-            echo "| approved_by (proposal) | ${APPROVED_BY} |"
-            echo "| expires_at (proposal) | ${EXPIRES_AT} |"
+            if [ "$MODE" != "revoke" ]; then
+              echo "| approved_by (proposal) | ${APPROVED_BY} |"
+              echo "| expires_at (proposal) | ${EXPIRES_AT} |"
+            fi
             echo ""
             echo "No production mutation was performed. This run did not dispatch"
             echo "\`deploy-onex-prod.yml\`, did not merge the pull request, and did not lift"

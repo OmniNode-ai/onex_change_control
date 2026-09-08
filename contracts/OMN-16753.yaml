@@ -128,3 +128,40 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8528 --repo OmniNode-ai/onex_change_control --json number,state,baseRefName,headRefName"
+  - id: "dod-occ-grant-revoke-mode"
+    description: >-
+      .github/workflows/stage-prod-promotion-grant.yml carries a REVOKE mode, so removing a grant goes
+      through the same App-authored path that stages one (operator ruling 2026-09-08, firm). Before this,
+      the workflow was add-only by construction — it refuses to render unless grants/prod_promotion_grants.yaml
+      already reads `entries: []`, which is exactly the state a revocation is trying to restore — so the
+      only way to revoke was a hand-opened PR under the CODEOWNER's own identity, which recreates the
+      self-approval deadlock the 2026-09-06 ruling exists to end. The removal itself is src/onex_change_control/scripts/revoke_prod_promotion_grants.py,
+      not an inline heredoc, precisely so its three fail-closed invariants are unit-testable: every named
+      entry must be present before anything is removed (a revocation that silently no-ops on an absent
+      id reads exactly like one that worked); no expired entry may remain (OMN-13424, or a partial revocation
+      turns every subsequent PR to main red); and the header bytes above `entries:` survive the rewrite
+      unchanged, which is why the rewrite is textual and never a YAML round-trip. Revoke mode also REFUSES
+      the approved_by and expires_at inputs rather than accepting and ignoring them, and requires the
+      durable consent citation and the operator's verbatim words in their place.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants.py -q"
+  - id: "dod-occ-grant-revocation-bundle-complete"
+    description: >-
+      The OMN-16753 revocation bundle under .github/prod-promotion-requests/OMN-16753/revocation/ carries
+      every file revoke mode refuses to run without — manifest.yaml (the grant ids to remove plus the
+      consent citation and the operator's verbatim words, checked at dispatch), occ_contract.yaml (the
+      OCC contract rendered onto the hotfix branch), pr_body.md (the PR body carrying the main-target-guard
+      hotfix-evidence and backmerge lines), and receipts/ (the three DoD receipts whose probe output was
+      produced against the file the revocation actually renders). It is a subdirectory of the staging
+      bundle rather than a replacement for it: the staging bundle stays as the record of what was granted,
+      and the revocation sits beside it as the record of how that grant ended.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test -f .github/prod-promotion-requests/OMN-16753/revocation/manifest.yaml && test -f .github/prod-promotion-requests/OMN-16753/revocation/occ_contract.yaml
+          && test -f .github/prod-promotion-requests/OMN-16753/revocation/pr_body.md && test -d .github/prod-promotion-requests/OMN-16753/revocation/receipts
