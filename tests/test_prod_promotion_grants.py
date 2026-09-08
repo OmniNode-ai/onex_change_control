@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from onex_change_control.scripts.validate_prod_promotion_grants import validate_grants
@@ -416,3 +417,312 @@ class TestDualControlRemovedOMN14814:
         result = validate_grants(grants_file)
         assert not result.passed
         assert any("duplicate grant_id" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# OMN-16753: revoke mode for the App-authored grant path.
+#
+# Operator ruling 2026-09-08, firm: revocation is the same file, the same gate
+# and the same lifecycle as staging, so it goes through the same App-authored
+# workflow rather than a hand-opened PR. These cases pin the three fail-closed
+# invariants of the removal itself, which is the only part of that workflow
+# carrying real logic.
+# ---------------------------------------------------------------------------
+
+_WORKFLOW_FILE = _REPO_ROOT / ".github" / "workflows" / "stage-prod-promotion-grant.yml"
+
+# A header with the shape the real registry carries: prose the approver reads,
+# blank comment lines, and a trailing rule. Preserving it byte-for-byte is the
+# point of the textual (never round-tripped) rewrite.
+_RULE = "# " + "-" * 75
+_FIXTURE_HEADER = f"""{_RULE}
+# PROD-PROMOTION GRANT REGISTRY
+#
+# Trailing whitespace, comment ordering and blank lines below are load-bearing:
+# a reviewer reads this text when approving, and a YAML round-trip would
+# silently discard all of it.
+{_RULE}
+"""
+
+
+def _fixture_entry_block(grant_id: str, expires_at: str) -> str:
+    return (
+        f"  - grant_id: {grant_id}\n"
+        "    runtime_lane: prod\n"
+        "    image_digest: sha256:" + "a" * 64 + "\n"
+        "    promotion_batch_id: batch-3c59f394-5a40-4b44-b8e7-ed869d24c2cb\n"
+        "    approved_by: someapprover\n"
+        f'    expires_at: "{expires_at}"\n'
+        '    created_at: "2026-09-06T22:26:02Z"\n'
+        "    reason: >-\n"
+        "      A multi-line folded reason whose exact wrapping a YAML round-trip\n"
+        "      would reflow.\n"
+    )
+
+
+def _fixture_registry(*entries: str) -> str:
+    if not entries:
+        return _FIXTURE_HEADER + "entries: []\n"
+    return _FIXTURE_HEADER + "entries:\n" + "".join(entries)
+
+
+_GID_A = "grant-80201a19-7077-4d1d-a58f-3f7760117e68"
+_GID_B = "grant-3c187f1e-b4b8-4fbe-a4cb-6bca31c1b2a1"
+_GID_C = "grant-11111111-2222-3333-4444-555555555555"
+_FAR_FUTURE = "2099-01-01T00:00:00Z"
+_LAPSED = "2020-01-01T00:00:00Z"
+
+
+class TestRevokeModeRemoval:
+    """src/onex_change_control/scripts/revoke_prod_promotion_grants.py."""
+
+    def test_removes_every_named_entry_and_returns_to_rest(self) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            revoke_entries,
+        )
+
+        current = _fixture_registry(
+            _fixture_entry_block(_GID_A, _FAR_FUTURE),
+            _fixture_entry_block(_GID_B, _FAR_FUTURE),
+        )
+        result = revoke_entries(current, [_GID_A, _GID_B])
+        assert result.at_rest
+        assert result.remaining_grant_ids == ()
+        assert result.text.endswith("entries: []\n")
+        assert _GID_A not in result.text
+        assert _GID_B not in result.text
+        assert yaml.safe_load(result.text) == {"entries": []}
+
+    def test_header_bytes_are_identical_after_removal(self) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            revoke_entries,
+        )
+
+        current = _fixture_registry(
+            _fixture_entry_block(_GID_A, _FAR_FUTURE),
+            _fixture_entry_block(_GID_B, _FAR_FUTURE),
+        )
+        result = revoke_entries(current, [_GID_A, _GID_B])
+        assert result.header == _FIXTURE_HEADER
+        assert current.startswith(_FIXTURE_HEADER)
+        assert result.text.startswith(_FIXTURE_HEADER)
+        # The removal is a pure deletion: exactly the entry lines go, and the
+        # `entries:` key collapses to the at-rest form. Nothing above it moves.
+        assert result.text[: len(_FIXTURE_HEADER)] == current[: len(_FIXTURE_HEADER)]
+
+    def test_removes_only_the_named_entry_and_keeps_the_other_verbatim(self) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            revoke_entries,
+        )
+
+        kept_block = _fixture_entry_block(_GID_C, _FAR_FUTURE)
+        current = _fixture_registry(
+            _fixture_entry_block(_GID_A, _FAR_FUTURE), kept_block
+        )
+        result = revoke_entries(current, [_GID_A])
+        assert result.remaining_grant_ids == (_GID_C,)
+        assert not result.at_rest
+        assert result.text == _FIXTURE_HEADER + "entries:\n" + kept_block
+        # The surviving entry's folded scalar is byte-identical, not re-dumped.
+        assert kept_block in result.text
+
+    def test_refuses_when_a_named_entry_is_absent(self) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            RevocationRefusedError,
+            revoke_entries,
+        )
+
+        current = _fixture_registry(_fixture_entry_block(_GID_A, _FAR_FUTURE))
+        # A revocation that silently no-ops on an absent id reads exactly like one
+        # that worked, so it refuses rather than removing what it can.
+        with pytest.raises(RevocationRefusedError) as excinfo:
+            revoke_entries(current, [_GID_A, _GID_B])
+        assert _GID_B in str(excinfo.value)
+        assert "NOT present" in str(excinfo.value)
+
+    def test_refuses_when_the_registry_is_already_at_rest(self) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            RevocationRefusedError,
+            revoke_entries,
+        )
+
+        with pytest.raises(RevocationRefusedError) as excinfo:
+            revoke_entries(_fixture_registry(), [_GID_A])
+        assert "NOT present" in str(excinfo.value)
+
+    def test_refuses_when_an_expired_entry_would_remain(self) -> None:
+        """OMN-13424: an expired entry left at rest turns every subsequent PR to
+        main red. Removing the live entries and leaving a lapsed one behind
+        trades one problem for a permanently failing branch."""
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            RevocationRefusedError,
+            revoke_entries,
+        )
+
+        current = _fixture_registry(
+            _fixture_entry_block(_GID_A, _FAR_FUTURE),
+            _fixture_entry_block(_GID_B, _LAPSED),
+        )
+        with pytest.raises(RevocationRefusedError) as excinfo:
+            revoke_entries(current, [_GID_A])
+        assert _GID_B in str(excinfo.value)
+        assert "expired" in str(excinfo.value)
+        assert "OMN-13424" in str(excinfo.value)
+
+    def test_removing_the_expired_entry_too_is_permitted(self) -> None:
+        """The refusal above is about what REMAINS, not about what is removed:
+        revoking the lapsed entry in the same action is the correct repair."""
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            revoke_entries,
+        )
+
+        current = _fixture_registry(
+            _fixture_entry_block(_GID_A, _FAR_FUTURE),
+            _fixture_entry_block(_GID_B, _LAPSED),
+        )
+        result = revoke_entries(current, [_GID_A, _GID_B])
+        assert result.at_rest
+
+    def test_refuses_an_empty_grant_id_list(self) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            RevocationRefusedError,
+            revoke_entries,
+        )
+
+        current = _fixture_registry(_fixture_entry_block(_GID_A, _FAR_FUTURE))
+        with pytest.raises(RevocationRefusedError) as excinfo:
+            revoke_entries(current, [])
+        assert "names no grant ids" in str(excinfo.value)
+
+    def test_refuses_duplicate_grant_ids(self) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            RevocationRefusedError,
+            revoke_entries,
+        )
+
+        current = _fixture_registry(_fixture_entry_block(_GID_A, _FAR_FUTURE))
+        with pytest.raises(RevocationRefusedError) as excinfo:
+            revoke_entries(current, [_GID_A, _GID_A])
+        assert "duplicate" in str(excinfo.value)
+
+    def test_result_still_validates_against_the_real_schema_validator(
+        self, tmp_path: Path
+    ) -> None:
+        from onex_change_control.scripts.revoke_prod_promotion_grants import (
+            revoke_entries,
+        )
+
+        current = _fixture_registry(
+            _fixture_entry_block(_GID_A, _FAR_FUTURE),
+            _fixture_entry_block(_GID_B, _FAR_FUTURE),
+        )
+        result = revoke_entries(current, [_GID_A])
+        out = tmp_path / "grants.yaml"
+        out.write_text(result.text, encoding="utf-8")
+        assert validate_grants(out).passed
+
+
+class TestRevokeModeWorkflowWiring:
+    """The workflow declares revoke mode and routes it through the tested script.
+
+    These are shape assertions on the workflow YAML rather than a render: the
+    render itself needs an App token and a real `main`, so what is testable
+    offline is that revoke mode exists, that it does not silently accept the
+    staging honesty interlock's inputs, and that the removal is delegated to the
+    module the cases above exercise.
+    """
+
+    def _workflow(self) -> dict[str, Any]:
+        data = yaml.safe_load(_WORKFLOW_FILE.read_text(encoding="utf-8"))
+        assert isinstance(data, dict)
+        return data
+
+    def _inputs(self) -> dict[str, Any]:
+        workflow = self._workflow()
+        # PyYAML resolves the bare `on:` key to the boolean True, not the string
+        # "on", so the trigger block is looked up under whichever key is present.
+        trigger = next(
+            (v for k, v in workflow.items() if k in ("on", True)),
+            None,
+        )
+        assert isinstance(trigger, dict), "workflow declares no trigger block"
+        inputs = trigger["workflow_dispatch"]["inputs"]
+        assert isinstance(inputs, dict)
+        return inputs
+
+    def _steps(self) -> list[dict[str, Any]]:
+        steps = self._workflow()["jobs"]["stage"]["steps"]
+        assert isinstance(steps, list)
+        return steps
+
+    def test_mode_input_offers_stage_and_revoke_and_defaults_to_stage(self) -> None:
+        mode = self._inputs()["mode"]
+        assert mode["default"] == "stage", (
+            "revoke must be opt-in; a mis-typed dispatch must not remove grants"
+        )
+        assert sorted(mode["options"]) == ["revoke", "stage"]
+
+    def test_approved_by_and_expires_at_are_not_required_inputs(self) -> None:
+        """They are the STAGING honesty interlock and have no revocation meaning.
+        Requiredness moved into the assert step, which enforces them in stage
+        mode and REFUSES them in revoke mode."""
+        inputs = self._inputs()
+        for name in ("approved_by", "expires_at"):
+            assert inputs[name]["required"] is False, name
+
+    def test_revoke_step_delegates_to_the_tested_removal_script(self) -> None:
+        steps = self._steps()
+        revoke_steps = [s for s in steps if s.get("if") == "inputs.mode == 'revoke'"]
+        assert len(revoke_steps) == 1, (
+            "exactly one step performs the removal, and it is revoke-mode-gated"
+        )
+        assert "revoke_prod_promotion_grants.py" in revoke_steps[0]["run"]
+
+    def test_the_removal_script_is_staged_off_the_dispatch_ref(self) -> None:
+        """The branch step checks the work tree out at origin/main, which is a
+        deliberately divergent long-lived branch that does not carry this script.
+        Invoking it from the work tree after that checkout would fail; it is staged
+        to RUNNER_TEMP first, exactly like the request bundle and for the same
+        reason."""
+        steps = self._steps()
+        bundle_step = next(s for s in steps if s.get("id") == "bundle")
+        assert (
+            "src/onex_change_control/scripts/revoke_prod_promotion_grants.py"
+            in bundle_step["run"]
+        )
+        revoke_step = next(s for s in steps if s.get("if") == "inputs.mode == 'revoke'")
+        assert '"${RUNNER_TEMP}/revoke_prod_promotion_grants.py"' in revoke_step["run"]
+        assert (
+            "python3 src/onex_change_control/scripts/revoke_prod_promotion_grants.py"
+            not in revoke_step["run"]
+        )
+
+    def test_the_removal_script_exists_where_the_workflow_stages_it_from(self) -> None:
+        assert (
+            _REPO_ROOT
+            / "src"
+            / "onex_change_control"
+            / "scripts"
+            / "revoke_prod_promotion_grants.py"
+        ).is_file()
+
+    def test_the_add_only_render_step_is_skipped_in_revoke_mode(self) -> None:
+        steps = self._steps()
+        add_only = [
+            s
+            for s in steps
+            if "entries: []" in s.get("run", "")
+            and "rendered = current" in s.get("run", "")
+        ]
+        assert len(add_only) == 1
+        assert add_only[0].get("if") == "inputs.mode != 'revoke'", (
+            "the add-only splice must not run on a revocation; it refuses unless "
+            "the registry is already at rest, which is exactly what a revocation "
+            "is trying to restore"
+        )
+
+    def test_workflow_still_performs_no_prod_mutation(self) -> None:
+        text = _WORKFLOW_FILE.read_text(encoding="utf-8")
+        assert "deploy-onex-prod.yml" in text, "the no-mutation statement is present"
+        assert "workflow run deploy-onex-prod" not in text
+        assert "gh workflow run" not in text
