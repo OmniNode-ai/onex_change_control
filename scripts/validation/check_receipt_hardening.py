@@ -225,6 +225,85 @@ which is a corpus-wide retro-audit outside this PR's "gate extensions only"
 scope (operator ruling R-c); it is recorded here, not silently, per that
 same scope decision.
 
+ORPHAN_BINDING (OMN-13888), the eighth invariant
+------------------------------------------------
+Invariant 2 above accepts a whole-file ``contract_sha256`` when no
+``contract_entry_sha256`` is present, and until now it asked nothing about
+WHETHER the receipt's ``evidence_item_id`` is a declared ``dod_evidence``
+item at all. The entry-hash branch does ask — an unknown item raises
+``ContractEntryNotFoundError`` and is reported — but the whole-file branch
+had no equivalent, so a receipt naming an item its contract never declares
+passed silently. The string "orphan" did not appear in this file.
+
+That receipt is an ORPHAN, and the consequences fall on other people:
+
+* it pins ``sha256(contracts/<ticket>.yaml)``, so EVERY later append to that
+  contract, BY ANY LANE, restales it. The appending lane fails a gate on a
+  receipt it never wrote and cannot repair, which append-locks the ticket
+  contract for the whole fleet;
+* the sanctioned repair does not reach it either. ``S2`` derives a
+  replacement's anchors from the superseded item's OWN declared
+  ``checks[*].check_value``, and an undeclared item declares none — so
+  ``_item_anchors`` falls back to the item id and any ``pr-<N>`` fragment in
+  it, and the supersession either fails ``[S2]`` or passes by coincidence.
+
+Measured, live on ``dev``: ``contracts/OMN-17530.yaml`` declared 6 items
+against 9 receipt directories; the 3 extras
+(``dod-OmniNode-ai-omnibase_infra-pr-3326`` / ``-pr-3328`` / ``-pr-3332``)
+were minted whole-file-bound by ``node_occ_companion_compute``'s merged path,
+which appended only the OCC self-bind entry and never this PR's own entry —
+so every 2nd-and-later consumer of a ticket minted exactly one orphan. That
+producer defect is closed in the same change (the emitter now appends the
+item and REFUSES to mint a receipt it cannot bind per entry); this rule is
+the consumer-side half, so a regression there cannot land silently.
+
+``ORPHAN_BINDING`` — **a receipt with neither an entry hash nor an entry is
+refused.** Reported instead of the whole-file comparison, because on an
+orphan that comparison's stale-hash message names the wrong repair. Applies
+to the same post-``HARDENING_CUTOFF`` population as invariants 1-3.
+
+GRANDFATHER RULE — dated, enumerated, shrink-only. Removing whole-file
+acceptance outright is NOT what this does and would not be defensible: on
+dev at the time of writing, 9,908 receipts bind whole-file to an item their
+contract DOES declare, and they stay valid. The orphan population is 439
+post-cutoff receipts, frozen by path in
+``.onex_ratchets/omn_13888_orphan_receipt_baseline.yaml`` and suppressed for
+that rule only — every other rule still applies to a baselined file.
+
+A back-fill migration was considered and REFUSED, not skipped: writing
+``contract_entry_sha256`` into those 439 receipts means rewriting merged
+receipt files, which the OCC Append-Only Gate rejects as
+``receipt_file_mutated``. Repair here is append-only by construction —
+declare the item, mint a net-new receipt or supersession bound per entry,
+and shrink the baseline in the same PR.
+
+A time cutoff was also considered and refused: ``run_timestamp`` is
+producer-written, and the newest orphans in this corpus were minted the same
+day this rule was written, so no date separates legacy from live. The file
+carries a second list, ``open_repairs:``, for orphans that are pre-existing
+but under an ACTIVE, recorded repair — corpus members (so ``--orphan-corpus``
+stays a two-way set-equality check) that are deliberately NOT suppressed, so
+the gate names them to whichever lane next stages them. The three OMN-17530
+receipts above are its founding entries.
+
+WHAT IS AND IS NOT WIRED, stated rather than implied. The per-receipt
+ORPHAN_BINDING rule is enforced on every PR through the paths every other rule
+in this file uses: the ``check-receipt-hardening`` pre-commit hook and the
+changed-receipt CI step. ``--orphan-corpus`` — the two-way, whole-corpus
+set-equality ratchet — is deliberately NOT a required job yet, and the reason
+is measured rather than a preference: the producer that mints orphans is still
+deployed, so ``dev`` gained a new orphan roughly every merged second-consumer
+companion (439 -> 441 -> 442 in seventy minutes on the day this rule landed,
+every one from an unrelated lane). A required two-way job under those
+conditions is red on every PR in the repo within minutes and teaches people to
+pad the baseline, which is the one thing its own header forbids. What IS
+asserted continuously is the direction that cannot be reddened by a peer merge
+and still catches the ratchet failure that matters — no baselined entry has
+stopped being an orphan without being removed — in
+``tests/unit/scripts/test_orphan_receipt_binding_gate_omn_13888.py``. Wiring
+the two-way job is a follow-up for once the producer fix is deployed and the
+mint rate is zero.
+
 COMMIT_SHA_EXISTENCE (OMN-15461), the seventh invariant
 --------------------------------------------------------
 ``commit_sha`` is a required ``ModelDodReceipt`` field asserting "the code
@@ -1306,6 +1385,91 @@ def _chained_supersession_errors(receipt_path: Path) -> list[str]:
     return errors
 
 
+ORPHAN_TICKET = "OMN-13888"
+ORPHAN_RULE = "[ORPHAN_BINDING]"
+ORPHAN_BASELINE_PATH = Path(".onex_ratchets/omn_13888_orphan_receipt_baseline.yaml")
+
+
+def _orphan_baseline_list(baseline_path: Path, key: str) -> frozenset[str]:
+    data = _load_mapping(baseline_path)
+    if data is None:
+        return frozenset()
+    entries = data.get(key)
+    if not isinstance(entries, list):
+        return frozenset()
+    return frozenset(str(entry) for entry in entries if isinstance(entry, str))
+
+
+def load_orphan_baseline(baseline_path: Path) -> frozenset[str]:
+    """The SUPPRESSED set: pre-existing orphan receipts the gate tolerates.
+
+    Mirrors ``load_supersession_baseline`` / ``load_contract_abs_path_baseline``
+    in shape and semantics. Entries are receipt POSIX paths — a receipt names
+    exactly one ``evidence_item_id``, so the path is the whole key.
+
+    Deliberately reads ``violations:`` ONLY. The file's second list,
+    ``open_repairs:``, names orphans that are ALSO pre-existing but are under
+    an active, recorded repair — they are corpus members (so the ratchet in
+    ``load_orphan_corpus_expected`` stays green and wireable) and are NOT
+    suppressed (so the gate names them to whichever lane next stages them,
+    which is the whole point of recording a repair as open).
+    """
+    return _orphan_baseline_list(baseline_path, "violations")
+
+
+def load_orphan_open_repairs(baseline_path: Path) -> frozenset[str]:
+    """Orphans recorded as under active repair — corpus members, NOT suppressed."""
+    return _orphan_baseline_list(baseline_path, "open_repairs")
+
+
+def load_orphan_corpus_expected(baseline_path: Path) -> frozenset[str]:
+    """Every orphan the corpus is expected to contain (suppressed + open)."""
+    return load_orphan_baseline(baseline_path) | load_orphan_open_repairs(baseline_path)
+
+
+def _contract_declares_item(contract_path: Path, evidence_item_id: str) -> bool | None:
+    """Whether ``contract_path`` declares ``evidence_item_id`` (None = unreadable)."""
+    try:
+        data = yaml.safe_load(contract_path.read_text())
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    items = data.get("dod_evidence")
+    if not isinstance(items, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("id") == evidence_item_id for item in items
+    )
+
+
+def _orphan_binding_violation(
+    evidence_item_id: str, ticket_id: str, contract_path: Path
+) -> str | None:
+    """The ORPHAN_BINDING violation for a whole-file-bound receipt, or None.
+
+    THE ONE PREDICATE (OMN-13888). Called from ``_contract_hash_violation`` on
+    the gate path and from ``_orphan_receipt_findings`` in corpus mode, so the
+    two can never disagree about what an orphan is.
+    """
+    declared = _contract_declares_item(contract_path, evidence_item_id)
+    if declared is None or declared:
+        return None
+    return (
+        f"{ORPHAN_RULE} receipt carries no contract_entry_sha256 AND "
+        f"dod_evidence item {evidence_item_id!r} is not declared in "
+        f"{contract_path}. It is an ORPHAN: nothing in the contract binds it, "
+        f"so it pins sha256({contract_path}) instead and is invalidated by "
+        "every later append to that contract BY ANY LANE — which append-locks "
+        "the contract for everyone. It is also unrepairable through the "
+        "supersession path, because rule S2 derives a replacement's anchors "
+        "from the superseded item's OWN declared checks[*].check_value and an "
+        "undeclared item declares none. REPAIR: declare the item in "
+        f"contracts/{ticket_id}.yaml and re-mint this receipt with "
+        f"contract_entry_sha256 ({ORPHAN_TICKET}); do not pad the baseline."
+    )
+
+
 def _contract_hash_violation(
     receipt: ModelDodReceipt, contract_path: Path
 ) -> str | None:
@@ -1343,6 +1507,12 @@ def _contract_hash_violation(
                 "receipt was produced; rerun probes and regenerate the receipt."
             )
         return None
+
+    orphan = _orphan_binding_violation(
+        receipt.evidence_item_id, receipt.ticket_id, contract_path
+    )
+    if orphan is not None:
+        return orphan
 
     expected_whole = f"sha256:{compute_contract_sha256(contract_path)}"
     if contract_sha256 != expected_whole:
@@ -2086,6 +2256,150 @@ def run_supersession_corpus(
     return 1
 
 
+_ORPHAN_OPEN_REPAIRS_HEADER = (
+    "#\n"
+    "# open_repairs: orphans that are pre-existing but are under an ACTIVE,\n"
+    "# recorded repair. They are corpus members (so --orphan-corpus stays a\n"
+    "# meaningful set-equality ratchet) but are deliberately NOT suppressed, so\n"
+    "# the gate names them to whichever lane next stages them. Preserved verbatim\n"
+    "# by --write-orphan-baseline; move an entry here by hand when a repair is\n"
+    "# opened, and delete it outright when the repair lands.\n"
+)
+
+
+def _orphan_receipt_findings(receipts_root: Path, contracts_dir: Path) -> list[str]:
+    """Every post-cutoff orphan receipt in the corpus, as POSIX paths.
+
+    Uses the SAME eligibility the gate uses — supersession redirection via
+    ``_effective_check_path``, the ``HARDENING_CUTOFF`` legacy exemption, and
+    ``_orphan_binding_violation`` as the one predicate — so a path this returns
+    is exactly a path the gate would flag if the file were in a PR's changed
+    set, and the baseline cannot drift from the rule it suppresses.
+    """
+    findings: list[str] = []
+    seen: set[Path] = set()
+    for path in sorted(receipts_root.rglob("*.yaml")):
+        effective = _effective_check_path(path)
+        if effective in seen or not effective.is_file():
+            continue
+        seen.add(effective)
+        raw = _load_mapping(effective)
+        if raw is None:
+            continue
+        node = (
+            raw.get("replacement") if isinstance(raw.get("replacement"), dict) else raw
+        )
+        if not isinstance(node, dict):
+            continue
+        run_ts = _extract_receipt_timestamp(node)
+        if run_ts is None or run_ts < HARDENING_CUTOFF:
+            continue
+        if node.get("contract_entry_sha256") is not None:
+            continue
+        ticket_id = node.get("ticket_id") or raw.get("ticket_id")
+        evidence_item_id = node.get("evidence_item_id")
+        if not isinstance(ticket_id, str) or not isinstance(evidence_item_id, str):
+            continue
+        contract_path = contracts_dir / f"{ticket_id}.yaml"
+        if not contract_path.is_file():
+            continue
+        if _orphan_binding_violation(evidence_item_id, ticket_id, contract_path):
+            findings.append(effective.as_posix())
+    return findings
+
+
+def run_orphan_corpus(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Corpus ratchet: set-equality against the frozen orphan baseline, both ways."""
+    observed = set(_orphan_receipt_findings(receipts_root, contracts_dir))
+    baseline = load_orphan_corpus_expected(baseline_path)
+    new_violations = sorted(observed - baseline)
+    stale_baseline = sorted(baseline - observed)
+    print(
+        f"Scanned {receipts_root} for {ORPHAN_TICKET} orphan receipts: "
+        f"{len(observed)} orphan(s); baseline {len(baseline)}."
+    )
+    if not new_violations and not stale_baseline:
+        print("Corpus matches the frozen orphan baseline exactly.")
+        return 0
+    if new_violations:
+        print(
+            f"\nNEW orphan receipts absent from {baseline_path} "
+            f"({len(new_violations)}):"
+        )
+        for entry in new_violations:
+            print(f"  - {entry}")
+        print(
+            "\nDo NOT pad the baseline. Declare the item in its ticket contract "
+            "and re-mint the receipt with contract_entry_sha256."
+        )
+    if stale_baseline:
+        print(
+            f"\nBaseline entries that are no longer orphans ({len(stale_baseline)}) — "
+            "shrink the baseline in the same PR that repaired them:"
+        )
+        for entry in stale_baseline:
+            print(f"  - {entry}")
+    return 1
+
+
+def write_orphan_baseline(
+    receipts_root: Path, contracts_dir: Path, baseline_path: Path
+) -> int:
+    """Regenerate the frozen orphan baseline (repair PRs only)."""
+    open_repairs = sorted(load_orphan_open_repairs(baseline_path))
+    entries = [
+        entry
+        for entry in _orphan_receipt_findings(receipts_root, contracts_dir)
+        if entry not in set(open_repairs)
+    ]
+    header = (
+        "---\n"
+        "# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.\n"
+        "# SPDX-License-Identifier: MIT\n"
+        "#\n"
+        f"# Frozen, shrink-only baseline of pre-existing {ORPHAN_TICKET} ORPHAN\n"
+        "# receipts across drift/dod_receipts/**: post-HARDENING_CUTOFF receipts\n"
+        "# that carry no contract_entry_sha256 AND whose evidence_item_id is not a\n"
+        "# declared dod_evidence item in their ticket contract.\n"
+        "#\n"
+        "# WHY A BASELINE AND NOT A CUTOFF DATE: run_timestamp is producer-written,\n"
+        "# and the newest orphans in this corpus were minted the same day the rule\n"
+        "# landed, so no date separates 'legacy' from 'live'. An enumerated path\n"
+        "# list does, and it names the debt instead of hiding it behind a\n"
+        "# comparison.\n"
+        "#\n"
+        "# WHY NOT A BACK-FILL MIGRATION: back-filling contract_entry_sha256 into\n"
+        "# these receipts would REWRITE merged receipt files, which the OCC\n"
+        "# Append-Only Gate rejects as receipt_file_mutated. Repair is append-only:\n"
+        "# declare the item in contracts/<ticket>.yaml and mint a NET-NEW receipt\n"
+        "# (or supersession) bound per entry, then shrink this file in the same PR.\n"
+        "#\n"
+        "# RATCHET DISCIPLINE: this list may only SHRINK. A newly minted orphan is a\n"
+        "# hard failure — node_occ_companion_compute refuses to mint one as of\n"
+        f"# {ORPHAN_TICKET}, so a new entry here means a producer regressed.\n"
+        "#\n"
+        "# Regenerate (repair PRs only):\n"
+        "#   uv run python scripts/validation/check_receipt_hardening.py \\\n"
+        "#     --write-orphan-baseline\n"
+        "violations:\n"
+    )
+    body = "".join(f"  - {entry}\n" for entry in entries)
+    open_block = (
+        "open_repairs:\n" + "".join(f"  - {entry}\n" for entry in open_repairs)
+        if open_repairs
+        else "open_repairs: []\n"
+    )
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(header + body + _ORPHAN_OPEN_REPAIRS_HEADER + open_block)
+    print(
+        f"Wrote {len(entries)} suppressed orphan entries and preserved "
+        f"{len(open_repairs)} open repair(s) to {baseline_path}."
+    )
+    return 0
+
+
 def write_supersession_baseline(
     receipts_root: Path, contracts_dir: Path, baseline_path: Path
 ) -> int:
@@ -2344,14 +2658,57 @@ def _check_supersession_summary_registration(
     return failures
 
 
-def check_receipt_file(  # noqa: C901
+def check_receipt_file(  # noqa: PLR0913
+    receipt_path: Path,
+    contracts_dir: Path,
+    supersession_baseline: frozenset[str] | None = None,
+    commit_sha_resolver: CommitShaResolver | None = None,
+    infrastructure_diagnostics: list[str] | None = None,
+    orphan_baseline: frozenset[str] | None = None,
+) -> list[str]:
+    """Return violation strings for one receipt file (empty = clean).
+
+    ``orphan_baseline`` suppresses the ORPHAN_BINDING rule for the frozen,
+    shrink-only set of pre-existing orphan receipts (OMN-13888) — see
+    ``load_orphan_baseline`` and the module docstring.
+    """
+    return _drop_baselined_orphans(
+        receipt_path,
+        _check_receipt_file_unbaselined(
+            receipt_path,
+            contracts_dir,
+            supersession_baseline,
+            commit_sha_resolver,
+            infrastructure_diagnostics,
+        ),
+        orphan_baseline,
+    )
+
+
+def _drop_baselined_orphans(
+    receipt_path: Path,
+    violations: list[str],
+    orphan_baseline: frozenset[str] | None,
+) -> list[str]:
+    """Filter ORPHAN_BINDING fragments for a baselined receipt path.
+
+    Suppression is keyed on the receipt PATH alone: a receipt names exactly one
+    ``evidence_item_id``, so there is no second dimension to key on, and every
+    other rule stays enforced on a baselined file.
+    """
+    if not orphan_baseline or receipt_path.as_posix() not in orphan_baseline:
+        return violations
+    return [v for v in violations if ORPHAN_RULE not in v]
+
+
+def _check_receipt_file_unbaselined(  # noqa: C901
     receipt_path: Path,
     contracts_dir: Path,
     supersession_baseline: frozenset[str] | None = None,
     commit_sha_resolver: CommitShaResolver | None = None,
     infrastructure_diagnostics: list[str] | None = None,
 ) -> list[str]:
-    """Return violation strings for one receipt file (empty = clean)."""
+    """``check_receipt_file`` before ORPHAN_BINDING baseline suppression."""
     resolver = commit_sha_resolver or CommitShaResolver()
     infrastructure = (
         infrastructure_diagnostics if infrastructure_diagnostics is not None else []
@@ -2428,6 +2785,7 @@ def _check_staged_file(  # noqa: PLR0913
     contract_abs_path_baseline: frozenset[str],
     commit_sha_resolver: CommitShaResolver,
     infrastructure_diagnostics: list[str],
+    orphan_baseline: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Route one staged file to the contract- or receipt-shaped check (OMN-15710).
 
@@ -2443,6 +2801,7 @@ def _check_staged_file(  # noqa: PLR0913
         supersession_baseline,
         commit_sha_resolver,
         infrastructure_diagnostics,
+        orphan_baseline,
     )
 
 
@@ -2708,6 +3067,30 @@ def main(  # noqa: C901, PLR0912, PLR0915
         help="Pre-commit config inspected by --check-commit-sha-wiring.",
     )
     parser.add_argument(
+        "--orphan-baseline",
+        default=str(ORPHAN_BASELINE_PATH),
+        help=(
+            f"Frozen shrink-only baseline of pre-existing {ORPHAN_TICKET} orphan "
+            "receipts (no contract_entry_sha256 and no declared contract entry)."
+        ),
+    )
+    parser.add_argument(
+        "--orphan-corpus",
+        action="store_true",
+        help=(
+            "Scan every receipt in the corpus for orphan bindings and assert set "
+            "equality against the frozen baseline in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--write-orphan-baseline",
+        action="store_true",
+        help=(
+            "Regenerate the frozen orphan baseline. Repair PRs only — never run "
+            "this to make a newly minted orphan receipt pass."
+        ),
+    )
+    parser.add_argument(
         "--contract-abs-path-baseline",
         default=str(CONTRACT_ABS_PATH_BASELINE_PATH),
         help=(
@@ -2725,6 +3108,18 @@ def main(  # noqa: C901, PLR0912, PLR0915
     contract_abs_path_baseline = load_contract_abs_path_baseline(
         Path(args.contract_abs_path_baseline)
     )
+
+    orphan_baseline_path = Path(args.orphan_baseline)
+
+    if args.write_orphan_baseline:
+        return write_orphan_baseline(
+            Path(args.receipts_root), contracts_dir, orphan_baseline_path
+        )
+
+    if args.orphan_corpus:
+        return run_orphan_corpus(
+            Path(args.receipts_root), contracts_dir, orphan_baseline_path
+        )
 
     if args.write_supersession_baseline:
         return write_supersession_baseline(
@@ -2763,6 +3158,7 @@ def main(  # noqa: C901, PLR0912, PLR0915
         )
 
     supersession_baseline = load_supersession_baseline(baseline_path)
+    orphan_baseline = load_orphan_baseline(orphan_baseline_path)
     try:
         commit_sha_resolver = CommitShaResolver(rest_budget=args.commit_sha_rest_budget)
     except ValueError as exc:
@@ -2809,6 +3205,7 @@ def main(  # noqa: C901, PLR0912, PLR0915
                 contract_abs_path_baseline,
                 commit_sha_resolver,
                 infrastructure_diagnostics,
+                orphan_baseline,
             )
         )
 
