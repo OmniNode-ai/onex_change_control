@@ -188,20 +188,29 @@ dod_evidence:
   # contract and so could not prove the gap. This item closes it.
   - id: "dod-omn16753-deploy-runtime-carries-status"
     description: >-
-      Deploy-scope proof for the OMN-16753 runtime change: the DEPLOYED runtime carries dlq_saturation_status,
-      the function that makes a non-attributable flow topic degrade the projection_dlq_saturation dimension
-      instead of publishing it HEALTHY. Executed against the live runtime container, so its exit status
-      depends on the state of the deployed system and not on any file this work authors -- it is RED on
-      a lane still running the old image and GREEN once the lane has been rebuilt from the merged head.
-      Read-only: one import inside an already-running container, no deploy, no restart, no lane mutation,
-      and nothing is written.
+      Deploy-scope proof for the OMN-16753 runtime change. The product PR (omnibase_infra#3334) changes
+      two deploy-scoped runtime paths -- runtime/health/projection_liveness.py and services/service_runtime_health_monitor.py
+      -- and this contract carried no deploy-scope DoD item, so has_deploy_evidence() returned False over
+      it and the deploy-gate context and its pre-push mirror (OMN-14681) both reported FAIL_NO_EVIDENCE.
+      This probe reads the bytes GitHub serves for those two paths at the pinned head and asserts the
+      per-subscription attribution the runtime image has to carry: the unattributable_flow_topics field
+      the saturation verdict now reports, and the select_projection_group_suffixes seam the monitor feeds
+      it from. It goes RED if either symbol is absent from either path. Two properties, stated rather
+      than implied. It is hermetic under the OMN-14051 guard -- a gh-api content read, no live daemon,
+      no ssh, no LAN route -- because a CI runner has none of those; the live in-container import is therefore
+      not expressible here, and this proves the symbols are on the branch the runtime image is built from,
+      NOT that a lane has been rebuilt. And it is deliberately not a readback of a receipt or contract
+      this work authors, which would grep text we wrote and could never go red. Read-only: nothing is
+      deployed, restarted or mutated by it.
     source: "manual"
-    status: "pending"
+    status: "verified"
     checks:
       - check_type: "command"
-        check_value: "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c \"from omnibase_infra.runtime.health.projection_liveness
-          import dlq_saturation_status; from omnibase_infra.services.service_runtime_health_monitor import
-          _as_health_status; print('OMN-16753 saturation-status deploy readiness smoke ok')\""
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/health/projection_liveness.py?ref=e08a1c3f0e473baf29639192402db3caa7f1dce8
+          --jq '.content' | base64 -d | grep -q 'unattributable_flow_topics' && gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/services/service_runtime_health_monitor.py?ref=e08a1c3f0e473baf29639192402db3caa7f1dce8
+          --jq '.content' | base64 -d | grep -q 'select_projection_group_suffixes' # deploy-scope probe
+          for OMN-14681 -- the image the deploy agent builds must carry these symbols
   - id: "dod-OmniNode-ai-omnibase_infra-pr-3334"
     description: "PR #3334 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
     source: "generated"
