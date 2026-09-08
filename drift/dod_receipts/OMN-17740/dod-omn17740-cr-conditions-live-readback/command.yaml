@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17740"
+evidence_item_id: "dod-omn17740-cr-conditions-live-readback"
+check_type: "command"
+check_value: |-
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 409ded4f-6769-4f34-a101-1b1ffdbdb044 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep 'Successfully synced' | grep -c 'onex-dev'
+contract_sha256: "sha256:bca77f8e5a619a997d33df811eea877d7230939e6c9bbd34d45785437ab3af15"
+contract_entry_sha256: "sha256:6eff2f254bf8120bab53616daf731ac7b4f2c7d849520845dfebe60a52842ced"
+status: PASS
+run_timestamp: "2026-09-08T01:15:00Z"
+commit_sha: "c07e2f8407548e5b978977d4257485aa3fe9c4a5"
+runner: "beta-proof-omn17740"
+verifier: "staging-readonly-ssm-readback"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/commits/c07e2f8407548e5b978977d4257485aa3fe9c4a5 --jq '.sha'  # authority pin for this receipt's commit_sha
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 409ded4f-6769-4f34-a101-1b1ffdbdb044 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep 'Successfully synced' | grep -c 'onex-dev'
+probe_stdout: |
+  5
+  CR=keycloak-smtp-infisical-secret :: 2026-09-08T01:00:43Z INFO Successfully synced 14 secrets. Operator will requeue after [1m0s]
+  CR=omnidash-credentials :: 2026-09-08T01:00:44Z INFO Successfully synced 9 secrets. Operator will requeue after [1m0s]
+  CR=omniintelligence-credentials :: 2026-09-08T01:00:44Z INFO Successfully synced 8 secrets. Operator will requeue after [1m0s]
+  CR=omniweb-infisical-secret :: 2026-09-08T01:00:44Z INFO Successfully synced 10 secrets. Operator will requeue after [1m0s]
+  CR=onex-runtime-credentials :: 2026-09-08T01:00:45Z INFO Successfully synced 18 secrets. Operator will requeue after [1m0s]
+  POSITIVE CONTROL F (a CR name that does not exist): NO_LINE_FOUND
+  Condition selector, SSM 63f5bc2c-7f60-4998-8767-ec91bdeb1413: NOT_TRUE_COUNT=0 TRUE_COUNT=5 SYNTHETIC_NOT_TRUE_COUNT=1
+  NEGATIVE CONTROL on this exact check (namespace kube-public): 0, exit 1
+actual_output: |-
+  PASS: 5 of 5 onex-dev InfisicalSecret CRs report ReadyToSyncSecrets=True (TRUE_COUNT=5,
+  NOT_TRUE_COUNT=0) on EC2 i-06169517a92b45f86, node ip-10-40-204-249, as-of 2026-09-08T01:00:52Z,
+  and each of the five logged a SUBSEQUENT successful sync at 01:00:43-45Z on a 60s resync interval
+  - three days after the 2026-09-05T12:03:27Z operator pod start, so the True is live and not a
+  frozen condition. Zero 401 / no-identity-access-token / unauthorized lines in 24h of operator log
+  against a positive control of 13783 matching lines in 35831. Positive controls: inverted selector
+  5 rows; a synthetic False+401 CR is detected as 1 row; a nonexistent CR returns NO_LINE_FOUND; a
+  nonexistent Secret returns MISSING; the same read in kube-public returns ABSENT.
+  ROOT CAUSE, proven in the same pass: onex-dev/universal-auth-credentials - the credentialsRef
+  Secret all five CRs authenticate through - carries exactly one managedFields entry,
+  kubectl-client-side-apply at 2026-08-30T09:27:57Z, with no write after it, while the operator pod
+  was created 2026-09-05T12:03:27Z with restartCount 0 and the five conditions flipped True 19-21s
+  later. The failure was a stale CONSUMER holding a token minted before the 2026-08-30 rewrite, not
+  stale secret material; the repair changed no secret.
+  SCOPE: this receipt binds DoD 2 (and the DoD 1 root cause) only. DoD 3 (round-trip write/observe/
+  remove) is a live secret-store mutation and was not attempted; DoD 4 (a wired detection gate) is
+  proven ABSENT at omninode_infra c07e2f8407548e5b978977d4257485aa3fe9c4a5; DoD 5 is partial.
+  OMN-17740 remains open.
+exit_code: 0
