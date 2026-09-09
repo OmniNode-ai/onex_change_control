@@ -101,3 +101,42 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh pr view 8800 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1280"
+    description: >
+      PR #1280 on OmniNode-ai/omninode_infra — the server half of the operator's 2026-09-09T~14:27Z clarification
+      ("it should be for the label for the API key so that people can mint more than one API key"). The
+      ticket's scope item 3 asked this repo to be READ rather than assumed: is there a per-tenant key
+      cap, a unique (tenant_id, name) constraint refusing a duplicate label, or auto-mint logic that revokes
+      or replaces an incumbent? Three suspects, one real. There is NO per-tenant cap — MAX_API_KEY_LIMIT
+      is a pagination bound enforced in list_api_keys, not in the mint — and nothing on the create path
+      revokes: _ensure_default_api_key returns early when the tenant holds any key and create_api_key's
+      body is a single INSERT. So a key with a DISTINCT label was never blocked, which is the headline
+      intent and already worked. The third was real: uq_tenant_api_keys_tenant_id_name_active (PARTIAL
+      on is_active, so a revoked key does not hold its name hostage) correctly refuses a second ACTIVE
+      key under the same name, but that refusal raised ApiKeyValidationError, routers/api_keys.py caught
+      nothing, and there is no add_exception_handler for any ApiKeyError in docker/onex-api — so the route
+      answered a bare 500, which omniweb's apiFetch renders as its no-detail fallback "API error 500".
+      #1280 adds ApiKeyNameConflictError, deliberately a SUBCLASS of ApiKeyValidationError so provision.py's
+      sign-up mint keeps treating a concurrent same-name race as an idempotent no-op (a sibling type would
+      have converted that no-op into a 500 AT SIGN-UP), and translates it through one shared helper used
+      by BOTH create routes into a typed 409 carrying a new RESOURCE_CONFLICT refusal code. Only the collision
+      is translated: an invalid tenant_id arrives as the same base type and must not be answered "pick
+      another label". The 409 is declared per-route rather than added to REFUSAL_RESPONSES, because a
+      conflict is reachable only where a route has an incumbent to collide with. Bound by hand (union-resolve)
+      onto this same-ticket companion because autobind is not minting companions in this window (OMN-18073);
+      appended, so every existing entry's contract_entry_sha256 stays valid (OMN-13888). Rule 24 stated
+      rather than implied: the .201 compose dev lane runs no onex-api and no dashboard, so there is no
+      lab surface for this path, no lab pass is claimed, and the staging readback on onex-dev is the proof.
+      No credential was rotated, re-issued, revoked or minted, no secret value was read or printed, and
+      no cluster object was mutated (rule 22).
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1280 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "test_passes"
+        check_value: |-
+          python3 -m pytest tests/test_omn_18081_duplicate_key_label_refusal.py -q
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-18081/omninode_infra/docker/onex-api"
