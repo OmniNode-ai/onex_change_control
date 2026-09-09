@@ -1,0 +1,103 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18081"
+title: "API-key creation UI: make the user-entered label visible, and say a key can carry one"
+summary: >
+  OCC companion for OmniNode-ai/omniweb PR #364, binding AC1, AC2 and AC3. Bound by hand (union-resolve),
+  the same way OCC#8760 was bound for omninode_infra#1266 and OCC#8787 for omninode_infra#1274: OMN-18073
+  records that autobind is not minting companions in this window, and on this PR the occ-companion-effect
+  job failed outright with "the lane declares security_protocol=SASL_PLAINTEXT / sasl_mechanism=SCRAM-SHA-256,
+  but KAFKA_SASL_USERNAME and/or KAFKA_SASL_PASSWORD are not set in this job's environment" (run 34355977342),
+  so no companion could be published and #364 has no receipt to cite. Cause of the ticket: the operator
+  reported from the dev dashboard that "users cannot actually add in a label for the key anymore". The
+  important finding is that NOTHING HAD BEEN REMOVED — read-only at origin/dev acec8de the label input
+  still rendered, resolveKeyLabel still returned a typed label verbatim, action-logic forwarded it, api-client
+  POSTed it as {name}, and the gateway's ApiKeyCreateBody requires and STORES that name (1-128, ^[\w\s\-\.]+$),
+  so no omninode_infra change was needed and none was made. The operator-visible outcome was produced
+  by three compounding things, none of them a removal - both mints write a name with NO PROMPT AT ALL
+  (the gateway's at sign-up via DEFAULT_SIGNUP_API_KEY_NAME, and the panel's own first-visit backfill),
+  the input sat behind a "New API key" toggle with nothing hinting it existed, and the page header read
+  "you never type one in", which is true of the SECRET but reads as a statement about the whole panel.
+  #364 opens the create form permanently so the label is reachable without first guessing that a button
+  conceals it, scopes the header's claim to the credential and states the label is the customer's to give
+  or leave blank, and captions an auto-named key as auto-named. The caption is the ticket's stated alternative
+  to a rename - the gateway exposes NO PATCH /v1/api-keys/{id} (routers/api_keys.py carries post, get
+  and delete only), so a rename is not buildable and is out of scope on the ticket. Both protections OMN-18011
+  bought are preserved and now pinned rather than left to inspection: the submit control is still never
+  gated on the label being non-empty (AC1 of that ticket, operator ruling 2026-09-06), and validateKeyLabel
+  still refuses an onxk_-prefixed label, which is the mistake that put a 17-character key fragment in
+  key d0554098's stored name. The PR closes the gap AC3 names - no test pinned that a label input renders
+  AT ALL, so a regression deleting it outright would have gone green - with a new suite wired as CI Gate
+  4l, RED at acec8de (10 of 17 fail) and GREEN at the pushed head. AC4 (the staging readback on dev.app
+  after delivery) is deliberately NOT bound here: it cannot be proven before this merges and reaches onex-dev.
+  Rule 24 is stated rather than implied - the .201 compose dev lane runs no dashboard, so there is no
+  lab surface for this change, no lab pass is claimed, and the staging readback is the proof. A second
+  commit on the same PR bumps the pnpm sharp override off the vulnerable exact pin 0.35.0 to '>=0.35.4
+  <0.36'; that is unrelated to the label fix but was blocking it and every other open PR in the repo,
+  and it is evidenced separately below. No credential was rotated, re-issued, revoked or minted, no secret
+  value was read, printed or decoded, and no cluster object was mutated (rule 22).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #364 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #364 on OmniNode-ai/omniweb, derived from the PR's own diff: the suite the
+      PR adds, which renders the real ApiKeyManager through renderToStaticMarkup and asserts that a
+      label input is present on FIRST PAINT with no interaction, that the panel and page copy state a
+      label is possible, and that both OMN-18011 protections still hold (the submit control is never
+      gated on an empty label; an onxk_-prefixed label is still refused). Every source-scanning
+      assertion carries a positive control. Executed at cwd `${OMNI_HOME}/omniweb`.
+    command: |-
+      pnpm test:api-key-label-affordance
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omniweb-pr-364"
+    description: >
+      PR #364 on OmniNode-ai/omniweb — the always-open create form, the header and panel copy that state
+      a label is possible, the auto-named caption, and the new label-affordance suite wired as CI Gate
+      4l. Bound by hand (union-resolve) because the occ-companion-effect job could not publish a companion
+      for this ticket (OMN-18073).
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 364 --repo OmniNode-ai/omniweb --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniweb/pulls/364/files --paginate --jq '.[].filename' | grep -cFx 'tests/api-key-label-affordance.test.tsx'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #364 on OmniNode-ai/omniweb — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omniweb-pr-364"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          pnpm test:api-key-label-affordance
+        cwd: "${OMNI_HOME}/omniweb"
+  - id: "occ-self-bind-pr-8800"
+    description: |-
+      OCC self-binding receipt for PR #8800, the in-repo evidence PR carrying this contract.
+      Binds OMN-18081 to the OCC PR by pr_number so eligibility can resolve a PASS receipt
+      for the evidence PR itself. Appended, not edited: both existing entries are untouched,
+      so their contract_entry_sha256 values stay valid (OMN-13888). No binds_ac — this is an
+      infrastructure self-binding, not evidence for any acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 8800 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
