@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+evidence_item_id: "dod-occ-diff-derived-behavior-proof-pr-1284"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omnidash_runtime_edge_image.py tests/k8s/test_omnidash_rds_tls.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py tests/k8s/test_omn_16350_migration_gate_and_overlay_regression_guard.py tests/k8s/test_omn_17250_public_rollout_stale_condition.py tests/k8s/test_deploy_onex_staging_rollout_wait_writer_roster.py -q
+contract_sha256: "sha256:e817abf9d5c3c6038be35acbc4c846c41c5213210ac8925376d2c82d7b272e53"
+contract_entry_sha256: "sha256:9c73646f9606b730034e72c30018ead89fa197c8aa5402c0fdbc8c55b3ddcbe7"
+status: PASS
+run_timestamp: "2026-09-09T18:26:14+00:00"
+commit_sha: "22ee1d88d50fbb302a9e4ae0a6279f3d949ab95a"
+runner: "omnidash-rollout-strategy"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/commits/22ee1d88d50fbb302a9e4ae0a6279f3d949ab95a --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-omnidash" \
+        && uv run pytest tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omnidash_runtime_edge_image.py tests/k8s/test_omnidash_rds_tls.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py tests/k8s/test_omn_16350_migration_gate_and_overlay_regression_guard.py tests/k8s/test_omn_17250_public_rollout_stale_condition.py tests/k8s/test_deploy_onex_staging_rollout_wait_writer_roster.py -q -p no:cacheprovider)
+probe_stdout: |
+  22ee1d88d50fbb302a9e4ae0a6279f3d949ab95a
+  ........................................................................ [ 93%]
+  .....                                                                    [100%]
+  77 passed in 26.09s
+actual_output: |-
+  PASS: the pushed commit resolves on OmniNode-ai/omninode_infra and 77 tests pass at it.
+
+  The behavior this diff changes is what the overlay RENDERS, so the proof is a rendered-manifest
+  control taken in this lane rather than asserted, using kubectl kustomize k8s/onex-dev-overlay-dev
+  locally with no cluster contact.
+
+  RED control, rendered from origin/dev (the pre-change tree), parsed out of the rendered YAML
+  rather than eyeballed:
+    omnidash replicas: 2
+    omnidash strategy: {'rollingUpdate': {'maxSurge': 1, 'maxUnavailable': 0}, 'type': 'RollingUpdate'}
+  So before this change the Deployment is REQUIRED to add a third pod and FORBIDDEN from removing
+  one first. That is the deadlock, and it comes from an EXPLICIT declaration in
+  k8s/onex-dev/omnidash/deployment.yaml, not from the inherited 25%/25% default that produced the
+  same shape on omniweb.
+
+  GREEN, rendered from the pushed commit:
+    omnidash replicas: 2
+    omnidash strategy: {'rollingUpdate': {'maxSurge': 0, 'maxUnavailable': 1}, 'type': 'RollingUpdate'}
+
+  The zero is not vacuous: the two renders differ, and the diff between them is exactly ONE hunk
+  (counted with `diff -u ... | grep -c '^@@'`, not eyeballed) containing only the maxSurge and
+  maxUnavailable lines. Nothing else in an 8815-line render moved - image, replicas, resources,
+  env, the PodDisruptionBudget and every other object are byte-identical, and the omniweb
+  Deployment #1282 already fixed is untouched at maxSurge 0 / maxUnavailable 1.
+
+  The eight suites are the ones that own this file, the overlay it lives in, or omnidash itself:
+  test_manifest_env_hygiene.py and test_omn_17693_orphan_deployment_detection.py (both read the
+  rendered overlay), test_omnidash_runtime_edge_image.py and test_omnidash_rds_tls.py (the two
+  omnidash-owning suites), test_onex_lab_overlay_omn17533.py (the lab-overlay parity gate),
+  test_omn_16350_migration_gate_and_overlay_regression_guard.py (the overlay regression guard),
+  test_omn_17250_public_rollout_stale_condition.py and
+  test_deploy_onex_staging_rollout_wait_writer_roster.py (the rollout-wait surfaces).
+
+  NOT claimed here, and deliberately so: AC7 is a live-cluster readback against
+  i-06169517a92b45f86 and is not derivable from this diff. It is recorded on the Linear ticket
+  after the staging deploy. AC1, AC2 and AC3 remain unclaimed for the reason OCC#8811 recorded.
+exit_code: 0
+pr_number: 1284
+branch: "jonah/omn-18085-omnidash-companion"

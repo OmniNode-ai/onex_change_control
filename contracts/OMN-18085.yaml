@@ -1,8 +1,8 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-18085"
-title: "omniweb's dev rollout is pinned to maxSurge 0 so it never waits on CPU the staging node does not
-  have"
+title: "omniweb and omnidash dev rollouts are pinned to maxSurge 0 so neither waits on CPU the staging
+  node does not have"
 summary: >
   OCC companion for OmniNode-ai/omninode_infra PR #1282. Bound by hand (union-resolve) because the autobind
   producer mints nothing today (OMN-18073), the same reason OCC#8760, OCC#8782, OCC#8792 and OCC#8798
@@ -52,7 +52,31 @@ summary: >
   against any cluster, the public cluster i-0e596e8b557e27785 untouched, no instance resize, no credential
   rotated, re-issued, revoked or minted, and no secret value read, printed or decoded. AC1, AC2 and AC3
   are live-cluster readbacks that are not derivable from this diff; they are recorded on the Linear ticket
-  after the staging deploy and are deliberately NOT claimed by any evidence item here.
+  after the staging deploy and are deliberately NOT claimed by any evidence item here. UNION-RESOLVE APPEND
+  for OmniNode-ai/omninode_infra PR #1284, the omnidash half of the same ticket, hand-bound for the same
+  OMN-18073 reason. One correction to the paragraph above is recorded rather than glossed: PR #1282 stated
+  omnidash "has the identical 25%/25%-on-a-full-node shape", which is right about the effect and wrong
+  about the source. omnidash does NOT inherit the Kubernetes default - k8s/onex-dev/omnidash/deployment.yaml
+  declares maxSurge 1 / maxUnavailable 0 EXPLICITLY, read back live at 2026-09-09T18:07Z as {"rollingUpdate":{"maxSurge":1,"maxUnavailable":0},"type":"RollingUpdate"}
+  at replicas 2. Different source, identical arithmetic, identical deadlock: the Deployment must create
+  a third pod and may not terminate either running pod first, so it can only progress by finding 100m
+  of unallocated CPU on a node with 120m free, and the omnidash pod's effective CPU request is max(init
+  10m, sum(containers) 100m) = 100m, the same figure as one omniweb replica. Node arithmetic re-measured
+  read-only over SSM against i-06169517a92b45f86 at 2026-09-09T18:07Z with --comment omnidash-rollout-strategy:
+  4000m allocatable, 3880m requested (97%), 120m free, omnidash 2 pods Running since 2026-09-02T13:22Z,
+  0 Pending cluster-wide. Stated plainly rather than implied: omnidash is NOT currently broken - this
+  is a latent deadlock removed before it fires, not an incident repair. The fix is the same one, in the
+  same dev overlay, for the same blast-radius reason, and it does not conflict with the omnidash PodDisruptionBudget
+  (k8s/onex-dev/omnidash/pdb.yaml, minAvailable 1): a PDB constrains the Eviction API, while a Deployment
+  rolling update scales the old ReplicaSet down directly rather than evicting, and maxUnavailable 1 on
+  2 replicas leaves 1 pod serving, which is what the budget asks for anyway. Enumeration rather than a
+  vague residual: omnidash and omniweb are the ONLY replicas-2 Deployments the k8s/onex-dev-overlay-dev
+  render produces, and both are now covered; the four replicas-1 Deployments with the same surge-requiring
+  shape (omnimarket-projection-api and umami explicitly, memgraph-lab and pgweb by inherited default)
+  are deliberately left alone, because at one replica maxUnavailable 1 is a full outage of that workload
+  for the rollout rather than a degraded-but- serving pair. AC6, AC7 and AC8 were added to the Linear
+  ticket for the omnidash half before this contract bound to them; AC7 is a live-cluster readback that
+  is not derivable from this diff and is deliberately NOT claimed by any evidence item here.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -65,6 +89,14 @@ evidence_requirements:
       Behavior proof for PR #1282 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the overlay digest-pin gate that owns this patch file, manifest env hygiene over the rendered overlay, and the orphan-Deployment detector that reads the same overlay. Executed at cwd `${OMNI_HOME}/omninode_infra`.
     command: |-
       uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omn_17693_orphan_deployment_detection.py -q
+  - kind: "ci"
+    description: "PR #1284 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1284 on OmniNode-ai/omninode_infra, the omnidash half, derived from the PR's own diff: manifest env hygiene and the orphan-Deployment detector over the rendered overlay, the two omnidash-owning suites, the onex-lab overlay parity gate, and the overlay regression guard. Executed at cwd `${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-omnidash`.
+    command: |-
+      uv run pytest tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omnidash_runtime_edge_image.py tests/k8s/test_omnidash_rds_tls.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py tests/k8s/test_omn_16350_migration_gate_and_overlay_regression_guard.py tests/k8s/test_omn_17250_public_rollout_stale_condition.py tests/k8s/test_deploy_onex_staging_rollout_wait_writer_roster.py -q
 emergency_bypass:
   enabled: false
   justification: ""
@@ -111,6 +143,50 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omn_17693_orphan_deployment_detection.py -q
         cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1284"
+    description: >
+      PR #1284 on OmniNode-ai/omninode_infra - the omnidash half. Adds k8s/onex-dev-overlay-dev/patches/omnidash-deployment.yaml
+      pinning the omnidash rollout to maxSurge 0 / maxUnavailable 1, plus the kustomization.yaml entry
+      registering it. Carries the re-measured node arithmetic, the correction that omnidash declares maxSurge
+      1 / maxUnavailable 0 explicitly rather than inheriting the 25%/25% default, the PodDisruptionBudget
+      non-interaction, and the full enumeration of every Deployment the overlay renders with its disposition.
+      Bound by hand (union-resolve) because the autobind producer mints nothing today (OMN-18073).
+    source: "generated"
+    binds_ac:
+      - "AC6"
+      - "AC8"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1284 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1284/files --paginate --jq '.[].filename' | grep -cFx 'k8s/onex-dev-overlay-dev/patches/omnidash-deployment.yaml'
+  - id: "dod-deploy-assessment-pr-1284"
+    description: >
+      Deploy-scope DoD so PR #1284 clears the deploy-gate. The diff touches one new kustomize overlay
+      patch and the kustomization entry that registers it, together shaping a Deployment applied to the
+      staging cluster. It mutates no cluster: the change is landed through the overlay only, per CLAUDE.md
+      rule 13, and the entire diagnosis behind it was taken read-only over SSM with get and describe.
+      The blast radius is provably the staging cluster, since only deploy-onex-staging.yml applies k8s/onex-dev-overlay-dev
+      and deploy-onex-prod.yml applies k8s/onex-prod.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1284/files --paginate --jq '.[].filename' | grep -ciE '^k8s/'
+  - id: "dod-occ-diff-derived-behavior-proof-pr-1284"
+    description: "PR #1284 on OmniNode-ai/omninode_infra - diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1284"
+    binds_ac:
+      - "AC6"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omnidash_runtime_edge_image.py tests/k8s/test_omnidash_rds_tls.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py tests/k8s/test_omn_16350_migration_gate_and_overlay_regression_guard.py tests/k8s/test_omn_17250_public_rollout_stale_condition.py tests/k8s/test_deploy_onex_staging_rollout_wait_writer_roster.py -q
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-omnidash"
   - id: "occ-self-bind-pr-8811"
     description: >-
       OCC self-binding receipt for PR #8811, the in-repo evidence PR carrying this contract. Binds OMN-18085
@@ -123,3 +199,15 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8811 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "occ-self-bind-pr-8816"
+    description: >-
+      OCC self-binding receipt for PR #8816, the in-repo evidence PR carrying the union-resolve APPEND
+      that binds OMN-18085 to omninode_infra#1284. Binds by pr_number so eligibility can resolve a PASS
+      receipt for the evidence PR itself. Hand-minted: the autobind producer mints nothing today (OMN-18073).
+      It declares no binds_ac because a pull-request-visibility probe proves no acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8816 --repo OmniNode-ai/onex_change_control --json number,state,headRefName

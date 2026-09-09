@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+evidence_item_id: "dod-deploy-assessment-pr-1284"
+check_type: "command"
+check_value: |-
+  gh api repos/OmniNode-ai/omninode_infra/pulls/1284/files --paginate --jq '.[].filename' | grep -ciE '^k8s/'
+contract_sha256: "sha256:e817abf9d5c3c6038be35acbc4c846c41c5213210ac8925376d2c82d7b272e53"
+contract_entry_sha256: "sha256:8b65a30c1344f3f55e1962ea3ad6606e1be9bcc07fbefc69a82f826d95fe6cb6"
+status: PASS
+run_timestamp: "2026-09-09T18:26:14+00:00"
+commit_sha: "22ee1d88d50fbb302a9e4ae0a6279f3d949ab95a"
+runner: "omnidash-rollout-strategy"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/pulls/1284/files --paginate --jq '.[].filename'
+probe_stdout: |
+  k8s/onex-dev-overlay-dev/kustomization.yaml
+  k8s/onex-dev-overlay-dev/patches/omnidash-deployment.yaml
+actual_output: |-
+  PASS: the diff is TWO files and both are deploy-scoped by the matcher - the new kustomize overlay
+  patch k8s/onex-dev-overlay-dev/patches/omnidash-deployment.yaml and the
+  k8s/onex-dev-overlay-dev/kustomization.yaml entry that registers it. Together they set
+  spec.strategy (maxSurge 0 / maxUnavailable 1) on the omnidash Deployment and change nothing else;
+  the full rendered-overlay diff is a single hunk, confirmed by rendering both revisions with
+  kubectl kustomize locally and counting diff hunks (1) across an 8815-line render.
+
+  The change mutates no cluster. It is landed through the overlay only, per CLAUDE.md rule 13, and
+  the entire diagnosis behind it was taken read-only over SSM against i-06169517a92b45f86 with
+  kubectl get / describe and --comment omnidash-rollout-strategy. No kubectl set, patch, apply,
+  scale or delete was run on any cluster; the public cluster i-0e596e8b557e27785 was not touched;
+  no credential was rotated, re-issued, revoked or minted and no secret value was read, printed or
+  decoded.
+
+  Blast radius is provably the staging cluster: only .github/workflows/deploy-onex-staging.yml
+  applies k8s/onex-dev-overlay-dev, and deploy-onex-prod.yml applies k8s/onex-prod and never this
+  directory.
+
+  Availability during the rollout is preserved and does not conflict with the omnidash
+  PodDisruptionBudget (k8s/onex-dev/omnidash/pdb.yaml, minAvailable 1). A PDB constrains the
+  Eviction API - node drains, descheduling - whereas a Deployment rolling update scales the old
+  ReplicaSet down directly rather than evicting. maxUnavailable 1 on 2 replicas leaves 1 pod
+  serving, which is what the budget asks for anyway, so the two agree rather than merely not
+  colliding.
+exit_code: 0
+pr_number: 1284
+branch: "jonah/omn-18085-omnidash-companion"
