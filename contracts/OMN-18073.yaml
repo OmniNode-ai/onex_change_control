@@ -89,3 +89,59 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8786 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3364"
+    description: >
+      PR #3364 on OmniNode-ai/omnibase_infra -- the deploy-agent env TRANSPORT itself, which is the half
+      #3358 only guarded against. The dev unit loses EnvironmentFile= entirely and ExecStart runs deploy/deploy-agent-launch.sh,
+      which bash-`source`s the same operator store the way scripts/deploy-runtime.sh always has, so the
+      process environment is the bash-decoded one. DEPLOY_AGENT_ENV_PROTECTED restores systemd's file-order
+      precedence, which a plain `set -a; source` would otherwise invert -- the store's KAFKA_ENVIRONMENT
+      disagrees with the dev unit's, so an unprotected name is a silently relabelled lane. self_update
+      re-execs the launcher rather than the interpreter, so a repaired value is picked up at the next
+      job boundary; os.execv inherits the environment verbatim, so the pre-existing interpreter re-exec
+      could only ever carry forward what the process started with. Bound by hand (union-resolve) because
+      autobind still mints nothing -- this ticket's own outage is the reason it cannot.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3364 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3364/files --paginate --jq '.[].filename' | grep -cFx 'scripts/deploy-agent/deploy/deploy-agent-launch.sh'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3364/files --paginate --jq '.[].filename' | grep -cFx 'scripts/deploy-agent/deploy/deploy-agent.service'
+  - id: "dod-deploy-assessment-pr-3364"
+    description: >
+      Deploy-scope DoD so PR #3364 clears the deploy-gate. All six changed files are deploy-scoped by
+      the matcher: a systemd unit, a launcher script, the executor, and three unit tests. Nothing in the
+      diff mutates a lane -- it changes only how a unit that an OPERATOR later restarts obtains its environment.
+      The restart itself is deliberately not performed by this change and is recorded as pending operator
+      approval. The governed pre-push deploy-scope parity hook reported PASS on the same commit.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3364/files --paginate --jq '.[].filename' | grep -ciE 'scripts/|deploy/'
+  - id: "dod-occ-diff-derived-behavior-proof-pr-3364"
+    description: "PR #3364 on OmniNode-ai/omnibase_infra -- diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-3364"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/test_deploy_agent_launcher_omn18073.py tests/unit/test_executor_self_update_launcher_omn18073.py tests/unit/test_deploy_agent_service_source.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra/scripts/deploy-agent"
+  - id: "occ-self-bind-pr-8810"
+    description: >-
+      OCC self-binding receipt for PR #8810, the in-repo evidence PR carrying the omnibase_infra#3364
+      entries above. Binds OMN-18073 to that companion by pr_number so eligibility can resolve a PASS
+      receipt for the evidence PR itself. Hand-minted: autobind mints nothing while this ticket's own
+      outage is open. It declares no binds_ac because a pull-request-visibility probe proves no acceptance
+      criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8810 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
