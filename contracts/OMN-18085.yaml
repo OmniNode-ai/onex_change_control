@@ -1,0 +1,125 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+title: "omniweb's dev rollout is pinned to maxSurge 0 so it never waits on CPU the staging node does not
+  have"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #1282. Bound by hand (union-resolve) because the autobind
+  producer mints nothing today (OMN-18073), the same reason OCC#8760, OCC#8782, OCC#8792 and OCC#8798
+  were hand-minted in this window. k8s/onex-dev/omniweb/deployment.yaml declares no strategy, so it inherits
+  the Kubernetes default RollingUpdate maxSurge 25% / maxUnavailable 25%. At replicas 2 those percentages
+  resolve to maxSurge 1 (fractions round UP) and maxUnavailable 0 (fractions round DOWN), so the Deployment
+  is REQUIRED to create a third pod and FORBIDDEN from terminating either running pod first - it can only
+  progress by finding 100m of unallocated CPU. The dev-system staging node has almost none. Measured read-only
+  over SSM against EC2 i-06169517a92b45f86 at 2026-09-09T16:40Z, node ip-10-40-204-249 is a single 4-CPU
+  k3s control-plane with 4000m allocatable, 3880m requested (97%), 120m free, and 2564m actually used
+  (64% per kubectl top node) - Insufficient cpu is about REQUESTS against allocatable, never about usage,
+  so at 64% use the node was not busy, it was fully committed. Live instance on the rollout this ticket
+  was filed for (omniweb#366, merge 7b28a4d087ebd0a4076229697b653939c83fa75f): ReplicaSet omniweb-7dd966bbd9
+  rev 168 was created at 16:15:18Z and its surge replica went Pending with "0/1 nodes are available: 1
+  Insufficient cpu"; at about 16:33:15Z omnimarket-projection-api finished ITS own rollout and scaled
+  ReplicaSet d4c5fcfc5 from 1 to 0, releasing exactly the 100m omniweb needed; omniweb reached Progressing/NewReplicaSetAvailable
+  2/2 ready at 16:33:23Z. The rollout was unblocked by an unrelated Deployment, roughly 18 minutes of
+  a staging deploy spent waiting on a coin flip, and deploy-onex-staging.yml rolls several 2-replica Deployments
+  on the same push so the 120m headroom is a race rather than a guarantee. Stated plainly and recorded
+  rather than implied - the rollout SELF-CLEARED at 16:33:23Z, before this change existed; both serving
+  pods already carry sha256:1b98a56c64a39261fe0ea5e5e3683f209b172b44f79cbfd0799d502aab747cf5, whose ECR
+  tag is sha-7b28a4d087ebd0a4076229697b653939c83fa75f, so this PR does not rescue that rollout, it removes
+  the deadlock so the next one does not depend on a coin flip. Cause class is the surge strategy needing
+  headroom the node does not reliably have, with the 97% request commitment as the standing condition;
+  it is explicitly NOT leaked objects, since all 11 non-current omniweb ReplicaSets are scaled to 0 and
+  every Completed Job pod contributes 0m - the positive control being that the per-namespace sum of Running
+  and Pending pod requests is 3880m, exactly matching the node's own Allocated resources line. Trimming
+  requests was measured and REJECTED: the two pods dominating actual CPU are UNDER-requested, not over
+  (omninode-runtime requests 300m and uses 916m, 3.05x; omninode-runtime-effects requests 100m and uses
+  692m, 6.92x), so cutting requests would degrade placement quality while leaving a strategy that is wrong
+  on its own terms; the genuinely idle 100m requests (three qdrant StatefulSets, kreuzberg, omnidash)
+  live in k8s/data-plane and the shared k8s/onex-dev base, outside this dev-only overlay. The fix is maxSurge
+  0 / maxUnavailable 1 in the DEV OVERLAY only, which inverts the order so a replacement pod lands in
+  the slot a terminating pod frees, needing zero additional headroom, with one of two replicas serving
+  throughout. It is in k8s/onex-dev-overlay-dev and not the base because the base is applied to the production-facing
+  cluster too (the onex-dev NAMESPACE owns the public app/api/dash hostnames), where maxSurge 0 would
+  make every public omniweb deploy drop to a single replica on a cluster that has room to surge properly;
+  this overlay is applied by one workflow only, deploy-onex-staging.yml against i-06169517a92b45f86, and
+  deploy-onex-prod.yml applies k8s/onex-prod and never this directory. The change cannot revert omniweb's
+  image - the digest pin in k8s/onex-dev/omniweb/kustomization.yaml is a floor, and the workflow step
+  "Freeze omniweb on its live verified digest" re-pins the ephemeral checkout to the live digest before
+  the apply, anchoring on the digest key, so this patch touching only spec.strategy is orthogonal. Lab-first
+  is stated honestly rather than claimed: the k8s/onex-lab overlay DOES NOT carry omniweb - it bases on
+  ../onex-dev/runtime and ../onex-dev/api only and names omniweb among the seven planes deliberately left
+  out, with a matching entry in parity_exclusions.yaml - so no lab surface renders this Deployment and
+  no lab pass covers this change. Read-only throughout: no kubectl set, patch, apply, scale or delete
+  against any cluster, the public cluster i-0e596e8b557e27785 untouched, no instance resize, no credential
+  rotated, re-issued, revoked or minted, and no secret value read, printed or decoded. AC1, AC2 and AC3
+  are live-cluster readbacks that are not derivable from this diff; they are recorded on the Linear ticket
+  after the staging deploy and are deliberately NOT claimed by any evidence item here.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1282 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1282 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the overlay digest-pin gate that owns this patch file, manifest env hygiene over the rendered overlay, and the orphan-Deployment detector that reads the same overlay. Executed at cwd `${OMNI_HOME}/omninode_infra`.
+    command: |-
+      uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omn_17693_orphan_deployment_detection.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1282"
+    description: >
+      PR #1282 on OmniNode-ai/omninode_infra - the dev-overlay strategy pin (maxSurge 0 / maxUnavailable
+      1) on the omniweb Deployment, carrying the measured node arithmetic and the rejected request-trim
+      alternative in the patch file's own rationale block. Bound by hand (union-resolve) because the autobind
+      producer mints nothing today (OMN-18073).
+    source: "generated"
+    binds_ac:
+      - "AC4"
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1282 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1282/files --paginate --jq '.[].filename' | grep -cFx 'k8s/onex-dev-overlay-dev/patches/omniweb-deployment.yaml'
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy-scope DoD so PR #1282 clears the deploy-gate. The diff touches one kustomize overlay patch
+      that shapes a Deployment applied to the staging cluster. It mutates no cluster: the change is landed
+      through the overlay only, per CLAUDE.md rule 13, and the entire diagnosis behind it was taken read-only
+      over SSM with get / describe / top. The blast radius is provably the staging cluster, since only
+      deploy-onex-staging.yml applies k8s/onex-dev-overlay-dev and deploy-onex-prod.yml applies k8s/onex-prod.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1282/files --paginate --jq '.[].filename' | grep -ciE '^k8s/'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1282 on OmniNode-ai/omninode_infra - diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1282"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omn_17693_orphan_deployment_detection.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "occ-self-bind-pr-8811"
+    description: >-
+      OCC self-binding receipt for PR #8811, the in-repo evidence PR carrying this contract. Binds OMN-18085
+      to the OCC companion by pr_number so eligibility can resolve a PASS receipt for the evidence PR
+      itself. Hand-minted: the autobind producer mints nothing today (OMN-18073). It declares no binds_ac
+      because a pull-request-visibility probe proves no acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8811 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
