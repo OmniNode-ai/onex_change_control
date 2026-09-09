@@ -1,0 +1,41 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+evidence_item_id: "dod-deploy-assessment"
+check_type: "command"
+check_value: |-
+  gh api repos/OmniNode-ai/omninode_infra/pulls/1282/files --paginate --jq '.[].filename' | grep -ciE '^k8s/'
+contract_sha256: "sha256:be74ca7aea61d620f1ea28031825d27db4022d94de94c770d7c981a2210eb270"
+contract_entry_sha256: "sha256:058d096f54bb661c12b46851f010b0676004f5a1785de790580d9a777733c624"
+status: PASS
+run_timestamp: "2026-09-09T16:53:59+00:00"
+commit_sha: "2f5eb20cbad88b4898eeba568f45c16c3d1e5df5"
+runner: "staging-node-capacity"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/pulls/1282/files --paginate --jq '.[].filename'
+probe_stdout: |
+  k8s/onex-dev-overlay-dev/patches/omniweb-deployment.yaml
+actual_output: |-
+  PASS: the diff is ONE file and it is deploy-scoped by the matcher - the kustomize overlay patch
+  k8s/onex-dev-overlay-dev/patches/omniweb-deployment.yaml. It adds a spec.strategy block
+  (maxSurge 0 / maxUnavailable 1) and changes nothing else; the full rendered-overlay diff is a
+  single hunk, confirmed by rendering both revisions with kubectl kustomize locally and counting
+  diff hunks (1).
+
+  The change mutates no cluster. It is landed through the overlay only, per CLAUDE.md rule 13, and
+  the entire diagnosis behind it was taken read-only over SSM against i-06169517a92b45f86 with
+  kubectl get / describe / top and --comment staging-node-capacity. No kubectl set, patch, apply,
+  scale or delete was run on any cluster; the public cluster i-0e596e8b557e27785 was not touched.
+
+  Blast radius is provably the staging cluster: only .github/workflows/deploy-onex-staging.yml
+  applies k8s/onex-dev-overlay-dev, and deploy-onex-prod.yml applies k8s/onex-prod and never this
+  directory.
+
+  This cannot revert omniweb's image. The digest pin in k8s/onex-dev/omniweb/kustomization.yaml is
+  a floor; the workflow step "Freeze omniweb on its live verified digest" re-pins the ephemeral
+  checkout to the live digest before the apply, anchoring on the digest key. This patch touches
+  only spec.strategy and is orthogonal to that mechanism.
+exit_code: 0
+pr_number: 1282
+branch: "jonah/omn-18085-occ-companion"

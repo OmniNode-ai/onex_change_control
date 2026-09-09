@@ -1,0 +1,59 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+evidence_item_id: "dod-occ-diff-derived-behavior-proof"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omn_17693_orphan_deployment_detection.py -q
+contract_sha256: "sha256:be74ca7aea61d620f1ea28031825d27db4022d94de94c770d7c981a2210eb270"
+contract_entry_sha256: "sha256:0c15894122dd8f020fd789948c8f938af7e6ef5aebab8d28270d325b9a484f25"
+status: PASS
+run_timestamp: "2026-09-09T16:53:59+00:00"
+commit_sha: "2f5eb20cbad88b4898eeba568f45c16c3d1e5df5"
+runner: "staging-node-capacity"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/commits/2f5eb20cbad88b4898eeba568f45c16c3d1e5df5 --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra" \
+        && uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omn_17693_orphan_deployment_detection.py -q -p no:cacheprovider)
+probe_stdout: |
+  2f5eb20cbad88b4898eeba568f45c16c3d1e5df5
+  ...........................................                              [100%]
+  43 passed in 11.72s
+actual_output: |-
+  PASS: the pushed commit resolves on OmniNode-ai/omninode_infra and 43 tests pass at it.
+
+  The behavior this diff changes is what the overlay RENDERS, so the proof is a rendered-manifest
+  control taken in this lane rather than asserted, using kubectl kustomize k8s/onex-dev-overlay-dev
+  locally with no cluster contact.
+
+  RED control, rendered from origin/dev (the pre-change tree):
+    omniweb Deployment - strategy present: False
+    omniweb Deployment - maxSurge present: False
+  So before this change the Deployment carries no strategy at all and inherits the Kubernetes
+  default RollingUpdate 25% / 25%. At replicas 2 that is maxSurge 1 (fractions round UP) and
+  maxUnavailable 0 (fractions round DOWN) - the rollout must add a third pod and may not remove one
+  first, which is the deadlock.
+
+  GREEN, rendered from the pushed commit:
+    strategy:
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
+      type: RollingUpdate
+
+  The zero is not vacuous: the two renders differ, and the diff between them is exactly ONE hunk
+  (counted, not eyeballed) containing only the five strategy lines. Nothing else in a 6900-line
+  render moved - image, replicas, resources, env and every other object are byte-identical.
+
+  The three suites are the ones that own this file and the overlay it lives in:
+  test_omniweb_overlay_digest_pin.py (OMN-18011, the gate that owns the omniweb overlay pin),
+  test_manifest_env_hygiene.py (reads the rendered overlay), and
+  test_omn_17693_orphan_deployment_detection.py (reads the same overlay).
+
+  NOT claimed here, and deliberately so: AC1, AC2 and AC3 are live-cluster readbacks against
+  i-06169517a92b45f86 and are not derivable from this diff. They are recorded on the Linear ticket
+  after the staging deploy. No evidence item in this contract binds them.
+exit_code: 0
+pr_number: 1282
+branch: "jonah/omn-18085-occ-companion"
