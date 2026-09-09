@@ -2567,6 +2567,139 @@ def check_supersession_wiring(
     )
 
 
+def check_orphan_corpus_wiring(
+    ci_yaml_path: Path, gate_module_path: Path | None = None
+) -> list[str]:
+    """Assert the orphan corpus ratchet job exists, is unconditional, gates CI Summary.
+
+    The sibling of :func:`check_supersession_wiring`, and deliberately the same
+    shape — both anchor a whole-corpus ratchet whose two halves (the ci.yml job
+    and its STRICT_GATE_JOBS registration) can otherwise be deleted in one edit.
+
+    WHY THIS JOB EXISTS NOW AND NOT AT ``ORPHAN_TICKET``'s LANDING. The module
+    docstring records the measured reason the two-way ``--orphan-corpus`` check
+    was NOT wired on the day the rule landed: the producer that minted orphans
+    was still deployed, so ``dev`` gained roughly one new orphan per merged
+    second-consumer companion (439 -> 441 -> 442 in seventy minutes), and a
+    required two-way job under those conditions is red on every PR in the repo
+    within minutes — which teaches people to pad the baseline, the one thing the
+    baseline's own header forbids. The stated condition for wiring it was a
+    recount after the emitter fix had been deployed for a window of real
+    companion traffic, with the count unchanged.
+
+    That condition is met and measured, not asserted: between the landing commit
+    ``13b8c92192a74d45423971a7ef13d1a4c64559be`` and ``9ec59e4482``, 27 OCC PRs
+    merged and 72 net-new ``command.yaml`` receipts were added to
+    ``drift/dod_receipts/**``, and ``--orphan-corpus`` still reports exactly 444
+    orphans against a 444-entry baseline (441 suppressed + 3 open repairs). 72
+    new receipts, zero new orphans — the mint rate is zero, so the two-way check
+    is stable enough to be required.
+
+    The job lives in ``ci.yml`` rather than a standalone workflow ON PURPOSE:
+    ``CI Summary`` is the required context on OCC ``dev``, and a job in the same
+    workflow file inherits that context's trigger set exactly. A separate
+    workflow file would get its own ``on:`` block, which is how a required check
+    drifts into being skipped on an event the umbrella still fires for.
+    """
+    return _check_corpus_ratchet_wiring(
+        ci_yaml_path=ci_yaml_path,
+        job_id="orphan-corpus-ratchet",
+        absence_message=(
+            "job `orphan-corpus-ratchet` is absent from {ci_name}. It is the only "
+            "required-path surface asserting two-way set equality between the "
+            "orphan corpus and its frozen baseline; removing it lets a newly "
+            f"minted orphan land unobserved ({ORPHAN_TICKET})."
+        ),
+        required_run_fragments=(
+            (
+                "--orphan-corpus",
+                "does not run check_receipt_hardening.py --orphan-corpus. The "
+                "job name is not the gate; executing the corpus ratchet is.",
+            ),
+            (
+                "test_orphan_receipt_binding_gate_omn_13888.py",
+                "does not run tests/unit/scripts/"
+                "test_orphan_receipt_binding_gate_omn_13888.py, which holds the "
+                "RED/GREEN controls for the orphan detector and this ratchet.",
+            ),
+            (
+                "--check-orphan-corpus-wiring",
+                "does not re-run --check-orphan-corpus-wiring. The job must "
+                "re-assert its own wiring on every PR, not only on PRs that "
+                "edit ci.yml.",
+            ),
+        ),
+        gate_module_path=gate_module_path,
+    )
+
+
+def _check_corpus_ratchet_wiring(
+    *,
+    ci_yaml_path: Path,
+    job_id: str,
+    absence_message: str,
+    required_run_fragments: tuple[tuple[str, str], ...],
+    gate_module_path: Path | None,
+) -> list[str]:
+    """Shared shape check for a whole-corpus ratchet job and its CI Summary hold.
+
+    Factored out of :func:`check_supersession_wiring` when the second such
+    ratchet was wired, so the two anchors cannot drift apart: an assertion added
+    for one is an assertion added for both.
+    """
+    summary_id = "ci-summary"
+    try:
+        loaded = yaml.safe_load(ci_yaml_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        return [f"unreadable {ci_yaml_path}: {exc}"]
+    jobs = (loaded or {}).get("jobs")
+    if not isinstance(jobs, dict):
+        return [f"{ci_yaml_path} declares no `jobs:` mapping"]
+
+    job = jobs.get(job_id)
+    if not isinstance(job, dict):
+        return [absence_message.format(ci_name=ci_yaml_path.name)]
+
+    failures: list[str] = []
+    if "needs" in job:
+        failures.append(
+            f"job `{job_id}` declares `needs:` ({job['needs']!r}). It must be "
+            "unconditional — a needs-chain lets an upstream skip silently skip "
+            "the ratchet."
+        )
+    if "if" in job:
+        failures.append(
+            f"job `{job_id}` declares `if:` ({job['if']!r}). It must be "
+            "unconditional — a skip here means something is wrong, not that the "
+            "gate legitimately opted out."
+        )
+
+    steps = job.get("steps")
+    run_blob = "\n".join(
+        str(step.get("run", ""))
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict)
+    )
+    for fragment, complaint in required_run_fragments:
+        if fragment not in run_blob:
+            failures.append(f"job `{job_id}` {complaint}")
+
+    summary = jobs.get(summary_id)
+    if not isinstance(summary, dict):
+        failures.append(
+            f"job `{summary_id}` is absent — `CI Summary` is the required context "
+            "on OCC dev; without it nothing is enforced."
+        )
+        return failures
+
+    resolved_gate_path = gate_module_path or (
+        ci_yaml_path.resolve().parents[2] / "scripts" / "ci" / "ci_summary_gate.py"
+    )
+    return failures + _check_supersession_summary_registration(
+        job, job_id, summary, summary_id, resolved_gate_path
+    )
+
+
 def check_commit_sha_wiring(precommit_yaml: Path, ci_yaml: Path) -> list[str]:
     """Assert the bounded resolver cannot silently lose its one-run wiring."""
 
@@ -3083,6 +3216,14 @@ def main(  # noqa: C901, PLR0912, PLR0915
         ),
     )
     parser.add_argument(
+        "--check-orphan-corpus-wiring",
+        action="store_true",
+        help=(
+            "Anti-removal anchor: assert ci.yml still declares the unconditional "
+            "orphan-corpus-ratchet job and that CI Summary holds it strictly."
+        ),
+    )
+    parser.add_argument(
         "--write-orphan-baseline",
         action="store_true",
         help=(
@@ -3138,6 +3279,17 @@ def main(  # noqa: C901, PLR0912, PLR0915
                 print(f"  - {failure}")
             return 1
         print(f"SUPERSESSION BINDING WIRING GATE PASSED ({ci_yaml})")
+        return 0
+
+    if args.check_orphan_corpus_wiring:
+        ci_yaml = Path(args.ci_yaml)
+        failures = check_orphan_corpus_wiring(ci_yaml)
+        if failures:
+            print(f"ORPHAN CORPUS WIRING GATE FAILED ({ci_yaml}) [{ORPHAN_TICKET}]:")
+            for failure in failures:
+                print(f"  - {failure}")
+            return 1
+        print(f"ORPHAN CORPUS WIRING GATE PASSED ({ci_yaml})")
         return 0
 
     if args.check_commit_sha_wiring:
