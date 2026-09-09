@@ -153,3 +153,73 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8834 --repo OmniNode-ai/onex_change_control --json number,state"
+  # -- OMN-18056 AC bindings -------------------------------------------------
+  # Every item above is autobind PR bookkeeping: `gh pr view` classifies as
+  # PR_STATE_SURROGATE, and the one diff-derived behaviour proof runs the
+  # hardcoded-AWS-identifier linter from PR #1244 -- it touches neither the
+  # board, the bucket, the role, nor the schedule. None of them can honestly
+  # carry a `binds_ac`. The four items below are the first checks in this
+  # contract whose exit status depends on what the ticket actually claims.
+  - id: "dod-omn-18044-ac1-served-independently"
+    description: "AC1 -- the board is served 24/7 from CloudFront, independent of any laptop."
+    source: "manual"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          curl -sS -o /dev/null -w '%{http_code}' https://d9l07l2pt8q0.cloudfront.net/ | grep -qx 200
+  - id: "dod-omn-18044-ac2-unattended-refresh"
+    description: |-
+      AC2 -- scheduled runs of the publish workflow succeed with no human in the path. Asserts
+      the MONOTONE property (OMN-15540 Rule F): the count of successful scheduled runs only
+      grows, so `>= 2` cannot be falsified by a later failure or a re-run rewriting a
+      conclusion. Stood at 83 when this item was authored.
+    source: "manual"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omninode_infra/actions/workflows/publish-beta-board.yml/runs?event=schedule&status=success&per_page=1' --jq '.total_count')" -ge 2
+  - id: "dod-omn-18044-ac3-publisher-least-privilege"
+    description: |-
+      AC3 -- omninode-beta-board-publisher may write the board bucket and is denied PutObject
+      anywhere else. Asserts BOTH halves as positive greps so neither can fail open: a role with
+      no permissions passes a deny-only check, and a role with s3:* passes an allow-only one.
+      execution_scope is local_done_gate because the hosted compliance runner holds no AWS
+      credentials (OMN-15392).
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -o pipefail -c 'aws iam simulate-principal-policy --policy-source-arn arn:aws:iam::272493677981:role/omninode-beta-board-publisher --action-names s3:PutObject --resource-arns arn:aws:s3:::omninode-beta-board-272493677981-us-east-1/index.html --query "EvaluationResults[0].EvalDecision" --output text | grep -qx allowed && aws iam simulate-principal-policy --policy-source-arn arn:aws:iam::272493677981:role/omninode-beta-board-publisher --action-names s3:PutObject --resource-arns arn:aws:s3:::omninode-not-the-board-bucket/x --query "EvaluationResults[0].EvalDecision" --output text | grep -qxE "implicitDeny|explicitDeny"'
+  - id: "dod-omn-18044-ac4-publish-gated-on-build-checks"
+    description: |-
+      AC4 -- the publish steps are sequenced after a build-check step that exits 1, and neither
+      that step nor the upload carries a bypass. Pinned at omninode_infra
+      c5904e7634346e99281ada31492aa55e2059cfa0, a squash commit on dev. Verified to
+      discriminate: it fails when continue-on-error or an `if:` is added to the upload step, and
+      when sys.exit(1) is removed from the build-check step.
+    source: "manual"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/.github/workflows/publish-beta-board.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0' --jq '.content' | base64 -d | python3 -c '
+          import sys, re
+          t = sys.stdin.read()
+          steps = re.split(r"\n(?=      - name: )", t)
+          idx = {}
+          for i, s in enumerate(steps):
+              m = re.search(r"- name: (.*)", s)
+              if m: idx.setdefault(m.group(1).strip(), i)
+          build = next(i for k, i in idx.items() if k.startswith("Build checks"))
+          up = idx["Upload to S3"]
+          assert build < up, "upload is not sequenced after build checks"
+          assert "sys.exit(1)" in steps[build], "build checks never fail the job"
+          for name, i in (("build-checks", build), ("upload", up)):
+              seg = steps[i]
+              assert "continue-on-error" not in seg, name + " step is bypassable"
+              assert not re.search(r"^\s+if:", seg, re.M), name + " step is conditional"
+          print("OK: publish is gated behind a hard-failing build check")'
