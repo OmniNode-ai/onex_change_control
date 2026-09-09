@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18077"
+title: "Relocate the synthetic-customer provisioning script out of the documentation repo into omninode_infra,
+  with a hermetic test"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #1274 — scope A of OMN-18077, which binds AC1 only.
+  Bound by hand (union-resolve), the same way OCC#8760 was bound for omninode_infra#1266: OMN-18073 records
+  that autobind is not minting companions in this window, so a product PR left without one has no receipt
+  to cite and fails the Receipt Gate on the missing citation rather than on anything wrong with the change.
+  Cause of the ticket: a sweep on 2026-09-09 found merged executable code living in the private documentation
+  repository, which has no receipt gate, no tests and no lint. The clearest case is the OMN-17281 synthetic-customer
+  provisioning script — it had already needed two fix PRs there, and it authenticates against a Keycloak
+  realm and provisions a tenant, so it is operational code with real side effects that was reviewed as
+  if it were a document. #1274 lands it as scripts/provision-synthetic-customer.sh, flat in scripts/ beside
+  the onex-dev operator scripts it belongs with (bootstrap-onex-dev.sh, deploy-onex-api.sh, bootstrap-dev-valkey-credential.sh,
+  ensure-proof-tenant-provider-credential.sh) and beside its admin-path counterpart provision-alpha-user.sh,
+  and adds tests/scripts/test_provision_synthetic_customer.py. The move adds an SPDX header (required
+  by this repo's hook for scripts/**), a rewritten header naming the target plane by cluster AND EC2 instance
+  id, every input by NAME, the operator-consent requirement and both ticket ids; a --dry-run/--help path
+  that prints value NAMES only and makes no network call; an exit 2 on an unrecognised flag, which previously
+  fell through to the LIVE path so a typo started a run nobody asked for; and mktemp in place of a fixed
+  /tmp filename whose predictability made the script's own printed evidence injectable. NO LIVE RUN WAS
+  PERFORMED (rule 24): the script targets a real identity on a shared realm on the dev-system cluster
+  (EC2 i-06169517a92b45f86, namespace onex-dev), a mutation and not a read, and it is out of scope by
+  the ticket's own wording. For a script that must not run without express operator consent, the hermetic
+  test IS the lab-equivalent proof. Two honest limits are recorded in the PR body rather than implied:
+  the script does not currently work against the live dev realm at all (OMN-17527 moved the customer path
+  onto a dedicated client with direct access grants disabled, and this script is still bound to grant_type=password),
+  and the bearer token still reaches curl through argv on the provision call, a pre-existing property
+  carried across unchanged and now named in the header instead of left under an overbroad "never in argv"
+  claim. Scope B (the knowledge-base-internal functional-code gate, AC2/AC3) and scope C (the audit README
+  pointer and the deletion, AC4) are a separate PR in that repository and are NOT bound here. No credential
+  was rotated, re-issued, revoked or minted, no secret value was read, printed or decoded, no cluster
+  object was mutated and no realm was contacted (rule 22).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1274 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1274 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the
+      hermetic suite the PR adds, which drives the shipped script (bash -n, the repo's own shellcheck
+      severity, --dry-run/--help under a PATH holding only `cat`, and a heredoc-aware scan for any
+      output statement expanding a secret-named variable, with a positive control fixture). Executed
+      at cwd `${OMNI_HOME}/omninode_infra`.
+    command: |-
+      uv run pytest tests/scripts/test_provision_synthetic_customer.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1274"
+    description: >
+      PR #1274 on OmniNode-ai/omninode_infra — the relocated script at scripts/provision-synthetic-customer.sh
+      and its hermetic test. Bound by hand (union-resolve) because autobind minted no companion for this
+      ticket (OMN-18073).
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1274 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1274/files --paginate --jq '.[].filename' | grep -cFx 'scripts/provision-synthetic-customer.sh'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1274 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1274"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/scripts/test_provision_synthetic_customer.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
