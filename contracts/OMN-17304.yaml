@@ -122,3 +122,76 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh pr view 8814 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-omn17304-ac4-in-lane-locus-readback"
+    description: >
+      AC4 in-lane locus readback, taken live against the .201 dev lane (compose project omnibase-infra)
+      on 2026-09-09 at merged sha dad0a209670f0cc48fc8767b5a922c78c61d9764. Command shape (credentials
+      only ever in process env, never argv, never printed): `onex delegate "<prompt>" --bus kafka --locus
+      deployed-lane` from the canonical omnibase_infra clone with KAFKA_BOOTSTRAP_SERVERS / KAFKA_SECURITY_PROTOCOL=SASL_PLAINTEXT
+      / KAFKA_SASL_MECHANISM=SCRAM-SHA-256 / KAFKA_SASL_USERNAME / KAFKA_SASL_PASSWORD exported. Exit
+      code 0, status success, fresh correlation 336a977a-40b2-4791-89a9-c77dedff6a60. BOTH clauses of
+      AC4 met. (1) The CLI publishes and does not subscribe the entry handler — the capture log records
+      `RuntimeLocal: client mode — publishing to 'onex.cmd.omnimarket.delegate-skill.v1' and awaiting
+      correlation 336a977a-...; hosting no handlers (1 declared)`, and the only topic the process subscribes
+      is the terminal event topic onex.evt.omnimarket.delegate-skill-completed.v1. (2) The OMN-16932 in-lane
+      recipe: `docker logs omninode-runtime --since 20m | grep 336a977a-...` returned 17 hits and omninode-runtime-effects
+      returned 3 — non-zero on both — with a negative control (an all-zero uuid) returning 0 on both,
+      so the grep discriminates. (3) The Mac CLI's own consumer group showed NO committed-offset movement
+      for that run: CURRENT-OFFSET 216 at 18:48:08Z and 216 at 18:48:42Z, while LOG-END-OFFSET advanced
+      294 -> 295 over the same window, which is the discriminating control — the topic moved and the group
+      did not. Execution scope, stated honestly: the readback needed SASL-authenticated broker admin access
+      and `docker logs` on the lab host, so its checks are not re-executable from a CI runner. The two
+      checks below are the re-executable half — they assert at the merged sha that the caller-side client
+      mode exists and that the locus gate authenticates — and the receipt carries the live transcript.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=dad0a209670f0cc48fc8767b5a922c78c61d9764' --jq '.content' | base64 -d | grep -c 'host_handlers=locus_decision.locus is EnumDelegateLocus.IN_PROCESS'
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/backends/backend_probe.py?ref=dad0a209670f0cc48fc8767b5a922c78c61d9764' --jq '.content' | base64 -d | grep -c 'build_confluent_auth_config_from_env'
+  - id: "dod-omn17304-ac5-stale-consumer-group-reaped"
+    description: >
+      AC5: the stale Mac CLI consumer group local.omnibase_core.handlerdelegateskill.consume.v1.__t.onex.cmd.omnimarket.delegate-skill.v1
+      is reaped on the .201 dev-lane broker (container omnibase-infra-redpanda, compose project omnibase-infra),
+      2026-09-09T18:49Z. Pre-state read before the delete and recorded: STATE Empty, MEMBERS 0, CURRENT-OFFSET
+      216, LOG-START 176, LOG-END 295, LAG 79 on partition 0 of onex.cmd.omnimarket.delegate-skill.v1
+      — the exact group AC5 names, with no active members. `rpk group delete` returned STATUS OK for that
+      one group and nothing else; a group-list readback finds it absent, while the positive control shows
+      its two siblings on the same topic still listed, including the STABLE local.omnimarket.node_delegate_skill_orchestrator.consume.1.1.0.__i.runtime-effects
+      group. The replay hazard AC5 names is discharged permanently rather than merely cleared: a SECOND
+      client-mode delegation was issued after the delete (correlation c35f1a9b-5641-4f3a-81f2-8c273fe1f8ab,
+      exit 0, status success) and the group did NOT reappear, because the caller now passes host_handlers=False
+      and the CLI subscribes no consumer group on the command topic at all. Scope of the mutation: one
+      consumer group, on the dev lane only; no topic, config, container, other group, or other lane was
+      touched. Execution scope, stated honestly: this is a one-time broker mutation and its readback needs
+      SASL-authenticated admin access to the lab broker, so it is receipt-backed rather than re-executable
+      from CI. The check below is the re-executable half — it asserts at the merged sha that the code
+      which would recreate the group is gone, which is what makes the reap durable.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/receipt_mode.py?ref=dad0a209670f0cc48fc8767b5a922c78c61d9764' --jq '.content' | base64 -d | grep -c 'host_handlers'
+  - id: "occ-self-bind-pr-8823"
+    description: |-
+      OCC self-binding receipt for PR #8823, the in-repo evidence PR carrying the AC4
+      in-lane locus readback and the AC5 consumer-group reap. Binds OMN-17304 to this
+      OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR
+      itself, the same shape as occ-self-bind-pr-8792 and occ-self-bind-pr-8814.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 8823 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
