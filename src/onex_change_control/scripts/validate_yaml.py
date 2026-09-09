@@ -175,29 +175,42 @@ def format_validation_error(error: ValidationError) -> str:
 # the first contract in the corpus to declare a binding turns EVERY subsequent
 # OCC pull request red, not just its own.
 #
-# So: when -- and only when -- the installed core model does not know the field,
-# each declaring item is validated against the OCC-local `ModelDodEvidenceItem`
-# (which does know it, and which owns the label rule), and the field is then
+# So: every declaring item is validated against the OCC-local
+# `ModelDodEvidenceItem` (which owns the label rule), and -- when, and only
+# when, the installed core model does not know the field -- the field is then
 # withheld from the copy handed to core's model. The rest of the item, and the
 # rest of the contract, still meet core's model unchanged.
 #
-# THIS IS FORWARD COMPATIBILITY WITH ONE NAMED FIELD, NOT A LOOSENING. The
-# predicate is read off core's own model at import time, so the moment a core
-# release carrying dca2ee2c is pinned here, `CORE_KNOWS_BINDS_AC` is True, the
-# helper returns its input unchanged, and core validates the field itself. It
-# deletes itself behaviourally rather than needing to be remembered. Nothing
-# else is stripped: an unknown field that is not exactly `binds_ac` still
-# reaches core's model and is still refused.
+# THIS IS FORWARD COMPATIBILITY WITH ONE NAMED FIELD, NOT A LOOSENING. Only the
+# WITHHOLDING is conditioned on core's model; the label validation is not, and
+# that split is deliberate. OMN-18056 landed `binds_ac` in core as
+# `tuple[str, ...]` with a length cap and NO label rule, so once a core release
+# carrying dca2ee2c is pinned here (0.47.6, this repo's floor), core accepts
+# `["not a label"]` without complaint. Conditioning the validation too -- which
+# this helper originally did -- would therefore have made the corpus gate stop
+# refusing a malformed binding at the exact moment the pin moved, silently, with
+# `TestContractYamlGate::test_contract_with_a_malformed_binding_fails` as the
+# only thing standing between that and a merged repin. The OCC-local model
+# stays the authority on the label shape until core carries the same rule
+# (tracked as the OMN-18056 phase-4 follow-up, which owns retiring this helper).
+# Nothing else is stripped: an unknown field that is not exactly `binds_ac`
+# still reaches core's model and is still refused.
 CORE_KNOWS_BINDS_AC = "binds_ac" in ModelContractDodItem.model_fields
 
 _BINDS_AC_FIELD = "binds_ac"
 
 
 def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
-    """Validate declared ``binds_ac`` locally, then hide it from core's model.
+    """Validate declared ``binds_ac`` locally, then hide it from an older core.
 
-    A no-op when the installed core model already knows the field, when the
-    contract declares no ``dod_evidence``, or when no item declares a binding.
+    The label validation is unconditional: core carries the field as of 0.47.6
+    but not the label rule, so this remains the only gate that refuses a
+    malformed binding. Only the WITHHOLDING is conditioned on
+    ``CORE_KNOWS_BINDS_AC``; when core knows the field the input is returned
+    unchanged and core validates the rest of the item itself.
+
+    A no-op when the contract declares no ``dod_evidence`` or when no item
+    declares a binding.
 
     Raises:
         ValidationError: when a declaring item does not satisfy the OCC-local
@@ -206,8 +219,6 @@ def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
             something this helper quietly discards.
 
     """
-    if CORE_KNOWS_BINDS_AC:
-        return data
     items = data.get("dod_evidence")
     if not isinstance(items, list):
         return data
@@ -223,6 +234,8 @@ def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
         # through the same formatter as every other validation failure.
         ModelDodEvidenceItem.model_validate(item)
         withheld.append({k: v for k, v in item.items() if k != _BINDS_AC_FIELD})
+    if CORE_KNOWS_BINDS_AC:
+        return data
     return {**data, "dod_evidence": withheld}
 
 
