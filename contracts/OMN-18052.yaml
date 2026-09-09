@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18052"
+title: "C27 row 11 probe: a clean machine installs the published package"
+summary: >
+  OCC evidence contract for OmniNode-ai/knowledge-base-internal PR #318. Filed in response to the in-progress-probe-hygiene
+  sweep, which recorded that this ticket declared no executable close probe and was therefore invisible
+  to the evidence closer rather than failing it. The checks below execute the guide's own CLAIM against
+  the live package index, not merge state.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #318 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "manual"
+    description: |-
+      The correction this ticket makes is a factual claim about the published package: that
+      `omnimarket` no longer excludes CPython 3.13. That is checkable against PyPI, so the
+      probe reads the index rather than re-reading the sentence.
+    command: |-
+      curl -sf https://pypi.org/pypi/omnimarket/0.4.41/json | python3 -c "import sys,json;print(json.load(sys.stdin)['info']['requires_python'])"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn-18052-no-upper-interpreter-bound"
+    description: >-
+      The published omnimarket 0.4.41 declares requires-python with NO upper bound. This is the claim
+      the guide correction rests on, executed against the live package index — if the bound ever returns,
+      this check goes red and the guide is wrong again.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          curl -sf https://pypi.org/pypi/omnimarket/0.4.41/json | python3 -c "import sys,json;rp=json.load(sys.stdin)['info']['requires_python'];assert rp=='>=3.12', rp;assert '<3.13' not in rp, rp;print(rp)"
+  - id: "dod-omn-18052-guide-states-no-upper-bound"
+    description: >-
+      The corrected paragraph is present in guides/customer-getting-started.md at the PR head — the guide
+      now says what the index says.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/knowledge-base-internal/contents/guides/customer-getting-started.md?ref=6900b1cbc2cd5b45f76fb6410ce6e6ccfc82f455' --jq '.content' | base64 -d | grep -c 'with no upper bound'
+  - id: "dod-omn-18052-prd-row-11-carries-the-probe"
+    description: >-
+      The beta PRD row 11 records the probe result rather than a Done-carrier list, which is the 2026-09-08
+      ruling this row was the first to close under.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/knowledge-base-internal/contents/beta/requirements/2026-09-04-beta-prd.md?ref=6900b1cbc2cd5b45f76fb6410ce6e6ccfc82f455' --jq '.content' | base64 -d | grep -c 'Python 3.13.15'
