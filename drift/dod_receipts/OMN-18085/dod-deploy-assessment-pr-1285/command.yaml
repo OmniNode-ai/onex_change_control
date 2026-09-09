@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+evidence_item_id: "dod-deploy-assessment-pr-1285"
+check_type: "command"
+check_value: |-
+  body="$(gh api repos/OmniNode-ai/omninode_infra/pulls/1285/files --paginate --jq '.[].filename')" \
+    && printf '%s\n' "$body" | grep -qxF 'aws/cluster-dev/variables.tf' \
+    && ! printf '%s\n' "$body" | grep -qE '^k8s/'
+contract_sha256: "sha256:62e61c08564885b5d80d91e9ca095e6b6b11c7d2b9bcd18582be9ce726895a18"
+contract_entry_sha256: "sha256:0fbef17e511a9d0c18820874805821c84e66f2ebc9b90408c081913661491d97"
+status: PASS
+run_timestamp: "2026-09-09T19:47:27+00:00"
+commit_sha: "0746b49b34e3cdb6d68af538d049e2d48e6fb48c"
+runner: "staging-resize-8cpu"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  body="$(gh api repos/OmniNode-ai/omninode_infra/pulls/1285/files --paginate --jq '.[].filename')" \
+    && printf '%s\n' "$body" | grep -qxF 'aws/cluster-dev/variables.tf' \
+    && ! printf '%s\n' "$body" | grep -qE '^k8s/'
+probe_stdout: |
+  aws/cluster-dev/variables.tf
+actual_output: |-
+  PASS, fail-closed and SIGPIPE-safe: the file list is buffered into a variable first, then asserted
+  twice against that buffer - positively, that the diff CONTAINS aws/cluster-dev/variables.tf, and
+  negatively, that it contains NO file under k8s/. Buffering matters because piping an unbounded
+  producer straight into grep -q lets grep exit at the first match and kill the producer with SIGPIPE,
+  which under bash -o pipefail becomes a 141 and a false RED on evidence that is actually present
+  (OMN-15411 Rule E). An empty or failed fetch fails this check rather than passing it.
+
+  The whole diff is that single file, so merging mutates no running system. A terraform declaration
+  takes effect only when someone applies the root, and this PR runs no apply. The live instance was
+  already resized out of band, in place and under operator consent, before this PR opened - so the PR
+  is the declaration catching up to reality rather than an instruction to change it.
+
+  Recorded as the residual rather than left implied: applying aws/cluster-dev is NOT a no-op. Its plan
+  on this PR reports 3 to add and 11 to change, spanning MSK, RDS, SNS and SSM as well as the three
+  launch templates. That breadth is why the apply is a separate decision, which this PR neither takes
+  nor authorises.
+
+  Blast radius stated for the reviewer: aws/cluster-dev is the dev-system cluster root. The public
+  cluster instance i-0e596e8b557e27785 and prod live in different roots and were untouched by any part
+  of this work.
+exit_code: 0
+pr_number: 1285
+branch: "jonah/omn-18085-resize-dev-system-node"
