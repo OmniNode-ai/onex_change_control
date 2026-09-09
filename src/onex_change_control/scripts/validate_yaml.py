@@ -24,10 +24,12 @@ from pathlib import Path
 from typing import NoReturn
 
 import yaml
+from omnibase_core.models.ticket.model_contract_dod_item import ModelContractDodItem
 from pydantic import ValidationError
 
 from onex_change_control.kafka.governance_emitter import emit_governance_check_completed
 from onex_change_control.models import ModelDayClose, ModelTicketContract
+from onex_change_control.models.model_dod_check import ModelDodEvidenceItem
 from onex_change_control.validation.contract_shape_v1 import V1_DIR
 
 # CLI version (increment when CLI logic changes)
@@ -154,6 +156,76 @@ def format_validation_error(error: ValidationError) -> str:
     return "\n".join(lines)
 
 
+# OMN-18056. `binds_ac` AGAINST AN INSTALLED CORE THAT PREDATES IT.
+#
+# This CLI validates `contracts/OMN-*.yaml` against omnibase_core's
+# `ModelTicketContract`, whose `dod_evidence` is
+# `list[ModelContractDodItem]` -- `extra="forbid"`. omnibase_core dca2ee2c
+# (#1666) adds `binds_ac` to that model, but at the time of writing that commit
+# sits on core's `dev` and is in NO released tag: `git tag --contains dca2ee2c`
+# is empty, the newest release is 0.47.5, and this repo pins
+# `omnibase-core>=0.46.8,<0.47.0` (0.46.13 installed). Measured against that
+# installed core, `ModelContractDodItem.model_validate({... "binds_ac": ["AC1"]})`
+# raises `extra_forbidden`.
+#
+# That matters more here than at any other gate: the `Validate Contract YAML
+# (OMN-8808)` job runs `validate-yaml contracts/OMN-*.yaml` over the WHOLE
+# corpus and is a member of `STRICT_GATE_JOBS` in `scripts/ci/ci_summary_gate.py`,
+# so it sits under the required `CI Summary` umbrella. Without the shim below,
+# the first contract in the corpus to declare a binding turns EVERY subsequent
+# OCC pull request red, not just its own.
+#
+# So: when -- and only when -- the installed core model does not know the field,
+# each declaring item is validated against the OCC-local `ModelDodEvidenceItem`
+# (which does know it, and which owns the label rule), and the field is then
+# withheld from the copy handed to core's model. The rest of the item, and the
+# rest of the contract, still meet core's model unchanged.
+#
+# THIS IS FORWARD COMPATIBILITY WITH ONE NAMED FIELD, NOT A LOOSENING. The
+# predicate is read off core's own model at import time, so the moment a core
+# release carrying dca2ee2c is pinned here, `CORE_KNOWS_BINDS_AC` is True, the
+# helper returns its input unchanged, and core validates the field itself. It
+# deletes itself behaviourally rather than needing to be remembered. Nothing
+# else is stripped: an unknown field that is not exactly `binds_ac` still
+# reaches core's model and is still refused.
+CORE_KNOWS_BINDS_AC = "binds_ac" in ModelContractDodItem.model_fields
+
+_BINDS_AC_FIELD = "binds_ac"
+
+
+def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
+    """Validate declared ``binds_ac`` locally, then hide it from core's model.
+
+    A no-op when the installed core model already knows the field, when the
+    contract declares no ``dod_evidence``, or when no item declares a binding.
+
+    Raises:
+        ValidationError: when a declaring item does not satisfy the OCC-local
+            ``ModelDodEvidenceItem`` -- so a malformed binding is a validation
+            failure here exactly as it would be at the compliance gate, never
+            something this helper quietly discards.
+
+    """
+    if CORE_KNOWS_BINDS_AC:
+        return data
+    items = data.get("dod_evidence")
+    if not isinstance(items, list):
+        return data
+    if not any(isinstance(item, dict) and _BINDS_AC_FIELD in item for item in items):
+        return data
+
+    withheld: list[object] = []
+    for item in items:
+        if not isinstance(item, dict) or _BINDS_AC_FIELD not in item:
+            withheld.append(item)
+            continue
+        # Raises ValidationError on a malformed label; the caller renders it
+        # through the same formatter as every other validation failure.
+        ModelDodEvidenceItem.model_validate(item)
+        withheld.append({k: v for k, v in item.items() if k != _BINDS_AC_FIELD})
+    return {**data, "dod_evidence": withheld}
+
+
 def _load_yaml_file(file_path: Path) -> dict[str, object] | None:
     """Load and parse a YAML file.
 
@@ -248,6 +320,8 @@ def validate_file(file_path: Path) -> bool:
 
     # Validate
     try:
+        if schema_type != "day_close":
+            data = withhold_unreleased_binds_ac(data)
         model_class.model_validate(data)
     except ValidationError as e:
         print_error(f"Validation failed for '{file_path}' ({schema_type}):")

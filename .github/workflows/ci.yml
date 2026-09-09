@@ -183,6 +183,25 @@ jobs:
         if: needs.zone-filter.outputs.docs_only != 'true' && github.event_name == 'pull_request' && github.base_ref == 'dev'
         env:
           BASE_REF: ${{ github.base_ref || 'dev' }}
+          # OMN-18056. The SAME three variables the `Run full pre-commit` step
+          # above sets, for the same reason and with the same values.
+          #
+          # `check-seam-contract-coverage` matches
+          # `^src/onex_change_control/(kafka|models/model_|enums/enum_interface)`
+          # and refuses to guess a comparison base: on a CI checkout HEAD is
+          # detached, so without these it exits 2 with "HEAD is detached, so a
+          # local hook cannot infer the intended comparison target". Measured on
+          # job 102373700095 — step 4 (`Run full pre-commit`, which sets them)
+          # SUCCEEDED and step 5 (this one, which did not) FAILED, on the same
+          # commit, on the same hook. So every dev PR touching a `model_*.py`
+          # failed the required Pre-commit job on a missing input, not on a
+          # seam-coverage finding.
+          #
+          # This gives the hook the base it asks for. It is not a SKIP and not a
+          # narrowed file set: the hook still runs and still enforces.
+          ONEX_SEAM_CONTRACT_BASE: origin/${{ github.base_ref }}
+          ONEX_SEAM_CONTRACT_HEAD_REF: ${{ github.sha }}
+          ONEX_SEAM_CONTRACT_TICKET_ID: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
           git fetch origin "$BASE_REF" --no-tags
@@ -196,6 +215,13 @@ jobs:
         if: needs.zone-filter.outputs.docs_only == 'true'
         env:
           BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          # Same three variables as the two steps above. This step's file set is
+          # contracts/ and drift/dod_receipts/ only, so the seam hook does not
+          # currently select here — they are set so the parity holds by
+          # construction rather than by that filter staying narrow.
+          ONEX_SEAM_CONTRACT_BASE: origin/${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+          ONEX_SEAM_CONTRACT_HEAD_REF: ${{ github.sha }}
+          ONEX_SEAM_CONTRACT_TICKET_ID: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
           base_ref="${BASE_REF#refs/heads/}"
