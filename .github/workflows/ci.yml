@@ -1920,6 +1920,81 @@ jobs:
           uv run python scripts/validation/check_receipt_hardening.py \
             --check-supersession-wiring
 
+  orphan-corpus-ratchet:
+    name: Orphan Corpus Ratchet (OMN-13888)
+    # OMN-13888. The per-receipt ORPHAN_BINDING rule (a receipt carrying neither
+    # a contract_entry_sha256 nor a declared contract entry) has been enforced on
+    # changed receipts since the rule landed. This job adds the half that a
+    # changed-files scope structurally cannot see: two-way set equality between
+    # the whole orphan corpus and the frozen shrink-only baseline in
+    # .onex_ratchets/omn_13888_orphan_receipt_baseline.yaml. The changed-receipt
+    # step never sees a baseline entry that has been repaired and not removed,
+    # and never sees an orphan minted into a directory this PR does not touch.
+    #
+    # WHY IT IS WIRED NOW AND WAS DELIBERATELY NOT WIRED AT LANDING. The rule's
+    # own docstring records the measured reason for the delay: the producer that
+    # minted orphans was still deployed, so dev gained roughly one new orphan per
+    # merged second-consumer companion (439 -> 441 -> 442 in seventy minutes on
+    # the day the rule landed, every one from an unrelated lane). A required
+    # two-way job under those conditions is red on every PR in the repo within
+    # minutes, which trains people to pad the baseline -- the one thing the
+    # baseline's own header forbids. The stated condition for wiring was a
+    # recount after the emitter fix had absorbed real companion traffic.
+    #
+    # The recount, measured rather than asserted: between the landing commit
+    # 13b8c92192a74d45423971a7ef13d1a4c64559be and 9ec59e4482, 27 OCC PRs merged
+    # and 72 net-new command.yaml receipts landed under drift/dod_receipts/**,
+    # and --orphan-corpus still reports exactly 444 orphans against a 444-entry
+    # baseline (441 suppressed + 3 open repairs). 72 new receipts, zero new
+    # orphans: the mint rate is zero and the two-way check is stable to require.
+    #
+    # WHY IN ci.yml AND NOT A STANDALONE WORKFLOW: `CI Summary` is the required
+    # context on OCC dev, and a job in this file inherits that context's trigger
+    # set exactly (opened/synchronize/reopened/labeled/unlabeled/
+    # ready_for_review). A separate workflow file would carry its own `on:`
+    # block, which is precisely how a required check drifts into being skipped on
+    # an event the umbrella still fires for.
+    #
+    # UNCONDITIONAL BY DESIGN (same reasoning as supersession-binding-ratchet
+    # below): no needs:, no if:, no paths filter. A skip here means something is
+    # wrong, not that the gate legitimately opted out -- the strict success-only
+    # check in ci-summary fails closed on any non-success result.
+    #
+    # ANTI-REMOVAL ANCHOR: check_receipt_hardening.py --check-orphan-corpus-wiring
+    # is a pre-commit hook scoped to this file AND the last step of this job, so
+    # ANY edit to ci.yml re-asserts (a) the job exists, (b) it is unconditional,
+    # (c) it runs the corpus ratchet and the gate's own RED/GREEN test module,
+    # and (d) ci-summary holds it via STRICT_GATE_JOBS.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Two-way shrink-only orphan corpus ratchet over every receipt
+        run: |
+          uv run python scripts/validation/check_receipt_hardening.py \
+            --orphan-corpus
+      - name: Detector RED/GREEN controls for the orphan rule and this ratchet
+        run: |
+          uv run pytest \
+            tests/unit/scripts/test_orphan_receipt_binding_gate_omn_13888.py \
+            -q -p no:randomly
+      - name: Orphan-corpus CI wiring is intact (anti-removal anchor)
+        run: |
+          uv run python scripts/validation/check_receipt_hardening.py \
+            --check-orphan-corpus-wiring
+
   validate-prod-promotion-grants:
     name: validate-prod-promotion-grants
     # OMN-14441: the prod-promotion-grant trust anchor (CLAUDE.md §2a/§12) had

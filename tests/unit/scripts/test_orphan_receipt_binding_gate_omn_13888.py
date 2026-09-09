@@ -439,3 +439,138 @@ def test_red_control_pre_change_gate_accepts_the_orphan(tmp_path: Path) -> None:
     )
     assert old_gate.check_receipt_file(receipt, contract.parent) == []
     assert _check(receipt, contract.parent) != []
+
+
+# ---------------------------------------------------------------------------
+# The wiring half (OMN-13888 follow-up): --orphan-corpus is now a required job.
+#
+# The rule shipped with its two-way corpus check deliberately UNWIRED, on a
+# measured condition: the producer minting orphans was still deployed, so a
+# required two-way job would have been red on every PR in the repo within
+# minutes and would have taught people to pad the baseline. The condition for
+# wiring it was a recount after the emitter fix absorbed real companion
+# traffic. That recount is `test_the_corpus_recount_condition_for_wiring_holds`
+# below; these assert the job cannot now be silently removed.
+# ---------------------------------------------------------------------------
+
+_CI_YAML = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_ORPHAN_JOB_ID = "orphan-corpus-ratchet"
+_ORPHAN_JOB_NAME = "Orphan Corpus Ratchet (OMN-13888)"
+
+
+def test_wiring_anchor_passes_on_the_live_workflow() -> None:
+    assert gate.check_orphan_corpus_wiring(_CI_YAML) == []
+
+
+def test_the_orphan_ratchet_job_shares_the_required_contexts_triggers() -> None:
+    """The OMN-18062 skipped-after-edit class, closed by construction.
+
+    A ratchet in its OWN workflow file carries its own ``on:`` block, which can
+    drift from the required context's. This job lives in ``ci.yml``, the same
+    file as ``ci-summary`` / ``CI Summary`` -- the required context on OCC dev
+    -- so its trigger set is not merely equal, it is the same object. Asserted
+    rather than assumed, because "put it in ci.yml" is a convention until
+    something fails when it is broken.
+    """
+    data = yaml.safe_load(_CI_YAML.read_text())
+    jobs = data["jobs"]
+    assert _ORPHAN_JOB_ID in jobs
+    assert "ci-summary" in jobs, (
+        "the orphan ratchet's trigger equality is inherited from CI Summary "
+        "living in this same workflow file"
+    )
+    on_block = data.get("on", data.get(True))
+    pull_request = on_block["pull_request"]
+    # OMN-15731 set: a label flip or a draft->ready flip must re-evaluate.
+    for required_type in ("opened", "synchronize", "reopened", "ready_for_review"):
+        assert required_type in pull_request["types"], required_type
+    assert "merge_group" in on_block, (
+        "the ratchet must also run on merge_group, or a queued merge bypasses it"
+    )
+    assert "paths" not in pull_request
+    assert "paths-ignore" not in pull_request
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["drop_job", "declares_needs", "add_if", "drop_corpus_step", "drop_test_step"],
+)
+def test_wiring_anchor_fires_on_each_removal_vector(
+    tmp_path: Path, mutation: str
+) -> None:
+    data = yaml.safe_load(_CI_YAML.read_text())
+    jobs = data["jobs"]
+    if mutation == "drop_job":
+        del jobs[_ORPHAN_JOB_ID]
+    elif mutation == "declares_needs":
+        jobs["ci-summary"]["needs"] = [_ORPHAN_JOB_ID]
+    elif mutation == "add_if":
+        jobs[_ORPHAN_JOB_ID]["if"] = "github.event_name == 'push'"
+    elif mutation == "drop_corpus_step":
+        jobs[_ORPHAN_JOB_ID]["steps"] = [
+            step
+            for step in jobs[_ORPHAN_JOB_ID]["steps"]
+            if "--orphan-corpus" not in str(step.get("run", ""))
+        ]
+    elif mutation == "drop_test_step":
+        jobs[_ORPHAN_JOB_ID]["steps"] = [
+            step
+            for step in jobs[_ORPHAN_JOB_ID]["steps"]
+            if "test_orphan_receipt_binding_gate_omn_13888.py"
+            not in str(step.get("run", ""))
+        ]
+    mutated = tmp_path / "ci.yml"
+    mutated.write_text(yaml.safe_dump(data, sort_keys=False))
+    assert gate.check_orphan_corpus_wiring(mutated) != []
+
+
+def test_wiring_anchor_fires_when_job_not_registered_in_strict_gate_jobs(
+    tmp_path: Path,
+) -> None:
+    """`needs:` alone treats `skipped` as non-blocking; STRICT_GATE_JOBS is the
+    surface that fails closed on any non-success."""
+    gate_module = _REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py"
+    gate_source = gate_module.read_text(encoding="utf-8")
+    mutated_gate = gate_source.replace(f'"{_ORPHAN_JOB_NAME}",\n', "")
+    assert mutated_gate != gate_source, "the registration line was not found to strip"
+    gate_path = tmp_path / "ci_summary_gate.py"
+    gate_path.write_text(mutated_gate, encoding="utf-8")
+    failures = gate.check_orphan_corpus_wiring(_CI_YAML, gate_module_path=gate_path)
+    assert any("STRICT_GATE_JOBS" in f for f in failures), failures
+
+
+def test_the_precommit_hook_half_of_the_anchor_exists() -> None:
+    """Both halves: the job re-asserts its wiring, and a ci.yml edit does too."""
+    config = yaml.safe_load((_REPO_ROOT / ".pre-commit-config.yaml").read_text())
+    hooks = [
+        hook
+        for repo in config["repos"]
+        for hook in repo.get("hooks", [])
+        if hook.get("id") == "check-orphan-corpus-wiring"
+    ]
+    assert len(hooks) == 1, "expected exactly one check-orphan-corpus-wiring hook"
+    hook = hooks[0]
+    assert "--check-orphan-corpus-wiring" in hook["entry"]
+    assert hook["files"] == r"^\.github/workflows/ci\.yml$"
+
+
+def test_the_corpus_recount_condition_for_wiring_holds(monkeypatch: Any) -> None:
+    """The two-way check is GREEN on the live corpus -- the wiring precondition.
+
+    This is the assertion the module's original ``test_no_baseline_entry_has_
+    stopped_being_an_orphan`` deliberately weakened to a one-way SUBSET, because
+    at the time the producer was still minting orphans and a two-way assertion
+    would have been reddened by unrelated peer merges. It is safe to assert both
+    directions now and the reason is measured, not preferred: across the 27 OCC
+    PRs and 72 net-new command.yaml receipts merged between the landing commit
+    and the wiring commit, the corpus stayed at exactly 444 -- zero new orphans.
+
+    If this test ever goes red with NEW entries, the correct response is NOT to
+    add them to the baseline. It is that a producer regressed past
+    ``_require_entry_hash`` and minted an orphan it was built to refuse.
+    """
+    monkeypatch.chdir(_REPO_ROOT)
+    rc = gate.run_orphan_corpus(
+        Path("drift/dod_receipts"), Path("contracts"), _BASELINE
+    )
+    assert rc == 0, "the live corpus no longer matches the frozen baseline"
