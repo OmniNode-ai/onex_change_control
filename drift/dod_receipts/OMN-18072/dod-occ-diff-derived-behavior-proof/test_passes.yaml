@@ -1,0 +1,57 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18072"
+evidence_item_id: "dod-occ-diff-derived-behavior-proof"
+check_type: "test_passes"
+check_value: |-
+  (cd scripts/deploy-agent && uv run pytest tests/unit/test_build_budget_omn18072.py tests/unit/test_executor_build_ceiling_omn18072.py tests/unit/test_compose_budget_omn18057.py tests/unit/test_executor_runtime_timeout_recovery_omn18057.py tests/unit/test_terminal_verdict_omn18057.py -q) && uv run pytest tests/scripts/test_trigger_lane_state_paths_omn18072.py tests/scripts/test_trigger_redeploy_start.py -q
+contract_sha256: "sha256:6ab0d0eaadd7e2a546d621aba1a317cd79e16c834a67621f6ea4db4cd5d408e4"
+contract_entry_sha256: "sha256:9396b39178c2a4589b9eddb3da87fb6854a562174b988db997bfc836f436b681"
+status: PASS
+run_timestamp: "2026-09-09T10:28:08+00:00"
+commit_sha: "091f32687f8247ee30ae205e84d844deaaa68c9f"
+runner: "omn18072-agent-build-ceiling"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omnibase_infra/commits/091f32687f8247ee30ae205e84d844deaaa68c9f --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-18072/omnibase_infra" \
+        && (cd scripts/deploy-agent && uv run pytest tests/unit/test_build_budget_omn18072.py tests/unit/test_executor_build_ceiling_omn18072.py tests/unit/test_compose_budget_omn18057.py tests/unit/test_executor_runtime_timeout_recovery_omn18057.py tests/unit/test_terminal_verdict_omn18057.py -q -p no:cacheprovider) \
+        && uv run pytest tests/scripts/test_trigger_lane_state_paths_omn18072.py tests/scripts/test_trigger_redeploy_start.py -q -p no:cacheprovider)
+probe_stdout: |
+  091f32687f8247ee30ae205e84d844deaaa68c9f
+  ........................................................                 [100%]
+  56 passed in 11.97s
+  ............................                                             [100%]
+  28 passed in 0.17s
+actual_output: |-
+  PASS: the pushed commit resolves on OmniNode-ai/omnibase_infra and 56 + 28 tests pass at it.
+
+  The zero is not vacuous — the RED control was taken in this lane, twice, rather than inherited.
+
+  (1) BUILD CEILING. The origin/dev _compose_build was loaded directly and probed for the ceiling it
+  hands subprocess.run for the runtime build: "RED origin/dev build ceiling handed to subprocess.run:
+  300 seconds". That is the exact mechanism of the two live kills — subprocess.run kills at exactly
+  the timeout= it is given, which is why the failures landed at 300.0s and 300.3s rather than at
+  scattered values. On this branch the same probe yields 1080s, derived and logged verbatim as
+  "60 work steps of '.../docker/Dockerfile.runtime' x 15s/step (one shared BuildKit solve) + 9
+  buildable service(s) in profile 'runtime' x 20s/image (export), floor 600s". Running the new test
+  modules against the origin/dev executor gives 17 errors on the missing derivation.
+
+  (2) MATCHER. The REAL canonical deploy-gate classifier (omniclaude
+  .github/actions/deploy-gate/validate_pr_deploy_required.py at origin/main) was run against the REAL
+  omnibase_infra#3352 file list: "RED canonical-only, #3352 : [] -> trigger: False", reproducing run
+  34330947198's "no runtime path changes detected" rather than describing it. Unioned with the new
+  lane-state list the same input gives three hits — both docker/migrations/_blocked/ files and
+  scripts/run-forward-migrations.sh — and "trigger: True". POSITIVE CONTROL for that zero: a
+  docs-only file list through the same unioned path still yields [] and "trigger: False", so the
+  empty result is earned rather than assumed.
+
+  The predecessor compose-up ceiling and terminal-verdict guards are included in this invocation
+  unchanged and green, which is the regression half.
+
+  Rule 24 honest limit: the agent-path lane rebuild this change unblocks cannot precede it — the fix
+  is TO the deploy agent, so the lane cannot exercise it until the agent clone self-updates past the
+  merge. Only read-only probes were taken on .201 (journalctl, docker images / image inspect /
+  inspect, and the agent's job-state JSON); no lane was mutated by this work.
+exit_code: 0
+pr_number: 3357
