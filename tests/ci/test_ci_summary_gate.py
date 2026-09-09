@@ -47,6 +47,7 @@ from scripts.ci.ci_summary_gate import (
     STRICT_GATE_JOBS,
     _load_check_runs,
     dedup_latest,
+    drop_superseded_skips,
     evaluate,
     evaluate_external_contexts,
     latest_check_run_by_name,
@@ -1221,3 +1222,163 @@ def test_fetch_paginated_retry_exhaustion_fails_closed_not_crashed(
     )
     assert failures == []
     assert sorted(unresolved) == sorted(EXPECTED_EXTERNAL_CONTEXTS)
+
+
+# ---------------------------------------------------------------------------
+# OMN-18062 -- a `skipped` row that lands on a head SHA which already carries a
+# non-skipped row for the same context name is a RE-TRIGGER ARTIFACT, not a
+# verdict about that head.
+#
+# Live shape being pinned (onex_change_control#8709, 2026-09-08): `gh pr edit`
+# fired a second `guards.yml` `pull_request` run with `action == "edited"`;
+# `dep-provenance-gate`'s `if:` admits only
+# ["opened","synchronize","reopened","ready_for_review"], so that run SKIPPED
+# it and GitHub wrote a fresh `skipped` check-run onto the unchanged head 64
+# seconds after the same job had reported `success`. `CI Summary` read the
+# newest row, failed closed, and could not be cleared by a re-run -- only by a
+# new head SHA.
+#
+# Each relaxation below is paired with a positive control that must STILL fail,
+# so the test file cannot pass by having stopped asserting anything.
+# ---------------------------------------------------------------------------
+
+_VICTIM = "Dep Provenance Gate"
+_T0 = "2026-09-08T20:47:00Z"
+_T0_PLUS_64 = "2026-09-08T20:48:04Z"
+
+
+def _incident_rows(
+    second_conclusion: str, *, second_status: str = "completed"
+) -> list[dict[str, object]]:
+    """All-green external rows plus a SECOND row for `_VICTIM` 64s later."""
+
+    runs = _all_green_check_runs()
+    for r in runs:
+        if r["name"] == _VICTIM:
+            r["started_at"] = _T0
+    runs.append(
+        {
+            "name": _VICTIM,
+            "status": second_status,
+            "conclusion": second_conclusion if second_status == "completed" else None,
+            "started_at": _T0_PLUS_64,
+            "id": 10_000,
+        }
+    )
+    return runs
+
+
+def test_incident_victim_is_an_asserted_external_context() -> None:
+    """Positive control for the fixture itself: the name is really asserted."""
+
+    assert _VICTIM in EXPECTED_EXTERNAL_CONTEXTS
+
+
+def test_skip_after_success_on_same_head_is_not_a_regression() -> None:
+    """RED CONTROL (OMN-18062): success at t0, skipped at t0+64s, same head."""
+
+    runs = _incident_rows("skipped")
+    assert latest_check_run_by_name(runs)[_VICTIM].conclusion == "success"
+    failures, unresolved = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert unresolved == []
+
+
+def test_failure_after_success_on_same_head_still_fails() -> None:
+    """POSITIVE CONTROL: a real verdict at t0+64s still wins on recency."""
+
+    runs = _incident_rows("failure")
+    assert latest_check_run_by_name(runs)[_VICTIM].conclusion == "failure"
+    failures, _ = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_skipped_with_no_prior_conclusion_on_the_head_still_fails() -> None:
+    """POSITIVE CONTROL: a name whose ONLY row is `skipped` still fails closed."""
+
+    runs = [r for r in _all_green_check_runs() if r["name"] != _VICTIM]
+    runs.append(
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": _T0_PLUS_64,
+            "id": 10_001,
+        }
+    )
+    failures, _ = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_two_skips_and_no_conclusion_still_fails() -> None:
+    """POSITIVE CONTROL: repeated skips do not amount to a conclusion."""
+
+    runs = [r for r in _all_green_check_runs() if r["name"] != _VICTIM]
+    runs += [
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": ts,
+            "id": rid,
+        }
+        for ts, rid in ((_T0, 10_002), (_T0_PLUS_64, 10_003))
+    ]
+    failures, _ = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_skip_first_then_success_resolves_success() -> None:
+    """A skip at t0 followed by a real success is green (unchanged behaviour)."""
+
+    runs = [r for r in _all_green_check_runs() if r["name"] != _VICTIM]
+    runs += [
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": _T0,
+            "id": 10_004,
+        },
+        {
+            "name": _VICTIM,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": _T0_PLUS_64,
+            "id": 10_005,
+        },
+    ]
+    failures, unresolved = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert unresolved == []
+
+
+def test_in_progress_after_success_is_still_pending() -> None:
+    """POSITIVE CONTROL: a live re-run keeps the context PENDING, not stale-green."""
+
+    runs = _incident_rows("", second_status="in_progress")
+    failures, unresolved = evaluate_external_contexts(runs, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert _VICTIM in unresolved
+
+
+def test_drop_superseded_skips_leaves_unrelated_names_untouched() -> None:
+    """The filter is per-NAME: a skip on one name cannot be cleared by another."""
+
+    rows: list[dict[str, object]] = [
+        {
+            "name": "a",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": _T0,
+            "id": 1,
+        },
+        {
+            "name": "b",
+            "status": "completed",
+            "conclusion": "skipped",
+            "started_at": _T0,
+            "id": 2,
+        },
+    ]
+    assert drop_superseded_skips(rows) == rows
