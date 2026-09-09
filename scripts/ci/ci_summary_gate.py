@@ -72,6 +72,12 @@ Verdict policy — DEFAULT-DENY, FAIL-CLOSED, four layers
    dev PRs, see the per-entry comments below); missing/still-running is
    PENDING, converted to FAILURE at the caller's deadline; an unfetchable
    check-runs list is treated as every context unobserved, never green.
+   OMN-18062 narrows that ``skipped`` bar by exactly one case: a ``skipped``
+   row for a name that ALSO carries a non-skipped row on the same head is a
+   re-trigger artifact and is dropped before resolution
+   (:func:`drop_superseded_skips`). A ``skipped`` with no non-skipped row on
+   that head still fails closed, and a ``failure`` after a ``success`` still
+   wins.
 
 Exit codes: ``0`` success, ``1`` failure, ``2`` pending.
 """
@@ -519,6 +525,65 @@ def dedup_latest(
     return latest
 
 
+def _is_skipped_row(raw: dict[str, object]) -> bool:
+    """True for a completed check-run whose conclusion is ``skipped``."""
+
+    return (
+        str(raw.get("status") or "") == "completed"
+        and str(raw.get("conclusion") or "") == "skipped"
+    )
+
+
+def drop_superseded_skips(
+    check_runs: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Drop ``skipped`` rows for names that also carry a non-skipped row (OMN-18062).
+
+    MECHANISM this closes, measured on this repo's PR #8709 (2026-09-08): a
+    ``gh pr edit`` of the PR body fires a SECOND ``pull_request`` run of a
+    workflow whose ``types:`` include ``edited`` (``guards.yml``). A job in
+    that workflow whose own ``if:`` excludes ``edited`` -- ``dep-provenance-
+    gate``, whose ``if:`` admits only opened/synchronize/reopened/
+    ready_for_review -- is SKIPPED in that run, and GitHub writes a FRESH
+    check-run with conclusion ``skipped`` onto the same, unchanged head SHA
+    where the very same job reported ``success`` 64 seconds earlier.
+    Latest-wins resolution then picks the skip, :data:`EXTERNAL_GOOD_
+    CONCLUSIONS` admits only ``success``, and ``CI Summary`` fails closed on a
+    head that nothing regressed on. Re-running ``CI Summary`` cannot clear it
+    (the skip is and stays the newest row for that name) -- only a new head
+    SHA can, so every lane that edits a PR body (OCC autobind stamps,
+    union-resolves) pays a re-push cycle.
+
+    A ``skipped`` row is evidence about a WORKFLOW RUN, not about the head: it
+    says a job's ``if:`` was false for that run's event. When a non-skipped row
+    for the same name exists on the same head, that row is the verdict about
+    the head and the skip is a re-trigger artifact.
+
+    What this deliberately does NOT relax:
+
+    * ``skipped`` with **no** non-skipped row for that name still stands and
+      still fails closed -- a producer whose ``if:`` was false for the whole
+      life of the head never ran, which is exactly the skip-as-pass vector
+      (OMN-15057 / OMN-14854) the strict external bar exists for.
+    * A ``failure`` (or ``cancelled``, or anything else non-skipped) after a
+      ``success`` still wins on recency -- a failure IS a verdict about the
+      head.
+    * A still-running row is non-skipped, so a later skip can never suppress
+      PENDING into a stale green.
+    """
+
+    named_non_skips = {
+        str(raw.get("name") or "")
+        for raw in check_runs
+        if str(raw.get("name") or "") and not _is_skipped_row(raw)
+    }
+    return [
+        raw
+        for raw in check_runs
+        if not (_is_skipped_row(raw) and str(raw.get("name") or "") in named_non_skips)
+    ]
+
+
 def latest_check_run_by_name(
     check_runs: list[dict[str, object]],
 ) -> dict[str, JobState]:
@@ -526,12 +591,14 @@ def latest_check_run_by_name(
 
     Resolution is **latest wins** by ``(started_at, id)`` -- the same rule
     GitHub applies when deciding a required status check from several
-    same-named check-runs on one SHA.
+    same-named check-runs on one SHA -- over the rows that survive
+    :func:`drop_superseded_skips`, so a re-trigger skip cannot supersede a
+    real conclusion already recorded for that name on this head (OMN-18062).
     """
 
     latest: dict[str, JobState] = {}
     ordering: dict[str, tuple[str, int]] = {}
-    for raw in check_runs:
+    for raw in drop_superseded_skips(check_runs):
         name = str(raw.get("name") or "")
         if not name:
             continue
