@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17304"
+evidence_item_id: "dod-omn17304-ac6-wire-correlation-not-swallowed"
+check_type: "command"
+check_value: |-
+  gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_local.py?ref=fc20d08690f03593eb8c55fd2c02c5f0f75f2b68' --jq '.content' | base64 -d | grep -cF '_resolve_wire_correlation_id'
+contract_sha256: "sha256:a61550b8b718466eea69902429d35778ba80978e219efd22646abe07b1546d4e"
+contract_entry_sha256: "sha256:febdfcc6d0521a265dee48958e21a50b50b08ca46632f14be09936f71fc54ce2"
+status: PASS
+run_timestamp: "2026-09-09T20:22:07Z"
+commit_sha: "fc20d08690f03593eb8c55fd2c02c5f0f75f2b68"
+runner: "claude-local-worktree"
+verifier: "omn17304-bind-remaining"
+probe_command: |-
+  gh api 'repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_local.py?ref=fc20d08690f03593eb8c55fd2c02c5f0f75f2b68' --jq '.content' | base64 -d | grep -cF '_resolve_wire_correlation_id'
+probe_stdout: |
+  2
+actual_output: |-
+  PASS -- AC6, four re-executable checks, each run verbatim from the contract at
+  2026-09-09T20:19Z, each paired with a negative control at the pre-change parent
+  4edb9e596bb64e5e746bd80ee6295f4d8b1996a6.
+
+    check                                                     merge fc20d086  parent 4edb9e59
+    1. _resolve_wire_correlation_id exists                          2               0
+    2. the unstampable report replaces the swallowed pass           1               0
+    3. the published-command line names the wire id + source        1               0
+    4. the red-first AC6 test is present                            1               0
+
+  A NAIVE CHECK WAS REJECTED, and the reason is the point. Greping for the OLD swallow comment
+  returns 1 at BOTH shas, because the new method quotes that exact old code inside its own docstring
+  to explain what it replaced. A contract that had bound AC6 to that grep would have been green with
+  the fix reverted. It is not in the contract.
+
+  WHAT WAS READ, both shas side by side. At the parent, the code minted a throwaway uuid4, assigned
+  it to the payload, caught the refusal in a bare two-exception handler whose body was a pass, and
+  then logged THAT discarded id as the published correlation. The delegation request model is frozen
+  with extra forbidden, so on that path the assignment ALWAYS raised and every capture log named a
+  correlation appearing nowhere on the broker. At the merge sha the mint is replaced by
+  _resolve_wire_correlation_id, which returns the id together with its provenance -- the payload's
+  own id when it carries one, a runtime-minted id only to fill a genuine absence, and an explicit
+  unstampable report, logged as a warning and never swallowed, when a frozen payload refuses the
+  stamp. The same resolved pair then goes to the log line, so the printed id is BY CONSTRUCTION the
+  one on the wire rather than a second value that happens to agree.
+
+  LIVE BEHAVIOUR PROOF, receipt-backed for the same hosted-execution reason as the AC1 and AC3 items.
+  At omnibase_core origin/dev 2be947e5e84bb474b0f4e7a01754dfd55f0a6437, detached verify worktree:
+    uv run pytest tests/unit/runtime/test_runtime_local_client_mode.py -k correlation -q
+    -> 2 passed, 8 deselected in 2.12s
+  The selected pair, confirmed by collect-only rather than assumed:
+    test_wire_correlation_is_the_payload_correlation_not_a_fresh_uuid  <- the red-first AC6 test,
+                                                                         docstring cites AC6 by name
+    test_host_mode_terminal_is_correlation_filtered_too
+exit_code: 0
+pr_number: 1633
+branch: "dev"

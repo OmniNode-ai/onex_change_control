@@ -1,0 +1,53 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17304"
+evidence_item_id: "dod-omn17304-ac1-explicit-override-provenance"
+check_type: "command"
+check_value: |-
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=fcaed1832997818b77c2a944af12d95bc3b1131b' --jq '.content' | base64 -d | grep -cF 'explicit --bus %s OVERRIDES the configured'
+contract_sha256: "sha256:a61550b8b718466eea69902429d35778ba80978e219efd22646abe07b1546d4e"
+contract_entry_sha256: "sha256:34e941031ef28ec45be3e6b742044f22e1604a2627701ab70127b677c20a2fc1"
+status: PASS
+run_timestamp: "2026-09-09T20:22:07Z"
+commit_sha: "fcaed1832997818b77c2a944af12d95bc3b1131b"
+runner: "claude-local-worktree"
+verifier: "omn17304-bind-remaining"
+probe_command: |-
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=fcaed1832997818b77c2a944af12d95bc3b1131b' --jq '.content' | base64 -d | grep -cF 'explicit --bus %s OVERRIDES the configured'
+probe_stdout: |
+  1
+actual_output: |-
+  PASS -- AC1, three re-executable checks, each run verbatim from the contract at
+  2026-09-09T20:19Z, each paired with a negative control at the pre-change parent
+  196cdaef91b58aecf9c31495c14ef9cf4db9e777.
+
+    check                                                     merge fcaed183  parent 196cdaef
+    1. cli_delegate.py carries the --bus OVERRIDE line              1               0
+    2. cli_delegate.py carries the --kafka-bootstrap line           1               0
+    3. the four AC1 test methods are present                        4               0
+
+  The controls are what make these probative rather than provenance: all three are green at the
+  merge sha and all three are 0 with the product change absent, so each can go red for a product
+  reason.
+
+  WHAT WAS READ, not inferred from the ticket. At the parent, every provenance line in run_delegate
+  sat inside the branch taken only when no bus was supplied, so an explicit flag produced NO log
+  record and a receipt could not tell "the authority chose kafka" from "a human typed --bus kafka".
+  The merge adds two logger.info lines naming each flag as an OVERRIDE, and a four-test class:
+    - test_explicit_bus_logs_itself_as_an_override
+    - test_explicit_kafka_bootstrap_logs_itself_as_an_override
+    - test_auto_resolved_bus_is_not_labelled_an_override   <- the counter-assertion
+    - test_override_provenance_never_reaches_stdout        <- the stdout clause
+  The third is the one that keeps the label meaningful: without it, labelling every run an override
+  would pass the first two and carry no information.
+
+  LIVE BEHAVIOUR PROOF, receipt-backed rather than declared as a check because a check rooted in an
+  operator home directory is not executable by hosted contract compliance (OMN-16366 precedent).
+  At omnibase_infra origin/dev 0b2749b9a5d3bda2b53b5b164112e533d9bd364f, detached verify worktree:
+    uv run pytest tests/unit/cli/test_cli_delegate.py \
+      -k "TestExplicitOverrideProvenance or TestOfflineStandaloneGolden" -q
+    -> 6 passed, 70 deselected in 0.64s
+  Four of those six are the AC1 class; the other two are the AC3 golden pair.
+exit_code: 0
+pr_number: 3065
+branch: "dev"
