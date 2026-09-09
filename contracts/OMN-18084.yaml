@@ -1,0 +1,169 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18084"
+title: "The DLQ replay handler no longer re-dead-letters its own failures into the topics it reads"
+summary: >
+  OCC companion for OmniNode-ai/omnibase_infra PR #3365. Bound by hand (union-resolve) because the autobind
+  producer mints nothing today, the same reason OCC#8798 and OCC#8802 were hand-minted in this window.
+  MEASURED on the .201 dev lane over a 480 s double-read window ending 2026-09-09T16:27:34Z: onex.dlq.omnibase-infra.events.v1
+  took 93,027 records = 193.8 records/s = 16.74M/day = about 151 GB/day at 9,656 bytes/record on disk.
+  All 2,000 records of a sample carried original_topic equal to the topic they were consumed from, failure_type
+  handler_exception, and RuntimeError Consumer not started. The topic held 108 GB of a 213 GB Redpanda
+  data directory; /data on that host is 84 percent used with 590 GB free and carries the prod, stability-test,
+  judge and collaborator lane volumes; retention is 7 days with no byte cap, so steady state for that
+  one topic is about 1.05 TB. The zero-composition control is not vacuous - the authenticated rpk topic
+  list returned 1,659 topics where the unauthenticated read returned a SASL error, so an empty result
+  would have been an error rather than an absence. Three defects compose into the loop and all three are
+  closed here. (1) The loop-breaker _is_dead_letter_source_topic guarded the no-dispatcher leg and the
+  no-result-applier leg but NOT the handler-error leg; the per-topic routing split that landed earlier
+  in the week did not create the amplifier, it moved DLQ traffic off the guarded leg onto the unguarded
+  one by making the replay handler dispatch successfully and then fail. (2) get_dlq_topic_for_original
+  reads a message category out of a topic's own segments, so it is a FIXED POINT on onex.dlq.* names -
+  it answers a dead-letter topic with itself. (3) service_kernel keys runtime dependencies by handler
+  NAME, so the three per-topic dispatchers share one DLQConsumer, and _ensure_runtime_dependencies_started
+  skips a dependency already flagged started without taking responsibility for stopping it, so a peer's
+  finally tore down a consumer another dispatcher was draining - which is the exception the unguarded
+  leg was answering. NO lane, container, topic, consumer group, service, retention setting, cluster, credential
+  or routing variable was mutated by this change or by the lane that authored it. Reclaiming the 108 GB
+  backlog is deliberately out of scope: it is a lane mutation needing its own authorization, and it must
+  not happen before this fix is deployed or the topic simply refills.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3365 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3365 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the three
+      RED-first modules the fix was written against, covering the handler-error loop-breaker, the typed
+      refusal of the dead-letter fixed point, and the shared-consumer lifecycle. Executed at cwd
+      `${OMNI_HOME}/omnibase_infra`.
+    command: |-
+      uv run pytest tests/unit/runtime/auto_wiring/test_omn18084_handler_error_leg_dlq_loop.py tests/unit/event_bus/test_omn18084_dlq_topic_fixed_point_refused.py tests/unit/nodes/node_dlq_replay_effect/test_omn18084_shared_consumer_lifecycle.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3365"
+    description: >
+      PR #3365 on OmniNode-ai/omnibase_infra - the handler-error loop-breaker, the typed refusal at the
+      DLQ topic resolver with pre-guards at every production call site, and the run mutex over the shared
+      replay consumer. Bound by hand (union-resolve) because the autobind producer mints nothing today.
+      It declares no binds_ac because a pull-request-visibility probe proves no acceptance criterion.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3365 --repo OmniNode-ai/omnibase_infra --json number,state"
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy-scope DoD so PR #3365 clears the deploy-gate. The diff touches the auto-wiring consume boundary,
+      the subcontract wiring DLQ path, the bus-forwarder gateway delivery service and the DLQ replay handler
+      - all deployed runtime surfaces. Nothing in it mutates a lane: every change is a guard that REMOVES
+      a publish, plus a mutex that serialises an existing lifecycle. The one behaviour change visible
+      to an operator is that a failure on a dead-letter source topic is now recorded as a structured log
+      line instead of a new dead-letter record. Deployment reaches the .201 dev lane only when the deploy
+      agent is restarted; this lane neither performed nor requested that.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3365/files --paginate --jq '.[].filename' | grep -ciE 'runtime/|nodes/|event_bus/'
+  - id: "ac1-handler-error-leg-is-guarded"
+    description: >-
+      AC1 binding. Runs the class whose own docstring states the criterion - "AC1 - the HANDLER_ERROR
+      leg gets the loop-breaker the others have" - so the mapping is transcribed from the test module
+      rather than inferred from a name. The class asserts zero new records on onex.dlq.omnibase-infra.events.v1
+      by name, asserts no written record names its own source topic, extends the same assertion to the
+      commands sink so the guard keys on the DLQ shape rather than one topic name, and carries a positive
+      control asserting an ordinary topic still produces exactly one DLQ write to a DIFFERENT topic -
+      without which a guard that returned early for every topic would pass the other three while deleting
+      the boundary's reason to exist.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/runtime/auto_wiring/test_omn18084_handler_error_leg_dlq_loop.py::TestHandlerErrorOnADeadLetterTopicIsNotRepublished -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac2-dlq-topic-fixed-point-is-refused"
+    description: >-
+      AC2 binding. Runs both classes of the resolver module: the one whose docstring states the criterion
+      - "AC2 - the resolver refuses to rebuild its own fixed point" - parametrised over all four dead-letter
+      sinks the lane carries, plus its positive control that an ordinary topic still resolves to the documented
+      answer; and the companion class asserting the two never-raising boundary helpers PRE-GUARD rather
+      than catch, which is what keeps a typed refusal from converting a logged loss into a crash on a
+      path documented as never raising.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/event_bus/test_omn18084_dlq_topic_fixed_point_refused.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac3-shared-consumer-lifecycle-is-serialised"
+    description: >-
+      AC3 binding. Runs the class whose docstring states the criterion - "AC3 - Consumer not started cannot
+      arise from concurrent start/stop". It drives two real HandlerDlqReplay instances over one consumer
+      double that SUBCLASSES the production DLQConsumer and overrides only the three methods touching
+      Kafka, so the started flag it moves is the production one; the interleave is made deterministic
+      with a scheduling gate rather than a semantic change. It also pins that serialising does not LEAK
+      a started consumer, which would stall the group at max_poll_interval_ms rather than fail loudly
+      - the failure mode a naive fix introduces.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18084_shared_consumer_lifecycle.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac4-red-first-modules-are-in-the-pr"
+    description: >-
+      AC4 binding. The three RED-first modules the fix was written against are present in PR #3365's own
+      file list, and all three pass together at the merged head. Their failing assertions at the parent
+      commit a4393794 are quoted verbatim in the PR body, one row per module, which is the half a re-runnable
+      probe cannot reproduce after the fix has landed - a check that could still fail at the parent would
+      have to check out the parent, and the honest statement is that this item proves presence and passage,
+      with the RED half evidenced by the quoted output.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3365/files --paginate --jq '.[].filename' | grep -cE 'test_omn18084_(handler_error_leg_dlq_loop|dlq_topic_fixed_point_refused|shared_consumer_lifecycle)\.py'
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/runtime/auto_wiring/test_omn18084_handler_error_leg_dlq_loop.py tests/unit/event_bus/test_omn18084_dlq_topic_fixed_point_refused.py tests/unit/nodes/node_dlq_replay_effect/test_omn18084_shared_consumer_lifecycle.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac5-lab-statement-is-in-the-pr-body"
+    description: >-
+      AC5 binding. The PR body states, rather than implies, that the lab pass could not run at fix time
+      because the dev-lane deploy agent is down, and that the proof is tree-level only. This item reads
+      the live PR body and requires that sentence to be present. An honest gap recorded is evidence; a
+      borrowed lab proof is not, which is why this criterion is bound to the body text and not to a probe
+      of the lane.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 3365 --repo OmniNode-ai/omnibase_infra --json body --jq '.body' | grep -c 'the lab pass could not run at fix time'
+  - id: "occ-self-bind-pr-8813"
+    description: >-
+      OCC self-binding receipt for PR #8813, the in-repo evidence PR carrying this contract. Binds OMN-18084
+      to the OCC companion by pr_number so eligibility can resolve a PASS receipt for the evidence PR
+      itself. Hand-minted: the autobind producer mints nothing today. It declares no binds_ac because
+      a pull-request-visibility probe proves no acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8813 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
