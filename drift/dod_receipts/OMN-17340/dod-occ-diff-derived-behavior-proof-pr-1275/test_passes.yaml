@@ -1,0 +1,50 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17340"
+evidence_item_id: "dod-occ-diff-derived-behavior-proof-pr-1275"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_omniweb_public_surface_drift_report.py tests/k8s/test_check_auth_url_manifest.py tests/k8s/test_secret_ownership_manifest.py tests/k8s/test_staging_composition_contract.py -q
+contract_sha256: "sha256:38034f3a4a350fd8882df5142cd4eb4eeb640bfd19385a317fec06e7edffc18f"
+contract_entry_sha256: "sha256:14389dced25283b05e82207c79955b4e224036e6f1ef76f7652b849b5026d835"
+status: PASS
+run_timestamp: "2026-09-09T12:43:38+00:00"
+commit_sha: "1767cb89102320d69c47719122fc34f161375a40"
+runner: "omn17340-overlay"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/commits/1767cb89102320d69c47719122fc34f161375a40 --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-17340/omninode_infra" \
+        && kustomize build k8s/onex-dev-overlay-dev | python3 -c 'read the omniweb Deployment, print the two env values' \
+        && uv run pytest tests/k8s/test_omniweb_overlay_digest_pin.py tests/k8s/test_omniweb_public_surface_drift_report.py tests/k8s/test_check_auth_url_manifest.py tests/k8s/test_secret_ownership_manifest.py tests/k8s/test_staging_composition_contract.py -q -p no:cacheprovider)
+probe_stdout: |
+  1767cb89102320d69c47719122fc34f161375a40
+  DASHBOARD_DATA_SOURCE= projection-api
+  PROJECTION_API_BASE_URL= http://omnimarket-projection-api.onex-dev.svc.cluster.local:3002
+  ........................................................................ [ 77%]
+  .....................                                                    [100%]
+  93 passed in 57.14s
+actual_output: |-
+  PASS, with its limits named rather than implied. Two distinct proofs are folded in here.
+
+  (1) The POSITIVE proof of the change itself is the kustomize render, and its control was taken
+  rather than assumed: rendering the overlay with ONLY
+  k8s/onex-dev-overlay-dev/patches/omniweb-deployment.yaml restored from origin/dev prints
+  "DASHBOARD_DATA_SOURCE= None / PROJECTION_API_BASE_URL= None"; the same render at this branch
+  head prints the two values above. The rendered omniweb container carries 18 env entries with no
+  duplicate names, so the two additions do not shadow an existing one.
+
+  (2) The 93 passing tests are a NON-REGRESSION proof, not a behaviour proof of the flip. They are
+  the manifest suites that parse this exact Deployment across both overlays (digest pin, public
+  surface drift, AUTH_URL validity, secret ownership, staging composition), and they are green
+  before and after the change by design — a manifest env addition has no pytest target in this repo
+  that would go red on its absence. Claiming them as proof of the flip would be the class of
+  vacuous evidence OMN-16434 exists to reject, so they are recorded for what they are.
+
+  The runtime behaviour this selects was measured live, read-only, from an omniweb pod on
+  dev-system i-06169517a92b45f86 (SSM, --comment omn17340) and is recorded in the product PR body:
+  both savings topics answer HTTP 503 and neither appears in the projection API's bus_backed_topics,
+  so the page will render a typed live-failure state — not sample data — until the savings topic is
+  bus-fed (OMN-15800 / OMN-17426, writer fix expected 2026-09-10).
+exit_code: 0
+pr_number: 1275
