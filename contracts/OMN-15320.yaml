@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15320"
+title: "deploy-onex-staging: correct the rollout-timeout rationale that still claims a 180s budget the
+  workflow has not used since OMN-14974"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #1271, satisfying OMN-15320 AC2. Bound by hand (union-resolve)
+  because autobind mints no companion at present (OMN-18073), so #1271 would otherwise have no receipt
+  to cite and both the Receipt Gate and occ-preflight would fail on the missing citation. Cause of the
+  ticket: deploy-onex-dev run 30348504044, whose only change was moving the runtime image digest pin,
+  went red at the rollout wait on omninode-runtime-effects while both pods reached Ready on their own
+  at 6m52s. The image is 783,619,615 bytes, so a digest bump forces a cold pull the then-180s wait could
+  not cover, making the step red-by-construction on exactly the deploys that move the digest. AC2 asks
+  that, if a fixed number is kept, its comment cite the cold-pull measurement rather than the falsified
+  "~30-60s for cold pull" estimate. The governed value was already raised to 1500 by OMN-14974; only the
+  prose stayed stale. Read live on origin/dev at 1cac4743 on 2026-09-09, the workflow's rationale block
+  at lines 2465-2470 still read "~30-60s for cold pull" and "Total: 180s provides adequate margin", while
+  line 127 read DEPLOY_TIMEOUT_SECONDS "1500" and k8s/onex-dev/runtime/deployment-omninode-runtime.yaml
+  line 19 read progressDeadlineSeconds 1800. #1271 replaces that comment with the OMN-15320 live readback
+  and tightens tests/k8s/test_runtime_readiness_gate.py so the correction cannot silently regress. No
+  timeout value, no manifest field and no deploy step is changed; the diff is a YAML comment block plus
+  pytest assertions. 1500 and 1800 are deliberately NOT reconciled here: they are different knobs, the
+  client-side rollout wait and the server-side Deployment progress deadline, and their ordering is already
+  governed by the pre-existing test_main_runtime_progress_deadline_exceeds_rollout_wait. AC1, which needs
+  one green push-triggered deploy on a real runtime-digest bump, is not claimed by this PR and no deploy
+  was triggered by this lane. No credential was rotated, re-issued, revoked or minted, no secret value
+  was read or printed, no cluster object was mutated, and no runtime lane was touched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1271 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1271 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the readiness-gate
+      suite the PR changes, which asserts the rationale block cites OMN-15320, the 783,619,615-byte cold pull and the
+      six-minute readback, that the governed DEPLOY_TIMEOUT_SECONDS is exactly 1500, and that no stale 30-60s or 180s
+      timeout claim survives anywhere in the workflow file. Executed at cwd `${OMNI_HOME}/omninode_infra`.
+    command: |-
+      uv run pytest tests/k8s/test_runtime_readiness_gate.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1271"
+    description: >
+      PR #1271 on OmniNode-ai/omninode_infra — the corrected rollout-timeout rationale and the assertions
+      that hold it. Bound by hand (union-resolve) because autobind mints no companion at present (OMN-18073).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1271 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1271/files --paginate --jq '.[].filename' | grep -cFx '.github/workflows/deploy-onex-staging.yml'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1271 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1271"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/k8s/test_runtime_readiness_gate.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
