@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18068"
+title: "deploy-onex-staging: bound every credential-attach database wait so a dead tunnel cannot spend
+  the deploy's whole job budget"
+summary: >
+  OCC companion for OmniNode-ai/omninode_infra PR #1266. Bound by hand (union-resolve): the OMN-18068
+  autobind command published green twice on omninode_infra runs 34310571742 and 34312180180 and no companion
+  PR was minted either time, so #1266 had no receipt to cite and both the Receipt Gate and occ-preflight
+  failed on the missing citation. Cause of the ticket: deploy-onex-staging run 34306265179 (job 102323690052)
+  was killed by the job's own 45-minute budget after 44m32s inside step "Attach store-carried LOGIN credentials
+  (OMN-17733)". The step source is BYTE-IDENTICAL between the control head 2cc9f458 (run 34303974607,
+  job 102316896761, same step ~1.5s) and the hung head 6ca0c3c4, so this was not a code change. The blocked
+  call is the first admin psql after the script banner: the SSM ToRemoteHost session gha-deploy-onex-staging-sc6shpayju6rvvzldg6uddaeea
+  was established 03:15:08Z and TERMINATED BY AWS at 03:40:12Z, and libpq went on blocking a further 19m23s
+  because there was no connect bound, no wall-clock bound in the script, and no step-level timeout. RDS
+  was the positive control for the not-the-database zero: available, MasterUserSecret active, serving
+  10-14 concurrent connections at sub-millisecond read and write latency throughout the 44 minutes. Because
+  the only ceiling was job-scope, the kill skipped steps 19-33 including the kustomize overlay apply,
+  so the run delivered nothing at all to onex-dev and the OMN-16350 regression guard correctly went red.
+  #1266 routes every database call through one bounding helper (timeout(1) plus PGCONNECT_TIMEOUT, with
+  the admin password still reaching libpq through the environment and never through argv) and gives the
+  step its own timeout-minutes strictly below the job's. No credential was rotated, re-issued, revoked
+  or minted, no secret value was read, printed or decoded, and no cluster object was mutated (rule 22).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1266 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1266 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the new bounded-wait module, which drives the shipped script against a peer that completes the TCP handshake and then never answers, plus the credential-attach suites the script and workflow change move. Executed at cwd `${OMNI_HOME}/omninode_infra`.
+    command: |-
+      uv run pytest tests/scripts/test_attach_login_credential_bounded_waits_omn18068.py tests/scripts/test_attach_topology_login_credential.py tests/k8s/test_deploy_staging_attaches_login_credentials_omn17733.py tests/k8s/test_omn17769_store_resolved_credential_registration.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1266"
+    description: >
+      PR #1266 on OmniNode-ai/omninode_infra — the bounded credential-attach wait and its step-level timeout.
+      Bound by hand (union-resolve) because the autobind published no companion for this ticket on either
+      attempt.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1266 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1266/files --paginate --jq '.[].filename' | grep -cFx 'tests/scripts/test_attach_login_credential_bounded_waits_omn18068.py'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1266 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1266"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/scripts/test_attach_login_credential_bounded_waits_omn18068.py tests/scripts/test_attach_topology_login_credential.py tests/k8s/test_deploy_staging_attaches_login_credentials_omn17733.py tests/k8s/test_omn17769_store_resolved_credential_registration.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
