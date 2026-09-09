@@ -11,12 +11,13 @@ interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "tests"
-    description: "Focused golden-chain coverage validates opt-in immutable history collection and its
-      failure behavior."
+    description: "Focused golden-chain and real bus coverage validate opt-in immutable history collection,
+      requested-state provenance, and failure behavior."
     command: "See dod-check-execution-history-behavior receipt."
   - kind: "ci"
     description: "The immutable product diff is limited to the lifecycle inventory contract, metadata,
-      model, handler, and focused golden-chain test."
+      model, handler, focused golden-chain test, real bus-coverage integration test, and the required
+      0.4.44 release identity files."
     command: "See dod-product-head-and-scope receipt."
   - kind: "manual"
     description: "Compute-only source evidence verifies the new collector at the immutable product head;
@@ -29,16 +30,16 @@ emergency_bypass:
 dod_evidence:
   - id: "dod-check-execution-history-behavior"
     description: >-
-      Focused golden-chain tests at the exact product commit prove the opt-in immutable check-execution
-      history behavior. This is local Done-gate evidence and does not claim hosted execution, runtime
-      activation, or internal validator-firing counts.
+      Focused golden-chain and real bus-coverage tests at the exact product commit prove the opt-in immutable
+      check-execution history behavior and requested-state provenance. This is local Done-gate evidence
+      and does not claim hosted execution, runtime activation, or internal validator-firing counts.
     source: "manual"
     execution_scope: "local_done_gate"
     checks:
       - check_type: "test_passes"
         check_value: |-
-          bash -euo pipefail <<'CHECK'
-          expected_sha="f5c88d78dd77291100dcc3b73405d255532cb60d"
+          bash -euo pipefail <<'PROOF'
+          expected_sha="b13eea2ff64c243ad3c9ee799ed35c780fb70ffc"
           actual_sha="$(gh api "repos/OmniNode-ai/omnimarket/commits/$expected_sha" --jq .sha)"
           test "$actual_sha" = "$expected_sha"
           target_root="$(mktemp -d "${TMPDIR:-/tmp}/omn-18078-proof.XXXXXX")"
@@ -54,59 +55,73 @@ dod_evidence:
           (
             cd "$target"
             test "$(git rev-parse HEAD)" = "$actual_sha"
-            env -u PYTHONPATH -u VIRTUAL_ENV UV_CACHE_DIR=/tmp/omn-18078-occ-uv-cache uv run --locked pytest tests/test_golden_chain_pr_lifecycle_inventory_compute.py -q
+            env -u PYTHONPATH -u VIRTUAL_ENV UV_CACHE_DIR=/tmp/omn-18078-occ-uv-cache uv run --locked pytest tests/test_golden_chain_pr_lifecycle_inventory_compute.py tests/integration/node_pr_lifecycle_inventory_compute/test_pr_lifecycle_inventory_bus_coverage.py -q
           )
-          CHECK
+          PROOF
         cwd: "${OMNI_HOME}/omnimarket"
   - id: "dod-product-head-and-scope"
     description: >-
       The remote product head has exactly the lifecycle inventory contract, metadata, model, handler,
-      and focused golden-chain test relative to its immutable PR base. The check also verifies whitespace
-      and does not claim deployment or runtime activation.
+      focused golden-chain test, real bus-coverage integration test, and 0.4.44 release identity files
+      relative to its immutable PR base. The check also verifies whitespace and does not claim deployment
+      or runtime activation.
     source: "manual"
     execution_scope: "local_done_gate"
     checks:
       - check_type: "command"
         check_value: |-
-          bash -euo pipefail <<'CHECK'
-          expected_sha="f5c88d78dd77291100dcc3b73405d255532cb60d"
+          bash -euo pipefail <<'PROOF'
+          expected_sha="b13eea2ff64c243ad3c9ee799ed35c780fb70ffc"
           base_sha="86513e25dec2e890bd733b4e519f6b1b0c9daba5"
           actual_sha="$(gh api "repos/OmniNode-ai/omnimarket/commits/$expected_sha" --jq .sha)"
           test "$actual_sha" = "$expected_sha"
           test "$(git merge-base "$base_sha" "$actual_sha")" = "$base_sha"
-          test "$(git diff --name-only "$base_sha"..."$actual_sha")" = "$(printf '%s\n%s\n%s\n%s\n%s' \
+          expected_paths="$(printf '%s\n' \
+            pyproject.toml \
             src/omnimarket/nodes/node_pr_lifecycle_inventory_compute/contract.yaml \
             src/omnimarket/nodes/node_pr_lifecycle_inventory_compute/handlers/handler_pr_lifecycle_inventory.py \
             src/omnimarket/nodes/node_pr_lifecycle_inventory_compute/metadata.yaml \
             src/omnimarket/nodes/node_pr_lifecycle_inventory_compute/models/model_pr_lifecycle_inventory.py \
-            tests/test_golden_chain_pr_lifecycle_inventory_compute.py)"
+            tests/integration/node_pr_lifecycle_inventory_compute/test_pr_lifecycle_inventory_bus_coverage.py \
+            tests/test_golden_chain_pr_lifecycle_inventory_compute.py \
+            uv.lock)"
+          test "$(git diff --name-only "$base_sha"..."$actual_sha")" = "$expected_paths"
           git diff --check "$base_sha"..."$actual_sha"
-          printf 'PASS: remote product SHA, immutable base, declared paths, and whitespace check matched\n'
-          CHECK
+          printf 'PASS: remote product SHA, immutable base, eight declared paths, and whitespace check matched\n'
+          PROOF
         cwd: "${OMNI_HOME}/omnimarket"
   - id: "dod-compute-only-deploy-source"
     description: >-
       Hosted, compute-only source-presence evidence binds the immutable product head to the opt-in all-history
-      check-execution collector and strict total-count validation. It does not claim behavior correctness,
-      runtime activation, deployment, or authoritative internal validator-firing counts; local behavior
-      is proven separately.
+      check-execution collector, requested-state provenance, and strict total-count validation. It does
+      not claim behavior correctness, runtime activation, deployment, or authoritative internal validator-firing
+      counts; local behavior is proven separately.
     source: "manual"
     execution_scope: "hosted_and_local"
     checks:
       - check_type: "command"
         check_value: |-
-          bash -euo pipefail <<'CHECK'
-          expected_sha="f5c88d78dd77291100dcc3b73405d255532cb60d"
+          bash -euo pipefail <<'PROOF'
+          expected_sha="b13eea2ff64c243ad3c9ee799ed35c780fb70ffc"
           actual_sha="$(gh api "repos/OmniNode-ai/omnimarket/commits/$expected_sha" --jq .sha)"
           test "$actual_sha" = "$expected_sha"
-          source_file="$(mktemp "${TMPDIR:-/tmp}/omn-18078-source.XXXXXX")"
-          trap 'rm -f "$source_file"' EXIT
-          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_inventory_compute/handlers/handler_pr_lifecycle_inventory.py?ref=$actual_sha" --jq .content | base64 -d > "$source_file"
-          grep -Fq 'include_check_execution_history: bool = False' "$source_file"
-          grep -Fq 'check-runs?filter=all' "$source_file"
-          grep -Fq 'isinstance(total, bool)' "$source_file"
-          printf 'PASS: immutable product source retains opt-in all-history check-execution collection and boolean total-count rejection\n'
-          CHECK
+          handler_file="$(mktemp "${TMPDIR:-/tmp}/omn-18078-handler.XXXXXX")"
+          model_file="$(mktemp "${TMPDIR:-/tmp}/omn-18078-model.XXXXXX")"
+          cleanup() {
+            rm -f "$handler_file"
+            rm -f "$model_file"
+          }
+          trap cleanup EXIT
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_inventory_compute/handlers/handler_pr_lifecycle_inventory.py?ref=$actual_sha" --jq .content | base64 -d > "$handler_file"
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_pr_lifecycle_inventory_compute/models/model_pr_lifecycle_inventory.py?ref=$actual_sha" --jq .content | base64 -d > "$model_file"
+          grep -Fq 'if include_check_execution_history:' "$handler_file"
+          grep -Fq 'check_execution_history_requested=include_check_execution_history' "$handler_file"
+          grep -Fq 'check-runs?filter=all' "$handler_file"
+          grep -Fq 'isinstance(total, bool)' "$handler_file"
+          grep -Fq 'check_execution_history_requested: bool = Field(' "$model_file"
+          grep -Fq 'default=False' "$model_file"
+          printf 'PASS: immutable product source retains opt-in all-history collection and records requested history state\n'
+          PROOF
   - id: "occ-self-bind-pr-8796"
     description: >-
       Observed initial identity for OCC companion PR #8796. This records the PR number, branch, base,
