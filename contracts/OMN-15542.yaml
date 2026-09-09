@@ -97,3 +97,178 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8821 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "ac1-orchestrator-mints-a-typed-uuid-per-attempt"
+    description: >-
+      AC1 minting half, and the AC2 sentence "durably records the ONE current in-flight attempt ID". Escalates
+      a workflow from the local route to the cloud route and asserts both emitted attempts carry a real
+      UUID instance (not a string, not None), and that the workflow's current_inference_attempt_id equals
+      the CLOUD attempt after the escalation — one current attempt, replaced rather than accumulated.
+      Negative control run 2026-09-09: replacing both `workflow.current_inference_attempt_id = uuid4()`
+      assignments with `None` in handler_delegation_workflow.py flips this check to FAIL.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1", "AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceAttemptIdentity::test_every_emitted_inference_intent_carries_a_distinct_attempt_id" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac1-ac5-effect-echoes-id-for-stamped-intent"
+    description: >-
+      AC1 echo half and the AC5 sentence "provider success/error response tests preserve the attempt UUID".
+      The inference effect is the only party holding the intent while a call is outstanding, so it is
+      the only party that can echo the attempt identity onto ModelInferenceResponseData. This check executes
+      `_attempt_round_trip_fields` for a STAMPED intent: the returned kwarg mapping is exactly the intent's
+      own UUID, and a ModelInferenceResponseData constructed from it preserves it as a UUID rather than
+      a string. Paired with the unstamped entry below, which is what stops a helper that always stamped
+      an identity from passing this one on its own. Negative control run 2026-09-09: forcing the helper
+      to return an empty mapping flips this check to FAIL while leaving the unstamped entry PASS.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1", "AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceEffectEchoesAttemptId::test_round_trip_fields_carry_the_attempt_id" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac1-ac5-effect-omits-id-for-unstamped-intent"
+    description: >-
+      The other half of AC1's echo clause and AC5's provider-response sentence. A pre-upgrade intent carries
+      no attempt identity, and the effect must return an EMPTY mapping for it rather than fabricating
+      a UUID that was never on the wire — a fabricated identity would make every legacy response look
+      like a superseded attempt and be rejected. Negative control run 2026-09-09: forcing the helper to
+      stamp an id unconditionally flips this check to FAIL while leaving the stamped entry above PASS,
+      which is what makes either of the two informative.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1", "AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceEffectEchoesAttemptId::test_round_trip_fields_are_empty_for_an_unstamped_intent" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac1-effect-echo-wired-at-success-and-error"
+    description: >-
+      AC1's remaining clause, "echoed by the inference effect on success AND error paths", read at the
+      merged commit rather than asserted. The two behavior checks above prove the echo helper; no test
+      in the repository exercises the effect's own return objects, so this entry pins the wiring instead
+      of leaving that clause unevidenced: at merge a441826e25cacca9cfb7e8f0c742c7f324ec4cbe the effect's
+      handler_inference_intent.py constructs ModelInferenceResponseData at exactly two sites — the except-branch
+      error response and the success response — and BOTH splat the echo helper. The check asserts the
+      count is exactly 2, so dropping either site fails it. This is a structural read of pinned content,
+      weaker than the behavior checks above, and is declared as such. Negative control run 2026-09-09:
+      the same probe against the first parent e21a737c1c9f9ba680f2baf6cc8e05d30c18d640 returns 0 and exits
+      non-zero.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_llm_delegation_call_effect/handlers/handler_inference_intent.py?ref=a441826e25cacca9cfb7e8f0c742c7f324ec4cbe --jq '.content' | base64 -d | grep -cF '**_attempt_round_trip_fields(intent),')" -eq 2
+  - id: "ac2-ac4-stale-response-never-reaches-gate"
+    description: >-
+      The reported defect, executed. This is simultaneously AC4's first sentence and AC2's fail-closed
+      sentence, so it binds both. A local intent is emitted, the same workflow is escalated to the Gemini/cheap_cloud
+      route, and the delayed LOCAL response is then delivered carrying the superseded attempt id. The
+      test asserts the handler returns NO events at all — so no ModelQualityGateIntent, no gate input,
+      no terminal — and that workflow.state is still ROUTED, inference_content and inference_model_used
+      are still None, current_inference_attempt_id is still the cloud attempt, and routing_decision.endpoint_url
+      is still the cloud endpoint. "Costs" is covered transitively rather than by a dedicated assertion:
+      no event was emitted and no inference field was set, so nothing exists for a cost to be metered
+      from. Negative control run 2026-09-09: making `_stale_response_rejection` return None unconditionally
+      flips this check to FAIL — the stale response reaches the quality gate.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2", "AC4"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceAttemptIdentity::test_delayed_local_response_is_rejected_after_escalation_to_cloud" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac2-the-rejection-is-typed-durable-evidence"
+    description: >-
+      AC2's "ignored/fails closed" is not satisfied by a silent drop — a dropped response that leaves
+      no record is indistinguishable from one that never arrived. This check asserts the rejection appends
+      exactly one typed ModelStaleInferenceResponseRejection naming BOTH attempt identities and the route
+      the stale response would otherwise have been relabelled onto: response_model_used Qwen3.6-35B-A3B
+      against current_tier_name cheap_cloud, the cloud endpoint and the cloud selected model, with response_model_used
+      explicitly not equal to current_selected_model. That inequality is the internally impossible provenance
+      pair this ticket was filed on. Negative control run 2026-09-09: making `_stale_response_rejection`
+      return None unconditionally flips it to FAIL.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceAttemptIdentity::test_rejection_emits_typed_evidence_naming_the_prevented_relabel" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac2-a-stale-error-response-does-not-re-escalate"
+    description: >-
+      The error half of AC2's fail-closed sentence, and the one place a cost/ladder effect is asserted
+      directly. A late ERROR from a superseded attempt is what drives the escalation ladder, so an unguarded
+      one would escalate a second time off a route that has already moved on. The check asserts no events,
+      escalation_count unchanged against the value captured before delivery, current_inference_attempt_id
+      and the route unchanged, and one typed rejection recorded with response_was_error True. Negative
+      control run 2026-09-09: making `_stale_response_rejection` return None unconditionally flips it
+      to FAIL.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceAttemptIdentity::test_a_stale_error_response_is_rejected_and_does_not_re_escalate" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac4-current-response-reaches-gate-coherent"
+    description: >-
+      AC4's second sentence, and the half that makes the first one meaningful: a guard that rejected every
+      response would satisfy "the delayed local response must not reach the gate" while breaking delegation
+      entirely. The stale local response is delivered FIRST and must not poison the workflow, then the
+      current cloud response is delivered; the test asserts exactly one ModelQualityGateIntent, state
+      INFERENCE_COMPLETED, and the terminal provenance triple coherent — inference_model_used is the cloud
+      model, endpoint_url the cloud endpoint, tier_name cheap_cloud. A Gemini route never carries a Qwen
+      model identity. Negative control run 2026-09-09: making `_stale_response_rejection` return None
+      unconditionally flips it to FAIL, because the stale response the test delivers first is then accepted
+      and the terminal carries the superseded model.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceAttemptIdentity::test_current_cloud_response_is_accepted_and_stays_coherent" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac2-ac5-codec-round-trips-current-attempt-id"
+    description: >-
+      AC5's state-codec sentence and the word "durably" in AC2. In-process identity is not enough: the
+      orchestrator's workflow state crosses a persistence boundary via state_codec, and a leg replayed
+      in another process must still reject the superseded attempt. The check encodes and decodes the escalated
+      workflow and asserts the decoded current_inference_attempt_id both equals the cloud attempt and
+      is still a UUID instance rather than a string. Negative control run 2026-09-09: stripping current_inference_attempt_id
+      from the encoded payload flips it to FAIL.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2", "AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceAttemptIdentity::test_state_codec_round_trips_the_current_attempt_id" -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac5-codec-round-trips-rejection-evidence"
+    description: >-
+      The second half of AC5's state-codec sentence: the rejection evidence must be durable too, not an
+      in-process log that vanishes at the same boundary the workflow survives. The check encodes and decodes
+      a workflow that has already rejected a superseded response and asserts the decoded state still carries
+      one typed ModelStaleInferenceResponseRejection with both attempt identities and the current endpoint
+      intact. Negative control run 2026-09-09: stripping stale_response_rejections from the encoded payload
+      flips it to FAIL.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/delegation/test_inference_attempt_identity_omn15542.py::TestInferenceAttemptIdentity::test_state_codec_round_trips_the_typed_rejection_evidence" -q
+        cwd: "${OMNI_HOME}/omnimarket"
