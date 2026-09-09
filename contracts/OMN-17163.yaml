@@ -1,0 +1,100 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17163"
+title: "DLQ depth monitor and baselines scheduler resolve the dev-lane broker from the lane declaration
+  on the deploy runner"
+summary: >
+  OCC companion for OmniNode-ai/omnibase_infra PR #3362. Bound by hand (union-resolve) because the autobind
+  producer mints nothing today (OMN-18073), the same reason OCC#8760 and OCC#8782 were hand-minted in
+  this window. dlq-depth-monitor.yml (added 93c42ada4, PR #2946, OMN-16769) had NEVER passed: 545 runs
+  since 2026-08-28T05:17:29Z, 543 failure, 2 cancelled, 0 success, every one raising "Unable to bootstrap
+  from [('localhost', 19092, AF_UNSPEC)]" at handler_dlq_depth_monitor.py:156. The zero is not vacuous
+  - the same success filter returns 1246 for runner-routing-audit.yml and 1394 for runtime-rebuild-trigger.yml.
+  baselines-scheduler.yml carried the identical defect and its last 8 scheduled runs were all failure.
+  The ticket's original causal claim (the runner selector was repointed after the workflow was authored)
+  is FALSIFIED by the chronology: the org routing variable was already ["ubuntu-latest"] at 2026-08-27T04:36:53Z,
+  the workflow merged 2026-08-28T02:27:16Z about 22 hours later, and its first run was already hosted
+  and already red. There was no regression; it shipped broken, merged green because its own CI never runs
+  it, and its red therefore carried zero information for its entire existence - so onex.dlq.omnibase-infra.quarantine.v1,
+  the ~8.88M-record sink that hid the OMN-16767 delegation outage, was never measured. Three compounding
+  causes are fixed together: (1) runs-on read the trusted-CI routing variable resolving to ubuntu-latest,
+  and the omnibase-ci label the old comment named would not have worked either because those runners are
+  containers with no host networking and no extra_hosts - the constraint is NETWORK NAMESPACE, not trust,
+  so runs-on is now the literal [self-hosted, omnibase-deploy]; (2) the KAFKA_BOOTSTRAP_SERVERS default
+  fired unconditionally because no secret of that name exists at repo scope (7 secrets, positive control
+  total_count == 7) or org scope (positive control - the same read did return the two SASL names), and
+  the ~/.omnibase/.env sourcing is a no-op on both runner classes; (3) OMN-18012 Phase B enabled SASL/SCRAM-SHA-256
+  on the .201 dev-lane external listener at ~2026-09-07T16:40Z and neither workflow injected the four
+  variables build_aiokafka_auth_kwargs_from_env reads, so a runner-only fix would have moved the failure
+  from Errno 111 to an auth failure. Both workflows now resolve address AND transport from omnimarket
+  config/ci_bus_lanes.yaml through load_lane_transport, which raises rather than returning a default;
+  the SCRAM principal arrives as step environment from the org secrets, by name, never argv. scripts/run_baselines_batch_compute.py
+  loses its own DEFAULT_BOOTSTRAP_SERVERS and gains build_confluent_auth_config_from_env. NO runner-routing
+  variable was touched at any of the six scopes (OMN-16682 single-owner; hosted routing is asserted intent
+  per config/runner_routing_policy.yaml expected_json, which is unmodified), no .201 lane, listener, credential
+  or DLQ topic was mutated, and rule 22 is respected - nothing rotated, re-issued, revoked or minted,
+  and no secret value read, printed or decoded.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3362 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3362 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the new PR-time workflow guard that pins the runner, the absent address, the fail-closed lane loader and the credentials-as-environment rule over BOTH workflows, plus the node suite the fail-closed ordering assertions move. Executed at cwd `${OMNI_HOME}/omnibase_infra`.
+    command: |-
+      uv run pytest tests/ci/test_dlq_and_baselines_lane_broker_omn17163.py tests/unit/nodes/node_dlq_depth_monitor_effect/ tests/unit/scripts/test_run_baselines_batch_compute.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3362"
+    description: >
+      PR #3362 on OmniNode-ai/omnibase_infra - the deploy-runner pin, the lane-declared broker and transport
+      on both scheduled probes, and the PR-time guard that keeps them there. Bound by hand (union-resolve)
+      because the autobind producer mints nothing today (OMN-18073).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3362 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3362/files --paginate --jq '.[].filename' | grep -cFx 'tests/ci/test_dlq_and_baselines_lane_broker_omn17163.py'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3362/files --paginate --jq '.[].filename' | grep -cFx '.github/workflows/baselines-scheduler.yml'
+  - id: "dod-deploy-assessment"
+    description: >
+      Deploy-scope DoD so PR #3362 clears the deploy-gate. The diff touches a node contract and two scheduled
+      workflows that speak to the deployed dev lane; nothing in it mutates the lane, and the change is
+      read-only on the monitor side by construction (the node's only broker surface is ProtocolDlqAdminTransport,
+      five methods, all reads, behind a group-less consumer that commits nothing).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3362/files --paginate --jq '.[].filename' | grep -ciE 'nodes/|\.github/workflows/|scripts/'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #3362 on OmniNode-ai/omnibase_infra - diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-3362"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/ci/test_dlq_and_baselines_lane_broker_omn17163.py tests/unit/nodes/node_dlq_depth_monitor_effect/ tests/unit/scripts/test_run_baselines_batch_compute.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-8798"
+    description: >-
+      OCC self-binding receipt for PR #8798, the in-repo evidence PR carrying this contract. Binds OMN-17163
+      to the OCC companion by pr_number so eligibility can resolve a PASS receipt for the evidence PR
+      itself. Hand-minted: the autobind producer mints nothing today (OMN-18073). It declares no binds_ac
+      because a pull-request-visibility probe proves no acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8798 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
