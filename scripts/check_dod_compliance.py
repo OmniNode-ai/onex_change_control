@@ -42,6 +42,9 @@ from pydantic import ValidationError
 
 from onex_change_control.integrations import contract_descriptor
 from onex_change_control.models import ModelTicketContract
+from onex_change_control.scripts.validate_yaml import (
+    withhold_unreleased_binds_ac,
+)
 
 _LEGACY_RECEIPT_CUTOFF: date = date(2026, 6, 1)
 """Two-receipt-location reconciliation hard cutoff (OMN-9791, Wave C / Task 11).
@@ -237,7 +240,13 @@ def _validate_contract_schema(
         return "FAIL", f"Contract is not a YAML mapping: {contract_path}"
 
     try:
-        ModelTicketContract.model_validate(data)
+        # OMN-18056: same forward-compatibility as the wired
+        # `Validate Contract YAML (OMN-8808)` gate -- a `binds_ac` binding is
+        # validated against the OCC-local item model and withheld from core's,
+        # for as long as the pinned core release predates dca2ee2c. See
+        # `withhold_unreleased_binds_ac`'s own comment for why, and for the
+        # condition that turns it back into a no-op.
+        ModelTicketContract.model_validate(withhold_unreleased_binds_ac(data))
     except ValidationError as e:
         errors = e.errors()
         if errors:

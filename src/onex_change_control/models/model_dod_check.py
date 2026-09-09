@@ -13,6 +13,7 @@ intentionally distinct. ModelDodEvidenceItem references ModelDodCheck.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from omnibase_core.models.ticket.model_emergency_bypass import (
@@ -21,11 +22,30 @@ from omnibase_core.models.ticket.model_emergency_bypass import (
 from omnibase_core.models.ticket.model_evidence_requirement import (
     ModelEvidenceRequirement as ModelEvidenceRequirement,  # re-export
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Security constraints to prevent DoS attacks
 _MAX_STRING_LENGTH = 10000
 _MAX_LIST_ITEMS = 1000
+
+# OMN-18056. The one label shape a ``binds_ac`` entry may take.
+#
+# The closer (omnibase_infra ``handler_evidence_autoclose_sweep``) canonicalises
+# BOTH sides of its join -- the ticket's criterion text and this field's entries
+# -- through a single ``_canonical_ac_label`` built on
+# ``^[\s>*_+-]*(?:\*\*)?\s*(AC|DOD)[-_ .]?(\d+)\b``. That regex tolerates
+# leading bullet/emphasis debris and trailing prose because the criterion side
+# is a free-text markdown bullet.
+#
+# A ``binds_ac`` entry is not a bullet: it is an author writing a label into a
+# machine-read field, so this side is the STRICT half of the same rule --
+# ``AC1``, ``ac-1``, ``DoD 2`` and nothing else. The asymmetry is deliberate and
+# runs in the safe direction: everything this accepts, the closer's regex also
+# canonicalises to the same value, so a contract that passes here cannot fail to
+# join. What it refuses is an entry like ``"AC1 -- the gate is wired"``, which
+# the closer WOULD read as ``AC1``; refusing it at authoring time turns a
+# silently-truncated binding into a named error instead.
+_AC_LABEL_ENTRY_RE = re.compile(r"^(AC|DOD)[-_ .]?(\d+)$", re.IGNORECASE)
 
 
 class ModelDodCheck(BaseModel):
@@ -117,6 +137,37 @@ class ModelDodEvidenceItem(BaseModel):
         default="generated",
         description="Where this DoD item originated",
     )
+    # OMN-18056. WHICH ACCEPTANCE CRITERIA THIS ITEM CLAIMS TO COVER.
+    #
+    # This model is what the WIRED OCC compliance gate validates every active
+    # dod_evidence item against: ci.yml's `contract-compliance-check` job ->
+    # scripts/ci/run_contract_compliance_check.py ->
+    # contract_compliance_check._validate_dod_item. It is `extra="forbid"`, so
+    # before this field existed a contract declaring a binding was rejected
+    # WHOLESALE as `INVALID_DOD_EVIDENCE_ITEM -- strict schema rejected
+    # field(s): binds_ac` and none of its checks ran. The corresponding core
+    # models (`ModelContractDodItem`, `ModelDodEvidenceItem`) carry the same
+    # field for the same reason; this one is OCC-local and is a THIRD gate
+    # audience, not a copy kept in sync by convention.
+    #
+    # OPTIONAL AND DEFAULTED, so every existing contract in the corpus parses
+    # unchanged. `extra="forbid"` stays -- forbidding what is not declared is
+    # the property that made the field necessary, not a defect to route around.
+    #
+    # HONEST LIMIT, stated rather than implied: this is the AUTHOR'S CLAIM.
+    # This model can check that an entry is a well-formed label; it cannot
+    # check that the item's checks prove the criterion that label names. What
+    # the field removes is the SILENT case -- a criterion nothing even claims
+    # to cover -- not authorial error.
+    binds_ac: tuple[str, ...] = Field(
+        default=(),
+        max_length=_MAX_LIST_ITEMS,
+        description=(
+            "Acceptance-criterion labels (`AC1`, `DoD2`) from the ticket body "
+            "that this evidence item claims to prove. Empty means it claims "
+            "none, which is a coverage gap rather than a pass."
+        ),
+    )
     linear_dod_text: str | None = Field(
         default=None,
         description="Original DoD text from Linear, if sourced from Linear",
@@ -143,6 +194,35 @@ class ModelDodEvidenceItem(BaseModel):
         description="Path to evidence artifact (e.g., test output, screenshot)",
         max_length=_MAX_STRING_LENGTH,
     )
+
+    @field_validator("binds_ac")
+    @classmethod
+    def _entries_are_acceptance_criterion_labels(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Reject a `binds_ac` entry that is not a well-formed criterion label.
+
+        An entry that does not parse as a label cannot join to anything: the
+        closer's canonicaliser returns `""` for it and the binding is silently
+        absent from the join, which reads downstream as "this criterion is
+        bound by nothing" -- indistinguishable from a contract that never
+        declared it. That is the exact silent case OMN-18056 exists to remove,
+        so a malformed entry fails the contract instead of degrading into one.
+
+        Entries are NOT normalised here. The value is preserved verbatim so the
+        contract keeps saying what its author wrote; canonicalisation stays in
+        the single `_canonical_ac_label` the closer applies to both sides of
+        the join, because a second normaliser is a second truth.
+        """
+        malformed = [entry for entry in value if not _AC_LABEL_ENTRY_RE.match(entry)]
+        if malformed:
+            rendered = ", ".join(repr(entry) for entry in malformed)
+            msg = (
+                f"binds_ac entries must be acceptance-criterion labels "
+                f"(`AC1`, `ac-1`, `DoD2`); rejected: {rendered}"
+            )
+            raise ValueError(msg)
+        return value
 
 
 __all__ = [
