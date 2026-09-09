@@ -77,29 +77,29 @@ summary: >
   for the rollout rather than a degraded-but- serving pair. AC6, AC7 and AC8 were added to the Linear
   ticket for the omnidash half before this contract bound to them; AC7 is a live-cluster readback that
   is not derivable from this diff and is deliberately NOT claimed by any evidence item here. UNION-RESOLVE
-  APPEND for OmniNode-ai/omninode_infra PR #1286, the runtime-sizing half, hand-bound for the same OMN-18073
-  reason. It begins by REFUSING its own brief: dispatched to find why every deploy-onex-staging apply
-  restarts every pod, readback says it does not, so nothing is changed to make that true. Read-only over
-  SSM on i-06169517a92b45f86, --comment onexdev-apply-restart-and-requests: 22 deploy runs on 2026-09-09
-  gave 11 fleet rollouts, and diffing consecutive ReplicaSet pod templates (derived pod-template-hash
-  stripped) names the changed field each time. 16:14:22Z to 17:20:42Z differs in ONE field, image sha256:402cf20c
-  to sha256:b5433155, all else byte-identical. 02:44:36Z to 05:57:00Z has a byte-identical image and differs
-  only in OMNIINTELLIGENCE_DB_URL gaining its secretKeyRef, and rolled FOUR Deployments (the ones binding
-  that key), not twelve - the selectivity proof. Negative controls: the push runs at 12:07:04Z and 15:11:37Z
-  both concluded success and created ZERO new ReplicaSets. The real driver is that ten of eleven rollouts
-  carried a genuinely different runtime digest, one per omnibase_infra dev merge over the OMN-15796 candidate-delivery
-  path; all ten digests are distinct, so this is delivery, not a pin/repin oscillation, and the twelve
-  roll together because they share one image. So this half changes SIZING, measured while both pods were
-  Ready and unstarved (node load 2.28 on eight cores): omninode-runtime 821/859/839/864m against 300m,
-  effects 596/890/648/662m against 100m. Requests go to 1000m and 800m; limits untouched. The 320m ceiling
-  in the prior rationale is stale, derived from the 4-vCPU node resized to t3a.2xlarge at 18:41:28Z by
-  another lane under its own grant. Startup budget 1800s to 3600s, progressDeadlineSeconds with it, because
-  effects booted SUCCESSFULLY in 1919s - PAST the budget meant to protect it. Readiness failureThreshold
-  3 to 6, matching the worker; timeoutSeconds and DEPLOY_TIMEOUT_SECONDS both stay, deliberately, for
-  reasons in the PR body. Render diff is 8 hunks over 8815 lines, on the two Deployments only. LAB GAP,
-  verified not assumed: kubectl kustomize k8s/onex-lab renders BYTE-IDENTICAL before and after, so no
-  lab pass covers this and none is claimed. AC9 and AC13 are live-cluster facts not derivable from this
-  diff and are deliberately NOT claimed by any evidence item here.
+  APPEND for OmniNode-ai/omninode_infra PR #1285, the node-sizing half of the same ticket, hand-bound
+  for the same OMN-18073 reason. #1282 and #1284 remove the surge REQUIREMENT from a rollout; #1285 removes
+  the CONDITION that made it unsatisfiable. The dev-system staging instance i-06169517a92b45f86 was resized
+  in place from t3a.xlarge (4 vCPU / 16 GiB) to t3a.2xlarge (8 vCPU / 32 GiB) on 2026-09-09 under the
+  operator consent row at omni_home docs/tracking/ROLLING_WORK_LEDGER.md:5463, and #1285 changes only
+  the declaration so terraform stops disagreeing with the live instance. AC2 is bound on LIVE READBACK,
+  not on the diff: over SSM with --comment staging-resize-8cpu, allocatable CPU 4000m -> 8000m and memory
+  16212040Ki -> 32572104Ki with requests UNCHANGED at 3880m, so utilisation moved 97% -> 48% and free
+  headroom 120m -> 4120m against the 100m one omniweb replica requests. A correction is recorded rather
+  than glossed: #1285's first commit claimed a terraform apply would trip aws_autoscaling_group.k3s_system's
+  instance_refresh and REPLACE the node; the PR's own plan disproves it - it updates aws_launch_template.k3s_system
+  in place, never lists the ASG, and reports 0 to destroy - because launch_template.version is the literal
+  $Latest, so the ASG resource is unchanged and the refresh has no trigger. What survives: an apply only
+  writes a new launch template version effective on the NEXT launch, so no apply could have resized the
+  running instance; suspending the ASG's processes before the stop WAS mandatory, since min=max=desired=1
+  with an EC2 health check would have read the stopped instance as unhealthy and replaced it; and the
+  node is stateful, carrying the k3s control plane and local-path PersistentVolumes for postgres, valkey,
+  qdrant and Keycloak, so any real replacement destroys data. Recorded but NOT fixed here: the launch
+  template's $Latest still declares t3a.large, so a replacement today would still return the cluster at
+  half size until aws/cluster-dev is applied. AC1, AC3, AC4, AC5, AC6, AC7 and AC8 are NOT claimed by
+  any #1285 evidence item. UNION-RESOLVE APPEND for omninode_infra #1286: its brief's premise is REFUTED
+  on readback - an unchanged apply is already a no-op. Requests 300m to 1000m and 100m to 800m; startup
+  budget 1800s to 3600s. This field is at its cap; the account is in the #1286 evidence items.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -120,6 +120,14 @@ evidence_requirements:
       Behavior proof for PR #1284 on OmniNode-ai/omninode_infra, the omnidash half, derived from the PR's own diff: manifest env hygiene and the orphan-Deployment detector over the rendered overlay, the two omnidash-owning suites, the onex-lab overlay parity gate, and the overlay regression guard. Executed at cwd `${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-omnidash`.
     command: |-
       uv run pytest tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omnidash_runtime_edge_image.py tests/k8s/test_omnidash_rds_tls.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py tests/k8s/test_omn_16350_migration_gate_and_overlay_regression_guard.py tests/k8s/test_omn_17250_public_rollout_stale_condition.py tests/k8s/test_deploy_onex_staging_rollout_wait_writer_roster.py -q
+  - kind: "ci"
+    description: "PR #1285 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1285 on OmniNode-ai/omninode_infra, the node-sizing half, derived from the PR's own diff. The diff is one terraform variable declaration in aws/cluster-dev, so the proof that fits it is the terraform toolchain over that root rather than a pytest selection: formatting and configuration validity. Executed at cwd `${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-resize/aws/cluster-dev`. The stronger proof is the repository's own `plan (cluster-dev)` PR check, which renders the real plan against live state and passed on both commits of this PR.
+    command: |-
+      terraform fmt -check -recursive . && terraform init -backend=false -input=false && terraform validate
 emergency_bypass:
   enabled: false
   justification: ""
@@ -210,6 +218,63 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_omnidash_runtime_edge_image.py tests/k8s/test_omnidash_rds_tls.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py tests/k8s/test_omn_16350_migration_gate_and_overlay_regression_guard.py tests/k8s/test_omn_17250_public_rollout_stale_condition.py tests/k8s/test_deploy_onex_staging_rollout_wait_writer_roster.py -q
         cwd: "${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-omnidash"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1285"
+    description: >
+      PR #1285 on OmniNode-ai/omninode_infra - the node-sizing half. Changes one declaration, aws/cluster-dev/variables.tf
+      instance_type_system, from t3a.large to t3a.2xlarge so the terraform root stops disagreeing with
+      the live dev-system staging instance i-06169517a92b45f86, which was resized in place from t3a.xlarge
+      to t3a.2xlarge on 2026-09-09 under the operator consent row at omni_home docs/tracking/ROLLING_WORK_LEDGER.md:5463.
+      Binds AC2 on the live readback, not on the diff: allocatable CPU 4000m -> 8000m with requests unchanged
+      at 3880m, so free request headroom moved 120m -> 4120m against the 100m one omniweb replica requests.
+      The PR runs no terraform apply.
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1285 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1285/files --paginate --jq '.[].filename' | grep -cFx 'aws/cluster-dev/variables.tf'
+  - id: "dod-deploy-assessment-pr-1285"
+    description: >
+      Deploy-scope DoD so PR #1285 clears the deploy-gate. The diff touches exactly one file, aws/cluster-dev/variables.tf,
+      and no kubernetes manifest, no overlay and no workload. It mutates nothing by merging: a terraform
+      declaration takes effect only when someone applies the root, and this PR runs no apply. The live
+      instance was already resized out of band under operator consent before this PR opened, so merging
+      changes no running system. Stated rather than implied, because it is the residual: applying aws/cluster-dev
+      is NOT a no-op - its plan reports 3 to add and 11 to change across MSK, RDS, SNS and SSM - so the
+      apply remains a separate decision that this PR neither takes nor authorises.
+    source: "generated"
+    binds_ac: []
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api repos/OmniNode-ai/omninode_infra/pulls/1285/files --paginate --jq '.[].filename')" \
+            && printf '%s\n' "$body" | grep -qxF 'aws/cluster-dev/variables.tf' \
+            && ! printf '%s\n' "$body" | grep -qE '^k8s/'
+  - id: "dod-occ-diff-derived-behavior-proof-pr-1285"
+    description: "PR #1285 on OmniNode-ai/omninode_infra - diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1285"
+    binds_ac: []
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          terraform fmt -check -recursive . && terraform init -backend=false -input=false && terraform validate
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-resize/aws/cluster-dev"
+  - id: "occ-self-bind-pr-8827"
+    description: >-
+      OCC self-binding receipt for PR #8827, the in-repo evidence PR carrying the union-resolve APPEND
+      that binds OMN-18085 to omninode_infra#1285. Binds by pr_number so eligibility can resolve a PASS
+      receipt for the evidence PR itself. Hand-minted: the autobind producer mints nothing today (OMN-18073).
+      It declares no binds_ac because a pull-request-visibility probe proves no acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8827 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
   - id: "occ-self-bind-pr-8811"
     description: >-
       OCC self-binding receipt for PR #8811, the in-repo evidence PR carrying this contract. Binds OMN-18085

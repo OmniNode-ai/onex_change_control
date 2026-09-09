@@ -98,3 +98,90 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8798 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3367"
+    description: >
+      PR #3367 on OmniNode-ai/omnibase_infra - the FOURTH defect on this ticket, invisible until the first
+      three were fixed: with the runner, the address and the transport all correct, the probe still never
+      opened a socket, because the omnimarket drift guard (OMN-14060) refused the `onex skill` dispatch
+      before any broker contact. The deploy runner sets OMNI_HOME to its private clone tree, which contains
+      omnimarket, so the guard becomes determinable and fires on a dispatch it has no bearing on. The
+      diff is one workflow env entry plus its rationale comments; it touches no runs-on, no address, no
+      transport and no source. Bound by hand (union-resolve) because the autobind producer mints nothing
+      today (OMN-18073), the same reason OCC#8798 was hand-minted for #3362 on this ticket earlier today.
+      Declares no binds_ac: a pull-request-visibility probe proves no acceptance criterion.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3367 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3367/files --paginate --jq '.[].filename' | grep -cFx '.github/workflows/dlq-depth-monitor.yml'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3367/files --paginate --jq '.[] | select(.filename==".github/workflows/dlq-depth-monitor.yml") | .patch' | grep -cE '^\+\s*ONEX_ALLOW_OMNIMARKET_DRIFT:\s*"1"'
+  - id: "dod-omn17163-monitor-reaches-the-broker-pr-3367"
+    description: >
+      AC1 and AC2 on this ticket's own body: the monitor completes and emits a real per-topic histogram
+      (AC1), and it is red only when a sink exceeds its contract-pinned bound so red carries information
+      again (AC2). Both are proven by a matched pair of runs at PR #3367's head 1eef12c79886a3a34070dad80411890d5f170fe1,
+      each read live in this lane. Run 34387859397 (suppress_alert_exit=true) concluded SUCCESS with zero
+      KafkaConnectionError, topics_matched 67, topics_observed 67, topics_alerting 3, total_arrivals_in_window
+      250517, total_retained_depth 3280496, exit_code 0, and tee'd dlq-monitor-result.json - AC1. Run
+      34387621476 on the identical head and identical data concluded FAILURE with alert_triggered true
+      on three sinks over their bound - AC2, the designed red. The zero-vacuity control is the workflow's
+      own history: an all-time status=success query returns total_count 1 for this workflow and that single
+      success IS 34387859397 at this head, while the same filter returns 1397 for runtime-rebuild-trigger.yml,
+      so the one is real and the filter works. HONEST LIMIT, stated rather than implied: both runs are
+      workflow_dispatch, not schedule. AC1 names a SCHEDULED run, and that half is only obtainable after
+      this workflow file is on dev - the post-merge scheduled run is reported on the ticket. The substance
+      AC1 asks for (a completed run, a real histogram, no KafkaConnectionError) is proven here; the trigger
+      type is not.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/omnibase_infra/actions/runs/34387859397/attempts/1/jobs --jq '[.jobs[] | select(.run_attempt == 1) | .conclusion] | join(",")')" = "success"
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/omnibase_infra/actions/runs/34387621476/attempts/1/jobs --jq '[.jobs[] | select(.run_attempt == 1) | .conclusion] | join(",")')" = "failure"
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/actions/workflows/dlq-depth-monitor.yml/runs?status=success&per_page=100' --jq '.workflow_runs[].head_sha' | grep -cFx '1eef12c79886a3a34070dad80411890d5f170fe1'
+  - id: "dod-omn17163-lane-broker-guard-holds-pr-3367"
+    description: >
+      AC3 on this ticket's own body - the workflow no longer silently depends on a repo variable that
+      can be repointed without failing it closed. AC3 is a STANDING PROPERTY of the workflow file, first
+      established by #3362; this item re-proves it at #3367's head, which is the only head that matters
+      because #3367 edits that same file. The proof is the PR-time guard #3362 landed, tests/ci/test_dlq_and_baselines_lane_broker_omn17163.py,
+      run file-scoped in this lane at 1eef12c79886a3a34070dad80411890d5f170fe1: 21 passed. #3367 itself
+      adds no test - its diff is one workflow file - so this is the applicable existing guard rather than
+      a new one, and saying so is the honest description of what ran. The zero is not vacuous and the
+      RED control was TAKEN, not asserted: the same file, unmodified, run against the pre-#3362 workflow
+      and publisher sources read from 1e5145885f8b5d28b6e266f8b4c958c92ab96be8, gives 17 failed / 4 passed
+      - including every runs-on pin, every host-local-literal assertion, the fail-closed lane loader and
+      the credentials-as-environment rule. The test carries its own live positive control on chain-canary.yml,
+      the reference implementation, so a predicate that is merely too strict fails loudly instead of passing
+      vacuously.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/ci/test_dlq_and_baselines_lane_broker_omn17163.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-8822"
+    description: >-
+      OCC self-binding receipt for PR #8822, the in-repo evidence PR carrying these #3367 items. Binds
+      OMN-17163 to this second companion by pr_number so eligibility can resolve a PASS receipt for the
+      evidence PR itself. Hand-minted: the autobind producer mints nothing today (OMN-18073). It declares
+      no binds_ac because a pull-request-visibility probe proves no acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8822 --repo OmniNode-ai/onex_change_control --json number,state,headRefName

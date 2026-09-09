@@ -1,0 +1,46 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17163"
+evidence_item_id: "dod-omn17163-monitor-reaches-the-broker-pr-3367"
+check_type: "command"
+check_value: |-
+  test "$(gh api repos/OmniNode-ai/omnibase_infra/actions/runs/34387859397/attempts/1/jobs --jq '[.jobs[] | select(.run_attempt == 1) | .conclusion] | join(",")')" = "success"
+contract_sha256: "sha256:941a5afc45c73dcb051198545d8f2e4cf6f53d49a4b75bd5fd6a082138dedb4c"
+contract_entry_sha256: "sha256:f4f26b4febd61ee85b0fffd70598b45597e400ed8d003211aa119c00f1b1cbae"
+status: PASS
+run_timestamp: "2026-09-09T18:58:16+00:00"
+commit_sha: "1eef12c79886a3a34070dad80411890d5f170fe1"
+runner: "omn17163-3367-companion"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omnibase_infra/actions/runs/34387859397/attempts/1/jobs --jq '.jobs[] | [.name,.conclusion,(.run_attempt|tostring),.runner_name,(.labels|join(","))]|join("  |  ")'
+probe_stdout: |
+  DLQ Depth Monitor (read-only)  |  success  |  1  |  omninode-deploy-runner  |  self-hosted,omnibase-deploy
+actual_output: |-
+  PASS -- AC1's substance. Attempt 1 of run 34387859397, at PR #3367's head
+  1eef12c79886a3a34070dad80411890d5f170fe1, concluded success on omninode-deploy-runner. This is the
+  first time in this workflow's existence that the probe reached the broker.
+
+  The measurement itself was read out of the job log in this lane, not transcribed from a prior comment.
+  The node emitted exit_code 0 with topics_matched 67, topics_observed 67, topics_alerting 3,
+  total_arrivals_in_window 250517, total_retained_depth 3280496, alert_triggered true, window_seconds
+  1800, and the step tee'd dlq-monitor-result.json. A grep of the same log for 'KafkaConnectionError'
+  returns 0 -- which is the exact falsifier AC1 names, so its absence was checked rather than assumed.
+
+  Three alerting sinks, from the emitted histogram:
+    onex.dlq.omnibase-infra.events.v1       retained 2308145  arrivals 250382  8346.07/min
+    onex.dlq.omnibase-infra.quarantine.v1   retained  970546  arrivals     65     2.17/min
+    onex.dlq.omnibase-infra.commands.v1     retained    1535  arrivals     70     2.33/min
+
+  The assertion is ATTEMPT-ANCHORED (/attempts/1/jobs plus a .run_attempt == 1 selector), not a bare
+  .conclusion read on the run. The OMN-9350 fail-open lint blocked the first draft of this contract for
+  exactly that mutable-state pin -- a re-run rewrites a conclusion in place -- and it was right. The gate
+  fired before the push and the check_value was rewritten, rather than the finding being argued with.
+
+  HONEST LIMIT, stated rather than implied: this run is workflow_dispatch, not schedule. AC1 names a
+  SCHEDULED run. The substance AC1 asks for -- a completed run, a real per-topic histogram, no
+  KafkaConnectionError -- is proven here; the trigger type is not, and cannot be until the workflow file
+  is on dev. The post-merge scheduled run is reported on the ticket.
+exit_code: 0
+pr_number: 3367
+branch: "jonah/omn-17163-occ-companion-3367"
