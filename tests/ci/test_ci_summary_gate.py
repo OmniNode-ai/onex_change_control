@@ -1382,3 +1382,70 @@ def test_drop_superseded_skips_leaves_unrelated_names_untouched() -> None:
         },
     ]
     assert drop_superseded_skips(rows) == rows
+
+
+# --------------------------------------------------------------------------- #
+# OMN-18062 follow-up -- the head SHA partitions supersession.
+#
+# The original fix keyed `drop_superseded_skips` on the context NAME alone. A
+# `success` recorded on head A would then clear a `skipped` recorded on head B,
+# re-opening the skip-as-pass vector (OMN-15057 / OMN-14854) on the head
+# actually being gated. That is unreachable through the sanctioned caller --
+# it fetches `commits/{sha}/check-runs` for ONE head -- but the safety rested
+# on convention. These tests make it a property of the function.
+# --------------------------------------------------------------------------- #
+
+_HEAD_A = "a" * 40
+_HEAD_B = "b" * 40
+
+
+def _on_head(row: dict[str, object], head_sha: str) -> dict[str, object]:
+    """Stamp a check-run fixture row with the head SHA it is a verdict about.
+
+    Kept separate from the shared row builders so every test predating this
+    guard keeps producing rows with no `head_sha` key -- the payload shape the
+    partition must stay backward-compatible with.
+    """
+
+    return {**row, "head_sha": head_sha}
+
+
+def _incident_rows_on_heads(
+    first_head: str, second_head: str
+) -> list[dict[str, object]]:
+    """The incident fixture, with the two rows placed on named head SHAs."""
+
+    rows = [_on_head(r, first_head) for r in _incident_rows("skipped")]
+    rows[-1] = _on_head(rows[-1], second_head)
+    return rows
+
+
+def test_skip_on_a_different_head_is_not_superseded() -> None:
+    """RED: success@headA + skipped@headB must FAIL, not resolve to success."""
+
+    rows = _incident_rows_on_heads(_HEAD_A, _HEAD_B)
+    assert len(drop_superseded_skips(rows)) == len(rows)
+    assert latest_check_run_by_name(rows)[_VICTIM].conclusion == "skipped"
+    failures, _unresolved = evaluate_external_contexts(rows, EXPECTED_EXTERNAL_CONTEXTS)
+    assert _VICTIM in failures
+
+
+def test_same_head_supersession_still_works_with_head_shas_present() -> None:
+    """POSITIVE CONTROL: the partition does not break the fix it guards."""
+
+    rows = _incident_rows_on_heads(_HEAD_A, _HEAD_A)
+    assert latest_check_run_by_name(rows)[_VICTIM].conclusion == "success"
+    failures, unresolved = evaluate_external_contexts(rows, EXPECTED_EXTERNAL_CONTEXTS)
+    assert failures == []
+    assert unresolved == []
+
+
+def test_rows_without_a_head_sha_still_supersede() -> None:
+    """POSITIVE CONTROL: rows carrying no `head_sha` share one partition, so a
+    payload without head SHAs behaves exactly as it did before this guard."""
+
+    rows: list[dict[str, object]] = [
+        {"name": "x", "status": "completed", "conclusion": "success"},
+        {"name": "x", "status": "completed", "conclusion": "skipped"},
+    ]
+    assert [r["conclusion"] for r in drop_superseded_skips(rows)] == ["success"]
