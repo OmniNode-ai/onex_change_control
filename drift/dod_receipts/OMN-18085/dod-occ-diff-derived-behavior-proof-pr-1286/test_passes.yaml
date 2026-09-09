@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18085"
+evidence_item_id: "dod-occ-diff-derived-behavior-proof-pr-1286"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/k8s/test_runtime_startup_probe_and_cpu_omn17372.py tests/k8s/test_runtime_readiness_gate.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_gateway_attach_runtime_config.py tests/k8s/test_omn18067_runtime_plane_store_sourced_bindings.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py -q
+contract_sha256: "sha256:43dfbdef0ba8156234874aabc3300ad97c08cac4731f81ada59d5e9f5937723c"
+contract_entry_sha256: "sha256:6e4c3030d21de7944f569bc44272da7faa581f44e1b556f3e25c658d525d11c1"
+status: PASS
+run_timestamp: "2026-09-09T19:29:11+00:00"
+commit_sha: "a45c06873f9f15fb98c015d8e369ba7ea97d68ed"
+runner: "onexdev-apply-restart-and-requests"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omninode_infra/commits/a45c06873f9f15fb98c015d8e369ba7ea97d68ed --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-apply-restart" \
+        && uv run pytest tests/k8s/test_runtime_startup_probe_and_cpu_omn17372.py tests/k8s/test_runtime_readiness_gate.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_gateway_attach_runtime_config.py tests/k8s/test_omn18067_runtime_plane_store_sourced_bindings.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py -q -p no:cacheprovider)
+probe_stdout: |
+  a45c06873f9f15fb98c015d8e369ba7ea97d68ed
+  ........................................................................ [ 86%]
+  ...........                                                              [100%]
+  83 passed in 8.00s
+actual_output: |-
+  PASS: the pushed commit resolves on OmniNode-ai/omninode_infra and 83 tests pass at it.
+
+  The behavior this diff changes is what the overlay RENDERS, so the proof is a rendered-manifest
+  control taken in this lane rather than asserted, using kubectl kustomize k8s/onex-dev-overlay-dev
+  locally with no cluster contact.
+
+  RED control, rendered from origin/dev (the pre-change tree):
+    omninode-runtime          requests.cpu=300m  startup=10x180=1800s  progressDeadline=1800s  readiness.failureThreshold=3
+    omninode-runtime-effects  requests.cpu=100m  startup=10x180=1800s  progressDeadline=1800s  readiness.failureThreshold=3
+
+  GREEN, rendered from the pushed commit:
+    omninode-runtime          requests.cpu=1000m startup=10x360=3600s  progressDeadline=3600s  readiness.failureThreshold=6
+    omninode-runtime-effects  requests.cpu=800m  startup=10x360=3600s  progressDeadline=3600s  readiness.failureThreshold=6
+
+  limits.cpu is 1000m on both sides -- unchanged, deliberately, for the reason OMN-17372 records.
+
+  The zero is not vacuous: the two renders differ, and the diff between them is exactly EIGHT hunks
+  (counted with `diff -u | grep -c '^@@'`, not eyeballed) over an 8815-line render, containing only
+  progressDeadlineSeconds, readinessProbe.failureThreshold, requests.cpu and
+  startupProbe.failureThreshold, twice each. Nothing else moved -- no image, no replicas, no env,
+  and no generated-ConfigMap name-suffix hash.
+
+  WHY THESE VALUES. Measured on the live pods while both were Ready and unstarved, node load average
+  2.28 on eight cores, omninode-runtime Ready since 18:58:10Z and effects since 18:52:24Z -- these
+  are steady state, not startup spikes:
+
+    omninode-runtime          821m / 859m / 839m / 864m against a 300m request (peak 916m on ticket)
+    omninode-runtime-effects  596m / 890m / 648m / 662m against a 100m request (peak 692m on ticket)
+
+  The startup budget moves because a boot that SUCCEEDED exceeded it: omninode-runtime-effects took
+  1919s on 2026-09-09 (17:20:19Z -> 17:52:18Z) against a budget of 1800s.
+
+  THE GATE ITSELF IS RE-BASELINED, deliberately rather than relaxed, and it GAINS two assertions it
+  did not have, both RED on the parent:
+
+    test_effects_runtime_cpu_request_matches_measured_demand      (parent renders 100m)
+    test_startup_budget_covers_the_worst_boot_that_ever_completed (parent budget 1800s < 1919s)
+
+  The second exists because the pre-existing test_startup_budget_equals_the_rollout_budget only
+  checks that the startup and rollout budgets AGREE with each other; it cannot notice that both are
+  too small. The ceiling in test_cpu_requests_fit_the_node_headroom moves 320m -> 3720m for a stated
+  reason: it was pinned to a 4-vCPU node that has since been resized to 8 vCPU by another lane under
+  its own operator-approved grant.
+
+  WHAT THIS PROVES, AND WHAT IT DOES NOT. It proves AC10 (the rendered requests are 1000m and 800m,
+  limits unchanged) and AC11 (the startup budget on both profiles exceeds the 1919s boot, and
+  periodSeconds x failureThreshold still equals progressDeadlineSeconds on every runtime profile). It
+  proves AC12 only in its diff-derivable half -- that the rendered request sum fits the node budget
+  RECORDED in the gate, 3720m of fundable headroom after reserving 400m for the five surge-capable
+  Deployments. It does NOT prove that budget was read live; that readback (8000m allocatable, 3880m
+  requested, each Deployment's strategy) is recorded on the Linear ticket.
+
+  NOT claimed here, and deliberately so: AC9 -- that an apply with no pod-template change is already
+  a no-op -- is a live ReplicaSet-history finding on i-06169517a92b45f86 and is not derivable from
+  this diff. Neither is AC13, the post-merge restart readback. No evidence item in this contract
+  binds either.
+exit_code: 0
+pr_number: 1286
+branch: "jonah/omn-18085-runtime-requests-startup-budget"
