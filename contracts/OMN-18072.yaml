@@ -1,0 +1,80 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18072"
+title: "Derive the deploy agent's runtime image-build ceiling from the build model, and fire the Runtime
+  Rebuild Trigger on lane-state changes"
+summary: >
+  OCC companion for OmniNode-ai/omnibase_infra PR #3357. Bound by hand (union-resolve) because autobind
+  mints nothing while its own fix is landing, the same posture OCC#8760 took. The predecessor ticket derived
+  the runtime COMPOSE-UP ceiling from the compose model and deliberately kept PHASE_TIMEOUTS[Phase.RUNTIME]
+  = 300 bounding the runtime IMAGE BUILD, the pinned-digest pull and the migration preflight. MEASURED
+  on the dev lane 2026-09-09 from the deploy agent's own job history (state dir /data/omninode/deploy-agent/state/jobs-dev,
+  journal deploy-agent-dev): command 6c323639 built in <= 233.9s and SUCCEEDED (build start 01:44:30.717Z,
+  first core container Created 01:48:24.652Z); commands 79171e79 and 2788af33 were both killed in `docker
+  compose --profile runtime build` at exactly 300.0s and 300.3s, the second with a WARM BuildKit cache,
+  so the cache is not the variable -- a BUILD_SOURCE=workspace build over three staged sibling repos runs
+  close enough to the constant that ordinary host load decides whether a sanctioned rebuild lives or dies,
+  blocking rule 24's lab-first process generally. Two of the three observations are RIGHT-CENSORED at
+  300s (killed, not measured) and the job-state JSON records no per-phase duration, so a percentile over
+  the recorded history is not derivable from it; the ceiling is instead read from the build MODEL the
+  way compose_budget reads the compose model: max(floor, build_steps * per_step + buildable_services *
+  per_image), which on the dev lane derives 1080s = 60 work steps of Dockerfile.runtime x 15s/step (one
+  shared BuildKit solve -- all nine images carry the byte-identical config creation timestamp 2026-09-09T05:09:08.891295047-04:00)
+  + 9 buildable services x 20s/image (export), floor 600s, logged verbatim at deploy time. The pull, the
+  image inspects and the migration one-shots are not builds and keep their own flat bound. A breach now
+  raises a NAMED verdict carrying its own derivation and stating the lane was not mutated, since the build
+  precedes every compose up and leaves no residue to recover. Second gap, same class: the Runtime Rebuild
+  Trigger reported "no runtime path changes detected" for omnibase_infra#3352 (run 34330947198), which
+  changed scripts/run-forward-migrations.sh and the docker/migrations corpus; a named lane-state path
+  list is now unioned with the canonical deploy-gate classifier's result in this repo rather than widening
+  that list in omniclaude, where it also gates every PR in four repos. No credential was rotated, re-issued,
+  revoked or minted, no secret value was read, printed or decoded, and no runtime lane was mutated by
+  this work (rule 22, rule 24).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3357 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3357 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the new build-budget derivation module and its executor wiring, the predecessor compose-up ceiling and terminal-verdict guards the change must leave untouched, and the widened Runtime Rebuild Trigger matcher. Executed at cwd `${OMNI_HOME}/omnibase_infra`.
+    command: |-
+      (cd scripts/deploy-agent && uv run pytest tests/unit/test_build_budget_omn18072.py tests/unit/test_executor_build_ceiling_omn18072.py tests/unit/test_compose_budget_omn18057.py tests/unit/test_executor_runtime_timeout_recovery_omn18057.py tests/unit/test_terminal_verdict_omn18057.py -q) && uv run pytest tests/scripts/test_trigger_lane_state_paths_omn18072.py tests/scripts/test_trigger_redeploy_start.py -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3357"
+    description: >
+      PR #3357 on OmniNode-ai/omnibase_infra — the model-derived runtime image-build ceiling and the widened
+      rebuild-trigger matcher. Bound by hand (union-resolve) because autobind mints no companion while
+      its own fix is landing.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3357 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3357/files --paginate --jq '.[].filename' | grep -cFx 'scripts/deploy-agent/deploy_agent/build_budget.py'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #3357 on OmniNode-ai/omnibase_infra — diff-derived behavior proof."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-3357"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          (cd scripts/deploy-agent && uv run pytest tests/unit/test_build_budget_omn18072.py tests/unit/test_executor_build_ceiling_omn18072.py tests/unit/test_compose_budget_omn18057.py tests/unit/test_executor_runtime_timeout_recovery_omn18057.py tests/unit/test_terminal_verdict_omn18057.py -q) && uv run pytest tests/scripts/test_trigger_lane_state_paths_omn18072.py tests/scripts/test_trigger_redeploy_start.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-8779"
+    description: >-
+      OCC self-binding receipt for PR #8779, the in-repo evidence PR carrying this contract. Binds OMN-18072
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8779 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
