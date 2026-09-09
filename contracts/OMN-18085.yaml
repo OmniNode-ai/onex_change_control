@@ -76,7 +76,30 @@ summary: >
   are deliberately left alone, because at one replica maxUnavailable 1 is a full outage of that workload
   for the rollout rather than a degraded-but- serving pair. AC6, AC7 and AC8 were added to the Linear
   ticket for the omnidash half before this contract bound to them; AC7 is a live-cluster readback that
-  is not derivable from this diff and is deliberately NOT claimed by any evidence item here.
+  is not derivable from this diff and is deliberately NOT claimed by any evidence item here. UNION-RESOLVE
+  APPEND for OmniNode-ai/omninode_infra PR #1286, the runtime-sizing half, hand-bound for the same OMN-18073
+  reason. It begins by REFUSING its own brief: dispatched to find why every deploy-onex-staging apply
+  restarts every pod, readback says it does not, so nothing is changed to make that true. Read-only over
+  SSM on i-06169517a92b45f86, --comment onexdev-apply-restart-and-requests: 22 deploy runs on 2026-09-09
+  gave 11 fleet rollouts, and diffing consecutive ReplicaSet pod templates (derived pod-template-hash
+  stripped) names the changed field each time. 16:14:22Z to 17:20:42Z differs in ONE field, image sha256:402cf20c
+  to sha256:b5433155, all else byte-identical. 02:44:36Z to 05:57:00Z has a byte-identical image and differs
+  only in OMNIINTELLIGENCE_DB_URL gaining its secretKeyRef, and rolled FOUR Deployments (the ones binding
+  that key), not twelve - the selectivity proof. Negative controls: the push runs at 12:07:04Z and 15:11:37Z
+  both concluded success and created ZERO new ReplicaSets. The real driver is that ten of eleven rollouts
+  carried a genuinely different runtime digest, one per omnibase_infra dev merge over the OMN-15796 candidate-delivery
+  path; all ten digests are distinct, so this is delivery, not a pin/repin oscillation, and the twelve
+  roll together because they share one image. So this half changes SIZING, measured while both pods were
+  Ready and unstarved (node load 2.28 on eight cores): omninode-runtime 821/859/839/864m against 300m,
+  effects 596/890/648/662m against 100m. Requests go to 1000m and 800m; limits untouched. The 320m ceiling
+  in the prior rationale is stale, derived from the 4-vCPU node resized to t3a.2xlarge at 18:41:28Z by
+  another lane under its own grant. Startup budget 1800s to 3600s, progressDeadlineSeconds with it, because
+  effects booted SUCCESSFULLY in 1919s - PAST the budget meant to protect it. Readiness failureThreshold
+  3 to 6, matching the worker; timeoutSeconds and DEPLOY_TIMEOUT_SECONDS both stay, deliberately, for
+  reasons in the PR body. Render diff is 8 hunks over 8815 lines, on the two Deployments only. LAB GAP,
+  verified not assumed: kubectl kustomize k8s/onex-lab renders BYTE-IDENTICAL before and after, so no
+  lab pass covers this and none is claimed. AC9 and AC13 are live-cluster facts not derivable from this
+  diff and are deliberately NOT claimed by any evidence item here.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -211,3 +234,60 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8816 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1286"
+    description: >
+      PR #1286 on OmniNode-ai/omninode_infra - the runtime-sizing half. Raises requests.cpu to 1000m on
+      omninode-runtime and 800m on omninode-runtime-effects in the dev overlay, widens the startup budget
+      1800s -> 3600s on both while holding the OMN-17372 periodSeconds x failureThreshold == progressDeadlineSeconds
+      invariant, and lifts readiness failureThreshold 3 -> 6 to match the worker profile. Carries the
+      steady-state measurement table, the enumerated 400m surge reserve (one surge pod each for the only
+      five Deployments in onex-dev that can surge at all, every strategy read live), and the refusal of
+      its own brief's premise. Bound by hand (union-resolve) because the autobind producer mints nothing
+      today (OMN-18073).
+    source: "generated"
+    binds_ac:
+      - "AC10"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1286 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1286/files --paginate --jq '.[].filename' | grep -cFx 'k8s/onex-dev-overlay-dev/patches/omninode-runtime-startup-readiness.yaml'
+  - id: "dod-deploy-assessment-pr-1286"
+    description: >
+      Deploy-scope DoD so PR #1286 clears the deploy-gate. The diff touches two kustomize overlay patches
+      that shape Deployments applied to the staging cluster, plus the guard test asserting the rendered
+      result. It mutates no cluster: the change is landed through the overlay only, per CLAUDE.md rule
+      13, and the diagnosis behind it was taken read-only over SSM with get, describe and top. Blast radius
+      is provably the staging cluster, since only deploy-onex-staging.yml applies k8s/onex-dev-overlay-dev
+      and deploy-onex-prod.yml applies k8s/onex-prod, which this diff does not touch.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1286/files --paginate --jq '.[].filename' | grep -ciE '^k8s/'
+  - id: "dod-occ-diff-derived-behavior-proof-pr-1286"
+    description: >
+      PR #1286 on OmniNode-ai/omninode_infra - diff-derived behavior proof (OMN-16434). The behavior this
+      diff changes is what the overlay RENDERS, so the proof is the re-baselined OMN-17372 gate, which
+      asserts the RENDERED overlay rather than the patch files, plus the adjacent suites reading the same
+      render. Two assertions in it are new and RED on the parent: the effects CPU request (parent 100m),
+      and that the startup budget exceeds the 1919s boot that completed on 2026-09-09 (parent budget 1800s).
+      The second exists because the pre-existing budget test only checks that the startup and rollout
+      budgets AGREE with each other and cannot notice that both are too small. What this proves and what
+      it does not is stated rather than implied: it proves the rendered requests and probe budgets are
+      the intended values and that the request sum fits the node budget RECORDED in the gate; it does
+      not prove that budget was read live, which is AC12's live half and is recorded on the Linear ticket.
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1286"
+    binds_ac:
+      - "AC10"
+      - "AC11"
+      - "AC12"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/k8s/test_runtime_startup_probe_and_cpu_omn17372.py tests/k8s/test_runtime_readiness_gate.py tests/k8s/test_manifest_env_hygiene.py tests/k8s/test_gateway_attach_runtime_config.py tests/k8s/test_omn18067_runtime_plane_store_sourced_bindings.py tests/k8s/test_omn_17693_orphan_deployment_detection.py tests/k8s/test_onex_lab_overlay_omn17533.py -q
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-18085/omninode_infra-apply-restart"
