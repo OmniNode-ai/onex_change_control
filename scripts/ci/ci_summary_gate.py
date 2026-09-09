@@ -534,6 +534,28 @@ def _is_skipped_row(raw: dict[str, object]) -> bool:
     )
 
 
+def _skip_partition_key(raw: dict[str, object]) -> tuple[str, str]:
+    """Partition key for skip supersession: ``(context name, head SHA)``.
+
+    The head SHA is load-bearing, not decoration. A ``skipped`` row is only a
+    re-trigger artifact when a non-skipped row exists for the same name ON THE
+    SAME HEAD; a non-skipped row on a DIFFERENT head is a verdict about a
+    different commit and must not clear it. Partitioning by name alone would
+    let a ``success`` recorded on an earlier head silently suppress a
+    ``skipped`` on the head actually being gated -- the exact
+    skip-as-pass vector (OMN-15057 / OMN-14854) the strict external bar
+    exists for, re-opened through the fix for OMN-18062.
+
+    Rows carrying no ``head_sha`` field all share the ``""`` partition, so a
+    payload without head SHAs behaves exactly as it did before this guard.
+    Unreachable through the sanctioned caller -- it fetches
+    ``commits/{sha}/check-runs`` for one head -- but the safety of that
+    rested on convention, and this makes it a property of the function.
+    """
+
+    return (str(raw.get("name") or ""), str(raw.get("head_sha") or ""))
+
+
 def drop_superseded_skips(
     check_runs: list[dict[str, object]],
 ) -> list[dict[str, object]]:
@@ -570,17 +592,20 @@ def drop_superseded_skips(
       head.
     * A still-running row is non-skipped, so a later skip can never suppress
       PENDING into a stale green.
+    * A skip on a DIFFERENT head SHA. Supersession is partitioned by
+      ``(name, head_sha)``, not by name alone -- see
+      :func:`_skip_partition_key`.
     """
 
-    named_non_skips = {
-        str(raw.get("name") or "")
+    non_skipped_keys = {
+        _skip_partition_key(raw)
         for raw in check_runs
         if str(raw.get("name") or "") and not _is_skipped_row(raw)
     }
     return [
         raw
         for raw in check_runs
-        if not (_is_skipped_row(raw) and str(raw.get("name") or "") in named_non_skips)
+        if not (_is_skipped_row(raw) and _skip_partition_key(raw) in non_skipped_keys)
     ]
 
 
