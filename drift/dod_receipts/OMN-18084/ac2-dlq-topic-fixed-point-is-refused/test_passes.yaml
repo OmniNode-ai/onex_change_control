@@ -1,0 +1,43 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18084"
+evidence_item_id: "ac2-dlq-topic-fixed-point-is-refused"
+check_type: "test_passes"
+check_value: |-
+  uv run pytest tests/unit/event_bus/test_omn18084_dlq_topic_fixed_point_refused.py -q
+contract_sha256: "sha256:d007aaee4c32683e9aebf051ab0e83bd497906837cb0f33740208ff3e2b37e41"
+contract_entry_sha256: "sha256:ae9ad9cb926397b465115e240d532ca0f7ed0690d771e71ac7aaac4a1f72ddf3"
+status: PASS
+run_timestamp: "2026-09-09T17:53:09+00:00"
+commit_sha: "e13932a406b5bc5ef34fefc210896238ce9a1909"
+runner: "dlq-loop-fix"
+verifier: "occ-union-resolve-same-ticket-companion"
+probe_command: |-
+  gh api repos/OmniNode-ai/omnibase_infra/commits/e13932a406b5bc5ef34fefc210896238ce9a1909 --jq .sha \
+    && (cd "${OMNI_HOME}/omni_worktrees/OMN-18084/omnibase_infra" \
+        && uv run pytest tests/unit/event_bus/test_omn18084_dlq_topic_fixed_point_refused.py -q -p no:cacheprovider)
+probe_stdout: |
+  e13932a406b5bc5ef34fefc210896238ce9a1909
+  ............                                                             [100%]
+  12 passed in 0.11s
+actual_output: |-
+  PASS: 12 tests green at e13932a406b5bc5ef34fefc210896238ce9a1909.
+
+  At the parent commit a4393794 the parametrised refusal tests fail with DID NOT RAISE
+  DlqTopicFixedPointError on all four dead-letter sinks, because get_dlq_topic_for_original
+  returns its own input for every one of them. That is f(x) == x, and it is what put
+  original_topic equal to the source topic on all 2,000 sampled records.
+
+  Both directions are pinned. test_an_ordinary_topic_still_resolves is the positive control: a
+  refusal that refused everything would satisfy the four parametrised cases and break every real
+  caller. test_the_legacy_event_type_path_refuses_on_the_same_terms closes the one remaining
+  laundering route, derive_dlq_topic_for_event_type's no-event_type path, which delegates here.
+
+  The second class is the part that keeps the typed refusal SAFE. Two boundary helpers on this
+  seam are documented as never raising, and one of them raises to withhold an offset. A bare
+  refusal reaching either would convert a logged loss into a crash, or into an infinite
+  redelivery of a deterministically failing record. Both are asserted to pre-guard and return,
+  publishing nothing, rather than catching an exception after the fact. That is why AC2 is
+  "every production call site pre-guards" and not merely "the resolver raises".
+exit_code: 0
+pr_number: 3365
