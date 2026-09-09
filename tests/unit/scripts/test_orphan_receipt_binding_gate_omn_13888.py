@@ -40,6 +40,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _GATE_PATH = _REPO_ROOT / "scripts" / "validation" / "check_receipt_hardening.py"
 _BASELINE = _REPO_ROOT / ".onex_ratchets" / "omn_13888_orphan_receipt_baseline.yaml"
+_ORPHAN_RULE_INTRODUCING_COMMIT = "8ac57f3e8928691ee489ae628eb2aeb875b7895a"
 
 # The three live OMN-17530 orphans. They are recorded under ``open_repairs:``
 # rather than ``violations:`` in the baseline, so the gate still names them.
@@ -401,26 +402,26 @@ def test_no_baseline_entry_has_stopped_being_an_orphan(monkeypatch: Any) -> None
 def test_red_control_pre_change_gate_accepts_the_orphan(tmp_path: Path) -> None:
     """The control: the version of this gate at the merge base reports nothing.
 
-    Loads ``scripts/validation/check_receipt_hardening.py`` as it exists on
-    ``origin/dev`` and runs the SAME orphan fixture through it. If this ever
-    starts failing because the pre-change module already refuses the fixture,
-    the fixture stopped reproducing the defect and the rest of this module is
-    proving nothing.
+    Loads ``scripts/validation/check_receipt_hardening.py`` from the parent of
+    the commit that introduced ORPHAN_BINDING and runs the SAME orphan fixture
+    through it. PR merge-base is intentionally not used here: unrelated append
+    PRs based after OMN-13888 landed would otherwise compare against the fixed
+    validator and turn this red-control into a permanent repo-wide failure.
     """
-    merge_base = subprocess.run(
-        ["git", "merge-base", "HEAD", "origin/dev"],
+    pre_change = subprocess.run(
+        ["git", "rev-parse", f"{_ORPHAN_RULE_INTRODUCING_COMMIT}^"],
         cwd=_REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
-    if merge_base.returncode != 0:
-        pytest.skip("origin/dev is not available in this checkout")
+    if pre_change.returncode != 0:
+        pytest.skip("the pre-change ORPHAN_BINDING commit is not available")
     blob = subprocess.run(
         [
             "git",
             "show",
-            f"{merge_base.stdout.strip()}:scripts/validation/check_receipt_hardening.py",
+            f"{pre_change.stdout.strip()}:scripts/validation/check_receipt_hardening.py",
         ],
         cwd=_REPO_ROOT,
         capture_output=True,
