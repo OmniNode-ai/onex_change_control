@@ -1,0 +1,54 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17304"
+evidence_item_id: "dod-omn17304-ac3-config-authority-offline-golden"
+check_type: "command"
+check_value: |-
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=21aaec90c9d74a19d537abe701ccae77651d7f45' --jq '.content' | base64 -d | grep -cF 'config_bus='
+contract_sha256: "sha256:48fd5f2274b3db2bd82a38b222b2e0f44a078e32d1b7ec45b3ba414dcdcae961"
+contract_entry_sha256: "sha256:19529c97ca8f9206d4b02fe6ae4a978f7aed17fa39c01e9f14f6c38dd90f7530"
+status: PASS
+run_timestamp: "2026-09-09T20:22:07Z"
+commit_sha: "21aaec90c9d74a19d537abe701ccae77651d7f45"
+runner: "claude-local-worktree"
+verifier: "omn17304-bind-remaining"
+probe_command: |-
+  gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=21aaec90c9d74a19d537abe701ccae77651d7f45' --jq '.content' | base64 -d | grep -cF 'config_bus='
+probe_stdout: |
+  2
+actual_output: |-
+  PASS -- AC3, three re-executable checks, each run verbatim from the contract at
+  2026-09-09T20:19Z, each paired with a negative control at the pre-change parent
+  0cbda9bfe8f679fc6d2b6c34ba60b6408b2ae350.
+
+    check                                                     merge 21aaec90  parent 0cbda9bf
+    1. cli_delegate.py passes config_bus= to the shared seam        2               0
+    2. the golden class and its two methods are present             3               0
+    3. the probe-must-not-run guard is present                      1               0
+
+  A FOURTH CANDIDATE CHECK WAS REJECTED, recorded because a rejected check is evidence too: a grep
+  for the override-map assertion line on its own returns 3 at the merge sha and 2 at the parent. It
+  does not discriminate -- that assertion text already exists in the pre-change tree -- so it would
+  have been green with the product change reverted. It is not in the contract.
+
+  WHAT WAS READ. The golden class was read in full at the merge sha rather than trusted by name, and
+  it earns the word on the two counts AC3 actually asks for:
+    no broker  -- _probe_must_not_run rigs the broker probe to FAIL the test if any network
+                  resolution is attempted, so a regression reintroducing the probe ladder goes red
+                  instead of passing quietly on a machine that has no broker
+    identical  -- the second test pins the override map handed to the runtime at exactly one key
+                  naming the in-memory bus, so an ADDITION to that map fails even when the
+                  delegation still succeeds
+  The first test additionally pins the stdout contract (a single ModelSkillResult JSON line, exit 0)
+  and the in-memory degradation warning naming the local-SQLite consequence, so an offline run
+  cannot be silently mistaken for shared-substrate evidence.
+
+  LIVE BEHAVIOUR PROOF, receipt-backed for the same hosted-execution reason as the AC1 item.
+  At omnibase_infra origin/dev 0b2749b9a5d3bda2b53b5b164112e533d9bd364f, detached verify worktree:
+    uv run pytest tests/unit/cli/test_cli_delegate.py \
+      -k "TestExplicitOverrideProvenance or TestOfflineStandaloneGolden" -q
+    -> 6 passed, 70 deselected in 0.64s
+  Two of those six are the AC3 golden pair.
+exit_code: 0
+pr_number: 3123
+branch: "dev"
