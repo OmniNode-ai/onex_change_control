@@ -1,0 +1,139 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18080"
+title: "Dashboard logout does not end the Keycloak SSO session (next login refused as already signed in)"
+summary: >
+  OCC companion, bound by hand (union-resolve), for the four product PRs of OMN-18080: OmniNode-ai/omniweb
+  PR #365 (the app half), OmniNode-ai/omnibase_infra PR #3363 and OmniNode-ai/omninode_infra PR #1279
+  (the two byte-identical copies of the Keycloak client declaration, parity-gated), and OmniNode-ai/omnidash
+  PR #316 (a transposed post-logout host in that repo's own client declaration). Hand-minted for the same
+  reason OCC#8787 and OCC#8760 were: OMN-18073 records that autobind is not minting companions in this
+  window, so a product PR left without one has no receipt to cite and fails the Receipt Gate on the missing
+  citation rather than on anything wrong with the change. Cause of the ticket, reported by the operator
+  in-session on 2026-09-09: signing out of the dev customer surface did not work, and the next sign-in
+  attempt was refused by Keycloak as already signed in, which made signing in as a second synthetic tenant
+  impossible in the same browser. Root cause, established from source rather than inferred: omniweb's
+  whole sign-out was next-auth v5's LOCAL signOut with a redirect to the marketing home, which clears
+  the app's own session cookie and contacts the identity provider not at all, so the Keycloak SSO session
+  survived every sign-out and the next authorization request auto-resolved to the still-signed-in user.
+  The "already signed in" text is Keycloak's own; a case-insensitive grep for it over omniweb at origin/dev
+  returns zero hits. A second blocker sat underneath: the JWT callback persisted the access token, the
+  refresh token and the expiry but NOT the ID token, so the id_token_hint a silent end-session call needs
+  was retained nowhere. omniweb#365 adds a discovery-resolved end-session resolver (the endpoint is read
+  from the configured issuer's own well-known document, never hardcoded, because the dev pods point at
+  one realm host and the production-facing lane at another), persists the ID token through sign-in and
+  refresh, clears the local session FIRST and then hands the client an absolute end-session URL carrying
+  id_token_hint and post_logout_redirect_uri, and adds the registered /signed-out landing route together
+  with the proxy entry that keeps it reachable without a session. omnibase_infra#3363 and omninode_infra#1279
+  register that post-logout URI on the omniweb client in the committed reconciler input, applied by the
+  sanctioned seeding Job; NO live kcadm write was performed at any point. omnidash#316 corrects a host
+  transposition in that repo's own committed client declaration, where every host read dash.dev.omninode.ai
+  rather than the dev.dash.omninode.ai the repo actually serves; the runtime side there needed no change,
+  because keycloak-connect's logout middleware already sends both parameters when a session grant exists,
+  and the earlier anonymous probe that saw a bare end-session URL proves nothing about a real session.
+  AC4 is bound here and is proved RED-then-GREEN in-lane. AC1, AC2 and the live half of AC3 are NOT bound:
+  they require a browser session and a read-only realm session readback on the dev-system cluster after
+  these merge, and rule 24 applies -- the .201 compose lane runs no omniweb, no dashboard and no Keycloak,
+  so no lab pass can cover a browser OIDC round trip, and no lab proof is claimed. No credential was rotated,
+  re-issued, revoked or minted, no secret value was read or printed, no cluster object was mutated and
+  no realm was contacted (rule 22).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #365 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #365 on OmniNode-ai/omniweb, derived from the PR's own diff: the suite the
+      PR adds, which drives the shipped end-session resolver (discovery per lane, fail-closed discovery
+      including an endpoint off the issuer's origin, both required query parameters, the public-origin
+      rule) and reads the shipped wiring (the ID token persisted onto the JWT, the action calling the
+      resolver rather than the local signOut, and the signed-out route being publicly reachable).
+      Executed at cwd `${OMNI_HOME}/omni_worktrees/OMN-18080/omniweb`.
+    command: |-
+      pnpm test:federated-logout
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omniweb-pr-365"
+    description: >
+      PR #365 on OmniNode-ai/omniweb -- the app half: the discovery-resolved end-session resolver, the
+      persisted ID token, the sign-out action that clears the local session and then hands back the end-session
+      URL, and the registered /signed-out landing route. Bound by hand (union-resolve) because autobind
+      minted no companion for this ticket (OMN-18073).
+    source: "generated"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 365 --repo OmniNode-ai/omniweb --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniweb/pulls/365/files --paginate --jq '.[].filename' | grep -cFx 'lib/federated-logout.ts'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #365 on OmniNode-ai/omniweb -- diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    binds_ac:
+      - "AC4"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omniweb-pr-365"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          pnpm test:federated-logout
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-18080/omniweb"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3363"
+    description: >
+      PR #3363 on OmniNode-ai/omnibase_infra -- the CANONICAL copy of the Keycloak client declaration,
+      registering post.logout.redirect.uris on the omniweb client, plus the six-assertion desired-state
+      test that pins it. This copy lands first: the desired-clients.json parity gate compares the omninode_infra
+      copy byte-for-byte against this one at this repo's dev.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3363 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3363/files --paginate --jq '.[].filename' | grep -cFx 'docker/keycloak/desired-clients.json'
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1279"
+    description: >
+      PR #1279 on OmniNode-ai/omninode_infra -- the mirrored copy the seed-keycloak-clients Job actually
+      mounts as KC_CONFIG, carrying the same post.logout.redirect.uris registration and its own copy of
+      the desired-state test. Applied by the sanctioned seeding path on the next dev merge; no live kcadm
+      write is involved.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1279 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1279/files --paginate --jq '.[].filename' | grep -cFx 'k8s/onex-dev/jobs/desired-clients.json'
+  - id: "dod-OmniNode-ai-omnidash-pr-316"
+    description: >
+      PR #316 on OmniNode-ai/omnidash -- the transposed post-logout host in that repo's own committed
+      client declaration, corrected in all four places, with a test pinning that every post-logout origin
+      is one the client actually logs in from. No live realm write.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 316 --repo OmniNode-ai/omnidash --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/pulls/316/files --paginate --jq '.[].filename' | grep -cFx 'deploy/keycloak/omnidash-client.json'
+  - id: "occ-self-bind-pr-8803"
+    description: "Binds OMN-18080 to OCC companion PR #8803 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8803 --repo OmniNode-ai/onex_change_control --json number,state"
