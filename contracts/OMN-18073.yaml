@@ -1,0 +1,81 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18073"
+title: "Refuse un-decoded ANSI-C env values at the deploy-agent compose seam, and declare the OCC App
+  credentials as dev-lane resolver mappings"
+summary: >
+  OCC companion for OmniNode-ai/omnibase_infra PR #3358. Bound by hand (union-resolve) because autobind
+  mints nothing while the outage this ticket describes is itself the reason autobind cannot mint -- the
+  same posture OCC#8760 and OCC#8779 took. Every OCC autobind mint on the dev-lane runtime-effects container
+  failed from 2026-09-09T01:55:02Z with pyjwt InvalidKeyError. THE TICKET'S PREMISE WAS REFUTED FIRST:
+  the operator env store's ONEXBOT_OCC_PRIVATE_KEY line is NOT corrupt. It is byte-identical in the live
+  file and in all 11 surviving 0600 backups back to 2026-07-30 -- len 1709, sha256-12 be7cd00cebac, ANSI-C
+  $'...' form with all 27 backslash escapes intact. Nothing wrote to it. The corruption is entirely in
+  TRANSPORT. DEFECT 1, the outage cause: the deploy agent runs as a systemd user unit declaring EnvironmentFile=
+  on that same file (scripts/deploy-agent/deploy/deploy-agent-dev.service:128), and systemd's env-file
+  parser does not implement bash ANSI-C quoting -- it keeps the literal wrapper and drops every backslash
+  escape, so each escaped newline collapses to the bare letter n. executor._compose_env() returns dict(os.environ)
+  and compose interpolates the variable (docker-compose.infra.yml:242) into every container the agent
+  creates. deploy-runtime.sh lines 89-93 bash-source the SAME file and decode it correctly, which is why
+  only the agent path broke. MEASURED read-only on the lab host: the four dev-lane containers created
+  01:49:44Z carry len 1682 sha256-12 42567e18a35f with zero backslashes, byte-identical to the agent daemon's
+  own /proc environ (unit restarted 01:38:54Z, three minutes before the last good mint OCC#8745 at 01:41Z
+  and eleven before the recreate); the script-path container omnimarket-projection-api (23:17:39Z) and
+  all three stability-lane containers (05:08:49Z) carry len 1679 sha256-12 8332b7f9c1cc, a real multi-line
+  PEM. Arithmetic closes: 1709 - 27 dropped backslashes = 1682; 1682 - 3 retained wrapper characters =
+  1679. POSITIVE CONTROL with a synthetic non-secret RSA key of identical shape: in ANSI-C form bash source
+  yields sha256-12 ea92e1a9cc10 while systemd EnvironmentFile yields be8fc49e6147; re-encoded as a real
+  multi-line double-quoted entry both yield ea92e1a9cc10 and the systemd-delivered value parses under
+  cryptography load_pem_private_key. The guard REFUSES rather than repairs: once the backslashes are gone,
+  a newline's n is indistinguishable from an n in the base64 body, so any normalizer reconstructs a different
+  value and calls it the original. DEFECT 2, which made defect 1 invisible: neither ONEXBOT_OCC_APP_ID
+  nor ONEXBOT_OCC_PRIVATE_KEY was a mapped logical_name on a dev lane running enable_convention_fallback
+  false, so the resolver logged only a no_mapping warning and the call site's env_var_fallback handed
+  the mangled bytes straight to pyjwt. Both are now declared, on the OMN-16921 SLACK_BOT_TOKEN precedent.
+  POSITIVE CONTROL on that zero: SLACK_BOT_TOKEN is declared and never appears in a failure line, while
+  SLACK_CHANNEL_ID and GITHUB_TOKEN are undeclared and fail with the identical message in the identical
+  log stream. NEGATIVE FINDING WITH CONTROL, stated rather than hidden: zero of the lane's 11 mappings
+  are store-sourced (10 env, 1 file) and INFISICAL_CLIENT_ID and INFISICAL_PROJECT_ID are both the empty
+  string on this container, so store-sourced resolution is not reachable on this lane by configuration
+  alone today and declaring these two as store-sourced would have kept OCC down rather than restoring
+  it. No credential was rotated, re-issued, revoked or minted, no secret value was printed, echoed, logged,
+  diffed or decoded to any output at any point, and no runtime lane was mutated or rebuilt by this work
+  (rule 22, rule 24).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3358 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #3358 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the new deploy-agent ANSI-C refusal guard on the compose env seam, the two newly declared OCC App credential mappings in the runtime policy contract, and the lane-rollback overlay test the same change touches. Executed at cwd `${OMNI_HOME}/omnibase_infra`.
+    command: |-
+      uv run pytest tests/unit/runtime/test_occ_app_credentials_declared_omn18073.py tests/scripts/test_lane_rollback_overlay_omn16729.py -q && (cd scripts/deploy-agent && uv run pytest tests/unit/test_executor_ansi_c_env_guard_omn18073.py -q)
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3358"
+    description: >
+      PR #3358 on OmniNode-ai/omnibase_infra -- the deploy-agent ANSI-C refusal guard and the two declared
+      OCC App credential resolver mappings. Bound by hand (union-resolve) because autobind mints no companion
+      while this very outage is open.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3358 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3358/files --paginate --jq '.[].filename' | grep -cFx 'scripts/deploy-agent/tests/unit/test_executor_ansi_c_env_guard_omn18073.py'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #3358 on OmniNode-ai/omnibase_infra -- diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnibase_infra-pr-3358"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/runtime/test_occ_app_credentials_declared_omn18073.py tests/scripts/test_lane_rollback_overlay_omn16729.py -q && (cd scripts/deploy-agent && uv run pytest tests/unit/test_executor_ansi_c_env_guard_omn18073.py -q)
+        cwd: "${OMNI_HOME}/omnibase_infra"
