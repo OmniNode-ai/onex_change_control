@@ -185,8 +185,16 @@ class TestWithholdingIsSelfDeleting:
         assert ("binds_ac" in evidence[0]) is CORE_KNOWS_BINDS_AC
 
     def test_a_malformed_binding_raises_rather_than_being_discarded(self) -> None:
-        if CORE_KNOWS_BINDS_AC:
-            pytest.skip("core validates the field itself; the shim is a no-op")
+        """Unconditional: core carries the field but not the label rule.
+
+        This assertion was guarded by ``CORE_KNOWS_BINDS_AC`` on the premise
+        that a core release carrying the field would validate it. OMN-18056
+        landed it in core as ``tuple[str, ...]`` with a length cap and no label
+        rule, so the premise is false and the guard would have silently retired
+        the only refusal of a malformed binding the moment the pin moved to
+        0.47.6. The OCC-local model owns the label shape on both sides of the
+        pin, so this holds on both.
+        """
         with pytest.raises(ValidationError):
             withhold_unreleased_binds_ac(
                 _contract(dod_evidence=[_item(binds_ac=["nope"])])
