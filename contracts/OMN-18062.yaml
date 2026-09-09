@@ -164,3 +164,60 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8766 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "ac1-real-pr-body-edit-no-red-unchanged-head"
+    description: >-
+      AC1 of OMN-18062 — "a body-only edit on an open PR no longer turns CI Summary red on an unchanged
+      head (proven on a real PR, cite the check-run ids)". The real PR is onex_change_control#8748, head
+      76907e10a12b2c971c01e6100c2c85b5ad1d5d8b: check-run 102337355947 (Dep Provenance Gate) concluded
+      success at 04:26:38Z; a body-only edit at 04:48:10Z re-triggered guards.yml with action=edited and
+      minted check-run 102341531810 for the SAME context name, concluding skipped at 04:48:15Z on the
+      SAME head; CI Summary check-run 102338378262 polled after that skip and concluded success at 04:58:44Z.
+      The pre-change latest-wins resolver would have failed closed on that head. NET-NEW item, appended
+      rather than annotated onto a merged entry: the fourteen items above are file-in-diff greps, symbol-presence
+      greps, gh pr view self-binds and one diff-derived test run, and none of them reads the real-PR check-run
+      sequence this criterion names.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/commits/76907e10a12b2c971c01e6100c2c85b5ad1d5d8b/check-runs --paginate --jq '.check_runs[] | select(.id == 102337355947 or .id == 102341531810 or .id == 102338378262) | "\(.id):\(.conclusion)"' | sort | tr '\n' ' ' | grep -cF '102337355947:success 102338378262:success 102341531810:skipped'
+  - id: "ac2-red-green-and-companion-first"
+    description: >-
+      AC2 of OMN-18062 — first two of its three conjuncts, one falsifiable check each. (a) "RED/GREEN
+      captured": at the merged squash 87a21bdb1757a5ff286de8b145114ea6bf4cf6d2 the gate's own suite carries
+      the RED control test_skip_after_success_on_same_head_is_not_a_regression plus two positive controls,
+      test_failure_after_success_on_same_head_still_fails and test_skipped_with_no_prior_conclusion_on_the_head_still_fails,
+      so the RED and the GREEN are both pinned in the merged tree rather than asserted in prose. (b) "OCC
+      companions first": the companion onex_change_control#8751 merged at 03:17:34Z and the product PR
+      omnimarket#2422 at 04:02:52Z, so the companion sorts first. The third conjunct is item ac2-ledger-terminal-row,
+      split out because its check needs a cross-repo cwd and therefore a local_done_gate execution scope.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/onex_change_control/contents/tests/ci/test_ci_summary_gate.py?ref=87a21bdb1757a5ff286de8b145114ea6bf4cf6d2" --jq '.content' | base64 -d | grep -cE 'def test_(skip_after_success_on_same_head_is_not_a_regression|failure_after_success_on_same_head_still_fails|skipped_with_no_prior_conclusion_on_the_head_still_fails)'
+      - check_type: "command"
+        check_value: |-
+          printf '%s\n%s\n' "$(gh pr view 8751 --repo OmniNode-ai/onex_change_control --json mergedAt --jq .mergedAt) OCC-8751-companion" "$(gh pr view 2422 --repo OmniNode-ai/omnimarket --json mergedAt --jq .mergedAt) omnimarket-2422-product" | sort | head -1 | grep -c 'OCC-8751-companion'
+  - id: "ac2-ledger-terminal-row"
+    description: >-
+      AC2 of OMN-18062 — its third conjunct, "ledger TERMINAL row". The row is 2026-09-09T05:35:35Z |
+      TERMINAL | lane=omn18062-ci-summary-skipped in the rolling work ledger, the declared coordination
+      surface for lane terminal state. execution_scope is local_done_gate because the ledger lives outside
+      any product checkout and the check therefore needs the ${OMNI_HOME} cwd token, which the hosted
+      single-repo gate cannot resolve. HONEST LIMIT, stated rather than implied: this check reads a working-tree
+      file, so it proves the row on the machine the local done gate runs on and nothing about any other
+      machine.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -c 'TERMINAL | lane=omn18062-ci-summary-skipped' docs/tracking/ROLLING_WORK_LEDGER.md
+        cwd: "${OMNI_HOME}"
