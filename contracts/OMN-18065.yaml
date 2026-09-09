@@ -1,0 +1,45 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18065"
+title: "The delegation reader binds each projection with its own tenant_id column type"
+summary: >
+  OCC contract for OmniNode-ai/omninode_infra PR #1262. Migration 0037 (OMN-15683) converted delegation_events.tenant_id
+  from text to uuid while savings_estimates.tenant_id stayed text. The onex-api delegation reader bound
+  one Python str for both projections; psycopg 3 sends str as text and PostgreSQL has no uuid = text operator,
+  so both tenant-scoped delegation endpoints returned HTTP 503. Reproduced on the onex-lab k3s overlay
+  with 0037 applied through the overlay's own migrate path, and fixed forward by parsing the tenant identity
+  once at the API boundary into a uuid.UUID and binding it under one parameter name per column type.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+contract_completeness: FULL
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1262 CI checks green"
+    command: "gh pr checks 1262 --repo OmniNode-ai/omninode_infra"
+  - kind: "tests"
+    description: "Behavior proof for PR #1262 on OmniNode-ai/omninode_infra, derived from the PR's own
+      diff: the reader regression tests it adds. RED against origin/dev (3 failed, assert 503 == 200,
+      operator does not exist uuid = text), GREEN on the branch (28 passed)."
+    command: "uv run pytest docker/onex-api/tests/test_delegation_savings.py -q"
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1262"
+    description: "PR #1262 on OmniNode-ai/omninode_infra — Evidence-Source binding."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1262 --repo OmniNode-ai/omninode_infra --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1262-ci"
+    description: "PR #1262 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1262 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1262 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1262"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest docker/onex-api/tests/test_delegation_savings.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
