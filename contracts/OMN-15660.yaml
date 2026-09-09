@@ -3,7 +3,15 @@ schema_version: "1.0.0"
 ticket_id: "OMN-15660"
 title: "Autobind OCC evidence for OMN-15660"
 summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_core PR #1645.
+  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_core PR #1645,
+  then UNION-RESOLVED by hand for OmniNode-ai/omnibase_core PR #1671 -- the second product PR on this
+  same ticket. #1645 closed the TERMINAL leg only (run-scoped terminal consumer group + the terminal correlation
+  predicate armed in both modes); AC3 names TWO call sites and says in its own sentence that a fix scoping
+  only one path is incomplete. #1671 closes the HANDLER leg: the command-topic subscribe group is run-scoped
+  and LocalRuntimeBusAdapter.on_message refuses a message declaring another invocation's correlation.
+  Bound by hand because OCC autobind mints nothing while the OMN-18073 outage is open -- the same posture
+  OCC#8760, OCC#8779 and OCC#8786 took. Every entry below the #1645 block is APPENDED; no existing dod_evidence
+  item or receipt was edited.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -16,6 +24,16 @@ evidence_requirements:
       Behavior proof for PR #1645 on OmniNode-ai/omnibase_core, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_core`.
     command: |-
       uv run pytest tests/gates/test_consumer_group_name_authorization.py tests/unit/runtime/test_runtime_local_client_mode.py tests/unit/runtime/test_runtime_local_terminal_isolation.py -q
+  - kind: "ci"
+    description: "PR #1671 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1671 on OmniNode-ai/omnibase_core, derived from that PR's own diff: the handler-leg
+      correlation refusal suite it adds and the handler-group tests it adds to the existing isolation suite.
+      Bound as dod_evidence item `dod-occ-handler-leg-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_core`.
+    command: |-
+      uv run pytest tests/unit/runtime/test_runtime_local_adapter_correlation_refusal.py tests/unit/runtime/test_runtime_local_terminal_isolation.py -q
 emergency_bypass:
   enabled: false
   justification: ""
@@ -52,3 +70,47 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8192 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_core-pr-1671"
+    description: >-
+      PR #1671 on OmniNode-ai/omnibase_core -- the HANDLER leg of this ticket: the command-topic consumer
+      group is run-scoped and the adapter refuses another invocation's handler input. Bound by hand (union-resolve)
+      because OCC autobind mints no companion while the OMN-18073 outage is open.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1671 --repo OmniNode-ai/omnibase_core --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_local_adapter.py?ref=e60465b328d1124ff247224d29516e7183aa38b9 --jq '.content' | base64 -d | grep -c 'def _correlation_matches'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_core/contents/src/omnibase_core/runtime/runtime_local.py?ref=e60465b328d1124ff247224d29516e7183aa38b9 --jq '.content' | base64 -d | grep -c 'handler_group_node'
+  - id: "dod-deploy-assessment-pr-1671"
+    description: "Deploy-scope DoD so PR #1671 clears the deploy-gate (F-05)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_core/pulls/1671/files --paginate --jq '.[].filename' | grep -ciE 'nodes/|handlers/|runtime/|services/|docker|monitor_logs|deploy'
+  - id: "dod-occ-handler-leg-behavior-proof"
+    description: >-
+      PR #1671 on OmniNode-ai/omnibase_core -- diff-derived behavior proof for the handler leg (OMN-16434).
+      Distinct from `dod-occ-diff-derived-behavior-proof`, which is #1645's terminal-leg proof and stays
+      exactly as merged.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/runtime/test_runtime_local_adapter_correlation_refusal.py tests/unit/runtime/test_runtime_local_terminal_isolation.py -q
+        cwd: "${OMNI_HOME}/omnibase_core"
+  - id: "occ-self-bind-pr-8804"
+    description: "Binds OMN-15660 to OCC companion PR #8804 (self-bind, union-resolve)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8804 --repo OmniNode-ai/onex_change_control --json number,state"
