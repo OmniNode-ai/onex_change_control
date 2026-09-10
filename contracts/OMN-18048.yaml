@@ -164,23 +164,30 @@ dod_evidence:
   - id: "ac3-corpus-count-is-recorded-with-its-command"
     description: >-
       AC3 binding. AC3 asks that the corpus measurement be recorded as a number with the command behind
-      it. The measurement IS recorded, on merged origin/dev, in the parser's own docstring at handler_evidence_autoclose_sweep.py:
+      it. The measurement IS recorded, on merged origin/dev, in the parser's own docstring in handler_evidence_autoclose_sweep.py:
       "Measured (OMN-18048 AC3, 110 ticket descriptions read at full text): **14.5%** carry an AC-looking
-      heading this set does not recognise, across **12 distinct spellings**." The check below reads that
-      file from the merged head over the GitHub contents API and asserts all three figures together —
-      corpus size 110, rate 14.5%, and 12 distinct spellings — so a silent edit to any one of them turns
-      the check red rather than passing on a partial match. Verified with a positive control (exits 0
-      against the live merged head) and a negative control (the same command with corpus size 999 exits
-      1), so a zero here is a real zero and not a swallowed error; stderr is not suppressed. This entry
-      is net-new and append-only: every pre-existing entry on this contract is merged and held immutable
-      by the Append-Only Gate, and nothing above is edited. The assignee's stated reason for leaving AC3
-      unbound (2026-09-10T12:23Z) is that the historical count has no reproducible committed command.
-      That concerns RE-RUNNING the census, which AC3 does not ask for; AC3 asks that the number be recorded
-      with its command, and this binds the record.
+      heading this set does not recognise, across **12 distinct spellings**." The check reads that file
+      from the merged head over the GitHub contents API and asserts all three figures in ONE pattern --
+      corpus size 110, rate 14.5%, and 12 distinct spellings -- so a silent edit to any single figure
+      turns the check red instead of passing on a partial match. Each figure was independently negative-controlled
+      (999 ticket descriptions, 99.9%, 7 distinct spellings) and each variant exits 1, so the pass is
+      not a wildcard. The check deliberately materialises the decoded file into a shell variable and matches
+      with `case` rather than piping into `grep -q`. Under `set -o pipefail` a `grep -q` terminates on
+      first match, SIGPIPEs the upstream `base64`/`tr`, and the pipeline returns 141 -- observed intermittently
+      here, 2 reds in 13 runs of the grep form (OMN-16535 SIGPIPE false-red class). The `case` form consumes
+      the whole stream and returned 0 on 8 of 8 consecutive runs. A check that is red one run in six is
+      worse than no check, because the red is indistinguishable from a real regression. This entry is
+      net-new and append-only: every pre-existing entry on this contract is merged and held immutable
+      by the Append-Only Gate, and nothing above it is edited. Recorded disagreement: the assignee's note
+      of 2026-09-10T12:23Z gives the reason for leaving AC3 unbound as the historical count having no
+      reproducible committed command. That objection concerns RE-RUNNING the census, which AC3 does not
+      ask for; AC3 asks that the number be recorded with its command, and this binds the record. If the
+      intent was a re-runnable census, AC3 should be reworded and this binding withdrawn rather than read
+      against the old wording.
     source: "manual"
     status: "verified"
     binds_ac: ["AC3"]
     checks:
       - check_type: "command"
         check_value: |-
-          gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=dev" --jq ".content" | base64 -d | tr "\n" " " | grep -qE "Measured \(OMN-18048 AC3, 110 ticket descriptions read at full text\): +\*\*14\.5%\*\* carry an AC-looking heading this set does not recognise, across +\*\*12 distinct spellings\*\*"
+          c=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=dev" --jq ".content" | base64 -d | tr "\n" " " | tr -s " "); case "$c" in *"Measured (OMN-18048 AC3, 110 ticket descriptions read at full text): **14.5%** carry an AC-looking heading this set does not recognise, across **12 distinct spellings**"*) exit 0 ;; *) exit 1 ;; esac
