@@ -172,6 +172,11 @@ _COMMAND_HEAD_ALLOWLIST: frozenset[str] = frozenset(
         "cd",
         "env",
         "curl",
+        # OMN-17446: read-only AWS probes are a real evidence class here — an
+        # SSM invocation readback is how a live cluster measurement is made
+        # re-resolvable without re-running it. `aws` is unambiguously a command
+        # head, never prose, which is the distinction Rule A draws.
+        "aws",
         "mktemp",
         "diff",
         "cmp",
