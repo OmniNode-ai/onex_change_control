@@ -440,6 +440,40 @@ _AWS_CREDENTIAL_ENV_VARS: tuple[str, ...] = (
 
 _LINEAR_CREDENTIAL_ENV_VARS: tuple[str, ...] = ("LINEAR_API_KEY",)
 
+
+def _aws_credential_available() -> bool:
+    """True if ANY plausible AWS credential source is present.
+
+    Env vars alone are NOT sufficient to answer this, and assuming they were
+    was a real defect caught by this block's own positive control: an SSO or
+    named-profile credential resolves through the shared config files with none
+    of the variables above set, so an env-var-only test reports a FALSE
+    "absent" and silently declines a check that would have run. That is the
+    failure direction this whole block exists to prevent, pointed the other
+    way.
+
+    ``aws-actions/configure-aws-credentials`` does export the variables, so the
+    hosted CI path is covered by the first branch. The shared-config branch
+    covers the local preflight and node_dod_verify paths, where a profile
+    credential is ordinary.
+
+    Deliberately NOT a `sts get-caller-identity` call: that is a network round
+    trip per check, and being wrong in the permissive direction here is cheap.
+    A credential that looks present but is not still fails, and
+    ``_credential_denial_reason`` catches botocore's own authoritative
+    diagnosis after the fact.
+    """
+    if any(os.environ.get(name) for name in _AWS_CREDENTIAL_ENV_VARS):
+        return True
+    config = os.environ.get("AWS_CONFIG_FILE")
+    creds = os.environ.get("AWS_SHARED_CREDENTIALS_FILE")
+    candidates = [
+        Path(config) if config else Path.home() / ".aws" / "config",
+        Path(creds) if creds else Path.home() / ".aws" / "credentials",
+    ]
+    return any(path.exists() for path in candidates)
+
+
 #: Substrings that identify a credential-scope refusal rather than a product
 #: failure. Each is specific enough that an ordinary red cannot match it -- a
 #: bare "403" is deliberately NOT here, because a rate limit is not a scope
@@ -470,13 +504,13 @@ def _credential_absent_reason(command: str) -> str | None:
         return None
     binaries = frozenset(_command_binaries(command))
 
-    if "aws" in binaries and not any(
-        os.environ.get(name) for name in _AWS_CREDENTIAL_ENV_VARS
-    ):
+    if "aws" in binaries and not _aws_credential_available():
         return (
             f"{_CREDENTIAL_ABSENT_PREFIX} [{_SSM_CREDENTIAL_NAME}] -- this check "
-            "invokes the AWS CLI, and no AWS credential is present in this job's "
-            f"environment (looked for: {', '.join(_AWS_CREDENTIAL_ENV_VARS)}). "
+            "invokes the AWS CLI, and no AWS credential source is present in "
+            "this job's environment -- neither any of "
+            f"({', '.join(_AWS_CREDENTIAL_ENV_VARS)}) nor a shared AWS config "
+            "or credentials file. "
             "The check was NOT executed, so this verdict says nothing about the "
             "product either way -- it is not a PASS and not a product failure. "
             f"Provision the read-only role '{_SSM_CREDENTIAL_NAME}' and assume it "

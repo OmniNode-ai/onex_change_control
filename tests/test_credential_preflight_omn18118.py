@@ -45,6 +45,7 @@ from onex_change_control.scripts.contract_compliance_check import (
     _RESULT_BLOCK,
     _RESULT_NOT_EVALUATED,
     _RESULT_PASS,
+    _aws_credential_available,
     _check_command,
     _credential_absent_reason,
     _credential_denial_reason,
@@ -53,7 +54,6 @@ from onex_change_control.scripts.contract_compliance_check import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
 
 # Every env var that could satisfy either preflight, cleared together so a
 # developer's ambient AWS profile or Linear key cannot turn a RED test green
@@ -64,9 +64,28 @@ _ALL_CREDENTIAL_ENV_VARS = tuple(_AWS_CREDENTIAL_ENV_VARS) + tuple(
 
 
 @pytest.fixture
-def _no_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Remove EVERY credential source, not merely the environment variables.
+
+    Clearing env vars alone is not enough and the omission was a real defect,
+    caught by this file's own positive control rather than by review: an SSO or
+    named-profile credential resolves through ``~/.aws/config`` with none of
+    those variables set. On a developer's machine that made the preflight see a
+    credential the CI job does not have, so the RED tests below would have gone
+    green locally for the wrong reason. HOME is redirected at an empty
+    directory so "absent" means absent.
+    """
     for name in _ALL_CREDENTIAL_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    for name in (
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_CONFIG_FILE",
+        "AWS_SHARED_CREDENTIALS_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("no-aws-home")))
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +289,40 @@ def test_command_merely_mentioning_aws_in_a_string_is_not_declined(
     result, _ = _check_command("grep -c 'aws ssm' runbook.md", tmp_path)
 
     assert result == _RESULT_PASS
+
+
+def test_shared_config_file_counts_as_a_credential_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression for the defect the positive control caught.
+
+    An env-var-only test reported a FALSE "absent" for an SSO or named-profile
+    credential, which would have silently declined a check that would have run
+    -- the failure direction this block exists to prevent, pointed the other
+    way. Pinned so the shared-config branch cannot be dropped as redundant.
+    """
+    for name in (*_ALL_CREDENTIAL_ENV_VARS, "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("AWS_SHARED_CREDENTIALS_FILE", raising=False)
+    config = tmp_path / "config"
+    config.write_text("[default]\nregion = us-east-1\n")
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+
+    assert _aws_credential_available() is True
+    assert (
+        _credential_absent_reason("aws ssm get-command-invocation --command-id x")
+        is None
+    )
+
+
+def test_no_credential_source_at_all_is_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The other half of the same pair -- an empty HOME really does read absent."""
+    for name in (*_ALL_CREDENTIAL_ENV_VARS, "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("AWS_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("AWS_SHARED_CREDENTIALS_FILE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert _aws_credential_available() is False
