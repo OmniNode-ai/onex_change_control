@@ -1,9 +1,33 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-18106"
-title: "Autobind OCC evidence for OMN-18106"
+title: "Closer prior-revert fence records its first baseline after post-revert evidence lands, so a reverted
+  ticket with changed evidence never releases"
 summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #3376.
+  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #3376,
+  then extended by hand (append-only, OMN-13888) with the four AC-bound evidence items the autobind shape
+  does not carry: the autobind entries declare no binds_ac at all, so no acceptance criterion of this
+  ticket resolved to a check. The four appended items bind AC1, AC2, AC3 and AC5; AC4 is the post-merge
+  readback on the first scheduled sweep tick and cannot be proven before this merges, so it is deliberately
+  left unbound and recorded on the ticket instead. Every autobind entry above is untouched and keeps its
+  own per-entry hash. What the product PR fixes: the positive prior-revert fence held a reverted ticket
+  until a later tick's verdict fingerprint differed from every fingerprint recorded as a post-revert baseline,
+  and that baseline was recorded from the FIRST verdict the sweep observed after the reversal rather than
+  the verdict as it stood AT the reversal. Where remediation landed in the gap between the two - the common
+  case, since work continues after a revert and the sweep ticks every thirty minutes - the already-repaired
+  verdict became the thing change had to be measured against, and dod_verify being deterministic, no later
+  tick could ever differ from it. Measured on OMN-15542: reverted 2026-09-02T07:46:30Z, repaired over
+  the following week, first post-revert look at 2026-09-09T23:16:09Z on run 34415223971, which minted
+  ca128f676aa74a44 as a permanent hold. The fix asks the ordering first, from timestamps rather than from
+  what the sweep remembers seeing: the reversal's own createdAt against the landing times of the evidence
+  the verdict is resolved from (the merged evidence companion, each cited product PR). Evidence at or
+  after the reversal releases to the ordinary flip predicate and the outcome carries post_revert_evidence_release
+  naming what beat what; evidence entirely before it still holds; an ordering that cannot be read holds,
+  naming the timestamp. No credential was rotated, re-issued, revoked or minted, no secret value was read
+  or printed, and no cluster object was mutated. Rule 24 stated rather than implied: the sweep runs as
+  a scheduled GitHub Actions job and not on the .201 dev lane or the k3s lab overlay, so there is no lab
+  surface for it, no lab pass is claimed, and the first scheduled sweep run after the merge is the live
+  readback.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -52,3 +76,113 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8851 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18106-ac2-ordering-fix"
+    description: >
+      AC2 - the fix is implemented. PR #3376 on OmniNode-ai/omnibase_infra carries the ordering test that
+      runs before the recorded-baseline mechanism (_evidence_after_revert, _newest_revert_entry_created_at,
+      _parse_iso_utc), the companion merged_at plumbed down from the enumeration payload, the cited-PR
+      merge times collected where the existing conjunct already reads them, the post_revert_evidence_release
+      field on the outcome, and the enum record of why the mechanism changed. The chosen design and its
+      tradeoff are stated in the PR body, which is what AC2 asks for. Probed by reading the handler at
+      the PR head sha 8ffce8bb043391426236340504a024dee9962870 - a surface outside this OCC change, and
+      one that goes RED if the symbols are absent. Bound by hand (union-resolve) because autobind is not
+      minting companions in this window (OMN-18073).
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=8ffce8bb043391426236340504a024dee9962870" | grep -c 'def _evidence_after_revert'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/models/model_evidence_autoclose_outcome.py?ref=8ffce8bb043391426236340504a024dee9962870" | grep -c 'post_revert_evidence_release'
+  - id: "dod-omn18106-ac1-red-test-at-parent"
+    description: >
+      AC1 - a red test exists reproducing the defect, at the state before the fix. The suite the PR adds
+      was run against the parent commit 1c2b15953 and returned 3 failed, 1 passed: the OMN-15542-shaped
+      ticket was held with SKIPPED_PRIOR_REVERT on its first tick and could reach no flip on any later
+      identical tick, which is the permanent hold AC1 asks to be demonstrated. The one passing case is
+      the control the fix must not break. The first probe reads the new suite AT the PR head and requires
+      the OMN-15542-timeline case to be in it; the second requires GitHub's own file-status for that path
+      in this PR to be 'added', which is what makes the first one a statement about a change rather than
+      about a file that was always there.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_omn_18106_post_revert_evidence_release.py?ref=8ffce8bb043391426236340504a024dee9962870" | grep -c 'def test_evidence_that_postdates_the_revert_releases_the_fence'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3376/files --paginate --jq '.[] | select(.filename == "tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_omn_18106_post_revert_evidence_release.py") | .status' | grep -c '^added$'
+  - id: "dod-omn18106-ac3-green-with-control"
+    description: >
+      AC3 - the red test goes GREEN against the fix, without weakening the fence's core guarantee that
+      a genuinely UNCHANGED reverted ticket stays held. The same suite carries the control (a reverted
+      ticket whose evidence entirely predates the reversal must hold on EVERY tick, not just the first,
+      and write nothing), the equality boundary (evidence at the same second as the revert releases),
+      and fail-closed cases for unreadable reversal/evidence timestamps. All seven pass against the fix;
+      the control and the fail-closed cases are what make "green" mean more than "the assertion was relaxed".
+      Diff-derived behavior proof (OMN-16434). The first probe requires the control case to be present
+      in the suite at the PR head, so a later change that deleted it to get green would go RED here.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_omn_18106_post_revert_evidence_release.py?ref=8ffce8bb043391426236340504a024dee9962870" | grep -c 'def test_evidence_entirely_before_the_revert_still_holds'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_omn_18106_post_revert_evidence_release.py?ref=8ffce8bb043391426236340504a024dee9962870" | grep -c 'def test_an_unreadable_revert_time_holds_rather_than_releases'
+  - id: "dod-omn18106-ac5-no-regression"
+    description: >
+      AC5 - no regression to the negative fence, the OMN-17658 per-run flip budget, or anything else in
+      the module. The focused OMN-18106 suite is green at 7 passed, pre-commit run --all-files is green,
+      and the governed pre-push escalated to a fail-closed FULL-suite run on lab host h105.2, which ran
+      27475 tests green on this PR's head commit. Two existing revert fixtures had their transition timestamps
+      re-derived from the same clock their companion merges on: ordering was never load-bearing before
+      this change, and both had drifted into describing a ticket whose evidence landed AFTER its revert,
+      which is the very shape this ticket is about rather than the shape their docstrings name. Every
+      assertion in both is unchanged, and the first probe requires the negative fence's own test to still
+      be present and still asserting the hold.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/nodes/node_evidence_autoclose_sweep_effect/test_omn_16106_closer_flip_conjuncts.py?ref=8ffce8bb043391426236340504a024dee9962870" | grep -c 'test_a_reverted_closer_flip_is_held_even_though_it_has_an_actor_id'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_evidence_autoclose_sweep_effect/handlers/handler_evidence_autoclose_sweep.py?ref=8ffce8bb043391426236340504a024dee9962870" | grep -c '_prior_flip_fingerprints(prior_bodies)'
+  - id: "occ-self-bind-pr-8852"
+    description: >
+      OCC self-binding receipt for PR #8852, the in-repo evidence PR carrying the AC-bound half of this
+      ticket. Binds OMN-18106 to that OCC PR by pr_number so eligibility can resolve a PASS receipt for
+      the evidence PR itself. A second self-bind is needed because the autobind companion OCC#8851 merged
+      first and declares no binds_ac on any item; occ-self-bind-pr-8851 stays untouched above and keeps
+      its own per-entry hash. Appended, not edited (OMN-13888). No binds_ac - this is an infrastructure
+      self-binding, not evidence for any acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/8852 --jq '.number, .state'
+  - id: "occ-self-bind-pr-8852"
+    description: >
+      OCC self-binding receipt for PR #8852, the in-repo evidence PR carrying the AC-bound half of this
+      ticket. Binds OMN-18106 to that OCC PR by pr_number so eligibility can resolve a PASS receipt for
+      the evidence PR itself. A second self-bind is needed because the autobind companion OCC#8851 merged
+      first and declares no binds_ac on any item; occ-self-bind-pr-8851 stays untouched above and keeps
+      its own per-entry hash. Appended, not edited (OMN-13888). No binds_ac - this is an infrastructure
+      self-binding, not evidence for any acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/8852 --jq '.number, .head.sha, .state'
