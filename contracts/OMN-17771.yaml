@@ -1,0 +1,142 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17771"
+title: "Point the customer guides' registration URL and token grant at onex-customer"
+summary: >
+  Evidence for OMN-17771. The customer guides' registration URL and token grant both name the dedicated
+  onex-customer Keycloak client, and the documented sign-on walk was executed live against dev.auth.omninode.ai
+  and dev.app.omninode.ai rather than asserted by inspection. The walk found one false statement in Step
+  1 — it claimed the reader lands on the dashboard signed in, when the authorization code actually returns
+  to the public landing page, which never consumes it — corrected by OmniNode-ai/knowledge-base-internal#331.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "knowledge-base-internal PR #331 CI checks green"
+    command: "gh pr checks 331 --repo OmniNode-ai/knowledge-base-internal"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn17771-ac1-no-internal-client-ids"
+    description: >
+      AC1 — zero client_id=omnidash-spa and zero client_id=omniweb occurrences in any customer-facing
+      guide. Counted at the merged tip of OmniNode-ai/knowledge-base-internal, across all four customer-*.md
+      guides. The first check sums those occurrences over every customer guide and asserts the total is
+      0. The second check is the positive control that makes the zero meaningful: the same grep pattern,
+      run against the same files, counts a NON-zero number of onex-customer occurrences — so the pattern
+      and the file set are both live and an always-empty result would fail. A single omnidash-spa mention
+      survives in guides/customer-api-key-security.md, in prose instructing readers to move OFF that client;
+      it is not a client_id= instruction and the AC counts client_id= occurrences.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(for f in customer-getting-started customer-api-key-security customer-beta-gateway-and-delegation customer-usage-and-plans; do gh api "repos/OmniNode-ai/knowledge-base-internal/contents/guides/$f.md?ref=main" --jq '.content' | base64 -d | grep -cE 'client_id=(omnidash-spa|omniweb)'; done | paste -sd+ - | bc)" = "0"
+      - check_type: "command"
+        check_value: |-
+          test "$(for f in customer-getting-started customer-api-key-security; do gh api "repos/OmniNode-ai/knowledge-base-internal/contents/guides/$f.md?ref=main" --jq '.content' | base64 -d | grep -c 'client_id=onex-customer'; done | paste -sd+ - | bc)" -gt "0"
+  - id: "dod-omn17771-ac2-registration-url-form"
+    description: >
+      AC2 — the Step 1 registration URL, pasted verbatim, returns HTTP 200 with a registration form, probed
+      with no source checkout and no org credential. Executed live 2026-09-10T00:5xZ: the URL read out
+      of guides/customer-getting-started.md at origin/main 348bbe1b859f5da35d3baebbfab28215fff4ea75, with
+      client_id=onex-customer, response_type=code, scope=openid, redirect_uri=https://dev.app.omninode.ai
+      and a freshly generated S256 challenge, returned HTTP 200, 13417 bytes, carrying id="kc-register-form"
+      and the six inputs username, email, firstName, lastName, password, password-confirm. The first check
+      re-runs that probe unauthenticated and asserts both HTTP 200 and the presence of the registration
+      form id. The second check is the positive control: the same endpoint with a client_id that does
+      not exist on the realm returns a page WITHOUT kc-register-form, so a 200 alone cannot pass this
+      criterion.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          CH=$(printf '%s' "occ-ac2-verifier-fixed-string-for-a-deterministic-challenge" | openssl dgst -binary -sha256 | openssl base64 | tr '+/' '-_' | tr -d '=\n'); OUT=$(curl -sS -o /tmp/omn17771_ac2.html -w '%{http_code}' "https://dev.auth.omninode.ai/realms/omninode/protocol/openid-connect/registrations?client_id=onex-customer&response_type=code&scope=openid&redirect_uri=https://dev.app.omninode.ai&code_challenge=${CH}&code_challenge_method=S256"); test "$OUT" = "200" && grep -q 'id="kc-register-form"' /tmp/omn17771_ac2.html
+      - check_type: "command"
+        check_value: |-
+          CH=$(printf '%s' "occ-ac2-verifier-fixed-string-for-a-deterministic-challenge" | openssl dgst -binary -sha256 | openssl base64 | tr '+/' '-_' | tr -d '=\n'); test "$(curl -sS "https://dev.auth.omninode.ai/realms/omninode/protocol/openid-connect/registrations?client_id=onex-customer-does-not-exist&response_type=code&scope=openid&redirect_uri=https://dev.app.omninode.ai&code_challenge=${CH}&code_challenge_method=S256" | grep -c 'id="kc-register-form"')" = "0"
+  - id: "dod-omn17771-ac3-client-ok-code-rejected"
+    description: >
+      AC3 — the token command names a client that exists on the plane the guide names, proven by an invalid_grant
+      (code/user rejected) rather than unauthorized_client or Client not found (client rejected). Probed
+      live 2026-09-10T01:0xZ against the token endpoint with the guide's own authorization_code command
+      shape: client_id=onex-customer with a deliberately invalid code returns HTTP 400 {"error":"invalid_grant","error_description":"Code
+      not valid"} — the client was accepted and the code was rejected. The positive control is the same
+      request with a client_id that does not exist, which returns HTTP 401 {"error":"invalid_client"},
+      so the two outcomes discriminate. STATED PLAINLY, NOT SOFTENED: the ticket's scope-correction note
+      restates AC3 more strictly as "the documented command produces a usable token at all". That stricter
+      form was NOT exercised and is NOT claimed here. Reaching a real authorization code needs a verified
+      account, and the realm sets verifyEmail: true — a correct-password sign-in returns HTTP 302 back
+      to execution=VERIFY_EMAIL until the emailed link is clicked. The disposable account this lane registered
+      through the public path (omn17771-walk-20260910@example.invalid) is on a reserved invalid domain
+      with no readable inbox, so the link was unreachable. That is a limitation of this lane, not a defect
+      in the guide or the client: nothing on the path waits on an operator.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          curl -sS -X POST "https://dev.auth.omninode.ai/realms/omninode/protocol/openid-connect/token" -H "Content-Type: application/x-www-form-urlencoded" -d "grant_type=authorization_code" -d "client_id=onex-customer" -d "code=deliberately-invalid-code" -d "redirect_uri=https://dev.app.omninode.ai" -d "code_verifier=occ-ac3-deterministic-verifier-value-for-this-check-0001" | grep -q '"error":"invalid_grant"'
+      - check_type: "command"
+        check_value: |-
+          curl -sS -X POST "https://dev.auth.omninode.ai/realms/omninode/protocol/openid-connect/token" -H "Content-Type: application/x-www-form-urlencoded" -d "grant_type=authorization_code" -d "client_id=onex-customer-does-not-exist" -d "code=deliberately-invalid-code" -d "redirect_uri=https://dev.app.omninode.ai" -d "code_verifier=occ-ac3-deterministic-verifier-value-for-this-check-0001" | grep -q '"error":"invalid_client"'
+  - id: "dod-omn17771-ac4-repo-checkers-green"
+    description: >
+      AC4 — the no-private-repo-links and beta-layout checkers are green. Both are wired as GitHub Actions
+      workflows on OmniNode-ai/knowledge-base-internal (.github/workflows/no-private-repo-links.yml and
+      .github/workflows/beta-layout.yml) and both ran on PR #331. Locally on the branch head 48b91f8adc649977eea124e28649eb3bd1a63067,
+      python3 -m scripts.check_no_private_repo_links and python3 -m scripts.check_beta_layout each exited
+      0, and a full pre-commit run --all-files passed every hook including the OMN-17936 customer-guide
+      primary-path gate. The check below asserts that every check-run on the merged head of PR #331 concluded
+      success, which covers both named checkers; the second check is the positive control that the run
+      set is non-empty, so a repository with zero reported checks cannot pass by vacuous truth.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/knowledge-base-internal/commits/48b91f8adc649977eea124e28649eb3bd1a63067/check-runs --jq '[.check_runs[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length')" = "0"
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api repos/OmniNode-ai/knowledge-base-internal/commits/48b91f8adc649977eea124e28649eb3bd1a63067/check-runs --jq '.check_runs | length')" -gt "0"
+  - id: "dod-omn17771-ac5-merged-read-back-main"
+    description: >
+      AC5 — merged to main and read back from origin/main, not from the merge API alone. The first check
+      reads the corrected Step 1 prose out of guides/customer-getting-started.md at ref=main through the
+      contents API and asserts the new landing-page sentence is present. The second check is the negative
+      control against the pre-change parent 348bbe1b859f5da35d3baebbfab28215fff4ea75, where that sentence
+      counts 0 and the FALSE sentence this PR removed ("browser lands back on `https://dev.app.omninode.ai`,
+      signed in") is still present — so the pair proves a state change at main rather than a pattern that
+      matches everywhere.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/knowledge-base-internal/contents/guides/customer-getting-started.md?ref=main' --jq '.content' | base64 -d | grep -q 'you are not signed in to the dashboard yet'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/knowledge-base-internal/contents/guides/customer-getting-started.md?ref=348bbe1b859f5da35d3baebbfab28215fff4ea75' --jq '.content' | base64 -d | grep -c 'you are not signed in to the dashboard yet')" = "0"
+  - id: "occ-self-bind-pr-omn17771"
+    description: "Binds OMN-17771 to its OCC companion PR on OmniNode-ai/onex_change_control (self-bind)."
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr list --repo OmniNode-ai/onex_change_control --search 'OMN-17771 in:title'
+          --state all --json number,state --jq 'length > 0'"
