@@ -76,3 +76,64 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8039 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn17512-ac1-audience-mapper-at-merged-shas"
+    description: >-
+      AC1 — the `omnidash-spa` client definition carries an `oidc-audience-mapper` granting the `onex-api`
+      audience. Re-derived from the MERGED code at both squash shas rather than adopted from any prior
+      report: omnibase_infra#3133 squash b20c832c4719fb19f7f903c8f2db24e685315581 (docker/keycloak/desired-clients.json)
+      and omninode_infra#1139 squash 34721f242d9fad7a565eb3fd33661186a215508c (k8s/onex-dev/jobs/desired-clients.json).
+      Each check is a content read pinned to its squash sha, buffered before assertion (OMN-15411 Rule
+      E), and its exit status depends on this ticket's diff. NEGATIVE CONTROL taken at each merge's first
+      parent (03fb6901e8b9 and b41f4873f726): the `omnidash-spa` client is ABSENT from both files there
+      (7 clients, 0 matching blocks, both commands exit 1) and present at the merged shas (8 clients,
+      1 block, exactly 1 matching mapper, both commands exit 0) — so the checks discriminate rather than
+      passing for any input. The two copies were byte-identical at merge (sha256-12 3519e9d74067) and
+      remain byte-identical at dev tip re-read 2026-09-10 (sha256-12 45b7b1861528, omnibase_infra@17047498145d
+      and omninode_infra@c5904e763434), which is what the desired-clients.json parity gate requires.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/keycloak/desired-clients.json?ref=b20c832c4719fb19f7f903c8f2db24e685315581" --jq '.content | @base64d | fromjson | [.clients[] | select(.clientId=="omnidash-spa") | .protocolMappers[] | select(.protocolMapper=="oidc-audience-mapper" and .config["included.client.audience"]=="onex-api")] | length')" && grep -qx 1 <<< "$body"
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/jobs/desired-clients.json?ref=34721f242d9fad7a565eb3fd33661186a215508c" --jq '.content | @base64d | fromjson | [.clients[] | select(.clientId=="omnidash-spa") | .protocolMappers[] | select(.protocolMapper=="oidc-audience-mapper" and .config["included.client.audience"]=="onex-api")] | length')" && grep -qx 1 <<< "$body"
+  - id: "dod-omn17512-ac2-accepted-audience-unwidened"
+    description: >-
+      AC2 — the accepted audience was NOT widened; the narrow mapper is the whole fix, which is what the
+      OMN-17281 ruling required. Check 1 reads the omninode_infra#1139 changed-file list and requires
+      `k8s/onex-dev/jobs/desired-clients.json` PRESENT and `docker/onex-api/auth_oidc.py` ABSENT in one
+      command, so the positive control is inside the assertion and a `gh` failure yields no output and
+      fails rather than reading as a pass. Falsifiable: inverting the control to assert the changed file
+      is absent exits 1. Checks 2 and 3 read auth_oidc.py at the #1139 squash sha 34721f242d9fad7a565eb3fd33661186a215508c
+      and require line 1679 to still default the accepted audience to `onex-api` and line 1759 to still
+      pass `verify_aud: True`. NEGATIVE CONTROL: the same read grepped for a widened default returns 0
+      and exits 1. Neither merged PR touches auth_oidc.py — #3133 changed .github/workflows/ci.yml, docker/keycloak/desired-clients.json
+      and two test files; #1139 changed .secrets.baseline and k8s/onex-dev/jobs/desired-clients.json.
+      Every producer is buffered before assertion (OMN-15411 Rule E).
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          files="$(gh api repos/OmniNode-ai/omninode_infra/pulls/1139/files --paginate --jq '[.[].filename] | (index("k8s/onex-dev/jobs/desired-clients.json") != null) and (index("docker/onex-api/auth_oidc.py") == null)')" && grep -qx true <<< "$files"
+      - check_type: "command"
+        check_value: |-
+          src="$(gh api "repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_oidc.py?ref=34721f242d9fad7a565eb3fd33661186a215508c" --jq '.content | @base64d')" && grep -cF 'os.getenv("KEYCLOAK_AUDIENCE", "onex-api")' <<< "$src"
+      - check_type: "command"
+        check_value: |-
+          src="$(gh api "repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_oidc.py?ref=34721f242d9fad7a565eb3fd33661186a215508c" --jq '.content | @base64d')" && grep -cF '"verify_aud": True' <<< "$src"
+  - id: "occ-self-bind-pr-8857"
+    description: >-
+      OCC self-binding receipt for PR #8857, the in-repo evidence PR carrying this contract's AC1 and
+      AC2 bindings. Binds OMN-17512 to the OCC PR by pr_number so eligibility can resolve a PASS receipt
+      for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8857 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
