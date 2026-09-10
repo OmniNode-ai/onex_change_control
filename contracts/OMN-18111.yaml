@@ -1,9 +1,14 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-18111"
-title: "Autobind OCC evidence for OMN-18111"
-summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #3380.
+title: "OCC evidence for OMN-18111 - dlq_replay_history tracking wired, unparseable path recorded"
+summary: >-
+  OCC contract minted by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra#3380 and
+  then bound by hand to the ticket's acceptance criteria. AC1 through AC5 are bound below. AC6 is a post-merge
+  live readback on the .201 dev lane (dlq_replay_history row count rising from the measured baseline of
+  0 at 2026-09-10T01:55Z) and is deliberately NOT bound to a check: no command runnable from CI can reach
+  that lane, and a check that pretended to would be a worse failure than an unbound criterion. It is recorded
+  on the ticket instead.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -22,9 +27,25 @@ emergency_bypass:
   follow_up_ticket_id: ""
 dod_evidence:
   - id: "dod-OmniNode-ai-omnibase_infra-pr-3380"
-    description: "PR #3380 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    description: >-
+      PR #3380 on OmniNode-ai/omnibase_infra. AC5: the runtime OWNS the tracking service's lifecycle -
+      it is built and initialized at bootstrap and shut down on BOTH shutdown paths, so no pool is left
+      open on exit. The three greps below are counted at the pushed sha: the builder exists, and `_dlq_replay_tracking.shutdown()`
+      appears on both cleanup paths.
     source: "generated"
+    binds_ac:
+      - "AC5"
     checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c 'async def _build_dlq_replay_tracking'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c '_dlq_replay_tracking.shutdown()'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c 'dlq_tracking=_dlq_replay_tracking'
+
       - check_type: "command"
         check_value: |-
           gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_dlq_replay_effect/handlers/handler_dlq_replay.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c 'def _record_unparseable'
@@ -39,13 +60,65 @@ dod_evidence:
         check_value: |-
           gh api repos/OmniNode-ai/omnibase_infra/pulls/3380/files --paginate --jq '.[].filename' | grep -ciE 'nodes/|handlers/|runtime/|services/|docker|monitor_logs|deploy'
   - id: "dod-occ-diff-derived-behavior-proof"
-    description: "PR #3380 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434)."
+    description: >-
+      PR #3380 on OmniNode-ai/omnibase_infra - diff-derived behavior proof (OMN-16434). AC1: the runtime
+      supplies the contract-declared `tracking` dependency, and the second test in that file DISCOVERS
+      the required names from contract.yaml rather than asserting a written list, so the next declared-and-unwired
+      dependency is red there. Both selections failed on origin/dev before this change.
     source: "generated"
+    binds_ac:
+      - "AC1"
     checks:
       - check_type: "test_passes"
         check_value: |-
-          uv run pytest tests/integration/test_omn18111_dlq_tracking_dependency_wired.py tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q
+          uv run pytest tests/integration/test_omn18111_dlq_tracking_dependency_wired.py -q
         cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-parseable-terminal-outcomes-recorded"
+    description: >-
+      AC2: every terminal outcome on the parseable path produces exactly one ModelDlqReplayRecord - one
+      COMPLETED and one QUARANTINED across a two-record run, counted per outcome rather than in aggregate
+      so a double write fails as loudly as a missing one.
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q -k test_1_every_parseable_terminal_outcome_is_recorded_exactly_once
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-unparseable-path-recorded"
+    description: >-
+      AC3: the unparseable-record path records its terminal outcome with the DLQ coordinate it was read
+      at, and the coordinate-derived id is deterministic. RED on origin/dev, where _quarantine_unparseable
+      called the recorder from none of its three exits. The grep proves the method exists at the pushed
+      sha.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q -k "test_2_unparseable_quarantine_is_recorded_with_its_dlq_coordinate or test_2b_unparseable_dlq_coordinate_id_is_deterministic"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_dlq_replay_effect/handlers/handler_dlq_replay.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4 --jq '.content' | base64 -d | grep -c 'async def _record_unparseable'
+  - id: "dod-audit-write-cannot-change-a-verdict"
+    description: >-
+      AC4: a tracking write that raises leaves a CONFIRMED quarantine QUARANTINED and its offset committable.
+      This is the criterion that matters most operationally - propagating the failure would turn a confirmed
+      quarantine into a redelivery and re-amplify the OMN-18084 loop with a database outage as its trigger.
+    source: "generated"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_replay_effect/test_omn18111_terminal_outcomes_recorded.py -q -k "test_3_a_failing_audit_write_never_changes_the_verdict or test_3b_absent_tracking_is_still_a_working_drain or test_3c_disabled_tracking_service_writes_nothing"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_dlq_replay_effect/handlers/handler_dlq_replay.py?ref=ce8ad48f517ea05c5369427781fd13f536e10df4
+          --jq '.content' | base64 -d | grep -c 'async def _write_audit_row' "
   - id: "occ-self-bind-pr-8872"
     description: "Binds OMN-18111 to OCC companion PR #8872 (self-bind)."
     source: "generated"
