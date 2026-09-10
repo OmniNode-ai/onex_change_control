@@ -23,7 +23,10 @@ import sys
 
 from onex_change_control.scripts.contract_compliance_check import (
     _ALLOWLIST_FIELDS,
+    _AWS_CREDENTIAL_ENV_VARS,
     _CHECK_RUNNERS,
+    _CREDENTIAL_ABSENT_PREFIX,
+    _LINEAR_CREDENTIAL_ENV_VARS,
     _OMN_TICKET_PATTERN,
     _REPO_PATTERN,
     _RESULT_BLOCK,
@@ -40,6 +43,8 @@ from onex_change_control.scripts.contract_compliance_check import (
     _CheckContext,
     _classify_check,
     _contract_digest,
+    _credential_absent_reason,
+    _credential_denial_reason,
     _demote,
     _extract_ticket_id,
     _find_contracts_dir,
@@ -62,7 +67,10 @@ from onex_change_control.scripts.contract_compliance_check import (
 
 __all__ = [
     "_ALLOWLIST_FIELDS",
+    "_AWS_CREDENTIAL_ENV_VARS",
     "_CHECK_RUNNERS",
+    "_CREDENTIAL_ABSENT_PREFIX",
+    "_LINEAR_CREDENTIAL_ENV_VARS",
     "_OMN_TICKET_PATTERN",
     "_REPO_PATTERN",
     "_RESULT_BLOCK",
@@ -79,6 +87,8 @@ __all__ = [
     "_check_test_passes",
     "_classify_check",
     "_contract_digest",
+    "_credential_absent_reason",
+    "_credential_denial_reason",
     "_demote",
     "_extract_ticket_id",
     "_find_contracts_dir",

@@ -1,0 +1,63 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18118"
+title: "Credential preflight: a check that needs an absent credential is NOT_EVALUATED, naming the credential"
+summary: >-
+  Landed the CREDENTIAL half of OMN-18118, which its own correction comment (eda02919) identified as the
+  real blocker and as a prerequisite for any new evidence-item kind. This contract deliberately binds
+  NO acceptance criterion: OMN-18118's ACs are written against a `recorded_fact` item kind that this change
+  does not add, and claiming them would be exactly the surrogate binding the ticket forbids. See the PR
+  body for what is and is not closed.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Red-first fixture for the credential preflight and the post-hoc scope classifier, including the
+      negative control that a red with no credential marker still BLOCKs.
+    command: "uv run pytest tests/test_credential_preflight_omn18118.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn18118-credential-preflight-behavior"
+    description: >-
+      Behaviour proof, executed in this repo's own checkout (the OCC in-repo case): a check invoking the
+      AWS CLI with no AWS credential in the environment returns NOT_EVALUATED and names occ-compliance-ssm-readonly;
+      a GitHub App scope refusal on a .../actions/... read returns NOT_EVALUATED and names `actions: read`;
+      and -- the negative control that makes the rest meaningful -- an ordinary failing command with no
+      credential marker still returns BLOCK, so the classifier cannot retire the gate by turning every
+      red into a polite decline. Eleven cases, including both positive controls (the preflight steps ASIDE
+      once a credential is present) and the pinned measured limit that a Linear read is refused earlier
+      by _non_hermetic_reason.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_credential_preflight_omn18118.py -q"
+  - id: "dod-omn18118-no-regression-in-the-runner-corpus"
+    description: >-
+      The existing compliance-runner, ratchet and admissibility suites still pass with the preflight inserted
+      -- the change adds a decline path and does not move any check that previously PASSed or BLOCKed.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest tests/test_contract_compliance_check.py tests/test_dod_runner_ratchet.py tests/test_evidence_admissibility.py
+          -q
+  - id: "dod-omn18118-job-assumes-the-readonly-role"
+    description: >-
+      The contract-compliance job declares id-token write and assumes occ-compliance-ssm-readonly, and
+      BOTH added steps are continue-on-error so that an unprovisioned role leaves the credential absent
+      (reported per-check as NOT_EVALUATED) rather than turning every OCC PR red on a cause unrelated
+      to the PR.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run python -c "import sys,yaml; j=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['contract-compliance'];
+          s={x.get('name'):x for x in j['steps'] if x.get('name')}; r=s['Assume read-only SSM role (OMN-18118)'];
+          sys.exit(0 if j['permissions']['id-token']=='write' and r['continue-on-error'] is True and 'occ-compliance-ssm-readonly'
+          in r['with']['role-to-assume'] and s['Ensure AWS CLI is available (OMN-18118)']['continue-on-error']
+          is True else 1)"
