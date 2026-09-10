@@ -52,3 +52,50 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8904 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn17228-ac2-red-first-real-postgres"
+    description: |-
+      OMN-17228 DoD bullet 2 -- "RED-first: a test that feeds the live-shaped payload through the
+      real dispatch path and fails today."
+
+      Met, and met more strongly than the bullet asks: the RED proof is taken against REAL Postgres,
+      not a mock double. OmniNode-ai/omnimarket#2443 (MERGED 2026-09-10T08:29:48Z, squash
+      8dfb7bbf9506497e10f763cb821bb107ccc47958) adds
+      tests/test_omn17228_real_postgres_drifted_default_write_path.py, which applies the live
+      node_projection_delegation migration set to a disposable schema, DROPS the DEFAULT on
+      task_type / delegated_to / timestamp to reproduce the drifted onex-dev shape, and drives the
+      real DelegationProjectionRunner.project_event() quality-gate branch through AsyncpgAdapter.
+
+      Measured on the .201 compose dev lane's Postgres 2026-09-10. At the parent commit the three
+      behavioural tests raise asyncpg.exceptions.NotNullViolationError -- 'null value in column
+      "task_type" of relation "delegation_events" violates not-null constraint' -- which is the live
+      DLQ's failure_reason byte-for-byte. At head all five pass. The fixture's own faithfulness
+      (defaults really absent, an omitting INSERT really refused) is asserted by
+      TestTheDriftedFixtureIsFaithful before any behaviour is asserted on it, so the RED half cannot
+      pass vacuously.
+
+      Bound to AC2 ONLY. DoD bullets 1, 3 and 4 are NOT claimed by this item and are NOT met:
+      bullet 1 (the extra_forbidden disposition) was settled by the earlier
+      strip_runner_injected_keys change, not here; bullet 3 requires a post-deploy live probe on
+      onex-dev that has not been taken; bullet 4 (the OMN-16249 relationship) is unwritten. The
+      ticket stays open.
+
+      Every probe below is pinned to the MERGED squash commit rather than the PR head, because the
+      product branch is deleted and a squash gives the landed content a different sha. The negative
+      control resolves the squash's first parent 71c6ad952947035532000893b1bb895b86564bd6.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn17228_real_postgres_drifted_default_write_path.py?ref=8dfb7bbf9506497e10f763cb821bb107ccc47958" --jq '.content' | base64 -d | grep -c 'ALTER COLUMN {column} DROP DEFAULT'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_delegation.py?ref=8dfb7bbf9506497e10f763cb821bb107ccc47958" --jq '.content' | base64 -d | grep -c '"tenant_id", "timestamp", "task_type", "delegated_to"'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_delegation.py?ref=71c6ad952947035532000893b1bb895b86564bd6" --jq '.content' | base64 -d | grep -c '"task_type": ""')" = "0"
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2443 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '[.state,.mergeCommit.oid]|join(" ")' | grep -Fxc 'MERGED 8dfb7bbf9506497e10f763cb821bb107ccc47958'
