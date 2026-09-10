@@ -1,0 +1,91 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-14201
+title: Central OCC evidence for the OMN-14201 production scale-down prod-promotion grant
+summary: >-
+  Central OCC evidence for the PR that stages one prod-promotion grant entry onto
+  onex_change_control@main for the OMN-14201 production scale-down. The entry is a SAME-DIGEST
+  authorization on sha256:13c96028…, the runtime digest k8s/onex-prod/runtime/kustomization.yaml
+  already pins on omninode_infra main at bc451167 and the seven onex-prod runtime pods are already
+  running. It authorizes exactly one deploy_target=runtime-only dispatch of deploy-onex-prod.yml,
+  whose apply is scoped to the namespace bootstrap and k8s/onex-prod/runtime, and whose only content
+  change is replica counts (omninode_infra#1310). No image changes, no version roll. PREP ONLY: this
+  contract proves the request is well-formed and validated against both the producer-side schema and
+  the consumer-side k3s gate. It does NOT authorize prod mutation and it is NOT the approval act.
+  The third receipt below records, measured rather than asserted, that the promotion this grant
+  covers is currently REFUSED by the OMN-17357 staging-green premise — which is the governing
+  ruling's own logic enforced mechanically, not a defect in the grant.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: manual
+    description: >-
+      Prod-promotion grant registry value, producer-side schema validation, and consumer-side gate
+      resolution for the OMN-14201 production scale-down grant.
+    command: >-
+      grep -Fq 'grant-5e1078c5-f906-4a6c-8825-ae500c9a1dfc' grants/prod_promotion_grants.yaml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn14201-grant-registry-value"
+    description: >-
+      The prod-promotion grant registry (grants/prod_promotion_grants.yaml) carries the OMN-14201
+      grant entry grant-5e1078c5-f906-4a6c-8825-ae500c9a1dfc under promotion_batch_id
+      batch-209965ad-bccc-4c41-b4b1-5a6db6935839, on image_digest
+      sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6 with runtime_lane prod.
+      That digest is the one the unconditional OMN-14209 runtime grant gate resolves from
+      k8s/onex-prod/runtime/kustomization.yaml, re-read on omninode_infra main at bc451167 on
+      2026-09-10 and unchanged — a same-digest authorization that changes no workload image.
+      Falsifiable: the same grep returns 1 against any base lacking the entry, including
+      onex_change_control@main and this repo's dev branch, which was run as the negative control.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Fq 'grant-5e1078c5-f906-4a6c-8825-ae500c9a1dfc' grants/prod_promotion_grants.yaml &&
+          grep -Fq 'promotion_batch_id: batch-209965ad-bccc-4c41-b4b1-5a6db6935839'
+          grants/prod_promotion_grants.yaml && grep -Fq
+          'image_digest: sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6'
+          grants/prod_promotion_grants.yaml
+  - id: "dod-omn14201-grant-schema-validation"
+    description: >-
+      The repo's own prod-promotion grant schema validator passes against the grant file carrying the
+      rendered OMN-14201 entry — required-field presence, grant_id and image_digest regexes, ISO-8601
+      timestamp shapes, expires_at strictly after created_at, the OMN-13424 at-rest invariant that
+      refuses an already-expired entry, and grant_id uniqueness. Executed hermetically from the repo
+      checkout against the rendered file, no network. Proven by a negative control in the same run: a
+      copy of the identical file with runtime_lane blanked FAILS with exit 1 and names the violation,
+      so the PASS is a real verdict and not a validator that silently accepts everything.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run python src/onex_change_control/scripts/validate_prod_promotion_grants.py --file
+          grants/prod_promotion_grants.yaml
+  - id: "dod-omn14201-consumer-gate-blocks-on-staging-green"
+    description: >-
+      The consumer-side k3s gate (omninode_infra scripts/validate_prod_promotion_grant.py), run
+      offline against the rendered grant file with the digest this grant covers and with prod health
+      HEALTHY, REFUSES the promotion — twice, on two different inputs, for two different stated
+      reasons, both from the OMN-17357 staging-green premise which is evaluated BEFORE the grant is
+      ever read. With no report supplied it blocks 'absent'; with the real current staging report
+      supplied (bar revision r10, collected 2026-09-10T16:44:13Z) it blocks 'not_green', reporting
+      2 PASS / 3 FAIL / 3 UNPROVEN. Both exit 1. This is recorded as evidence rather than omitted
+      because an approver must know that merging this grant does not make the promotion runnable
+      today: it becomes runnable when the staging bar goes green, which is exactly what the governing
+      operator ruling requires. The grant half of the gate is deliberately NOT demonstrated here —
+      the staging premise short-circuits before it, so any claim about the grant half would be
+      asserted rather than measured.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          python3 scripts/validate_prod_promotion_grant.py --target-digest
+          sha256:13c96028566b7f429fd46298304fb61c03c325b3e45f60638cce61c28185fcf6 --requested-by
+          daniyalabbas96 --health-status healthy --grants-file grants/prod_promotion_grants.yaml
