@@ -1,0 +1,123 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18074"
+title: "Harden OCC auto-merge eligibility and strategy"
+summary: >-
+  Code-only governance workflow hardening for onex_change_control PR #8788. The change makes eligibility
+  pagination and status selection fail closed, and selects merge strategy from the actual repository merge-queue
+  state. It does not deploy, restart services, build or publish runtime images, mutate runtime state,
+  or perform live service actions.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "The changed auto-merge workflow behavior is covered by explicit pagination/status and
+      strategy regression tests at the immutable source head."
+    command: "See the two local_done_gate test_passes entries."
+  - kind: "ci"
+    description: "The central evidence PR is bound to its actual open PR identity and the pinned workflow
+      source content."
+    command: "See the hosted source-content and local historical self-bind entries."
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-occ-eligibility-pagination-and-status"
+    description: >-
+      Local source-bound regression evidence for exact-head eligibility pagination, canonical attempt
+      selection, incomplete and malformed check-run fail-closed behavior, and strict status/conclusion
+      handling. The recorded command verifies the clean immutable source head before running the explicit
+      14-test group.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    status: "pending"
+    checks:
+      - check_type: "test_passes"
+        check_value: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          REPO_ROOT="${OMNI_HOME}/omni_worktrees/OMN-18074/onex_change_control"
+          EXPECTED_SHA="e498a8221a4e75df28e8ad86e31b43f26f8b5fc7"
+          cd "$REPO_ROOT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          OMN18074_TEST_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$OMN18074_TEST_ROOT"' EXIT
+          timeout --kill-after=15s 300s uv run --frozen pytest --basetemp "$OMN18074_TEST_ROOT/cases" -vv --durations=10 \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_exact_head_success_beyond_api_page_is_selected[31]' \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_exact_head_success_beyond_api_page_is_selected[100]' \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_latest_exact_head_non_success_masks_older_success[in_progress-None-2026-09-09T00:00:00Z]' \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_latest_exact_head_non_success_masks_older_success[queued-None-None]' \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_latest_exact_head_non_success_masks_older_success[completed-failure-2026-09-09T00:00:00Z]' \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_older_incomplete_candidate_does_not_mask_newer_completed_success \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_started_at_order_wins_when_completion_order_is_overlapped \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_missing_eligibility_fields_fail_closed[status]' \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_missing_eligibility_fields_fail_closed[conclusion]' \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_unknown_eligibility_status_fails_closed \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_malformed_eligibility_id_fails_closed \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_check_runs_api_error_defers_without_stale_success \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_malformed_check_runs_response_defers_without_stale_success \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_malformed_check_runs_page_defers_without_partial_success
+  - id: "dod-occ-queue-aware-merge-strategy"
+    description: >-
+      Local source-bound regression evidence for queue-aware merge strategy, non-default base lookup,
+      malformed GraphQL responses, API failures, and squash capability fail-closed behavior. The recorded
+      command verifies the clean immutable source head before running the explicit seven-test group.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    status: "pending"
+    checks:
+      - check_type: "test_passes"
+        check_value: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          REPO_ROOT="${OMNI_HOME}/omni_worktrees/OMN-18074/onex_change_control"
+          EXPECTED_SHA="e498a8221a4e75df28e8ad86e31b43f26f8b5fc7"
+          cd "$REPO_ROOT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          OMN18074_TEST_ROOT="$(mktemp -d)"
+          trap 'rm -rf "$OMN18074_TEST_ROOT"' EXIT
+          timeout --kill-after=15s 300s uv run --frozen pytest --basetemp "$OMN18074_TEST_ROOT/cases" -vv --durations=10 \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_merge_method_follows_actual_queue_presence[{"id":"queue"}]' \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_merge_method_follows_actual_queue_presence[null]' \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_non_default_base_is_used_for_queue_lookup \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_merge_queue_lookup_error_fails_closed_without_merge \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_partial_or_malformed_merge_queue_response_fails_closed_without_merge[{"data":{"repository":{}}}]' \
+            'tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_partial_or_malformed_merge_queue_response_fails_closed_without_merge[{"data":{"repository":{"mergeQueue":{"id":42}}}}]' \
+            tests/ci/test_auto_merge_eligibility_and_strategy_omn18074.py::test_no_queue_without_squash_permission_fails_closed_without_merge
+  - id: "dod-OmniNode-ai-onex_change_control-pr-8788"
+    description: >-
+      Hosted-and-local pinned source-content observation for the actual workflow at immutable source commit
+      e498a8221a4e75df28e8ad86e31b43f26f8b5fc7. It asserts only the declared source literals and does
+      not claim behavior, CI success, image build, deployment, runtime action, topic census, DDL, or rollout.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |
+          bash -euo pipefail <<'CHECK'
+          CONTENT="$(gh api 'repos/OmniNode-ai/onex_change_control/contents/.github/workflows/auto-merge.yml?ref=e498a8221a4e75df28e8ad86e31b43f26f8b5fc7' --jq .content | base64 -d)"
+          printf '%s\n' "$CONTENT" | grep -F 'check-runs?per_page=100'
+          printf '%s\n' "$CONTENT" | grep -F 'merge_args=(--auto --squash)'
+          CHECK
+  - id: "occ-self-bind-pr-8788"
+    description: >-
+      Historical initial identity observation for central OCC PR #8788: the actual PR was open on its
+      renewal branch at the recorded e498 source head and dev base. This local_done_gate observation does
+      not assert that a later evidence commit remains the current PR head, and it makes no merge, source,
+      runtime, deployment, service, image, topic, DDL, or rollout claim.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: |
+          bash -euo pipefail <<'CHECK'
+          gh pr view 8788 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid,baseRefName --jq 'if .number == 8788 and .state == "OPEN" and .headRefName == "jonah/omn-18074-occ-auto-merge-queue-aware" and .headRefOid == "e498a8221a4e75df28e8ad86e31b43f26f8b5fc7" and .baseRefName == "dev" then [.number, .state, .headRefName, .headRefOid, .baseRefName] | @tsv else error("unexpected PR binding") end'
+          CHECK
