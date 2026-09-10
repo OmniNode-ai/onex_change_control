@@ -52,3 +52,115 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8842 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "ac1-alert-run-exits-nonzero-and-names-offenders"
+    description: |-
+      AC1 binding, executed. "An over-bound run exits non-zero AND writes dlq-monitor-result.json
+      carrying the full per-topic histogram and the offender list, and the step summary names every
+      offending topic with its arrival count, its bound and its retained depth."
+
+      Two halves, one command, because neither alone is the criterion:
+
+        * the WORKFLOW half. tests/ci/test_omn18088_dlq_monitor_names_its_offenders.py does not
+          re-implement the renderer -- it EXTRACTS the Python the workflow ships, in the heredoc it
+          ships it in, and runs that against captured payloads from the two live runs at the parent
+          head (34387859397 suppressed, 34399417506 the all-null alert run). TestTheAlertingRunNames
+          ItsOffenders asserts the extracted gate exits 1 and that the rendered summary carries each
+          offending topic with its arrivals and its retained depth; a quiet topic present in the same
+          payload must NOT appear, which is the positive control for the filter, since naming
+          everything is also wrong. TestEveryUnreadableCaseFailsClosed pins the run this ticket was
+          opened for: the exact null payload of 34399417506 is named "THE PROBE DID NOT COMPLETE ...
+          not a DLQ alert", so a malfunction is never readable as a breach.
+        * the PAYLOAD half. TestTheAlertingRunReturnsItsEvidence asserts the handler RETURNS a typed
+          ModelDlqDepthMonitorResult on the alert path instead of raising, that every offender carries
+          arrivals, bound and retained depth, and that the serialized payload is not the empty-but-
+          well-typed shape -- the regression that would satisfy a naive "payload is not null" check.
+
+      HONEST LIMIT, stated rather than left to be discovered: this proves the gate's exit status, the
+      rendered summary and the payload the file is written FROM. It does not exercise receipt mode's
+      file write end to end. That half is covered by three live runs at the merged head recorded on
+      the ticket (34407661033, 34410010894, 34410672052, each carrying the full 67-row histogram),
+      which are Actions-run readbacks on a private repository the compliance runner cannot fetch --
+      see OMN-18118. Named as its own entry rather than added to any entry above, because every entry
+      above is merged and the Append-Only Gate holds merged entries immutable.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/ci/test_omn18088_dlq_monitor_names_its_offenders.py tests/unit/nodes/node_dlq_depth_monitor_effect/test_omn18088_alert_path_carries_the_offenders.py -q -k "TestTheAlertingRunNamesItsOffenders or TestTheAlertingRunReturnsItsEvidence or TestEveryUnreadableCaseFailsClosed"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac2-suppressed-path-unchanged-both-paths-agree"
+    description: |-
+      AC2 binding, executed. "suppress_alert_exit=true behaviour is unchanged: the run stays green and
+      returns the same histogram it returns today. Falsified by a suppressed run that goes red or whose
+      payload shape differs from run 34387859397's."
+
+      The criterion is a NON-regression, so it is bound to the two classes that assert exactly that and
+      nothing else. TestTheGreenPaths runs the workflow's own extracted gate over a suppressed payload
+      and asserts exit 0 with the offending topic still named and "does NOT gate this run" printed --
+      green is not silence -- plus a clean run that is green and says so. TestBothPathsWriteTheSameFile
+      asserts the suppressed call still returns all three alerting verdicts with alert_exit_requested
+      false, and that the alerting and suppressed serializations agree field for field, histogram row
+      for row, on everything except the two fields that record the gating decision itself.
+
+      That last assertion is what makes this bind AC2 rather than merely accompany it: a fix that
+      quietly changed the suppressed payload's shape would pass every AC1 check and fail here.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/ci/test_omn18088_dlq_monitor_names_its_offenders.py tests/unit/nodes/node_dlq_depth_monitor_effect/test_omn18088_alert_path_carries_the_offenders.py -q -k "TestTheGreenPaths or TestBothPathsWriteTheSameFile"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac3-the-file-scoped-suite-is-green-at-the-fix"
+    description: |-
+      AC3 binding, the green half. "A file-scoped test is red at the parent sha, asserting the
+      null-payload shape the alert path produces today, and green at the fix."
+
+      tests/unit/nodes/node_dlq_depth_monitor_effect/test_omn18088_alert_path_carries_the_offenders.py
+      is that file. It is green here, at the merged head, all ten cases. Its module docstring names the
+      three layers that conspired to lose the offender list and states that every assertion that a
+      value is present is paired with the shape the defect produced, so a regression cannot pass by
+      returning an empty-but-well-typed result -- which is the "asserting the null-payload shape" half
+      of the criterion, held inside the suite rather than alongside it.
+
+      A green run at the merged head cannot, on its own, establish that the suite was red before. The
+      companion entry ac3-negative-control-red-at-the-parent-sha supplies that
+      half; neither entry is the criterion without the other.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dlq_depth_monitor_effect/test_omn18088_alert_path_carries_the_offenders.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac3-negative-control-red-at-the-parent-sha"
+    description: |-
+      AC3 binding, the red-at-the-parent half, as a re-runnable fact rather than a recollection.
+
+      The ticket records the suite as 10 failed / 0 passed at parent 0b2749b9a5d3bda2b53b5b164112e533d9bd364f.
+      That measurement is not reproducible from the repository -- the file did not exist at that commit,
+      so nothing can re-run it there. What IS reproducible, and is what this check asserts, is the
+      REASON it could not have passed: the field every assertion turns on, alert_exit_requested, has
+      zero occurrences in model_dlq_depth_monitor_result.py at the parent, and the suite file itself is
+      absent from that tree.
+
+      Each of the two negative assertions is paired with its positive control at the merged squash
+      abb59f0a8e913ae5e3c5e1407cf221a494a67f83, where the field appears six times and the suite file is
+      present. Without those, a matcher that had silently stopped matching would report the same clean
+      zero as a genuine absence -- an empty result is not evidence of absence.
+
+      Read from git object storage at two pinned shas, so the answer does not depend on which tree the
+      verifier happens to be sitting on, and no network or credential is required.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          P=0b2749b9a5d3bda2b53b5b164112e533d9bd364f; M=abb59f0a8e913ae5e3c5e1407cf221a494a67f83; F=src/omnibase_infra/nodes/node_dlq_depth_monitor_effect/models/model_dlq_depth_monitor_result.py; T=tests/unit/nodes/node_dlq_depth_monitor_effect/test_omn18088_alert_path_carries_the_offenders.py; test "$(git show "${P}:${F}" | grep -c alert_exit_requested)" -eq 0 && test -z "$(git ls-tree -r --name-only "${P}" -- "${T}")" && test "$(git show "${M}:${F}" | grep -c alert_exit_requested)" -ge 1 && test -n "$(git ls-tree -r --name-only "${M}" -- "${T}")"
+        cwd: "${OMNI_HOME}/omnibase_infra"
