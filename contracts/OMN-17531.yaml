@@ -50,3 +50,231 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8066 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "ac1-overlays-bind-literal-one-at-merge-sha"
+    description: >-
+      AC1 binding, the positive half: "Each of the three lanes has ONEX_WIRING_STRICT_MODE: '1' bound
+      in its overlay, in committed source." Re-derived by a remote read pinned to the merge commit 810c818a10b3b149a9fa2e5de112fe9909b29b7f
+      (omnibase_infra#3137), not from a local checkout, so the check answers a question about landed source
+      rather than about whatever tree the verifier happens to sit in. Matched with grep -qxF against the
+      exact literal two-space-indented line, so an interpolated ${ONEX_WIRING_STRICT_MODE:-1} form would
+      NOT satisfy it — that distinction is the point of the criterion's second sentence, because an interpolated
+      form lets an ambient shell export silently return a lane to the quarantining semantics. All three
+      lanes are asserted, the collaborator lane included: AC1 is a committed-source criterion and is satisfied
+      for that lane, which is why the 2026-09-10 scope split moves only the collaborator lane's DEPLOY
+      criteria and the AC5 residual out. Named as its own entry rather than added to any entry above it,
+      because every entry above is merged and the Append-Only Gate holds merged entries immutable.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          n=0; for f in dev-lane lakshman stability-test; do body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.$f.yml?ref=810c818a10b3b149a9fa2e5de112fe9909b29b7f" --jq '.content' | base64 -d)"; grep -qxF '  ONEX_WIRING_STRICT_MODE: "1"' <<< "$body" && n=$((n+1)); done; [ "$n" = 3 ]
+  - id: "ac1-negative-control-absent-at-the-parent-commit"
+    description: >-
+      AC1 binding, the negative control. The same three remote reads against the merge commit's first
+      parent 35088928699757f28c65974438e7d97c0238e76a must find NO ONEX_WIRING_STRICT_MODE line at all
+      in any of the three overlays. Without this, the positive check above cannot distinguish "this PR
+      bound the flag" from "the flag was already there and this PR did nothing" — a green result on the
+      positive half alone is not evidence for the criterion. Run 2026-09-10: 0 of 3 overlays carry the
+      key at the parent, 3 of 3 carry it at the merge.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          n=0; for f in dev-lane lakshman stability-test; do body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.$f.yml?ref=35088928699757f28c65974438e7d97c0238e76a" --jq '.content' | base64 -d)"; grep -qF 'ONEX_WIRING_STRICT_MODE' <<< "$body" && n=$((n+1)); done; [ "$n" = 0 ]
+  - id: "ac1-strict-anchor-reaches-every-runtime-service"
+    description: >-
+      AC1 binding, the reachability half: "No :-0 default is left reachable for those three lanes." Binding
+      the anchor is not the same as consuming it — an overlay could define the strict-wiring env block
+      and merge it into nothing, leaving every runtime service still resolving the base docker-compose.infra.yml
+      ${ONEX_WIRING_STRICT_MODE:-0}. This check counts the YAML merge-key references to each overlay's
+      strict-wiring anchor and requires exactly 8 across the three files: dev 3 (omninode-runtime, runtime-effects,
+      runtime-worker), the collaborator lane 2 (omninode-runtime, runtime-effects — that lane declares
+      no worker), stability-test 3. projection-api and omninode-contract-resolver are deliberately NOT
+      counted: they are uvicorn servers that never reach wire_from_manifest, so binding strict mode on
+      them would assert nothing.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          n=0; for p in dev-lane:dev_lane_strict_wiring_env lakshman:lakshman-strict-wiring-env stability-test:stability_test_strict_wiring_env; do f=${p%%:*}; a=${p##*:}; body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.$f.yml?ref=810c818a10b3b149a9fa2e5de112fe9909b29b7f" --jq '.content' | base64 -d)"; c=$(grep -c "!!merge <<:.*\*$a" <<< "$body"); n=$((n+c)); done; [ "$n" = 8 ]
+  - id: "ac2-attribution-mechanism-on-both-sanctioned-paths"
+    description: |-
+      AC2 binding, scoped to the dev and stability-test lanes after the 2026-09-10 scope split. Both were
+      redeployed on 2026-09-02 through the sanctioned path and nothing else — dev via
+      scripts/deploy-runtime.sh --execute --force --restart, stability-test via
+      scripts/runtime_build/refresh_stability_lane.sh --execute — and each run wrote a lane-deploy
+      attribution record. This check asserts, by remote read at the merge commit, that BOTH sanctioned
+      scripts invoke scripts/preflight_lane_deploy_attribution.py, which is the component that writes the
+      record. It is paired with the executed-behaviour entry below; the mechanism read alone would pass on
+      a script that called the preflight and ignored its verdict.
+
+      Stated plainly rather than implied: the two record ids themselves —
+      20260902T144403.202541Z-dev-allow.json and 20260902T145842.371287Z-stability-test-allow.json, 2 of
+      189 in the record directory — are artifacts on the lab host's filesystem. A GitHub-hosted runner has
+      no route to that host, so the gate cannot re-execute that readback and does not pretend to. The
+      readback is recorded on the ticket with its date. What the gate proves is the mechanism and the
+      behaviour; what the ticket carries is the observation.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          n=0; for f in scripts/deploy-runtime.sh scripts/runtime_build/refresh_stability_lane.sh; do body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/$f?ref=810c818a10b3b149a9fa2e5de112fe9909b29b7f" --jq '.content' | base64 -d)"; grep -qF 'preflight_lane_deploy_attribution' <<< "$body" && n=$((n+1)); done; [ "$n" = 2 ]
+  - id: "ac2-attribution-behaviour-executes"
+    description: >-
+      AC2 binding, the executed half. Runs the test suite that exercises lane-deploy attribution through
+      the sanctioned deploy path, so the criterion is answered by behaviour rather than by a grep for
+      a filename. A script that imported the preflight and discarded its result would satisfy the mechanism
+      read above and fail here, which is why the two are separate entries rather than one.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/scripts/test_deploy_runtime_lane_attribution.py tests/scripts/test_preflight_lane_deploy_attribution.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac3-strict-binding-executes-in-both-directions"
+    description: |-
+      AC3 binding, scoped to dev and stability-test after the 2026-09-10 scope split. The criterion's FAIL
+      condition is a quarantined-but-running lane. Under ONEX_WIRING_STRICT_MODE=1 that state is
+      unreachable by construction: an unwireable handler kills boot instead of being quarantined. So the
+      criterion reduces to whether strict mode is genuinely bound on the runtime services of those lanes,
+      which this check executes rather than reads — the nine-case suite added with the change pins the
+      binding in BOTH directions, so a later overlay refactor that dropped it goes RED here instead of
+      silently returning a lane to quarantining semantics.
+
+      Stated plainly rather than implied: the boot observation itself is a lab-host fact and the gate does
+      not re-execute it. Two reasons, both measured. A GitHub-hosted runner has no route to that host. And
+      the boot-log summary is gone regardless — the json-file driver is capped at 10 MB across three files
+      and the boot window on both main runtimes has rotated out, confirmed by a positive control on
+      2026-09-10 rather than assumed: 309 auto-wiring lines survive on omninode-runtime and 0 summary
+      lines do, so a grep for "Auto-wiring complete" returns an empty result that reads exactly like a
+      clean bill of health. The recorded boot evidence is the 2026-09-02T15:15Z readback on the ticket:
+      wired=231 skipped=79 failed=0 quarantined=0 on both mains, quarantined=0 on all six services, and a
+      2026-09-10 re-read showing all six running, strict, at RestartCount 0.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_lane_strict_wiring_omn17531.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac3-base-default-still-quarantines"
+    description: >-
+      AC3 binding, the control. The criterion is only meaningful if the two settings genuinely differ:
+      at 0 an unwireable handler is quarantined and boot succeeds, at 1 it kills boot. If the base compose
+      had also been flipped to 1, every lane would be strict for reasons unrelated to this change and
+      the overlay literal would prove nothing. This check reads the base docker-compose.infra.yml at the
+      merge commit and requires the quarantining default ${ONEX_WIRING_STRICT_MODE:-0} to still be there
+      — which is simultaneously the proof that prod and judge were left untouched, as the ticket's own
+      scope section requires.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.infra.yml?ref=810c818a10b3b149a9fa2e5de112fe9909b29b7f" --jq '.content' | base64 -d)"; grep -qxF '  ONEX_WIRING_STRICT_MODE: ${ONEX_WIRING_STRICT_MODE:-0}' <<< "$body"
+  - id: "ac4-exposure-fixed-in-source-not-suppressed"
+    description: >-
+      AC4 binding, the positive half. Auto-wiring itself produced zero failures on the two redeployed
+      lanes, so there was no "Auto-wiring failed for N contract(s)" block to file from them. Two other
+      exposures surfaced during the same rollout and each was filed as its own ticket with its own root
+      cause rather than worked around. This check proves one of them was fixed IN SOURCE, which is a stronger
+      claim than "a ticket exists" — a filed-then-abandoned finding would satisfy the weaker form. At
+      the merge commit, scripts/runtime_build/verify_stability_refresh.py accepted a body of {"status":
+      "degraded", "details": {"healthy": true}} because it read details.healthy and never consulted status,
+      so the refresh gate signed off a lane its own probe called unhealthy ten minutes later. The check
+      requires that permissive read to be ABSENT at dev and PRESENT at the merge commit, so it is falsifiable
+      in both directions: it goes RED if the fix is reverted, and it would have gone RED before the fix
+      landed.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          now="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/verify_stability_refresh.py?ref=17047498145d8b020e348bcb32e9ea533ce80001" --jq '.content' | base64 -d)"; then_="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/verify_stability_refresh.py?ref=810c818a10b3b149a9fa2e5de112fe9909b29b7f" --jq '.content' | base64 -d)"; grep -qF 'details_healthy' <<< "$then_" && ! grep -qF 'details_healthy' <<< "$now"
+  - id: "ac4-no-suppression-landed-in-the-strict-mode-pr"
+    description: >-
+      AC4 binding, the prohibition half: "Do NOT downgrade the flag, add an allowlist, add a per-contract
+      skip, or widen a quarantine branch to make a lane green." The positive half above cannot see this
+      — a lane can have findings filed AND a quietly added allowlist. This check reads the merged file
+      list of omnibase_infra#3137 and requires zero files whose path names an allowlist, skiplist, waiver
+      or exemption surface. It is paired with ac1-overlays-bind-literal-one-at-merge-sha, which independently
+      proves the flag was not downgraded to an interpolated or 0-valued form, and with ac3-base-default-still-quarantines,
+      which proves no lane outside the three was widened. The change's five files are the three lane overlays
+      plus tests/ci/test_env_parity.py and tests/ci/test_lane_strict_wiring_omn17531.py.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          files="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/3137/files --paginate --jq '.[].filename')"; [ "$(grep -ciE 'allowlist|allow_list|skiplist|waiver|exempt' <<< "$files")" = "0" ]
+  - id: "ac5-lab-committed-package-set-is-the-narrow-two"
+    description: |-
+      AC5 binding, the lab half, scoped to dev and stability-test after the 2026-09-10 scope split. The
+      criterion asks for the set each lane wires under strict mode against the set onex-dev wires, and
+      anticipated a lab lane wiring a strictly SMALLER set. Measured, the picture is the opposite and more
+      interesting than the criterion expected. This check asserts the COMMITTED runtime policy for the lab
+      lanes, omnibase_infra docker/runtime-policy.env, declares exactly two packages: omnibase_infra and
+      omnimarket. Split from the staging half below into its own entry so each receipt binds a single
+      product repository, rather than one entry naming two and leaving its authority ambiguous.
+
+      Read live on 2026-09-10, the dev and stability-test main runtimes actually carry four packages:
+      omnibase_infra, omnimarket, omniclaude and omniintelligence. That extra pair arrives from a
+      host-side environment override, not from committed source. The consequence worth recording, and the
+      reason the criterion is not simply "passed": the lab lanes run a superset of BOTH staging and their
+      own committed policy, so a lab-only failure can originate in an omniclaude or omniintelligence
+      contract that neither declares, and a green lab lane is not by itself evidence about a package
+      staging does not run. The per-lane contract counts behind this — dev 310, stability-test 310
+      byte-identical, the collaborator lane 308 short by node_waste_detection_compute and
+      version_skew_detector purely because its image is older — are recorded on the ticket. The
+      post-redeploy re-run of that count for the collaborator lane is the AC5 residual and lives on
+      OMN-17807 AC5. Stated plainly: the live column is an observation on the lab host, which a
+      GitHub-hosted runner has no route to; the gate asserts the committed declaration and the ticket
+      carries the live readback with its date.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          lab="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/runtime-policy.env?ref=17047498145d8b020e348bcb32e9ea533ce80001" --jq '.content' | base64 -d)"; grep -qxF 'ONEX_ACTIVE_RUNTIME_PACKAGES=omnibase_infra,omnimarket' <<< "$lab"
+  - id: "ac5-staging-committed-package-set-is-the-same-two"
+    description: |-
+      AC5 binding, the staging half. Asserts that the committed onex-dev runtime ConfigMap in
+      omninode_infra declares the same two packages the lab policy declares, omnibase_infra and
+      omnimarket, so the comparison the criterion asks for is anchored on both sides rather than on the
+      lab side alone. Paired with the lab half above: together they establish that the two COMMITTED
+      declarations agree, which is what makes the live lab lanes' four-package set a finding about a
+      host-side override rather than a difference between the two environments' intent.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          stg="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/configmap.yaml?ref=7534696b5e38ebd24131ec5592483363518abb1c" --jq '.content' | base64 -d)"; grep -qxF '  ONEX_ACTIVE_RUNTIME_PACKAGES: "omnibase_infra,omnimarket"' <<< "$stg"
+  - id: "occ-self-bind-pr-8864"
+    description: >-
+      OCC self-binding receipt for PR #8864, the in-repo evidence PR carrying this contract. Binds OMN-17531
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+      Added on the eligibility preflight's own instruction after every criterion receipt verified; it
+      asserts nothing about the criteria and exists only so the evidence PR is resolvable as its own artifact.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8864 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
