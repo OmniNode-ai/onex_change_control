@@ -45,3 +45,93 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8894 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "omn18127-ac1-ac5-negative-control"
+    description: >-
+      AC1 and AC5 — the gate fails the omnimarket PR that adds an unmodelled key, and the SAME overlay
+      passes once the consumer learns it. The pair is what makes the red a finding rather than a permanent
+      state. The red case is the real event reproduced: omnimarket#2437's dev-lane declaration against
+      the publisher model as it stood at 2026-09-10T04:17:04Z. Both halves were also run outside the test
+      suite against the ACTUAL publisher source rather than a reduced copy — refused (exit 1, naming lanes.dev.ledger_readback)
+      against omnibase_infra origin/dev 19608d7f9, and accepted (exit 0) against omnibase_infra#3387 head
+      2f5f3d22d, which learns the key. The checks below run the suite that pins both halves and confirm
+      the two named cases exist by name.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+      - "AC5"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_ci_bus_overlay_parity.py::TestParityAgainstTheRealIncident
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/ci/test_ci_bus_overlay_parity.py?ref=bf1290be41c16dcd2da2e7a193dc1facd6fc4433" --jq '.content' | base64 -d | grep -c 'def test_the_key_that_broke_the_fleet_fails_on_this_repositorys_pr'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/ci/test_ci_bus_overlay_parity.py?ref=bf1290be41c16dcd2da2e7a193dc1facd6fc4433" --jq '.content' | base64 -d | grep -c 'def test_the_same_overlay_passes_once_the_consumer_learns_the_key'
+  - id: "omn18127-ac2-consumer-resolved-live"
+    description: >-
+      AC2 — the consumer-side model is resolved from omnibase_infra's dev branch at check time, never
+      from a vendored copy. A pinned or vendored copy would reproduce this very defect one level down,
+      leaving the gate green against a model nobody runs. The workflow sparse-checks scripts/trigger_rebuild_on_merge.py
+      at ref dev, and a test asserts that ref is dev rather than a sha.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci-bus-overlay-parity.yml?ref=bf1290be41c16dcd2da2e7a193dc1facd6fc4433" --jq '.content' | base64 -d | grep -c 'repository: OmniNode-ai/omnibase_infra'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci-bus-overlay-parity.yml?ref=bf1290be41c16dcd2da2e7a193dc1facd6fc4433" --jq '.content' | base64 -d | grep -c 'scripts/trigger_rebuild_on_merge.py'
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_ci_bus_overlay_parity.py::TestParityWorkflowIsWired
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "omn18127-ac3-fails-closed"
+    description: >-
+      AC3 — a fetch, parse or resolution failure fails the check rather than skipping it. A parity gate
+      that cannot read its counterpart has not passed; it has not run. Six refusal paths each have their
+      own case: the consumer model missing, empty, unparseable, failing to import, carrying no loader,
+      and the overlay itself missing. The empty case is the one that matters most in practice, because
+      a silently empty sparse checkout is the shape that would otherwise turn the whole job into a green
+      no-op; the workflow also refuses it before the checker runs.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_ci_bus_overlay_parity.py::TestFailsClosed -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci-bus-overlay-parity.yml?ref=bf1290be41c16dcd2da2e7a193dc1facd6fc4433" --jq '.content' | base64 -d | grep -c 'This run compared nothing and proves nothing about the contract'
+  - id: "omn18127-ac4-strictness-preserved"
+    description: >-
+      AC4 — the consumer's extra=forbid strictness is untouched and is asserted rather than assumed. This
+      gate is a re-run of that strictness, so if it were ever relaxed to extra=allow every overlay would
+      validate here and the check would report green forever, most confidently at the moment the contract
+      stopped being enforced. The checker therefore reads the strictness directly from the fetched SOURCE
+      with ast — so a runtime mutation cannot satisfy it — and refuses a relaxed consumer, naming the
+      models that lost it. On the consumer side the strictness itself is pinned by the publisher's own
+      suite, which still refuses an unmodelled lane key after the fix.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_ci_bus_overlay_parity.py::TestRefusesASilentlyGreenConsumer
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/check_ci_bus_overlay_parity.py?ref=bf1290be41c16dcd2da2e7a193dc1facd6fc4433" --jq '.content' | base64 -d | grep -c '_REQUIRED_STRICT_MODELS'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci-bus-overlay-parity.yml?ref=bf1290be41c16dcd2da2e7a193dc1facd6fc4433" --jq '.content' | base64 -d | grep -c 'NO OVERRIDE INPUT'
