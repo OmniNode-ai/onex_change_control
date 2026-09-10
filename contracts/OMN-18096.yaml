@@ -43,3 +43,48 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8847 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18096-ac2-red-green-replay"
+    description: >
+      AC2 -- the gate shown RED at the state of both repositories when the OMN-18083 skew was introduced,
+      and GREEN after the fix, both runs recorded. The producer sha is held FIXED at omnimarket a41831914053c085f9f8a3c2c04ba770f82f2982
+      (#2420, the commit that added lanes.dev.projection_readback) across both runs, so the only variable
+      is the consumer-side model. RED consumer = omnibase_infra 34340a64c482beb81c7ca16a41f3e7553a6e5a32,
+      the dev head immediately before the fix. GREEN consumer = cc8974408d6c543311a40b8beb414787a80fef2e
+      (#3371). GREEN IS A REAL CI RUN: `CI Bus Overlay Binding` run 34403897618, push to dev at head cc897440,
+      conclusion success -- it read omnimarket@dev live, whose overlay blob 1dae1b683f5a0ea1261e3321a31351b0050fdea8
+      is byte-identical to a4183191's, so that run IS the GREEN half of this pair and not a proxy for
+      it. RED IS A LOCAL REPLAY, not a CI run, and cannot be one: the workflow's producer checkout pins
+      `ref: dev` with no dispatch input, and test_binding_workflow_checks_out_the_producer_side_file asserts
+      that pin, so no dispatch can point the gate at a historical producer sha. The replay ran the workflow's
+      own command, `uv run pytest tests/unit/scripts/test_ci_bus_overlay_live_binding.py -v --no-header
+      -p no:randomly` with CI_BUS_OVERLAY_LIVE_PATH set, in a detached worktree at the RED consumer sha
+      with the as-landed gate artifact staged in (it did not exist at that sha), and returned 2 failed
+      / 4 passed, exit 1, on `lanes.dev.projection_readback Extra inputs are not permitted` -- the exact
+      string OMN-18083 reports. Positive control: the same RED tree against the overlay one commit earlier
+      (omnimarket 6dc10d2282501785529e90f7991119a86a78d982, before the key existed) returned 6 passed,
+      exit 0, so the RED failure is attributable to the producer-side key and not to the pre-fix tree.
+      Logs: .claude_scratch/omn18096-ac2-red.log and .claude_scratch/omn18096-ac2-green.log on the authoring
+      host. The checks below re-derive the pair from immutable pinned shas rather than from those logs:
+      check 1 is the GREEN CI run itself; checks 2-4 are the three facts that make the RED outcome necessary
+      rather than reported -- the pre-fix model carries no knowledge of the key, the lane model it would
+      be parsed by is extra="forbid", and the producer overlay at the skew sha declares it; check 5 is
+      the single variable the fix changed.
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          jobs=$(gh api repos/OmniNode-ai/omnibase_infra/actions/runs/34403897618/attempts/1/jobs --jq '.jobs[] | .name + "|" + .head_sha + "|" + .conclusion') && printf '%s\n' "$jobs" | grep -qFx 'ci-bus-overlay-binding|cc8974408d6c543311a40b8beb414787a80fef2e|success'
+      - check_type: "command"
+        check_value: |-
+          body=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/trigger_rebuild_on_merge.py?ref=34340a64c482beb81c7ca16a41f3e7553a6e5a32" --jq .content | base64 -d) && printf '%s' "$body" | grep -qF 'class ModelCiBusLane(BaseModel):' && ! printf '%s' "$body" | grep -qF 'projection_readback'
+      - check_type: "command"
+        check_value: |-
+          body=$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/trigger_rebuild_on_merge.py?ref=34340a64c482beb81c7ca16a41f3e7553a6e5a32" --jq .content | base64 -d) && printf '%s' "$body" | grep -qF 'class ModelCiBusLane(BaseModel):' && printf '%s' "$body" | grep -A24 -F 'class ModelCiBusLane(BaseModel):' | grep -qF 'model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/config/ci_bus_lanes.yaml?ref=a41831914053c085f9f8a3c2c04ba770f82f2982" --jq .content | base64 -d | grep -c '^    projection_readback:')" = "1"
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/trigger_rebuild_on_merge.py?ref=cc8974408d6c543311a40b8beb414787a80fef2e" --jq .content | base64 -d | grep -c projection_readback)" -ge "4"
