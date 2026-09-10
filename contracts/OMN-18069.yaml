@@ -202,3 +202,111 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8829 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "ac1-cause-named-with-evidence"
+    description: >-
+      AC1 binding. Proves the criterion against merged code rather than a lane's prose, because the narrative
+      record lives in a private repo this runner is not guaranteed to be able to read. The producer PR
+      omnimarket#2423 (merged 2026-09-09T10:03:37Z, squash 459eda587c142053dd412274bc4f4148405087d3) carries
+      BOTH real OMN-18068 command ids — d856d7ff-2044-4e3b-af1a-6d14ae892743 and e2a163a2-507c-4cce-ae91-b6c26b245440
+      — as RED/GREEN fixtures in its own test module, which is the criterion's "the two OMN-18068 commands
+      explained" made executable, and it names the cause as a typed error class rather than a log string.
+      The negative control is the first parent 7bfbb0f0, where the fixture module does not exist at all,
+      so the probe cannot pass vacuously. The narrative half of the record, including the OMN-18062 asymmetry,
+      is the ledger PROGRESS row at docs/tracking/ROLLING_WORK_LEDGER.md:5179 and the criteria table comment
+      on the ticket; neither is machine-readable from this runner.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "
+          import base64, subprocess
+          ref = '459eda587c142053dd412274bc4f4148405087d3'
+          path = 'tests/unit/nodes/node_pr_lifecycle_fix_effect/test_autobind_loud_outcome_omn_18069.py'
+          out = subprocess.check_output(['gh','api','repos/OmniNode-ai/omnimarket/contents/'+path+'?ref='+ref,'--jq','.content'])
+          body = base64.b64decode(out).decode('utf-8','replace')
+          for cid in ('d856d7ff-2044-4e3b-af1a-6d14ae892743','e2a163a2-507c-4cce-ae91-b6c26b245440'):
+              assert cid in body, ('command id missing from the merged fixture', cid)
+          src = subprocess.check_output(['gh','api','repos/OmniNode-ai/omnimarket/contents/src/omnimarket/github_app_auth.py?ref='+ref,'--jq','.content'])
+          assert 'class GitHubAppCredentialMalformedError' in base64.b64decode(src).decode('utf-8','replace')
+          print('both OMN-18068 command ids are fixtures in the merged producer test; the cause is a named typed error')
+          "
+  - id: "ac4-companions-first-and-terminal-ledger-row"
+    description: >-
+      AC4 binding. Checks the falsifiable half of the criterion live: every OCC companion on this ticket
+      merged STRICTLY BEFORE the product PR it carries evidence for, across all five pairs — OCC#8764
+      before omnimarket#2423, OCC#8772 before omnibase_infra#3353, OCC#8799 before omnimarket#2429, OCC#8802
+      before omniclaude#2129, OCC#8829 before omnibase_core#1672. Read from merge timestamps, so it cannot
+      be satisfied by a lane asserting the ordering. Stated limit, rather than left implied: the criterion's
+      other half, the TERMINAL ledger row, is NOT checked here. That ledger lives in a private repo whose
+      read access this runner is not guaranteed to hold, and a check that fails on a missing token rather
+      than on missing evidence would be worse than no check. The rows exist and were read directly at
+      docs/tracking/ROLLING_WORK_LEDGER.md:5242 and :5249, lane=omn18069-autobind-drop.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/commits/e6b57a90907b5682eda2d312068962698ce955b5 --jq '.sha' \
+            && python3 -c "
+          import subprocess
+          PAIRS = [
+              ('repos/OmniNode-ai/onex_change_control/pulls/8764', 'repos/OmniNode-ai/omnimarket/pulls/2423'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8772', 'repos/OmniNode-ai/omnibase_infra/pulls/3353'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8799', 'repos/OmniNode-ai/omnimarket/pulls/2429'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8802', 'repos/OmniNode-ai/omniclaude/pulls/2129'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8829', 'repos/OmniNode-ai/omnibase_core/pulls/1672'),
+          ]
+          def merged_at(api_path):
+              return subprocess.check_output(['gh','api',api_path,'--jq','.merged_at']).decode().strip()
+          for companion, product in PAIRS:
+              c = merged_at(companion)
+              p = merged_at(product)
+              assert c and p and c != 'null' and p != 'null' and c < p, ('companion not merged first', companion, product, c, p)
+          print('companions-first holds for all five pairs')
+          "
+  - id: "omn-18069-scope-item-4-fanout-landed-in-five-repos"
+    description: >-
+      Evidence, deliberately NOT bound to an acceptance criterion. Records that the consumer half of scope
+      item 2 landed in all five repos that vendor scripts/ci/check_occ_companion_merged.py: the gate now
+      short-circuits to a terminal FAIL naming the producer's reason instead of spending its 1500-second
+      deadline, and returns None (fails open, unchanged PENDING path) when the outcome check is absent
+      or unreadable so another repo's outage cannot fail a PR here. Verified at each merged squash sha
+      with a negative control at its first parent (2 occurrences of the check-name constant after, 0 before)
+      — omnibase_infra 6f33161d6892984c5e3ab83741677761ad37a4b7, omniclaude 1b7adef426b61b308ac8abccb2b7065846f19a50,
+      omnimarket e8a538419fd64d91ec30213466b4ee2645cfeb59, omninode_infra 997643b4607edfde56177fb8d2b3c633dc9ea346,
+      omnibase_core e7241554fde580c88713f3cc7bdc9d33174688e2. This entry carries no binds_ac because AC2
+      asserts an END-TO-END behaviour that is still unproven: the producer half (omnimarket#2423, merged
+      2026-09-09T10:03:37Z) has never emitted a single 'occ-autobind / outcome' check-run. Probed live
+      on the four fan-out PR heads with pagination and a working positive control (other occ-autobind-named
+      checks were found on the same heads): zero outcome check-runs. The producer runs on the dev-lane
+      effects runtime, which is the surface OMN-18073 and OMN-18072 still have down.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "
+          import base64, json, subprocess
+          SELF = 'repos/OmniNode-ai/onex_change_control/pulls/8862'
+          assert subprocess.check_output(['gh','api',SELF,'--jq','.number']).decode().strip() == '8862', 'carrier PR did not resolve'
+          TARGETS = [
+              ('repos/OmniNode-ai/omnibase_infra', '6f33161d6892984c5e3ab83741677761ad37a4b7'),
+              ('repos/OmniNode-ai/omniclaude', '1b7adef426b61b308ac8abccb2b7065846f19a50'),
+              ('repos/OmniNode-ai/omnimarket', 'e8a538419fd64d91ec30213466b4ee2645cfeb59'),
+              ('repos/OmniNode-ai/omninode_infra', '997643b4607edfde56177fb8d2b3c633dc9ea346'),
+              ('repos/OmniNode-ai/omnibase_core', 'e7241554fde580c88713f3cc7bdc9d33174688e2'),
+          ]
+          PATH = 'scripts/ci/check_occ_companion_merged.py'
+          def body(repo, ref):
+              out = subprocess.check_output(['gh','api',repo+'/contents/'+PATH+'?ref='+ref,'--jq','.content'])
+              return base64.b64decode(out).decode('utf-8','replace')
+          for repo, sha in TARGETS:
+              after = body(repo, sha).count('AUTOBIND_OUTCOME_CHECK_NAME')
+              parent = json.loads(subprocess.check_output(['gh','api',repo+'/commits/'+sha,'--jq','{p: .parents[0].sha}']))['p']
+              before = body(repo, parent).count('AUTOBIND_OUTCOME_CHECK_NAME')
+              assert after == 2 and before == 0, (repo, sha, after, parent, before)
+          print('fan-out present in five repos, absent at every parent')
+          "
