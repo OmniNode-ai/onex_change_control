@@ -250,15 +250,20 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           python3 -c "
-          import json, subprocess
-          pairs = [('8764','omnimarket','2423'),('8772','omnibase_infra','3353'),('8799','omnimarket','2429'),('8802','omniclaude','2129'),('8829','omnibase_core','1672')]
-          def merged(repo, num):
-              out = subprocess.check_output(['gh','api','repos/OmniNode-ai/'+repo+'/pulls/'+num,'--jq','.merged_at'])
-              return out.decode().strip()
-          for occ, repo, pr in pairs:
-              c = merged('onex_change_control', occ)
-              p = merged(repo, pr)
-              assert c and p and c != 'null' and p != 'null' and c < p, ('companion not merged first', occ, repo, pr, c, p)
+          import subprocess
+          PAIRS = [
+              ('repos/OmniNode-ai/onex_change_control/pulls/8764', 'repos/OmniNode-ai/omnimarket/pulls/2423'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8772', 'repos/OmniNode-ai/omnibase_infra/pulls/3353'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8799', 'repos/OmniNode-ai/omnimarket/pulls/2429'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8802', 'repos/OmniNode-ai/omniclaude/pulls/2129'),
+              ('repos/OmniNode-ai/onex_change_control/pulls/8829', 'repos/OmniNode-ai/omnibase_core/pulls/1672'),
+          ]
+          def merged_at(api_path):
+              return subprocess.check_output(['gh','api',api_path,'--jq','.merged_at']).decode().strip()
+          for companion, product in PAIRS:
+              c = merged_at(companion)
+              p = merged_at(product)
+              assert c and p and c != 'null' and p != 'null' and c < p, ('companion not merged first', companion, product, c, p)
           print('companions-first holds for all five pairs')
           "
   - id: "omn-18069-scope-item-4-fanout-landed-in-five-repos"
@@ -284,14 +289,20 @@ dod_evidence:
         check_value: |-
           python3 -c "
           import base64, json, subprocess
-          repos = [('omnibase_infra','6f33161d6892984c5e3ab83741677761ad37a4b7'),('omniclaude','1b7adef426b61b308ac8abccb2b7065846f19a50'),('omnimarket','e8a538419fd64d91ec30213466b4ee2645cfeb59'),('omninode_infra','997643b4607edfde56177fb8d2b3c633dc9ea346'),('omnibase_core','e7241554fde580c88713f3cc7bdc9d33174688e2')]
-          path = 'scripts/ci/check_occ_companion_merged.py'
+          TARGETS = [
+              ('repos/OmniNode-ai/omnibase_infra', '6f33161d6892984c5e3ab83741677761ad37a4b7'),
+              ('repos/OmniNode-ai/omniclaude', '1b7adef426b61b308ac8abccb2b7065846f19a50'),
+              ('repos/OmniNode-ai/omnimarket', 'e8a538419fd64d91ec30213466b4ee2645cfeb59'),
+              ('repos/OmniNode-ai/omninode_infra', '997643b4607edfde56177fb8d2b3c633dc9ea346'),
+              ('repos/OmniNode-ai/omnibase_core', 'e7241554fde580c88713f3cc7bdc9d33174688e2'),
+          ]
+          PATH = 'scripts/ci/check_occ_companion_merged.py'
           def body(repo, ref):
-              out = subprocess.check_output(['gh','api','repos/OmniNode-ai/'+repo+'/contents/'+path+'?ref='+ref,'--jq','.content'])
-              return base64.b64decode(out).decode('utf-8', 'replace')
-          for repo, sha in repos:
+              out = subprocess.check_output(['gh','api',repo+'/contents/'+PATH+'?ref='+ref,'--jq','.content'])
+              return base64.b64decode(out).decode('utf-8','replace')
+          for repo, sha in TARGETS:
               after = body(repo, sha).count('AUTOBIND_OUTCOME_CHECK_NAME')
-              parent = json.loads(subprocess.check_output(['gh','api','repos/OmniNode-ai/'+repo+'/commits/'+sha,'--jq','{p: .parents[0].sha}']))['p']
+              parent = json.loads(subprocess.check_output(['gh','api',repo+'/commits/'+sha,'--jq','{p: .parents[0].sha}']))['p']
               before = body(repo, parent).count('AUTOBIND_OUTCOME_CHECK_NAME')
               assert after == 2 and before == 0, (repo, sha, after, parent, before)
           print('fan-out present in five repos, absent at every parent')
