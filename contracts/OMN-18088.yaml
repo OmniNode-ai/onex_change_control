@@ -175,3 +175,38 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8900 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "ac3-negative-control-red-at-parent-via-api"
+    description: |-
+      AC3 binding, the red-at-the-parent half, re-expressed so it can execute where the sweep runs it.
+
+      Supersedes ac3-negative-control-red-at-the-parent-sha, which asserted the same four facts but read
+      them with `git show` at a pinned sha in the product clone. That is correct on a full clone and
+      impossible on the sweep's: the autoclose workflow checks out product repos at fetch-depth 1, so a
+      commit that is not the tip is simply not in the object store and the read fails before it can
+      answer anything. The check was measuring the clone's depth, not the code. Its verdict here is
+      unchanged; only where the bytes come from changes.
+
+      The same four facts, read through the repository contents API at the two pinned shas, which does
+      not depend on any local checkout:
+
+        * alert_exit_requested has zero occurrences in model_dlq_depth_monitor_result.py at parent
+          0b2749b9a5d3bda2b53b5b164112e533d9bd364f, so every assertion in the suite turns on a field
+          that did not exist there;
+        * it appears at least once at the merged squash abb59f0a8e913ae5e3c5e1407cf221a494a67f83 --
+          the positive control, without which a matcher that had stopped matching would report the same
+          clean zero;
+        * the suite file is absent from the test directory listing at the parent, and that listing is
+          asserted non-empty first, so an API call returning nothing cannot read as an absent file;
+        * the suite file is present in the same listing at the merged squash.
+
+      The ticket records the suite as 10 failed / 0 passed when it was run against the parent tree. That
+      measurement is not reproducible -- the file did not exist at that commit, so nothing can re-run it
+      there. What is reproducible, and what this asserts, is the reason it could not have passed.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    evidence_artifact: "supersedes_dod_evidence:ac3-negative-control-red-at-the-parent-sha"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          P=0b2749b9a5d3bda2b53b5b164112e533d9bd364f; M=abb59f0a8e913ae5e3c5e1407cf221a494a67f83; R=repos/OmniNode-ai/omnibase_infra/contents; F=src/omnibase_infra/nodes/node_dlq_depth_monitor_effect/models/model_dlq_depth_monitor_result.py; D=tests/unit/nodes/node_dlq_depth_monitor_effect; N=test_omn18088_alert_path_carries_the_offenders.py; lsp="$(gh api "${R}/${D}?ref=${P}" --jq '.[].name')"; lsm="$(gh api "${R}/${D}?ref=${M}" --jq '.[].name')"; test "$(gh api "${R}/${F}?ref=${P}" --jq '.content' | base64 -d | grep -c alert_exit_requested)" -eq 0 && test "$(gh api "${R}/${F}?ref=${M}" --jq '.content' | base64 -d | grep -c alert_exit_requested)" -ge 1 && test -n "${lsp}" && test "$(printf '%s\n' "${lsp}" | grep -cFx "${N}")" -eq 0 && test "$(printf '%s\n' "${lsm}" | grep -cFx "${N}")" -eq 1
