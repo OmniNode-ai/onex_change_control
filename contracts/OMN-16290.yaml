@@ -38,3 +38,102 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6779 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn16290-ac1-request-time-order-by-wired"
+    description: >
+      AC1 — the request path from the query param to the read is wired, and an invalid value is rejected
+      rather than silently ignored. At the merged squash sha d400590464949d97842446df4a510c508ca4f1d4
+      (OmniNode-ai/omnimarket#2113, merged 2026-08-22T08:30:11Z), `projection_query` in src/omnimarket/projection/api_server.py
+      declares a real `order_by: str | None = Query(default=None)` parameter; `_base_order_by_spec` parses
+      and column-validates it through `discovery.parse_order_by_clauses` — the same grammar the contract-time
+      parser uses, extracted in this change into a shared context-free core — and REPLACES the contract-declared
+      `cfg.order_by_spec` entirely with the request spec, which is then fed to `SnapshotCache.get_rows(order_by_override=...)`.
+      A malformed clause or a column not declared on the topic raises `InvalidOrderByError` and returns
+      HTTP 422 with `{"error": "invalid_order_by"}` — never a silent fall back to the default (no-defensive-defaults).
+      Before this change the endpoint declared only `order` (an ASC/DESC direction flip on the first contract-declared
+      sort column), so FastAPI accepted a caller-supplied `order_by` as an unrecognised query param and
+      dropped it. The two checks below are a positive/negative pair against the same file: the first counts
+      6 matches at the merged sha, the second counts 0 at the pre-change parent 9455655fd59c50ee7db906f64a0590c41695ec92,
+      so the pattern discriminates rather than matching everywhere.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/api_server.py?ref=d400590464949d97842446df4a510c508ca4f1d4' --jq '.content' | base64 -d | grep -cE 'order_by: str \| None = Query|_base_order_by_spec|class InvalidOrderByError|"invalid_order_by"'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/api_server.py?ref=9455655fd59c50ee7db906f64a0590c41695ec92' --jq '.content' | base64 -d | grep -cE 'order_by: str \| None = Query|_base_order_by_spec|class InvalidOrderByError|"invalid_order_by"')" = "0"
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/discovery.py?ref=d400590464949d97842446df4a510c508ca4f1d4' --jq '.content' | base64 -d | grep -c 'def parse_order_by_clauses'
+  - id: "dod-omn16290-ac2-request-time-regression-test"
+    description: >
+      AC2 — a regression test drives the REAL endpoint with a non-default `order_by` and asserts the ordering
+      of the rows actually returned, not merely the startup validator. OmniNode-ai/omnimarket#2113 adds
+      tests/test_omn16290_order_by_request_time.py (194 lines), which drives the real FastAPI route through
+      TestClient against a REAL SnapshotCache seeded out of order via the same `apply_message` the live
+      Kafka consumer loop calls — no MagicMock stand-in for the cache, so the assertions exercise the
+      actual `_sort_rows` comparison rather than a kwarg captured by a mock. It asserts the returned row
+      SEQUENCE changes: `_rank_sequence(body) == [2, 1, 0]` under the contract default `created_at DESC`,
+      `== [0, 1, 2]` under `order_by=rank ASC`, and `== [2, 1, 0]` under `order_by=rank DESC`, together
+      with the reported `ordering` string and two HTTP 422 `invalid_order_by` rejections. The PR body
+      records the suite proven RED against pre-fix source (10 failing) and GREEN after (62 passing). The
+      checks below are a positive/negative pair: the assertion patterns count 6 at the merged sha, and
+      the file does not exist at the pre-change parent 9455655fd59c50ee7db906f64a0590c41695ec92, where
+      the API request-time patterns in the pre-existing tests/test_projection_api_server.py count 0 against
+      2 at the merged sha.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/tests/test_omn16290_order_by_request_time.py?ref=d400590464949d97842446df4a510c508ca4f1d4' --jq '.content' | base64 -d | grep -cE 'assert _rank_sequence\(body\) ==|assert resp.status_code == 422'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omnimarket/contents/tests/test_projection_api_server.py?ref=9455655fd59c50ee7db906f64a0590c41695ec92' --jq '.content' | base64 -d | grep -cE 'invalid_order_by|_base_order_by_spec')" = "0"
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/tests/test_projection_api_server.py?ref=d400590464949d97842446df4a510c508ca4f1d4' --jq '.content' | base64 -d | grep -cE 'invalid_order_by|_base_order_by_spec'
+  - id: "dod-omn16290-ac3-deployed-lane-order-by-readback"
+    description: >
+      AC3 — live readback on the deployed projection-api, taken 2026-09-10 against the lab dev lane (compose
+      project omnibase-infra, container omnimarket-projection-api, host port 3002), which is the surface
+      the ticket's `proof_class: deployed` names. Read-only HTTP GETs only; nothing was mutated on any
+      lane. The deployed OpenAPI document for GET /projection/{topic} declares parameters [topic, correlation_id,
+      since, limit, order, order_by] — the parameter exists on the running service, not merely in source.
+      Against topic onex.snapshot.projection.live-events.v1 (declared columns include id, event_id, type,
+      timestamp, source, topic, summary, payload, correlation_id, created_at; contract default `created_at
+      DESC`), limit=5, THREE distinct orderings were served from the same data -- no order_by reported
+      `created_at DESC` leading with event_id ec5264b1-04e2-4be6-9a87-30376cc57376; `order_by=event_id
+      ASC` reported `event_id ASC` leading with 0072bba6-ea82-402a-bfdf-a07329bf9ed6, 00927793-0b30-417c-b533-6a4bb6e9f94c,
+      00b4a0e8-63fc-4df5-a2f4-6140e687b401; and `order_by=event_id DESC` reported `event_id DESC` leading
+      with ff8b0d6c-ab9f-4aaa-a213-557ce966627f, fe97c912-6db8-4288-b718-22987c2de980, fe0d2b5b-60f1-465d-a311-126de094861e.
+      The row sequences are disjoint in both direction and key, which is what "two order_by values producing
+      different orderings" asks for. Rejection was exercised too: `order_by=not_a_column ASC` returned
+      HTTP 422 `{"error": "invalid_order_by", "detail": "order_by column 'not_a_column' is not a member
+      of the declared columns"}` and `order_by=event_id SIDEWAYS` returned HTTP 422 with the grammar message
+      -- neither silently ignored. NEGATIVE CONTROL, same host, same read-only method, lanes still running
+      pre-fix images: the prod lane (port 23002) and the judge lane (port 43002) both declare [topic,
+      correlation_id, since, limit, order] with NO order_by, and on the judge lane `order_by=not_a_column
+      ASC` returns HTTP 200 with `ordering` unchanged at `created_at DESC` -- the exact "accepted but
+      silently ignored" defect this ticket reports, still observable on an un-upgraded lane, which proves
+      the dev-lane result is the change and not an artifact of the probe. Execution scope, stated honestly:
+      the readback targets a LAN host and is therefore not re-executable from a CI runner, so the transcript
+      above is the receipt and the checks below are the re-executable half -- they assert that the merged
+      sha is an ancestor of omnimarket dev (so a lane built from dev carries it) and that the 422 rejection
+      path exists in the served source at that sha.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/compare/d400590464949d97842446df4a510c508ca4f1d4...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/api_server.py?ref=d400590464949d97842446df4a510c508ca4f1d4' --jq '.content' | base64 -d | grep -c 'status_code=422'
