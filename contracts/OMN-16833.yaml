@@ -46,3 +46,94 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7412 --repo OmniNode-ai/onex_change_control --json number,state"
+  # OMN-16833 (2026-09-10) — SUPERSEDING items for omnimarket#2438, the PR that
+  # actually closes this ticket. Everything above was minted for #2184 / #2966,
+  # which corrected the DS-V4-Flash served id and added the typed dev-lane
+  # overlay binding. Neither one closed AC1: the closeout sweeps of 2026-09-08,
+  # 09 and 10 all read `BACKENDS_LOADED` missing `cloud-vertex-gemini` and
+  # `local-ds-v4-flash` on the dev lane, which is the falsifier AC1 states for
+  # itself. The items above declare no `binds_ac` and carry no diff-derived
+  # behavior proof (`behavior_proving_count = 0` on every draw), so they could
+  # not have flipped this ticket and correctly did not.
+  - id: "dod-OmniNode-ai-omnimarket-pr-2438"
+    description: >-
+      OmniNode-ai/omnimarket#2438 — the closing PR. Unreferences the two backends no lane in the fleet
+      can bind and wires the gate that refuses the class. Declares no binds_ac: a pull-request-visibility
+      probe proves no acceptance criterion.
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omnimarket-pr-2184"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2438 --repo OmniNode-ai/omnimarket --json number,state,mergeCommit"
+  - id: "dod-omn16833-ac1-ac3-bindability-gate"
+    description: |-
+      AC1 + AC3, diff-derived behavior proof. AC1 asks that every backend a deployed tier references
+      either resolves a complete endpoint_url on the lane or is not referenced by that lane's tiers;
+      AC3 asks for a check that FAILS when the tier config references a backend the contract cannot
+      resolve. omnimarket#2438 satisfies AC1 through its second limb — `cloud-vertex-gemini` and
+      `local-ds-v4-flash` are no longer referenced by any tier — and satisfies AC3 by making that
+      condition mechanically refusable rather than silently droppable.
+
+      The decision per backend was measured, not inferred. `cloud-vertex-gemini` has no binding path on
+      ANY lane: the deploy-time renderer never reads endpoint bindings from the process environment (its
+      own module docstring), so BIFROST_VERTEX_GEMINI_ENDPOINT_URL is inert there, and the typed lane
+      overlay that IS the binding authority admits only unauthenticated local http:// chat-completions
+      endpoints, so a bearer-authenticated cloud backend is unrepresentable in it by construction.
+      `local-ds-v4-flash` was probed on 2026-09-10: GET .200:8101/v1/models returned curl exit 7
+      "Couldn't connect to server", http=000, with two controls proving the probe itself ran — ping .200
+      returned 2/2 packets at 0.0% loss, and the same probe against .201:8000 returned HTTP 200. All
+      three lab lane overlays declare serving false on it (OMN-16999) and onex-dev declares locale cloud
+      with zero local backends, so every lane in the fleet renders endpoint_url null.
+
+      This check is RED-derivable: the validator failed on the parent tree naming exactly
+      cloud-vertex-gemini (cloud_endpoint_url_null) and local-ds-v4-flash (local_bound_by_no_lane), and
+      the test module carries a positive control that re-references a parked backend in a scratch copy of
+      the tiers file and requires the validator to name it, so a clean tree cannot be mistaken for a
+      check that does not work.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_routing_tiers_contract.py tests/nodes/node_delegation_routing_reducer/test_same_tier_fallback_reachability_omn15180.py tests/unit/delegation/test_same_tier_backend_fallback_omn14402.py tests/unit/delegation/test_cloud_escalation_omn13140.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
+      - check_type: "command"
+        check_value: |-
+          uv run python -m omnimarket.validators.routing_tier_backend_bindability
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn16833-ac2-zero-cost-local-rung-first"
+    description: |-
+      AC2 — `test`, `summarization` and `documentation` each resolve a zero-cost local rung before any
+      metered rung. Unaffected by this PR and asserted directly: `test` is served in the local tier by
+      `local-coder` and `summarization` / `documentation` by `local-heavy-reasoning`, both of which are
+      bound serving true by the dev, judge and lakshman lane overlays against .201:8000 (probed
+      2026-09-10, HTTP 200). The local tier precedes cheap_cloud in every one of those three classes'
+      escalation_policy.tier_order, so a local rung that exists is a local rung that is tried first.
+
+      The named test is the OMN-16442 completeness assertion for exactly these three classes; it fails if
+      any of them loses its last local declarant. The bindability gate in the same run is what makes that
+      assertion mean something on the lane rather than only in the file — before this PR a class could
+      hold a local declarant that every lane dropped, which is how AC2 read as satisfied on paper while
+      the ladder degraded to paid-first.
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_routing_tiers_contract.py::test_prose_classes_kept_a_local_rung_after_reasoner_retirement tests/test_routing_tiers_contract.py::test_no_tier_references_a_backend_no_lane_can_bind -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "occ-self-bind-pr-8875"
+    description: >-
+      OCC self-binding receipt for PR #8875, the in-repo evidence PR carrying the superseding items above.
+      Binds OMN-16833 to that companion by pr_number so eligibility can resolve a PASS receipt for the
+      evidence PR itself. Hand-minted: the autobind producer mints nothing today (OMN-18073). Declares
+      no binds_ac because a pull-request-visibility probe proves no acceptance criterion.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8875 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
