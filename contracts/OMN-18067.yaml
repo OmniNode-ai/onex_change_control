@@ -73,3 +73,70 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8896 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-bar-leg5-pass-on-the-landed-sha"
+    description: >-
+      AC1. Bar leg 5 (store_sourced_secrets) reads PASS on the landed sha, naming the instance id, and
+      the facts artifact shows every runtime binding arriving by valueFrom.secretKeyRef into a Secret
+      an InfisicalSecret owns. omninode_infra #1294 merged 2026-09-10T07:26:48Z squash 78b59915efdeda6c911f1cd8a07aaf4457400325;
+      deploy-onex-staging run 34449991366 applied the overlay on that sha and concluded success. BEFORE/AFTER,
+      not an assertion: bar run 34449190281 collected 2026-09-10T07:18:08Z -- before that deploy -- scored
+      leg 5 FAIL with the detail "pod omninode-runtime-74887dd8c5-8cbcp in namespace onex-dev on i-06169517a92b45f86
+      binds env key VALKEY_PASSWORD to Secret onex-valkey-credentials, which no InfisicalSecret owns".
+      Runs 34465176555 (10:16:48Z) and 34465906041 (10:25:05Z) both score leg 5 PASS with "all 8 secret-bearing
+      env keys across 1 runtime pod(s) in namespace onex-dev on i-06169517a92b45f86 resolve through valueFrom.secretKeyRef
+      into store-owned Secrets, with no literal value in any manifest". Two independent runs rather than
+      one, so a single reading cannot carry the criterion. The facts artifact records VALKEY_PASSWORD
+      -> onex-runtime-credentials with store_sourced true; the only false store_sourced entries left are
+      the two INFISICAL_* keys, whose role is store_bootstrap -- the credential the runtime authenticates
+      TO the store WITH, which the leg exempts by construction because requiring it to come from the store
+      is circular. Legs 1, 3 and 4 read FAIL in those runs for causes outside this ticket: leg 4 was ALREADY
+      FAIL at 07:18Z, before this change deployed, and legs 1 and 3 turn on staging deploy run 34463307676
+      (head d8b21a3326fa, not this ticket's sha) concluding failure with a mixed-digest plane. This change
+      touches no image, digest or replica count.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" && gh run download 34465906041 --repo OmniNode-ai/omninode_infra --name staging-green-report --dir "$d" && python3 -c "import json,sys; r=json.load(open(sys.argv[1]+'/staging-green-report.json')); leg=[x for x in r['legs'] if x['checklist_item']==5][0]; assert leg['outcome']=='PASS', leg; assert 'i-06169517a92b45f86' in leg['detail'], leg; print('leg5', leg['outcome'])" "$d"
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" && gh run download 34465906041 --repo OmniNode-ai/omninode_infra --name staging-green-report --dir "$d" && python3 -c "import json,sys; f=json.load(open(sys.argv[1]+'/staging-green-facts.json')); pods=f['legs']['store_sourced_secrets']['secret_env_bindings']['pods']; b=[x for p in pods for x in p['secret_bearing_bindings']]; assert b, 'no bindings classified - a zero here would satisfy every assertion below it'; v=[x for x in b if x['env_key']=='VALKEY_PASSWORD']; assert v, 'VALKEY_PASSWORD absent from the classified bindings'; assert all(x['binding_kind']=='secret_key_ref' and x['secret_name']=='onex-runtime-credentials' and x['store_sourced'] for x in v), v; assert all(x['store_sourced'] or x['role']=='store_bootstrap' for x in b), [x for x in b if not x['store_sourced'] and x['role']!='store_bootstrap']; print('bindings', len(b), 'valkey store_sourced', [x['store_sourced'] for x in v])" "$d"
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" && gh run download 34449190281 --repo OmniNode-ai/omninode_infra --name staging-green-report --dir "$d" && python3 -c "import json,sys; r=json.load(open(sys.argv[1]+'/staging-green-report.json')); leg=[x for x in r['legs'] if x['checklist_item']==5][0]; assert leg['outcome']=='FAIL', leg; assert 'onex-valkey-credentials' in leg['detail'], leg; print('pre-change control: leg5', leg['outcome'])" "$d"
+  - id: "ac2-lab-red-green-gate-and-companion-order"
+    description: >-
+      AC2. The lab readback, the RED/GREEN gate, the companion-first order and the ledger row. LAB: a
+      k8s/onex-lab render with per-run generated values resolves all six lab consumers AND the lane's
+      own Valkey server to ONE Secret and ONE key, so the lane's server/client no-drift invariant survives
+      the move; the lane's Valkey server was rebound with them, and the now-unreferenced generator and
+      its properties file are deleted. RED/GREEN: both gates were run against a deliberately reverted
+      binding before the change was accepted -- the render gate failed with "runtime-plane secretKeyRefs
+      into a Secret no InfisicalSecret in k8s/onex-dev-overlay-dev declares: ['omninode-runtime[omninode-runtime]
+      VALKEY_PASSWORD -> Secret onex-valkey-credentials']", and the Valkey contract gate failed with "expected
+      mandatory onex-runtime-credentials:VALKEY_PASSWORD, got ('onex-valkey-credentials', 'password',
+      False)"; both pass on the change. The single-entry UNOWNED_SECRET_ALLOWANCE ratchet is DELETED rather
+      than amended, exactly as its own note required, and a successor test asserts the symbol cannot be
+      reintroduced. COMPANION FIRST: OCC #8896 merged 2026-09-10T07:12:15Z squash ccef8709bb489de7e8fc0197c4c92fe365000b33,
+      ahead of omninode_infra #1294 at 07:26:48Z.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/k8s/test_omn18067_runtime_plane_store_sourced_bindings.py tests/k8s/test_omn_16594_valkey_auth_wiring.py tests/k8s/test_onex_lab_overlay_omn17533.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
+      - check_type: "command"
+        check_value: |-
+          python3 scripts/validation/test_valkey_credential_contract.py
+        cwd: "${OMNI_HOME}/omninode_infra"
+      - check_type: "command"
+        check_value: |-
+          python3 -c "import re,sys; t=open('tests/k8s/test_omn18067_runtime_plane_store_sourced_bindings.py').read(); assert not re.search(r'^UNOWNED_SECRET_ALLOWANCE', t, re.M), 'the allowance was reintroduced as a module symbol'; assert 'test_no_unowned_secret_allowance_may_be_reintroduced' in t, 'the successor ratchet test is gone'; print('allowance deleted, successor ratchet present')"
+        cwd: "${OMNI_HOME}/omninode_infra"
+      - check_type: "command"
+        check_value: |-
+          python3 -c "import json,subprocess; occ=json.loads(subprocess.run(['gh','pr','view','8896','--repo','OmniNode-ai/onex_change_control','--json','mergedAt'],capture_output=True,text=True,check=True).stdout)['mergedAt']; pr=json.loads(subprocess.run(['gh','pr','view','1294','--repo','OmniNode-ai/omninode_infra','--json','mergedAt'],capture_output=True,text=True,check=True).stdout)['mergedAt']; assert occ and pr, (occ,pr); assert occ < pr, ('companion did not merge first', occ, pr); print('companion', occ, 'before product', pr)"
