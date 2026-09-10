@@ -47,3 +47,189 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8936 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18139-ac1-red-green-real-postgres"
+    description: |-
+      OMN-18139 AC1 -- "a red test at the parent reproducing the live failure string against real
+      Postgres with the ::uuid policy, green at head."
+
+      Met. OmniNode-ai/omnimarket#2445 (MERGED 2026-09-10, squash
+      02abec5ad75d40dad2b9255ee6473b27b96cbb6a, released v0.4.49) adds
+      tests/test_omn18139_real_postgres_tenant_guc_representation.py, which applies the live
+      node_projection_delegation migration set to a disposable schema and drives the real
+      DelegationProjectionRunner.project_event() through the real AsyncpgAdapter.
+
+      NO DRIFT IS APPLIED, unlike the OMN-17228 module this one follows. Applying migrations 0007
+      through 0034 in order lands the deployed onex-dev shape exactly: tenant_id uuid NOT NULL
+      DEFAULT '820272f9-4aaf-5add-a2df-0af942852ab2'::uuid, relrowsecurity=t relforcerowsecurity=t,
+      and tenant_isolation USING and WITH CHECK both
+      (tenant_id = (current_setting('app.tenant_id'::text, true))::uuid).
+
+      The fixture's real requirement is OWNERSHIP, and this is recorded because getting it wrong
+      produced a green that proved nothing. FORCE ROW LEVEL SECURITY subjects the table owner to its
+      own policies, but a superuser bypasses regardless -- and so does a plain view whose owner is a
+      superuser, since base-table policies for such a view are evaluated as its owner. A first cut
+      built the schema as postgres and handed the runner a NOBYPASSRLS login role; it passed while
+      no policy ever evaluated. The schema is now created AUTHORIZATION the writer role with every
+      migration applied under SET ROLE, and TestTheFixtureIsFaithful asserts that ownership, the
+      ::uuid cast, and the slug refusal before any behaviour is asserted on it.
+
+      Measured on a real Postgres 2026-09-10. At the squash parent
+      f36822c59b48d8a36114891223f1041391b6ef82 the behavioural test raises
+      asyncpg.exceptions.InvalidTextRepresentationError -- 'invalid input syntax for type uuid:
+      "omninode"' -- which is the live dead-letter record's failure string byte-for-byte, from
+      onex.dlq.omnimarket.projection-delegation-malformed.v1 offset 266 at 2026-09-10T10:21:18.312Z.
+      At head all thirteen pass, verified against both a populated database and a freshly created
+      one.
+
+      HONEST LIMIT, stated so a green count cannot imply more than it proved: the OCC receipt runner
+      executed this module in CI as '7 passed, 5 skipped'. The five real-Postgres tests SKIP where no
+      database is provisioned. That runner receipt is a genuine PASS of the declared command and it
+      does NOT carry the behavioural half. The behavioural proof is the lab execution recorded in
+      this item's own receipt, and the merge-gating Integration Silent-Skip Guard (OMN-14172) is what
+      makes the module actually execute on the job that does provision Postgres.
+
+      Bound to AC1 ONLY. AC5 (the live staging readback) is NOT claimed by this item and is NOT met
+      at the time of writing -- it requires the writer to restart on this release on onex-dev.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn18139_real_postgres_tenant_guc_representation.py?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'invalid input syntax for type uuid'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn18139_real_postgres_tenant_guc_representation.py?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'CREATE SCHEMA {schema} AUTHORIZATION {role}'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/tests?ref=f36822c59b48d8a36114891223f1041391b6ef82" --jq '[.[].name]|join(" ")' | grep -c 'test_omn18139_real_postgres_tenant_guc_representation.py')" = "0"
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2445 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '[.state,.mergeCommit.oid]|join(" ")' | grep -Fxc 'MERGED 02abec5ad75d40dad2b9255ee6473b27b96cbb6a'
+  - id: "dod-omn18139-ac2-tenant-uuid-never-slug"
+    description: |-
+      OMN-18139 AC2 -- "the handler passes the canonical tenant UUID resolved by the OMN-16804 path,
+      never a slug."
+
+      Met. Both call sites that reached AsyncpgAdapter with no tenant= now name their tenant. The
+      aggregate republish does NOT resolve the tenant a second time: _dynamic_upsert records the
+      tenant it already resolved, in the same branch that increments the counter the republish is
+      gated on, so the two cannot disagree about which write they describe. A second resolver over
+      the same event is the "two divergent resolvers" class OMN-15919 and OMN-17422 were each an
+      instance of, and this change does not add a third.
+
+      _publish_aggregate_snapshots takes a KEYWORD-ONLY, NO-DEFAULT tenant. A default would
+      reintroduce the defect silently, so a caller that omits it is a TypeError rather than a
+      house-slug bind. That property is pinned by a signature assertion, not only by review.
+
+      Bound to AC2 ONLY.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_delegation.py?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'self._last_delegation_write_tenant = tenant'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_delegation.py?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'self, meta: MessageMeta, \*, tenant: str'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_delegation.py?ref=f36822c59b48d8a36114891223f1041391b6ef82" --jq '.content' | base64 -d | grep -c '_last_delegation_write_tenant')" = "0"
+  - id: "dod-omn18139-ac3-aggregate-scope-ruling"
+    description: |-
+      OMN-18139 AC3 -- "the aggregate republish semantics are ruled on before the code, not after."
+
+      Met, and the ruling is recorded in the artifact rather than only in a PR body. The failing read
+      carried a comment claiming "No tenant GUC: these views aggregate ACROSS tenants by definition".
+      That was factually wrong about its own code in two ways: AsyncpgAdapter sets app.tenant_id on
+      EVERY statement, so the omission never chose "no tenant" but an unnamed one; and a NOBYPASSRLS
+      writer under FORCE ROW LEVEL SECURITY cannot read across tenants at all, so "platform-wide" was
+      never available at this call site and is not what is being given up.
+
+      The ruling taken is option (a) of the acceptance criterion: the aggregate is scoped to the
+      tenant of the write that changed it, and the exposure says so. The four contract exposure
+      comment blocks that called these aggregates platform-wide are corrected in the same change, so
+      the contract no longer asserts a property the writer cannot deliver. The negative control below
+      shows the old wording really was there at the parent, so this is a measured correction rather
+      than a claim.
+
+      Bound to AC3 ONLY.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/contract.yaml?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'platform-wide operational aggregate')" = "0"
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/contract.yaml?ref=f36822c59b48d8a36114891223f1041391b6ef82" --jq '.content' | base64 -d | grep -c 'platform-wide operational aggregate'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/handlers/handler_delegation.py?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'cross-tenant aggregate at all'
+  - id: "dod-omn18139-ac4-casting-pairing-gate"
+    description: |-
+      OMN-18139 AC4 -- "blast radius from the source, not from the two lines in the evidence."
+
+      Met, as a gate rather than as prose. Enumerated live at the merged sha: 24 untenanted adapter
+      calls remain in the package and NONE names a relation whose app.tenant_id policy casts to uuid.
+      Exactly two relations in the repo carry a casting policy -- delegation_events and
+      capability_scores -- and the casting set is derived from the migrations themselves rather than
+      from a hand-kept list, because the defect IS a relation's policy changing under a call site
+      that did not change with it, and a list in a test file would go stale the same way.
+
+      The invariant is stated as a PAIRING (an untenanted call must not name a casting relation)
+      rather than as "every call must pass a tenant", which is what makes it survivable and therefore
+      enforceable, and it fails closed from both directions: a new untenanted call on a casting
+      relation is red, and so is a migration that converts a relation an untenanted call already
+      touches.
+
+      THE BLIND SPOT IS DECLARED IN THE MODULE, not left to be discovered. The repo-wide gate matches
+      the relation NAME in the call's source text, so it is blind to a relation interpolated from a
+      variable -- and both sites this ticket fixes were exactly that. It would NOT have caught the
+      live defect. The module-scoped gate covers the dynamic case by requiring a tenant on every call
+      in the one module that writes casting relations. Neither gate subsumes the other, and this item
+      does not claim the weaker one is sufficient.
+
+      Bound to AC4 ONLY.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn18139_tenant_guc_call_site_ratchet.py?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'class TestNoUntenantedCallTouchesACastingRelation'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn18139_tenant_guc_call_site_ratchet.py?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'THE HONEST LIMIT, stated rather than left for someone to discover'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnimarket/contents/tests?ref=f36822c59b48d8a36114891223f1041391b6ef82" --jq '[.[].name]|join(" ")' | grep -c 'test_omn18139_tenant_guc_call_site_ratchet.py')" = "0"
+  - id: "dod-omn18139-ac6-lab-carveout-statement"
+    description: |-
+      OMN-18139 AC6 -- "the rule 24(d) statement is in the PR body."
+
+      Met. OmniNode-ai/omnimarket#2445's body states that the .201 compose dev lane cannot exercise
+      the tenant-scoped path -- delegation_events there reads relrowsecurity=f relforcerowsecurity=f
+      and the connection is a superuser, so no policy predicate evaluates on that lane's own tables
+      and this defect is structurally unreachable on them. The body says what the lab run DOES prove
+      (the writer's statements survive a real casting policy under a real NOBYPASSRLS identity on a
+      role-owned schema) and states plainly that it is not a staging proof.
+
+      Bound to AC6 ONLY.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC6"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2445 --repo OmniNode-ai/omnimarket --json body --jq '.body' | grep -c 'the compose dev lane cannot exercise the tenant-scoped path'
+      - check_type: "command"
+        check_value: |-
+          gh pr view 2445 --repo OmniNode-ai/omnimarket --json body --jq '.body' | grep -c 'It is not a staging proof'
