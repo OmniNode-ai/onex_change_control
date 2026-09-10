@@ -1,0 +1,40 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18139"
+evidence_item_id: "dod-omn18139-ac3-aggregate-scope-ruling"
+check_type: "command"
+check_value: |-
+  test "$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/contract.yaml?ref=02abec5ad75d40dad2b9255ee6473b27b96cbb6a" --jq '.content' | base64 -d | grep -c 'platform-wide operational aggregate')" = "0"
+contract_entry_sha256: "sha256:2d85e1191cc4b4c87daeb8ad64e279a488406259a7d81b011a80b90b897e9761"
+status: PASS
+run_timestamp: "2026-09-10T14:15:35Z"
+commit_sha: "02abec5ad75d40dad2b9255ee6473b27b96cbb6a"
+runner: "delegation-tenant-guc-fix"
+verifier: "occ-merged-sha-content-probe"
+probe_command: |-
+  gh pr view 2445 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '[.state,.mergeCommit.oid]|join(" ")'
+probe_stdout: |
+  MERGED 02abec5ad75d40dad2b9255ee6473b27b96cbb6a
+actual_output: |
+  PASS. Three declared checks executed against the merged squash commit.
+
+    check 1  'platform-wide operational aggregate' GONE at the merged sha ........ 0
+    check 2  POSITIVE CONTROL, the same phrase present at the parent ............. 4
+    check 3  the ruling recorded in the handler at the merged sha ................ 1
+
+  Check 1 is a zero and check 2 is its positive control by construction: the identical grep
+  against the identical path at the squash parent returns 4, one per exposure. The removal is
+  therefore measured, not a grep that matches nothing anywhere.
+
+  The ruling itself: the comment at the failing read claimed 'No tenant GUC: these views
+  aggregate ACROSS tenants by definition'. That was wrong about its own code twice --
+  AsyncpgAdapter sets app.tenant_id on every statement, so the omission chose an unnamed
+  tenant rather than none; and a NOBYPASSRLS writer under FORCE ROW LEVEL SECURITY cannot
+  read across tenants at all, so 'platform-wide' was never available here. Option (a) was
+  taken: the aggregate is scoped to the tenant of the write that changed it, and all four
+  contract exposure comments are corrected to say so.
+
+  Binds AC3 only.
+exit_code: 0
+pr_number: 2445
+branch: "jonah/omn-18139-ac-bind"
