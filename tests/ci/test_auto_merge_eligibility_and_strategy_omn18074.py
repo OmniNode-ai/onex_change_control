@@ -9,6 +9,7 @@ parallel Python implementation of its decisions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -25,6 +26,18 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AUTO_MERGE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "auto-merge.yml"
 BASE_COMMIT = "4def4e4df3add8996465bb5698b3b03e9a5b748d"
+# This is the verbatim .github/workflows/auto-merge.yml blob at BASE_COMMIT:
+# blob 605aaf11b0d6bb622cee9801ad0849565572a5df.  It is deliberately .txt so
+# YAML tooling cannot rewrite the historical baseline under test.
+BASE_WORKFLOW_FIXTURE = (
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "auto_merge_4def4e4df3add8996465bb5698b3b03e9a5b748d.yaml.txt"
+)
+BASE_WORKFLOW_SHA256 = (
+    "2af5fe67eb36017a7f2aa7a2ec1b742260f1d575a08f36120f382b42f0294cd9"
+)
 ELIGIBILITY_STEP = "Check OCC eligibility preflight status"
 STRATEGY_STEP = "Enable auto-merge"
 HEAD_SHA = "a" * 40
@@ -57,15 +70,12 @@ def _current_workflow() -> str:
 
 
 def _base_workflow() -> str:
-    completed = subprocess.run(
-        ["git", "show", f"{BASE_COMMIT}:.github/workflows/auto-merge.yml"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
+    contents = BASE_WORKFLOW_FIXTURE.read_bytes()
+    assert hashlib.sha256(contents).hexdigest() == BASE_WORKFLOW_SHA256, (
+        "historical auto-merge fixture does not match "
+        f"{BASE_COMMIT}:.github/workflows/auto-merge.yml"
     )
-    assert completed.returncode == 0, completed.stderr
-    return completed.stdout
+    return contents.decode("utf-8")
 
 
 def _run_script(
