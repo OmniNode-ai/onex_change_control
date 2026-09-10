@@ -1418,3 +1418,37 @@ def test_rule_f_still_flags_run_attempt_without_filter_all(tmp_path: Path) -> No
     assert any(
         "mutable-state-pin/run-conclusion" in label for _p, label, _f in findings
     ), "run_attempt without filter=all must stay flagged"
+
+
+@pytest.mark.unit
+def test_rule_a_accepts_a_read_only_aws_probe(tmp_path: Path) -> None:
+    """OMN-17446: ``aws`` is a command head, not prose.
+
+    Rule A exists to reject a check authored as an English DESCRIPTION of
+    something a human already ran, because ``sh -c`` fails such a value on its
+    first word. A read-only ``aws ssm get-command-invocation`` readback is the
+    opposite: it is how a live cluster measurement is made re-resolvable
+    WITHOUT re-running it, which matters because re-running would need
+    ``send-command`` and a verifier must not mutate. Pinned here so the
+    allowlist entry is a covered decision rather than an untested widening.
+    """
+    ok = (
+        "aws ssm get-command-invocation "
+        "--command-id e3d835fc-9445-41b3-9269-b630deeae88a "
+        "--instance-id i-06169517a92b45f86 --query Status --output text "
+        "| grep -cx Success"
+    )
+    path = write_contract(tmp_path, ok)
+    assert linter.lint_contract(path) == []
+
+
+@pytest.mark.unit
+def test_rule_a_still_rejects_prose_that_merely_mentions_aws(tmp_path: Path) -> None:
+    """The control for the test above: widening the allowlist by one real
+    command head must not open the door Rule A was built to close."""
+    prose = (
+        "Recorded readback: aws ssm get-command-invocation was run by hand on "
+        "i-06169517a92b45f86 and returned Success"
+    )
+    path = write_contract(tmp_path, prose)
+    assert linter.lint_contract(path), "Rule A must still reject a prose description"
