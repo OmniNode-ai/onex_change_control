@@ -1,0 +1,72 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-15922
+evidence_item_id: dod-3-live-authenticated-readback
+check_type: command
+check_value: |
+  INSTANCE="${ONEX_DEV_SYSTEM_INSTANCE_ID:-i-06169517a92b45f86}"
+  NS="${ONEX_DEV_NAMESPACE:-onex-dev}"
+  TENANT="${OMN15922_DOD3_TENANT_ID:-18ae3951-376b-4400-af83-c34a137bfda1}"
+  PREFIX="${OMN15922_DOD3_REQUEST_PREFIX:-omn15922-dod3-auth}"
+  CMDS=$(NS="$NS" TENANT="$TENANT" PREFIX="$PREFIX" python3 -c '
+  import json, os
+  ns, ten, pre = os.environ["NS"], os.environ["TENANT"], os.environ["PREFIX"]
+  py = f"""import os, psycopg
+  cur = psycopg.connect(os.environ["OMNINODE_CLOUD_DB_URL"]).cursor()
+  TEN, PRE = "{ten}", "{pre}%"
+  cur.execute("SELECT count(*) FROM usage_events WHERE request_id LIKE %s AND tenant_id = %s::uuid", (PRE, TEN))
+  print("DOD3_AUTHENTICATED_ROWS=%d" % cur.fetchone()[0])
+  cur.execute("SELECT count(*) FROM usage_events WHERE tenant_id = %s::uuid", (TEN,))
+  print("DOD3_TENANT_TOTAL_ROWS=%d" % cur.fetchone()[0])
+  cur.execute("SELECT count(DISTINCT tenant_id::text) FROM usage_events WHERE request_id LIKE %s", (PRE,))
+  print("DOD3_DISTINCT_TENANTS=%d" % cur.fetchone()[0])
+  for label, pat in (("NOAUTH", "omn15922-dod3-noauth-%"), ("SIGTAMPER", "omn15922-dod3-sigtamper-%"), ("PAYTAMPER", "omn15922-dod3-paytamper-%")):
+      cur.execute("SELECT count(*) FROM usage_events WHERE request_id LIKE %s", (pat,))
+      print("DOD3_REFUSED_%s_ROWS=%d" % (label, cur.fetchone()[0]))
+  """
+  cmds = [
+    "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml",
+    f"POD=$(sudo -E kubectl -n {ns} get pod -o name | grep onex-api | head -1 | cut -d/ -f2)",
+    "cat > /tmp/omn15922_dod3_check.py <<\"PYEOF\"\n" + py + "PYEOF",
+    f"sudo -E kubectl -n {ns} exec -i \"$POD\" -c onex-api -- /opt/venv/bin/python - < /tmp/omn15922_dod3_check.py",
+    "rm -f /tmp/omn15922_dod3_check.py",
+  ]
+  print(json.dumps({"commands": cmds}))
+  ')
+  CID=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
+    --comment omn15922-dod3-auth-readback --parameters "$CMDS" --query Command.CommandId --output text) || exit 1
+  for _ in $(seq 1 60); do
+    ST=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$INSTANCE" --query Status --output text 2>/dev/null || echo Pending)
+    case "$ST" in Success|Failed|Cancelled|TimedOut) break;; esac
+    sleep 3
+  done
+  OUT=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$INSTANCE" --query StandardOutputContent --output text) || exit 1
+  echo "$OUT"
+  grep -qE '^DOD3_AUTHENTICATED_ROWS=[1-9][0-9]*$' <<< "$OUT" &&
+    grep -qE '^DOD3_TENANT_TOTAL_ROWS=[1-9][0-9]*$' <<< "$OUT" &&
+    grep -qx 'DOD3_DISTINCT_TENANTS=1' <<< "$OUT" &&
+    grep -qx 'DOD3_REFUSED_NOAUTH_ROWS=0' <<< "$OUT" &&
+    grep -qx 'DOD3_REFUSED_SIGTAMPER_ROWS=0' <<< "$OUT" &&
+    grep -qx 'DOD3_REFUSED_PAYTAMPER_ROWS=0' <<< "$OUT"
+contract_sha256: 3f34e6b46bad2747d932794d86dfd5c55f3daa3378f57c87e575a99b3227392a
+contract_entry_sha256: sha256:87a3fc9121f2afc22beebc007f24dc790f71ef6125bf3a0c38b2f647daefa8eb
+status: PASS
+run_timestamp: '2026-09-10T03:28:27.584623+00:00'
+commit_sha: 074f0046e0afa7144bde5feef6c9eafe53ce94f0
+runner: omn15922-dod3-auth-readback
+verifier: |
+  live-cluster-projection-readback
+probe_command: |
+  aws ssm get-command-invocation --command-id <the readback invocation> --instance-id i-06169517a92b45f86 --query StandardOutputContent --output text
+probe_stdout: |
+  DOD3_AUTHENTICATED_ROWS=2
+  DOD3_TENANT_TOTAL_ROWS=15
+  DOD3_DISTINCT_TENANTS=1
+  DOD3_REFUSED_NOAUTH_ROWS=0
+  DOD3_REFUSED_SIGTAMPER_ROWS=0
+  DOD3_REFUSED_PAYTAMPER_ROWS=0
+actual_output: |
+  PASS. Two usage_events rows exist for this lane's correlation-id prefix, each stamped with the SERVER-resolved tenant 18ae3951-376b-4400-af83-c34a137bfda1, which equals the credential's own tenant_id -- the equality DoD 3 requires. Positive control: the tenant carries 15 usage rows in total, so a database answering zero to every question could not read as a pass. Exactly one distinct tenant appears across the lane's rows, so a cross-tenant resolution would be visible. All three refused requests (no Authorization; signature tampered mid-string; payload tampered) wrote ZERO rows, which is the half that makes the positive rows mean something. DISCRIMINATING, both legs measured: the identical command exits 1 with DOD3_AUTHENTICATED_ROWS=0 when OMN15922_DOD3_REQUEST_PREFIX names a prefix that never happened, and exits 1 on both the row assertion and the positive control when OMN15922_DOD3_TENANT_ID is the nil UUID.
+exit_code: 0
+pr_number: 8870
+branch: jonah/omn-15922-dod3-readback
