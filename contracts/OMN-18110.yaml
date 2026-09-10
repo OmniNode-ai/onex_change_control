@@ -1,9 +1,34 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-18110"
-title: "Autobind OCC evidence for OMN-18110"
+title: "A FAILED contract attach is never retried, so one transient consumer group-join timeout at boot
+  strands contracts for the whole process lifetime"
 summary: >
-  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #3379.
+  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omnibase_infra PR #3379,
+  then extended by hand (append-only, OMN-13888) with the AC-bound evidence items the autobind shape does
+  not carry: the autobind entries declare no binds_ac at all, so no acceptance criterion of this ticket
+  resolved to a check. The appended items bind AC1 through AC5. AC6 is the post-merge lane readback and
+  cannot be proven before this merges, so it is deliberately left unbound and recorded on the ticket instead.
+  Every autobind entry above is untouched and keeps its own per-entry hash. What the product PR fixes:
+  the boot interleave records two non-attached outcomes per contract - NOT_READY, where provisioning or
+  the readiness confirm never converged so the consumer attach was not attempted, and FAILED, where readiness
+  PASSED and the Kafka consumer group-join itself raised. OMN-15215 built the bounded reconciliation loop
+  that makes "runtime stays live" recoverable but selected its input on NOT_READY alone, in the kernel
+  that schedules the loop and again in the wiring seam that re-validates its identities, so a FAILED attach
+  was recorded once, logged once, and never revisited. Measured on the .201 dev lane from the runtime's
+  own boot aggregate: the main-profile boot at 2026-09-10T00:03:45.913617Z published state=degraded required_contracts=215
+  attached_contracts=211 with four blocker rows, each status=failed detail=InfraTimeoutError over a readiness.status=ready
+  with an empty failure set and nothing subscribed - node_occ_evidence_draft_orchestrator, node_occ_evidence_validator_compute,
+  node_omnigate_projection and node_omnigate_receipt_generator. The twelve boots either side of it all
+  published 215 of 215, so this is a transient fault made permanent by a missing retry rather than a wiring
+  defect. The runtime held projection_attachment DEGRADED for the ~90 minutes until an unrelated refresh
+  restarted it; the image that recovered differs from the image that failed by one commit whose entire
+  diff is one file of 166 insertions under tests/, with no src byte changed, so the restart is what cleared
+  it and a restart was the only path back. The fix introduces one shared predicate, ModelContractAttachResult.needs_reattach,
+  read by both call sites so they cannot drift again, written as the negation of ATTACHED so a status
+  added later is retried by default. The retry budget, the backoff and the never-crash-boot boundary are
+  unchanged. No credential was rotated, re-issued, revoked or minted, no secret value was read or printed,
+  and no cluster object was mutated - every lane probe was a read.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
@@ -52,3 +77,100 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8868 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18110-ac1-red-first-behaviour-proof"
+    description: >
+      AC1 - a red-first test proves a contract whose boot attach ends FAILED (readiness passed, the attach
+      raised) is excluded from the reconciliation input before the fix and admitted after it. PR #3379
+      on OmniNode-ai/omnibase_infra adds tests/unit/runtime/auto_wiring/test_failed_attach_reconciliation_omn18110.py,
+      whose test_reattach_retries_a_failed_attach_and_attaches_every_topic failed against the parent tree
+      with "assert set() == {...}" because the FAILED row was filtered out of the retry. The fixture is
+      the same harness the OMN-15215 regression uses - a real contract.yaml on disk through the real discovery
+      loader, the real wire_from_manifest and the real _interleave_contract - with only the Kafka boundary
+      doubled, and a provisioner that always reports READY so the fixture cannot pass through the pre-existing
+      NOT_READY path. Executed at cwd ${OMNI_HOME}/omnibase_infra.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/runtime/auto_wiring/test_failed_attach_reconciliation_omn18110.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_failed_attach_reconciliation_omn18110.py?ref=de487f13f0b554b67e4dc0a409a4a382774ececd" | grep -c 'def test_reattach_retries_a_failed_attach_and_attaches_every_topic'
+  - id: "dod-omn18110-ac2-one-shared-predicate"
+    description: >
+      AC2 - the reconciliation input covers every non-ATTACHED result, and the kernel selector and the
+      wiring seam's identity validator read ONE definition so they cannot drift. Probed at the PR head
+      sha de487f13f0b554b67e4dc0a409a4a382774ececd on three surfaces outside this OCC change, each of
+      which goes RED if the symbol is absent: needs_reattach is defined on ModelContractAttachResult,
+      service_kernel selects the loop input with it, and handler_wiring's identity validator admits on
+      it. The fourth check is the negative half that makes the first three load-bearing - the NOT_READY-only
+      status filter is gone from service_kernel, so grep -c returns 0 and the check_value is written to
+      succeed on that.
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/event_bus/model_contract_attach_result.py?ref=de487f13f0b554b67e4dc0a409a4a382774ececd" | grep -c 'def needs_reattach'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=de487f13f0b554b67e4dc0a409a4a382774ececd" | grep -c 'r.needs_reattach'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=de487f13f0b554b67e4dc0a409a4a382774ececd" | grep -c 'result.needs_reattach'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=de487f13f0b554b67e4dc0a409a4a382774ececd" | grep -c 'is EnumContractAttachStatus.NOT_READY')" = "0"
+  - id: "dod-omn18110-ac3-retry-stays-bounded-and-non-fatal"
+    description: >
+      AC3 - widening WHICH contracts are retried does not widen HOW MANY times any one of them is, and
+      a permanently stuck attach still does not crash boot. Two tests carry it: the bounded case asserts
+      the contract is still reported FAILED after the budget, that no topic ever attached, and that the
+      total subscribe-call count is at most topics x (max_attempts + 1); the negative case asserts an
+      ATTACHED contract is never re-attached, so the predicate is "did NOT attach" rather than "is not
+      NOT_READY". Executed at cwd ${OMNI_HOME}/omnibase_infra.
+    source: "generated"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/runtime/auto_wiring/test_failed_attach_reconciliation_omn18110.py -q -k "bounded or never_re_attached"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/runtime/auto_wiring/test_failed_attach_reconciliation_omn18110.py?ref=de487f13f0b554b67e4dc0a409a4a382774ececd" | grep -c 'def test_retry_is_bounded_and_never_raises_when_it_cannot_converge'
+  - id: "dod-omn18110-ac4-readiness-gate-fold-preserved"
+    description: >
+      AC4 - every retry outcome still reaches the readiness-gate fold, so a contract that converges late
+      flips /ready without a pod restart. The kernel still passes its on_attempt hook into the loop at
+      the PR head sha, and the end-to-end loop test asserts the hook fired and that the contract resolved
+      to ATTACHED across a backoff. Executed at cwd ${OMNI_HOME}/omnibase_infra.
+    source: "generated"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/service_kernel.py?ref=de487f13f0b554b67e4dc0a409a4a382774ececd" | grep -c '_contract_attach_gate.record(results)'
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/runtime/auto_wiring/test_failed_attach_reconciliation_omn18110.py -q -k "reconciliation_loop_resolves_a_failed_attach"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-omn18110-ac5-gates-green-on-the-product-pr"
+    description: >
+      AC5 - the enforced gates pass on PR #3379. Local lint, format, mypy --strict and the full pre-commit
+      chain ran clean before push, and the governed impacted-test selector ran as the pre-push hook and
+      passed (deploy-scope-dod outcome=PASS_EVIDENCE); those are recorded in the PR body as the local
+      half. The mechanically re-resolvable half is the PR's own CI, which this check reads live rather
+      than quoting.
+    source: "generated"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks 3379 --repo OmniNode-ai/omnibase_infra"
