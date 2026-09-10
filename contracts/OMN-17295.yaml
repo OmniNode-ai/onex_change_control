@@ -47,3 +47,111 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7824 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "ac5-clone-origin-leg-present-at-3382-head"
+    description: >-
+      AC5 binding, the positive half: "Local venv -> origin/dev drift is detected on this Mac, not just
+      venv -> clone." omnibase_infra#3382 adds a third observation leg to scripts/reconcile-workspace-venvs.sh
+      -- for every clone named by sibling_clone_manifest.sh and present under $OMNI_HOME, HEAD against
+      refs/remotes/origin/<branch>, reported per clone with a behind-count, verdict-bearing in --check.
+      Re-derived by a remote read pinned to the branch head 5be2ccafb8ef1f0979a079ad47a6d58e70fa8314,
+      not from a local checkout, so the check answers a question about the landed source rather than about
+      whatever tree the verifier happens to sit in. Named as its own entry rather than added to any entry
+      above it, because every entry above is merged and the Append-Only Gate holds merged entries immutable.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/reconcile-workspace-venvs.sh?ref=5be2ccafb8ef1f0979a079ad47a6d58e70fa8314" --jq '.content' | base64 -d)"; grep -q 'clone_branch_report' <<< "$body" && grep -q 'refs/remotes/origin/' <<< "$body"
+  - id: "ac5-negative-control-at-the-parent-commit"
+    description: >-
+      AC5 binding, the negative control. The same remote read against the branch point 17047498145d8b020e348bcb32e9ea533ce80001
+      must find NEITHER the observation function NOR any remote-tracking ref read in that script. Without
+      this, the positive check cannot distinguish "this PR added the leg" from "the leg was already there
+      and this PR did nothing" -- and a green result on the positive half alone is not evidence for the
+      criterion. That distinction is the whole reason AC5 was falsified by source read in the first place:
+      the script carried an explicit banner saying it pins to the local clone head, NOT origin/dev, and
+      performed zero origin/dev comparisons.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/reconcile-workspace-venvs.sh?ref=17047498145d8b020e348bcb32e9ea533ce80001" --jq '.content' | base64 -d)"; ! grep -q 'clone_branch_report' <<< "$body" && ! grep -q 'refs/remotes/origin/' <<< "$body"
+  - id: "ac5-detection-is-read-only-never-fetches"
+    description: >-
+      AC5 binding, the property that keeps the detection safe to run where it runs. --check exempts itself
+      from the OMN-17366 ownership plan on the grounds that a read-only probe writes nothing; a fetch
+      writes objects, refs and reflogs, and on the .201 root cron that exemption is what keeps root-owned
+      objects out of operator-owned clones. So the leg reads the tracking ref AS LAST FETCHED and never
+      fetches. Asserted structurally over the executable region only -- everything from `set -uo pipefail`
+      onward -- because the header prose necessarily discusses fetching in order to explain why it does
+      not do it, and a whole-file grep would be satisfied by that prose rather than by the code.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/reconcile-workspace-venvs.sh?ref=5be2ccafb8ef1f0979a079ad47a6d58e70fa8314" --jq '.content' | base64 -d)"; ! sed -n '/^set -uo pipefail/,$p' <<< "$body" | grep -q 'git .*fetch'
+  - id: "ac5-behaviour-proof-drift-and-composed-layer"
+    description: |-
+      AC5 binding, the executed half. The structural checks above prove the leg is present; they cannot
+      prove it produces a DRIFT verdict, and a leg that observed the refs and then verdicted IN_SYNC anyway
+      would satisfy every one of them. This suite builds real (local, file-path origin) git repositories,
+      pushes the remote ahead of the clone, and asserts the verdict flips to DRIFT with the clone name,
+      both shas and the behind-count in the output.
+
+      It also pins the two properties that must NOT change, because both are ways this could be "fixed"
+      into a regression:
+
+        * the composed layer still installs. omnimarket plus its --no-deps companions living in
+          omnibase_infra's venv is BY DESIGN, and a stale clone is not a reason to skip or strip it
+          (test_repair_still_installs_the_composed_layer_when_the_clone_is_stale). The pin stays the LOCAL
+          clone HEAD, never origin/dev, because that is what the OMN-14060 drift guard compares against
+          (OMN-16366).
+        * the venv reconciler never advances a clone (test_repair_never_advances_the_clone). There is one
+          clone reconciler, scripts/runtime_build/reconcile_deploy_clones.sh (OMN-17291), and one venv
+          reconciler, composed by reconcile-host.sh. AC5's own second sentence says to coordinate with
+          OMN-17291 rather than duplicate it, so a fast-forward added here would fail the criterion it
+          claimed to satisfy.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/scripts/test_reconcile_clone_origin_drift_omn17295.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac5-live-dry-run-readback-on-the-mac"
+    description: |-
+      AC5's "on this Mac" clause, recorded rather than re-executed. Run 2026-09-10, mutating nothing:
+
+        bash scripts/reconcile-workspace-venvs.sh --check --omni-home $OMNI_HOME
+
+        [reconcile] clone surface vs origin/dev (as last fetched; this script does not fetch):
+        [reconcile]   omnibase_infra: HEAD 17047498145d  origin/dev 17047498145d  behind by 0 commit(s)
+        [reconcile]   omnibase_core: HEAD e7241554fde5  origin/dev e7241554fde5  behind by 0 commit(s)
+        [reconcile]   omnibase_spi: HEAD c6aa159f3dde  origin/dev c6aa159f3dde  behind by 0 commit(s)
+        [reconcile]   omnibase_compat: HEAD 939afb25e7fb  origin/dev 939afb25e7fb  behind by 0 commit(s)
+        [reconcile]   omnimarket: HEAD 87afb9c33215  origin/dev 87afb9c33215  behind by 0 commit(s)
+        [reconcile] verdict: IN_SYNC (omnimarket 87afb9c33215)
+
+      Stated plainly rather than implied: that readback is an observation of one operator's workstation.
+      A GitHub-hosted runner has no route to it and this gate does not pretend otherwise -- which is why
+      the re-executable checks above are structural and behavioural, and this entry carries the observation
+      with its date. The five clones were all at the tip when it ran, so the live table reads zero across
+      the board; the DRIFT direction is proven by the behaviour suite, not by this line.
+
+      The composite reconciler's own live verdict at the same moment, for the same reason:
+      reconcile-host.sh --check reported all five clone surfaces and all five venv surfaces
+      ALREADY_AT_TARGET, VERDICT: IN_SYNC.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3382 --repo OmniNode-ai/omnibase_infra --json number,state,mergeCommit"
