@@ -40,6 +40,80 @@ evidence_requirements:
       timeout claim survives anywhere in the workflow file. Executed at cwd `${OMNI_HOME}/omninode_infra`.
     command: |-
       uv run pytest tests/k8s/test_runtime_readiness_gate.py -q
+  - kind: "manual"
+    description: >-
+      AC1 — SATISFIED ON LIVE EVIDENCE, BUT NOT BINDABLE AS A dod_evidence CHECK, for the same private-repo
+      token reason recorded against OMN-15376 AC3/AC4. A deploy whose ONLY change is a runtime image digest
+      bump went green in ONE run, with no redispatch, on a real digest change rather than a warm-image
+      rerun: omninode_infra run 34408930764 (Deploy onex-staging (SSM port-forward), event repository_dispatch,
+      display title omnibase-infra-dev-candidate, run_attempt 1, conclusion success, 2026-09-09T21:48:37Z
+      to 22:10:13Z). The digest-bump-only premise is proven by construction rather than argued: this run
+      and its immediate predecessor 34405754290 (event push, run_attempt 1, conclusion success, 21:14:01Z
+      to 21:38:42Z) carry the SAME head_sha c5904e7634346e99281ada31492aa55e2059cfa0, so the source tree
+      the two runs deployed is byte-identical and the git delta between them is empty. The one thing that
+      differs is the runtime image the dispatch payload delivered: the predecessor recorded delivered_image_ref
+      omninode-runtime@sha256:a8cad8729f5823fe629a1bb4b49dd5275bba60aca54a2531ff3250aa526aebdb and this
+      run recorded omninode-runtime@sha256:264eff1d7292b959d809eab289bbc368c29f37d8fa866a5f7bc1a89157d8f8d5.
+      A repository_dispatch delivery is a strictly stronger control than the commit-pinned digest bump
+      the ticket founding run used, because a commit-pinned bump still carries a one-line source diff
+      while this one carries none at all. The pull was genuinely cold, which is what the criterion turns
+      on. Inside step 44 "Wait for remaining runtime deployment rollouts", omninode-runtime alone waited
+      21:53:49 to 22:03:58 = 609 seconds, 3.4x the 180-second budget the ticket falsified; omnimarket-projection-api
+      then took a further 277 seconds; the whole step ran 21:53:48 to 22:08:42 = 894 seconds; all seventeen
+      runtime-plane Deployments reported "successfully rolled out" with zero timeouts. The run then reached
+      its terminal gate, step 59 "Post-deploy BUSINESS PROOF gate (OMN-15256) [TERMINAL]", success at
+      22:10:06Z — the step the ticket records as being skipped whenever the wait goes red. Probes executed
+      2026-09-10, rc=0 each, every conclusion read through the attempt-anchored path so a later re-run
+      cannot rewrite it (OMN-15540 Rule F): `gh api repos/OmniNode-ai/omninode_infra/actions/runs/34408930764/attempts/1
+      --jq '[.event,.conclusion,(.run_attempt|tostring),.head_sha]|join(" ")'` returned `repository_dispatch
+      success 1 c5904e7634346e99281ada31492aa55e2059cfa0`; `gh api repos/OmniNode-ai/omninode_infra/actions/runs/34408930764/attempts/1/jobs
+      --jq '.jobs[]|select(.name=="deploy-staging")|.steps[]|select(.name=="Wait for remaining runtime
+      deployment rollouts")|[(.number|tostring),.conclusion]|join(" ")'` returned `44 success`. Why this
+      is recorded here instead of in dod_evidence: OmniNode-ai/omninode_infra is a PRIVATE repository
+      and hosted contract compliance runs as the onexbot-occ-writer GitHub App, whose installation carries
+      contents and pull_requests read on that repo but NOT `actions: read`. Proven live in this PR own
+      first CI run — OCC PR #8863, Contract Compliance Check job 102709538516: every `repos/OmniNode-ai/omninode_infra/actions/...`
+      probe returned `gh: Resource not accessible by integration (HTTP 403)` and reported 10 BLOCK, while
+      every `contents`, `commits` and `pulls` probe against the SAME repo in the SAME run succeeded. A
+      check that 403s in CI is a hard merge block with no hosted-skip mechanism, so binding AC1 as an
+      executable check would make this contract unlandable. The remedy is an org-level change this lane
+      is not authorized to make: grant the onexbot-occ-writer App `actions: read` on omninode_infra. Until
+      that lands, AC1 is closable only on this recorded readback, not by the AC-binding gate.
+  - kind: "manual"
+    description: >-
+      AC1 negative control — SATISFIED ON LIVE EVIDENCE, same non-bindability reason as the AC1 entry
+      above. The same class of deploy, before the fix, returning the opposite result: omninode_infra run
+      30348504044 (deploy-onex-dev.yml, event workflow_dispatch, run_attempt 1, 2026-07-28) on commit
+      b9f759148a6327a51fd92586678640eda7030b05, whose diff touches EXACTLY ONE file, k8s/onex-dev/runtime/kustomization.yaml
+      — a digest-pin move and nothing else. It failed, at precisely "Wait for remaining runtime deployment
+      rollouts", under DEPLOY_TIMEOUT_SECONDS "180" as read at that commit. The second half of the control
+      is the two-run ritual the ticket describes: run 30349179289, a redispatch against the SAME head_sha
+      ten minutes later with the image now warm, went green. Identical inputs, opposite outcomes, differing
+      only in image warmth, which is what makes the 894-second cold-pull green above evidence of the fix
+      rather than evidence of a warm image. Probes executed 2026-09-10, rc=0 each: `gh api repos/OmniNode-ai/omninode_infra/actions/runs/30348504044/attempts/1/jobs
+      --jq '.jobs[]|select(.name=="deploy-dev")|[.conclusion,([.steps[]|select(.conclusion=="failure")
+      |.name]|join(","))]|join(" ")'` returned `failure Wait for remaining runtime deployment rollouts`;
+      `gh api repos/OmniNode-ai/omninode_infra/actions/runs/30349179289/attempts/1 --jq '[.head_sha,.conclusion,(.run_attempt|tostring)]|join("
+      ")'` returned `b9f759148a6327a51fd92586678640eda7030b05 success 1`. The commit-shape half of this
+      control IS readable by the App and was verified green in the same CI run: `gh api repos/OmniNode-ai/omninode_infra/commits/b9f759148a6327a51fd92586678640eda7030b05
+      --jq '[.files[].filename]|join(",")' | grep -Fxc 'k8s/onex-dev/runtime/kustomization.yaml'`.
+  - kind: "manual"
+    description: >-
+      AC3 — SATISFIED ON LIVE EVIDENCE, same non-bindability reason as the AC1 entries above. A rollout
+      that genuinely fails still fails the job; the wait was neither removed nor made advisory. omninode_infra
+      run 34056793755 (Deploy onex-staging, event push, run_attempt 1, 2026-09-06T20:03:33Z, head 13c10bf4)
+      went red at "Wait for remaining runtime deployment rollouts" and carried that failure to the run
+      conclusion. The step discriminates rather than blanket-passing: in that same run omninode-runtime
+      waited 20:10:58 to 20:20:33 and reported "successfully rolled out", and then omnimarket-projection-api
+      waited 20:20:34 to 20:29:46 and returned `error: deployment "omnimarket-projection-api" exceeded
+      its progress deadline`, raising `::error::Rollout failed or timed out: omnimarket-projection-api`.
+      The failure took 552 seconds to declare, well inside the 1500-second budget, so the raised budget
+      did not convert a real failure into a pass — it waited, the rollout genuinely did not converge,
+      and the job went red. Probes executed 2026-09-10, rc=0 each: `gh api repos/OmniNode-ai/omninode_infra/actions/runs/34056793755/attempts/1
+      --jq '[.event,.conclusion,(.run_attempt|tostring)]|join(" ")'` returned `push failure 1`; `gh api
+      repos/OmniNode-ai/omninode_infra/actions/runs/34056793755/attempts/1/jobs --jq '.jobs[]|select(.name=="deploy-staging")|[.conclusion,([.steps[]|select(.conclusion=="failure")
+      |.name]|join(";"))]|join(" ")'` returned `failure Wait for remaining runtime deployment rollouts;Post-deploy
+      verification gate (OMN-11969)`.
 emergency_bypass:
   enabled: false
   justification: ""
@@ -71,3 +145,31 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8780 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn15320-ac2-rationale-cites-cold-pull"
+    description: >
+      AC2 — the wait budget's comment cites the cold-pull measurement it is based on rather than the falsified
+      estimate. Supersedes dod-OmniNode-ai-omninode_infra-pr-1271 and dod-occ-diff-derived-behavior-proof,
+      which bind the same PR but predate the binds_ac field and therefore declare no criterion. No claim
+      in those items is withdrawn; this item restates them against the merged squash commit and attaches
+      the AC label. Read at merged sha f157b36aa5b05f89edf644a2284ae81f73356fbd (omninode_infra#1271):
+      the rationale block cites the OMN-15320 783,619,615-byte runtime image cold pull and its roughly
+      six-minute readback, the governed value reads DEPLOY_TIMEOUT_SECONDS "1500", and the falsified "~30-60s
+      for cold pull" estimate the ticket names is absent from the file.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1271"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=f157b36aa5b05f89edf644a2284ae81f73356fbd" --jq '.content' | base64 -d | grep -c '783,619,615-byte runtime image cold pull'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=f157b36aa5b05f89edf644a2284ae81f73356fbd" --jq '.content' | base64 -d | grep -c 'DEPLOY_TIMEOUT_SECONDS: "1500"'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=f157b36aa5b05f89edf644a2284ae81f73356fbd" --jq '.content' | base64 -d | grep -c '30-60s for cold pull')" = "0"
+      - check_type: "command"
+        check_value: |-
+          gh pr view 1271 --repo OmniNode-ai/omninode_infra --json state,mergeCommit --jq '[.state,.mergeCommit.oid]|join(" ")' | grep -Fxc 'MERGED f157b36aa5b05f89edf644a2284ae81f73356fbd'
