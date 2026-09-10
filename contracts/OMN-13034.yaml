@@ -108,3 +108,50 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 6899 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3394"
+    description: "PR #3394 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3394 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3394/files --paginate --jq '.[].filename' | grep -cFx 'deploy/lane-census/census-snapshot.json'
+  - id: "occ-self-bind-pr-8917"
+    description: "Binds OMN-13034 to OCC companion PR #8917 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8917 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "occ-census-freshness-live-3394"
+    description: >-
+      Supersedes occ-census-freshness-live-2846 for the third OMN-13034 consumer by reading omnibase_infra#3394's
+      committed census-snapshot.json at its head SHA (e4998cb85762fdab7e299f9a66b5764eb6878b74) and asserting
+      via jq -e that the snapshot's emitted_at timestamp is within the 7-day staleness gate. The 2846-pinned
+      probe now reads an 18-day-old snapshot and BLOCKS by construction -- each refresh of the census
+      must re-point this probe at its own head, which is what this item does.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:occ-census-freshness-live-2846"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/deploy/lane-census/census-snapshot.json?ref=e4998cb85762fdab7e299f9a66b5764eb6878b74"
+          --jq '.content' | base64 -d | jq -e --arg now "$(date -u +%s)" '((.emitted_at | sub("\\.[0-9]+";
+          "") | sub("\\+00:00$"; "Z") | fromdateiso8601)) > (($now | tonumber) - 7*86400)'
+  - id: "occ-census-local-verify-3394"
+    description: >-
+      Supersedes occ-census-local-verify-2846 for the third OMN-13034 consumer by fetching omnibase_infra#3394's
+      census snapshot and check_lane_census_age.py from head SHA e4998cb85762fdab7e299f9a66b5764eb6878b74,
+      then executing the product repo's own staleness checker against the fetched snapshot. The script's
+      exit code (0=fresh, 1=stale/missing/malformed) is the falsifiable proof. Verified before commit:
+      this invocation exits 0 on the #3394 snapshot and exits 1 on the superseded 2846 snapshot (negative
+      control).
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:occ-census-local-verify-2846"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/deploy/lane-census/census-snapshot.json?ref=e4998cb85762fdab7e299f9a66b5764eb6878b74"
+          --jq '.content' | base64 -d > /tmp/occ8917-census-snapshot.json && gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/check_lane_census_age.py?ref=e4998cb85762fdab7e299f9a66b5764eb6878b74"
+          --jq '.content' | base64 -d > /tmp/occ8917-check_lane_census_age.py && python3 /tmp/occ8917-check_lane_census_age.py
+          --snapshot /tmp/occ8917-census-snapshot.json --max-age-days 7
