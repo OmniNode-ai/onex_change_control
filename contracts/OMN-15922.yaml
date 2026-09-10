@@ -292,6 +292,303 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8330 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-3-live-authenticated-readback"
+    binds_ac: ["DoD3"]
+    description: |-
+      DoD 3, proven live and read back server-side rather than from CLI
+      stdout. Lane omn15922-dod3-auth-readback, 2026-09-10T01:43-01:44Z, on
+      the staging onex-dev namespace of the DEV-SYSTEM EC2 instance
+      i-06169517a92b45f86; every SSM send-command carried
+      --comment omn15922-dod3-auth-readback.
+
+      What was done, in the order DoD 3 names it. An EXISTING per-tenant
+      confidential machine client -- provisioned 2026-08-24, held in the
+      onex-dev Secret named omn15922-dod6-daniyal-cred and resolved by
+      REFERENCE, never created, rotated, re-issued or revoked by this lane --
+      was exchanged at the realm token endpoint under RFC 6749 s4.4
+      grant_type=client_credentials: HTTP 200, token_type Bearer,
+      expires_in 300, and NO refresh_token, which is the property the ticket
+      calls out (re-grant, never grant_type=refresh_token). The token carried
+      azp and principal_id equal to the client id, tenant_id
+      18ae3951-376b-4400-af83-c34a137bfda1, tenant_slug d5-e2e-0b5ae67c and
+      aud [onex-api, redpanda-events, account] -- the dual-audience shape the
+      merged OMN-15922 exchange-input fix exists to accept. That Bearer was
+      attached to GET /v1/whoami on the dev gateway: HTTP 200, and the
+      SERVER-resolved body named tenant 18ae3951-376b-4400-af83-c34a137bfda1
+      / d5-e2e-0b5ae67c, identical to the credential's own tenant_id, which
+      is the equality DoD 3 requires. POST /v1/auth/gateway-token then
+      returned HTTP 200 with an attach token whose aud is gateway-attach and
+      whose azp is the derived gateway-attach principal, tenant-bound
+      server-side.
+
+      Why this check is a readback and not a transcript. Every authenticated
+      /v1 request writes a usage_events row through the onex-api middleware,
+      keyed by the caller's X-Request-ID and stamped with the tenant the
+      SERVER resolved, not the tenant the caller claimed. This check reads
+      those rows back out of the serving database from inside the onex-api
+      pod itself and asserts three things: at least one row exists for this
+      lane's correlation-id prefix AND carries the credential's tenant_id;
+      the tenant has a non-zero total row count (a positive control, so a
+      database that answered zero to everything cannot read as a pass); and
+      exactly one distinct tenant appears across the lane's rows, so a
+      cross-tenant resolution would be visible rather than averaged away.
+
+      Negative controls, asserted here rather than described. The same
+      endpoint with NO Authorization header returned HTTP 401
+      auth.credential.absent; with a signature tampered mid-string, and again
+      with a payload whose tenant_slug was rewritten, HTTP 401
+      auth.credential.invalid. Each refusal used its own correlation id, and
+      this check asserts all three wrote ZERO rows -- a refused request must
+      leave no server-side trace, which is the half that makes the positive
+      row mean something. A fourth control is recorded because it initially
+      read as a defect and was not one: flipping the LAST base64url character
+      of an RS256 signature returned HTTP 200, because a 342-character
+      signature's final character carries four significant bits and two
+      unused ones, so A and B decode to identical bytes. That was a
+      no-op disguised as a tamper, measured and corrected, not a gateway
+      weakness; the two real tamper controls above replaced it.
+
+      Falsifiability, measured rather than asserted. With
+      OMN15922_DOD3_REQUEST_PREFIX pointed at a prefix that never happened
+      the check exits 1 on DOD3_AUTHENTICATED_ROWS=0; with
+      OMN15922_DOD3_TENANT_ID pointed at the nil UUID it exits 1 on both the
+      row assertion and the positive control. Both RED legs were run.
+
+      Scope, stated: execution_scope is local_done_gate because this check
+      reaches a live cluster through SSM, which hosted compliance has no
+      credential for. Every parameter is an environment NAME with the live
+      value as its default, so the check is re-runnable by any lane holding
+      dev-plane read access and carries no secret material. No token or
+      client secret value appears in this contract, this check, or its
+      output: the grant is recorded by sha256 prefix and length only.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          INSTANCE="${ONEX_DEV_SYSTEM_INSTANCE_ID:-i-06169517a92b45f86}"
+          NS="${ONEX_DEV_NAMESPACE:-onex-dev}"
+          TENANT="${OMN15922_DOD3_TENANT_ID:-18ae3951-376b-4400-af83-c34a137bfda1}"
+          PREFIX="${OMN15922_DOD3_REQUEST_PREFIX:-omn15922-dod3-auth}"
+          CMDS=$(NS="$NS" TENANT="$TENANT" PREFIX="$PREFIX" python3 -c '
+          import json, os
+          ns, ten, pre = os.environ["NS"], os.environ["TENANT"], os.environ["PREFIX"]
+          py = f"""import os, psycopg
+          cur = psycopg.connect(os.environ["OMNINODE_CLOUD_DB_URL"]).cursor()
+          TEN, PRE = "{ten}", "{pre}%"
+          cur.execute("SELECT count(*) FROM usage_events WHERE request_id LIKE %s AND tenant_id = %s::uuid", (PRE, TEN))
+          print("DOD3_AUTHENTICATED_ROWS=%d" % cur.fetchone()[0])
+          cur.execute("SELECT count(*) FROM usage_events WHERE tenant_id = %s::uuid", (TEN,))
+          print("DOD3_TENANT_TOTAL_ROWS=%d" % cur.fetchone()[0])
+          cur.execute("SELECT count(DISTINCT tenant_id::text) FROM usage_events WHERE request_id LIKE %s", (PRE,))
+          print("DOD3_DISTINCT_TENANTS=%d" % cur.fetchone()[0])
+          for label, pat in (("NOAUTH", "omn15922-dod3-noauth-%"), ("SIGTAMPER", "omn15922-dod3-sigtamper-%"), ("PAYTAMPER", "omn15922-dod3-paytamper-%")):
+              cur.execute("SELECT count(*) FROM usage_events WHERE request_id LIKE %s", (pat,))
+              print("DOD3_REFUSED_%s_ROWS=%d" % (label, cur.fetchone()[0]))
+          """
+          cmds = [
+            "export KUBECONFIG=/etc/rancher/k3s/k3s.yaml",
+            f"POD=$(sudo -E kubectl -n {ns} get pod -o name | grep onex-api | head -1 | cut -d/ -f2)",
+            "cat > /tmp/omn15922_dod3_check.py <<\"PYEOF\"\n" + py + "PYEOF",
+            f"sudo -E kubectl -n {ns} exec -i \"$POD\" -c onex-api -- /opt/venv/bin/python - < /tmp/omn15922_dod3_check.py",
+            "rm -f /tmp/omn15922_dod3_check.py",
+          ]
+          print(json.dumps({"commands": cmds}))
+          ')
+          CID=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
+            --comment omn15922-dod3-auth-readback --parameters "$CMDS" --query Command.CommandId --output text) || exit 1
+          for _ in $(seq 1 60); do
+            ST=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$INSTANCE" --query Status --output text 2>/dev/null || echo Pending)
+            case "$ST" in Success|Failed|Cancelled|TimedOut) break;; esac
+            sleep 3
+          done
+          OUT=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$INSTANCE" --query StandardOutputContent --output text) || exit 1
+          echo "$OUT"
+          grep -qE '^DOD3_AUTHENTICATED_ROWS=[1-9][0-9]*$' <<< "$OUT" &&
+            grep -qE '^DOD3_TENANT_TOTAL_ROWS=[1-9][0-9]*$' <<< "$OUT" &&
+            grep -qx 'DOD3_DISTINCT_TENANTS=1' <<< "$OUT" &&
+            grep -qx 'DOD3_REFUSED_NOAUTH_ROWS=0' <<< "$OUT" &&
+            grep -qx 'DOD3_REFUSED_SIGTAMPER_ROWS=0' <<< "$OUT" &&
+            grep -qx 'DOD3_REFUSED_PAYTAMPER_ROWS=0' <<< "$OUT"
+  - id: "dod-1-auth-command-surface"
+    binds_ac: ["DoD1"]
+    description: |-
+      DoD 1 and the escape hatch DoD 2 names: all four subcommands the ticket
+      requires -- login, status, token, logout -- are declared on the auth
+      group at the merged fix head, asserted as an exact count of four
+      decorator lines rather than a substring that a docstring mentioning the
+      commands would also satisfy. Pinned at the #3227 merge commit, so it
+      reads merged product state and not a branch that could still move.
+      Paired with dod-credential-secrets-are-not-plain-strings, already on
+      this contract, which is the "never prints secret material" half.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_auth.py?ref=93f39f30a12fc31e7fe5b2c5a55066ef49abd016" --jq '.content' | base64 -d | grep -cE '^@auth_group\.command\("(login|status|token|logout)"\)$' | grep -qx 4
+  - id: "dod-7-gates-green-at-fix-head"
+    binds_ac: ["DoD7"]
+    description: |-
+      DoD 7 -- lint, format, typing and pre-commit green -- read from live
+      check-run conclusions at the #3227 HEAD commit rather than from a PR
+      body claim.
+
+      Reads the LATEST run per check name, not every historical attempt. That
+      distinction is the whole check: the adversarial gate was CANCELLED at
+      05:38:56Z and re-ran to success at 05:43:46Z, nineteen minutes before
+      the merge. A naive count over all attempts reads that supersession as a
+      failure, which is the same misreading the standing note about cancelled
+      runs rendering as failures warns about. Grouped by name, the latest
+      conclusion of all 142 runs is success, skipped or neutral, and zero are
+      otherwise.
+
+      Deliberately pinned to the PR HEAD sha and NOT the merge commit. The
+      merge commit additionally carries two post-merge scheduled monitors on
+      the dev branch, DLQ Depth Monitor and Baselines Batch Compute, failing
+      for reasons that have nothing to do with this change. Asserting over
+      the merge commit would either charge this ticket with those failures or
+      need an allowlist that would hide a real one later.
+
+      Falsifiability measured, not asserted: the identical command emits 0
+      and exits 0 at this head, and emits 2 and exits 1 at the merge commit
+      93f39f30a12fc31e7fe5b2c5a55066ef49abd016. Both legs were run.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          REF=4d813f8c8df68daf0126297f4c9496532b1e4a48
+          BAD=$(gh api "repos/OmniNode-ai/omnibase_infra/commits/$REF/check-runs" --paginate --jq ".check_runs[] | [.name, .started_at, .conclusion] | @tsv" \
+            | sort -t"$(printf "\t")" -k1,1 -k2,2 \
+            | awk -F"\t" "{last[\$1]=\$3} END {n=0; for (k in last) if (last[k] != \"success\" && last[k] != \"skipped\" && last[k] != \"neutral\") n++; print n}")
+          echo "DOD7_NON_GREEN_LATEST_RUNS=$BAD"
+          test "$BAD" = "0"
+  - id: "dod-8-no-env-configuration-surface"
+    binds_ac: ["DoD8"]
+    description: |-
+      DoD 8 -- "zero new env vars introduced as configuration". Asserted as
+      an absence measured across the three files that would carry one if the
+      rule had been broken: the auth CLI, the token minter, and the stored
+      credential model. Each reads back ZERO occurrences of os.environ or
+      os.getenv at the merged fix head, so configuration reaches this slice
+      through the contract overlay and the credential store only, which is
+      what the standing config rule requires.
+
+      An absence check needs a positive control or it passes on a typo, so
+      this one also asserts the files are non-empty by requiring a known line
+      from each: a grep that matched nothing because the path was wrong would
+      otherwise be indistinguishable from a clean result.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          REF=93f39f30a12fc31e7fe5b2c5a55066ef49abd016
+          for p in src/omnibase_infra/cli/cli_auth.py src/omnibase_infra/gateway/client/gateway_token_minter.py src/omnibase_infra/gateway/models/model_gateway_credential.py; do
+            body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/$p?ref=$REF" --jq '.content' | base64 -d)" || exit 1
+            test "$(grep -cE 'os\.environ|os\.getenv' <<< "$body")" = "0" || exit 1
+            grep -qE '^(import|from) ' <<< "$body" || exit 1
+          done
+  - id: "dod-4-delegate-fail-closed-unbuilt"
+    description: |-
+      NOT a binding. This item records an OPEN gap as a measured fact so it
+      cannot be lost, and it carries no binds_ac precisely because it proves
+      the criterion is NOT met.
+
+      DoD 4 has two halves. The auth-CLI half is already proven on this
+      contract by dod-onex-auth-fails-closed-without-credential: with no
+      stored credential, status and token exit non-zero and name the
+      remediation. The second half is the one the criterion actually turns
+      on -- "cloud target configured, no valid token resolves, ZERO local
+      execution" -- and it lives in the delegate command, not the auth
+      command. At the merged fix head cli_delegate.py contains zero
+      references to the auth CLI, the auth group, or the gateway credential
+      store, so there is no code path by which a missing token could stop a
+      local delegation. The criterion is unbuilt, not merely unproven.
+
+      This check asserts that count is zero TODAY and goes RED the moment the
+      integration lands -- which is the signal wanted: a red here means
+      someone wired it and this item should be replaced by a real DoD 4
+      binding, not that something broke.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=93f39f30a12fc31e7fe5b2c5a55066ef49abd016" --jq '.content' | base64 -d | grep -cE 'cli_auth|auth_group|ModelGatewayCredential|StoreGatewayCredential')" = "0"
+  - id: "dod-2-token-mints-and-re-grants"
+    binds_ac: ["DoD2"]
+    description: |-
+      DoD 2 -- `onex auth token` emits a currently-valid access token and
+      re-grants transparently near expiry -- bound to the two behaviour
+      suites that hold its two halves, both executed rather than read.
+
+      The MINT half. The merged OMN-15922 fix made the client's
+      exchange-input audience rule mirror the server's REQUIRED-subset plus
+      PERMITTED-superset rule instead of bare set equality against a single
+      audience. Before it, the shipped command refused a genuine provisioned
+      credential the gateway had already accepted with HTTP 200. The token
+      minter suite drives the live audience shape through the real minter and
+      asserts a mint, and carries the two negative controls the widening
+      needs -- an audience outside PERMITTED, and a token missing the broker
+      audience, both still refused -- so a fix that widened PAST the server
+      fails it too.
+
+      The RE-GRANT half. client_credentials issues no refresh_token, which
+      this lane confirmed live: the grant returned token_type Bearer,
+      expires_in 300 and no refresh_token field. Renewal therefore has to be
+      a re-grant inside a declared window, and the renewal-planner suite is
+      what holds that shape: a directive that renews at or after expiry
+      cannot be constructed, every planned instant lands inside the declared
+      window, and a window the client cannot honour is reported rather than
+      silently run.
+
+      Live corroboration from this lane, recorded and not asserted as the
+      check: the credential exchanged at the realm token endpoint on
+      2026-09-10 carried aud [onex-api, redpanda-events, account] -- exactly
+      the dual-audience input the mint test drives, so the suite's fixture is
+      the live shape rather than an invented one.
+
+      Measured this lane, both legs, in a CLEAN worktree checked out at the
+      fix merge commit rather than the canonical clone: 29 passed across both
+      suites. RED control: removing onex-api from the client's PERMITTED
+      audience set fails exactly the two tests that encode the server rule --
+      the audience-sets mirror test and the dual-audience acceptance test --
+      and fails them with ONEX_CORE_163_AUTHENTICATION_ERROR on audience
+      ['onex-api'], the same error class the live defect produced. Restored,
+      19 passed, tree clean.
+
+      Why a clean worktree. The canonical omnibase_infra clone still trips
+      the venv-purity gate on an undeclared omnimarket distribution, which
+      makes this check SKIP rather than run there. That is a real gate on a
+      real condition, tracked separately, and is not routed around here: the
+      declared cwd stays the canonical clone, and a skip is reported as a
+      skip and never as a pass. What the clean-worktree run establishes is
+      that the skip is an environment condition and not a failing suite.
+
+      Honest limit. This binds the client's own behaviour, executed. It does
+      not claim a live `onex auth token` invocation against this credential:
+      that needs the machine secret on the invoking host, and this lane
+      resolved the credential by reference inside the cluster instead,
+      deliberately, so no secret left it.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/gateway/test_gateway_token_minter.py tests/unit/gateway/test_gateway_renewal_planner.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "occ-self-bind-pr-8870"
+    description: |-
+      OCC companion PR #8870 -- self-bind for OMN-15922 (OMN-14650). Mirrors
+      the earlier self-binds on this contract and exists for the same
+      mechanical reason: merge eligibility needs at least one PASS receipt on
+      the cited ticket to bind to the OCC PR carrying the evidence, otherwise
+      the companion is ineligible on a ticket mismatch. It is a binding
+      record, not substantive proof -- the falsifiable evidence in this
+      companion is dod-3-live-authenticated-readback, which reads a
+      server-side row back out of the serving database and was measured RED
+      on two separate false inputs before being asserted GREEN.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8870 --repo OmniNode-ai/onex_change_control --json number,state"
 emergency_bypass:
   enabled: false
   justification: ''
