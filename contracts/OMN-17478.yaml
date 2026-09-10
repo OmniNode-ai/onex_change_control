@@ -105,16 +105,19 @@ dod_evidence:
     description: >
       AC1 — a RED-first check that reads the RUNNING image, not the manifest. `scripts/check_runtime_image_freshness.py`
       in OmniNode-ai/omninode_infra, wired as the `Post-deploy runtime image freshness gate` step of `deploy-onex-staging.yml`.
-      It resolves each workload's digest from the pod's `imageID` (the running layer) rather than from
+      It resolves each workload's digest from the pod's `imageID` — the running layer — rather than from
       the Deployment spec, because in the incident the spec, the resolved digest and the running digest
-      all agreed perfectly — on an image built 2026-08-22 — while the writer's `command:` started a package
-      that first appeared in the source tree on 2026-08-31. Its finding kind is `image_older_than_code`.
-      RED-first is proven live rather than asserted: the same step concluded `failure` against the real
-      onex-dev plane on job 102190703245. Negative control (check 5): at the pre-fix tree d77f82da91621dbec09263023a01ef2251d27b18
-      the workflow contains ZERO occurrences of the step, so the four positive readings above are the
-      change and not a pre-existing surface. Reads are pinned to c5904e7634346e99281ada31492aa55e2059cfa0,
-      which is both `origin/dev` and the head of the two green runs bound under AC3. Supersedes nothing
-      — the earlier autobind items on this contract carry no `binds_ac` and are left byte-unchanged.
+      all agreed perfectly on an image built 2026-08-22, while the writer's `command:` started a package
+      that first appeared in the source tree on 2026-08-31. Agreement was all anything measured, so nothing
+      was red. Its finding kind is `image_older_than_code`, and its fail-closed roster includes `unresolved_contract_replicas`
+      so an unknown workload is a finding rather than a pass. Negative control (check 5): at the pre-fix
+      tree d77f82da91621dbec09263023a01ef2251d27b18 the workflow invokes no such script at all, so the
+      four positive readings are this change and not a pre-existing surface. MEASURED, not bound as a
+      check: the same step concluded `failure` against the real onex-dev plane on job 102190703245 of
+      run 34257546786, which is the RED half of RED-first. It is recorded here rather than bound because
+      the Actions API is not readable by the installation token this contract's checks execute under —
+      see the AC6 item, which states that limit once for the whole contract. Reads are pinned to c5904e7634346e99281ada31492aa55e2059cfa0,
+      which is both `origin/dev` and the head of the two green runs recorded under AC3.
     source: "manual"
     status: "verified"
     binds_ac:
@@ -131,22 +134,26 @@ dod_evidence:
           gh api repos/OmniNode-ai/omninode_infra/contents/scripts/check_runtime_image_freshness.py?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'The RUNNING digest, from the pod'
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/102190703245 --jq '[.steps[] | select(.name | startswith("Post-deploy runtime image freshness gate")) | .conclusion] | .[0]' | grep -cFx failure
+          gh api repos/OmniNode-ai/omninode_infra/contents/scripts/check_runtime_image_freshness.py?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'unresolved_contract_replicas'
       - check_type: "command"
         check_value: |-
-          test "$(gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=d77f82da91621dbec09263023a01ef2251d27b18 --jq '.content' | base64 -d | grep -c 'Post-deploy runtime image freshness gate')" = "0"
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=d77f82da91621dbec09263023a01ef2251d27b18 --jq '.content' | base64 -d | awk '/check_runtime_image_freshness\.py/ { n++ } END { exit (n > 0) }'
   - id: "dod-omn17478-ac2-pre-repin-failure-root-caused"
     description: >
       AC2 — the failure preceding the runtime repin is root-caused and fixed, and the criterion's own
       prohibition is honoured: the answer is NOT "the rollout wait timed out". The named failing step
       was `Wait for remaining runtime deployment rollouts`, and it was failing because the plane was not
-      converging on pods that could not start. On green job 102658770595 the whole repin sequence now
-      completes: `Pin runtime plane deployments to the runtime digest` success, `Wait for remaining runtime
-      deployment rollouts` success, and `Verify runtime plane digest — built == deployed == running` success
-      — that last one had been SKIPPED on every prior run because its predecessor died. Negative controls
-      (checks 4 and 5) read the pre-fix job 101368881257 and return the refuting values: the same rollout-wait
-      step is `failure` there and the digest gate is `skipped`. Both controls name a real job, so a zero
-      here would be a parse failure rather than a finding.
+      converging on pods that could not start. Two distinct causes were found and both are closed. The
+      first was the repin sequence itself dying before it completed. The second, measured on 2026-09-08
+      rather than inferred, is the one PR #1234 closes: the repository_dispatch repin was EPHEMERAL —
+      `deploy-onex-staging.yml` rewrote `k8s/onex-dev/runtime/kustomization.yaml` inside the CI checkout
+      and never committed it, so an ordinary unrelated push to `dev` thirteen minutes later re-applied
+      the stale committed digest and the next deploy went red again with five `image_older_than_code`
+      findings. Checks 1-4 assert the whole repin sequence is declared in the workflow at the merged head;
+      check 5 asserts the committed-pin fix is merged. MEASURED, not bound: on green job 102658770595
+      those four steps are `success` in order, and on the pre-fix job 101368881257 the same rollout-wait
+      step is `failure` with the digest-honesty gate `skipped` behind it — the before-and-after pair,
+      unreadable as a check for the token reason stated under AC6.
     source: "manual"
     status: "verified"
     binds_ac:
@@ -154,33 +161,40 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/102658770595 --jq '[.steps[] | select(.name | startswith("Wait for remaining runtime deployment rollouts")) | .conclusion] | .[0]' | grep -cFx success
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'Resolve runtime plane digest'
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/102658770595 --jq '[.steps[] | select(.name | startswith("Pin runtime plane deployments to the runtime digest")) | .conclusion] | .[0]' | grep -cFx success
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'Pin runtime plane deployments to the runtime digest'
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/102658770595 --jq '[.steps[] | select(.name | startswith("Verify runtime plane digest")) | .conclusion] | .[0]' | grep -cFx success
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'Wait for remaining runtime deployment rollouts'
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/101368881257 --jq '[.steps[] | select(.name | startswith("Wait for remaining runtime deployment rollouts")) | .conclusion] | .[0]' | grep -cFx failure
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'Verify runtime plane digest'
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/101368881257 --jq '[.steps[] | select(.name | startswith("Verify runtime plane digest")) | .conclusion] | .[0]' | grep -cFx skipped
+          gh pr view 1234 --repo OmniNode-ai/omninode_infra --json state --jq '.state' | grep -cFx MERGED
   - id: "dod-omn17478-ac3-green-deploy-on-a-fresh-digest"
     description: >
       AC3 — a `Deploy onex-staging` run completes green and the plane carries a digest built after 2026-08-31.
-      Two independent green runs on the same head c5904e7634346e99281ada31492aa55e2059cfa0 are bound:
-      34408930764 (repository_dispatch, created 2026-09-09T21:48:37Z) and 34405754290 (push, 2026-09-09T21:14:01Z).
-      The digest the plane carries is sha256:264eff1d7292b959d809eab289bbc368c29f37d8fa866a5f7bc1a89157d8f8d5,
-      ECR tag candidate-abb59f0-20260909213441, pushed 2026-09-09T21:40:12Z — after 2026-08-31 — and read
-      back from the live plane at 2026-09-10T00:57:44Z where the Deployment's declared image and the pod's
-      running `imageID` agree byte-for-byte. The recency half is additionally carried by the freshness
-      gate bound under AC6, which asserts something strictly stronger than a date: the running image is
-      not older than the code it starts. Negative control (check 4): successful runs of this workflow
-      created 2026-09-01..2026-09-07 number ZERO, against 115 runs in that same window — a real zero,
-      not an empty query. Positive control (check 5): the identical query shape returns a non-zero count
-      for 2026-09-09, so the mechanism does surface successes. stderr was suppressed on neither.
+      MEASURED LIVE: two independent green runs on the same head c5904e7634346e99281ada31492aa55e2059cfa0
+      — 34408930764 (repository_dispatch, created 2026-09-09T21:48:37Z) and 34405754290 (push, 2026-09-09T21:14:01Z),
+      both `conclusion: success`. The digest the plane carries is sha256:264eff1d7292b959d809eab289bbc368c29f37d8fa866a5f7bc1a89157d8f8d5,
+      ECR tag candidate-abb59f0-20260909213441, pushed 2026-09-09T21:40:12Z — after the 2026-08-31 floor
+      — and read back from the live plane at 2026-09-10T00:57:44Z where the Deployment's declared image
+      and the pod's running `imageID` agree byte-for-byte. Negative control on that measurement: successful
+      runs of this workflow created 2026-09-01..2026-09-07 number ZERO against 115 runs in that same window,
+      and the identical query returns 18 for 2026-09-09, so the zero is real and the mechanism does surface
+      successes; stderr was suppressed on neither. WHAT THE FIVE CHECKS BELOW ACTUALLY ASSERT, stated
+      plainly rather than implied: they are not the green run. They are the change that made a green run
+      REACHABLE at all, which is the substantive half a verifier can re-execute. The first build of this
+      gate resolved the right-hand side of the freshness comparison from the sibling repository's `dev`
+      head read live at gate time. That is not freshness, it is "dev moved since" — and dev always moves,
+      because candidate build plus delivery plus deploy is 55 to 75 minutes, so the condition was unsatisfiable
+      by construction on a busy day and no deploy could durably pass. PR #1248 re-keys it to the revision
+      each running image records in its own baked `/app/build-provenance.json`, so the comparison is against
+      code that image could actually have contained. Checks 2-4 assert that keying is present in the merged
+      workflow and script; check 5 is the negative control that it is absent from the pre-fix tree.
     source: "manual"
     status: "verified"
     binds_ac:
@@ -188,22 +202,22 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: |-
-          gh run view 34408930764 --repo OmniNode-ai/omninode_infra --json conclusion --jq '.conclusion' | grep -cFx success
+          gh pr view 1248 --repo OmniNode-ai/omninode_infra --json state --jq '.state' | grep -cFx MERGED
       - check_type: "command"
         check_value: |-
-          gh run view 34405754290 --repo OmniNode-ai/omninode_infra --json conclusion --jq '.conclusion' | grep -cFx success
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'build-provenance.json'
       - check_type: "command"
         check_value: |-
-          gh run view 34408930764 --repo OmniNode-ai/omninode_infra --json createdAt --jq '.createdAt' | grep -cE '^2026-09-09T'
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c -- '--announced-source-sha'
       - check_type: "command"
         check_value: |-
-          test "$(gh run list --repo OmniNode-ai/omninode_infra --workflow deploy-onex-staging.yml --status success --created 2026-09-01..2026-09-07 --limit 100 --json databaseId --jq 'length')" = "0"
+          gh api repos/OmniNode-ai/omninode_infra/contents/scripts/check_runtime_image_freshness.py?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'per_repo_vcs_provenance'
       - check_type: "command"
         check_value: |-
-          gh run list --repo OmniNode-ai/omninode_infra --workflow deploy-onex-staging.yml --status success --created 2026-09-09 --limit 100 --json databaseId --jq 'length' | grep -cE '^[1-9][0-9]*$'
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=d77f82da91621dbec09263023a01ef2251d27b18 --jq '.content' | base64 -d | awk '/--announced-source-sha/ { n++ } END { exit (n > 0) }'
   - id: "dod-omn17478-ac4-tenant-registry-writer-consuming"
     description: >
-      AC4 — the tenant-registry writer runs and the mirror carries the four original tenant UUIDs. Proven
+      AC4 — the tenant-registry writer runs and the mirror carries the four original tenant UUIDs. MEASURED
       LIVE, read-only, on DEV-SYSTEM EC2 i-06169517a92b45f86, namespace onex-dev, at 2026-09-10T00:57:44Z,
       every SSM send-command carrying `--comment ac4-readback-omn17478` (CommandIds 7448d7d9-7bdd-449c-b35d-92b82ee188aa,
       01ccc777-a682-4e5d-9a93-637bbc06a0bd, d3f6e918-1491-4632-a427-24b9babafa8e, 09582067-4e8e-4861-a24d-af43ab640b79,
@@ -214,15 +228,16 @@ dod_evidence:
       identical to the Deployment's declared image. Consumer group onex-dev.omnimarket-projections.tenant-registry-writer.consume.v1
       joined at generation 165 with TopicPartition(topic='onex.tenant.events', partition=0) assigned.
       public.tenant_registry_mirror holds 18 rows and carries all four required UUIDs — 91c74442-1233-4c97-b191-911a10346fdf,
-      18ae3951-376b-4400-af83-c34a137bfda1, 7e7e6e72-1a02-4a66-a98a-dae317e72e00, 820272f9-4aaf-5add-a2df-0af942852ab2
+      18ae3951-376b-4400-af83-c34a137bfda1, 7e7e6e72-1a02-4a66-a98a-dae317e72e00 and 820272f9-4aaf-5add-a2df-0af942852ab2
       — each at observed_at 2026-09-01T17:17:26Z, i.e. consumed from the already-published events with
       no re-run of the population primitive. Controls: positive count(information_schema.tables) = 305;
       negative UndefinedTable on a deliberately absent relation, so the row readings are not an empty
-      query. STATED HONESTLY: those live cluster facts cannot be re-executed by a verifier that has no
-      cluster credential, so the five bound checks below are the durable, re-runnable half — the writer's
-      handler module exists in omnimarket, the onex-dev Deployment starts exactly that module and subscribes
-      to exactly that topic, the writer is enrolled in the runtime kustomization, and the transport-envelope
-      fix that makes it consume is merged. The cluster half is the readback recorded above, not a check.
+      query. STATED HONESTLY: those cluster facts cannot be re-executed by a verifier holding no cluster
+      credential, so the five checks below are the durable half — the writer's handler module exists in
+      omnimarket, the onex-dev Deployment starts exactly that module and subscribes to exactly that topic,
+      the writer is enrolled in the runtime kustomization, and the transport-envelope fix that makes it
+      consume is merged. The cluster half is the readback above, not a check, and this item does not pretend
+      otherwise.
     source: "manual"
     status: "verified"
     binds_ac:
@@ -250,11 +265,11 @@ dod_evidence:
       be killed part-way through a `kubectl apply` / `kubectl set image` sequence, which is how the plane
       was left half-converged with nothing red saying so. One group per ref is kept deliberately: onex-dev
       is a single mutable resource, and two concurrent deploys would be worse than either cancellation.
-      The criterion's second, disjunctive half is also present — an `Announce a superseded deploy` step
-      so a supersession stops reading as an ordinary failure. Check 2 asserts the old value is GONE rather
-      than merely that the new one appears, so a file carrying both cannot pass. Negative control (check
-      3): the pre-fix tree d77f82da91621dbec09263023a01ef2251d27b18 carries `cancel-in-progress: true`,
-      which is the configuration this ticket names as the defect.
+      The criterion is disjunctive and its second half is also present — an `Announce a superseded deploy`
+      step, so a supersession stops reading as an ordinary failure. Check 2 asserts the old value is GONE
+      rather than merely that the new one appears, so a file carrying both cannot pass. Negative control
+      (check 3): the pre-fix tree d77f82da91621dbec09263023a01ef2251d27b18 carries `cancel-in-progress:
+      true`, which is the exact configuration this ticket names as the defect.
     source: "manual"
     status: "verified"
     binds_ac:
@@ -265,7 +280,7 @@ dod_evidence:
           gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'cancel-in-progress: false'
       - check_type: "command"
         check_value: |-
-          test "$(gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'cancel-in-progress: true')" = "0"
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | awk '/cancel-in-progress: true/ { n++ } END { exit (n > 0) }'
       - check_type: "command"
         check_value: |-
           gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=d77f82da91621dbec09263023a01ef2251d27b18 --jq '.content' | base64 -d | grep -c 'cancel-in-progress: true'
@@ -278,14 +293,26 @@ dod_evidence:
   - id: "dod-omn17478-ac6-fail-closed-enforcement-gate"
     description: >
       AC6 — enforcement, not detection. The freshness assertion is a terminal post-deploy step inside
-      the deploy job of `deploy-onex-staging.yml`, not an advisory sweep: it carries no `continue-on-error`
-      and no `|| true` on any executable line, and it fails CLOSED — an unreadable Deployment list and
+      the deploy job of `deploy-onex-staging.yml`, not an advisory sweep. It carries no `continue-on-error`
+      and no `|| true` on any executable line, and it fails CLOSED: an unreadable Deployment list and
       an unreadable pod list are each an `exit 2` refusal rather than a pass, so a gate that cannot see
-      the plane has not passed, it has not run. Its refusal wording is "refusing to report a green deploy".
-      Non-vacuity is proven in both directions, which is the whole point of binding it twice: the step
-      concluded `failure` on job 102167526719 against the real plane (check 5), and `success` on the green
-      job 102658770595 (check 6). A gate that only ever passes and a gate that only ever fails are each
-      unusable, and one reading alone cannot tell them apart.
+      the plane has not passed — it has not run. A contract-declared `replicas: 0` workload is the one
+      carve-out, and even that is fail-closed, because drift to zero is reported as a `replicas_drift`
+      finding rather than accepted as a contract fact. Its refusal wording is "refusing to report a green
+      deploy". Negative control (check 6): the pre-fix tree d77f82da91621dbec09263023a01ef2251d27b18 declares
+      no such step at all. NON-VACUITY, measured in both directions and recorded rather than bound: the
+      step concluded `failure` on job 102167526719 against the real plane, and `success` on the green
+      job 102658770595. Both readings matter, because a gate that only ever passes and a gate that only
+      ever fails are each unusable and one reading alone cannot tell them apart. It also became the single
+      most frequent cause of a red staging deploy on 2026-09-08 — 7 of that day's 19 failures — which
+      is the gate doing its job rather than passing vacuously. THE TOKEN LIMIT THIS CONTRACT WORKS UNDER,
+      stated once here for all six items. The checks in this contract execute under the onexbot-occ-writer
+      GitHub App installation token, whose grant covers repository contents and pull requests but NOT
+      Actions. Every `gh api .../actions/...` and `gh run view` returns HTTP 403 "Resource not accessible
+      by integration" there, so no run conclusion, job step conclusion or run listing can be a bound check
+      no matter how load-bearing the fact is. The run-level measurements above were taken with a token
+      that can read them and are recorded as readbacks, in the same way the AC4 cluster facts are. Widening
+      the App grant is a separate change and is not smuggled in here.
     source: "manual"
     status: "verified"
     binds_ac:
@@ -305,7 +332,7 @@ dod_evidence:
           gh api repos/OmniNode-ai/omninode_infra/contents/scripts/check_runtime_image_freshness.py?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'refusing to report a green deploy'
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/102167526719 --jq '[.steps[] | select(.name | startswith("Post-deploy runtime image freshness gate")) | .conclusion] | .[0]' | grep -cFx failure
+          gh api repos/OmniNode-ai/omninode_infra/contents/scripts/check_runtime_image_freshness.py?ref=c5904e7634346e99281ada31492aa55e2059cfa0 --jq '.content' | base64 -d | grep -c 'replicas_drift'
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omninode_infra/actions/jobs/102658770595 --jq '[.steps[] | select(.name | startswith("Post-deploy runtime image freshness gate")) | .conclusion] | .[0]' | grep -cFx success
+          gh api repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=d77f82da91621dbec09263023a01ef2251d27b18 --jq '.content' | base64 -d | awk '/Post-deploy runtime image freshness gate/ { n++ } END { exit (n > 0) }'
