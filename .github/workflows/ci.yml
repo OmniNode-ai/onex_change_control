@@ -1211,6 +1211,13 @@ jobs:
     # PR to validate against), so we exclude it — otherwise every push to
     # main would fail at the PR-number resolver step.
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    # OMN-18118: `id-token: write` is what lets this job assume the read-only
+    # SSM role below via GitHub OIDC. It mints an OIDC token for THIS job; it
+    # grants no repository write of any kind. contents/pull-requests stay read.
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1308,6 +1315,45 @@ jobs:
           fi
           echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
           echo "Resolved PR #$PR_NUM"
+      # OMN-18118 -- give the runner the read-only credentials an admissible
+      # live probe needs.
+      #
+      # Three contracts (OMN-15954, OMN-17740, OMN-17809) already author
+      # `aws ssm get-command-invocation` inside an EXECUTED check_value. They
+      # were authored green and have run red here since the day they landed,
+      # because this job's environment was exactly EMERGENCY_BYPASS + GH_TOKEN.
+      #
+      # BOTH steps below are `continue-on-error: true`, and that is the whole
+      # design, not a convenience. If assuming the role hard-failed, every OCC
+      # PR touching one of those contracts would go red on a credential that is
+      # not provisioned yet -- a gate failing for a reason that has nothing to
+      # do with the PR. Instead the step is allowed to fail, the credential
+      # stays absent, and the RUNNER reports the absence per-check as
+      # NOT_EVALUATED naming `occ-compliance-ssm-readonly`. The check is never
+      # counted as PASS on that path (tests/test_credential_preflight_omn18118.py
+      # pins it), so nothing is laundered: the honest verdict is carried by the
+      # check that needed the credential, not by the job that could not mint it.
+      - name: Ensure AWS CLI is available (OMN-18118)
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          if command -v aws >/dev/null 2>&1; then
+            aws --version
+            exit 0
+          fi
+          python3 -m pip install --user 'awscli>=1.33,<2'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/aws" --version
+      - name: Assume read-only SSM role (OMN-18118)
+        if: steps.bootstrap_check.outputs.skip != 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-to-assume: >-
+            arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/occ-compliance-ssm-readonly
+          role-session-name: occ-contract-compliance
       - name: Run contract compliance check
         if: steps.bootstrap_check.outputs.skip != 'true'
         # Use ``uv run python`` so the runner script and any ``uv``-prefixed
