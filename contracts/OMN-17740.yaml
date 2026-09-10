@@ -43,3 +43,51 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8924 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn17740-dod1-stale-consumer-not-stale-secret"
+    description: |-
+      DoD 1 - the root cause, named and distinguished from the related public-cluster ticket's. The failure was a STALE CONSUMER, not stale secret material: the credentials Secret onex-dev/universal-auth-credentials carries no write after 2026-08-30T09:27:57Z, while the operator that was serving on 2026-08-31T00:00:26Z had been running since 2026-07-28T19:50:32Z and the 2026-09-05T12:03Z repair was a pod restart with NO secret changed. The operator logs in once per CR at container start and never renews (0 of 335 access tokens on this instance carry a renewal), so a write to that Secret is invisible to it for the remaining life of its cached token - the 14.5-hour gap. The bound check re-reads the live SSM readback of 2026-09-10T10:41Z and asserts the Secret's last write is still 2026-08-30T09:27:57Z, which is the half that makes "the consumer was stale" rather than "the material was stale" the true statement. This SUPERSEDES nothing; it attaches the criterion label to evidence the ticket already carried in prose.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "DoD1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 9633f23e-b92c-4aac-8f50-f12594382094 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'CREDENTIALS onex-dev/universal-auth-credentials LASTWRITE=2026-08-30T09:27:57Z'
+  - id: "dod-omn17740-dod2-crs-true-subsequent-sync"
+    description: |-
+      DoD 2 - every InfisicalSecret CR reports ReadyToSyncSecrets=True, re-read live on 2026-09-10T10:41Z on EC2 i-06169517a92b45f86 (omninode-k3s-dev-system) by lane omn17740-dod-remainder, read-only SSM with --comment omn17740-dod-remainder. Six CRs (the five in onex-dev plus one in dev) are True on BOTH conditions, each with a successful sync inside the preceding 60 s, and the auth-failure count over the log window is 0 against a positive control of 1170 lines in that same window - so the zero is a reading rather than an empty probe. Supersedes dod-omn17740-cr-conditions-live-readback, which binds the same criterion from the 2026-09-08 readback but predates the binds_ac field and therefore declares no criterion. No claim in that item is withdrawn.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-omn17740-cr-conditions-live-readback"
+    binds_ac:
+      - "DoD2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 9633f23e-b92c-4aac-8f50-f12594382094 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'READY=True LOADED=True')" = "6"
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 9633f23e-b92c-4aac-8f50-f12594382094 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'AUTHFAIL COUNT=0 WINDOW_LINES=1170'
+  - id: "dod-omn17740-dod4-detection-gate-wired-on-dev"
+    description: |-
+      DoD 4 - the detection surface exists AND is wired as a gate, so occurrence three is caught mechanically rather than by a person doing unrelated work (rule 5: detection that is not enforcement gets ignored). OmniNode-ai/omninode_infra#1300 merged to dev at 2026-09-10T11:39:14Z, squash 9a701486df3e7796ec4fbabc73d1726d3468fc09. It adds scripts/check_infisical_sync_health.py and wires it as a BLOCKING step of .github/workflows/deploy-onex-staging.yml, after the SSM port-forward sanity check and before the first cluster mutation, with no continue-on-error, no step-level condition and no skip input. Two rules: every CR True on both conditions AND carrying a subsequent sync inside a bounded window (a stopped controller leaves conditions frozen at True), and every credentials Secret written BEFORE the operator container start (the 2026-08-30 signature, detectable ~14 h before the 401s begin). The checks below read the merged state of dev rather than the PR, because a gate that was merged and then reverted is not wired. Supersedes dod-OmniNode-ai-omninode_infra-pr-1300 and dod-OmniNode-ai-omninode_infra-pr-1300-ci, which bind the same PR but predate the binds_ac field and declare no criterion.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1300"
+    binds_ac:
+      - "DoD4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api "repos/OmniNode-ai/omninode_infra/pulls/1300" --jq '.merged')" = "true"
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/scripts/check_infisical_sync_health.py?ref=dev" --jq '.name' | grep -qx 'check_infisical_sync_health.py'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/.github/workflows/deploy-onex-staging.yml?ref=dev" --jq '.content' | base64 -d | grep -c 'Infisical sync-health gate (OMN-17740)'
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/scripts/test_check_infisical_sync_health.py tests/k8s/test_deploy_onex_staging_infisical_sync_gate_omn17740.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
