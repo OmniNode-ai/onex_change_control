@@ -1334,7 +1334,9 @@ jobs:
       # pins it), so nothing is laundered: the honest verdict is carried by the
       # check that needed the credential, not by the job that could not mint it.
       - name: Ensure AWS CLI is available (OMN-18118)
-        if: steps.bootstrap_check.outputs.skip != 'true'
+        if: >-
+          steps.bootstrap_check.outputs.skip != 'true'
+          && vars.AWS_ACCOUNT_ID != ''
         continue-on-error: true
         shell: bash
         run: |
@@ -1345,8 +1347,30 @@ jobs:
           python3 -m pip install --user 'awscli>=1.33,<2'
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/aws" --version
+      # OMN-18118 follow-up. `AWS_ACCOUNT_ID` is a REPO-scoped Actions variable
+      # in omninode_infra and omnibase_infra; there is no org-scoped copy, so it
+      # is NOT visible here. Without the guard below the ARN interpolated with
+      # an empty account field, and `configure-aws-credentials` treated that as
+      # a retryable condition: 12 attempts with backoff, ~93 seconds burnt on
+      # every OCC PR, ending in `Request ARN is invalid`. Measured on PR #8910,
+      # job 102820226994 (09:36:40Z -> 09:37:39Z).
+      #
+      # The guard makes the step SKIP rather than fail slowly, so the cost is
+      # zero until the identity actually exists. `retry-max-attempts: 1` covers
+      # the other case: once the variable IS set but the role is missing or its
+      # trust policy does not match, that is a real misconfiguration and should
+      # surface in seconds, not after a minute and a half of retries.
+      #
+      # Setting `AWS_ACCOUNT_ID` on this repo is therefore the deliberate
+      # ACTIVATION SWITCH, thrown after `terraform apply` creates the role
+      # (omninode_infra#1296). Until then the compliance runner reports every
+      # AWS-needing check as NOT_EVALUATED naming `occ-compliance-ssm-readonly`
+      # -- which is the honest verdict, and the same one it would give if the
+      # assume had failed.
       - name: Assume read-only SSM role (OMN-18118)
-        if: steps.bootstrap_check.outputs.skip != 'true'
+        if: >-
+          steps.bootstrap_check.outputs.skip != 'true'
+          && vars.AWS_ACCOUNT_ID != ''
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -1354,6 +1378,7 @@ jobs:
           role-to-assume: >-
             arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/occ-compliance-ssm-readonly
           role-session-name: occ-contract-compliance
+          retry-max-attempts: 1
       - name: Run contract compliance check
         if: steps.bootstrap_check.outputs.skip != 'true'
         # Use ``uv run python`` so the runner script and any ``uv``-prefixed

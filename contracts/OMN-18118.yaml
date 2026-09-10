@@ -95,3 +95,20 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8898 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18118-assume-guarded-on-account-var"
+    description: >-
+      Follow-up binding for a defect measured in the landed change, not asserted from review. AWS_ACCOUNT_ID
+      is a REPO-scoped Actions variable in omninode_infra and omnibase_infra with no org-scoped copy,
+      so it is not visible in onex_change_control. The assume step therefore interpolated an empty account
+      field, and configure-aws-credentials treated the malformed ARN as retryable: 12 attempts with backoff,
+      roughly 93 seconds burnt on every OCC PR before ending in "Request ARN is invalid". Measured live
+      on PR #8910, job 102820226994, 09:36:40Z to 09:37:39Z. Both AWS steps are now guarded on the variable
+      being non-empty, so they SKIP at zero cost until the identity exists, and the assume carries retry-max-attempts
+      1 so a genuine misconfiguration surfaces in seconds rather than after a minute and a half. Named
+      as its own entry rather than folded into dod-omn18118-job-assumes-the-readonly-role, because that
+      entry is merged and the Append-Only Gate holds merged entries immutable.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |
+          uv run python -c "import sys,yaml; j=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['contract-compliance']; s={x.get('name'):x for x in j['steps'] if x.get('name')}; a=s['Assume read-only SSM role (OMN-18118)']; c=s['Ensure AWS CLI is available (OMN-18118)']; sys.exit(0 if 'vars.AWS_ACCOUNT_ID' in a['if'] and 'vars.AWS_ACCOUNT_ID' in c['if'] and a['with']['retry-max-attempts'] == 1 else 1)"
