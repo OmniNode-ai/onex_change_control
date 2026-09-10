@@ -101,3 +101,71 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/scripts/test_check_infisical_sync_health.py tests/k8s/test_deploy_onex_staging_infisical_sync_gate_omn17740.py -q
         cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-omn17740-dod3-store-round-trip"
+    description: |-
+      DoD 3 - the round-trip proof, performed 2026-09-10T14:31-14:41Z by lane omn17740-dod3-dod5 on EC2 i-06169517a92b45f86 (omninode-k3s-dev-system). One throwaway NON-CREDENTIAL key OMN17740_ROUNDTRIP_PROBE was written into the live store at /dev/omniweb/ (project omninode-rw-ht, env dev) through the Infisical API, observed to arrive in the managed Secret onex-dev/omniweb-credentials, then deleted and observed to disappear. The probe value was generated on-cluster and never printed; only its sha256-12 (2396b9221ce5) and length (34) were recorded. Every observation is a read-only SSM send-command with --comment omn17740-dod3-dod5.
+      TIMELINE. BASELINE e9f50cd9-b732-41d2-8275-618060ad8f88 at 14:31:55Z: 10 keys, probe absent, annotation W/"secrets-783-30EF734A". WRITE b6df08a2-f08a-4b1e-81c6-c3bf2dbfc450 at 14:33:05Z: HTTP 200, secret version 1, id abf41fa1-3eb7-4602-98a7-634e2649f509. ARRIVAL 6fe26a87-4637-4ec7-9bc8-574e51c178fd at 14:35:40Z: 11 keys, probe present, annotation W/"secrets-843-C9D79881". PERSISTENCE 07c18a8c-876e-4211-af72-dd9161156eb9 at 14:37:40Z: still 11, resourceVersion unchanged at 10492448. DELETE 74c1b0c0-2088-4b88-807c-0b4222953d0d at 14:38:07Z: HTTP 200 on the same secret id. REMOVAL 8cb85767-f5bb-4671-a171-6a44a0d95eee at 14:40:50Z: back to 10 keys, probe absent, annotation back to the byte-identical pre-write W/"secrets-783-30EF734A".
+      WHY THE WAIT IS THE EVIDENCE. The CR's resyncInterval is 60 s and the operator logs "Secrets unchanged (server ETag match), skipping reconciliation" on every interval where the upstream ETag has not moved (OMN-15329). A write and a delete inside one 60 s window would therefore prove nothing: the operator would never observe either. So the write was held across THREE reconciles that reported "Successfully synced 11 secrets" (14:33:07Z, 14:34:07Z, 14:35:07Z) and two more before the delete (14:36:08Z, 14:37:08Z), and the removal across three that reported 10 (14:38:08Z, 14:39:08Z, 14:40:08Z). Arrival and removal each crossed at least two FULL intervals.
+      This is a live-store round trip and it is NOT a credential action: nothing was rotated, re-issued, revoked or minted, and the key carried no credential value. The store write and delete are the only two mutations this lane performed; both went through the store API, never kubectl.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "DoD3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id e9f50cd9-b732-41d2-8275-618060ad8f88 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'PROBE_KEY_PRESENT: False'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 6fe26a87-4637-4ec7-9bc8-574e51c178fd --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'PROBE_KEY_PRESENT: True' | grep -qx '1'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 6fe26a87-4637-4ec7-9bc8-574e51c178fd --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'Successfully synced 11 secrets' | grep -qx '3'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 8cb85767-f5bb-4671-a171-6a44a0d95eee --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'PROBE_KEY_PRESENT: False' | grep -qx '1'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 8cb85767-f5bb-4671-a171-6a44a0d95eee --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'Successfully synced 10 secrets' | grep -qx '3'
+  - id: "dod-omn17740-dod3-blast-radius-zero"
+    description: |-
+      DoD 3, blast-radius half. The round trip above was safe to run because the added key reaches no workload. Measured before the write, not assumed: namespace onex-dev carries 24 Deployment/StatefulSet/DaemonSet workloads and ZERO of them carry the secrets.infisical.com/auto-reload annotation, so no managed-Secret change can trigger a restart. The managed Secret onex-dev/omniweb-credentials has exactly ONE consumer, Deployment/omniweb, and it binds six named keys through individual secretKeyRef entries (OMNIBASE_INFRA_DB_URL, OMNIWEB_DB_URL, NEXTAUTH_SECRET, KEYCLOAK_SIGNUP_CLIENT_SECRET, NEXT_PUBLIC_POSTHOG_KEY, NEXT_PUBLIC_POSTHOG_HOST) rather than a whole-secret envFrom - so a key the deployment does not name is not injected anywhere at all. No existing key was read for its value, written or touched.
+      MEASUREMENT PROVENANCE: the census was first taken BEFORE the write at 14:30:58Z and re-taken cleanly at 14:45:27Z (5be0aa0d-6758-41b7-a6ea-f6b1fc4fe7de) reading 24 workloads / 0 auto-reload both times; the bound check cites the clean invocation because the earlier one exited non-zero on an unrelated later step in the same script, and a check should not read its evidence out of a failed command. POSITIVE CONTROL on the zero: the same census over pod-template annotations finds 2 distinct keys with 15 occurrences of kubectl.kubernetes.io/restartedAt, so the auto-reload zero is a reading rather than a probe that returned nothing.
+      CONFIRMED AFTER: ca168465-519f-45cd-a197-25efbb86d13c at 14:41:18Z shows both omniweb pods Running with restartCount 0 and startTime 2026-09-10T00:14:06Z / 00:14:21Z, fourteen hours BEFORE the write - so neither pod restarted during the round trip. The same readback shows all six InfisicalSecret CRs still True on all three conditions, and the managed Secret restored to its exact pre-write key set and version annotation.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "DoD3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 5be0aa0d-6758-41b7-a6ea-f6b1fc4fe7de --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'WORKLOADS_TOTAL=24 AUTO_RELOAD=0'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 5be0aa0d-6758-41b7-a6ea-f6b1fc4fe7de --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'ENVFROM_WHOLE_SECRET_BINDINGS=0 NAMED_KEYREF_BINDINGS=6'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id ca168465-519f-45cd-a197-25efbb86d13c --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'restarts: 0' | grep -qx '2'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id ca168465-519f-45cd-a197-25efbb86d13c --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'PROBE_ABSENT: True'
+  - id: "dod-omn17740-dod5-public-cluster-read"
+    description: |-
+      DoD 5 - the related public-cluster ticket's Done state reconciled against a live read of the surface it actually names. Read-only SSM 97eba021-aea7-4d85-a2cb-6bc376a17a10 at 2026-09-10T14:38:33Z on EC2 i-0e596e8b557e27785 (omninode-k3s-system-public, node ip-10-40-12-45), --comment omn17740-dod3-dod5. NOTHING on that instance was mutated.
+      VERDICT: OMN-16526 is GENUINELY FIXED on its own surface, so this ticket's break is a distinct regression on a different cluster rather than a contradiction of that closure. The CR onex-dev/omniweb-infisical-secret reports LoadedInfisicalToken=True, ReadyToSyncSecrets=True and AutoRedeployReady=True with the message "Last reconcile synced 5 secrets", and the managed Secret onex-dev/omniweb-credentials carries exactly 5 keys (KEYCLOAK_CLIENT_SECRET, KEYCLOAK_SIGNUP_CLIENT_SECRET, NEXTAUTH_SECRET, OMNIBASE_INFRA_DB_URL, OMNIWEB_DB_URL), matching that ticket's stated criterion of five. Names only; no value was read or printed.
+      HONEST LIMIT, stated rather than left absent: this is a CONDITION read, not a subsequent-sync proof. The conditions on that cluster last transitioned 2026-08-30T21:06:33Z and a condition does not re-stamp on an unchanged sync, so this readback cannot by itself distinguish a live controller from one that stopped and left True frozen - which is precisely the failure shape DoD 4's gate exists to catch. Proving the stronger property there needs the operator log window on that instance, which is out of this lane's read-only boundary as scoped.
+      TWO UNRELATED FAILURES OBSERVED ON THAT CLUSTER, recorded because they were seen, owned by neither this ticket nor OMN-16526 and NOT acted on: dev/omnidash-credentials has LoadedInfisicalToken=False since 2026-08-30T19:48:58Z and ReadyToSyncSecrets=False since 2026-08-20T00:00:10Z ("authentication failed for strategy [UNIVERSAL_MACHINE_IDENTITY]"), and onex-prod/umami-infisical-sync has ReadyToSyncSecrets=False since 2026-08-19T13:16:44Z. The probe key used for DoD 3 was confirmed ABSENT everywhere on this cluster, as it must be - it was never written here.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "DoD5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 97eba021-aea7-4d85-a2cb-6bc376a17a10 --instance-id i-0e596e8b557e27785 --query 'StandardOutputContent' --output text | grep -c 'KEY_COUNT: 5' | grep -qx '1'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 97eba021-aea7-4d85-a2cb-6bc376a17a10 --instance-id i-0e596e8b557e27785 --query 'StandardOutputContent' --output text | grep -c 'Last reconcile synced 5 secrets'
+      - check_type: "command"
+        check_value: |-
+          env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 97eba021-aea7-4d85-a2cb-6bc376a17a10 --instance-id i-0e596e8b557e27785 --query 'StandardOutputContent' --output text | grep -c 'PROBE_PRESENT_ON_PUBLIC_CLUSTER: NONE (expected)'
