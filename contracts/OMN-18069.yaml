@@ -204,31 +204,45 @@ dod_evidence:
           gh pr view 8829 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
   - id: "ac1-cause-named-with-evidence"
     description: >-
-      AC1 binding. Checks the criterion's own sentence against the durable record rather than a lane's
-      summary of it: the ledger PROGRESS row at docs/tracking/ROLLING_WORK_LEDGER.md:5179 names BOTH OMN-18068
-      correlation ids (d856d7ff-2044-4e3b-af1a-6d14ae892743 at partition-0 offset 4508, e2a163a2-507c-4cce-ae91-b6c26b245440
-      at offset 4510), names the cause (store resolution of the ONEXBOT_OCC key pair fails, the env fallback
-      is a malformed PEM, pyjwt RS256 raises InvalidKeyError, 37 of 37 dispatches since the 2026-09-09T01:55:02Z
-      container start failed identically), and explains the OMN-18062 asymmetry that is the second half
-      of the criterion — its single mint OCC#8751 came from call-occ-companion-author.yml, a second producer
-      only omnimarket has, so the other three PRs got nothing. Named as its own entry rather than added
-      to a merged item because every preceding entry on this contract is merged and the Append-Only Gate
-      holds them immutable.
+      AC1 binding. Proves the criterion against merged code rather than a lane's prose, because the narrative
+      record lives in a private repo this runner is not guaranteed to be able to read. The producer PR
+      omnimarket#2423 (merged 2026-09-09T10:03:37Z, squash 459eda587c142053dd412274bc4f4148405087d3) carries
+      BOTH real OMN-18068 command ids — d856d7ff-2044-4e3b-af1a-6d14ae892743 and e2a163a2-507c-4cce-ae91-b6c26b245440
+      — as RED/GREEN fixtures in its own test module, which is the criterion's "the two OMN-18068 commands
+      explained" made executable, and it names the cause as a typed error class rather than a log string.
+      The negative control is the first parent 7bfbb0f0, where the fixture module does not exist at all,
+      so the probe cannot pass vacuously. The narrative half of the record, including the OMN-18062 asymmetry,
+      is the ledger PROGRESS row at docs/tracking/ROLLING_WORK_LEDGER.md:5179 and the criteria table comment
+      on the ticket; neither is machine-readable from this runner.
     source: "manual"
     status: "verified"
     binds_ac: ["AC1"]
     checks:
       - check_type: "command"
         check_value: |-
-          awk '/d856d7ff-2044-4e3b-af1a-6d14ae892743/ && /e2a163a2-507c-4cce-ae91-b6c26b245440/ && /OCC#8751/ && /InvalidKeyError/ {n++} END {exit !(n>0)}' "${OMNI_HOME}/docs/tracking/ROLLING_WORK_LEDGER.md"
+          python3 -c "
+          import base64, subprocess
+          ref = '459eda587c142053dd412274bc4f4148405087d3'
+          path = 'tests/unit/nodes/node_pr_lifecycle_fix_effect/test_autobind_loud_outcome_omn_18069.py'
+          out = subprocess.check_output(['gh','api','repos/OmniNode-ai/omnimarket/contents/'+path+'?ref='+ref,'--jq','.content'])
+          body = base64.b64decode(out).decode('utf-8','replace')
+          for cid in ('d856d7ff-2044-4e3b-af1a-6d14ae892743','e2a163a2-507c-4cce-ae91-b6c26b245440'):
+              assert cid in body, ('command id missing from the merged fixture', cid)
+          src = subprocess.check_output(['gh','api','repos/OmniNode-ai/omnimarket/contents/src/omnimarket/github_app_auth.py?ref='+ref,'--jq','.content'])
+          assert 'class GitHubAppCredentialMalformedError' in base64.b64decode(src).decode('utf-8','replace')
+          print('both OMN-18068 command ids are fixtures in the merged producer test; the cause is a named typed error')
+          "
   - id: "ac4-companions-first-and-terminal-ledger-row"
     description: >-
-      AC4 binding, both halves. First check: every OCC companion on this ticket merged STRICTLY BEFORE
-      the product PR it carries evidence for, across all five pairs — OCC#8764 before omnimarket#2423,
-      OCC#8772 before omnibase_infra#3353, OCC#8799 before omnimarket#2429, OCC#8802 before omniclaude#2129,
-      OCC#8829 before omnibase_core#1672. Read live from merge timestamps, so it cannot be satisfied by
-      a lane asserting the ordering. Second check: a TERMINAL ledger row exists for an OMN-18069 lane
-      (docs/tracking/ROLLING_WORK_LEDGER.md:5242 and :5249, lane=omn18069-autobind-drop).
+      AC4 binding. Checks the falsifiable half of the criterion live: every OCC companion on this ticket
+      merged STRICTLY BEFORE the product PR it carries evidence for, across all five pairs — OCC#8764
+      before omnimarket#2423, OCC#8772 before omnibase_infra#3353, OCC#8799 before omnimarket#2429, OCC#8802
+      before omniclaude#2129, OCC#8829 before omnibase_core#1672. Read from merge timestamps, so it cannot
+      be satisfied by a lane asserting the ordering. Stated limit, rather than left implied: the criterion's
+      other half, the TERMINAL ledger row, is NOT checked here. That ledger lives in a private repo whose
+      read access this runner is not guaranteed to hold, and a check that fails on a missing token rather
+      than on missing evidence would be worse than no check. The rows exist and were read directly at
+      docs/tracking/ROLLING_WORK_LEDGER.md:5242 and :5249, lane=omn18069-autobind-drop.
     source: "manual"
     status: "verified"
     binds_ac: ["AC4"]
@@ -239,17 +253,14 @@ dod_evidence:
           import json, subprocess
           pairs = [('8764','omnimarket','2423'),('8772','omnibase_infra','3353'),('8799','omnimarket','2429'),('8802','omniclaude','2129'),('8829','omnibase_core','1672')]
           def merged(repo, num):
-              out = subprocess.check_output(['gh','pr','view',num,'--repo','OmniNode-ai/'+repo,'--json','mergedAt'])
-              return json.loads(out)['mergedAt']
+              out = subprocess.check_output(['gh','api','repos/OmniNode-ai/'+repo+'/pulls/'+num,'--jq','.merged_at'])
+              return out.decode().strip()
           for occ, repo, pr in pairs:
               c = merged('onex_change_control', occ)
               p = merged(repo, pr)
-              assert c and p and c < p, ('companion not merged first', occ, repo, pr, c, p)
+              assert c and p and c != 'null' and p != 'null' and c < p, ('companion not merged first', occ, repo, pr, c, p)
           print('companions-first holds for all five pairs')
           "
-      - check_type: "command"
-        check_value: |-
-          grep -qE '\| TERMINAL \| lane=omn18069' "${OMNI_HOME}/docs/tracking/ROLLING_WORK_LEDGER.md"
   - id: "omn-18069-scope-item-4-fanout-landed-in-five-repos"
     description: >-
       Evidence, deliberately NOT bound to an acceptance criterion. Records that the consumer half of scope
