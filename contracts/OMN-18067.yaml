@@ -73,3 +73,160 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8896 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-bar-leg5-pass-after-the-landed-sha"
+    description: >-
+      AC1, the pass. omninode_infra #1294 merged 2026-09-10T07:26:48Z squash 78b59915efdeda6c911f1cd8a07aaf4457400325;
+      deploy-onex-staging run 34449991366 applied the overlay on that sha and concluded success. Bar run
+      34465906041, collected 10:25:05Z, scores leg 5 store_sourced_secrets PASS and its detail names the
+      instance id: all 8 secret-bearing env keys across 1 runtime pod in namespace onex-dev on i-06169517a92b45f86
+      resolve through valueFrom.secretKeyRef into store-owned Secrets, with no literal value in any manifest.
+      Run 34465176555 at 10:16:48Z scored the same leg PASS independently, so the verdict does not rest
+      on a single reading. execution_scope is local_done_gate (OMN-15392): the hosted gate cannot run
+      this one. The bar report and facts live as Actions artifacts on omninode_infra and the OCC CI identity
+      has no actions:read there -- it gets HTTP 403 -- while the gate checks run in the omninode_infra
+      clone, which the hosted gate does not check out. The local Done gate owns it and the hosted gate
+      records NOT-EVALUATED rather than guessing. Executed against landed state before this entry was
+      committed.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" && gh run download 34465906041 --repo OmniNode-ai/omninode_infra --name staging-green-report --dir "$d" && python3 -c "import json,sys; r=json.load(open(sys.argv[1]+'/staging-green-report.json')); leg=[x for x in r['legs'] if x['checklist_item']==5][0]; assert leg['outcome']=='PASS', leg; assert 'i-06169517a92b45f86' in leg['detail'], leg; print('leg5', leg['outcome'])" "$d"
+  - id: "ac1-facts-artifact-per-binding-shape"
+    description: >-
+      AC1, the facts artifact behind the verdict. Every classified binding on the runtime pod arrives
+      by valueFrom.secretKeyRef, VALKEY_PASSWORD names onex-runtime-credentials with store_sourced true,
+      and the only store_sourced-false entries are the two INFISICAL_* keys whose role is store_bootstrap
+      -- the credential the runtime authenticates TO the store WITH, which the leg exempts by construction
+      because requiring it to come from the store is circular. The check asserts the classifier saw real
+      bindings FIRST, so a render that classified nothing cannot satisfy the assertions after it. execution_scope
+      is local_done_gate (OMN-15392): the hosted gate cannot run this one. The bar report and facts live
+      as Actions artifacts on omninode_infra and the OCC CI identity has no actions:read there -- it gets
+      HTTP 403 -- while the gate checks run in the omninode_infra clone, which the hosted gate does not
+      check out. The local Done gate owns it and the hosted gate records NOT-EVALUATED rather than guessing.
+      Executed against landed state before this entry was committed.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" && gh run download 34465906041 --repo OmniNode-ai/omninode_infra --name staging-green-report --dir "$d" && python3 -c "import json,sys; f=json.load(open(sys.argv[1]+'/staging-green-facts.json')); pods=f['legs']['store_sourced_secrets']['secret_env_bindings']['pods']; b=[x for p in pods for x in p['secret_bearing_bindings']]; assert b, 'no bindings classified - a zero here would satisfy every assertion below it'; v=[x for x in b if x['env_key']=='VALKEY_PASSWORD']; assert v, 'VALKEY_PASSWORD absent from the classified bindings'; assert all(x['binding_kind']=='secret_key_ref' and x['secret_name']=='onex-runtime-credentials' and x['store_sourced'] for x in v), v; assert all(x['store_sourced'] or x['role']=='store_bootstrap' for x in b), [x for x in b if not x['store_sourced'] and x['role']!='store_bootstrap']; print('bindings', len(b), 'valkey store_sourced', [x['store_sourced'] for x in v])" "$d"
+  - id: "ac1-pre-change-fail-as-the-control"
+    description: >-
+      AC1, the control that makes the pass a measured change of state rather than an unanchored green.
+      Bar run 34449190281, collected 2026-09-10T07:18:08Z, BEFORE the landed sha deployed, scores leg
+      5 FAIL and its detail names the exact binding: pod omninode-runtime-74887dd8c5-8cbcp in namespace
+      onex-dev on i-06169517a92b45f86 binds env key VALKEY_PASSWORD to Secret onex-valkey-credentials,
+      which no InfisicalSecret owns. Legs 1, 3 and 4 read FAIL in the later runs for causes outside this
+      ticket: leg 4 was ALREADY FAIL at 07:18Z, and legs 1 and 3 turn on staging deploy 34463307676, head
+      d8b21a3326fa, another lane's sha, concluding failure with a mixed-digest plane. This change touches
+      no image, digest or replica count. execution_scope is local_done_gate (OMN-15392): the hosted gate
+      cannot run this one. The bar report and facts live as Actions artifacts on omninode_infra and the
+      OCC CI identity has no actions:read there -- it gets HTTP 403 -- while the gate checks run in the
+      omninode_infra clone, which the hosted gate does not check out. The local Done gate owns it and
+      the hosted gate records NOT-EVALUATED rather than guessing. Executed against landed state before
+      this entry was committed.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d="$(mktemp -d)" && gh run download 34449190281 --repo OmniNode-ai/omninode_infra --name staging-green-report --dir "$d" && python3 -c "import json,sys; r=json.load(open(sys.argv[1]+'/staging-green-report.json')); leg=[x for x in r['legs'] if x['checklist_item']==5][0]; assert leg['outcome']=='FAIL', leg; assert 'onex-valkey-credentials' in leg['detail'], leg; print('pre-change control: leg5', leg['outcome'])" "$d"
+  - id: "ac2-red-green-gates-and-lab-render"
+    description: >-
+      AC2, the gates. The render gate feeds the onex-dev overlay's runtime-family pod templates through
+      the bar collector's OWN classifier; the wiring gate pins the rotation script's per-namespace consumer
+      expectation to what the manifests declare; the lab overlay gate covers the lane whose Valkey server
+      reads requirepass from the same Secret key its clients bind, which is why a lab render with per-run
+      generated values resolves all six lab consumers and that server to one Secret and one key. RED/GREEN
+      was proven, not asserted: against a deliberately reverted binding the render gate failed naming
+      omninode-runtime VALKEY_PASSWORD into Secret onex-valkey-credentials, and all three pass on the
+      change. execution_scope is local_done_gate (OMN-15392): the hosted gate cannot run this one. The
+      bar report and facts live as Actions artifacts on omninode_infra and the OCC CI identity has no
+      actions:read there -- it gets HTTP 403 -- while the gate checks run in the omninode_infra clone,
+      which the hosted gate does not check out. The local Done gate owns it and the hosted gate records
+      NOT-EVALUATED rather than guessing. Executed against landed state before this entry was committed.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        cwd: "${OMNI_HOME}/omninode_infra"
+        check_value: |-
+          uv run pytest tests/k8s/test_omn18067_runtime_plane_store_sourced_bindings.py tests/k8s/test_omn_16594_valkey_auth_wiring.py tests/k8s/test_onex_lab_overlay_omn17533.py -q
+  - id: "ac2-valkey-contract-gate-per-environment"
+    description: >-
+      AC2, the cross-environment gate. It now expects the store-synced reference on onex-dev and the mirror
+      on onex-prod and onex-public, so the divergence is a recorded decision rather than drift, and a
+      manifest path under no declared environment raises rather than inheriting a default. Proven RED
+      on the same reverted binding, reporting that it expected onex-runtime-credentials VALKEY_PASSWORD
+      and got the mirror pair instead. execution_scope is local_done_gate (OMN-15392): the hosted gate
+      cannot run this one. The bar report and facts live as Actions artifacts on omninode_infra and the
+      OCC CI identity has no actions:read there -- it gets HTTP 403 -- while the gate checks run in the
+      omninode_infra clone, which the hosted gate does not check out. The local Done gate owns it and
+      the hosted gate records NOT-EVALUATED rather than guessing. Executed against landed state before
+      this entry was committed.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        cwd: "${OMNI_HOME}/omninode_infra"
+        check_value: |-
+          uv run python scripts/validation/test_valkey_credential_contract.py
+  - id: "ac2-unowned-allowance-deleted-not-amended"
+    description: >-
+      AC2, the ratchet. Its own note required it be DELETED rather than amended once the store value landed
+      and was proven equal to what the server enforces. This asserts the module symbol is gone -- not
+      merely empty, because an empty allowlist is one edit away from a second category -- and that the
+      successor test keeping it gone is present. execution_scope is local_done_gate (OMN-15392): the hosted
+      gate cannot run this one. The bar report and facts live as Actions artifacts on omninode_infra and
+      the OCC CI identity has no actions:read there -- it gets HTTP 403 -- while the gate checks run in
+      the omninode_infra clone, which the hosted gate does not check out. The local Done gate owns it
+      and the hosted gate records NOT-EVALUATED rather than guessing. Executed against landed state before
+      this entry was committed.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        cwd: "${OMNI_HOME}/omninode_infra"
+        check_value: |-
+          python3 -c "import re,sys; t=open('tests/k8s/test_omn18067_runtime_plane_store_sourced_bindings.py').read(); assert not re.search(r'^UNOWNED_SECRET_ALLOWANCE', t, re.M), 'the allowance was reintroduced as a module symbol'; assert 'test_no_unowned_secret_allowance_may_be_reintroduced' in t, 'the successor ratchet test is gone'; print('allowance deleted, successor ratchet present')"
+  - id: "ac2-companion-merged-before-the-product-pr"
+    description: >-
+      AC2, the ordering. The OCC companion onex_change_control #8896 merged 2026-09-10T07:12:15Z squash
+      ccef8709bb489de7e8fc0197c4c92fe365000b33, ahead of omninode_infra #1294 at 07:26:48Z. Compared from
+      the two live mergedAt timestamps rather than asserted from memory. execution_scope is local_done_gate
+      (OMN-15392): the hosted gate cannot run this one. The bar report and facts live as Actions artifacts
+      on omninode_infra and the OCC CI identity has no actions:read there -- it gets HTTP 403 -- while
+      the gate checks run in the omninode_infra clone, which the hosted gate does not check out. The local
+      Done gate owns it and the hosted gate records NOT-EVALUATED rather than guessing. Executed against
+      landed state before this entry was committed.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "import json,subprocess; occ=json.loads(subprocess.run(['gh','pr','view','8896','--repo','OmniNode-ai/onex_change_control','--json','mergedAt'],capture_output=True,text=True,check=True).stdout)['mergedAt']; pr=json.loads(subprocess.run(['gh','pr','view','1294','--repo','OmniNode-ai/omninode_infra','--json','mergedAt'],capture_output=True,text=True,check=True).stdout)['mergedAt']; assert occ and pr, (occ,pr); assert occ < pr, ('companion did not merge first', occ, pr); print('companion', occ, 'before product', pr)"
+  - id: "occ-self-bind-pr-8925"
+    description: >-
+      OCC self-binding receipt for PR #8925, the in-repo evidence PR carrying this contract. Binds OMN-18067
+      to the OCC PR by pr_number so eligibility can resolve a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8925 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
