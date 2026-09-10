@@ -69,3 +69,59 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8943 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1272-superseded"
+    description: >
+      Withdraws the citation of OmniNode-ai/omninode_infra PR #1272. That draft was closed unmerged on
+      2026-09-09 as a duplicate under the operator rescope, and the work it carried was re-done and landed
+      by PR #1303 instead. The earlier items binding #1272 made claims about a PR that never reached dev,
+      so they are retired here rather than left to read as live evidence. No claim about what #1272's
+      local proof showed is withdrawn; what is withdrawn is the assertion that #1272 is this ticket's
+      landed evidence. The check records #1272's terminal CLOSED-unmerged state, which is monotone once
+      reached.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1272"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 1272 --repo OmniNode-ai/omninode_infra --json state --jq .state)" = "CLOSED" && test "$(gh pr view 1272 --repo OmniNode-ai/omninode_infra --json mergedAt --jq '.mergedAt // "null"')" = "null" && printf 'omninode_infra PR #1272 closed-unmerged terminal state PASS\n'
+  - id: "dod-omn17083-ac1-dead-row-deleted-at-dev"
+    description: >
+      AC1 — the dead OPEN_ROUTER_API_KEY InfisicalSecret template row is deleted. Read at the immutable
+      merged squash commit 305ac9191fa59f4140e8cd56834621fdc382c8eb (PR #1303), the manifest declares
+      no template row for that key. The check is fail-closed in both directions: it first requires the
+      VALKEY_PASSWORD template row to be PRESENT in the fetched body, so a failed fetch, an empty response
+      or the wrong file cannot produce a passing absence, and only then requires the retired key's row
+      to be absent.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/runtime/onex-runtime-infisical-secret.yaml?ref=305ac9191fa59f4140e8cd56834621fdc382c8eb" --jq .content | base64 -d)" && printf '%s\n' "$body" | grep -qF 'VALKEY_PASSWORD: "{{ .VALKEY_PASSWORD.Value }}"' && ! printf '%s\n' "$body" | grep -qF 'OPEN_ROUTER_API_KEY: "{{ .OPEN_ROUTER_API_KEY.Value }}"' && printf 'AC1 PASS: positive-control row present, retired OPEN_ROUTER_API_KEY row absent at 305ac919\n'
+  - id: "dod-omn17083-ac2-live-cluster-readback"
+    description: >
+      AC2 — the key is absent from the live onex-dev InfisicalSecret custom resource and from the synced
+      Secret on the dev-system cluster i-06169517a92b45f86. The live readback is SSM command e8adfcdf-e1ab-4fa1-91df-59856d4cde79,
+      read-only, key NAMES only, no value printed: zero occurrences of the retired key in the custom resource,
+      VALKEY_PASSWORD at two occurrences in the same probe as the positive control, and 16 key names on
+      the synced Secret with the retired key absent. That probe needs cluster credentials and is deliberately
+      NOT declared as a check — a check CI cannot execute would fail rather than prove anything, and the
+      readback is recorded on the ticket instead. The check below asserts the re-executable half that
+      makes the cluster state durable rather than a one-off: the landed commit is an ancestor of dev,
+      and deploy-onex-staging re-asserts this overlay server-side on every push to dev, so dev is what
+      the cluster converges back to after any drift. Ancestry is used rather than a read of the mutable
+      dev tip because ancestry is monotone once a squash lands. The run that applied it is 34487786485
+      on the merge sha; its overall conclusion was failure at the post-deploy business-proof gate, a step
+      unrelated to this change that was already failing on the base commit before this change existed,
+      while the overlay-apply and post-apply sanity steps in that run succeeded.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/compare/305ac9191fa59f4140e8cd56834621fdc382c8eb...dev" --jq .status | grep -qxE 'identical|ahead' && printf 'AC2 PASS: merged commit 305ac919 is on the dev mainline that deploy-onex-staging re-asserts\n'
