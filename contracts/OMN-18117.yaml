@@ -1,24 +1,87 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-18117"
-title: "Autobind OCC evidence for OMN-18117"
-summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #3384."
+title: "Product-clone freshness check compares against the moving upstream tip, not the SHA materialised
+  for the run"
+summary: >
+  Autobind companion authored for OmniNode-ai/omnimarket PR #2439, then extended (append-only, OMN-13888)
+  by an OCC union with the second autobind companion for OmniNode-ai/omnibase_infra PR #3384, plus the
+  two AC-bound evidence items neither autobind shape carries. One ticket produced PRs in two repositories,
+  so each PR's autobind authored the same contracts/OMN-18117.yaml and the second went add/add DIRTY the
+  moment the first merged; this is the union resolution. Every entry from the first companion is byte-unchanged
+  and keeps its own entry hash, and the entries from the second are spliced verbatim except for the shared
+  dod-occ-diff-derived-behavior-proof id, which is kept as the first companion authored it (the omnimarket
+  suite, which is the half that decides the verdict) while the second repository's behaviour proof is
+  carried under its own id so no id appears twice. The two appended items bind AC1 and AC2. AC3 is the
+  post-merge readback on the first scheduled sweep tick and cannot be proven before this merges; AC4 is
+  the ledger row and the ticket comment naming the chosen fix. Both are deliberately left unbound and
+  recorded on the ticket instead. What the product PRs fix: the evidence-autoclose sweep materialises
+  every product clone once near the start of its job and then runs dod_verify behaviour checks against
+  those trees for the next twenty-odd minutes, while EvidenceCollector decided freshness at check time
+  by fetching origin/<branch> again and comparing the clone's HEAD against that fresh fetch's tip - so
+  any ordinary merge landing inside the window made a clone that genuinely contains the work under adjudication
+  read behind N, and the behaviour check pinned there was refused unexecuted as PRODUCT_CLONE_STALE. Run
+  34428131180 at 2026-09-10T02:06:28Z carried eight tickets that way, each with zero failed checks and
+  nothing proven either direction. The fix freezes the comparison target: omnibase_infra records, per
+  tree, the upstream tip it materialised against and renders a pin file both check-bearing steps export;
+  omnimarket measures HEAD against that recorded commit and performs no fetch. The recorded commit is
+  the upstream TIP, never the clone's own HEAD, because a HEAD-derived pin is vacuous and would launder
+  a tree that was already behind when the run picked it up - the OMN-16846 AC5 refusal, which is out of
+  scope to weaken. No credential was rotated, re-issued, revoked or minted, no secret value was read or
+  printed, and no cluster object was mutated. Rule 24 stated rather than implied: the closer is a scheduled
+  GitHub Actions job with no .201 dev-lane or k3s lab overlay surface, so no lab pass is claimed for it
+  and the first scheduled sweep run after these merge is the live readback.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "ci"
+    description: "PR #2439 product diff scope present"
+    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #2439 on OmniNode-ai/omnimarket, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnimarket`.
+    command: |-
+      uv run pytest tests/unit/nodes/node_dod_verify/test_omn_18117_pinned_product_clone_verdict.py -q
+  - kind: "ci"
     description: "PR #3384 product diff scope present"
     command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
   - kind: "tests"
     description: |-
-      Behavior proof for PR #3384 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_infra`.
+      Behavior proof for PR #3384 on OmniNode-ai/omnibase_infra, derived from the PR's own diff: the test target(s) it adds or changes. Carried as dod_evidence item `dod-omn18117-infra-behavior-proof`, executed at cwd `${OMNI_HOME}/omnibase_infra`.
     command: "uv run pytest tests/ci/test_autoclose_clone_pin_omn18117.py -q"
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2439"
+    description: "PR #2439 on OmniNode-ai/omnimarket — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/models/model_dod_verify_state.py?ref=eddc191fef1e4f14e6cf5c11dd57b1c0cb64d623 --jq '.content' | base64 -d | grep -c 'class ModelProductClonePin'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2439-ci"
+    description: "PR #2439 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2439 --repo OmniNode-ai/omnimarket --json files"
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #2439 on OmniNode-ai/omnimarket — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/nodes/node_dod_verify/test_omn_18117_pinned_product_clone_verdict.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "occ-self-bind-pr-8878"
+    description: "OCC companion PR #8878 — self-bind for OMN-18117 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 8878 --repo OmniNode-ai/onex_change_control --json number,state"
   - id: "dod-OmniNode-ai-omnibase_infra-pr-3384"
     description: "PR #3384 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
     source: "generated"
@@ -32,8 +95,12 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 3384 --repo OmniNode-ai/omnibase_infra --json files"
-  - id: "dod-occ-diff-derived-behavior-proof"
-    description: "PR #3384 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434)."
+  - id: "dod-omn18117-infra-behavior-proof"
+    description: >
+      PR #3384 on OmniNode-ai/omnibase_infra — diff-derived behavior proof (OMN-16434), carried under
+      its own id by the union resolution because dod-occ-diff-derived-behavior-proof is already bound
+      to the omnimarket half and a duplicate id is a contract-shape risk. Executes the PR-time gate that
+      extracts the pin renderer out of the shipped workflow YAML and runs it.
     source: "generated"
     checks:
       - check_type: "test_passes"
@@ -45,3 +112,59 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8879 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18117-ac1-red-first-pinned-verdict"
+    description: >
+      AC1 - a RED-first fixture where a clone is materialised at sha_A (containing the merge under adjudication),
+      dev then advances to sha_B before the freshness check runs, and the check executes instead of being
+      refused. Built against real git repositories rather than stubbed git calls: a bare origin on dev,
+      a commit adding proof.txt, a clone taken at that commit, then a second unrelated commit pushed to
+      origin. At the parent commit the pinned case failed with SKIPPED is not VERIFIED and the collector
+      logged 'clone freshness is stale ... behind=1' on a tree that demonstrably contains proof.txt. The
+      same file also carries the defect premise stated without the fix (a mid-run merge alone refuses
+      a clone that contains the work), which passes at the parent and after, and an assertion on the git
+      argv that a pinned run spawns no fetch at all - a run that still fetched would be one upstream advance
+      away from the defect returning. The first probe requires the AC1 case to be present in the suite
+      at the omnimarket PR head; the second requires GitHub's own file-status for that path in PR #2439
+      to be 'added', which is what makes the first a statement about a change rather than about a file
+      that was always there. Bound by hand (append-only union, OMN-13888) because the autobind entries
+      declare no binds_ac at all.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_dod_verify/test_omn_18117_pinned_product_clone_verdict.py?ref=eddc191fef1e4f14e6cf5c11dd57b1c0cb64d623" | grep -c 'def test_a_mid_run_merge_does_not_change_a_pinned_verdict'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2439/files --paginate --jq '.[] | select(.filename == "tests/unit/nodes/node_dod_verify/test_omn_18117_pinned_product_clone_verdict.py") | .status' | grep -c '^added$'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/evidence_collector.py?ref=eddc191fef1e4f14e6cf5c11dd57b1c0cb64d623" | grep -c 'def _pinned_product_clone_resolution'
+  - id: "dod-omn18117-ac2-omn16846-ac5-not-weakened"
+    description: >
+      AC2 - a clone that is missing the merge under adjudication is still refused, in both halves of the
+      fix. In omnimarket the fixture proves the refusing direction three ways at the same commit as AC1's
+      passing direction: a clone behind its own recorded pin is SKIPPED with cause PRODUCT_CLONE_STALE
+      and a behind_count of 1; that refused command still never executes, proven by a side-effect canary
+      file that must not appear; and a pinned commit absent from the clone's object database is STALE
+      rather than UNKNOWN, because a --depth 1 tree copied at an older SHA never receives the newer tip's
+      object and HEAD cannot contain a commit the repository has never seen. In omnibase_infra the property
+      that makes those refusals reachable at all is asserted at PR time: what the materialise loop records
+      is the UPSTREAM TIP, never the clone's own HEAD. A HEAD-derived pin is vacuous, since HEAD always
+      equals itself, and would read FRESH for every tree including one that was already behind when the
+      run picked it up - which is exactly the OMN-16846 AC5 refusal this ticket is forbidden to weaken.
+      Bound by hand (append-only union, OMN-13888).
+    source: "generated"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_dod_verify/test_omn_18117_pinned_product_clone_verdict.py?ref=eddc191fef1e4f14e6cf5c11dd57b1c0cb64d623" | grep -c 'def test_a_clone_behind_its_own_pin_is_still_refused'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnimarket/contents/tests/unit/nodes/node_dod_verify/test_omn_18117_pinned_product_clone_verdict.py?ref=eddc191fef1e4f14e6cf5c11dd57b1c0cb64d623" | grep -c 'def test_a_pin_absent_from_the_object_database_fails_closed'
+      - check_type: "command"
+        check_value: |-
+          gh api -H "Accept: application/vnd.github.raw" "repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_autoclose_clone_pin_omn18117.py?ref=c5823e82f87085d6fa20716d407c306134ff7cf0" | grep -c 'def test_the_pin_records_the_upstream_tip_not_the_clone_head'
