@@ -142,3 +142,75 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8901 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "ac3-check8-consults-resolver-via-api"
+    description: |-
+      AC3 binding, the structural positive with its parent control, re-expressed so it can execute where
+      the sweep runs it.
+
+      Supersedes ac3-check8-consults-the-cluster-resolver, which asserted the same facts but read them
+      with `git show` at pinned shas in the product clone. That is correct on a full clone and impossible
+      on the sweep's: the autoclose workflow checks out product repos at fetch-depth 1, so neither the
+      merged squash nor its parent is in the object store and the read fails before it can answer
+      anything. The check was measuring the clone's depth, not the code. Its verdict is unchanged; only
+      where the bytes come from changes.
+
+      Read through the repository contents API at two pinned shas, needing no local checkout. At the
+      merged squash d7eba9936c6943f253098d5928fcd5af8ad1226b, post-deploy-verify.sh names
+      resolve_workload_restart_state.py and that file is present in the scripts directory listing. At its
+      parent c5904e7634346e99281ada31492aa55e2059cfa0 the script names it zero times and the file is
+      absent from the same listing, which is asserted non-empty first so an API call returning nothing
+      cannot read as an absent file.
+
+      The parent half is what makes the head half evidence. Without it, a green positive cannot
+      distinguish "this change introduced the cluster-resolved witness" from "the witness was already
+      there and nothing about how restart state is obtained changed" -- and that is the distinction AC3
+      asks about.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    evidence_artifact: "supersedes_dod_evidence:ac3-check8-consults-the-cluster-resolver"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          M=d7eba9936c6943f253098d5928fcd5af8ad1226b; P=c5904e7634346e99281ada31492aa55e2059cfa0; R=repos/OmniNode-ai/omninode_infra/contents; S=scripts/post-deploy-verify.sh; N=resolve_workload_restart_state.py; lsm="$(gh api "${R}/scripts?ref=${M}" --jq '.[].name')"; lsp="$(gh api "${R}/scripts?ref=${P}" --jq '.[].name')"; test "$(gh api "${R}/${S}?ref=${M}" --jq '.content' | base64 -d | grep -c "${N}")" -ge 1 && test "$(printf '%s\n' "${lsm}" | grep -cFx "${N}")" -eq 1 && test "$(gh api "${R}/${S}?ref=${P}" --jq '.content' | base64 -d | grep -c "${N}")" -eq 0 && test -n "${lsp}" && test "$(printf '%s\n' "${lsp}" | grep -cFx "${N}")" -eq 0
+  - id: "ac3-negative-control-caller-not-witness-api"
+    description: |-
+      AC3 binding, the refusal half, re-expressed so it can execute where the sweep runs it.
+
+      Supersedes ac3-negative-control-caller-is-not-witness for the same reason as the entry above: it
+      read the merged squash with `git show` in a product clone the sweep checks out at fetch-depth 1,
+      where that commit is not in the object store. Same assertions, same verdict, read through the
+      repository contents API instead.
+
+      AC3 is half a prohibition -- the workflow's exact-match output "is not an acceptable witness" --
+      and a prohibition is not proven by any test that passes. Three absences, each paired with a
+      positive control on the same matcher:
+
+        * exact-match appears in post-deploy-verify.sh at least once on a COMMENT line, which is the
+          control, and zero times outside comment lines. Asserted over the executable region only,
+          because the header prose necessarily discusses exact-match in order to say the gate does not
+          accept it. If that prose moved, the first assertion reddens rather than the second one quietly
+          passing on a pattern that no longer matches anything.
+        * the resolver declares exactly three add_argument( options and none of --restart, --exact or
+          --state, so a caller has no way to assert a restart state to it even if it wanted to.
+        * what remains is a containerStatuses read, which is the container running-since fact AC4's own
+          negative control turns on.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    evidence_artifact: "supersedes_dod_evidence:ac3-negative-control-caller-is-not-witness"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          M=d7eba9936c6943f253098d5928fcd5af8ad1226b; R=repos/OmniNode-ai/omninode_infra/contents; S=scripts/post-deploy-verify.sh; V=scripts/resolve_workload_restart_state.py; s="$(gh api "${R}/${S}?ref=${M}" --jq '.content' | base64 -d)"; v="$(gh api "${R}/${V}?ref=${M}" --jq '.content' | base64 -d)"; test "$(printf '%s\n' "${s}" | grep -cE '^[[:space:]]*#.*exact.match')" -ge 1 && test "$(printf '%s\n' "${s}" | grep -vE '^[[:space:]]*#' | grep -cE 'exact.match')" -eq 0 && test "$(printf '%s\n' "${v}" | grep -cE 'add_argument\(')" -eq 3 && test "$(printf '%s\n' "${v}" | grep -cE 'add_argument\("--(restart|exact|state)')" -eq 0 && test "$(printf '%s\n' "${v}" | grep -c containerStatuses)" -ge 1
+  - id: "occ-self-bind-pr-8919"
+    description: >-
+      OCC self-binding receipt for PR #8919, the in-repo evidence PR carrying the two superseding AC3
+      structural entries above. Binds OMN-16535 to that OCC PR by pr_number so merge eligibility can resolve
+      a PASS receipt for the evidence PR itself.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8919 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
