@@ -70,3 +70,189 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 7992 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn16493-ac1-governed-job-apply"
+    description: >
+      AC1 — the operative delegation_events conversion applied on onex-dev through the governed k8s migrate
+      Job, evidenced by the Job's own log rather than ad-hoc CLI stdout. The operative id is 0037, not
+      the 0031 the criterion text names and not the 0034 the title names: the 2026-09-01 override in the
+      ticket body already re-points "0031" at whichever migration is operative, and the chain moved 0031
+      -> 0032 -> 0033 -> 0034 -> 0036 -> 0037 as each predecessor was retired. 0034 was retired on the
+      DATA axis (it resolves identity on m.tenant_slug alone and cannot convert a column that already
+      holds canonical UUIDs from write-time stamping); 0036 was retired on the PRIVILEGE axis (it reads
+      tenant_registry_mirror after set_config('role', <delegation_events' owner>), and that owner holds
+      no SELECT on the mirror). All of 0031, 0032, 0033, 0034 and 0036 remain in the omnibase_infra fence
+      baseline as retired; the k8s Job's K8S_OMN15683_RELEASED_NODE_MIGRATION_IDS array names exactly
+      one id, 0037, at the deployed head. The apply: OmniNode-ai/omninode_infra#1258 merged 2026-09-09T01:06:54Z
+      squash 6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab; deploy-onex-staging run 34408930764's predecessor
+      run 34297859000 on that exact head created Job omnibase-infra-migrate at 01:08:28.9Z from image
+      omnibase-infra-migrate:3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42 and logged "Migration omnibase-infra-migrate
+      completed successfully." at 01:09:46.9Z with "== Migration complete: applied=0 skipped=83 undeliverable=5
+      node_applied=1 node_skipped=173 ==". Live readback, 2026-09-10, read-only through the serving pod:
+      node_schema_migrations holds exactly one row for this migration, node:node_projection_delegation:0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql
+      applied_at 2026-09-09T01:09:18.051491Z -- strictly inside that Job window -- and holds no row for
+      0031, 0032, 0033, 0034 or 0036 on any lane. node_applied=1 and that single row are the same event.
+      The first three checks are the positive half against the deployed head and the Job's own log; the
+      first two checks below assert the release commit is an ancestor of omninode_infra dev and that the
+      named release array exists at that head; the third is the positive read of the released id at the
+      deployed head; the fourth is the NEGATIVE CONTROL at the immediately preceding parent f50ecec36,
+      where the released array names no 0037 at all, so the pattern discriminates the release rather than
+      matching the file. Execution scope, stated rather than implied: the Job's own log lines quoted above
+      were read from run 34297859000 job 102298419285 and are the receipt for this criterion; the OCC
+      runner's token carries no cross-repo actions:read on omninode_infra, so a log fetch is not re-executable
+      there and the checks below are the re-executable half.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/compare/6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/migrations/omnibase-infra-migrate.yaml?ref=6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab' --jq '.content' | base64 -d | grep -c 'K8S_OMN15683_RELEASED_NODE_MIGRATION_IDS'
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/migrations/omnibase-infra-migrate.yaml?ref=6cb6a4e9d1ee8e13f78ec127f35d37b920cca3ab' --jq '.content' | base64 -d | grep -c '0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omninode_infra/contents/k8s/migrations/omnibase-infra-migrate.yaml?ref=f50ecec36' --jq '.content' | base64 -d | grep -c '0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql')" = "0"
+  - id: "dod-omn16493-ac2-uuid-col-cast-readback"
+    description: >
+      AC2 — post-apply live readback from omnidash_analytics as role_omnidash showing the column is uuid
+      and the policy predicate carries the ::uuid cast. Taken 2026-09-10, read-only, on the DEV-SYSTEM
+      cluster instance i-06169517a92b45f86 via SSM with --comment omn16493-ac6-readback-close, through
+      the pod that actually serves (onex-api-65566495dd-kp4fg, container onex-api) on its own OMNIDASH_ANALYTICS_DB_URL.
+      The DSN was resolved and printed host-only before connecting, because a pod-local masquerade would
+      invalidate the reading: host omninode-dev-postgres.cqjkkokeaqd2.us-east-1.rds.amazonaws.com port
+      5432 db omnidash_analytics, and the session reported current_user role_omnidash, current_database
+      omnidash_analytics, inet_server_addr 10.40.160.37, PostgreSQL 16.13 -- the managed RDS instance,
+      not a sidecar. Verbatim: "delegation_events.tenant_id  uuid  NO" (data_type uuid, is_nullable NO)
+      from information_schema.columns; "tenant_isolation | (tenant_id = (current_setting('app.tenant_id'::text,
+      true))::uuid)" from pg_policy joined to pg_class; relrowsecurity t, relforcerowsecurity t. Reading
+      identity: pg_roles reports role_omnidash rolsuper f, rolbypassrls f, so the read is taken under
+      FORCE RLS exactly as a tenant-scoped caller experiences it. The pre-apply state recorded in this
+      ticket's own body was data_type text with the uncast predicate "tenant_isolation (tenant_id = current_setting('app.tenant_id'::text,
+      true))", so the type and the cast both changed. Execution scope, stated rather than implied: the
+      readback targets a private VPC instance reachable only over SSM and is therefore not re-executable
+      from a CI runner; the transcript above is the receipt, and the checks below are the re-executable
+      half -- the merged 0037 SQL declares both halves of what was read back (the ALTER ... TYPE UUID
+      and the restated policy carrying ::uuid on USING and WITH CHECK), and its merge sha is an ancestor
+      of omnibase_infra dev so the bundle the Job pulled carries it.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c 'ALTER COLUMN tenant_id TYPE UUID'
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c "current_setting('app.tenant_id', true)::uuid"
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/compare/3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+  - id: "dod-omn16493-ac3-uuid-key-reachability"
+    description: >
+      AC3 — the UUID key now resolves the beta tenant's rows, and no row was orphaned by the conversion.
+      Same read-only session as AC2. set_config('app.tenant_id', '91c74442-1233-4c97-b191-911a10346fdf')
+      then count(*) returns 198, against 0 before the apply. Splitting on the apply instant 2026-09-09T01:09:18.051491Z:
+      179 of those rows were written BEFORE the cutover -- they are converted rows, the population the
+      slug key used to answer for -- and 19 after, by the live writer. The criterion's literal form (count-equal
+      against the slug count taken immediately before the apply) is not re-derivable after the fact because
+      the apply is eight hours past and the beta program kept writing; the 179/19 split is the honest
+      form of the same claim, and the count-equal half is discharged exactly on AC4's tenant, where the
+      house count is frozen. On primary-key equality: a literally RLS-bypassing ground-truth query is
+      available to NO identity this lane may use -- pg_roles reports exactly one role on the instance
+      with rolbypassrls, rdsadmin, which is RDS-internal. The substitute is total reachability, and it
+      is stronger than a spot check: enumerating all 18 tenant_registry_mirror rows and counting under
+      each canonical UUID key yields 250 rows across 8 non-empty tenants (beta-business-proof 198, omninode
+      43, omn18011-proof-20260906205608 4, and 1 each for beta-refusal-probe-b, c19-synth-b-20260909,
+      d5-e2e-0b5ae67c, delegation-spotcheck-1786977419, t-1lostguy1), those 250 rows carry 250 DISTINCT
+      primary keys, and pg_stat_user_tables.n_live_tup for delegation_events is 250. Sum, distinct-PK
+      count and the table's own live-tuple total agree, so every row in the table is reachable under some
+      canonical UUID key and none is stranded. t-1lostguy1 is the externally-owned customer whose row
+      0034's ELSE-less CASE would have NULLed; it resolves. THREE NEGATIVE CONTROLS, same session: the
+      slug keys that used to work now RAISE InvalidTextRepresentation "invalid input syntax for type uuid:
+      \"beta-business-proof\"" and the same for "omninode" -- the cast rejects them, which is the conversion
+      being real rather than a widened predicate; an unmapped all-zero UUID returns 0; and no app.tenant_id
+      set at all returns 0. The re-executable check below is the code half: 0037 resolves identity on
+      BOTH representations (m.tenant_slug = d.tenant_id OR m.tenant_uuid::text = d.tenant_id), which is
+      what lets a mixed-representation column convert without stranding rows, and the second check is
+      the negative control at 0034's own merge sha 53ff3bbb9, where that second predicate is absent entirely
+      -- so the 250/250 reachability could not have come from 0034.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c 'm.tenant_uuid::text = d.tenant_id'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0034_delegation_events_uuid_via_registry_role_set_guard.sql?ref=53ff3bbb9' --jq '.content' | base64 -d | grep -c 'm.tenant_uuid::text = d.tenant_id')" = "0"
+  - id: "dod-omn16493-ac4-house-tenant-rows"
+    description: >
+      AC4 — the legacy `omninode` rows resolve under the house-tenant UUID 820272f9-4aaf-5add-a2df-0af942852ab2.
+      Same read-only session as AC2 and AC3. set_config('app.tenant_id', '820272f9-4aaf-5add-a2df-0af942852ab2')
+      then count(*) returns 43, and splitting on the apply instant gives 43 written before the cutover
+      and 0 after -- a frozen population, so this is the criterion's count-equal in its literal form:
+      the ticket body recorded the pre-apply slug key `omninode` returning exactly 43 on 2026-08-24 and
+      again on 2026-08-28, and the UUID key now returns exactly 43. Nothing was lost and nothing was added.
+      The mapping is registry-resolved rather than assumed: tenant_registry_mirror carries the row (820272f9-4aaf-5add-a2df-0af942852ab2,
+      omninode), read back in the same session, and 0037 resolves through that mirror. NEGATIVE CONTROL:
+      the slug key `omninode` now RAISES InvalidTextRepresentation "invalid input syntax for type uuid",
+      so the 43 rows answer to the UUID key alone and not to both. The re-executable check asserts 0037
+      also re-points the column DEFAULT at the same house-tenant UUID, so a future insert that omits tenant_id
+      lands on the house tenant rather than on a slug.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/docker/migrations/forward/nodes/node_projection_delegation/0037_delegation_events_uuid_mixed_representation_guard_before_set_role.sql?ref=3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42' --jq '.content' | base64 -d | grep -c "ALTER COLUMN tenant_id SET DEFAULT '820272f9-4aaf-5add-a2df-0af942852ab2'::uuid"
+  - id: "dod-omn16493-ac5-evidence-on-15683"
+    description: >
+      AC5 — the readback pasted onto OMN-15683, which is what makes that ticket eligible to close. Posted
+      2026-09-10 as Linear comment 002b1a59-468d-476b-9e30-bacf7dcd66e1 on OMN-15683, carrying the same
+      provenance block, the same migration-ledger row, the same per-tenant counts and the same three negative
+      controls as the parent readback on OMN-16493 (comment b7a21bb9-4de0-4137-bfe0-09422171bc4b), addressed
+      to OMN-15683's OWN criteria rather than restated generically: its AC3 GREEN-after (UUID key 198
+      rows against the 0 its defect probe recorded, with the reachability substitute for primary-key equality
+      named as a substitute), its AC5 legacy-row disposition (the `omninode` residue resolving under the
+      house-tenant UUID at 43 rows, count-equal to the pre-apply slug count), and its AC6 proof_class
+      live-readback (captured from the onex-dev database through the serving pod, with the DSN host printed
+      before connecting, not from CLI stdout). Linear is not reachable from a CI runner, so the comment
+      id above is the citation and the re-executable check below is the code half of the same claim: the
+      merged 0037 sha is an ancestor of omnibase_infra dev, so the fix chain OMN-15683 is waiting on is
+      landed and that ticket is eligible on the code axis as well as the evidence axis.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnibase_infra/compare/3dfe23e5e5e41f6b0c8a7501e0a6883e2dbd0a42...dev' --jq '.status' | grep -cE '^(ahead|identical)$'
+  - id: "occ-self-bind-pr-8858"
+    description: |-
+      OCC self-binding receipt for PR #8858, the in-repo evidence PR carrying the AC1-AC5
+      bindings for OMN-16493. Binds OMN-16493 to this OCC PR by pr_number so eligibility can
+      resolve a PASS receipt for the evidence PR itself, the same shape the sibling contracts
+      use for their own evidence PRs.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+      - "AC4"
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 8858 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
