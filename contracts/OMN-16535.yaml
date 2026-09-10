@@ -49,3 +49,85 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8861 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "ac3-restart-state-read-from-the-cluster"
+    description: |-
+      AC3 binding, the executed half. "Restart state is resolved from the cluster, not supplied by the
+      caller. The deploy workflow's exact-match output describes what CI intended to pin, not what the
+      cluster did with it, and is not an acceptable witness."
+
+      AC1, AC2 and AC4 are already bound above to this same suite; AC3 was the one criterion the
+      2026-09-10T02:09:34Z closer tick found bound to nothing. This entry closes it, scoped to the two
+      classes that answer AC3's question rather than to the whole file, so a green result here means the
+      restart legs passed rather than that thirty-seven unrelated cases did.
+
+        * TestRestartResolverUnits asserts that check 8 consults
+          scripts/resolve_workload_restart_state.py, and its own assertion message states the criterion
+          verbatim: check 8 "must consult the restart resolver, not infer restart state from a
+          caller-supplied input such as the workflow's exact-match output -- the caller cannot be the
+          witness."
+        * TestNoRestartEvidenceWindow drives the whole gate through a stubbed kubectl with a fixture pod
+          list, so the restart verdict is genuinely READ from a cluster response rather than passed in:
+          a container started six hours ago yields a named pass printing its reason, a restart inside
+          the window with no marker still FAILS, and an unreadable pod list FAILS CLOSED. It also
+          carries the AC4 negative control -- an in-place container restart, which leaves pod
+          .status.startTime untouched, must not be read as "no restart".
+
+      Named as its own entry rather than added to any entry above, because every entry above is merged
+      and the Append-Only Gate holds merged entries immutable.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/scripts/test_post_deploy_verify_outbox_broker_state.py -q -k "RestartResolverUnits or NoRestartEvidenceWindow"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "ac3-check8-consults-the-cluster-resolver"
+    description: |-
+      AC3 binding, the structural positive half with its negative control at the parent.
+
+      At the merged squash d7eba9936c6943f253098d5928fcd5af8ad1226b, scripts/post-deploy-verify.sh
+      names scripts/resolve_workload_restart_state.py and that resolver exists in the tree. At the
+      parent d7eba993^ it does neither: the script never names it and the file is absent.
+
+      The parent half is what makes the head half evidence. Without it a green positive result cannot
+      distinguish "this PR introduced the cluster-resolved witness" from "the witness was already there
+      and this PR changed nothing about how restart state is obtained" -- and it is exactly that
+      distinction AC3 asks about. Both shas are read from git object storage, so no network, credential
+      or live cluster is required and the answer does not depend on which tree the verifier occupies.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          M=d7eba9936c6943f253098d5928fcd5af8ad1226b; S=scripts/post-deploy-verify.sh; R=scripts/resolve_workload_restart_state.py; test "$(git show "${M}:${S}" | grep -c resolve_workload_restart_state.py)" -ge 1 && test -n "$(git ls-tree -r --name-only "${M}" -- "${R}")" && test "$(git show "${M}^:${S}" | grep -c resolve_workload_restart_state.py)" -eq 0 && test -z "$(git ls-tree -r --name-only "${M}^" -- "${R}")"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "ac3-negative-control-caller-is-not-witness"
+    description: |-
+      AC3 binding, the refusal half. AC3 is half a prohibition -- the workflow's exact-match output "is
+      not an acceptable witness" -- and a prohibition is not proven by any test that passes. This entry
+      asserts the absence directly, and pairs every absence with a positive control so a matcher that
+      had silently stopped matching cannot report the same clean zero as a genuine one.
+
+        * exact-match appears in post-deploy-verify.sh exactly once, in the comment block that explains
+          why it is NOT consulted, and zero times outside comment lines. The comment occurrence is the
+          positive control for the matcher: if the prose moved, the first assertion goes red rather
+          than the second one silently passing on a pattern that no longer matches anything. Asserted
+          over the executable region only, because the header prose necessarily discusses exact-match
+          in order to say the gate does not accept it.
+        * the resolver's entire command-line surface is three options -- --namespace, --workload,
+          --window -- and none of --restart, --exact or --state exists. A caller therefore has no way
+          to assert a restart state to it even if it wanted to; the state can only come from the
+          cluster read.
+        * that cluster read is a containerStatuses lookup, present in the resolver at the merged sha,
+          which is the running-since fact AC4's negative control also turns on.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          M=d7eba9936c6943f253098d5928fcd5af8ad1226b; S=scripts/post-deploy-verify.sh; R=scripts/resolve_workload_restart_state.py; test "$(git show "${M}:${S}" | grep -cE "^[[:space:]]*#.*exact.match")" -ge 1 && test "$(git show "${M}:${S}" | grep -vE "^[[:space:]]*#" | grep -cE "exact.match")" -eq 0 && test "$(git show "${M}:${R}" | grep -cE "add_argument\(")" -eq 3 && test "$(git show "${M}:${R}" | grep -cE "add_argument\(\"--(restart|exact|state)")" -eq 0 && test "$(git show "${M}:${R}" | grep -c containerStatuses)" -ge 1
+        cwd: "${OMNI_HOME}/omninode_infra"
