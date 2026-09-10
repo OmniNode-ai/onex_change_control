@@ -61,3 +61,174 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8971 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn17446-ac1-retention-gap-refusal-test"
+    description: >
+      AC1 — a test asserting that for a tenant whose lifecycle event predates the retention window, tenant_registry_mirror
+      holds no row and the OMN-16804 write-path resolver therefore refuses, driving the REAL resolver
+      rather than a double. Landed as tests/test_omn17446_retention_gap_resolver_refusal_real_postgres.py
+      in OmniNode-ai/omnimarket#2456, read at head sha 3356b5597998c97480d606875e09f8baa6430500. It drives
+      the shipped async_resolve_write_tenant_uuid composition against a real asyncpg connection and the
+      real 0000_create_tenant_registry_mirror.sql relation in a disposable schema, populating the in-window
+      half through the real projection writer. STATED PLAINLY, because the criterion says "fails today
+      by construction": this test is NOT red at its parent and cannot honestly be made so. That clause
+      was true of the SCENARIO when the ticket was filed, never of this ASSERTION — the resolver already
+      refused an unresolvable identity, which is what OMN-16804 built. Red-at-parent would require first
+      breaking the resolver. In its place the test carries a mutation control, and one was run: patching
+      the resolver to return the identity when the mirror holds no row turned two of its three tests red,
+      and the resolver was restored byte-identical (no resolver change appears in #2456's diff). The three
+      checks below assert, in order, that the file exists at that sha, that it drives the real resolver
+      composition rather than a mock, and that the sibling mutation control is present.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn17446_retention_gap_resolver_refusal_real_postgres.py?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'async_resolve_write_tenant_uuid(conn, str(_AGED_OUT_UUID))'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn17446_retention_gap_resolver_refusal_real_postgres.py?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'import asyncpg'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn17446_retention_gap_resolver_refusal_real_postgres.py?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'def test_the_refusal_assertion_is_probative'
+  - id: "dod-omn17446-ac2-reconcile-emitter-landed"
+    description: >
+      AC2 — the ruled mechanism is implemented and the mirror's population no longer depends on unexpired
+      topic retention. The operator ruling of 2026-09-01 DECLINED option A (compaction on the lifecycle
+      topic) and option C, and after the reset direction proved to have no sanctioned door, authorized
+      option B in its smallest form. That is the UUID-preserving, fail-closed re-emit primitive docker/onex-api/tenant_event_reemit.py,
+      merged as OmniNode-ai/omninode_infra#1127 at squash e9e3fd321161d603b6df55954a1a00759fef4a79. It
+      reads identity from the authoritative omninode_cloud.public.tenants row and cannot generate a UUID,
+      builds the envelope through the same builder the tenant-create path calls, and refuses the whole
+      batch before enqueueing anything on an empty, blank, duplicate or unknown slug. Recovery therefore
+      does not require the original event to still exist, which is the property topic retention could
+      not provide. Supersedes the two generated items that bind the same PR but predate the binds_ac field
+      and so declare no criterion; no claim in those items is withdrawn. Compaction is a settled decision
+      on this ticket, not an open residual.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1127"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/tenant_event_reemit.py?ref=e9e3fd321161d603b6df55954a1a00759fef4a79" --jq '.content' | base64 -d | grep -c 'build_tenant_created_envelope'
+      - check_type: "command"
+        check_value: |-
+          gh pr view 1127 --repo OmniNode-ai/omninode_infra --json state,mergeCommit --jq 'select(.state == "MERGED") | .mergeCommit.oid' | grep -c 'e9e3fd321161d603b6df55954a1a00759fef4a79'
+  - id: "dod-omn17446-ac3-mirror-covers-live-corpus"
+    description: >
+      AC3 — tenant_registry_mirror holds a row for every registry-known slug currently in delegation_events,
+      read back live on the onex-dev RDS. Measured READ-ONLY on 2026-09-10 between 16:11:13Z and 16:20:16Z
+      on DEV-SYSTEM i-06169517a92b45f86 (the PUBLIC cluster was never contacted), through pod onex-api-6bc7b7fdb7-9q862
+      as role_omnidash. RESULT: delegation_events holds 260 rows over 8 distinct tenant_id, and all 8
+      have a mirror row; all 18 mirror tenant_uuid values agree byte-for-byte with omninode_cloud.public.tenants,
+      0 disagreements. The set is larger than the 5 the ticket named — it was re-measured rather than
+      assumed. TWO PREMISES OF THE TICKET WERE STALE and are corrected here: the relations are in schema
+      public, not omninode_internal, and delegation_events.tenant_id is now uuid NOT NULL rather than
+      text (migration 0037 applied 2026-09-09T01:09:18Z). The count was NOT read by an unscoped SELECT,
+      which returns a masked 0 under FORCE RLS for a role with rolbypassrls=f; it was reconstructed per-identity
+      under set_config and the sum over candidates equals pg_stat_user_tables.n_live_tup exactly (260
+      = 260), which is what makes the enumeration provably complete rather than merely non-empty. Controls
+      were run both ways: the same guard shape against a registry-known but mirror-absent UUID DID return
+      it, and three known-absent identities returned zero. Zero mutation is proven by byte-identical pg_stat_user_tables
+      readings at 16:12:36Z and 16:20:00Z. HONEST LIMIT ON THE CHECK BELOW: it re-resolves the recorded
+      SSM invocation rather than re-running the probe, because re-running would require send-command,
+      which a verifier must not do; AWS retains invocations for a bounded window, so after that window
+      the durable record is the Linear evidence comment of 2026-09-10T17:09:42Z.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_tenant_registry/contract.yaml?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'onex.tenant.events'
+      - check_type: "command"
+        check_value: |-
+          aws ssm get-command-invocation --command-id e3d835fc-9445-41b3-9269-b630deeae88a --instance-id i-06169517a92b45f86 --query Status --output text | grep -cx Success
+  - id: "dod-omn17446-ac4-preguard-zero-unresolved"
+    description: >
+      AC4 — the 0032/0034 pre-guard returns zero unresolved slugs on staging. MET ON SUBSTANCE; the literal
+      criterion is unrunnable and obsolete, which is recorded rather than papered over. The verbatim 0034
+      pre-guard raises "operator does not exist: text = uuid" against the live schema, because m.tenant_slug
+      is text while d.tenant_id is now uuid; it is also unreachable in 0034's own control flow on a uuid
+      column, and 0034 is fenced, unapplied and twice superseded (0033 to 0034 OMN-17316, 0034 to 0036
+      OMN-15683, 0036 to 0037). Its unscoped standalone form returns a FALSE PASS — NULL unresolved while
+      count(*) reads 0 against 260 rows — the exact inversion the 0036 supersession row records, and it
+      must not be cited as evidence by anyone. The operative successor is 0037, whose type-correct read-only
+      equivalent, run per-identity over the reconciled 260/260 corpus, returned ZERO unresolved on 2026-09-10.
+      A second finding is recorded and NOT claimed as fixed here: the sanctioned read-only instrument
+      for this question, omnibase_infra scripts/ci/check_delegation_tenant_conversion_readiness.py, is
+      itself broken post-0037 — it UNIONs slugs and uuids into set_config(app.tenant_id) and the first
+      slug candidate aborts the probe with exit 3 and no verdict. AC4 therefore has no working turnkey
+      instrument today, only the hand-built reconstruction above. Same honest limit on the check as AC3.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_delegation/migrations/0034_delegation_events_uuid_via_registry_role_set_guard.sql?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'LEFT JOIN tenant_registry_mirror m ON m.tenant_slug = d.tenant_id'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/check_delegation_tenant_conversion_readiness.py?ref=0a704957c200ad2c7874e62e50515c419f24a286" --jq '.content' | base64 -d | grep -c 'UNION'
+      - check_type: "command"
+        check_value: |-
+          aws ssm get-command-invocation --command-id ef90c3e2-43c5-4120-932a-b9092c100fa2 --instance-id i-06169517a92b45f86 --query Status --output text | grep -cx Success
+  - id: "dod-omn17446-ac5-registry-reconcile-gate"
+    description: >
+      AC5 — a guard that fails closed when a projection whose relation is a registry (read by a write
+      path or a migration USING clause) is fed only by a time-retained topic with no reconcile path. Landed
+      as scripts/ci/check_registry_projection_reconcile.py in OmniNode-ai/omnimarket#2456, read at head
+      sha 3356b5597998c97480d606875e09f8baa6430500, and wired in the SAME change as BOTH the pre-commit
+      hook registry-projection-reconcile AND the CI lint-job step "Registry-projection reconcile gate",
+      per omni_home operating rule 5. Registry-ness is DERIVED, not declared, because the runtime's table-declaration
+      model forbids extra fields: a relation qualifies when another node's ALTER COLUMN TYPE USING conversion
+      resolves against it, or a shared projection module that SQL-reads it is imported by a node other
+      than its owner. The write-path scan is AST-based and renders f-strings, because the resolver composes
+      its SQL as FROM {CONSTANT} and a text grep for the relation name next to FROM misses the very case
+      this gate exists for; docstrings are excluded, because one module's docstring carries an operator
+      probe query a text scan reads as a live query. The compaction rule is READ from the ONEX topic taxonomy
+      rather than hardcoded, and the gate raises rather than passing if it cannot read that taxonomy or
+      its own allowlist — a gate that cannot read its own inputs has not passed, it has not run. The sole
+      escape hatch is an allowlist requiring every field, treating a blank field as absent, and reporting
+      a STALE entry as a violation in its own right. It ships with exactly one entry, for tenant_registry_mirror,
+      citing the AC2 re-emit primitive by repo, path and merge sha. The suite is 21 tests, red at authoring
+      (module absent) and green after; it includes a positive control proving the gate is probative on
+      the real tree — with the exemption removed, scan must flag exactly tenant_registry_mirror — so the
+      clean result is not a gate that detects nothing. The four checks below assert the gate exists, that
+      it fails closed on its own inputs, and that BOTH wirings are present, since a gate wired in only
+      one of them is advisory.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/scripts/ci/check_registry_projection_reconcile.py?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'class GateInputError'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/.pre-commit-config.yaml?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'id: registry-projection-reconcile'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci.yml?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'Registry-projection reconcile gate'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/ci/test_omn17446_registry_projection_reconcile_gate.py?ref=3356b5597998c97480d606875e09f8baa6430500" --jq '.content' | base64 -d | grep -c 'def test_the_gate_is_probative_on_the_real_tree'
+  - id: "occ-self-bind-pr-8972"
+    description: >-
+      OCC self-binding receipt for PR #8972, the in-repo evidence PR carrying the AC1-AC5 bindings on
+      this contract. Binds OMN-17446 to that OCC PR by pr_number so eligibility can resolve a PASS receipt
+      for the evidence PR itself. It makes no claim about the evidence in that PR, which the five binds_ac
+      items above carry with their own receipts.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh pr view 8972 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
