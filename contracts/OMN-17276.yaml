@@ -45,3 +45,72 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8664 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "behavior-proof-runnable-dependency-set"
+    description: |-
+      NET-NEW item. The merged `dod-occ-diff-derived-behavior-proof` above is UNTOUCHED, keeps its
+      receipt and stays in the record — merged entries are immutable (Append-Only Gate, ci.yml:1446),
+      and this supersedes rather than edits.
+
+      WHY IT EXISTS. That item declares
+      `uv run pytest docker/onex-api/tests/test_omn_17276_typed_refusal_codes.py -q` at cwd
+      ${OMNI_HOME}/omninode_infra. That command cannot execute there. omninode_infra's root project
+      deliberately omits psycopg — `pyproject.toml:48` says so in as many words, "psycopg is
+      deliberately NOT pulled in" — while `docker/onex-api/tests/conftest.py:55` imports it at module
+      level. Collection therefore dies in conftest before a single assertion runs, exit 4,
+      "ModuleNotFoundError: No module named 'psycopg'". The check measures the root venv's dependency
+      policy, not the product code.
+
+      THE DECLARED CHECK CANNOT FAIL FOR THIS TICKET'S REASON, WHICH IS THE ACTUAL DEFECT. Measured
+      2026-09-10 at omninode_infra `c5904e7`: with `test_omn_17276_typed_refusal_codes.py:112`
+      deliberately mutated (RefusalCode.CREDENTIAL_ABSENT -> CREDENTIAL_INVALID), the declared command
+      exits 4 with the identical conftest ImportError. Byte-identical outcome on working and on broken
+      source. A check whose result does not move when the behaviour it names breaks is non-probative
+      whatever status is stored against it.
+
+      THE REPAIR MOVES THE ENVIRONMENT, NOT THE BAR. Same test file, same assertions, same cwd. The
+      command now declares the dependency set the service itself ships — `docker/onex-api/requirements.txt`
+      and `requirements-test.txt`, the same two files `.github/workflows/onex-api-tests.yml` installs —
+      via `uv run --with-requirements`, which resolves into an ephemeral environment and does not mutate
+      the project venv whose purity is deliberate. Both files are required: requirements.txt alone
+      yields 19 passed / 8 errors, so the pair is minimal, not generous.
+
+      POSITIVE CONTROL, per the operator's 2026-09-10 ruling ("27 passing is consistent with a command
+      that would pass against anything"). Against the SAME deliberate mutation the corrected command
+      goes RED — exit 1, "1 failed, 26 passed", FAILED ...::test_no_credential_header_is_absent. Source
+      restored, `git status --porcelain` = 0, corrected command back to exit 0 / 27 passed. The green
+      below is therefore discriminating and not vacuous.
+
+      NO `binds_ac` DELIBERATELY. This item corrects an invocation; it does not establish which of this
+      ticket's acceptance criteria the suite proves. Binding one here would be my inference rather than
+      the module's own statement, which is the surrogate this evidence class exists to refuse. Left for
+      whoever binds the criteria on their own evidence.
+
+      RUNTIME. 7s warm (uv cache populated). The cold path installs 204 packages; CI runners cache
+      the uv store, and the per-check budget is 180s.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-diff-derived-behavior-proof"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run --with-requirements docker/onex-api/requirements.txt --with-requirements docker/onex-api/requirements-test.txt pytest docker/onex-api/tests/test_omn_17276_typed_refusal_codes.py -q
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "occ-self-bind-pr-8871"
+    description: |-
+      OCC self-binding receipt for PR #8871, the in-repo evidence PR carrying this contract.
+      Binds OMN-17276 to the OCC PR by pr_number so `occ-preflight / eligibility` can resolve
+      a PASS receipt for the evidence PR itself (reason `missing_occ_self_bind`).
+
+      NOT following the second half of that gate's remediation. It also instructs
+      "Recompute contract_sha256 on the EXISTING receipts for OMN-17276". Every receipt on
+      this contract that is already merged is immutable under the Append-Only Gate
+      (ci.yml:1446), and the recompute is unnecessary anyway: a receipt carrying
+      `contract_entry_sha256` is validated per-entry only — `check_receipt_hardening.py:1486`
+      returns before the whole-file comparison — so appending this entry cannot invalidate
+      one. That remediation string is the defect filed as OMN-18082 and ruled on 2026-09-10
+      ("APPROVED as filed. Build it. The remediation is wrong and the Append-Only Gate is
+      right."). This is its third observed instance.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh pr view 8871 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
