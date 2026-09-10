@@ -1,0 +1,39 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-17740
+evidence_item_id: dod-omn17740-dod1-stale-consumer-not-stale-secret
+check_type: command
+check_value: |
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 9633f23e-b92c-4aac-8f50-f12594382094 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'CREDENTIALS onex-dev/universal-auth-credentials LASTWRITE=2026-08-30T09:27:57Z'
+contract_sha256: "sha256:e6909f26f54175e6fecbe6c02a88f841f1d22d1fc3e1f5518231b5112189034e"
+contract_entry_sha256: sha256:7e5c729e44a1df578d568390ea9e4cbb5d851c626ce72c61bcafc60d8f9de848
+status: PASS
+run_timestamp: '2026-09-10T12:30:00Z'
+commit_sha: a58f35de667c03acb6a5613baa693fcdf7c53e00
+runner: claude-local-worktree
+verifier: omn17740-dod-remainder
+probe_command: |
+  env AWS_PAGER= aws ssm get-command-invocation --region us-east-1 --command-id 9633f23e-b92c-4aac-8f50-f12594382094 --instance-id i-06169517a92b45f86 --query 'StandardOutputContent' --output text | grep -c 'CREDENTIALS onex-dev/universal-auth-credentials LASTWRITE=2026-08-30T09:27:57Z'
+probe_stdout: |
+  1
+actual_output: |
+  PASS. DoD 1 -- the failure was a STALE CONSUMER, not stale secret material.
+  The bound command re-reads SSM invocation 9633f23e-b92c-4aac-8f50-f12594382094 on
+  i-06169517a92b45f86 (read-only, --comment omn17740-dod-remainder, 2026-09-10T10:41Z) and matches
+  exactly one line: CREDENTIALS onex-dev/universal-auth-credentials LASTWRITE=2026-08-30T09:27:57Z.
+  That timestamp is the Secret's newest managedFields write and it has not moved since, so the
+  2026-09-05T12:03Z repair -- which ended the outage -- changed no secret material.
+  The consumer was stale: the operator logs in once per CR at container start and never renews
+  (0 of 335 access tokens on this instance carry a renewal; 1572 API requests in 24 h, zero of them
+  logins), so the 2026-08-30 write was invisible to it for the remaining life of its cached token --
+  the 14.5-hour gap to the 2026-08-31T00:00:26Z break. This is a different cause from the related
+  public-cluster ticket's, which was a dead value IN the Secret, remediated by putting a working one
+  in. A rotation could never have fixed this one, and re-rotating would have re-armed it.
+  NEGATIVE CONTROL: the gate built under DoD 4 exits 1 on a replay of the same readback where the
+  operator start is moved to 2026-07-28T19:50:32Z -- the pod that was actually running when the
+  Secret was rewritten -- so the comparison discriminates rather than passing everywhere.
+  commit_sha names omninode_infra 9a701486, the contemporaneous merge. The evidence itself is a
+  cluster readback rather than a commit, stated rather than implied.
+exit_code: 0
+pr_number: 1300
+branch: dev
