@@ -1,18 +1,56 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-18159"
-title: "Autobind OCC evidence for OMN-18159"
-summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #2457."
+title: "Port the delegation projection writer to the runtime kernel so delegation_events is written as
+  tenant_projection_writer"
+summary: >
+  OCC companion for OmniNode-ai/omnimarket#2457 — the first landed slice of OMN-18159, which binds AC1
+  only, and binds it PARTIALLY. What #2457 closes is the sub-gap AC1 names first: the shared SYNC projection
+  write protocol could not express an attested write at all. Green-bar leg 4 requires the newest delegation_events
+  row from a tenant outside the historical compiled map to carry writer_identity == "tenant_projection_writer",
+  and that column can only be produced by a statement carrying a SQL expression Postgres evaluates per
+  row on BOTH arms. delegation_events is written today by DelegationProjectionRunner, a standalone async
+  process whose _dynamic_upsert can do that; the in-process def-B handler that must take the table over
+  writes through ProtocolProjectionDatabaseSync.upsert(table, conflict_key, row) -> bool, which supports
+  none of the four required capabilities — SQL-expression columns, insert-only columns withheld from the
+  DO UPDATE arm, RETURNING, or an explicit tenant override. node_projection_delegation/contract.yaml lines
+  322-331 already recorded this widening as its own change with the adapter implementations in scope.
+  #2457 is that change. It adds omnimarket/projection/upsert_statement.py, which owns the decisions (which
+  column goes on which arm, which expression is admissible, which identifier is safe) and renders them
+  into each driver's placeholder style, and implements the capability on the three sync adapters. THE
+  DESIGN DECISION WORTH THE REVIEW: the attested write is a SEPARATE runtime_checkable protocol, not two
+  more methods on the existing one. A runtime_checkable protocol matches on method PRESENCE, so adding
+  a method to ProtocolProjectionDatabaseSync silently reclassifies every structural implementation as
+  a non-implementation; around twenty test doubles in that repo implement the three-argument upsert and
+  nothing else, and every projection handler guarding its injected adapter with an isinstance check would
+  have raised TypeError against all of them at once, with no compiler warning. That was hit during the
+  build and backed out, and a standing test now asserts the base protocol did not grow a method. WHAT
+  IS DELIBERATELY NOT DONE, stated rather than implied. DelegationProjectionRunner is UNCHANGED — it writes
+  the live business-proof path, and converging it onto the shared builder is a separate change; what is
+  asserted instead is a differential ratchet between two live implementations, which cannot go stale the
+  way a copied constant can. No existing caller changes behaviour: upsert keeps its signature and its
+  bool, and every adapter's default-argument path renders the statement it rendered before. AC1 is NOT
+  fully discharged by this PR — the nine-commit handler port, the tenant-scoped read fix, the missing
+  delegation_shadow_comparisons writer and the kernel adapter's own widening in omnibase_infra all remain.
+  AC2 and AC3 are not started and are NOT bound here. RULE 24(d): the .201 compose dev lane runs no onex-api,
+  has row-level security off and writes as a superuser, so the RLS-dependent halves — the insert-only
+  column's WITH CHECK behaviour and the scoped writer principal the attestation records — are NOT exercised
+  by the lab pass; what the lab proves is the expression semantics and the statement shape against a real
+  Postgres, and the RLS proof is owed by AC3's staging readback and is not claimed here. No cluster object
+  was mutated, no workflow was dispatched, no credential was minted, rotated, re-issued or revoked, and
+  no secret value was read or printed (rule 22).
 is_seam_ticket: false
-interface_change: false
-interfaces_touched: []
+interface_change: true
+interfaces_touched:
+  - "protocols"
 evidence_requirements:
   - kind: "ci"
-    description: "PR #2457 product diff scope present"
-    command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
+    description: "PR #2457 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
   - kind: "tests"
     description: |-
-      Behavior proof for PR #2457 on OmniNode-ai/omnimarket, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omnimarket`.
+      Behavior proof for PR #2457 on OmniNode-ai/omnimarket, derived from the PR's own diff: the test
+      module it adds. Executed at cwd `${OMNI_HOME}/omnimarket`.
     command: "uv run pytest tests/test_omn18159_sync_upsert_write_contract.py -q"
 emergency_bypass:
   enabled: false
@@ -22,6 +60,8 @@ dod_evidence:
   - id: "dod-OmniNode-ai-omnimarket-pr-2457"
     description: "PR #2457 on OmniNode-ai/omnimarket — Evidence-Source autobind."
     source: "generated"
+    binds_ac:
+      - "AC1"
     checks:
       - check_type: "command"
         check_value: |-
@@ -29,12 +69,16 @@ dod_evidence:
   - id: "dod-OmniNode-ai-omnimarket-pr-2457-ci"
     description: "PR #2457 on OmniNode-ai/omnimarket — product diff scope check (OMN-14425)."
     source: "generated"
+    binds_ac:
+      - "AC1"
     checks:
       - check_type: "command"
         check_value: "gh pr view 2457 --repo OmniNode-ai/omnimarket --json files"
   - id: "dod-occ-diff-derived-behavior-proof"
     description: "PR #2457 on OmniNode-ai/omnimarket — diff-derived behavior proof (OMN-16434)."
     source: "generated"
+    binds_ac:
+      - "AC1"
     checks:
       - check_type: "test_passes"
         check_value: "uv run pytest tests/test_omn18159_sync_upsert_write_contract.py -q"
@@ -42,6 +86,78 @@ dod_evidence:
   - id: "occ-self-bind-pr-8973"
     description: "OCC companion PR #8973 — self-bind for OMN-18159 (OMN-14650)."
     source: "generated"
+    binds_ac:
+      - "AC1"
     checks:
       - check_type: "command"
         check_value: "gh pr view 8973 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omn18159-attestation-evaluated-by-postgres"
+    description: >
+      The property no double can stand in for, and the reason AC1 named this sub-gap first: that POSTGRES,
+      not the application, evaluates the attestation expressions, and that the DO UPDATE arm restates
+      them instead of leaving an existing row wearing its FIRST writer's stamp. A column DEFAULT covers
+      only INSERT, so without the restatement a re-written row keeps a stale writer_identity and a written_at
+      that stopped moving — and leg 4's readback orders on exactly that column. The class also asserts
+      the refusal that makes the attestation mean anything: a caller supplying writer_identity as a row
+      VALUE is rejected rather than allowed to displace the expression. Run against a real Postgres on
+      the .201 lab dev lane (rule 24, lab before staging); 5 tests, all passing.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          INTEGRATION_POSTGRES_HOST=192.168.86.201 uv run pytest tests/test_omn18159_sync_upsert_write_contract.py -q -m integration -p no:randomly
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn18159-base-protocol-blast-radius-guard"
+    description: >
+      The standing guard for the design decision this PR turns on. ProtocolProjectionDatabaseSync is runtime_checkable,
+      so it matches on method PRESENCE; adding a method to it reclassifies roughly twenty three-argument
+      test doubles as non-implementations at once and makes every handler that guards its injected adapter
+      with an isinstance check raise TypeError against all of them, with no compiler warning. The test
+      asserts the base protocol did NOT grow a method, that a three-argument double still satisfies it
+      and does NOT satisfy the attested-write protocol, and that all three real adapters carry both. Without
+      this the next lane widens the base protocol and finds out in production.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_omn18159_sync_upsert_write_contract.py::TestProtocolCarriesTheWriteContract -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn18159-builder-runner-differential"
+    description: >
+      The anti-drift ratchet between two LIVE implementations. DelegationProjectionRunner is deliberately
+      not changed by this PR, so the risk it creates is that the shared builder and the runner disagree
+      about the closed expression set, the attestation columns or the composed statement — which is how
+      the four implementations of this statement drifted apart in the first place. The test renders the
+      builder's numeric dialect for the runner's own delegation-events call shape and compares it against
+      the statement the runner composes for the same inputs, and asserts both sides' expression set and
+      attestation mapping are the same objects' contents. A copied constant would go stale silently; this
+      cannot.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_omn18159_sync_upsert_write_contract.py::TestBuilderAgreesWithTheLiveRunner -q
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn18159-no-existing-caller-regressed"
+    description: >
+      The claim that this widening changes no existing behaviour, proven rather than asserted. The governed
+      pre-push selector classified the change as test_infrastructure, escalated fail-closed to the FULL
+      suite, and placed it off-box on lab host h201.2 per rule 21: 19999 tests green on commit 89c876c650fe00e329df5aeeb4a71e765456ae75
+      in 206s, suite log sha256 9b32aaf8fae2cd49202efe0568fec88cc333523edddefa5374176713f8b4e19c. The
+      focused re-run named here covers the adapter consumers and the structural doubles specifically —
+      the population that a protocol widening puts at risk — including the two doubles that wrap an inner
+      adapter's upsert.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_postgres_sync_database_omn14015.py tests/test_omn15598_inmemory_upsert_parity.py tests/test_cli_projection_writer_tenant_rls_omn15306.py tests/test_writer_tenant_isolation_omn14898.py tests/test_omn16804_registry_resolved_write_tenant.py tests/test_projection_handlers.py tests/test_omn15905_delegation_projection_writer_seam.py tests/test_omn18140_delegation_writer_attestation.py src/omnimarket/nodes/node_projection_session_replay/tests/test_omn17888_indexed_reads.py src/omnimarket/nodes/node_projection_live_events/tests/test_projection_live_events.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
