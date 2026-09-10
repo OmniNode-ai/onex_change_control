@@ -153,3 +153,79 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           gh pr view 8853 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "dod-omn16290-diff-derived-behavior-proof"
+    description: >
+      AC1-AC3 behaviour proof, and the supersession of the hosted admissibility validator that stood in
+      for one. The superseded item ran `uv run pytest tests/test_evidence_admissibility.py -q`, a generic
+      OCC-side suite that executes no code this ticket changed and goes red only if that foreign suite
+      breaks — it carries no verdict about the product. This item replaces it with the test the ticket's
+      own diff adds: tests/test_omn16290_order_by_request_time.py, run from the omnimarket clone. That
+      suite drives the real FastAPI route against a real SnapshotCache seeded out of order, with no mock
+      standing in for the cache, and asserts the ACTUAL returned row sequence changes under a non-default
+      order_by — [2, 1, 0] under the contract default `created_at DESC`, [0, 1, 2] under `order_by=rank
+      ASC`, [2, 1, 0] under `order_by=rank DESC` — together with the reported ordering string and two
+      HTTP 422 `invalid_order_by` rejections. Its exit status therefore depends on the wiring AC1 asks
+      for, the request-time regression coverage AC2 asks for, and the reject-don't-ignore contract AC3
+      reads back on the deployed lane. Measured 2026-09-10 at OMN-16290's merged squash sha d400590464949d97842446df4a510c508ca4f1d4:
+      6 passed. The PR that added it recorded the same suite RED against pre-fix source (10 failing).
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:dod-occ-evidence-admissibility-validator"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_omn16290_order_by_request_time.py -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-omn16290-ac1-shared-grammar-single-source"
+    description: >
+      AC1, second leg, and the supersession of an earlier PR-state surrogate. The superseded item ran
+      `gh pr view 6779 --repo OmniNode-ai/onex_change_control --json number,state`, which exits 0 for
+      every pull request on GitHub and stays green with the product change entirely reverted — it proves
+      the PR is visible to the token and nothing else. This item replaces it with a content read that
+      can only pass if the change is present: AC1 asks that the value be VALIDATED, not merely accepted,
+      and the change achieves that by extracting the contract-time order_by grammar into one shared context-free
+      core, `discovery.parse_order_by_clauses`, called by both the startup parser (which wraps a failure
+      as a hard startup error) and the request path (which maps it to HTTP 422). One grammar, two failure
+      contracts, so a request-time value is held to exactly the rules a contract-declared one is. The
+      check counts the shared parser plus the request-time call sites at the merged sha; the paired control
+      at the pre-change parent 9455655fd59c50ee7db906f64a0590c41695ec92 returns 0, so the pattern discriminates.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-6779"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/discovery.py?ref=d400590464949d97842446df4a510c508ca4f1d4' --jq '.content' | base64 -d | grep -cE 'def parse_order_by_clauses|return parse_order_by_clauses'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/discovery.py?ref=9455655fd59c50ee7db906f64a0590c41695ec92' --jq '.content' | base64 -d | grep -cE 'def parse_order_by_clauses|return parse_order_by_clauses')" = "0"
+  - id: "dod-omn16290-ac3-served-rejection-path"
+    description: >
+      AC3, second leg, and the supersession of this ticket's own earlier self-bind. That self-bind ran
+      `gh pr view 8853 ... --json number,state,headRefName`, the same PR-state surrogate shape as the
+      item above: it was minted as provenance for the evidence PR and carries no product verdict, so it
+      is retired here rather than left to dilute the corpus that is supposed to prove the ticket. This
+      item replaces it with the half of the deployed readback that IS re-executable. The live half is
+      recorded on dod-omn16290-ac3-deployed-lane-order-by-readback and is not repeatable from a CI runner
+      because it targets a LAN host; what a runner can still establish is that the served code rejects
+      rather than ignores. The check counts the request-time rejection path at the merged sha — the caller-input
+      exception class, the 422 response, and the `invalid_order_by` payload the deployed lane actually
+      returned for both a bad column and a bad clause. The paired control at the pre-change parent 9455655fd59c50ee7db906f64a0590c41695ec92
+      returns 0, matching what the two un-upgraded lanes still do live: HTTP 200 with the ordering unchanged.
+    source: "manual"
+    status: "verified"
+    evidence_artifact: "supersedes_dod_evidence:occ-self-bind-pr-8853"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/api_server.py?ref=d400590464949d97842446df4a510c508ca4f1d4' --jq '.content' | base64 -d | grep -cE 'class InvalidOrderByError|status_code=422|"invalid_order_by"'
+      - check_type: "command"
+        check_value: |-
+          test "$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/api_server.py?ref=9455655fd59c50ee7db906f64a0590c41695ec92' --jq '.content' | base64 -d | grep -cE 'class InvalidOrderByError|"invalid_order_by"')" = "0"
