@@ -202,3 +202,86 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           gh pr view 8829 --repo OmniNode-ai/onex_change_control --json number,state,headRefName
+  - id: "ac1-cause-named-with-evidence"
+    description: >-
+      AC1 binding. Checks the criterion's own sentence against the durable record rather than a lane's
+      summary of it: the ledger PROGRESS row at docs/tracking/ROLLING_WORK_LEDGER.md:5179 names BOTH OMN-18068
+      correlation ids (d856d7ff-2044-4e3b-af1a-6d14ae892743 at partition-0 offset 4508, e2a163a2-507c-4cce-ae91-b6c26b245440
+      at offset 4510), names the cause (store resolution of the ONEXBOT_OCC key pair fails, the env fallback
+      is a malformed PEM, pyjwt RS256 raises InvalidKeyError, 37 of 37 dispatches since the 2026-09-09T01:55:02Z
+      container start failed identically), and explains the OMN-18062 asymmetry that is the second half
+      of the criterion — its single mint OCC#8751 came from call-occ-companion-author.yml, a second producer
+      only omnimarket has, so the other three PRs got nothing. Named as its own entry rather than added
+      to a merged item because every preceding entry on this contract is merged and the Append-Only Gate
+      holds them immutable.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          awk '/d856d7ff-2044-4e3b-af1a-6d14ae892743/ && /e2a163a2-507c-4cce-ae91-b6c26b245440/ && /OCC#8751/ && /InvalidKeyError/ {n++} END {exit !(n>0)}' "${OMNI_HOME}/docs/tracking/ROLLING_WORK_LEDGER.md"
+  - id: "ac4-companions-first-and-terminal-ledger-row"
+    description: >-
+      AC4 binding, both halves. First check: every OCC companion on this ticket merged STRICTLY BEFORE
+      the product PR it carries evidence for, across all five pairs — OCC#8764 before omnimarket#2423,
+      OCC#8772 before omnibase_infra#3353, OCC#8799 before omnimarket#2429, OCC#8802 before omniclaude#2129,
+      OCC#8829 before omnibase_core#1672. Read live from merge timestamps, so it cannot be satisfied by
+      a lane asserting the ordering. Second check: a TERMINAL ledger row exists for an OMN-18069 lane
+      (docs/tracking/ROLLING_WORK_LEDGER.md:5242 and :5249, lane=omn18069-autobind-drop).
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "
+          import json, subprocess
+          pairs = [('8764','omnimarket','2423'),('8772','omnibase_infra','3353'),('8799','omnimarket','2429'),('8802','omniclaude','2129'),('8829','omnibase_core','1672')]
+          def merged(repo, num):
+              out = subprocess.check_output(['gh','pr','view',num,'--repo','OmniNode-ai/'+repo,'--json','mergedAt'])
+              return json.loads(out)['mergedAt']
+          for occ, repo, pr in pairs:
+              c = merged('onex_change_control', occ)
+              p = merged(repo, pr)
+              assert c and p and c < p, ('companion not merged first', occ, repo, pr, c, p)
+          print('companions-first holds for all five pairs')
+          "
+      - check_type: "command"
+        check_value: |-
+          grep -qE '\| TERMINAL \| lane=omn18069' "${OMNI_HOME}/docs/tracking/ROLLING_WORK_LEDGER.md"
+  - id: "omn-18069-scope-item-4-fanout-landed-in-five-repos"
+    description: >-
+      Evidence, deliberately NOT bound to an acceptance criterion. Records that the consumer half of scope
+      item 2 landed in all five repos that vendor scripts/ci/check_occ_companion_merged.py: the gate now
+      short-circuits to a terminal FAIL naming the producer's reason instead of spending its 1500-second
+      deadline, and returns None (fails open, unchanged PENDING path) when the outcome check is absent
+      or unreadable so another repo's outage cannot fail a PR here. Verified at each merged squash sha
+      with a negative control at its first parent (2 occurrences of the check-name constant after, 0 before)
+      — omnibase_infra 6f33161d6892984c5e3ab83741677761ad37a4b7, omniclaude 1b7adef426b61b308ac8abccb2b7065846f19a50,
+      omnimarket e8a538419fd64d91ec30213466b4ee2645cfeb59, omninode_infra 997643b4607edfde56177fb8d2b3c633dc9ea346,
+      omnibase_core e7241554fde580c88713f3cc7bdc9d33174688e2. This entry carries no binds_ac because AC2
+      asserts an END-TO-END behaviour that is still unproven: the producer half (omnimarket#2423, merged
+      2026-09-09T10:03:37Z) has never emitted a single 'occ-autobind / outcome' check-run. Probed live
+      on the four fan-out PR heads with pagination and a working positive control (other occ-autobind-named
+      checks were found on the same heads): zero outcome check-runs. The producer runs on the dev-lane
+      effects runtime, which is the surface OMN-18073 and OMN-18072 still have down.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 -c "
+          import base64, json, subprocess
+          repos = [('omnibase_infra','6f33161d6892984c5e3ab83741677761ad37a4b7'),('omniclaude','1b7adef426b61b308ac8abccb2b7065846f19a50'),('omnimarket','e8a538419fd64d91ec30213466b4ee2645cfeb59'),('omninode_infra','997643b4607edfde56177fb8d2b3c633dc9ea346'),('omnibase_core','e7241554fde580c88713f3cc7bdc9d33174688e2')]
+          path = 'scripts/ci/check_occ_companion_merged.py'
+          def body(repo, ref):
+              out = subprocess.check_output(['gh','api','repos/OmniNode-ai/'+repo+'/contents/'+path+'?ref='+ref,'--jq','.content'])
+              return base64.b64decode(out).decode('utf-8', 'replace')
+          for repo, sha in repos:
+              after = body(repo, sha).count('AUTOBIND_OUTCOME_CHECK_NAME')
+              parent = json.loads(subprocess.check_output(['gh','api','repos/OmniNode-ai/'+repo+'/commits/'+sha,'--jq','{p: .parents[0].sha}']))['p']
+              before = body(repo, parent).count('AUTOBIND_OUTCOME_CHECK_NAME')
+              assert after == 2 and before == 0, (repo, sha, after, parent, before)
+          print('fan-out present in five repos, absent at every parent')
+          "
