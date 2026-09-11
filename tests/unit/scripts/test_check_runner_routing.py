@@ -254,9 +254,31 @@ def test_sequence_runs_on_is_rejected() -> None:
     ]
 
 
-def test_absent_or_unparseable_runs_on_is_not_a_violation() -> None:
-    assert _labels_for(None) == []
-    assert _labels_for({"unexpected": "mapping"}) == []
+def test_unreadable_runs_on_fails_loudly_rather_than_silently_passing() -> None:
+    """A shape the gate cannot read is rejected, not skipped.
+
+    The grep this replaced passed for weeks while matching the wrong thing. A
+    gate that quietly stops gating is the failure mode worth designing against,
+    so an unreadable runs-on is a violation rather than an empty result.
+    """
+    for unreadable in (None, {"unexpected": "mapping"}, 42):
+        violations = _labels_for(unreadable)
+        assert len(violations) == 1, f"{unreadable!r} was silently skipped"
+        assert "cannot read" in violations[0]
+
+
+def test_reusable_workflow_caller_needs_no_runs_on(tmp_path: Path) -> None:
+    """A `uses:` job delegates placement to the callee and declares none."""
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "wf.yml").write_text(
+        "jobs:\n"
+        "  call:\n"
+        "    uses: ./.github/workflows/reusable.yml\n"
+        "    secrets: inherit\n",
+        encoding="utf-8",
+    )
+    assert validate_workflows(tmp_path, labels=LABELS) == []
 
 
 def test_empty_label_set_finds_nothing() -> None:

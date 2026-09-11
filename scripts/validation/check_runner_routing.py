@@ -144,7 +144,16 @@ def hardcoded_label_violations(
     elif isinstance(runs_on, list):
         text = " ".join(str(item) for item in runs_on)
     else:
-        return []
+        # A shape this function cannot read must be reported, never skipped.
+        # Returning [] here would make the gate quietly stop gating that job,
+        # which is how the grep it replaced passed for weeks while matching
+        # the wrong thing. `uses:` jobs legitimately carry no runs-on and are
+        # filtered out by the caller before reaching this point.
+        return [
+            f"{workflow_path}:{job_name} has a runs-on this gate cannot read "
+            f"(type {type(runs_on).__name__}); it cannot be checked for a "
+            "hard-coded runner label, so it is rejected rather than skipped"
+        ]
 
     if PUBLIC_SELECTOR in text or TRUSTED_SELECTOR in text:
         # The label text inside a selector expression is that variable's
@@ -195,14 +204,18 @@ def _validate_job(
                 workflow_path=workflow_path, job_name=job_name, runs_on=runs_on
             )
         )
-    violations.extend(
-        hardcoded_label_violations(
-            workflow_path=workflow_path,
-            job_name=job_name,
-            runs_on=runs_on,
-            labels=labels,
+    # A job that delegates to a reusable workflow (`uses:`) declares no
+    # runs-on of its own; the callee owns placement. Every other job must
+    # declare one this gate can read.
+    if "uses" not in job:
+        violations.extend(
+            hardcoded_label_violations(
+                workflow_path=workflow_path,
+                job_name=job_name,
+                runs_on=runs_on,
+                labels=labels,
+            )
         )
-    )
     # OMN-16682: job-level env, plus every step's env, since a step env pins
     # the index just as effectively as a job env does.
     violations.extend(
