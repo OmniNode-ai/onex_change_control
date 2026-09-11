@@ -529,3 +529,56 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9064 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3431"
+    description: >
+      PR #3431 on OmniNode-ai/omnibase_infra — a read-only TABLE declaration is not a write grant. The
+      drift gate on the tenant_projection_writer grant set unioned the objects of EVERY TABLE grant block
+      in the topology, regardless of the privileges that block declares, and compared that union against
+      a regex matching only the write triple in one file, so a read-only declaration could never satisfy
+      it. Until PR #3425 no read-only declaration existed to expose the assumption. The four delegation
+      aggregates are SQL VIEWS declared access: read, which table_grant_derivation maps to READ_PRIVILEGES
+      -- SELECT alone -- and which the generator emits as its own SELECT-only block. NEITHER THE TOPOLOGY
+      NOR THE GRANT MIGRATION IS WRONG: the topology block is generated, and the writer already holds
+      SELECT on all four from node_projection_delegation/0039, the migration that creates the views, which
+      is where that grant must live because 0039 DROPs and CREATEs each view and a DROP discards its privileges.
+      So the assertion is scoped to the writable declarations and the read-only half is asserted rather
+      than dropped: SELECT-declared objects must be granted SELECT in the file that creates them, and
+      must NEVER be granted INSERT, UPDATE or DELETE anywhere -- 0040 made these views security_invoker
+      so a read evaluates row-level security against the caller, and a write privilege on a grouped aggregate
+      view is not coherent. FALSIFIED, NOT MERELY GREEN: three negative controls each fail the right test
+      (remove one writable grant; remove one view's SELECT; add a write grant on a view), and both assertions
+      carry a positive control on their own input set so neither can pass by comparing two empty sets.
+      No migration, topology file or grant changed, so the corpus a lane applies is byte-identical before
+      and after.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/tests/integration/migrations/test_102_tenant_projection_writer_role_omn15425.py?ref=f36a48beb088ff3b2b4e7805ffacaf2802147f25 --jq '.content' | base64 -d | grep -c 'def _declared_table_objects'
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3431-ci"
+    description: >
+      PR #3431 on OmniNode-ai/omnibase_infra — product diff scope check (OMN-14425). The diff is one test
+      file and nothing else, which is the claim this item exists to hold: a gate that was asking a read
+      declaration to satisfy a write assertion is fixed in the gate, not by widening a privilege or editing
+      a generated topology to match a stale expectation.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3431 --repo OmniNode-ai/omnibase_infra --json files"
+  - id: "occ-self-bind-pr-9077"
+    description: >
+      OCC companion PR #9077 — self-bind for OMN-18159 (OMN-14650). Binds this ticket to the companion
+      carrying the evidence for omnibase_infra#3431.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9077 --repo OmniNode-ai/onex_change_control --json number,state"
