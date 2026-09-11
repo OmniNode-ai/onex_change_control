@@ -450,3 +450,46 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9017 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3428"
+    description: >
+      PR #3428 on OmniNode-ai/omnibase_infra — migration 0040 realigns the four delegation aggregate views'
+      OWNER, which 0039 dropped. 0039 had to DROP and CREATE each view, because Postgres refuses a replace
+      that changes the column list and every one of them gained tenant_id, and a DROP discards the view's
+      owner as well as its privileges. 0039 restored the privileges and not the owner, and a view reads
+      its base tables with the privileges of the VIEW'S OWNER. The role that reaches 0039 is not the role
+      that created those views: migrations 0032, 0033 and 0034 each RESET ROLE, so everything after them
+      runs as the migration runner, which on a lane and in the source repo's fixtures is a SUPERUSER --
+      and a superuser is not subject to the base table's forced row-level security. So after 0039 a read
+      through any of the four returned EVERY tenant's rows whatever app.tenant_id held: the unscoped-serving
+      leak this ticket exists to remove, reintroduced by the change that removes it. MEASURED on a clean
+      postgres:16-alpine under SET ROLE <migrator>: through 0038 all four views are owned by <migrator>
+      with a NULL relacl; through 0039 all four are owned by postgres while delegation_events stays <migrator>'s;
+      through 0040 they are <migrator>'s again. It also denied the migrator's own reads, which is how
+      it surfaced -- three tests failing with 'permission denied for view projection_delegation_summary'.
+      ADDITIVE rather than an edit to 0039, because 0039 is applied on the .201 dev lane with a recorded
+      content_sha256 and is declared in the manifest, so the append-only gate freezes its bytes -- and
+      additive is also what reaches a lane that already applied it. The fence detector then refused 0040
+      on its first run because its RAISE EXCEPTION text spelled the forced-row-level-security phrase inside
+      a STRING LITERAL, which survives the runner's comment strip: a gate parsing prose that merely mentions
+      its trigger, fixed by naming the property rather than the literal, and proven by running the Sanitized
+      Legacy RDS Fixture Proof locally -- FAIL before, PASS after -- because CI prints only the first
+      240 lines of that log and the refusal sits past them.
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3428 --repo OmniNode-ai/omnibase_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3428/files --paginate --jq '.[].filename' | grep -cFx 'docker/migrations/forward/_ledger/application-migrations.tsv'
+  - id: "occ-self-bind-pr-9050"
+    description: "Binds OMN-18159 to OCC companion PR #9050 (self-bind)."
+    source: "generated"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9050 --repo OmniNode-ai/onex_change_control --json number,state"
