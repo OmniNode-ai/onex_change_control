@@ -274,8 +274,30 @@ dod_evidence:
   - id: "dod-OmniNode-ai-omniintelligence-pr-894"
     description: "PR #894 on OmniNode-ai/omniintelligence — Evidence-Source autobind."
   - id: "dod-OmniNode-ai-omnibase_infra-pr-3422"
-    description: "PR #3422 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    description: >
+      PR #3422 on OmniNode-ai/omnibase_infra — AC5, the FOURTH and last implementation. The runtime kernel's
+      own ProjectionDatabaseOperations, which it injects into every in-process projection handler, gains
+      upsert_returning with SQL-expression columns, insert-only columns and RETURNING, driven by the shared
+      omnibase_core plan (core pinned 0.47.8 -> 0.47.9 at BOTH declaration sites). Until this landed,
+      a handler running under the kernel could not stamp the write attestation at all, and omnimarket's
+      delegation handler refused this adapter BY NAME rather than persisting a row whose writer_identity
+      would be NULL on every update arm. A BUG WAS CAUGHT BY THE FIRST IMPLEMENTATION AND IS NOW PINNED
+      BY ITS OWN TEST: each domain subclass guards writes (the internal one rejects a canonical tenant_id,
+      the tenant one resolves attribution and scope, the catalog one enforces declared access) and every
+      guard hung off upsert, so an upsert_returning added beside it inherited the BASE implementation
+      and silently skipped all of them. Both entry points now route through one _prepare_write hook each
+      subclass overrides, so a rule added later reaches both by construction. A caller-supplied tenant
+      override is refused rather than honoured, because accepting one would reintroduce the attribution-from-the-caller
+      path those guards close. The rendered SQL is deliberately NOT taken from the shared plan -- this
+      adapter quotes every identifier and schema-qualifies the table and no other consumer does -- and
+      a byte-exact test pins the non-regression rather than asserting it. 13 new tests green, 688 green
+      across tests/unit/runtime/auto_wiring, mypy clean across 3004 source files, and the ONEX pattern
+      gate satisfied by moving a stateless helper to module level and deleting a redundant wrapper rather
+      than by relaxing the gate. Rule 24(d): no runtime effect on any lane yet, since nothing under the
+      kernel calls this until the delegation routing flips in a later phase; no lab proof claimed.
     source: "generated"
+    binds_ac:
+      - "AC5"
     checks:
       - check_type: "command"
         check_value: |-
@@ -299,6 +321,8 @@ dod_evidence:
   - id: "occ-self-bind-pr-9023"
     description: "Binds OMN-18159 to OCC companion PR #9023 (self-bind)."
     source: "generated"
+    binds_ac:
+      - "AC5"
     checks:
       - check_type: "command"
         check_value: "gh pr view 9023 --repo OmniNode-ai/onex_change_control --json number,state"
