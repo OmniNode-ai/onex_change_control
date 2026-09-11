@@ -1,0 +1,99 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18157"
+title: "Bind Contract Compliance evidence data to Evidence-Source"
+summary: >-
+  Companion for the composed OmniNode-ai/omnibase_core repair PR at product head b11d3e37e792a280432e53eff7da4e5fecead5d4,
+  based on parent head 16eb93428d8422e3f01cfea9daad9624906f3d3b. The checker code remains at its audited
+  immutable pin while the evidence data checkout is resolved from the exact Evidence-Source SHA. Missing
+  or malformed evidence fails before the pinned runner can report a vacuous success.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused product tests cover unresolved identities, malformed or missing Evidence-Source, closed-unmerged
+      OCC references, missing evidence data, and valid runner/workspace wiring.
+    command: >-
+      uv run pytest tests/unit/scripts/ci/test_contract_compliance_evidence_binding.py tests/unit/scripts/ci/test_ci_summary_gate.py::TestContractComplianceFailClosed
+      -q
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omnibase-core-pr-b11d3e37-source"
+    description: >-
+      The exact composed product head contains the two-checkout Contract Compliance workflow: immutable
+      checker code plus Evidence-Source-bound data, with the product workspace passed to the runner.
+    source: "manual"
+    status: "pending"
+    execution_scope: "hosted_and_local"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -euo pipefail <<'PROOF'
+          expected_sha="b11d3e37e792a280432e53eff7da4e5fecead5d4"
+          actual_sha="$(gh api "repos/OmniNode-ai/omnibase_core/commits/$expected_sha" --jq .sha)"
+          test "$actual_sha" = "$expected_sha"
+          workflow_file="$(mktemp "${TMPDIR:-/tmp}/omn-18157-ci.XXXXXX")"
+          cleanup() {
+            rm -f "$workflow_file"
+          }
+          trap cleanup EXIT
+          gh api "repos/OmniNode-ai/omnibase_core/contents/.github/workflows/ci.yml?ref=$actual_sha" --jq .content | base64 -d > "$workflow_file"
+          grep -Fq 'path: onex_change_control_evidence' "$workflow_file"
+          grep -Fq 'resolve_contract_compliance_evidence.py' "$workflow_file"
+          grep -Fq 'run_contract_compliance_with_evidence.py' "$workflow_file"
+          grep -Fq 'evidence-contracts-dir "$GITHUB_WORKSPACE/onex_change_control_evidence/contracts"' "$workflow_file"
+          printf 'PASS: immutable product workflow resolves Evidence-Source data and passes it to the pinned checker\n'
+          PROOF
+  - id: "dod-omnibase-core-pr-b11d3e37-behavior"
+    description: >-
+      Focused executable tests prove fail-closed resolution and preflight, including absent or malformed
+      evidence and valid data/workspace runner invocation, on the exact composed product head.
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        cwd: "${OMNI_HOME}/omnibase_core"
+        check_value: |-
+          bash -euo pipefail <<'PROOF'
+          expected_sha="b11d3e37e792a280432e53eff7da4e5fecead5d4"
+          actual_sha="$(gh api "repos/OmniNode-ai/omnibase_core/commits/$expected_sha" --jq .sha)"
+          test "$actual_sha" = "$expected_sha"
+          target_root="$(mktemp -d "${TMPDIR:-/tmp}/omn-18157-product.XXXXXX")"
+          target="$target_root/product"
+          cleanup() {
+            if test -e "$target/.git"; then
+              git worktree remove --force "$target"
+            fi
+            rmdir "$target_root"
+          }
+          trap cleanup EXIT HUP INT TERM
+          git worktree add --detach "$target" "$actual_sha"
+          (
+            cd "$target"
+            test "$(git rev-parse HEAD)" = "$actual_sha"
+            env -u PYTHONPATH -u VIRTUAL_ENV UV_CACHE_DIR=/tmp/omn-18157-occ-uv-cache uv run --locked pytest tests/unit/scripts/ci/test_contract_compliance_evidence_binding.py tests/unit/scripts/ci/test_ci_summary_gate.py::TestContractComplianceFailClosed -q
+          )
+          PROOF
+  - id: "occ-self-bind-pr-9012"
+    description: >-
+      Binds OMN-18157 to OCC companion PR #9012. This local_done_gate probe verifies the open companion
+      identity and branch; it does not claim hosted Contract Compliance acceptance.
+    source: "generated"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -euo pipefail <<'PROOF'
+          pr_json="$(gh pr view 9012 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,baseRefName)"
+          test "$(printf '%s' "$pr_json" | jq -r .number)" = "9012"
+          test "$(printf '%s' "$pr_json" | jq -r .state)" = "OPEN"
+          test "$(printf '%s' "$pr_json" | jq -r .headRefName)" = "jonah/omn-18157-occ-companion"
+          test "$(printf '%s' "$pr_json" | jq -r .baseRefName)" = "dev"
+          printf 'PASS: OCC#9012 is open on the expected companion branch against dev\n'
+          PROOF
