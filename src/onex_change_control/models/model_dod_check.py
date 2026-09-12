@@ -22,7 +22,11 @@ from omnibase_core.models.ticket.model_emergency_bypass import (
 from omnibase_core.models.ticket.model_evidence_requirement import (
     ModelEvidenceRequirement as ModelEvidenceRequirement,  # re-export
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from onex_change_control.models.model_ac_binding import (
+    ModelAcBinding,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
+)
 
 # Security constraints to prevent DoS attacks
 _MAX_STRING_LENGTH = 10000
@@ -168,6 +172,34 @@ class ModelDodEvidenceItem(BaseModel):
             "none, which is a coverage gap rather than a pass."
         ),
     )
+    # OMN-18236. THE ACCEPTANCE RECORD AND THE CRITERION REVISION.
+    #
+    # `binds_ac` above is the author's CLAIM and carries neither of the two
+    # facts that make a claim into a binding: that somebody agreed to it, and
+    # which revision of the criterion they agreed to. Without the first, a
+    # machine-proposed mapping and a reviewed one are indistinguishable, so a
+    # proposer could manufacture unreviewed bindings at corpus scale. Without
+    # the second, a criterion can be rewritten under a check that is still
+    # passing and the binding goes on reading as proof of a sentence that no
+    # longer exists.
+    #
+    # An entry here is pinned to a criterion hash always, and accepted only
+    # when it names an actor and a time. A binding with no `accepted_by` is a
+    # DRAFT proposal, which is not evidence; a binding whose hash no longer
+    # matches the ticket is STALE and reverts to unproven until re-accepted.
+    #
+    # Every label here must also appear in `binds_ac`, so the consumers that
+    # already read that list keep reading ONE declaration rather than two that
+    # can disagree.
+    ac_bindings: tuple[ModelAcBinding, ...] = Field(
+        default=(),
+        max_length=_MAX_LIST_ITEMS,
+        description=(
+            "Per-criterion binding records: the criterion hash each `binds_ac` "
+            "label was pinned to, and who accepted it. An entry with no "
+            "`accepted_by` is a draft proposal, not evidence."
+        ),
+    )
     linear_dod_text: str | None = Field(
         default=None,
         description="Original DoD text from Linear, if sourced from Linear",
@@ -223,6 +255,65 @@ class ModelDodEvidenceItem(BaseModel):
             )
             raise ValueError(msg)
         return value
+
+    @field_validator("ac_bindings")
+    @classmethod
+    def _binding_labels_are_unique(
+        cls, value: tuple[ModelAcBinding, ...]
+    ) -> tuple[ModelAcBinding, ...]:
+        """One record per criterion. Two records for one label is ambiguous.
+
+        A second record for the same label lets an accepted binding and a
+        stale or draft one sit side by side, and any consumer that stops at
+        the first match reports whichever happens to be written first. There
+        is no reading of "this criterion is both accepted and not" that is
+        safe to pick a side of.
+        """
+        seen: set[str] = set()
+        duplicated: list[str] = []
+        for binding in value:
+            canonical = binding.label.upper().replace("-", "").replace("_", "")
+            canonical = canonical.replace(" ", "").replace(".", "")
+            if canonical in seen:
+                duplicated.append(binding.label)
+            seen.add(canonical)
+        if duplicated:
+            rendered = ", ".join(repr(label) for label in duplicated)
+            msg = f"ac_bindings declares more than one record for: {rendered}"
+            raise ValueError(msg)
+        return value
+
+    @model_validator(mode="after")
+    def _every_binding_is_also_claimed(self) -> ModelDodEvidenceItem:
+        """A binding record for a criterion the item does not claim is a lie.
+
+        `binds_ac` is what every existing consumer reads. A record here whose
+        label is absent from that list would carry an acceptance for a
+        criterion the item never claimed, which is not a stricter statement
+        than `binds_ac` makes -- it is a different one, invisible to everything
+        already reading the claim.
+        """
+
+        def _canonical(label: str) -> str:
+            folded = label.upper()
+            for junk in ("-", "_", " ", "."):
+                folded = folded.replace(junk, "")
+            return folded
+
+        claimed = {_canonical(entry) for entry in self.binds_ac}
+        unclaimed = [
+            binding.label
+            for binding in self.ac_bindings
+            if _canonical(binding.label) not in claimed
+        ]
+        if unclaimed:
+            rendered = ", ".join(repr(label) for label in unclaimed)
+            msg = (
+                "every ac_bindings label must also appear in binds_ac; these "
+                f"are bound but not claimed: {rendered}"
+            )
+            raise ValueError(msg)
+        return self
 
 
 __all__ = [

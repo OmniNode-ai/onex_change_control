@@ -197,20 +197,33 @@ def format_validation_error(error: ValidationError) -> str:
 # still reaches core's model and is still refused.
 CORE_KNOWS_BINDS_AC = "binds_ac" in ModelContractDodItem.model_fields
 
+# OMN-18236. The per-criterion binding record -- the criterion hash a claim was
+# pinned to, and who accepted it. It is OCC-LOCAL and core is not expected to
+# carry it, so unlike `binds_ac` above this is not a waiting game: the
+# withholding below is the steady state, not a transition. The membership test
+# is written the same way anyway so that IF core ever adopts the field, this
+# helper stops hiding it on the same day rather than needing a second edit.
+CORE_KNOWS_AC_BINDINGS = "ac_bindings" in ModelContractDodItem.model_fields
+
 _BINDS_AC_FIELD = "binds_ac"
+_AC_BINDINGS_FIELD = "ac_bindings"
+#: The OCC-local item fields core's model would refuse as unknown.
+_OCC_LOCAL_ITEM_FIELDS = (_BINDS_AC_FIELD, _AC_BINDINGS_FIELD)
 
 
 def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
     """Validate declared ``binds_ac`` locally, then hide it from an older core.
 
-    The label validation is unconditional: core carries the field as of 0.47.6
-    but not the label rule, so this remains the only gate that refuses a
-    malformed binding. Only the WITHHOLDING is conditioned on
-    ``CORE_KNOWS_BINDS_AC``; when core knows the field the input is returned
-    unchanged and core validates the rest of the item itself.
+    The local validation is unconditional: core carries ``binds_ac`` as of
+    0.47.6 but not the label rule, and does not carry the OMN-18236
+    ``ac_bindings`` record at all, so this remains the only gate that refuses a
+    malformed binding, a record for an unclaimed criterion, a duplicate record
+    or a half-written acceptance. Only the WITHHOLDING is conditioned on what
+    core knows, per field: a field core already carries is left in place so core
+    validates it too, and a field core does not know is hidden from it.
 
     A no-op when the contract declares no ``dod_evidence`` or when no item
-    declares a binding.
+    declares a binding or a binding record.
 
     Raises:
         ValidationError: when a declaring item does not satisfy the OCC-local
@@ -222,19 +235,38 @@ def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
     items = data.get("dod_evidence")
     if not isinstance(items, list):
         return data
-    if not any(isinstance(item, dict) and _BINDS_AC_FIELD in item for item in items):
+    if not any(
+        isinstance(item, dict)
+        and any(field in item for field in _OCC_LOCAL_ITEM_FIELDS)
+        for item in items
+    ):
         return data
+
+    # Which fields core would refuse. A field core already carries is left in
+    # place so core validates it too; only the ones it does not know are hidden.
+    hidden = tuple(
+        field
+        for field, core_knows in (
+            (_BINDS_AC_FIELD, CORE_KNOWS_BINDS_AC),
+            (_AC_BINDINGS_FIELD, CORE_KNOWS_AC_BINDINGS),
+        )
+        if not core_knows
+    )
 
     withheld: list[object] = []
     for item in items:
-        if not isinstance(item, dict) or _BINDS_AC_FIELD not in item:
+        if not isinstance(item, dict) or not any(
+            field in item for field in _OCC_LOCAL_ITEM_FIELDS
+        ):
             withheld.append(item)
             continue
-        # Raises ValidationError on a malformed label; the caller renders it
-        # through the same formatter as every other validation failure.
+        # Raises ValidationError on a malformed label, a binding record for an
+        # unclaimed criterion, a duplicate record, or a half-written acceptance;
+        # the caller renders it through the same formatter as every other
+        # validation failure.
         ModelDodEvidenceItem.model_validate(item)
-        withheld.append({k: v for k, v in item.items() if k != _BINDS_AC_FIELD})
-    if CORE_KNOWS_BINDS_AC:
+        withheld.append({k: v for k, v in item.items() if k not in hidden})
+    if not hidden:
         return data
     return {**data, "dod_evidence": withheld}
 
