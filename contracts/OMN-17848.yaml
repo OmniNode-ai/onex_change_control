@@ -65,3 +65,63 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 8993 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-fullscope-false-all-nine-clients"
+    description: >-
+      AC1 binding. Decision: fullScopeAllowed=false on all 9 clients as a realm-wide rule. Reasoning:
+      public browser clients (omnidash-spa, onex-customer) must not emit every realm role into internet-reachable
+      tokens; confidential and admin clients follow the same rule for consistency and to prevent per-client
+      exceptions accumulating over time. Admin/service-account clients (onex-admin, omniweb-signup-admin)
+      retain role reachability via clientScopeMappings entries added in PR #3407. Applied to all 9 clients
+      in docker/keycloak/desired-clients.json (PR #3407, merge 75c1448d).
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/keycloak/desired-clients.json?ref=75c1448d32ac5fb052fefae464f3900e139e44aa" --jq '.content' | base64 -d | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          clients = data if isinstance(data, list) else data.get('clients', [data])
+          missing = [c.get('clientId') for c in clients if c.get('fullScopeAllowed') is not False]
+          assert not missing, f'FAIL: fullScopeAllowed not false on: {missing}'
+          print(f'AC1 pass: fullScopeAllowed=false on all {len(clients)} clients at merge commit 75c1448d')
+          "
+  - id: "ac2-fullscope-pinned-by-contract-test"
+    description: >-
+      AC2 binding. Contract test test_keycloak_desired_clients_contract.py added by PR #3407 (merge 75c1448d)
+      asserts fullScopeAllowed is explicitly false on every client. The test rejects the absent case (Keycloak
+      defaults absent to true server-side). 14 test functions present at merge commit.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/tests/test_keycloak_desired_clients_contract.py?ref=75c1448d32ac5fb052fefae464f3900e139e44aa" --jq '.content' | base64 -d | python3 -c "
+          import sys
+          src = sys.stdin.read()
+          assert 'test_all_clients_have_full_scope_allowed_explicitly_false' in src, 'FAIL: test not found'
+          assert 'fullScopeAllowed' in src, 'FAIL: fullScopeAllowed not asserted'
+          count = src.count('def test_')
+          print(f'AC2 pass: test_keycloak_desired_clients_contract.py contains test_all_clients_have_full_scope_allowed_explicitly_false and {count} test functions at merge commit 75c1448d')
+          "
+  - id: "ac3-seeder-sends-fullscope-field"
+    description: >-
+      AC3 binding. Confirmed seeder scripts/seed-keycloak-clients.py sends fullScopeAllowed explicitly
+      on both the update path (BASE_FIELDS) and create path (_build_create_payload). A realm that drifted
+      to true will converge on next reconcile. k8s/onex-dev/jobs/ desired-clients.json mirrored to match
+      in PR #1312 (merge b88ae5c1). fullScopeAllowed referenced 5 times in seeder at merge commit 75c1448d.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/scripts/seed-keycloak-clients.py?ref=75c1448d32ac5fb052fefae464f3900e139e44aa" --jq '.content' | base64 -d | python3 -c "
+          import sys
+          src = sys.stdin.read()
+          assert 'fullScopeAllowed' in src, 'FAIL: fullScopeAllowed not found in seed-keycloak-clients.py'
+          count = src.count('fullScopeAllowed')
+          print(f'AC3 pass: fullScopeAllowed referenced {count} times in seeder at merge commit 75c1448d')
+          "
