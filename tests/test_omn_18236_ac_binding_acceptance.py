@@ -32,11 +32,13 @@ from pydantic import ValidationError
 from onex_change_control.models.model_ac_binding import ModelAcBinding
 from onex_change_control.models.model_dod_check import ModelDodEvidenceItem
 from onex_change_control.validation.ac_binding_acceptance import (
+    AcBindingFinding,
     check_contract_ac_bindings,
     check_local_ac_bindings,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 from onex_change_control.validation.ac_criteria import (
@@ -93,7 +95,7 @@ def _contract(
     }
 
 
-def _rules(findings: list[object]) -> list[str]:
+def _rules(findings: Sequence[AcBindingFinding]) -> list[str]:
     return [f.rule for f in findings]
 
 
