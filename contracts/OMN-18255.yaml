@@ -1,0 +1,95 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18255"
+title: "Autobind OCC evidence for OMN-18255"
+summary: >
+  OCC contract authored by node_occ_companion_compute (OMN-14285) for OmniNode-ai/omninode_infra PR #1400.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1400 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #1400 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the test target(s) it adds or changes. Bound as dod_evidence item `dod-occ-diff-derived-behavior-proof`, executed at cwd `${OMNI_HOME}/omninode_infra`.
+    command: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1400"
+    description: "PR #1400 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1400 --repo OmniNode-ai/omninode_infra --json number,state"
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1400/files --paginate --jq '.[].filename' | grep -cFx 'k8s/onex-lab/verify_lab_persistence.py'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1400 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    evidence_artifact: "supersedes_dod_evidence:dod-OmniNode-ai-omninode_infra-pr-1400"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "occ-self-bind-pr-9277"
+    description: "Binds OMN-18255 to OCC companion PR #9277 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9277 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  - id: "ac1-authenticated-row-read-survives"
+    description: >-
+      AC1. Lab Postgres survives a full re-apply AND a pod replacement, and the proof is an authenticated
+      application read through the runtime path returning the expected rows afterwards, not a row count
+      from a privileged session. Verified live on the .201 k3s lab through the sanctioned apply_lab_lane.sh
+      path: baseline recorded 2026-09-12T19:53:35Z, full re-apply, pod onex-lab-postgres-668ffbbbbb-nw22z
+      deleted and replaced by -trjnb, verification 19:56:52Z with 0 failures. GET /v1/tenants/me/plan,
+      called over HTTP inside the API pod with the lane's own API key, returned the IDENTICAL tenant row
+      on both sides -- tenant_id 6c48114b-cfa9-4125-a390-67a0047a8fcc, slug onex-lab-house, plan discovery,
+      status active -- which is a comparison of row content and not of a status code. NEGATIVE CONTROL
+      in the same run: a deliberately wrong key is refused with HTTP 401, so the read is a statement about
+      authentication rather than only about the database. The analytics database is covered separately
+      by its migration ledger read as role_omnidash, a NOSUPERUSER NOBYPASSRLS login, byte-identical across
+      the rebuild -- row identity, not a count, because a wiped database that re-migrated carries the
+      same count and different timestamps. Honest limit, carried rather than hidden: the delegation projection
+      page is empty on this lane and its half is reported UNPROVEN, because a tenant with no registered
+      provider key terminalizes every delegation before a projection row is written.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q -k 'reads_rows
+          or row_returning or negative_control or ephemeral_volume or retains_its_data'"
+        cwd: "${OMNI_HOME}/omninode_infra"
+
+  - id: "ac2-every-client-credential-per-string"
+    description: >-
+      AC2. After that re-apply, every rendered client credential authenticates against the surviving database,
+      asserted PER CONNECTION STRING rather than for one representative client. Verified live at 2026-09-12T19:56:52Z
+      by k8s/onex-lab/verify_lab_persistence.py: 13 of 13 declared connection strings opened a real connection,
+      each reported with the login and database it resolved as -- the seven runtime values as postgres,
+      the three migration-runner logins as themselves, the escalation value, the control-plane DSN as
+      role_omninode_cloud, and the server's own superuser. Per connection string matters because the failure
+      this prevents is total rather than partial: a single representative connection would pass while
+      the lane was fine and would also pass in every case worth catching. The number attempted is itself
+      checked against the number the contract declares, so a run that attempted none cannot report clean,
+      and the list is read out of ci-only-secrets.contract.yaml rather than restated, so a credential
+      added there is covered without editing the checker.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q -k 'enumerates_every_declared
+          or vacuous or command_line'"
+        cwd: "${OMNI_HOME}/omninode_infra"
