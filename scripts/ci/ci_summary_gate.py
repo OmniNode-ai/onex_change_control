@@ -139,6 +139,7 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # SKIPPABLE for any precondition.
     "merge-hold-gate / evaluate",
     "Contract Shape v1 (OMN-15669)",
+    "Acceptance-Criterion Binding Gate (OMN-18236)",
 )
 
 # ---------------------------------------------------------------------------
