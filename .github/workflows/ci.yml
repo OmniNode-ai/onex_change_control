@@ -2676,6 +2676,117 @@ jobs:
           uv run check-contract-shape-v1 "${ARGS[@]}" \
             --changed-files ${{ steps.diff.outputs.files }}
 
+  ac-binding-acceptance:
+    name: Acceptance-Criterion Binding Gate (OMN-18236)
+    # A `binds_ac` claim names an acceptance criterion. Until this job existed
+    # nothing asked whether the ticket HAS that criterion, and nothing noticed
+    # when the criterion's text was rewritten under a check that was still
+    # green. Both are the same missing fact: the claim points at a moving
+    # target with no record of which revision it was accepted against.
+    #
+    # UNCONDITIONAL BY DESIGN, for the same reason the shape-v1 gate above is:
+    # no `needs:`, no `if:`, no paths filter. Scope is decided INSIDE the gate
+    # from the changed files, because a workflow-level path filter is a claim
+    # CI cannot prove correct. A skip here means something is wrong, never that
+    # the gate legitimately opted out.
+    #
+    # Enforcement path: `CI Summary` polls this run's own job list and turns a
+    # failure here into a failure of that required context, so this job blocks
+    # a merge without being listed in required_status_checks itself.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: RED/GREEN units for the gate itself
+        run: |
+          uv run pytest tests/test_omn_18236_ac_binding_acceptance.py -q -p no:randomly
+      - name: Local pre-commit counterpart runs the SAME entrypoint (rule 5)
+        run: |
+          set -euo pipefail
+          uv run pre-commit run check-ac-binding-acceptance --all-files
+      - name: Compute changed contracts vs base
+        id: diff
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch origin "${{ github.base_ref }}" --no-tags
+            BASE="origin/${{ github.base_ref }}"
+          else
+            BASE="HEAD~1"
+          fi
+          git diff --name-only "$BASE"...HEAD \
+            | grep -E '^contracts/OMN-[0-9]+\.yaml$' > /tmp/ac_changed.txt || true
+          echo "changed contracts: $(wc -l < /tmp/ac_changed.txt)"
+      - name: Fetch ticket bodies from Linear (workflow layer, not src/)
+        # The gate makes NO network call: the imperative-contract guard blocks
+        # raw HTTP from src/ because it bypasses contract transport, so the
+        # workflow layer fetches and the gate reads. Same idiom as the
+        # contract-shape-v1 job above, and the same file shape.
+        #
+        # NOT a graceful degradation. An unset key or a failed query writes a
+        # map that does not contain the ticket, and the gate returns
+        # ac_binding_ticket_unreadable RED. Unreachable is RED.
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+        run: |
+          set -uo pipefail
+          echo '{}' > /tmp/ac_ticket_bodies.json
+          TICKETS=$(grep -oE 'OMN-[0-9]+' /tmp/ac_changed.txt | sort -u || true)
+          if [ -z "${LINEAR_API_KEY:-}" ]; then
+            echo "::warning::ticket bodies unavailable; the gate fails closed" \
+                 "for any contract that binds a criterion."
+            exit 0
+          fi
+          python3 - "$TICKETS" <<'PYEOF'
+          import json, os, sys, urllib.request
+          keys = [t for t in sys.argv[1].split() if t]
+          out = {}
+          for tid in keys:
+              payload = json.dumps({
+                  "query": "query($id:String!){issue(id:$id){identifier description}}",
+                  "variables": {"id": tid},
+              }).encode()
+              req = urllib.request.Request(
+                  "https://api.linear.app/graphql", data=payload,
+                  headers={"Authorization": os.environ["LINEAR_API_KEY"],
+                           "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      issue = (json.loads(r.read().decode()).get("data") or {}).get("issue")
+                  if isinstance(issue, dict) and isinstance(issue.get("description"), str):
+                      out[tid] = issue["description"]
+              except Exception as exc:  # noqa: BLE001 - fail closed, never raise
+                  print(f"::warning::Linear fetch failed for {tid}: {exc}")
+          with open("/tmp/ac_ticket_bodies.json", "w", encoding="utf-8") as fh:
+              json.dump(out, fh)
+          print(f"fetched {len(out)}/{len(keys)} ticket body/bodies")
+          PYEOF
+      - name: Gate — every binding names a real criterion, at its current revision
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/ac_changed.txt ]; then
+            echo "no ticket contracts changed; nothing in scope"
+            exit 0
+          fi
+          # shellcheck disable=SC2046
+          uv run check-ac-binding-acceptance \
+            --ticket-bodies /tmp/ac_ticket_bodies.json \
+            $(cat /tmp/ac_changed.txt)
+
   ci-summary:
     name: CI Summary
     runs-on: >-
