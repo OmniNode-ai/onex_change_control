@@ -157,3 +157,61 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9132 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-live-verification-inbox-readback"
+    description: >-
+      AC1 binding, hand-authored under the operator ruling recorded at 2026-09-10T22:14:58Z. This check
+      pins the merged activation carrier and its post-apply readback: receipt rule set omninode-verification-inbox
+      was active and the SES identity verify.omninode.ai reached Success. The AWS account has no public
+      unauthenticated SES API, so the merged carrier is the authoritative existing readback surface; the
+      public-DNS half is read live and must return the exact four delegated Route53 nameservers. Any missing
+      PR state, changed merge identity, absent readback statement, or changed DNS answer exits red. No
+      credential, verification token, mail object, or message content is read or printed.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          readback="$(gh pr view 1339 --repo OmniNode-ai/omninode_infra --json state,mergeCommit,body)" &&
+          test "$(printf '%s' "$readback" | jq -r '.state + "|" + .mergeCommit.oid')" = 'MERGED|45b8bbe073a3053911e639e751acee75d41cd147' &&
+          printf '%s' "$readback" | jq -er '.body | contains("the active rule set is `omninode-verification-inbox`") and contains("It moved `Pending` to `Success`")' >/dev/null &&
+          actual_ns="$(dig +short NS verify.omninode.ai | tr '[:upper:]' '[:lower:]' | sort)" &&
+          expected_ns="$(printf '%s\n' ns-143.awsdns-17.com. ns-1506.awsdns-60.org. ns-1554.awsdns-02.co.uk. ns-968.awsdns-57.net. | sort)" &&
+          test "$actual_ns" = "$expected_ns" &&
+          printf '%s\n' 'PASS: active inbox rule-set and SES identity readback are pinned; four delegated nameservers answer publicly'
+  - id: "ac2-received-mail-decoding-behavior"
+    description: >-
+      AC2 binding, hand-authored under the operator ruling recorded at 2026-09-10T22:14:58Z. Runs the
+      behavior suite added by omniweb PR #369 at its authoritative 40-character squash commit cf493a0d38a0b8bd477f65f7ecd56fcd07e8dcc5.
+      The ruling's supplied citation had one extra "e" and named no possible Git object; the PR and repository
+      both resolve the commit recorded here. The suite proves raw received-mail parsing across quoted-printable,
+      base64, folded multipart headers, recipient extraction, link selection, and malformed input, including
+      the load-bearing control where the same message yields no link without decoding.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "pnpm test:received-mail"
+        cwd: "${OMNI_HOME}/omniweb"
+  - id: "ac3-synthetic-tenant-zero-touch-signon-walk"
+    description: >-
+      AC3 binding, hand-authored under the operator ruling recorded at 2026-09-10T22:14:58Z. Reads successful
+      workflow_dispatch run 34655576392 and downloads only its named chain-record artifact. The check
+      pins the dev commit and asserts the record contents, not merely the run conclusion: the golden synthetic-tenant
+      walk has its control plus exact S1-S4 checks all passing, and the error walk has its control plus
+      exact E1/E2 refusals all passing. No API key value, verification-mail body, action token, or customer
+      secret is read or printed.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          run="$(gh run view 34655576392 --repo OmniNode-ai/omniweb --json status,conclusion,event,headBranch,headSha)" &&
+          test "$(printf '%s' "$run" | jq -r '[.status,.conclusion,.event,.headBranch,.headSha] | join("|")')" = 'completed|success|workflow_dispatch|dev|ecd3392406fd91b089ad821dcab9fb02ae893cae' &&
+          artifact_root="$(mktemp -d)" &&
+          gh run download 34655576392 --repo OmniNode-ai/omniweb --name m3-signon-walk-chain-records-34655576392 --dir "$artifact_root" &&
+          jq -e '.result == "PASS" and .control.ran == true and .control.ok == true and ([.checks[].name] == ["S1-stranger-registers","S2-address-verified","S3-first-dashboard","S4-first-key-visible"]) and all(.checks[]; .ok == true)' "$artifact_root/signon-walk-golden.json" >/dev/null &&
+          jq -e '.result == "PASS" and .control.ran == true and .control.ok == true and ([.checks[].name] == ["E1-unissued-verification-token-refused","E2-second-machine-without-session-refused"]) and all(.checks[]; .ok == true)' "$artifact_root/signon-walk-error.json" >/dev/null &&
+          printf '%s\n' 'PASS: synthetic-tenant golden S1-S4 and error chain are complete and passing'
