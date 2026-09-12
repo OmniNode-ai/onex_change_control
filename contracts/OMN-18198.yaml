@@ -47,3 +47,65 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9158 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-attributed-not-quarantined"
+    description: >-
+      AC1. The merged resolver at omnimarket#2480's squash `e35cd37b` names the discriminator explicitly
+      rather than leaving it to timing: it exports `async_registry_mirror_watermark` and threads `_await_mirror_catchup`
+      through the two write paths that stamp a tenant. The real-Postgres regression `test_a_tenant_mirrored_mid_wait_is_attributed_not_quarantined`
+      pins that a tenant materializing mid-wait is attributed rather than DLQ'd. Live proof that the fix
+      is reached in the runtime: staging chain run 34692449209 (dev head `d8c516da`) reports the C19 `ROW_ATTRIBUTION`
+      leg `ATTRIBUTED_OK` for 2 tenants bootstrapped moments earlier, 0 vanished/missing terminals.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          src="$(gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/projection/tenant_registry_resolution.py?ref=e35cd37b4b2a3d0ec8cde816c95b4a7b4a1b1eb2" -H 'Accept: application/vnd.github.raw')" && test "$(printf '%s' "$src" | grep -c 'async def async_registry_mirror_watermark')" = 1 && test "$(printf '%s' "$src" | grep -c 'async def _await_mirror_catchup')" = 1 && t1="$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn18198_mirror_catchup_real_postgres.py?ref=e35cd37b4b2a3d0ec8cde816c95b4a7b4a1b1eb2" -H 'Accept: application/vnd.github.raw')" && test "$(printf '%s' "$t1" | grep -c 'def test_a_tenant_mirrored_mid_wait_is_attributed_not_quarantined')" = 1 && rm -rf /tmp/occ-omn18198-ac1 && gh run download 34692449209 --repo OmniNode-ai/omninode_infra --name c19-tenant-attribution-staging-34692449209 -D /tmp/occ-omn18198-ac1 && test "$(jq -r '.receipt.legs[] | select(.kind=="ROW_ATTRIBUTION") | .reason' /tmp/occ-omn18198-ac1/c19-staging-receipt.json)" = "ATTRIBUTED_OK" && printf '%s\n' 'AC1 resolver-source=present positive-behavior-test=present staging-run-34692449209=ATTRIBUTED_OK'
+  - id: "ac2-resolver-boundary-test-with-positive-control"
+    description: >-
+      AC2. The merged real-Postgres suite (omnimarket#2480, squash `e35cd37b`) binds AC1 at the resolver
+      boundary and carries the required positive control: `test_a_settled_tenant_resolves_against_the_real_relation`
+      is docstring-labelled "Positive control. The ordinary path is untouched by the new wait." exercising
+      an already-mirrored tenant, alongside the race case `test_a_tenant_mirrored_mid_wait_is_attributed_not_quarantined`.
+      Both are members of the diff-derived behavior-proof item `dod-occ-diff-derived-behavior-proof`,
+      which already executed and passed (10 passed, 4 skipped) in this same contract.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          t1="$(gh api "repos/OmniNode-ai/omnimarket/contents/tests/test_omn18198_mirror_catchup_real_postgres.py?ref=e35cd37b4b2a3d0ec8cde816c95b4a7b4a1b1eb2" -H 'Accept: application/vnd.github.raw')" && test "$(printf '%s' "$t1" | grep -c 'def test_a_settled_tenant_resolves_against_the_real_relation')" = 1 && test "$(printf '%s' "$t1" | grep -c 'Positive control')" -ge 1 && test "$(printf '%s' "$t1" | grep -c 'def test_a_tenant_mirrored_mid_wait_is_attributed_not_quarantined')" = 1 && printf '%s\n' 'AC2 positive-control-test=present race-test=present'
+  - id: "ac3-delegation-events-nonempty-onex-dev"
+    description: >-
+      AC3. Staging chain run 34692449209 (omninode_infra, dev head `d8c516da`) read `delegation_events`
+      back through the sanctioned projection API route (`sql_route=api-pod`) for a delegation submitted
+      through the sanctioned ingress (`POST /v1/workflows`) and found 4 rows (2 per tenant, 0 unbound),
+      not zero — reversing the OMN-17298 emptiness this ticket's description cited as its second independent
+      fact.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          rm -rf /tmp/occ-omn18198-ac3 && gh run download 34692449209 --repo OmniNode-ai/omninode_infra --name c19-tenant-attribution-staging-34692449209 -D /tmp/occ-omn18198-ac3 && route="$(jq -r '.receipt.sql_route' /tmp/occ-omn18198-ac3/c19-staging-receipt.json)" && test "$route" = "api-pod" && rows="$(jq '[.receipt.legs[] | select(.kind=="ROW_ATTRIBUTION") | .evidence.rows_by_tenant_scope | to_entries[] | .value] | add' /tmp/occ-omn18198-ac3/c19-staging-receipt.json)" && test "$rows" -gt 0 && printf 'AC3 sql_route=%s delegation_events_rows=%s\n' "$route" "$rows"
+  - id: "ac4-row-attribution-attributed-ok-staging"
+    description: >-
+      AC4. The C19 `ROW_ATTRIBUTION` leg reports `ATTRIBUTED_OK` on staging in run 34692449209 (omninode_infra,
+      dev head `d8c516da`, 2026-09-12): 4/4 correlations landed, 2 per tenant bound, 0 unbound control,
+      0 missing/mismatched. Producing pod `omnimarket-projection-delegation-writer-54f97ff998-h7pq4`,
+      DB `writer_identity=tenant_projection_writer` — this corrects this ticket's own prior disposition
+      that the delegation writer was retired and unreachable; the pod is live and wrote all four rows.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          rm -rf /tmp/occ-omn18198-ac4 && gh run download 34692449209 --repo OmniNode-ai/omninode_infra --name c19-tenant-attribution-staging-34692449209 -D /tmp/occ-omn18198-ac4 && verdict="$(jq -r '.receipt.legs[] | select(.kind=="ROW_ATTRIBUTION") | .reason' /tmp/occ-omn18198-ac4/c19-staging-receipt.json)" && test "$verdict" = "ATTRIBUTED_OK" && missing="$(jq '.receipt.legs[] | select(.kind=="ROW_ATTRIBUTION") | .evidence.missing | length' /tmp/occ-omn18198-ac4/c19-staging-receipt.json)" && test "$missing" = 0 && printf 'AC4 run=34692449209 ROW_ATTRIBUTION=%s missing=%s\n' "$verdict" "$missing"
