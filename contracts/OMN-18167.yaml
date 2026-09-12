@@ -56,3 +56,33 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 396 --repo OmniNode-ai/omniweb --json files"
+  - id: "ac1-ac8-c6-key-lifecycle-dev-proof"
+    description: >-
+      AC1-AC8 binding, hand-authored under Jonah's 2026-09-12 ruling. Reads the successful governed dev-plane
+      workflow_dispatch artifact at the exact product PR #396 head and asserts the golden control plus
+      G1-G5 and the error control plus E3 stored-hash refusal, E4 cross-tenant refusal, E0 revocation,
+      E1 revoked-key refusal and E2 active-list absence. It also pins the one-file Playwright harness
+      change, the merged C6 board probe wiring, and the explicit rule-24(d) disposition: onex-lab omits
+      the omniweb/Keycloak surface, so this is dev-plane proof and no lab pass is claimed. No API-key
+      value is read or printed.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7", "AC8"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          product="$(gh pr view 396 --repo OmniNode-ai/omniweb --json state,headRefOid,files,body)" &&
+          test "$(printf '%s' "$product" | jq -r '.state + "|" + .headRefOid')" = 'OPEN|3ea3a0c87190e1d46ff463acba0798de0f9031b2' &&
+          test "$(printf '%s' "$product" | jq -r '[.files[].path] | join("|")')" = 'e2e/chains/key-lifecycle.spec.ts' &&
+          printf '%s' "$product" | jq -er '.body | contains("onex-lab overlay deliberately omits omniweb and Keycloak") and contains("does not claim a lab proof")' >/dev/null &&
+          board="$(gh pr view 1319 --repo OmniNode-ai/omninode_infra --json state,mergeCommit)" &&
+          test "$(printf '%s' "$board" | jq -r '.state + "|" + .mergeCommit.oid')" = 'MERGED|6246806bc73d2223128cd8b25446ae1da0103d3a' &&
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/tools/beta_board/beta_board_data.py?ref=6246806bc73d2223128cd8b25446ae1da0103d3a' --jq .content | base64 --decode | grep -Fq '("m3-key-lifecycle-chain","OmniNode-ai/omniweb","m3-key-lifecycle-chain.yml","C6")' &&
+          run="$(gh run view 34695712066 --repo OmniNode-ai/omniweb --json status,conclusion,event,headBranch,headSha)" &&
+          test "$(printf '%s' "$run" | jq -r '[.status,.conclusion,.event,.headBranch,.headSha] | join("|")')" = 'completed|success|workflow_dispatch|lakshman/omn-18167-c6-refusal-legs|3ea3a0c87190e1d46ff463acba0798de0f9031b2' &&
+          artifact_root="$(mktemp -d)" &&
+          gh run download 34695712066 --repo OmniNode-ai/omniweb --name m3-key-lifecycle-chain-records-34695712066 --dir "$artifact_root" &&
+          jq -e '.chain == "key-lifecycle-golden" and .kind == "golden" and .criterion == "C6" and .target.plane == "dev" and .result == "PASS" and .control.name == "key-list-answers-the-session-and-refuses-no-credential" and .control.ran == true and .control.ok == true and ([.checks[].name] == ["G1-key-surface-rendered-and-list-read-succeeded","G2-created-in-browser-and-listed","G3-gateway-confirms-the-created-key","G4-revoked-in-browser-and-marked-revoked","G5-gateway-confirms-the-revocation"]) and all(.checks[]; .ok == true)' "$artifact_root/key-lifecycle-golden.json" >/dev/null &&
+          jq -e '.chain == "key-lifecycle-error" and .kind == "error" and .criterion == "C6" and .target.plane == "dev" and .result == "PASS" and .control.name == "a-live-key-is-accepted-on-the-same-endpoint" and .control.ran == true and .control.ok == true and ([.checks[].name] == ["E3-stored-hash-is-rejected","E4-tenant-a-key-is-refused-as-tenant-b","E0-revocation-accepted","E1-revoked-key-is-rejected","E2-list-after-revoke-excludes-it"]) and all(.checks[]; .ok == true)' "$artifact_root/key-lifecycle-error.json" >/dev/null &&
+          ! grep -ERq 'onxk_[[:alnum:]_-]{20,}' "$artifact_root" &&
+          printf '%s\n' 'PASS: C6 golden/error records, controls, all refusals, board wiring and lab exclusion are pinned'
