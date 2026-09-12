@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18239"
+title: "Propagate accepted bindings across the open-ticket corpus"
+summary: |-
+  Acceptance-criterion binding adoption is measured by parsing the whole
+  contract corpus, and a grow-only ratchet stops it going backwards.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+
+evidence_requirements:
+  - kind: "tests"
+    description: |-
+      Adoption is counted across every ticket contract, by parsing rather than
+      by substring, and a run measuring fewer than the frozen floors fails with
+      a message naming what was lost.
+    command: "uv run pytest tests/unit/scripts/test_omn_18239_binding_adoption_ratchet.py -q"
+  - kind: "ci"
+    description: |-
+      The ratchet runs in the unconditional contract-corpus-ratchets job, which
+      is the only surface that sees every contract on every pull request.
+    command: "uv run python scripts/validation/check_corpus_ratchet_wiring.py"
+
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+
+dod_evidence:
+  # Every scalar here is a LITERAL block (|-), never a folded one (>-).
+  # OMN-15479: this repository's yamlfmt rewrites a folded scalar carrying an
+  # internal newline and injects a sentinel into the parsed value, silently and
+  # as a fixed point.
+  - id: "ac1-adoption-is-measured-and-cannot-regress"
+    description: |-
+      AC1 is a TREND, which no single run can assert. What is mechanised here
+      is the one direction a gate has: adoption may not go backwards. Three
+      counts are frozen and a run measuring fewer than any floor fails. The
+      three are separate because a proposer can raise the recorded count on its
+      own and only a reviewer can raise the accepted one, so a single headline
+      number could be satisfied by the cheap half.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_omn_18239_binding_adoption_ratchet.py -q -p
+          no:randomly"
+
+  - id: "the-count-parses-rather-than-greps"
+    description: |-
+      A substring count over this corpus returns 67 and the plan quotes 61. The
+      parsed number is 63: four contracts carry the sentence declaring that they
+      declare no binding, in prose, and a substring count reports documentation
+      about the mechanism as adoption of it. The baseline freezes the parsed
+      number and a control test asserts prose is not counted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/scripts/test_omn_18239_binding_adoption_ratchet.py::test_the_count_parses_rather_than_greps
+          -q -p no:randomly"
+
+  - id: "the-ratchet-is-wired-into-a-required-context"
+    description: |-
+      The ratchet runs inside the unconditional contract-corpus-ratchets job.
+      The per-contract hooks are changed-files scoped and cannot see a contract
+      the pull request does not touch, so an adoption regression elsewhere in
+      the corpus would be invisible to them. The job's own anti-removal anchor
+      re-asserts the wiring on any edit to the workflow.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: "uv run python scripts/validation/check_corpus_ratchet_wiring.py"
+      - check_type: "grep"
+        check_value: "grep -q 'test_omn_18239_binding_adoption_ratchet.py' .github/workflows/ci.yml"
