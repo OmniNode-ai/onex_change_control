@@ -158,11 +158,12 @@ dod_evidence:
           printf '%s' "$live_pr" | grep -qF '"headRefName":"lakshman/omn-18075-occ-post-landing"' &&
           printf '%s' "$live_pr" | grep -qE '"headRefOid":"[0-9a-f]{40}"' &&
           test -s "drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml" &&
-          python3 -c 'import pathlib, yaml; d=yaml.safe_load(pathlib.Path("contracts/OMN-18075.yaml").read_text()); assert not any(i.get("id") == "occ-self-bind-pr-9208" for i in d.get("dod_evidence", []))' &&
-          test "$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '.state + \"|\" + .mergeCommit.oid')" = "MERGED|08f83eebd6421528f21c9c027ef56e3f4d39a2d9" &&
+          uv run python -c 'import pathlib, yaml; d=yaml.safe_load(pathlib.Path("contracts/OMN-18075.yaml").read_text()); assert not any(i.get("id") == "occ-self-bind-pr-9208" for i in d.get("dod_evidence", []))' &&
+          test "$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '.state + "|" + .mergeCommit.oid')" = "MERGED|08f83eebd6421528f21c9c027ef56e3f4d39a2d9" &&
           product_merged="$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json mergedAt --jq .mergedAt)" &&
           companion_created="$(gh pr view 9208 --repo OmniNode-ai/onex_change_control --json createdAt --jq .createdAt)" &&
-          python3 -c 'from datetime import datetime; import sys; assert datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")) > datetime.fromisoformat(sys.argv[2].replace("Z", "+00:00"))' "$companion_created" "$product_merged"
+          uv run python -c 'from datetime import datetime; import sys; assert datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")) > datetime.fromisoformat(sys.argv[2].replace("Z", "+00:00"))' "$companion_created" "$product_merged" &&
+          printf '%s\n' 'PASS: post-landing companion identity and producer order verified'
       - check_type: "command"
         check_value: |-
           classifier_root="$(mktemp -d)" &&
@@ -170,7 +171,7 @@ dod_evidence:
           gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/check_proof_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/nodes/node_dod_verify/services/check_proof_class.py" &&
           gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/enums/enum_check_proof_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/enums/enum_check_proof_class.py" &&
           gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/occ_evidence_probative_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/occ_evidence_probative_class.py" &&
-          CLASSIFIER_ROOT="$classifier_root" python3 -c 'import collections, os, pathlib, subprocess, sys, yaml; sys.path.insert(0, os.environ["CLASSIFIER_ROOT"]); from omnimarket.nodes.node_dod_verify.services.check_proof_class import classify_command; ids={"ac1-ac2-post-landing-companion-proof","ac3-post-landing-companion-append-only-proof"}; load=lambda raw: yaml.safe_load(raw); before=load(subprocess.check_output(["git","show","origin/dev:contracts/OMN-18075.yaml"], text=True)); after=load(pathlib.Path("contracts/OMN-18075.yaml").read_text()); count=lambda d: collections.Counter(classify_command(c.get("check_value") or c.get("command") or "").value for i in d["dod_evidence"] for c in i.get("checks", [])); new=[c.get("check_value") or c.get("command") for i in after["dod_evidence"] if i.get("id") in ids for c in i.get("checks", [])]; b=count(before); a=count(after); assert len(new)==3 and a["readback"]-b["readback"]==2 and a.total()-b.total()==3 and not any(i.get("id","").startswith("occ-self-bind-pr-") for i in after["dod_evidence"] if i.get("id") in ids); print({"before":{"readback":b["readback"],"total":b.total()},"after":{"readback":a["readback"],"total":a.total()},"hand_authored_checks":len(new)})'
+          CLASSIFIER_ROOT="$classifier_root" uv run python -c 'import collections, os, pathlib, subprocess, sys, yaml; sys.path.insert(0, os.environ["CLASSIFIER_ROOT"]); from omnimarket.nodes.node_dod_verify.services.check_proof_class import classify_command; ids={"ac1-ac2-post-landing-companion-proof","ac3-post-landing-companion-append-only-proof"}; load=lambda raw: yaml.safe_load(raw); before=load(subprocess.check_output(["git","show","origin/dev:contracts/OMN-18075.yaml"], text=True)); after=load(pathlib.Path("contracts/OMN-18075.yaml").read_text()); count=lambda d: collections.Counter(classify_command(c.get("check_value") or c.get("command") or "").value for i in d["dod_evidence"] for c in i.get("checks", [])); new=[c.get("check_value") or c.get("command") for i in after["dod_evidence"] if i.get("id") in ids for c in i.get("checks", [])]; b=count(before); a=count(after); assert len(new)==3 and a["readback"]-b["readback"]==2 and a.total()-b.total()==3 and not any(i.get("id","").startswith("occ-self-bind-pr-") for i in after["dod_evidence"] if i.get("id") in ids); print({"before":{"readback":b["readback"],"total":b.total()},"after":{"readback":a["readback"],"total":a.total()},"hand_authored_checks":len(new)})'
   - id: "ac3-post-landing-companion-append-only-proof"
     description: >-
       Hand-authored AC3 proof that this mint did not rewrite any merged companion. The complete PR diff
@@ -182,5 +183,6 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: |-
-          test "$(git diff --name-only origin/dev...HEAD | sort)" = "$(printf '%s\\n' contracts/OMN-18075.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.1.yaml drift/dod_receipts/OMN-18075/ac3-post-landing-companion-append-only-proof/command.yaml drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml | sort)" &&
-          git diff --numstat origin/dev...HEAD -- contracts/OMN-18075.yaml | awk 'NR == 1 && $1 == 0 && $2 > 0 {ok=1} END {exit !ok}'
+          test "$(git diff --name-only origin/dev...HEAD | sort)" = "$(printf '%s\n' contracts/OMN-18075.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.1.yaml drift/dod_receipts/OMN-18075/ac3-post-landing-companion-append-only-proof/command.yaml drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml | sort)" &&
+          git diff --numstat origin/dev...HEAD -- contracts/OMN-18075.yaml | awk 'NR == 1 && $1 > 0 && $2 == 0 {ok=1} END {exit !ok}' &&
+          printf '%s\n' 'PASS: append-only diff shape verified'
