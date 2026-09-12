@@ -140,9 +140,9 @@ dod_evidence:
       Hand-authored post-landing proof for AC1 and AC2. The previous companion OCC#9177 was minted before
       omnimarket#2485 landed and is preserved above. This fresh companion is intentionally not declared
       as an occ-self-bind item: its undeclared structural receipt lives under drift/occ_bindings. The
-      command resolves this companion's live PR number, requires the matching structural receipt, proves
-      that this contract does not declare that self-bind, and confirms the producer landed at 08f83eebd6421528f21c9c027ef56e3f4d39a2d9.
-      The second command loads the producer's actual node_dod_verify.services.check_proof_class.classify_command
+      command reads companion PR #9208 with its exact branch/head identity, requires the matching structural
+      receipt, proves that this contract does not declare that self-bind, and confirms the producer landed
+      at 08f83eebd6421528f21c9c027ef56e3f4d39a2d9. The second command loads the producer's actual node_dod_verify.services.check_proof_class.classify_command
       classifier and demonstrates its before/after class-count delta (6/19 readback checks to 8/22) from
       these two hand-authored commands only; the structural self-bind is excluded from declared evidence.
     source: "manual"
@@ -152,10 +152,17 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: |-
-          pr_number="$(gh pr view --repo OmniNode-ai/onex_change_control --json number --jq .number)" &&
-          test -s "drift/occ_bindings/OMN-18075/occ-self-bind-pr-${pr_number}/command.yaml" &&
-          ! grep -qF "\"occ-self-bind-pr-${pr_number}\"" contracts/OMN-18075.yaml &&
-          test "$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '.state + \"|\" + .mergeCommit.oid')" = "MERGED|08f83eebd6421528f21c9c027ef56e3f4d39a2d9"
+          live_pr="$(gh pr view 9208 --repo OmniNode-ai/onex_change_control --json number,state,headRefName,headRefOid)" &&
+          printf '%s' "$live_pr" | grep -qF '"number":9208' &&
+          printf '%s' "$live_pr" | grep -qE '"state":"(OPEN|MERGED)"' &&
+          printf '%s' "$live_pr" | grep -qF '"headRefName":"lakshman/omn-18075-occ-post-landing"' &&
+          printf '%s' "$live_pr" | grep -qE '"headRefOid":"[0-9a-f]{40}"' &&
+          test -s "drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml" &&
+          python3 -c 'import pathlib, yaml; d=yaml.safe_load(pathlib.Path("contracts/OMN-18075.yaml").read_text()); assert not any(i.get("id") == "occ-self-bind-pr-9208" for i in d.get("dod_evidence", []))' &&
+          test "$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '.state + \"|\" + .mergeCommit.oid')" = "MERGED|08f83eebd6421528f21c9c027ef56e3f4d39a2d9" &&
+          product_merged="$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json mergedAt --jq .mergedAt)" &&
+          companion_created="$(gh pr view 9208 --repo OmniNode-ai/onex_change_control --json createdAt --jq .createdAt)" &&
+          python3 -c 'from datetime import datetime; import sys; assert datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")) > datetime.fromisoformat(sys.argv[2].replace("Z", "+00:00"))' "$companion_created" "$product_merged"
       - check_type: "command"
         check_value: |-
           classifier_root="$(mktemp -d)" &&
@@ -175,6 +182,5 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: |-
-          pr_number="$(gh pr view --repo OmniNode-ai/onex_change_control --json number --jq .number)" &&
-          test "$(git diff --name-only origin/dev...HEAD | sort)" = "$(printf '%s\\n' contracts/OMN-18075.yaml drift/occ_bindings/OMN-18075/occ-self-bind-pr-${pr_number}/command.yaml | sort)" &&
+          test "$(git diff --name-only origin/dev...HEAD | sort)" = "$(printf '%s\\n' contracts/OMN-18075.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.1.yaml drift/dod_receipts/OMN-18075/ac3-post-landing-companion-append-only-proof/command.yaml drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml | sort)" &&
           git diff --numstat origin/dev...HEAD -- contracts/OMN-18075.yaml | awk 'NR == 1 && $1 == 0 && $2 > 0 {ok=1} END {exit !ok}'
