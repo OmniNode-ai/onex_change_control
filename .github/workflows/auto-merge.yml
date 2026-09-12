@@ -190,14 +190,20 @@ jobs:
             changed_files_json="null"
           fi
 
+          set +e
           result="$(python3 scripts/ci/check_governance_paths.py check --changed-files-json "$changed_files_json")"
+          checker_status=$?
+          set -e
           echo "governance-path check: ${result}"
 
-          if [ "$result" = "exclude" ]; then
+          if [ "$checker_status" -eq 0 ] && [ "$result" = "safe_to_arm" ]; then
+            echo "exclude=false" >> "$GITHUB_OUTPUT"
+          elif [ "$checker_status" -eq 1 ] && [ "$result" = "exclude" ]; then
             echo "::warning::PR #${PR} touches a governance file (or its changed-file set could not be determined) — auto-merge will NOT be armed (OMN-16117)."
             echo "exclude=true" >> "$GITHUB_OUTPUT"
           else
-            echo "exclude=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Governance-path checker returned unexpected status/output: status=${checker_status}, output=${result}"
+            exit 1
           fi
 
       - name: Enable auto-merge
