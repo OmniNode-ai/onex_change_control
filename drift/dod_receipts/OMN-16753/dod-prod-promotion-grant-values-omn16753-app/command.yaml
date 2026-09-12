@@ -1,0 +1,60 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16753
+evidence_item_id: dod-prod-promotion-grant-values-omn16753-app
+check_type: command
+check_value: |-
+  ! grep -Fq 'grant-80201a19-7077-4d1d-a58f-3f7760117e68' grants/prod_promotion_grants.yaml && ! grep -Fq 'grant-3c187f1e-b4b8-4fbe-a4cb-6bca31c1b2a1' grants/prod_promotion_grants.yaml && ! grep -Fq 'batch-3c59f394-5a40-4b44-b8e7-ed869d24c2cb' grants/prod_promotion_grants.yaml && grep -Eq '^entries: \[\]$' grants/prod_promotion_grants.yaml
+contract_sha256: sha256:0d1763d17d4e045eb85e5001863e090cc9f27f6d1f75f3862727624b81315353
+contract_entry_sha256: sha256:8a2a19cd7de034bbec76d86ee0492b334bcfee27813c28fb613be5bc353b0f60
+status: PASS
+run_timestamp: '2026-09-08T11:18:26Z'
+commit_sha: 3c52fd1ac86ffcd73323b88aefc6a72124b501ea
+runner: occ-grant-revoke-via-app-lane
+verifier: occ-grant-revoke-via-app-verifier
+probe_command: |-
+  # the item's own check_value chain, run against BOTH trees, plus the header-preservation hashes
+  ! grep -Fq 'grant-80201a19-...' <file> && ! grep -Fq 'grant-3c187f1e-...' <file> &&
+  ! grep -Fq 'batch-3c59f394-...' <file> && grep -Eq '^entries: \[\]$' <file>
+  # <file> = (1) the post-revocation registry this run produces, (2) onex_change_control@main 5df6a9d6bb
+probe_stdout: |
+  # The dod_evidence check_value chain, run against both trees.
+  [revoked tree  ] exit=0  (the file this revocation produces)
+  [main 5df6a9d6bb] exit=1  POSITIVE CONTROL: both entries live
+
+  # What is actually in each file, so the exit codes above are readable.
+  -- revoked tree, last 3 lines:
+     # NOTHING IS PRUNED BY THIS PR: `main` is already at rest (`entries: []`).
+     # ---------------------------------------------------------------------------
+     entries: []
+  -- main 5df6a9d6bb, grant ids present:
+       - grant_id: grant-80201a19-7077-4d1d-a58f-3f7760117e68
+       - grant_id: grant-3c187f1e-b4b8-4fbe-a4cb-6bca31c1b2a1
+
+  # Header preservation: the 506 comment lines above 'entries:' are byte-identical.
+     sha256(head -506 main)    = 58183a8476c3c03d1632bcab0493c889978ec5705be4ca6d5c092884294b7e34
+     sha256(head -506 revoked) = 58183a8476c3c03d1632bcab0493c889978ec5705be4ca6d5c092884294b7e34
+     diff main..revoked        = 29 deletions / 1 insertion
+actual_output: |-
+  PASS, and the positive control is the half that makes it a measurement. The check_value chain exits 0
+  against the registry this revocation produces and exits 1 against onex_change_control@main at
+  5df6a9d6bb, where both entries are still live. A chain that was silently broken - a mistyped grant id,
+  a grep that never matched - would have exited 0 on BOTH trees; it did not.
+
+  What is removed: grant-80201a19-7077-4d1d-a58f-3f7760117e68 (omninode-runtime sha256:13c96028..., the
+  same-digest authorization the unconditional runtime gate resolved from k8s/onex-prod/runtime/
+  kustomization.yaml) and grant-3c187f1e-b4b8-4fbe-a4cb-6bca31c1b2a1 (omnicloud/core sha256:bc95b9bc...,
+  the onex-api promotion), together with their shared promotion_batch_id batch-3c59f394-5a40-4b44-b8e7-
+  ed869d24c2cb. The registry returns to `entries: []` at rest.
+
+  SHAPE: a pure removal - 29 deletions, 1 insertion, and the 506 header comment lines above `entries:`
+  hash identically before and after (58183a8476c3c03d1632bcab0493c889978ec5705be4ca6d5c092884294b7e34).
+  That header is prose the approver reads; preserving it byte-for-byte is why the removal is textual and
+  never a YAML round-trip. This is the OCC#5382 / OCC#7554 prune shape.
+
+  NO PROD MUTATION: what is removed is permission, not workload. onex-prod keeps running exactly the
+  images it is running now, and neither entry was ever consumed - no deploy-onex-prod.yml dispatch ran
+  against either digest between the 2026-09-07 merge and this revocation.
+exit_code: 0
+pr_number: 8670
+branch: hotfix/omn-16753-grant-revoke-app-r1
