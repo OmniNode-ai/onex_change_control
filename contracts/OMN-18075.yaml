@@ -135,3 +135,46 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9177 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-ac2-post-landing-companion-proof"
+    description: >-
+      Hand-authored post-landing proof for AC1 and AC2. The previous companion OCC#9177 was minted before
+      omnimarket#2485 landed and is preserved above. This fresh companion is intentionally not declared
+      as an occ-self-bind item: its undeclared structural receipt lives under drift/occ_bindings. The
+      command resolves this companion's live PR number, requires the matching structural receipt, proves
+      that this contract does not declare that self-bind, and confirms the producer landed at 08f83eebd6421528f21c9c027ef56e3f4d39a2d9.
+      The second command loads the producer's actual node_dod_verify.services.check_proof_class.classify_command
+      classifier and demonstrates its before/after class-count delta (6/19 readback checks to 8/22) from
+      these two hand-authored commands only; the structural self-bind is excluded from declared evidence.
+    source: "manual"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          pr_number="$(gh pr view --repo OmniNode-ai/onex_change_control --json number --jq .number)" &&
+          test -s "drift/occ_bindings/OMN-18075/occ-self-bind-pr-${pr_number}/command.yaml" &&
+          ! grep -qF "\"occ-self-bind-pr-${pr_number}\"" contracts/OMN-18075.yaml &&
+          test "$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '.state + \"|\" + .mergeCommit.oid')" = "MERGED|08f83eebd6421528f21c9c027ef56e3f4d39a2d9"
+      - check_type: "command"
+        check_value: |-
+          classifier_root="$(mktemp -d)" &&
+          mkdir -p "$classifier_root/omnimarket/nodes/node_dod_verify/services" "$classifier_root/omnimarket/enums" &&
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/check_proof_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/nodes/node_dod_verify/services/check_proof_class.py" &&
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/enums/enum_check_proof_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/enums/enum_check_proof_class.py" &&
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/occ_evidence_probative_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/occ_evidence_probative_class.py" &&
+          CLASSIFIER_ROOT="$classifier_root" python3 -c 'import collections, os, pathlib, subprocess, sys, yaml; sys.path.insert(0, os.environ["CLASSIFIER_ROOT"]); from omnimarket.nodes.node_dod_verify.services.check_proof_class import classify_command; ids={"ac1-ac2-post-landing-companion-proof","ac3-post-landing-companion-append-only-proof"}; load=lambda raw: yaml.safe_load(raw); before=load(subprocess.check_output(["git","show","origin/dev:contracts/OMN-18075.yaml"], text=True)); after=load(pathlib.Path("contracts/OMN-18075.yaml").read_text()); count=lambda d: collections.Counter(classify_command(c.get("check_value") or c.get("command") or "").value for i in d["dod_evidence"] for c in i.get("checks", [])); new=[c.get("check_value") or c.get("command") for i in after["dod_evidence"] if i.get("id") in ids for c in i.get("checks", [])]; b=count(before); a=count(after); assert len(new)==3 and a["readback"]-b["readback"]==2 and a.total()-b.total()==3 and not any(i.get("id","").startswith("occ-self-bind-pr-") for i in after["dod_evidence"] if i.get("id") in ids); print({"before":{"readback":b["readback"],"total":b.total()},"after":{"readback":a["readback"],"total":a.total()},"hand_authored_checks":len(new)})'
+  - id: "ac3-post-landing-companion-append-only-proof"
+    description: >-
+      Hand-authored AC3 proof that this mint did not rewrite any merged companion. The complete PR diff
+      is fail-closed to exactly the append-only contracts/OMN-18075.yaml path plus this companion's one
+      undeclared structural receipt under drift/occ_bindings; the contract diff has zero deletions.
+    source: "manual"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          pr_number="$(gh pr view --repo OmniNode-ai/onex_change_control --json number --jq .number)" &&
+          test "$(git diff --name-only origin/dev...HEAD | sort)" = "$(printf '%s\\n' contracts/OMN-18075.yaml drift/occ_bindings/OMN-18075/occ-self-bind-pr-${pr_number}/command.yaml | sort)" &&
+          git diff --numstat origin/dev...HEAD -- contracts/OMN-18075.yaml | awk 'NR == 1 && $1 == 0 && $2 > 0 {ok=1} END {exit !ok}'
