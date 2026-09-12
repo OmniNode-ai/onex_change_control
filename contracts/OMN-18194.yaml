@@ -43,3 +43,82 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9233 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "omn18194-ac1-ac3-runner-starvation-behavior"
+    description: >-
+      AC1-AC3 hand binding. The merged infra carrier is fixed to #3458 at dfdf41e38faf2c613e230ef080ae4aac9fed1f31
+      and changes only the throttle implementation and its focused test file. Its terminal check set includes
+      the green CI Tests Gate and contains no failing or pending check. The content probe proves that
+      admission comes from the sanctioned omnibase-ci fleet probe, that starvation is zero online-minus-busy
+      capacity, and that probe errors fail closed. The focused regression supplies the criterion's concrete
+      reading: queued=183 (also 186), online=88, busy=58, therefore 30 matching runners idle; the operation
+      is applied and both queue readings remain observation-only. Its paired controls prove zero idle
+      capacity refuses, every named probe failure refuses, and the capacity gate has no bypass parameter.
+      This is repository and test evidence only; it makes no deployed-runtime claim.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1", "AC2", "AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          pr_state="$(gh pr view 3458 --repo OmniNode-ai/omnibase_infra --json state --jq '.state')" &&
+          contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; } &&
+          test "$pr_state" = "MERGED" &&
+          merge_sha="$(gh pr view 3458 --repo OmniNode-ai/omnibase_infra --json mergeCommit --jq '.mergeCommit.oid')" &&
+          test "$merge_sha" = "dfdf41e38faf2c613e230ef080ae4aac9fed1f31" &&
+          checks_green="$(gh pr checks 3458 --repo OmniNode-ai/omnibase_infra --json bucket --jq 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")')" &&
+          test "$checks_green" = "true" &&
+          files="$(gh api repos/OmniNode-ai/omnibase_infra/pulls/3458/files --jq '.[].filename')" &&
+          test "$(printf '%s\n' "$files" | wc -l | tr -d ' ')" = "2" &&
+          contains "$files" 'scripts/ci/bulk_pr_throttle.py' &&
+          contains "$files" 'scripts/ci/tests/test_bulk_pr_throttle.py' &&
+          source_b64="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/bulk_pr_throttle.py?ref=dfdf41e38faf2c613e230ef080ae4aac9fed1f31' --jq '.content')" &&
+          source_text="$(printf '%s' "$source_b64" | base64 --decode)" &&
+          tests_b64="$(gh api 'repos/OmniNode-ai/omnibase_infra/contents/scripts/ci/tests/test_bulk_pr_throttle.py?ref=dfdf41e38faf2c613e230ef080ae4aac9fed1f31' --jq '.content')" &&
+          tests_text="$(printf '%s' "$tests_b64" | base64 --decode)" &&
+          contains "$source_text" 'return online - busy <= 0' &&
+          contains "$source_text" 'return probe_fleet(token, RUNNER_GROUP, api_url)' &&
+          contains "$source_text" 'raise RunnerFleetProbeError(f"runner fleet probe refused: {error}")' &&
+          contains "$source_text" 'raise RunnerFleetStarvationTimeoutError(' &&
+          contains "$tests_text" '@pytest.mark.parametrize("queued", [183, 186])' &&
+          contains "$tests_text" 'return {"ok": True, "online": 88, "busy": 58, "total": 88}' &&
+          contains "$tests_text" 'def test_idle_matching_capacity_is_not_starvation_at_deep_queue(self, queued):' &&
+          contains "$tests_text" 'assert applied == [1]' &&
+          contains "$tests_text" 'assert report.waves[0].queue_depth_before == queued' &&
+          contains "$tests_text" 'def test_zero_matching_idle_capacity_refuses(self):' &&
+          contains "$tests_text" 'def test_every_probe_error_refuses_and_names_the_error(self, error):' &&
+          contains "$tests_text" 'def test_capacity_gate_has_no_bypass_parameter(self):' &&
+          printf 'PASS: OMN-18194 AC1-AC3 runner-starvation evidence matched merged omnibase_infra#3458.\n'
+  - id: "omn18194-ac4-public-runbook"
+    description: >-
+      AC4 hand binding. Public knowledge-base PR #81 is merged at f340b4835f59b60adcbd0c2ccade668b813a0c7d
+      with a terminal all-green check set. The exact merged runbook names live matching-runner capacity—not
+      raw queue depth—as the admission signal; documents RUNNER_FLEET_STATUS_TOKEN with the existing CROSS_REPO_PAT
+      fallback; enumerates the stable fail-closed errors; and documents bounded zero-idle refusal with
+      no bypass. This intentionally binds the public runbook Jonah designated after the old infra-local
+      copy was removed.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          pr_state="$(gh pr view 81 --repo OmniNode-ai/knowledge-base --json state --jq '.state')" &&
+          contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; } &&
+          test "$pr_state" = "MERGED" &&
+          merge_sha="$(gh pr view 81 --repo OmniNode-ai/knowledge-base --json mergeCommit --jq '.mergeCommit.oid')" &&
+          test "$merge_sha" = "f340b4835f59b60adcbd0c2ccade668b813a0c7d" &&
+          checks_green="$(gh pr checks 81 --repo OmniNode-ai/knowledge-base --json bucket --jq 'length > 0 and all(.[]; .bucket == "pass" or .bucket == "skipping")')" &&
+          test "$checks_green" = "true" &&
+          files="$(gh api repos/OmniNode-ai/knowledge-base/pulls/81/files --jq '.[].filename')" &&
+          contains "$files" 'runbooks/bulk-pr-operations.md' &&
+          runbook_b64="$(gh api 'repos/OmniNode-ai/knowledge-base/contents/runbooks/bulk-pr-operations.md?ref=f340b4835f59b60adcbd0c2ccade668b813a0c7d' --jq '.content')" &&
+          runbook="$(printf '%s' "$runbook_b64" | base64 --decode)" &&
+          contains "$runbook" 'Queue depth is observed before and after each wave; it does not authorize or refuse dispatch.' &&
+          contains "$runbook" 'filters for the `omnibase-ci` runner group. At least one online, non-busy' &&
+          contains "$runbook" 'matching runner is capacity; a deep queued-run count alone is not' &&
+          contains "$runbook" 'Local runs must provide `RUNNER_FLEET_STATUS_TOKEN`; the existing' &&
+          contains "$runbook" '`CROSS_REPO_PAT` environment value is the fallback.' &&
+          contains "$runbook" '`missing_token`, `bad_api_scheme`,' &&
+          contains "$runbook" '`http_<status>`, `timeout`, `malformed_json`, or `empty_fleet`.' &&
+          contains "$runbook" '`RunnerFleetStarvationTimeoutError`), not a silently-skipped wave.' &&
+          printf 'PASS: OMN-18194 AC4 public runbook evidence matched merged knowledge-base#81.\n'
