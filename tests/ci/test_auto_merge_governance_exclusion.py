@@ -237,6 +237,22 @@ def test_every_arming_step_is_gated_on_the_exclusion() -> None:
 
 
 @pytest.mark.unit
+def test_governance_gate_exclude_is_successful_skip() -> None:
+    """A legitimate governance exclusion must skip arming without redlining CI."""
+    workflow = _load_workflow(WORKFLOW.read_text(encoding="utf-8"))
+    gate = next(
+        s
+        for s in _auto_merge_steps(workflow)
+        if s.get("name") == GOVERNANCE_GATE_STEP_NAME
+    )
+    run = str(gate.get("run", ""))
+
+    assert "checker_status=$?" in run
+    assert '[ "$checker_status" -eq 1 ] && [ "$result" = "exclude" ]' in run
+    assert 'echo "exclude=true" >> "$GITHUB_OUTPUT"' in run
+
+
+@pytest.mark.unit
 def test_governance_path_checker_is_importable_and_guards_the_grant_file() -> None:
     """The decision module resolves on this branch and covers the grant file.
 
