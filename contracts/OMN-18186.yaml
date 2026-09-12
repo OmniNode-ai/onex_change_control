@@ -1,0 +1,175 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18186"
+title: "Lab Postgres on a persistent volume, with the credential half"
+summary: >-
+  OCC companion for OmniNode-ai/omninode_infra#1394. The onex-lab lane's Postgres moves off `emptyDir`
+  onto a statically bound PersistentVolume on the lab host's root device, and the renderer becomes volume-aware
+  in the same change so a surviving database stays reachable. Plan item 16 of OMN-18232, phase 4.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #1394 product diff scope present"
+    command: "gh pr view 1394 --repo OmniNode-ai/omninode_infra --json files"
+  - kind: "tests"
+    description: >-
+      Behavior proof for PR #1394 on OmniNode-ai/omninode_infra, derived from the PR's own diff: the test
+      module it adds. Executed at cwd `${OMNI_HOME}/omninode_infra`.
+    command: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omninode-infra-pr-1394"
+    description: "PR #1394 on OmniNode-ai/omninode_infra — Evidence-Source companion."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1394 --repo OmniNode-ai/omninode_infra --json number,state,mergeCommit"
+  - id: "dod-OmniNode-ai-omninode-infra-pr-1394-ci"
+    description: "PR #1394 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1394 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: "PR #1394 on OmniNode-ai/omninode_infra — diff-derived behavior proof (OMN-16434)."
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q"
+        cwd: "${OMNI_HOME}/omninode_infra"
+
+  - id: "ac1-volume-declared-off-shared-device"
+    description: >-
+      AC1. The lane Postgres data volume is a PersistentVolumeClaim declared in the k8s onex-lab overlay,
+      statically bound to a PersistentVolume whose hostPath is `/var/lib/onex-lab/postgres-data`. On the
+      lab host that path resolves to `/dev/nvme1n1p2` (1.8T, 7% used), deliberately NOT `/dev/nvme2n1p1`,
+      which is the single device backing `/data`, the k3s data directory that kubelet reports as both
+      nodefs and imagefs, and Docker's root directory — measured live 2026-09-12. The k3s local-path provisioner
+      writes under that shared device, so dynamic provisioning would have returned the database to the
+      device whose growth caused the OMN-18184 eviction; a static volume is what lets the path be named.
+      The class names no servable provisioner and the claim pins `volumeName`, so a cluster with a default
+      storage class cannot satisfy the claim with a fresh empty volume while reporting Bound. Live readback
+      after the apply: claim Bound to volume `onex-lab-postgres-data`, 20Gi, RWO, reclaim policy Retain.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          m="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-lab/substitutions/postgres.yaml?ref=a42d40f11963d3e82894de03043cda8f4d5df348" -H 'Accept: application/vnd.github.raw')" && test "$(printf '%s' "$m" | grep -c 'kind: PersistentVolumeClaim')" = 1 && test "$(printf '%s' "$m" | grep -c 'kind: PersistentVolume$')" = 1 && test "$(printf '%s' "$m" | grep -c 'path: /var/lib/onex-lab/postgres-data')" = 1 && test "$(printf '%s' "$m" | grep -c 'persistentVolumeReclaimPolicy: Retain')" = 1 && test "$(printf '%s' "$m" | grep -c 'volumeName: onex-lab-postgres-data')" = 1 && test "$(printf '%s' "$m" | grep -cE '^[[:space:]]+emptyDir:')" = 0 && printf '%s\n' 'AC1 pvc=declared pv=static path=root-device reclaim=Retain emptydir=absent'
+
+  - id: "ac2-survives-pod-replacement-on-lab"
+    description: >-
+      AC2. A pod delete and reschedule of onex-lab-postgres preserves the database. Proved on the .201
+      k3s lab on 2026-09-12 through the sanctioned k8s/onex-lab/apply_lab_lane.sh path, never by hand-editing
+      a live object. Pod `onex-lab-postgres-668ffbbbbb-b8svj` was deleted and replaced by `onex-lab-postgres-668ffbbbbb-nw22z`;
+      the host data directory kept its 13:48:32 creation time from the apply that created it. Before and
+      after, read as `role_omnidash` (NOSUPERUSER NOBYPASSRLS, not a privileged session), the omnidash_analytics
+      migration ledger was byte-identical: `169 | 2026-09-12 17:48:51.154901+00 | 2026-09-12 17:49:12.689718+00`.
+      That is a comparison of ROW IDENTITY and not a count, which matters because a wiped database that
+      re-migrated carries the same count and an entirely different set of timestamps. The lane's tenant
+      id `6c48114b-cfa9-4125-a390-67a0047a8fcc` was unchanged across both a full re-apply and the pod
+      replacement, and its API key still resolved (HTTP 200 on the tenant-scoped reader, with a wrong
+      key refused 401 as the control). The mechanism is pinned by the test module; the readback is recorded
+      in omninode_infra#1394 and in the work ledger.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q -k 'ephemeral_volume
+          or binds_statically or reserves_itself or retains_its_data'"
+        cwd: "${OMNI_HOME}/omninode_infra"
+
+  - id: "ac3-receipt-carries-migrations-applied"
+    description: >-
+      AC3. The onex-lab lab-pass receipt already carries a `migrations_applied` check, so a database that
+      could not be migrated is recorded as a receipt FAIL naming the migrate Job rather than surfacing
+      only as a runtime CrashLoop. It is emitted by the `candidate-boot-gate` job of omnibase_infra's
+      deliver-dev-candidate-to-staging workflow, whose emit step runs under `if: always()` precisely so
+      a FAILED lab pass is recorded as distinctly as a passing one — a receipt that only exists when everything
+      worked cannot tell "it failed" from "nobody ran it". This criterion was satisfied by the OMN-17530
+      rule-24 work before this ticket; it is verified here rather than re-implemented.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          w="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/deliver-dev-candidate-to-staging.yml?ref=dev" -H 'Accept: application/vnd.github.raw')" && test "$(printf '%s' "$w" | grep -c -- '--lane onex-lab')" -ge 1 && test "$(printf '%s' "$w" | grep -c -- '--check "migrations_applied:')" -ge 1 && printf '%s\n' 'AC3 onex-lab-lane=present migrations_applied-check=present'
+
+  - id: "ac4-broker-and-cache-reviewed"
+    description: >-
+      AC4. The other two stateful-looking workloads in the lane were reviewed and both stay ephemeral,
+      each with a stated reason rather than the lane's old blanket "per-CI-run and throwaway" premise
+      — the premise that put the database on an emptyDir and is therefore not a safe default for anything.
+      The broker holds no durable truth: every envelope on it is in flight, the durable record is what
+      the projection writers land in Postgres, and its topics are recreated by the runtime's own provisioning,
+      so a broker that comes back empty comes back correct. The cache declares no volume at all and runs
+      with snapshotting and the append log both switched off, so there is nothing on disk for a volume
+      to hold. Each manifest carries the decision and ties it to this review.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC4"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          r="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-lab/substitutions/redpanda.yaml?ref=a42d40f11963d3e82894de03043cda8f4d5df348" -H 'Accept: application/vnd.github.raw')" && v="$(gh api "repos/OmniNode-ai/omninode_infra/contents/k8s/onex-lab/substitutions/valkey.yaml?ref=a42d40f11963d3e82894de03043cda8f4d5df348" -H 'Accept: application/vnd.github.raw')" && test "$(printf '%s' "$r" | grep -c 'EPHEMERAL BY DESIGN')" = 1 && test "$(printf '%s' "$r" | grep -c 'OMN-18186')" -ge 1 && test "$(printf '%s' "$v" | grep -c 'EPHEMERAL BY DESIGN')" = 1 && test "$(printf '%s' "$v" | grep -c 'OMN-18186')" -ge 1 && printf '%s\n' 'AC4 broker=stated cache=stated both-tied-to-this-review'
+
+  - id: "ac5-renderer-volume-aware-same-change"
+    description: >-
+      AC5. The renderer lands volume-awareness in the same change as the volume. On a data volume that
+      already holds a database it does not issue a credential that disagrees with the stored one: `apply_lab_lane.sh`
+      reads the surviving superuser pair off the running Deployment's own Secret and passes it to `render_ci_secrets.py
+      --preserve-postgres-credential`, so every derived value in the whole render — the server's own superuser,
+      all eight runtime DSNs, all three migration-runner logins and the escalation value — agrees with
+      the roles that actually exist. Of the two designs the plan offers this is PRESERVE, not re-issue:
+      nothing on any path changes a stored credential, which is what keeps an ordinary bring-up clear
+      of the rotation rules. The predicate is the claim rather than a probe into the server, because the
+      case that most needs it to work is a lane whose pods are down, and a claim with no readable prior
+      Secret is refused naming the reset path rather than rendered over. Generated-per-run is intact for
+      a lane with no volume yet, so the CI boot gate's branch is unchanged. Live: apply 2 on the lab printed
+      `preserving the credential from secret/onex-lab-postgres-superuser-tc92t977b4` and both migrate
+      barriers completed against the surviving database.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC5"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q -k 'preserving
+          or unusable_preserved or missing_preserved or never_prints or default_render'"
+        cwd: "${OMNI_HOME}/omninode_infra"
+
+  - id: "ac6-every-client-credential-authenticates"
+    description: >-
+      AC6. After a full re-apply AND a pod replacement, every rendered client credential authenticates
+      against the surviving database, asserted per connection string rather than for one representative
+      client. Verified live on the .201 k3s lab at 2026-09-12T18:16:26Z by k8s/onex-lab/verify_lab_persistence.py:
+      13 of 13 declared connection strings opened a real connection, each reported with the login and
+      database it resolved as — the seven runtime values as `postgres`, the three migration-runner logins
+      as themselves, the escalation value, the control-plane DSN as `role_omninode_cloud`, and the server's
+      own superuser. Per connection string matters because the failure this half prevents is total rather
+      than partial: a single representative connection would pass while the lane was fine and would also
+      pass in every case worth catching. The count of attempted connections is itself checked against
+      the count the contract declares, so a run that attempted none cannot report clean. The connection
+      list is read out of ci-only-secrets.contract.yaml rather than restated, so a credential added there
+      is covered without editing the checker.
+    source: "manual"
+    status: "verified"
+    binds_ac:
+      - "AC6"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/k8s/test_onex_lab_persistent_storage_omn18186.py -q -k 'enumerates_every_declared
+          or negative_control or vacuous or command_line'"
+        cwd: "${OMNI_HOME}/omninode_infra"
