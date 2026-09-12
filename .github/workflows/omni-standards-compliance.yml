@@ -126,6 +126,21 @@ jobs:
           done
           echo "CI naming convention: PASS"
 
+      # OMN-18031: this job previously had only a checkout, because the
+      # routing check it ran was stdlib-only. The check now lives in
+      # scripts/validation/check_runner_routing.py, which parses workflows with
+      # PyYAML, so the job needs a Python that has it. PyYAML is installed
+      # directly rather than via `uv sync`: this job needs one library, not the
+      # project's whole dependency set, and installing the project here would
+      # make a fast policy gate depend on a full resolve.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install PyYAML
+        run: python -m pip install --disable-pip-version-check "pyyaml>=6,<7"
+
       - name: Verify centralized runner routing standard
         env:
           OMNI_PUBLIC_PR_RUNS_ON_JSON: ${{ vars.OMNI_PUBLIC_PR_RUNS_ON_JSON }}
@@ -135,41 +150,27 @@ jobs:
             echo "::error::Missing centralized runner selector variables"
             exit 1
           fi
-          if grep -RIn '^    runs-on: [^>$]' .github/workflows; then
-            echo "::error::Workflows must use centralized runner selector variables, not bare runs-on labels"
-            exit 1
-          fi
+          # OMN-18031: the hard-coded-label check lives in
+          # scripts/validation/check_runner_routing.py -- the canonical runner
+          # routing validator, already run by pre-commit and ci.yml -- so it is
+          # unit tested and there is one implementation rather than two.
+          #
+          # It replaces a `grep -RIn <label> .github/workflows` over whole
+          # files. That grep built its label set from the live routing
+          # variables and then matched the label ANYWHERE, so when
+          # OMNI_TRUSTED_CI_RUNS_ON_JSON gained a new label on
+          # 2026-09-11T21:12:33Z it began failing on a prose comment in
+          # release-staleness-gate.yml untouched since 2026-09-07. That failed
+          # the required CI Summary and blocked every OCC companion merge, and
+          # with it every product PR needing one.
+          #
+          # The variable guard above stays HERE rather than moving into the
+          # script: it is what makes CI fail closed on absent variables, while
+          # pre-commit runs the same script without them and exercises the
+          # routing and index-host checks only.
           if ! grep -R 'vars.OMNI_TRUSTED_CI_RUNS_ON_JSON' .github/workflows >/dev/null; then
             echo "::error::Missing trusted centralized runner selector in workflows"
             exit 1
           fi
-          python - <<'PY'
-          import json
-          import os
-          import subprocess
-          import sys
-
-          labels = set(json.loads(os.environ["OMNI_PUBLIC_PR_RUNS_ON_JSON"]))
-          labels.update(json.loads(os.environ["OMNI_TRUSTED_CI_RUNS_ON_JSON"]))
-          failed = False
-          for label in sorted(labels):
-              result = subprocess.run(
-                  ["grep", "-RIn", label, ".github/workflows"],
-                  check=False,
-                  text=True,
-                  capture_output=True,
-              )
-              findings = [
-                  line
-                  for line in result.stdout.splitlines()
-                  if "fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON ||" not in line
-                  and "fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON ||" not in line
-              ]
-              if findings:
-                  print(f"::error::Hard-coded runner label found: {label}")
-                  print("\n".join(findings))
-                  failed = True
-          if failed:
-              sys.exit(1)
-          PY
+          python scripts/validation/check_runner_routing.py
           echo "Centralized runner routing standard: PASS"
