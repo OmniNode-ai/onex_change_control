@@ -8,7 +8,9 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -168,6 +170,91 @@ def test_hook_configuration_passes_the_legacy_exclusions_explicitly() -> None:
     assert hook["require_serial"] is True
     assert "exclude" not in hook
     assert _configured_hook_arguments() == ("--exclude-regex", EXCLUSION_REGEX)
+
+
+@pytest.mark.unit
+def test_self_test_uses_unique_cleanup_safe_temp_directories(tmp_path: Path) -> None:
+    """Concurrent self-tests neither collide nor retain their private directories."""
+    environment = os.environ.copy()
+    environment["TMPDIR"] = str(tmp_path)
+    command = ["bash", str(HOOK), "--self-test"]
+
+    first = subprocess.Popen(
+        command,
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    second = subprocess.Popen(
+        command,
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    first_stdout, first_stderr = first.communicate()
+    second_stdout, second_stderr = second.communicate()
+
+    for return_code, stdout, stderr in (
+        (first.returncode, first_stdout, first_stderr),
+        (second.returncode, second_stdout, second_stderr),
+    ):
+        assert return_code == 0, stderr
+        assert "Results: 9 passed, 0 failed" in stdout
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.unit
+def test_self_test_cleans_its_private_directory_after_a_signal(tmp_path: Path) -> None:
+    """A terminated self-test removes only its own private temporary directory."""
+    real_bash = shutil.which("bash")
+    assert real_bash is not None
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir()
+    child_ready = tmp_path / "child-ready"
+    wrapper = bin_directory / "bash"
+    wrapper.write_text(
+        f"#!{real_bash}\n"
+        'touch "$OMN17526_CHILD_READY"\n'
+        "sleep 30\n"
+        f'exec "{real_bash}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "OMN17526_CHILD_READY": str(child_ready),
+            "PATH": f"{bin_directory}{os.pathsep}{environment['PATH']}",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+    self_test = subprocess.Popen(
+        ["/bin/bash", str(HOOK), "--self-test"],
+        cwd=tmp_path,
+        env=environment,
+        start_new_session=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not child_ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert child_ready.exists()
+
+        os.killpg(self_test.pid, signal.SIGTERM)
+        _, stderr = self_test.communicate(timeout=5)
+
+        assert self_test.returncode == 143, stderr
+        assert not list(tmp_path.glob("skip-token-selftest.*"))
+    finally:
+        if self_test.poll() is None:
+            os.killpg(self_test.pid, signal.SIGKILL)
+            self_test.communicate(timeout=5)
 
 
 @pytest.mark.unit

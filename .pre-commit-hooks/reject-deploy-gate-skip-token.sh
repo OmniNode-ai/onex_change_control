@@ -76,21 +76,45 @@ done
 if [[ "${1:-}" == "--self-test" ]]; then
     PASS=0
     FAIL=0
+    selftest_tmp_root="${TMPDIR:-/tmp}"
+    if ! selftest_directory="$(mktemp -d "${selftest_tmp_root%/}/skip-token-selftest.XXXXXX")"; then
+        echo "ERROR: could not create a private self-test directory." >&2
+        exit 1
+    fi
+
+    cleanup_selftest_directory() {
+        # mktemp created this private directory for this invocation, so cleanup
+        # cannot remove a concurrent self-test's files.
+        rm -rf "$selftest_directory"
+    }
+
+    exit_after_selftest_signal() {
+        local exit_status="$1"
+
+        cleanup_selftest_directory
+        trap - EXIT
+        exit "$exit_status"
+    }
+
+    trap cleanup_selftest_directory EXIT
+    trap 'exit_after_selftest_signal 129' HUP
+    trap 'exit_after_selftest_signal 130' INT
+    trap 'exit_after_selftest_signal 143' TERM
 
     run_test() {
         local name="$1"
         local content="$2"
         local expect_exit="$3"
+        local tmpfile=""
 
-        # Use .md extension so the file-type filter includes it in scanning
-        tmpfile=$(mktemp /tmp/skip-token-selftest.XXXXXX.md)
+        # Use .md extension so the file-type filter includes it in scanning.
+        # The private per-run directory makes this name safe from collisions.
+        tmpfile="$selftest_directory/test-$((PASS + FAIL)).md"
         printf '%s\n' "$content" > "$tmpfile"
 
         # Run hook against the temp file (not --self-test or --check-pr-body mode)
         actual_exit=0
         bash "$0" "$tmpfile" 2>/dev/null || actual_exit=$?
-
-        rm -f "$tmpfile"
 
         if [[ "$actual_exit" == "$expect_exit" ]]; then
             echo "  PASS: $name"
