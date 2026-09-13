@@ -1,0 +1,128 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17486"
+title: "feat(occ): govern durable PostgreSQL action-authorization nonce claim"
+summary: "Parent OMN-17463; blocks OMN-17462. Prospective implementation-and-test-only contract for the
+  durable PostgreSQL atomic one-time claim capability required before OMN-17462 can authorize a pre-execution
+  action. It grants no authorization, records no receipt, deploys no artifact, and activates no consumer."
+
+is_seam_ticket: true
+interface_change: true
+interfaces_touched:
+  - "protocols"
+  - "public_api"
+
+evidence_requirements:
+  - kind: "tests"
+    description: "The implementing omnibase_infra change must test the PostgreSQL 16 claim adapter and
+      its local CLI or Unix-domain RPC bootstrap interface, including concurrent callers, restart recovery,
+      expiry, request-digest mismatch, and all typed outcomes. Tests must use a contract overlay supplied
+      to the test harness; they must neither load nor inspect a .env file."
+  - kind: "tests"
+    description: "The claim request must bind exactly the canonical OMN-17462 registry fields: authorization_id,
+      ticket_id, contract_path, contract_commit_sha, contract_sha256, action_id, source_sha, artifact_sha256,
+      target_database, target_schema, target_service, target_principal, execute_enabled, issuer, nonce,
+      issued_at, expires_at, one_time_use, and reason. The durable row must retain an immutable SHA-256
+      request digest over the canonical serialization of those fields."
+  - kind: "tests"
+    description: "The PostgreSQL transaction or stored procedure must claim before an action may begin
+      and return exactly one typed result: claimed, already_consumed, expired, mismatch, or error. Existing
+      OMN-17463 first-effect consume/stage ledgers are evidence neither of this claim nor of permission
+      to act."
+  - kind: "manual"
+    description: "A later protected-artifact deployment may use only a reviewed contract overlay to name
+      its database connection and local tool endpoint. It must create a dedicated schema, table, restricted
+      role, forward migration, and non-destructive backout procedure without modifying or taking ownership
+      of shared PostgreSQL objects. This contract is not deployment authority."
+  - kind: "manual"
+    description: "The OMN-17462 consumer remains execute-disabled and default-deny until the exact protected
+      artifact is deployed and an exact canonical registry authorization has passed validation and been
+      atomically claimed. This contract creates neither the artifact deployment nor an authorization entry."
+
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+
+dod_evidence:
+  - id: "dod-dependency-and-default-deny"
+    description: "Parent OMN-17463 supplies the RSD verified first-effect ledger boundary; OMN-17486 blocks
+      OMN-17462 until this separate durable nonce-claim capability is implemented and tested. The committed
+      OMN-17462 registry remains empty, so this contract cannot be treated as a live authorization."
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: "uv run validate-pre-execution-action-authorizations --file grants/pre_execution_action_authorizations.yaml"
+  - id: "dod-canonical-request-binding"
+    description: "The implementation must accept no abbreviated or inferred authorization: it canonicalizes
+      and binds all nineteen OMN-17462 registry fields named in this contract, stores an immutable request
+      digest, and uniquely associates that digest with authorization_id and nonce. A second request with
+      the same authorization_id and nonce but another digest returns mismatch, never a new claim."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/runtime/action_authorization_claim/test_request_binding.py
+          tests/unit/runtime/action_authorization_claim/test_adapter_postgres.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-atomic-one-time-claim"
+    description: "On PostgreSQL 16, concurrent claims and a process restart must leave at most one durable
+      claimed row for an authorization_id and nonce. The claim happens before any candidate action, and
+      the only public outcomes are claimed, already_consumed, expired, mismatch, and error; an existing
+      first-effect consume or stage ledger entry must not infer permission."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/integration/runtime/action_authorization_claim/test_postgres16_concurrency.py
+          tests/integration/runtime/action_authorization_claim/test_postgres16_restart.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-dedicated-postgres-boundary-and-backout"
+    description: "The forward migration must own only schema action_authorization_claim, table action_authorization_claim.nonce_claims,
+      and restricted role rsd_action_authorization_claim. It must not alter OMN-17463 ledgers or other
+      shared PostgreSQL schemas. The paired backout disables the claim interface by revoking the restricted
+      role and preserves durable claim history; it must not drop unrelated shared objects."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/migrations/test_action_authorization_nonce_claim_sql.py
+          tests/unit/runtime/action_authorization_claim/test_restricted_principal.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-overlay-only-bootstrap-interface"
+    description: "The adapter exposes one local CLI or Unix-domain RPC interface for OMN-17462 bootstrap.
+      It obtains PostgreSQL connection and tool references only from the supplied contract overlay, rejects
+      missing or malformed overlay references, and neither reads nor falls back to .env. The restricted
+      principal may perform only the atomic claim operation in the dedicated schema."
+    source: "manual"
+    status: "pending"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/runtime/action_authorization_claim/test_overlay_bootstrap.py
+          tests/unit/runtime/action_authorization_claim/test_local_claim_interface.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "dod-no-activation-or-fabricated-evidence"
+    description: "Completion of this ticket is implementation and tests only. No deployment, execute-enabled
+      consumer activation, registry authorization entry, or DoD PASS receipt is created by OMN-17486.
+      The consumer remains default-deny until the exact protected artifact deployment and exact canonical
+      registry authorization are separately governed."
+    source: "manual"
+    status: "pending"
+    checks:
+      - check_type: "command"
+        check_value: "test ! -d drift/dod_receipts/OMN-17486 && uv run validate-pre-execution-action-authorizations
+          --file grants/pre_execution_action_authorizations.yaml"
+
+# Scope fence: OMN-17486 governs only the PostgreSQL 16 durable one-time
+# action-authorization claim capability layered above OMN-17463's verified
+# first-effect ledger. It is not a deployment, activation, authorization, or
+# receipt. No SQLite, file queue, shared-schema fallback, .env-derived
+# connection, inferred permission, broker operation, queue effect, or consumer
+# enablement is authorized. A claim is necessary but not sufficient for action:
+# OMN-17462 remains execute-disabled/default-deny until the exact protected
+# artifact is deployed and an exact canonical registry authorization is valid.
