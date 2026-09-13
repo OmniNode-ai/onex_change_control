@@ -123,7 +123,13 @@ repos:
         # case and rejects the line outright -- `config error: unrecognized
         # line: '---'`, exit 2, THE GATE DID NOT RUN. Formatting this one file
         # therefore disables the gate it configures.
-        exclude: ^(\.github/|templates/|\.kb-doc-gate\.yaml$|\.public-repo-hygiene\.yaml$)
+        # OMN-18304: tests/fixtures/omn_18304/ holds the verbatim bytes of the
+        # commits that shipped and repaired a live defect. Reformatting them
+        # would change the contract's canonical hash while the receipt's pinned
+        # hash stayed put, breaking the replay for the same reason the defect
+        # existed, and would also destroy the only property those files have:
+        # being what actually happened.
+        exclude: ^(\.github/|templates/|tests/fixtures/omn_18304/|\.kb-doc-gate\.yaml$|\.public-repo-hygiene\.yaml$)
 
   # Essential file formatting (standard across ecosystem)
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -168,8 +174,14 @@ repos:
         language: system
         entry: uv run python scripts/validation/validate_string_versions.py
         types_or: [python, yaml]
+        # OMN-18304: the `drift/` alternative is matched at any depth, not only
+        # at the repository root. A DoD receipt's string-shaped schema_version is
+        # exempt because of what the artifact IS, not because of where it sits,
+        # and a test fixture that vendors real receipt bytes is the same artifact
+        # class. The alternative is to rewrite the vendored bytes, which would
+        # destroy the only thing those fixtures are for: being history.
         exclude: >-
-          ^(\.github/|contracts/(?!OMN-)|drift/|eval_suites/|schemas/|standards/|templates/|src/onex_change_control/nodes/.*/contract\.yaml$)
+          ^(\.github/|contracts/(?!OMN-)|drift/|eval_suites/|schemas/|standards/|templates/|src/onex_change_control/nodes/.*/contract\.yaml$)|(?:^|/)drift/dod_receipts/
         pass_filenames: true
         stages: [pre-commit]
       - id: check-ai-slop
@@ -509,6 +521,25 @@ repos:
           with a bounded, documented registry of terminal-command classes (printf/echo literals, grep
           -c, wc -l, --jq sha/oid paths). Exit 1 on any violation.
         entry: uv run python scripts/validation/check_receipt_hardening.py --staged
+        language: system
+        files: ^(drift/dod_receipts/.*\.yaml|contracts/.*\.yaml)$
+        pass_filenames: false
+        require_serial: true
+        stages: [pre-commit]
+
+      - id: check-contract-change-rebinds-receipts
+        name: A contract change re-verifies every per-entry binding it moves (OMN-18304)
+        description: >
+          The hardening gate above validates the files in the diff. A changed contract is routed to the
+          contract-shaped check and is never expanded into that ticket's receipts, so a rename or move
+          of a dod_evidence entry leaves every receipt bound to it stale while the receipt's own bytes
+          stay untouched and therefore unexamined. Measured on onex_change_control#9327: a same-ticket
+          union renamed one item and left the pre-rename contract_entry_sha256, which surfaced only in
+          CI as occ-preflight reporting a hash mismatch. This hook compares the contract's per-entry hashes
+          against HEAD and re-verifies every receipt bound to an entry this change added, removed or moved.
+          Entries the change did not disturb stay out of scope, so it reports this author's defect and
+          never somebody else's. No suppression file and no exemption annotation. Exit 1 on any violation.
+        entry: uv run python scripts/validation/check_contract_change_rebinds_receipts.py --staged
         language: system
         files: ^(drift/dod_receipts/.*\.yaml|contracts/.*\.yaml)$
         pass_filenames: false

@@ -273,6 +273,44 @@ jobs:
           uv run python scripts/validation/check_receipt_hardening.py \
             --paths-file0 "$changed_paths_file"
 
+      # OMN-18304: the step above validates the FILES in the diff. A changed
+      # contract is routed to the contract-shaped check and is never expanded
+      # into that ticket's receipts, so a rename or move of a dod_evidence entry
+      # leaves every receipt bound to it stale while the receipt's own bytes are
+      # untouched and therefore unexamined. Measured on this repo's own #9327: a
+      # same-ticket union renamed one item and left the pre-rename
+      # contract_entry_sha256, which surfaced only downstream as occ-preflight
+      # reporting a hash mismatch, and was recomputed by hand.
+      #
+      # The control runs FIRST and unconditionally. A gate whose clean verdict is
+      # never shown to be falsifiable is indistinguishable from a gate that
+      # cannot fail, and this one is scoped narrowly enough that a scoping bug
+      # would silently empty it. SYNC with pre-commit hook
+      # 'check-contract-change-rebinds-receipts'.
+      - name: Contract-change rebind gate — positive control
+        run: |
+          uv run python scripts/validation/check_contract_change_rebinds_receipts.py \
+            --self-test
+      - name: Contract-change rebind gate
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          changed_contracts_file="$(mktemp)"
+          trap 'rm -f "$changed_contracts_file"' EXIT
+          git diff --name-only -z --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- \
+            ':(glob)contracts/*.yaml' \
+            ':(glob)contracts/*.yml' > "$changed_contracts_file"
+          if [ ! -s "$changed_contracts_file" ]; then
+            echo "No changed contract: nothing to re-verify."
+            exit 0
+          fi
+          uv run python scripts/validation/check_contract_change_rebinds_receipts.py \
+            --paths-file0 "$changed_contracts_file" \
+            --base-rev "$(git merge-base "origin/${base_ref}" HEAD)"
+
       # OMN-14428: every gate above is scoped to the data files it validates
       # (drift/dod_receipts/, contracts/, ...), so a PR that edits the gate's
       # own code but touches zero data files never executes it. That exact
