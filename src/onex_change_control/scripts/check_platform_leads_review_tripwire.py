@@ -1,96 +1,188 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""Tripwire for the platform-leads-review assumption behind OMN-14441 (OMN-14445).
+"""Tripwire for the machine dual control on prod-promotion grants (OMN-18327).
 
-`validate_prod_promotion_grants.py` rejects a grant whose `approved_by`
-equals the PR author. That check is a *complete* defense against forged
-self-approval only because `@OmniNode-ai/platform-leads` has exactly one
-member today: an honest `approved_by` on any grant MUST name that person,
-so a mismatch is unambiguous. The moment a second platform lead joins, the
-guarantee silently degrades — a PR author could write the *other* lead's
-login into `approved_by` without them ever reviewing anything, and nothing
-would catch it, because `required_pull_request_reviews` (CODEOWNERS
-enforcement) is intentionally NOT enabled on `dev` (enabling it would make a
-grant PR opened by the sole lead permanently unapprovable — GitHub blocks
-self-approval of your own PR; see OMN-14445 for the operator-scoped
-decision this requires, which this script does not make).
+WHAT THIS ASSERTS, AND WHY THE NAME NO LONGER DESCRIBES IT
+----------------------------------------------------------
+The console-script name, the `ci.yml` job name, and this module's filename
+are deliberately UNCHANGED from the OMN-14445 original. They are load-bearing
+identifiers: the job name is keyed in
+`tests/test_omn_16373_cross_repo_pat_retirement.py`, cited by the merged,
+append-only OCC contract `contracts/OMN-16373.yaml`, and surfaced as a check
+name on every PR in this repo. Renaming them would be a CI change in a change
+that is supposed to make exactly one substantive change. Read the name as an
+identifier, not as a description of the assertion below.
 
-This script converts that silent, time-bombed assumption into a loud,
-self-monitoring one: it fails the moment `@platform-leads` grows past one
-member while CODEOWNERS review is still unenforced, instead of letting the
-safety property expire unnoticed.
+ORIGINAL SCOPE (OMN-14445), NOW SUPERSEDED
+-------------------------------------------
+This job used to assert a GitHub setting: it FAILED whenever
+`@OmniNode-ai/platform-leads` had more than one member while
+`required_pull_request_reviews` was absent on `dev`. The reasoning was that
+OMN-14441's `approved_by != PR-author` check is a complete defense against a
+forged self-approval only while the team has exactly one member, so a second
+member without CODEOWNERS review would let an author name the OTHER lead in
+`approved_by` with nobody having reviewed anything.
+
+That tripwire did exactly what it was built to do: it fired on 2026-09-04,
+eight minutes after a second platform lead joined, and `require_code_owner_
+reviews` was enabled on `dev` to clear it. The consequence was the merge
+freeze the org's standing rule exists to prevent. Every lane in this fleet
+commits under one shared account, so the operator is the author of record on
+essentially every change-control PR, and GitHub blocks self-approval — which
+left OCC#9362 green on every required check and unmergeable, and with it every
+product PR whose OCC companion had to merge first.
+
+Operator ruling, in-session, 2026-09-13, firm, recorded verbatim at
+`docs/tracking/ROLLING_WORK_LEDGER.md:7452`: "you need to make sure that OCC
+tickets are mechanical, like they're supposed to be." Read together with the
+standing 2026-08-28 ruling that no human review is a required check on any
+process until full-time employees exist, change-control PRs land on machine
+gates only. Asserting a GitHub review setting is therefore asserting a thing
+the org has ruled out, and a gate that demands a state policy forbids is a
+gate that can only be satisfied by breaking policy.
+
+CURRENT SCOPE
+-------------
+The same safety concern — an approval that the requester supplied to
+themselves — is now carried by two MACHINE refusals, and this job asserts
+that both of them exist rather than asserting that a human reviewed anything.
+
+  1. AUTHORING TIME, in this repo. `validate_prod_promotion_grants` refuses
+     an entry NEW in the change whose `approved_by` is the requester, with
+     the reason string `self_granted` (OMN-17157). Asserted BEHAVIOURALLY:
+     this job builds a synthetic self-approved entry, runs the real
+     validator over it, and requires a refusal — and then runs the SAME
+     entry with a different approver and requires NO self-approval refusal.
+     A check that only ever proves a failure case cannot tell a working
+     validator from one that refuses everything, so the positive control is
+     part of the gate, not part of its test suite.
+
+  2. AUTHORING TIME, WIRED. The refusal existing in a module proves nothing
+     if CI never passes a requester: `validate_grants` runs the check only
+     when `requester is not None`. This job therefore parses `ci.yml` and
+     requires that the `validate-prod-promotion-grants` job actually passes
+     `--requester`. That job is unconditional and sits under the required
+     `CI Summary` rollup, which is fail-closed on a skipped or cancelled
+     member.
+
+  3. PROMOTION TIME, in omninode_infra. `scripts/validate_prod_promotion_
+     grant.py` refuses `approved_by == requested_by` against the DEPLOY
+     DISPATCHER, an identity that is not knowable when the grant is
+     authored, and resolves it to `EnumGrantOutcome.SELF_GRANTED`. This is
+     the half that the authoring-time check narrows rather than replaces, so
+     losing it silently is the failure this tripwire now exists to catch.
+     Read over the GitHub API, org-private, with the same credential and the
+     same retry/classification machinery the original reads used.
+
+Any of the three missing is a TRIP (exit 1). The check is fail-closed on an
+unreadable fact (exit 2), exactly as before.
+
+THE HONEST LIMIT, KEPT
+----------------------
+This is the same limit CLAUDE.md rule 12 states in its own text, and nothing
+here removes it: no file proves a human said the words. Neither refusal stops
+a requester from typing the OTHER lead's login into `approved_by` when that
+lead never approved anything. What the machine controls enforce is BLAST
+RADIUS — a grant is digest-pinned, time-bounded, single-use, uniquely
+identified, refused when self-named at authoring time, and refused again when
+self-named at dispatch time — not operator authenticity. Enforced human review
+was the only control that would have covered authenticity, and the operator
+has ruled it out until there are full-time employees to carry it. Do not
+re-add it here; re-raise it with the operator instead.
 
 Usage:
     uv run check-platform-leads-review-tripwire
 
 Exit codes:
-    0: safe — either CODEOWNERS review is independently enforced, or
-       platform-leads has <= 1 member (an honest approved_by has only one
-       possible value).
-    1: TRIPPED — platform-leads has > 1 member and CODEOWNERS review is
-       still unenforced; OMN-14441's self-approval check no longer fully
-       covers forged approvals.
-    2: INCONCLUSIVE — could not determine one or both facts because the
-       token lacks scope to read team membership or branch protection, or
-       because an unclassified GitHub API failure occurred. Treated as a
-       failure: an unproven safety property does not pass.
+    0: safe — both machine refusals exist and the authoring-time one is wired.
+    1: TRIPPED — at least one of the three facts is false. The prod-promotion
+       grant's dual control has lost a half; say which one in the message.
+    2: INCONCLUSIVE — a fact could not be determined (token scope, an
+       unreadable `ci.yml`, or an unclassified GitHub API failure). Treated
+       as a failure: an unproven safety property does not pass.
 
-Wedge-risk note (OMN-14445 review): unlike this repo's other cross-repo `gh`
-usage (which clones PUBLIC repos and works even with no token at all), the
-two API reads here are ORG-PRIVATE with no unauthenticated fallback — this
-job has a hard dependency on a token with `read:org` scope
-(`CROSS_REPO_PAT` in CI). If that PAT is ever absent, expired, or rotated
-without the replacement carrying `read:org`, this job goes INCONCLUSIVE on
-EVERY PR, not just the PR that changed the grants file, because it's
-unconditional. That is a real fail-closed trade-off, not a hypothetical:
-GitHub also withholds repo secrets entirely from `pull_request` runs
-triggered by a fork (this repo has none historically, but the code path
-exists). `--credential-origin` exists so the failure message names which case
-applies instead of leaving an operator to guess at 3am.
+Wedge-risk note (OMN-14445 review, still current): the promotion-time read is
+ORG-PRIVATE with no unauthenticated fallback, so this job has a hard
+dependency on a token with access to omninode_infra (`CROSS_REPO_PAT` in CI).
+If that PAT is ever absent, expired, or rotated without that access, this job
+goes INCONCLUSIVE on EVERY PR, not just a PR that changes the grants file,
+because it is unconditional. `--credential-origin` exists so the failure
+message names which case applies instead of leaving an operator to guess at
+3am. The two local facts need no network at all, which is a narrowing of that
+exposure: the original scope required a live read for BOTH of its facts.
 
-Rate-limit note (OMN-16373): the original `--credential-origin` diagnostic
-named a *scope* problem as the leading hypothesis for ANY non-zero `gh`
-exit. That was wrong for the single most common real failure. GitHub
-returns **HTTP 403 for BOTH** "your token lacks the scope" and "you
-exhausted the REST rate limit", and `CROSS_REPO_PAT` shares one 5,000
-req/hr primary bucket with every other tool, agent, and workflow acting as
-its owner. Every observed INCONCLUSIVE on this job to date has been the
-rate-limit case (e.g. jobs 98501448095 / 98499618819, 2026-08-27:
-"API rate limit exceeded for user ID 1002253 ... (HTTP 403)"), yet the
-message asserted a scope regression — sending at least five separate
-lanes chasing a credential that was never broken. Failures are therefore
-now classified from the error BODY, not the status code, and the
-retryable classes (rate limit, 5xx/network) are retried within the job's
-own timeout budget before the gate gives up.
+Rate-limit note (OMN-16373): GitHub returns **HTTP 403 for BOTH** "your token
+lacks the scope" and "you exhausted the REST rate limit", and `CROSS_REPO_PAT`
+shares one 5,000 req/hr primary bucket with every other tool, agent, and
+workflow acting as its owner. Every observed INCONCLUSIVE on this job to date
+has been the rate-limit case (e.g. jobs 98501448095 / 98499618819,
+2026-08-27), yet an earlier message asserted a scope regression — sending at
+least five separate lanes chasing a credential that was never broken. Failures
+are therefore classified from the error BODY, not the status code, and the
+retryable classes (rate limit, 5xx/network) are retried within the job's own
+timeout budget before the gate gives up.
 
 The gate remains fail-closed for policy and credential failures. Confirmed
 rate-limit exhaustion is different: it proves only that the shared API bucket
-is empty, not that the token lost `read:org` or that the platform-leads
-assumption changed. After the bounded retry budget, the job exits 0 with a
-DEFERRED diagnostic so one overloaded credential cannot wedge every PR in the
-repo. Retrying a *transient* failure is not weakening a gate — reporting a
-transient failure as a permanent credential defect is.
+is empty, not that a refusal was removed. After the bounded retry budget, the
+job exits 0 with a DEFERRED diagnostic so one overloaded credential cannot
+wedge every PR in the repo. Retrying a *transient* failure is not weakening a
+gate — reporting a transient failure as a permanent credential defect is.
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final, NamedTuple
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
+
+import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-DEFAULT_ORG = "OmniNode-ai"
-DEFAULT_TEAM = "platform-leads"
-DEFAULT_REPO = "OmniNode-ai/onex_change_control"
-DEFAULT_BRANCH = "dev"
+#: This repo's CI workflow, relative to the checkout root.
+DEFAULT_CI_WORKFLOW: Final[str] = ".github/workflows/ci.yml"
+#: The `ci.yml` job that must actually invoke the grants validator with a
+#: requester. Spelled once; `authoring_time_refusal_wired` resolves it out of
+#: the parsed workflow rather than grepping, so a mention in a comment or in a
+#: different job cannot satisfy it.
+GRANTS_VALIDATOR_JOB: Final[str] = "validate-prod-promotion-grants"
+#: The flag whose ABSENCE makes the authoring-time refusal dead code:
+#: `validate_grants` skips the self-approval check when `requester is None`.
+REQUESTER_FLAG: Final[str] = "--requester"
+
+#: The promotion-time half of the dual control, in the separate private repo
+#: that owns the k3s prod-promotion gate.
+DEFAULT_PROMOTION_GATE_REPO: Final[str] = "OmniNode-ai/omninode_infra"
+DEFAULT_PROMOTION_GATE_PATH: Final[str] = "scripts/validate_prod_promotion_grant.py"
+DEFAULT_PROMOTION_GATE_REF: Final[str] = "dev"
+#: Two INDEPENDENT markers, both required. The comparison alone could survive
+#: while the outcome it produces is downgraded to a warning, and the enum
+#: member alone could survive with nothing reaching it; requiring both means a
+#: rename of either trips this gate instead of half-passing it.
+PROMOTION_GATE_MARKERS: Final[tuple[str, ...]] = (
+    "approved_by == requested_by",
+    "SELF_GRANTED",
+)
+
+#: The reason string BOTH halves of the dual control emit for this one
+#: condition — `EnumGrantOutcome.SELF_GRANTED` at promotion time, and
+#: `SELF_GRANTED_REASON` in this repo's grants validator at authoring time.
+#: Spelled here as a literal rather than imported from the validator on
+#: purpose: when the validator does not define it, that is the TRIP this gate
+#: reports, and a module-level ImportError would report it as a crash instead.
+SELF_GRANTED_REASON: Final[str] = "self_granted"
 
 #: Total attempts (initial + retries) for a retryable `gh api` failure.
 GH_MAX_ATTEMPTS: Final[int] = 4
@@ -195,6 +287,16 @@ class TripwireInconclusiveError(RuntimeError):
 
 class TripwireDeferredRateLimitError(TripwireInconclusiveError):
     """Raised when GitHub rate limiting, not policy state, blocks the live read."""
+
+
+class TripwireAuthoringRefusalAbsentError(RuntimeError):
+    """Raised when the authoring-time refusal is not present to be exercised.
+
+    Deliberately NOT a `TripwireInconclusiveError`. An absent refusal is a
+    determinate, reportable fact — the control is gone — and reporting it as
+    "could not determine" would send an operator to check a credential
+    instead of to restore the check.
+    """
 
 
 def _run_gh(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -461,87 +563,271 @@ def _diagnose(
     return f"{cause}\n{action}: {raw}"
 
 
-def get_team_member_count(
-    org: str,
-    team_slug: str,
-    *,
-    credential_origin: str = "unknown",
-    deadline: float | None = None,
-) -> int:
-    """Return the live member count of `org/team_slug`, or raise if unreadable."""
-    result = _run_gh_checked(
-        ["api", f"orgs/{org}/teams/{team_slug}/members", "--jq", "length"],
-        action=f"could not read membership of {org}/{team_slug}",
-        credential_origin=credential_origin,
-        deadline=deadline,
-    )
+def _synthetic_grant_entry(*, approved_by: str) -> dict[str, Any]:
+    """A schema-shaped grant entry used only to exercise the real validator.
+
+    Never written to the repository's grants file and never resolvable by
+    anything downstream: the digest is all-zero and the grant id is the nil
+    uuid4 shape. Its only job is to give the authoring-time refusal something
+    real to refuse, so this gate proves BEHAVIOUR rather than matching text in
+    a module it never runs.
+    """
+    now = datetime.now(tz=UTC)
+    return {
+        "grant_id": "grant-00000000-0000-4000-8000-000000000000",
+        "runtime_lane": "prod",
+        "image_digest": f"sha256:{'0' * 64}",
+        "promotion_batch_id": "tripwire-synthetic-probe",
+        "approved_by": approved_by,
+        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "expires_at": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reason": (
+            "synthetic entry built in-memory by the OMN-18327 tripwire to "
+            "exercise the self-approval refusal; never persisted"
+        ),
+    }
+
+
+def _self_approval_errors(*, approved_by: str, requester: str) -> list[str]:
+    """Run the REAL grants validator over one synthetic entry; return its errors.
+
+    Raises `TripwireAuthoringRefusalAbsentError` when the validator does not
+    expose the OMN-17157 self-approval surface at all — that is a TRIP, not an
+    INCONCLUSIVE: a refusal that is not in the module is a refusal that is not
+    enforced, which is precisely the condition this gate reports.
+    """
     try:
-        return int(result.stdout.strip())
-    except ValueError as exc:
-        msg = f"unexpected member-count output for {org}/{team_slug}: {result.stdout!r}"
+        from onex_change_control.scripts.validate_prod_promotion_grants import (
+            validate_grants,
+        )
+    except ImportError as exc:  # pragma: no cover - the module is a sibling
+        msg = (
+            "could not import validate_prod_promotion_grants — the "
+            f"authoring-time refusal cannot be exercised at all: {exc}"
+        )
+        raise TripwireAuthoringRefusalAbsentError(msg) from exc
+
+    signature = inspect.signature(validate_grants)
+    if "requester" not in signature.parameters:
+        msg = (
+            "validate_grants() takes no `requester` parameter, so it cannot "
+            "refuse a self-approved grant at authoring time. The OMN-17157 "
+            "control is absent from this repo."
+        )
+        raise TripwireAuthoringRefusalAbsentError(msg)
+
+    payload = {"entries": [_synthetic_grant_entry(approved_by=approved_by)]}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        probe_file = Path(tmpdir) / "tripwire_probe_grants.yaml"
+        probe_file.write_text(yaml.safe_dump(payload), encoding="utf-8")
+        # Called through a kwargs mapping on purpose. Whether `validate_grants`
+        # ACCEPTS `requester` is the fact this gate exists to determine, and it
+        # is determined at runtime by the `inspect.signature` guard above — a
+        # statically-typed call site would make this module fail to type-check
+        # against exactly the revision it is supposed to report on.
+        kwargs: dict[str, Any] = {"requester": requester}
+        result = validate_grants(probe_file, **kwargs)
+    return [str(error) for error in result.errors]
+
+
+def authoring_time_refusal_behaves() -> tuple[bool, str]:
+    """Prove the OMN-17157 refusal fires on a self-approval and only on one.
+
+    Two runs, and BOTH are part of the gate:
+
+      * the negative case — `approved_by` IS the requester — must produce a
+        `self_granted` error; and
+      * the positive control — the identical entry with a different approver
+        — must produce NO `self_granted` error.
+
+    Without the second run this gate cannot tell a working validator from one
+    that refuses every grant, and "it refused" would be evidence of nothing.
+    """
+    requester = "tripwire-requester"
+    try:
+        self_approved = _self_approval_errors(
+            approved_by=requester, requester=requester
+        )
+        peer_approved = _self_approval_errors(
+            approved_by="tripwire-other-approver", requester=requester
+        )
+    except TripwireAuthoringRefusalAbsentError as exc:
+        return False, str(exc)
+
+    refused_self = any(SELF_GRANTED_REASON in error for error in self_approved)
+    refused_peer = any(SELF_GRANTED_REASON in error for error in peer_approved)
+
+    if not refused_self:
+        return False, (
+            "the grants validator did NOT refuse a synthetic entry whose "
+            f"approved_by equals the requester ({requester!r}). Expected an "
+            f"error containing {SELF_GRANTED_REASON!r}; got: {self_approved!r}"
+        )
+    if refused_peer:
+        return False, (
+            "the grants validator refused an entry approved by someone OTHER "
+            "than the requester, so its refusal does not distinguish a "
+            "self-approval from an ordinary grant and proves nothing. Errors: "
+            f"{peer_approved!r}"
+        )
+    return True, (
+        "the grants validator refuses a self-approved entry with "
+        f"{SELF_GRANTED_REASON!r} and does not refuse the same entry approved "
+        "by a different identity (positive control)"
+    )
+
+
+def authoring_time_refusal_wired(ci_workflow: Path) -> tuple[bool, str]:
+    """Prove `ci.yml` actually passes a requester to the grants validator.
+
+    `validate_grants` runs the self-approval check only when `requester is
+    not None`, so a refusal that CI never supplies a requester to is dead
+    code. Parsed as YAML rather than grepped: a `--requester` appearing in a
+    comment, or in a different job, is not the same fact.
+    """
+    try:
+        workflow = yaml.safe_load(ci_workflow.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        msg = (
+            f"could not parse {ci_workflow} to confirm the grants validator "
+            f"is wired with a requester: {exc}"
+        )
         raise TripwireInconclusiveError(msg) from exc
 
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if not isinstance(jobs, dict):
+        msg = (
+            f"{ci_workflow} has no `jobs:` mapping; cannot confirm the grants "
+            "validator is wired with a requester"
+        )
+        raise TripwireInconclusiveError(msg)
+    job = jobs.get(GRANTS_VALIDATOR_JOB)
+    if not isinstance(job, dict):
+        return False, (
+            f"{ci_workflow} declares no `{GRANTS_VALIDATOR_JOB}` job, so the "
+            "authoring-time refusal runs nowhere in CI"
+        )
 
-def is_review_required(
+    steps = job.get("steps")
+    run_text = "\n".join(
+        str(step.get("run", ""))
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict)
+    )
+    if REQUESTER_FLAG not in run_text:
+        return False, (
+            f"the `{GRANTS_VALIDATOR_JOB}` job in {ci_workflow} never passes "
+            f"`{REQUESTER_FLAG}`, so validate_grants() runs with requester=None "
+            "and the OMN-17157 self-approval check is skipped on every PR"
+        )
+    return True, (
+        f"the `{GRANTS_VALIDATOR_JOB}` job in {ci_workflow} passes "
+        f"`{REQUESTER_FLAG}`, and that job is unconditional under the required "
+        "`CI Summary` rollup"
+    )
+
+
+def promotion_time_refusal_present(
     repo: str,
-    branch: str,
+    path: str,
+    ref: str,
     *,
     credential_origin: str = "unknown",
     deadline: float | None = None,
-) -> bool:
-    """Return True if `required_pull_request_reviews` is configured on `repo@branch`."""
+) -> tuple[bool, str]:
+    """Prove the k3s promotion-time gate still refuses a self-granted promotion.
+
+    Read over the GitHub API because omninode_infra is a separate, private
+    repo: this job has no checkout of it and cloning one would cost minutes on
+    a gate that runs on every PR. Two independent markers are required, so a
+    rename of either the comparison or the outcome enum trips this rather than
+    half-passing.
+    """
     result = _run_gh_checked(
         [
             "api",
-            f"repos/{repo}/branches/{branch}/protection",
-            "--jq",
-            'has("required_pull_request_reviews")',
+            # `ref` goes in the query string, not through `--field`: a
+            # `--field` on `gh api` forces a POST, which this read is not.
+            f"repos/{repo}/contents/{path}?ref={ref}",
+            "--header",
+            "Accept: application/vnd.github.raw",
         ],
-        action=f"could not read branch protection for {repo}@{branch}",
+        action=f"could not read {repo}:{path}@{ref}",
         credential_origin=credential_origin,
         deadline=deadline,
     )
-    return result.stdout.strip() == "true"
+    source = result.stdout
+    missing = [marker for marker in PROMOTION_GATE_MARKERS if marker not in source]
+    if missing:
+        return False, (
+            f"{repo}:{path}@{ref} no longer carries the promotion-time "
+            f"self-approval refusal — missing marker(s): {missing!r}. That is "
+            "the half of the dual control that compares approved_by against "
+            "the DEPLOY DISPATCHER, an identity not knowable when the grant "
+            "was authored; the authoring-time check narrows it and does not "
+            "replace it."
+        )
+    return True, (
+        f"{repo}:{path}@{ref} refuses `approved_by == requested_by` and "
+        "resolves it to SELF_GRANTED"
+    )
 
 
 def evaluate(
-    *, member_count: int, review_required: bool, org: str, team: str
+    *,
+    authoring: tuple[bool, str],
+    wired: tuple[bool, str],
+    promotion: tuple[bool, str],
 ) -> tuple[bool, str]:
     """Pure decision logic, isolated from I/O so it is directly unit-testable.
 
-    Returns (safe, message).
+    Returns (safe, message). Every failing fact is named, not just the first:
+    an operator reading this at 3am should learn which halves of the dual
+    control are gone in one read, not one re-run per missing half.
     """
-    if review_required:
-        return (
-            True,
-            f"PASS: required_pull_request_reviews is enabled — CODEOWNERS review "
-            f"enforces approver identity independently of @{org}/{team} team size "
-            f"({member_count} member(s)).",
+    authoring_ok, authoring_detail = authoring
+    wired_ok, wired_detail = wired
+    promotion_ok, promotion_detail = promotion
+    failures = [
+        detail
+        for ok, detail in (
+            (authoring_ok, f"AUTHORING-TIME REFUSAL: {authoring_detail}"),
+            (wired_ok, f"AUTHORING-TIME REFUSAL NOT WIRED: {wired_detail}"),
+            (promotion_ok, f"PROMOTION-TIME REFUSAL: {promotion_detail}"),
         )
-    if member_count > 1:
-        return (
-            False,
-            f"TRIPWIRE TRIPPED: @{org}/{team} has {member_count} members but "
-            "required_pull_request_reviews is not enabled — OMN-14441's "
-            "approved_by != PR-author check can no longer distinguish an honest "
-            "approval from a forged one (a PR author could name any other "
-            "platform lead without them reviewing anything). See OMN-14445.",
+        if not ok
+    ]
+    if failures:
+        joined = "\n  - ".join(failures)
+        return False, (
+            "TRIPWIRE TRIPPED: the machine dual control on prod-promotion "
+            "grants has lost a half. Since the 2026-09-13 operator ruling "
+            "(docs/tracking/ROLLING_WORK_LEDGER.md:7452) these refusals are "
+            "the ONLY dual control on a prod-promotion grant — no human "
+            "review stands behind them. Restore the missing half; do not "
+            f"re-add a required review to compensate.\n  - {joined}"
         )
-    return (
-        True,
-        f"PASS (by construction): @{org}/{team} has {member_count} member(s); an "
-        "honest approved_by has only one possible value. This holds only until "
-        "a second platform lead joins — see OMN-14445 for the operator decision "
-        "needed before that happens.",
+    return True, (
+        "PASS: the machine dual control on prod-promotion grants is intact.\n"
+        f"  - authoring time: {authoring_detail}\n"
+        f"  - wired in CI: {wired_detail}\n"
+        f"  - promotion time: {promotion_detail}\n"
+        "  - honest limit (CLAUDE.md rule 12): no file proves a human said "
+        "the words. This enforces blast radius, not operator authenticity."
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--org", default=DEFAULT_ORG)
-    parser.add_argument("--team", default=DEFAULT_TEAM)
-    parser.add_argument("--repo", default=DEFAULT_REPO)
-    parser.add_argument("--branch", default=DEFAULT_BRANCH)
+    parser.add_argument(
+        "--ci-workflow",
+        type=Path,
+        default=Path(DEFAULT_CI_WORKFLOW),
+        help="Path to this repo's ci.yml, relative to the checkout root.",
+    )
+    parser.add_argument("--promotion-gate-repo", default=DEFAULT_PROMOTION_GATE_REPO)
+    parser.add_argument("--promotion-gate-path", default=DEFAULT_PROMOTION_GATE_PATH)
+    parser.add_argument("--promotion-gate-ref", default=DEFAULT_PROMOTION_GATE_REF)
     parser.add_argument(
         "--credential-origin",
         default="unknown",
@@ -556,16 +842,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     retry_deadline = time.monotonic() + GH_SHARED_RETRY_DEADLINE_SECONDS
 
+    authoring = authoring_time_refusal_behaves()
     try:
-        member_count = get_team_member_count(
-            args.org,
-            args.team,
-            credential_origin=args.credential_origin,
-            deadline=retry_deadline,
-        )
-        review_required = is_review_required(
-            args.repo,
-            args.branch,
+        wired = authoring_time_refusal_wired(args.ci_workflow)
+        promotion = promotion_time_refusal_present(
+            args.promotion_gate_repo,
+            args.promotion_gate_path,
+            args.promotion_gate_ref,
             credential_origin=args.credential_origin,
             deadline=retry_deadline,
         )
@@ -576,16 +859,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"TRIPWIRE INCONCLUSIVE: {exc}", file=sys.stderr)
         return 2
 
-    print(f"@{args.org}/{args.team} member count: {member_count}")
-    print(
-        f"required_pull_request_reviews on {args.repo}@{args.branch}: {review_required}"
-    )
-    safe, message = evaluate(
-        member_count=member_count,
-        review_required=review_required,
-        org=args.org,
-        team=args.team,
-    )
+    print(f"authoring-time refusal behaves: {authoring[0]}")
+    print(f"authoring-time refusal wired in CI: {wired[0]}")
+    print(f"promotion-time refusal present: {promotion[0]}")
+    safe, message = evaluate(authoring=authoring, wired=wired, promotion=promotion)
     print(message, file=sys.stderr if not safe else sys.stdout)
     return 0 if safe else 1
 
