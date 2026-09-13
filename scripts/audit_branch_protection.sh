@@ -12,7 +12,11 @@
 #
 # Per-branch checks (run for main AND dev):
 #   1. Approving reviews are NOT enforced (solo dev — required reviews block PRs),
-#      except on the explicitly review-gated main repos below. Judged via
+#      except on the explicitly review-gated repos below (applies on every
+#      audited branch for that repo, not main only — OMN-18287: a repo whose
+#      main is deliberately codeowner-gated carries the identical model on
+#      dev, and the carve-out must follow the repo, not one branch of it).
+#      Judged via
 #      GraphQL (authoritative), NOT the REST `required_pull_request_reviews`
 #      object. REST can report a phantom `required_approving_review_count` even
 #      when reviews are not actually enforced, which would false-fail dev;
@@ -128,11 +132,12 @@ RELEASE_SYNCED_MAIN_REPOS=(
 # next release sync rather than protect anything.
 MAIN_AUDIT_EXEMPT_REPOS=(omnibase_compat)
 
-# Main branches where code-owner review is the deliberate anti-self-issue
-# anchor for a sensitive governance file. These repos are not release-synced:
-# their main branches retain ordinary required-context checks, but this review
-# requirement overrides the solo-dev invariant above.
-REVIEW_GATED_MAIN_REPOS=(onex_change_control)
+# Repos where code-owner review is the deliberate anti-self-issue anchor for a
+# sensitive governance file. The carve-out applies on EVERY audited branch for
+# these repos (main and dev), not main only (OMN-18287) — these repos are not
+# release-synced, so their branches retain ordinary required-context checks,
+# but this review requirement overrides the solo-dev invariant above on both.
+REVIEW_GATED_REPOS=(onex_change_control)
 
 # Active repos that accept ticketed PRs must directly require the Receipt Gate.
 # Do not treat CI Summary as an implicit substitute; the branch protection rule
@@ -193,9 +198,9 @@ is_main_audit_exempt() {
   return 1
 }
 
-is_review_gated_main() {
+is_review_gated() {
   local repo="$1"
-  for p in "${REVIEW_GATED_MAIN_REPOS[@]}"; do
+  for p in "${REVIEW_GATED_REPOS[@]}"; do
     if [[ "$p" == "$repo" ]]; then
       return 0
     fi
@@ -347,10 +352,11 @@ check_branch() {
   }
 
   # 1. Review enforcement is GraphQL-authoritative. Ordinary branches retain
-  #    the solo-dev invariant; explicitly review-gated mains require both
-  #    approving and code-owner reviews.
+  #    the solo-dev invariant; explicitly review-gated repos (REVIEW_GATED_REPOS)
+  #    require both approving and code-owner reviews on every audited branch
+  #    for that repo, not main only (OMN-18287).
   TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-  if [[ "$branch" == "main" ]] && is_review_gated_main "$repo"; then
+  if is_review_gated "$repo"; then
     local review_state
     review_state=$(printf '%s' "$gql_rules" | jq -r --arg b "$branch" '
       [ .data.repository.branchProtectionRules.nodes[]?
@@ -359,10 +365,10 @@ check_branch() {
       | if length == 0 then "unknown" else .[0] end
     ' 2>/dev/null || echo "unknown")
     if [[ "$review_state" == "true:true" ]]; then
-      echo "    [${branch}] PASS: approving and code-owner reviews are enforced (review-gated main)"
+      echo "    [${branch}] PASS: approving and code-owner reviews are enforced (review-gated branch)"
       emit_jsonl "$repo" "$branch" "reviews_required" "PASS" "requiresApprovingReviews=true; requiresCodeOwnerReviews=true"
     else
-      echo "    [${branch}] FAIL: review-gated main requires approving and code-owner reviews (GraphQL state=${review_state})"
+      echo "    [${branch}] FAIL: review-gated branch requires approving and code-owner reviews (GraphQL state=${review_state})"
       emit_jsonl "$repo" "$branch" "reviews_required" "FAIL" "requiresApprovingReviews/requiresCodeOwnerReviews=${review_state}"
       REPO_OK=false
       FAILURES=$((FAILURES + 1))
