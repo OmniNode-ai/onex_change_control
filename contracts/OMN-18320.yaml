@@ -1,48 +1,57 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-18320"
-title: "Retire the lab compose prod lane from the lane census manifest"
-summary: >-
-  Bind evidence for OmniNode-ai/omnibase_infra#3489, which removes the retired lab compose prod lane from
-  the lane census desired-state manifest while leaving production governance paths unchanged.
+title: "Hand-authored OCC evidence for OMN-18320"
+summary: >
+  Hand-authored OCC contract for OmniNode-ai/omnibase_infra PR #3489. The autobind emitter declined to
+  mint a companion for this PR with skip:NO_RED_DERIVABLE_CHECK (OMN-15247) — no changed-file candidate
+  was RED-derivable by its own heuristic, because the change removes a declaration rather than adding
+  a symbol a grep can find. It explicitly directs that hand-authored evidence is required, which is what
+  this contract is. The binding below IS RED-derivable, just not in the shape the emitter looks for: the
+  retired lane is present at the merge base and absent at the PR head.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
 evidence_requirements:
   - kind: "ci"
-    description: "PR #3489 head and changed-file scope are observable."
-    command: "gh pr view 3489 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid,files"
+    description: "PR #3489 CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
   - kind: "tests"
-    description: "The lane census regression tests changed by PR #3489 pass on the PR head."
-    command: >-
-      env -u VIRTUAL_ENV uv run pytest tests/ci/test_lakshman_lane_governance_boundary.py tests/unit/scripts/test_lane_census_dry_run.py
-      tests/unit/scripts/test_lane_census_manifest_parity.py tests/unit/scripts/test_lane_census_plan.py
-      -q
+    description: |-
+      Behavior proof for PR #3489 on OmniNode-ai/omnibase_infra. The lane-census test
+      surface must stay green with the retired lane removed from the manifest. Bound as
+      dod_evidence item `dod-omn18320-lane-census-suite-green`, executed at cwd
+      `${OMNI_HOME}/omnibase_infra`.
+    command: |-
+      uv run pytest tests/unit/scripts/test_lane_census_plan.py tests/unit/scripts/test_lane_census_dry_run.py tests/unit/scripts/test_lane_census_manifest_parity.py tests/ci/test_lakshman_lane_governance_boundary.py -q
 emergency_bypass:
   enabled: false
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
-  - id: "dod-OmniNode-ai-omnibase_infra-pr-3489"
-    description: "PR #3489 on OmniNode-ai/omnibase_infra — hand-authored evidence for the lane census
-      manifest change."
+  - id: "dod-omn18320-lane-removed-from-census-manifest"
+    description: >
+      PR #3489 on OmniNode-ai/omnibase_infra — the retired lane is declared in the census manifest at
+      the merge base and absent at the PR head. This is the RED-controlled content binding: the same probe
+      against the merge base exits 1.
     source: "manual"
     checks:
       - check_type: "command"
-        check_value: "gh pr view 3489 --repo OmniNode-ai/omnibase_infra --json number,state,headRefName,headRefOid"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/deploy/lane-census/lane-manifest.yaml?ref=1595f9a017ff351426d5b8e099a04b8423dd31a0 --jq '.content' | base64 -d | python3 -c "import sys,yaml; d=yaml.safe_load(sys.stdin); assert 'prod' not in d['lanes']; print(sorted(d['lanes']))"
       - check_type: "command"
         check_value: |-
           gh api repos/OmniNode-ai/omnibase_infra/pulls/3489/files --paginate --jq '.[].filename' | grep -cFx 'deploy/lane-census/lane-manifest.yaml'
-  - id: "dod-lane-census-regression-tests-pr-3489"
-    description: "Changed lane census tests pass on omnibase_infra PR #3489 head 1595f9a017ff351426d5b8e099a04b8423dd31a0."
+  - id: "dod-omn18320-lane-census-suite-green"
+    description: >
+      PR #3489 on OmniNode-ai/omnibase_infra — the lane-census test surface is green with the lane removed,
+      including the frozen 2026-06-11 incident replay that now pins the retired lane spec in-module instead
+      of reading it from the manifest.
     source: "manual"
-    execution_scope: "local_done_gate"
     checks:
       - check_type: "test_passes"
-        check_value: >-
-          env -u VIRTUAL_ENV uv run pytest tests/ci/test_lakshman_lane_governance_boundary.py tests/unit/scripts/test_lane_census_dry_run.py
-          tests/unit/scripts/test_lane_census_manifest_parity.py tests/unit/scripts/test_lane_census_plan.py
-          -q
+        check_value: |-
+          uv run pytest tests/unit/scripts/test_lane_census_plan.py tests/unit/scripts/test_lane_census_dry_run.py tests/unit/scripts/test_lane_census_manifest_parity.py tests/ci/test_lakshman_lane_governance_boundary.py -q
         cwd: "${OMNI_HOME}/omnibase_infra"
   - id: "occ-self-bind-pr-9396"
     description: "Binds OMN-18320 to OCC companion PR #9396 (self-bind)."
