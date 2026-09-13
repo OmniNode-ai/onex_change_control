@@ -327,9 +327,9 @@ resolve_base_ref() {
     fi
 
     if [[ -n "$explicit_ref" ]]; then
-        # GitHub supplies this from the actual PR metadata. Keep CI's
-        # authoritative path at the five-Git-call budget; local branch
-        # identity is deliberately not inferred in this path.
+        # GitHub supplies this from the actual PR metadata. It is also a
+        # developer override in local hooks, so its normalized result receives
+        # the same self-reference check as a configured branch base below.
         if ! normalize_base_ref "$explicit_ref"; then
             echo "ERROR: GITHUB_BASE_REF is malformed; refusing to infer a base." >&2
             return 1
@@ -510,8 +510,25 @@ if ! base_ref="$(resolve_base_ref)"; then
     echo "ERROR: could not resolve an authoritative event or local policy base; refusing to skip token enforcement." >&2
     exit 1
 fi
-if ! base_oid="$(git rev-parse --verify --quiet --end-of-options "${base_ref}^{commit}")"; then
+if ! resolved_oids="$(git rev-parse --quiet "${base_ref}^{commit}" HEAD^{commit} 2>/dev/null)"; then
     echo "ERROR: resolved PR base ${base_ref} is unavailable locally; refusing to skip token enforcement." >&2
+    exit 1
+fi
+base_oid="${resolved_oids%%$'\n'*}"
+head_oid="${resolved_oids#*$'\n'}"
+if [[ "$resolved_oids" != *$'\n'* || ! "$base_oid" =~ ^[0-9a-f]{40}$ || ! "$head_oid" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "ERROR: could not resolve immutable base and HEAD objects; refusing to skip token enforcement." >&2
+    exit 1
+fi
+
+# A base equal to HEAD makes the committed candidate range empty. Reject that
+# self-reference for every explicit/event base, including attached and detached
+# 40-hex forms. The versioned local origin/dev policy remains usable while a
+# developer prepares their first staged commit, and a push event's before SHA
+# retains its distinct server-defined semantics. Resolve base and HEAD together
+# above so this invariant costs no extra Git subprocess.
+if [[ "$base_oid" == "$head_oid" && "${ONEX_SKIP_TOKEN_EVENT:-}" != "push" && ( -n "${ONEX_SKIP_TOKEN_EVENT:-}" || -n "${GITHUB_BASE_REF:-}" || "$base_ref" != "$INTEGRATION_BASE_REF" ) ]]; then
+    echo "ERROR: resolved PR base ${base_ref} is HEAD; refusing an empty committed-change scan." >&2
     exit 1
 fi
 if ! git merge-base "$base_oid" HEAD >/dev/null; then

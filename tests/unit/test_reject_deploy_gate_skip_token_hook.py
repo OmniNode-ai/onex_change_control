@@ -92,6 +92,10 @@ def _init_git_repository(
     """Initialize a feature branch tracking origin/dev in an isolated repository."""
     remote = path / "origin.git"
     subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    # Each synthetic origin receives many short fixture pushes. Disable its
+    # opportunistic auto-GC so a shared-machine maintenance run cannot make a
+    # deterministic hook regression appear to hang inside git-receive-pack.
+    subprocess.run(["git", "-C", str(remote), "config", "gc.auto", "0"], check=True)
     _git(path, "init", "-q")
     _git(path, "config", "user.email", "test@example.invalid")
     _git(path, "config", "user.name", "OMN-17496 test")
@@ -126,6 +130,12 @@ def _init_git_repository(
         _git(path, "push", "-q", "origin", "dev")
 
     _git(path, "checkout", "-qb", "feature", "--track", "origin/dev")
+    # Explicit/event bases that equal HEAD are deliberately rejected: they
+    # prove no committed branch surface. Keep ordinary regressions on a real
+    # feature commit so their selected origin/dev base is meaningful.
+    (path / "feature-context.txt").write_text("ordinary committed feature context\n")
+    _git(path, "add", "feature-context.txt")
+    _git(path, "commit", "-qm", "seed feature context")
 
 
 def _stage_file(path: Path, relative_path: str, content: str) -> None:
@@ -422,6 +432,168 @@ def test_normal_mode_rejects_a_self_referential_local_base(tmp_path: Path) -> No
 
     assert result.returncode == 1
     assert "resolved base origin/feature is this feature branch" in result.stderr
+
+
+@pytest.mark.unit
+def test_normal_mode_rejects_a_self_referential_github_base(tmp_path: Path) -> None:
+    """A local GITHUB_BASE_REF override cannot omit pushed feature commits."""
+    _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "github-self-tracking.md", "[skip-deploy-gate: enforce]\n")
+    _git(tmp_path, "commit", "-qm", "committed feature token")
+    _git(tmp_path, "push", "-qu", "origin", "feature")
+
+    result = _run_normal_hook(tmp_path, environment={"GITHUB_BASE_REF": "feature"})
+
+    assert result.returncode == 1
+    assert (
+        "origin/feature is HEAD; refusing an empty committed-change scan"
+        in result.stderr
+    )
+
+
+@pytest.mark.unit
+def test_workflow_dispatch_rejects_a_self_referential_branch_base(
+    tmp_path: Path,
+) -> None:
+    """A dispatch-selected branch cannot name the checked-out feature itself."""
+    _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "dispatch-self-tracking.md", "[skip-deploy-gate: enforce]\n")
+    _git(tmp_path, "commit", "-qm", "committed feature token")
+    _git(tmp_path, "push", "-qu", "origin", "feature")
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={
+            "ONEX_SKIP_TOKEN_EVENT": "workflow_dispatch",
+            "ONEX_SKIP_TOKEN_BASE": "feature",
+        },
+    )
+
+    assert result.returncode == 1
+    assert (
+        "origin/feature is HEAD; refusing an empty committed-change scan"
+        in result.stderr
+    )
+
+
+@pytest.mark.unit
+def test_workflow_dispatch_rejects_a_detached_base_equal_to_head(
+    tmp_path: Path,
+) -> None:
+    """Detached manual dispatches cannot select HEAD as an empty scan base."""
+    _init_git_repository(tmp_path)
+    _stage_file(tmp_path, "detached-self-tracking.md", "[skip-deploy-gate: enforce]\n")
+    _git(tmp_path, "commit", "-qm", "committed feature token")
+    _git(tmp_path, "checkout", "--detach")
+    head_sha = _git_output(tmp_path, "rev-parse", "HEAD")
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={
+            "ONEX_SKIP_TOKEN_EVENT": "workflow_dispatch",
+            "ONEX_SKIP_TOKEN_BASE": head_sha,
+        },
+    )
+
+    assert result.returncode == 1
+    assert "is HEAD; refusing an empty committed-change scan" in result.stderr
+
+
+@pytest.mark.unit
+def test_github_base_ref_rejects_an_attached_exact_head_sha(tmp_path: Path) -> None:
+    """An attached explicit object ID cannot select the current feature head."""
+    _init_git_repository(tmp_path)
+    head_sha = _git_output(tmp_path, "rev-parse", "HEAD")
+
+    result = _run_normal_hook(tmp_path, environment={"GITHUB_BASE_REF": head_sha})
+
+    assert result.returncode == 1
+    assert "is HEAD; refusing an empty committed-change scan" in result.stderr
+
+
+@pytest.mark.unit
+def test_workflow_dispatch_rejects_an_attached_exact_head_sha(tmp_path: Path) -> None:
+    """A dispatch SHA is checked against HEAD even outside detached CI."""
+    _init_git_repository(tmp_path)
+    head_sha = _git_output(tmp_path, "rev-parse", "HEAD")
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={
+            "ONEX_SKIP_TOKEN_EVENT": "workflow_dispatch",
+            "ONEX_SKIP_TOKEN_BASE": head_sha,
+        },
+    )
+
+    assert result.returncode == 1
+    assert "is HEAD; refusing an empty committed-change scan" in result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("event_name", ["pull_request", "merge_group"])
+def test_non_push_authoritative_exact_head_shas_fail_closed(
+    tmp_path: Path, event_name: str
+) -> None:
+    """PR and merge-queue object bases cannot create an empty branch range."""
+    _init_git_repository(tmp_path)
+    head_sha = _git_output(tmp_path, "rev-parse", "HEAD")
+
+    result = _run_normal_hook(
+        tmp_path,
+        environment={
+            "ONEX_SKIP_TOKEN_EVENT": event_name,
+            "ONEX_SKIP_TOKEN_BASE": head_sha,
+        },
+    )
+
+    assert result.returncode == 1
+    assert "is HEAD; refusing an empty committed-change scan" in result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("environment", "detached"),
+    [
+        ({"GITHUB_BASE_REF": "dev"}, False),
+        (
+            {
+                "ONEX_SKIP_TOKEN_EVENT": "workflow_dispatch",
+                "ONEX_SKIP_TOKEN_BASE": "dev",
+            },
+            False,
+        ),
+        ({"GITHUB_BASE_REF": "dev"}, True),
+        (
+            {
+                "ONEX_SKIP_TOKEN_EVENT": "workflow_dispatch",
+                "ONEX_SKIP_TOKEN_BASE": "dev",
+            },
+            True,
+        ),
+    ],
+)
+def test_valid_attached_and_detached_external_bases_keep_five_git_calls(
+    tmp_path: Path,
+    environment: dict[str, str],
+    detached: bool,  # noqa: FBT001 -- pytest parametrizes the execution mode.
+) -> None:
+    """HEAD caching keeps every valid external-base path at five Git calls."""
+    _init_git_repository(tmp_path)
+    if detached:
+        _git(tmp_path, "checkout", "--detach")
+    git_log, instrumentation = _instrument_git_calls(tmp_path)
+    instrumentation.update(environment)
+
+    result = _run_normal_hook(tmp_path, environment=instrumentation)
+
+    assert result.returncode == 0, result.stderr
+    assert [call.split()[0] for call in git_log.read_text().splitlines()] == [
+        "rev-parse",
+        "merge-base",
+        "diff",
+        "diff",
+        "grep",
+    ]
 
 
 @pytest.mark.unit
