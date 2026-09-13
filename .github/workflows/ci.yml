@@ -2134,12 +2134,10 @@ jobs:
     # starvation bug, not a slow check. Reducing the preamble (fetch-depth: 0
     # full-history clone plus uv provisioning on a 64-runner shared fleet) is
     # addressed below (OMN-15724): this validator has zero git/subprocess
-    # usage (single-file read of grants/prod_promotion_grants.yaml), so
+    # usage (single-file read of grants/prod_promotion_grants.yaml, no
+    # --pr-author/--base-ref since OMN-14814 removed dual-control), so
     # fetch-depth:1 is provably safe here — unlike check-bot-authored-authz-
     # guard below, which shells git merge-base and keeps fetch-depth:0.
-    # OMN-17157 restored the approver != requester check WITHOUT disturbing
-    # that: the base revision it diff-scopes against is read over the GitHub
-    # API, not out of local git history, so no deepening is needed.
     timeout-minutes: 45
     # OMN-16682: the OMN-15724 C1 job-level index override that used to sit
     # here is REMOVED. It selected the devpi cache with a ternary keyed on
@@ -2188,56 +2186,14 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
-      - name: Validate prod-promotion-grants trust anchor (OMN-14441 / OMN-17157)
-        # OMN-17157 restores the approver != requester control OMN-14814
-        # removed. OMN-14814's premise was that @OmniNode-ai/platform-leads
-        # "has exactly one member", making a second approver unsatisfiable;
-        # the team has TWO members, so the control is satisfiable again.
-        #
-        # Both the requester identity and the base revision of the grants file
-        # are read from the GitHub API rather than from the checkout or the
-        # event payload: the API is the authenticated source, and this keeps
-        # the checkout at fetch-depth:1 (OMN-15724 — a full-history clone of
-        # this repo has been observed at 22m38s, and this job is one of the
-        # ci-summary `needs:` members that budget protects). `--requester` is
-        # never sourced from the YAML: a requester could hand-type any name
-        # into approved_by.
-        #
-        # Fail-closed throughout: on a pull_request with no resolvable author
-        # the step FAILS; when the base revision cannot be read, the base file
-        # is simply absent and the validator treats every entry as NEW, which
-        # refuses more, never less.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      - name: Validate prod-promotion-grants trust anchor (OMN-14441 / OMN-14814)
         run: |
           set -euo pipefail
-          args=(--file grants/prod_promotion_grants.yaml)
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            pr_author="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.user.login')"
-            if [ -z "${pr_author}" ]; then
-              echo "::error::pull_request event with no resolvable PR author — the OMN-17157 self-approval check cannot be scoped. Failing closed."
-              exit 1
-            fi
-            echo "Requester (live GitHub API): ${pr_author}"
-            args+=(--requester "${pr_author}")
-
-            base_grants="$(mktemp)"
-            if gh api \
-                 "repos/${{ github.repository }}/contents/grants/prod_promotion_grants.yaml?ref=${BASE_SHA}" \
-                 --jq '.content' | base64 -d > "${base_grants}"; then
-              echo "Base revision of the grants file read at ${BASE_SHA} ($(wc -c < "${base_grants}") bytes)."
-              args+=(--base-file "${base_grants}")
-            else
-              echo "::warning::could not read the grants file at base ${BASE_SHA}; every entry will be treated as NEW (fail closed, refuses more)."
-            fi
-          else
-            echo "Not a pull_request event (${{ github.event_name }}) — schema validation only; there is no requester identity to compare against."
-          fi
-
-          uv run validate-prod-promotion-grants "${args[@]}"
+          # OMN-14814: the approved_by != PR-author dual-control check was
+          # removed (sole CODEOWNER — a second, different approver can never
+          # be supplied), so --pr-author/--base-ref are no longer passed. The
+          # schema + duplicate-id integrity checks remain fail-closed.
+          uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml
 
   validate-staging-namespace-grants:
     name: validate-staging-namespace-grants

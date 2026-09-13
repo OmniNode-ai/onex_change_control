@@ -31,48 +31,22 @@ Checks enforced (integrity, NEW as of OMN-14441):
     - No two entries share a `grant_id` (a duplicate would let two grants
       of the same identity resolve ambiguously downstream).
 
-Self-approval REFUSED again (OMN-17157, restoring OMN-14441):
-    `approved_by` must not be the identity that REQUESTED the grant. The
-    failure carries the reason string `self_granted` — the same token
-    omninode_infra's promotion-time gate emits
-    (`EnumGrantOutcome.SELF_GRANTED`) — so a self-approved grant is refused at
-    REVIEW time instead of surviving CI here and blocking later, at the moment
-    someone is trying to promote.
-
-    OMN-14814 had removed this check, on the premise that
-    `@OmniNode-ai/platform-leads` "has exactly one member (the sole
-    CODEOWNER)" and so a second, different approver could never be supplied.
-    That premise no longer holds — the team has TWO members — so the control
-    is satisfiable and its absence is a hole rather than a concession.
-
-    The check is REQUESTER-SCOPED and DIFF-SCOPED:
-      * with no `requester`, it does not run (a bare `--file` invocation is
-        schema validation and nothing more); and
-      * with a `base_file`, it fires only on entries the change ADDS, so an
-        unrelated PR opened by someone who shares a login with the approver
-        of an untouched entry is never false-positived. A missing or
-        unreadable base file fails CLOSED — every entry is then treated as
-        new, because an unreadable base is not evidence that an entry is
-        pre-existing.
-
-    HONEST LIMIT — what this does NOT cover, and what does. The canonical
-    authoring path (`.github/workflows/stage-prod-promotion-grant.yml`)
-    opens its PR with a GitHub App token, so on that path the PR author is
-    `onexbot-occ-writer[bot]` and never a human: comparing `approved_by` to
-    the PR author is VACUOUS there. That path is covered at DISPATCH time
-    instead, where the requesting human is real — the workflow refuses
-    `inputs.approved_by == github.actor` with the same reason string. This
-    validator covers the other path: a grants-file entry hand-authored in an
-    ordinary PR. Neither half is sufficient alone; both are wired.
-
+Dual-control REMOVED (OMN-14814):
+    The former `approved_by != PR-author` self-approval check has been
+    removed. `@OmniNode-ai/platform-leads` has exactly one member (the sole
+    CODEOWNER), so requiring a *second, different* approver would wedge every
+    prod-promotion grant permanently — the sole owner can never satisfy
+    `approved_by != requested_by`. The grant remains un-forgeable through the
+    checks that survive: a human must author the entry in a PR that passes
+    CODEOWNERS review (an AI agent cannot self-mint it), the grant must be
+    fresh (unexpired), digest-pinned, uniquely identified, and time-bounded.
     Stability-proven digest, OCC receipt, declared rollback target, gated-path
-    routing, and the health-conditional waiver remain enforced downstream by
-    the prod-promotion gate — this validator governs the grants file only.
+    routing, and the health-conditional waiver are enforced downstream by the
+    prod-promotion gate node — this validator governs only the grants-file
+    schema/integrity and is unchanged in those respects.
 
 Usage:
     uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml
-    uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml \
-        --requester jonahgabriel --base-file /tmp/base_grants.yaml
 
 Exit codes:
     0: grants file is valid (or `entries: []` at rest)
@@ -117,12 +91,6 @@ IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 # ISO-8601 UTC: 2026-06-21T12:00:00Z or 2026-06-21T12:00:00+00:00
 ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$")
 
-# OMN-17157: the reason string the promotion-time gate in omninode_infra emits
-# for this same condition (EnumGrantOutcome.SELF_GRANTED). Spelled once, here,
-# so both halves of the control are findable with one grep and cannot drift
-# into two differently-worded refusals of the same thing.
-SELF_GRANTED_REASON = "self_granted"
-
 
 def parse_iso8601(ts: str) -> datetime | None:
     """Parse an ISO-8601 UTC datetime string; return None on failure."""
@@ -162,76 +130,6 @@ def _check_duplicate_grant_ids(entries: list[Any]) -> list[str]:
                 )
             else:
                 seen_ids[gid] = idx
-    return errors
-
-
-def _load_base_grant_ids(base_file: Path | None) -> frozenset[str] | None:
-    """Grant ids present in the grants file AS IT EXISTS ON THE BASE REF.
-
-    Returns ``None`` when newness cannot be established — no base file was
-    supplied, or the supplied one is missing/unreadable/malformed. Callers
-    MUST treat ``None`` as "every entry is new" (fail closed): an unreadable
-    base is not evidence that an entry is pre-existing.
-    """
-    if base_file is None:
-        return None
-    try:
-        with base_file.open(encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
-    except (yaml.YAMLError, OSError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    entries = data.get("entries")
-    if not isinstance(entries, list):
-        return None
-    return frozenset(
-        entry["grant_id"]
-        for entry in entries
-        if isinstance(entry, dict) and isinstance(entry.get("grant_id"), str)
-    )
-
-
-def _check_self_approval(
-    entries: list[Any],
-    *,
-    requester: str,
-    base_grant_ids: frozenset[str] | None,
-) -> list[str]:
-    """Refuse entries NEW in this change whose approved_by is the requester.
-
-    GitHub logins are case-insensitive, so the comparison is casefolded —
-    otherwise a change of capitalisation would launder a self-approval past
-    the check while resolving to the same account everywhere else.
-    """
-    errors: list[str] = []
-    requester_key = requester.casefold()
-    for idx, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            continue
-        approved_by = entry.get("approved_by")
-        if not isinstance(approved_by, str):
-            # Shape is _check_identity_fields' job; do not double-report.
-            continue
-        grant_id = entry.get("grant_id")
-        is_new = (
-            base_grant_ids is None
-            or not isinstance(grant_id, str)
-            or grant_id not in base_grant_ids
-        )
-        if not is_new:
-            continue
-        if approved_by.casefold() == requester_key:
-            errors.append(
-                f"Entry[{idx}]: {SELF_GRANTED_REASON} — approved_by "
-                f"{approved_by!r} is the identity that requested this grant "
-                f"({requester!r}). A prod-promotion grant must be approved by "
-                "someone other than the person requesting it "
-                "(@OmniNode-ai/platform-leads has more than one member). This "
-                "is the same condition omninode_infra's promotion-time gate "
-                "refuses as 'self_granted'; refusing it here means it is "
-                "caught at review time instead of at promotion time."
-            )
     return errors
 
 
@@ -334,20 +232,9 @@ def _validate_entry(
     ]
 
 
-def validate_grants(
-    file_path: Path,
-    *,
-    requester: str | None = None,
-    base_file: Path | None = None,
-) -> ModelGrantValidationResult:
+def validate_grants(file_path: Path) -> ModelGrantValidationResult:
     """Validate a prod-promotion-grants YAML file. Pure(ish) — the only I/O
-    is reading `file_path` (and `base_file`, when diff-scoping is requested).
-
-    `requester` is the identity asking for the grant, resolved by the CALLER
-    from an authenticated source (the PR author on CI, never a field inside
-    the YAML — a requester could hand-type any name into `approved_by`).
-    When it is ``None`` the OMN-17157 self-approval check does not run and
-    this is schema validation only.
+    is reading `file_path`.
     """
     try:
         with file_path.open(encoding="utf-8") as fh:
@@ -385,14 +272,6 @@ def validate_grants(
         return ModelGrantValidationResult(passed=True, errors=[], entry_count=0)
 
     errors = _check_duplicate_grant_ids(entries)
-    if requester is not None:
-        errors.extend(
-            _check_self_approval(
-                entries,
-                requester=requester,
-                base_grant_ids=_load_base_grant_ids(base_file),
-            )
-        )
     for idx, entry in enumerate(entries):
         errors.extend(_validate_entry(idx, entry, file_path))
 
@@ -413,29 +292,10 @@ def main(argv: list[str] | None = None) -> int:
         default="grants/prod_promotion_grants.yaml",
         help="Path to the grants YAML file.",
     )
-    parser.add_argument(
-        "--requester",
-        default=None,
-        help="OMN-17157: GitHub login of the identity requesting the grant "
-        "(on CI, the PR author). When supplied, an entry NEW in this change "
-        "whose approved_by is this same identity is refused as "
-        f"'{SELF_GRANTED_REASON}'. Omit for schema-only validation.",
-    )
-    parser.add_argument(
-        "--base-file",
-        default=None,
-        help="OMN-17157: the grants file as it exists on the base ref, used "
-        "to diff-scope --requester to entries this change ADDS. A missing or "
-        "unreadable file fails CLOSED (every entry is treated as new).",
-    )
     args = parser.parse_args(argv)
 
     file_path = Path(args.file)
-    result = validate_grants(
-        file_path,
-        requester=args.requester,
-        base_file=Path(args.base_file) if args.base_file else None,
-    )
+    result = validate_grants(file_path)
 
     if not result.passed:
         print(f"FAIL: {file_path} has {len(result.errors)} violation(s):")

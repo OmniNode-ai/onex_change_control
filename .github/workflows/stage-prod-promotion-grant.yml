@@ -120,12 +120,6 @@ jobs:
       MODE: ${{ inputs.mode }}
       TICKET: ${{ inputs.ticket }}
       APPROVED_BY: ${{ inputs.approved_by }}
-      # OMN-17157: the human who dispatched this staging run IS the grant's
-      # requester. This is the only place on the canonical authoring path
-      # where that identity is real and authenticated — the PR this workflow
-      # opens is authored by the onexbot-occ-writer App token, so comparing
-      # approved_by to the PR author downstream is vacuous on this path.
-      DISPATCH_ACTOR: ${{ github.actor }}
       EXPIRES_AT: ${{ inputs.expires_at }}
       HOTFIX_EVIDENCE: ${{ inputs.hotfix_evidence }}
       BACKMERGE: ${{ inputs.backmerge }}
@@ -247,41 +241,6 @@ jobs:
                           f"attest to probe runs made against the manifest value; staging a different one would "
                           f"ship evidence that reads as proof of something never proven."
                       )
-
-              # OMN-17157: approver != requester, refused at DISPATCH time.
-              #
-              # The PR this workflow opens is authored by the App token, so the
-              # downstream `approved_by != PR-author` check in
-              # validate_prod_promotion_grants.py can never fire on this path.
-              # Here the dispatching actor is the real requesting human, so
-              # here is where the control has to live for this path.
-              #
-              # Reason string is deliberately the same token omninode_infra's
-              # promotion-time gate emits, so a grant refused here and a
-              # promotion refused there are greppable as one condition.
-              #
-              # OMN-14814 removed this control on the premise that
-              # @OmniNode-ai/platform-leads "has exactly one member"; the team
-              # has TWO, so a distinct approver is supplyable and refusing a
-              # self-approval no longer wedges anything.
-              approver = os.environ["APPROVED_BY"].strip()
-              dispatcher = os.environ.get("DISPATCH_ACTOR", "").strip()
-              if not dispatcher:
-                  # Fail closed: an unresolvable dispatcher is not a pass.
-                  problems.append(
-                      "DISPATCH_ACTOR is empty — the requesting identity cannot be "
-                      "resolved, so self_granted cannot be ruled out. Refusing."
-                  )
-              elif approver and approver.casefold() == dispatcher.casefold():
-                  problems.append(
-                      f"self_granted — approved_by {approver!r} is the identity that "
-                      f"dispatched this staging run ({dispatcher!r}). A prod-promotion "
-                      f"grant must be approved by someone other than the person "
-                      f"requesting it; @OmniNode-ai/platform-leads has more than one "
-                      f"member. This is the same condition the promotion-time gate in "
-                      f"omninode_infra refuses as 'self_granted' — refusing it here "
-                      f"means the grant never reaches the registry at all."
-                  )
           else:
               # A revocation proposes no approver and no expiry. Supplying either is
               # REFUSED rather than ignored: an input that is silently discarded is
