@@ -31,6 +31,14 @@ exception for ``onex_change_control`` ``main``: that governance branch must
 retain both approving and code-owner review enforcement. Ordinary repositories
 continue to assert the solo-dev invariant.
 
+OMN-18287 widens that exception from ``main`` only to every audited branch of
+a review-gated repo: ``onex_change_control``'s ``dev`` carries the identical
+deliberate codeowner-only review model (``required_approving_review_count=0``,
+``require_code_owner_reviews=true``) as its ``main``, so the carve-out must
+follow the repo, not one branch of it — the pre-fix script false-failed
+``omni_home``'s ``Branch Protection Guard`` on every PR from 2026-09-01
+onward because ``dev`` fell through to the ordinary solo-dev invariant.
+
 RED/GREEN
 ---------
 ``test_release_synced_main_passes_with_empty_contexts_and_ruleset`` is the RED
@@ -365,7 +373,85 @@ def test_review_gated_occ_main_fails_without_code_owner_reviews(
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert (
-        "review-gated main requires approving and code-owner reviews" in result.stdout
+        "review-gated branch requires approving and code-owner reviews" in result.stdout
+    )
+
+
+_GQL_REVIEW_GATED_DEV = {
+    "data": {
+        "repository": {
+            "branchProtectionRules": {
+                "nodes": [
+                    {
+                        "pattern": "main",
+                        "requiresApprovingReviews": True,
+                        "requiresCodeOwnerReviews": True,
+                    },
+                    {
+                        "pattern": "dev",
+                        "requiresApprovingReviews": True,
+                        "requiresCodeOwnerReviews": True,
+                    },
+                ]
+            }
+        }
+    }
+}
+
+
+@pytest.mark.unit
+def test_review_gated_occ_dev_requires_approving_and_code_owner_reviews(
+    tmp_path: Path,
+) -> None:
+    """OMN-18287: OCC's dev carries the identical deliberate codeowner-only
+    review model as its main (required_approving_review_count=0,
+    require_code_owner_reviews=true), so the review-gated carve-out that
+    OMN-17491 landed for main must also apply to dev — not just main.
+
+    RED before the OMN-18287 fix: the carve-out call site is gated
+    ``branch == "main"``, so on dev the script falls through to the ordinary
+    solo-dev invariant ("approving reviews are enforced" reads as FAIL) even
+    though this is the declared-compliant shape.
+    """
+    result = _run_audit(
+        tmp_path,
+        "onex_change_control",
+        _fixtures(
+            "onex_change_control",
+            _PROTECTION_CI_SUMMARY,
+            [_RULESET_MERGE_QUEUE_DISABLED],
+            gql_rules=_GQL_REVIEW_GATED_DEV,
+        ),
+        branches="dev",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "approving and code-owner reviews are enforced" in result.stdout
+
+
+@pytest.mark.unit
+def test_review_gated_occ_dev_fails_without_code_owner_reviews(
+    tmp_path: Path,
+) -> None:
+    """Approving reviews without the code-owner gate are insufficient on dev
+    either — the carve-out widens scope, it does not loosen the requirement."""
+    gql_rules = json.loads(json.dumps(_GQL_REVIEW_GATED_DEV))
+    gql_rules["data"]["repository"]["branchProtectionRules"]["nodes"][1][
+        "requiresCodeOwnerReviews"
+    ] = False
+    result = _run_audit(
+        tmp_path,
+        "onex_change_control",
+        _fixtures(
+            "onex_change_control",
+            _PROTECTION_CI_SUMMARY,
+            [_RULESET_MERGE_QUEUE_DISABLED],
+            gql_rules=gql_rules,
+        ),
+        branches="dev",
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert (
+        "review-gated branch requires approving and code-owner reviews" in result.stdout
     )
 
 
