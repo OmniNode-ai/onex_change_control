@@ -2584,11 +2584,10 @@ def _inventory_receipt_models(paths: list[Path]) -> list[tuple[Path, ModelDodRec
             continue
         try:
             parsed = _parse_receipt_candidate(candidate)
-            receipt = (
-                parsed.receipt
-                if isinstance(parsed, ParsedCrossRepoReceipt)
-                else parsed
-            )
+            if isinstance(parsed, ParsedCrossRepoReceipt):
+                receipt = parsed.receipt
+            else:
+                receipt = parsed
         except (RuntimeError, ValidationError, ValueError):
             continue
         if _after_omn_15461_cutoff(receipt.run_timestamp):
