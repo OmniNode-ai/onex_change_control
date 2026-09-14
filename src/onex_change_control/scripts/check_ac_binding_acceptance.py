@@ -23,7 +23,12 @@ every other gate CLI this package exposes, rather than as a loose file under
 ``scripts/``: the repository's scripts guard default-denies new scripts there
 and directs new work to a registered surface, which this is.
 
-Exit codes: 0 clean, 1 findings, 2 usage error.
+Exit codes: 0 no REFUSAL, 1 one or more refusals, 2 usage error.
+
+A hold is printed and does not move the exit code. Exactly one condition
+produces one -- a contract that binds no criterion at all against a ticket that
+declares some -- and it is reported rather than swallowed so that absence stays
+visible. A hold that exited 1 would be a refusal with a softer word for it.
 """
 
 from __future__ import annotations
@@ -39,6 +44,8 @@ from onex_change_control.validation.ac_binding_acceptance import (
     AcBindingFinding,
     check_contract_ac_bindings,
     check_local_ac_bindings,
+    holds,
+    refusals,
 )
 
 _TICKET_ID_SUFFIX = ".yaml"
@@ -104,7 +111,7 @@ def run(
         findings.extend(
             check_contract_ac_bindings(ticket_id, contract, bodies.get(ticket_id))
         )
-    return (1 if findings else 0), findings
+    return (1 if refusals(findings) else 0), findings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -152,11 +159,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     if findings:
         mode = "local" if args.local else "hosted"
+        refused = refusals(findings)
+        held = holds(findings)
         print(
-            f"Acceptance-criterion binding gate ({mode}): {len(findings)} finding(s)",
+            f"Acceptance-criterion binding gate ({mode}): "
+            f"{len(refused)} refusal(s), {len(held)} hold(s)",
             file=sys.stderr,
         )
-        for finding in findings:
+        # Refusals first: they are what has to be fixed before this run can
+        # pass, and a reader scrolling a long hold list would otherwise meet
+        # them last.
+        for finding in (*refused, *held):
             print(finding.render(), file=sys.stderr)
     return exit_code
 
