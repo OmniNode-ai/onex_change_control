@@ -17,7 +17,7 @@ REQUIRED_PROBE_COMMANDS = [
     "gh pr view",
     "gh pr checks",
     "docker ps",
-    "ssh <user>@<onex-host>",
+    "ssh jonah@192.168.86.201",
     "psql",
     "curl",
 ]

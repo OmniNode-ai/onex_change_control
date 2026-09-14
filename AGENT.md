@@ -4,8 +4,7 @@
 
 ## Context
 
-- **Drift policies / boundaries**: `src/onex_change_control/boundaries/` (kafka_boundaries.yaml, db_routing_rules.yaml) and `allowlists/` (per-repo allowlist YAMLs)
-- **Doctrine / authoritative policy config**: `src/onex_change_control/doctrine/loader.py`
+- **Drift policies**: `src/onex_change_control/policies/`
 - **Architecture**: `docs/`
 - **Conventions**: `CLAUDE.md`
 

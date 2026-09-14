@@ -34,7 +34,7 @@ PG_HOST = "192.168.86.201"
 PG_PORT = 15436
 PG_USER = "postgres"
 PG_PASSWORD = os.environ.get(
-    "POSTGRES_PASSWORD", "REDACTED-POSTGRES_PASSWORD-Piyr"
+    "POSTGRES_PASSWORD", "PiyrNUzuOuo7oPahEe5nQfalqfIe4LBJqlXWzoi8"
 )
 PG_DB = "omnidash_analytics"
 

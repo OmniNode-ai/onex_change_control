@@ -33,18 +33,10 @@ import sys
 from dataclasses import dataclass, field
 from enum import Enum, unique
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import yaml
 from colorama import Fore, Style, init
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-DEFAULT_MIGRATION_INVENTORY = (
-    Path(__file__).parent.parent / "boundaries" / "migration_inventory.yaml"
-)
-UNINVENTORIED_BOUNDARY = "__uninventoried__"
 
 
 @unique
@@ -126,46 +118,6 @@ class MigrationConflict(NamedTuple):
     definitions: list[TableDefinition]
 
 
-MigrationBoundaryMap = dict[Path, str]
-
-
-def _dict_items(value: object) -> Iterator[tuple[object, object]]:
-    """Return dict items for untyped YAML values."""
-    if isinstance(value, dict):
-        yield from value.items()
-
-
-def _list_items(value: object) -> Iterator[object]:
-    """Return list items for untyped YAML values."""
-    if isinstance(value, list):
-        yield from value
-
-
-def _iter_inventory_files(
-    data: object,
-) -> Iterator[tuple[str, str, str, str]]:
-    """Yield database, source repo, directory, and SQL filename from inventory."""
-    databases = data.get("databases", {}) if isinstance(data, dict) else {}
-    for db_name, db_config in _dict_items(databases):
-        if not isinstance(db_config, dict):
-            continue
-        for migration_set in _list_items(db_config.get("migration_sets", [])):
-            if not isinstance(migration_set, dict):
-                continue
-            source_repo = migration_set.get("source_repo")
-            directory = migration_set.get("directory")
-            if not isinstance(source_repo, str) or not isinstance(directory, str):
-                continue
-
-            for entry in _list_items(migration_set.get("migrations", [])):
-                if not isinstance(entry, dict):
-                    continue
-                filename = entry.get("file")
-                if not isinstance(filename, str) or not filename.endswith(".sql"):
-                    continue
-                yield str(db_name), source_repo, directory, filename
-
-
 def load_suppressions(suppressions_path: Path) -> set[str]:
     """Load suppressed table names from a YAML suppressions file.
 
@@ -188,51 +140,6 @@ def load_suppressions(suppressions_path: Path) -> set[str]:
             suppressed.add(table)
 
     return suppressed
-
-
-def load_migration_boundaries(
-    inventory_path: Path | None,
-    repos_root: Path,
-) -> MigrationBoundaryMap:
-    """Load migration file -> logical database boundary from the inventory."""
-    if inventory_path is None or not inventory_path.is_file():
-        return {}
-
-    data = yaml.safe_load(inventory_path.read_text()) or {}
-
-    boundaries: MigrationBoundaryMap = {}
-    for db_name, source_repo, directory, filename in _iter_inventory_files(data):
-        migration_dir = repos_root / source_repo / directory
-        boundaries[(migration_dir / filename).resolve()] = db_name
-
-    return boundaries
-
-
-def _migration_boundary(
-    table_def: TableDefinition,
-    boundaries: MigrationBoundaryMap,
-) -> str | None:
-    """Return the logical database boundary for a table definition, if known."""
-    return boundaries.get(table_def.file_path.resolve())
-
-
-def _defs_by_boundary(
-    definitions: list[TableDefinition],
-    boundaries: MigrationBoundaryMap,
-) -> dict[str, list[TableDefinition]]:
-    """Group table definitions by logical database boundary.
-
-    If any definition is missing from the inventory, fall back to the legacy
-    global conflict boundary so the checker stays conservative for unknown
-    migration paths.
-    """
-    grouped: dict[str, list[TableDefinition]] = {}
-    for definition in definitions:
-        boundary = _migration_boundary(definition, boundaries)
-        if boundary is None:
-            return {UNINVENTORIED_BOUNDARY: definitions}
-        grouped.setdefault(boundary, []).append(definition)
-    return grouped
 
 
 def filter_suppressed_conflicts(
@@ -323,17 +230,11 @@ def find_migration_files(
 
 
 def detect_conflicts(
-    repos_root: Path,
-    repos: list[str] | None = None,
-    migration_inventory_path: Path | None = DEFAULT_MIGRATION_INVENTORY,
+    repos_root: Path, repos: list[str] | None = None
 ) -> list[MigrationConflict]:
     """Detect migration conflicts across repositories."""
     # Collect all table definitions
     table_defs: dict[str, list[TableDefinition]] = {}
-    migration_boundaries = load_migration_boundaries(
-        migration_inventory_path,
-        repos_root,
-    )
 
     migration_files = find_migration_files(repos_root, repos)
 
@@ -352,28 +253,27 @@ def detect_conflicts(
     # Find conflicts
     conflicts = []
     for table_name, defs in table_defs.items():
-        for boundary_defs in _defs_by_boundary(defs, migration_boundaries).values():
-            if len(boundary_defs) <= 1:
-                continue
+        if len(defs) <= 1:
+            continue
 
-            # Check if all definitions have the same columns
-            column_sets = [d.columns for d in boundary_defs]
-            if all(c == column_sets[0] for c in column_sets):
-                conflicts.append(
-                    MigrationConflict(
-                        conflict_type=EnumMigrationConflictType.EXACT_DUPLICATE,
-                        table_name=table_name,
-                        definitions=boundary_defs,
-                    )
+        # Check if all definitions have the same columns
+        column_sets = [d.columns for d in defs]
+        if all(c == column_sets[0] for c in column_sets):
+            conflicts.append(
+                MigrationConflict(
+                    conflict_type=EnumMigrationConflictType.EXACT_DUPLICATE,
+                    table_name=table_name,
+                    definitions=defs,
                 )
-            else:
-                conflicts.append(
-                    MigrationConflict(
-                        conflict_type=EnumMigrationConflictType.NAME_CONFLICT,
-                        table_name=table_name,
-                        definitions=boundary_defs,
-                    )
+            )
+        else:
+            conflicts.append(
+                MigrationConflict(
+                    conflict_type=EnumMigrationConflictType.NAME_CONFLICT,
+                    table_name=table_name,
+                    definitions=defs,
                 )
+            )
 
     return conflicts
 
@@ -611,23 +511,6 @@ def _build_canonical_schemas(
     migration_files = find_migration_files(repos_root, repos)
     repo_schemas = _collect_repo_schemas(repos_root, migration_files)
     return _merge_schemas(repo_schemas)
-
-
-def _default_inventory_for_root(repos_root: Path) -> Path | None:
-    """Find the migration inventory for local and cloned OCC layouts."""
-    candidates = (
-        DEFAULT_MIGRATION_INVENTORY,
-        repos_root
-        / "onex_change_control"
-        / "src"
-        / "onex_change_control"
-        / "boundaries"
-        / "migration_inventory.yaml",
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
 
 
 def _extract_column_names(raw: str) -> list[str]:
@@ -869,12 +752,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="YAML file listing known intentional conflicts to suppress.",
     )
     parser.add_argument(
-        "--migration-inventory",
-        type=Path,
-        default=None,
-        help="YAML inventory mapping migration files to logical database boundaries.",
-    )
-    parser.add_argument(
         "--warn-columns",
         action="store_true",
         help="Treat column-reference violations as warnings (exit 0).",
@@ -899,15 +776,7 @@ def main() -> None:
         load_suppressions(args.suppressions_file) if args.suppressions_file else set()
     )
 
-    migration_inventory_path = args.migration_inventory or _default_inventory_for_root(
-        args.repos_root
-    )
-
-    all_conflicts = detect_conflicts(
-        args.repos_root,
-        args.repos,
-        migration_inventory_path,
-    )
+    all_conflicts = detect_conflicts(args.repos_root, args.repos)
     conflicts, suppressed = filter_suppressed_conflicts(
         all_conflicts, suppressed_tables
     )

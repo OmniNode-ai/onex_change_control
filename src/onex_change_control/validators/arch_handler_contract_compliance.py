@@ -25,14 +25,11 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 import yaml
-from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 from onex_change_control.enums.enum_compliance_verdict import EnumComplianceVerdict
-from onex_change_control.models.model_allowlisted_handler import ModelAllowlistedHandler
-from onex_change_control.models.model_script_exception import ModelScriptException
 from onex_change_control.scanners.handler_contract_compliance import cross_reference
 
 logger = logging.getLogger(__name__)
@@ -132,108 +129,6 @@ def _load_allowlist(allowlist_path: Path) -> dict[str, list[str]]:
         violations = entry.get("violations", [])
         if path:
             result[path] = violations
-
-    return result
-
-
-def validate_allowlist_tickets(allowlist_path: Path) -> list[str]:
-    """Return one error string per ``allowlisted_handlers`` entry with a bad ticket.
-
-    OMN-11878: every entry must carry a real ``OMN-####`` tracking ticket
-    (``ModelAllowlistedHandler.ticket``, pattern ``^OMN-\\d+$``). A malformed or
-    placeholder ticket (e.g. ``'# migration pending'``) — or a missing ticket —
-    is reported here, never silently accepted. Fail-closed: an unparseable
-    entry is also reported rather than skipped.
-    """
-    if not allowlist_path.exists():
-        return []
-
-    with allowlist_path.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    if not isinstance(data, dict):
-        return []
-
-    errors: list[str] = []
-    for entry in data.get("allowlisted_handlers", []) or []:
-        path = (
-            entry.get("path", "<missing path>")
-            if isinstance(entry, dict)
-            else "<malformed entry>"
-        )
-        try:
-            ModelAllowlistedHandler.model_validate(entry)
-        except ValidationError as exc:
-            reasons = "; ".join(err["msg"] for err in exc.errors()) or str(exc)
-            errors.append(f"{allowlist_path.name}: {path}: {reasons}")
-
-    return errors
-
-
-def _load_scripts_baseline(allowlist_path: Path) -> frozenset[str]:
-    """Load the frozen ``scripts/**`` baseline from an allowlist YAML.
-
-    The ``allowlisted_scripts:`` section lists pre-existing ``scripts/**`` files
-    frozen as debt under the deny-new policy (OMN-14475). Returns the set of
-    repo-relative paths. Burn-down only: entries are removed when a script is
-    converted to a node or annotated, never appended for a new script.
-    """
-    if not allowlist_path.exists():
-        return frozenset()
-
-    with allowlist_path.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    if not isinstance(data, dict):
-        return frozenset()
-
-    paths: set[str] = set()
-    for entry in data.get("allowlisted_scripts", []) or []:
-        if isinstance(entry, dict):
-            path = entry.get("path", "")
-            if path:
-                paths.add(str(path))
-        elif isinstance(entry, str):
-            paths.add(entry)
-
-    return frozenset(paths)
-
-
-def _load_scripts_exceptions(
-    registry_path: Path,
-) -> dict[tuple[str, str], ModelScriptException]:
-    """Load the CODEOWNERS-approved ``scripts_exceptions.yaml`` registry.
-
-    This is the ONLY way a NEW ``scripts/**`` file may land under the deny-new
-    policy (OMN-14475). The registry is a single central file resolved from
-    onex_change_control@main in CI (mirroring ``skip_token_approvals.yaml``) so
-    a downstream PR cannot self-add an entry; the gate is CODEOWNERS review on a
-    separate @main PR. ``approved_by`` records the reviewer's login but is
-    advisory, not code-enforced (no ``approved_by != author`` check here — that
-    check exists only in ``validate_prod_promotion_grants.py`` for prod grants).
-
-    Returns a dict keyed by ``(repo, path)`` -> ``ModelScriptException``.
-    Malformed entries are skipped (fail-closed: a bad entry grants nothing).
-    """
-    if not registry_path.exists():
-        return {}
-
-    with registry_path.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    if not isinstance(data, dict):
-        return {}
-
-    result: dict[tuple[str, str], ModelScriptException] = {}
-    for entry in data.get("entries", []) or []:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            exception = ModelScriptException.model_validate(entry)
-        except ValidationError:
-            # A malformed registry entry grants no exception (fail-closed).
-            continue
-        result[(exception.repo, exception.path)] = exception
 
     return result
 

@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from onex_change_control.enums.enum_reachability import EnumReachability
 from onex_change_control.scripts.check_imperative_contracts import main, scan_repo
 from onex_change_control.validators.arch_handler_contract_compliance import (
     _find_freestanding_modules,
@@ -26,7 +25,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 
-def _make_repo(tmp_path: Path, *, import_live_helper: bool = False) -> Path:
+def _make_repo(tmp_path: Path) -> Path:
     """Repo with one node handler AND one freestanding consumer module."""
     repo_root = tmp_path / "sea"
     (repo_root / ".git").mkdir(parents=True)
@@ -57,9 +56,8 @@ def _make_repo(tmp_path: Path, *, import_live_helper: bool = False) -> Path:
         encoding="utf-8",
     )
     (handlers / "__init__.py").write_text("", encoding="utf-8")
-    live_import = "\nfrom pipeline import live_consumer\n" if import_live_helper else ""
     (handlers / "handler_demo.py").write_text(
-        f'"""Compliant handler."""\n{live_import}\n\nclass HandlerDemo:\n'
+        '"""Compliant handler."""\n\n\nclass HandlerDemo:\n'
         "    async def handle(self, data: dict) -> dict:\n"
         '        return {"ok": True}\n',
         encoding="utf-8",
@@ -87,24 +85,6 @@ def _make_repo(tmp_path: Path, *, import_live_helper: bool = False) -> Path:
         ),
         encoding="utf-8",
     )
-    (pipeline / "live_consumer.py").write_text(
-        textwrap.dedent(
-            '''\
-            """Raw inference helper imported by the live handler when enabled."""
-
-            import httpx
-
-
-            def run(endpoint: str, prompt: str) -> object:
-                return httpx.post(
-                    endpoint,
-                    json={"prompt": prompt, "max_tokens": 2048},
-                    timeout=30,
-                )
-            '''
-        ),
-        encoding="utf-8",
-    )
     return repo_root
 
 
@@ -115,7 +95,6 @@ def test_find_freestanding_modules_excludes_handlers(tmp_path: Path) -> None:
     names = {m.name for m in modules}
 
     assert "consumer.py" in names
-    assert "live_consumer.py" in names
     # Node handler and node.py are NOT freestanding.
     assert "handler_demo.py" not in names
     assert "node.py" not in names
@@ -148,88 +127,18 @@ def test_scan_repo_without_flag_ignores_freestanding(tmp_path: Path) -> None:
     assert summary.new_violation_count == 0
 
 
-def test_scan_repo_with_flag_reports_dead_freestanding_without_blocking(
-    tmp_path: Path,
-) -> None:
+def test_scan_repo_with_flag_detects_freestanding(tmp_path: Path) -> None:
     repo_root = _make_repo(tmp_path)
 
     summary = scan_repo(repo_root, scan_freestanding=True)
 
     assert summary.freestanding_module_count >= 1
-    assert summary.new_violation_count == 0
-    assert summary.non_live_violation_count >= 1
+    assert summary.new_violation_count >= 1
     flagged = {r.module_path for r in summary.freestanding_results if r.violations}
     assert any(p.endswith("consumer.py") for p in flagged)
-    consumer = next(
-        r for r in summary.freestanding_results if r.module_path.endswith("consumer.py")
-    )
-    assert consumer.reachability == EnumReachability.DEAD
-
-
-def test_scan_repo_with_flag_blocks_live_reachable_freestanding(
-    tmp_path: Path,
-) -> None:
-    repo_root = _make_repo(tmp_path, import_live_helper=True)
-
-    summary = scan_repo(repo_root, scan_freestanding=True)
-
-    assert summary.new_violation_count == 1
-    live = next(
-        r
-        for r in summary.freestanding_results
-        if r.module_path.endswith("live_consumer.py")
-    )
-    assert live.reachability == EnumReachability.LIVE
-
-
-def test_scan_repo_with_flag_follows_package_init_relative_import(
-    tmp_path: Path,
-) -> None:
-    repo_root = _make_repo(tmp_path)
-    (repo_root / "src" / "pipeline" / "__init__.py").write_text(
-        "from . import live_consumer\n",
-        encoding="utf-8",
-    )
-    (
-        repo_root
-        / "src"
-        / "sea"
-        / "nodes"
-        / "node_demo"
-        / "handlers"
-        / "handler_demo.py"
-    ).write_text(
-        '"""Compliant handler."""\n\nimport pipeline\n\n\nclass HandlerDemo:\n'
-        "    async def handle(self, data: dict) -> dict:\n"
-        '        return {"ok": True}\n',
-        encoding="utf-8",
-    )
-
-    summary = scan_repo(repo_root, scan_freestanding=True)
-
-    assert summary.new_violation_count == 1
-    live = next(
-        r
-        for r in summary.freestanding_results
-        if r.module_path.endswith("live_consumer.py")
-    )
-    assert live.reachability == EnumReachability.LIVE
 
 
 def test_main_scan_freestanding_fails_on_freestanding_debt(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    _make_repo(tmp_path, import_live_helper=True)
-
-    exit_code = main(["--repo-root", str(tmp_path / "sea"), "--scan-freestanding"])
-
-    output = capsys.readouterr().out
-    assert exit_code == 1
-    assert "live_consumer.py" in output
-
-
-def test_main_scan_freestanding_reports_dead_smells_without_blocking(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -238,8 +147,7 @@ def test_main_scan_freestanding_reports_dead_smells_without_blocking(
     exit_code = main(["--repo-root", str(tmp_path / "sea"), "--scan-freestanding"])
 
     output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "Reported non-live imperative smells" in output
+    assert exit_code == 1
     assert "consumer.py" in output
 
 

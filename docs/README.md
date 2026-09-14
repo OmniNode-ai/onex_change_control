@@ -3,9 +3,6 @@
 > **Start here.** This index is the canonical docs map for `onex_change_control`.
 > All other docs in this directory link back here or are reachable from this page.
 
-<!-- Verified against code on 2026-06-21 refresh (OMN-13459): CLI commands match pyproject [project.scripts]; doc-freshness scanners present (scanners/doc_reference_extractor.py, doc_reference_resolver.py, doc_staleness_detector.py) and models present (model_doc_freshness_result.py, model_doc_freshness_sweep_report.py, model_doc_reference.py); the doc-freshness-swept.v1 topic is confirmed NOT yet registered in kafka/topics.py GovernanceTopic. -->
-
-
 ---
 
 ## Start Here
@@ -16,7 +13,6 @@ New to this repo? Read in this order:
 2. [CLAUDE.md](../CLAUDE.md) — developer context, naming conventions, development commands.
 3. [Design: Drift Control System](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) — the enforcement model.
 4. [Template Guide](TEMPLATE_GUIDE.md) — how to author YAML artifacts.
-5. [Check Types](CHECK_TYPES.md) — what each `dod_evidence` check actually executes.
 
 ---
 
@@ -38,7 +34,7 @@ New to this repo? Read in this order:
 | Workflow | Command | Doc |
 |----------|---------|-----|
 | Run general drift check | `uv run check-drift` | [Design](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) |
-| Check DB boundary violations | `uv run check-db-boundary` | [DB Boundary Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/db-boundary-policy.md) |
+| Check DB boundary violations | `uv run check-db-boundary` | [DB Boundary Policy](policy/db-boundary-policy.md) |
 | Check hardcoded Kafka topics | `uv run check-hardcoded-topics` | — |
 | Scan contract dependencies | `uv run scan-contract-dependencies` | — |
 | Check for bare feature flags | `uv run check-bare-feature-flags` | — |
@@ -76,9 +72,9 @@ When automation creates Linear tickets from drift findings:
 |-----|---------|
 | [design/DESIGN_DRIFT_CONTROL_SYSTEM.md](design/DESIGN_DRIFT_CONTROL_SYSTEM.md) | Full enforcement model, invariants, staged rollout phases |
 | [design/DECISION_LOG.md](design/DECISION_LOG.md) | Architectural decisions D-001 through D-008+ |
-| [DB Boundary Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/db-boundary-policy.md) | Database boundary enforcement policy (migrated to the knowledge base) |
-| [Typed-Metadata Policy](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/typed-metadata-policy.md) | Typed metadata enforcement policy (migrated to the knowledge base) |
-| [Required-Gates Rollout — April 2026 Snapshot](https://github.com/OmniNode-ai/knowledge-base/blob/main/reference/required-gates-rollout-2026-04-27.md) | Required gates rollout plan, superseded historical snapshot (migrated to the knowledge base) |
+| [policy/db-boundary-policy.md](policy/db-boundary-policy.md) | Database boundary enforcement policy |
+| [policy/typed-metadata-policy.md](policy/typed-metadata-policy.md) | Typed metadata enforcement policy |
+| [governance/2026-04-27-required-gates-rollout.md](governance/2026-04-27-required-gates-rollout.md) | Required gates rollout plan (April 2026) |
 
 ---
 
@@ -88,7 +84,6 @@ When automation creates Linear tickets from drift findings:
 |-----|---------|
 | [VERSIONING_POLICY.md](VERSIONING_POLICY.md) | Schema SemVer, immutability rules, breaking-change definition |
 | [TEMPLATE_GUIDE.md](TEMPLATE_GUIDE.md) | Field-by-field reference for `day_close.template.yaml` and `ticket_contract.template.yaml` |
-| [CHECK_TYPES.md](CHECK_TYPES.md) | What every `dod_evidence` `check_type` does in each runner, the `cwd` rules, and the shell it executes under |
 | [EVAL_FRAMEWORK.md](EVAL_FRAMEWORK.md) | A/B evaluation framework: eval suites, comparator, metrics, verdicts |
 | [RECEIPT_LOCATIONS.md](RECEIPT_LOCATIONS.md) | Canonical DoD receipt location (`drift/dod_receipts/`) and migration from legacy path |
 | [wire-schema-contract-spec.md](wire-schema-contract-spec.md) | Wire schema contract specification |
@@ -151,33 +146,25 @@ CI enforces all of the above on every PR. See `.github/workflows/ci.yml` for the
 
 ---
 
-## Doc Freshness Sweep
+## Doc Freshness Sweep (Planned)
 
-> **Status**: Models and scanners are implemented. Kafka topic registration and omnidash dashboard card are not yet built.
+> **Status**: Planned, not yet implemented in this repo.
 
-The `doc_freshness_sweep` governance capability:
+The `doc_freshness_sweep` is a planned governance capability that will:
 
-- Scans `.md` files across ONEX repos and extracts code references (file paths, class names, commands, env vars, URLs).
-- Detects stale references (code changed after the doc was last updated).
-- Detects broken references (referenced file or function no longer exists).
-- Will emit `onex.evt.onex-change-control.doc-freshness-swept.v1` Kafka events once the topic is registered in `GovernanceTopic`.
-- Auto-creates Linear tickets for broken or stale docs.
+- Scan all `.md` files across ONEX repos and extract code references (file paths, class names, commands, env vars, URLs).
+- Detect stale references (code changed after the doc was last updated).
+- Detect broken references (referenced file or function no longer exists).
+- Emit `onex.evt.onex-change-control.doc-freshness-swept.v1` Kafka events for dashboard consumption.
+- Auto-create Linear tickets for broken or stale docs.
 
-**What is implemented** (in `src/onex_change_control/scanners/`):
-- `doc_reference_extractor.py` — extracts code references from markdown files
-- `doc_reference_resolver.py` — resolves extracted references against the live codebase
-- `doc_staleness_detector.py` — detects stale or broken references
-
-**What is implemented** (in `src/onex_change_control/models/`):
-- `ModelDocFreshnessResult`, `ModelDocFreshnessSweepReport`, `ModelDocReference`
-
-**What remains**:
-- `GovernanceTopic` enum entry for `onex.evt.onex-change-control.doc-freshness-swept.v1` is not yet registered
-- omnidash dashboard card is not yet built
-
-**Ownership**: `onex_change_control` owns the models and the scanner/resolver library. `omniclaude` owns the `doc_freshness_sweep` skill definition. `omnidash` owns the dashboard card.
+**Ownership**: `onex_change_control` owns the models (`ModelDocFreshnessResult`, `ModelDocFreshnessSweepReport`, `ModelDocReference`) and the scanner/resolver library. `omniclaude` owns the `doc_freshness_sweep` skill definition. `omnidash` owns the dashboard card.
 
 **Design reference**: See `omni_home/docs/plans/archive/2026-Q1/2026-03-27-doc-freshness-sweep.md` — 15-task plan covering scanner, cross-reference checker, staleness detection, skill definition, and Kafka integration.
+
+**Integration with OmniClaude**: The skill calls into `onex_change_control` scanners, then emits results through the ONEX event bus.
+
+**Integration with OmniDash**: The `/status` page will display a "Doc Freshness" card consuming the `onex.evt.onex-change-control.doc-freshness-swept.v1` event.
 
 ---
 

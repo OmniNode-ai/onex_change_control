@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -40,7 +41,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
-from onex_change_control.integrations import contract_descriptor
 from onex_change_control.models import ModelTicketContract
 
 _LEGACY_RECEIPT_CUTOFF: date = date(2026, 6, 1)
@@ -71,10 +71,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Linear GraphQL client (stdlib-only)
 # ---------------------------------------------------------------------------
-# Endpoint resolves from the integration contract + overlay (OMN-13563) — never a
-# hardcoded URL literal. (The prior literal here was the non-canonical
-# `https://linear.app/graphql`; the contract default is the canonical
-# `https://api.linear.app/graphql` host.)
+
+LINEAR_API_URL = "https://linear.app/graphql"
 
 _TICKETS_QUERY = """
 query CompletedTickets($after: String, $filter: IssueFilter!) {
@@ -100,8 +98,8 @@ def _linear_request(
 ) -> dict[str, Any]:
     """Execute a Linear GraphQL query using stdlib urllib."""
     payload = json.dumps({"query": query, "variables": variables}).encode()
-    req = urllib.request.Request(  # noqa: S310 -- URL resolves from the contract
-        contract_descriptor.linear_graphql_url(),
+    req = urllib.request.Request(  # noqa: S310 -- URL is a constant HTTPS endpoint
+        LINEAR_API_URL,
         data=payload,
         headers={
             "Content-Type": "application/json",
@@ -538,9 +536,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Resolved via the contract-declared secret ref (OMN-13563); optional here
-    # (the sweep degrades gracefully without a Linear key), so required=False.
-    api_key = contract_descriptor.linear_api_key(required=False)
+    api_key = os.environ.get("LINEAR_API_KEY", "")
 
     if args.json:
         from onex_change_control.enums.enum_invariant_status import (

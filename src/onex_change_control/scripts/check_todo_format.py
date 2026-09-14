@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-# onex-allow-file-todo-marker OMN-14068 reason="subject IS the marker token"
 
 """Pre-commit hook: require all TODO/FIXME/HACK comments to reference a Linear ticket.
 
@@ -10,7 +9,7 @@ Usage:
 
 Exit code 0 = clean. Exit code 1 = violations found.
 
-Valid format:  # TODO(OMN-XXXX): description
+Valid format:  # TODO(OMN-1234): description
 Invalid:       # TODO: description   (no ticket reference)
 
 Centralised in onex_change_control so downstream repos consume

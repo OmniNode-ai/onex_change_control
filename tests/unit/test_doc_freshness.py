@@ -29,8 +29,6 @@ from onex_change_control.scanners.doc_reference_extractor import (
     extract_env_vars,
     extract_file_paths,
     extract_function_names,
-    extract_pr_numbers,
-    extract_ticket_state_claims,
     extract_urls,
 )
 from onex_change_control.scanners.doc_staleness_detector import (
@@ -53,15 +51,9 @@ class TestEnumDocReferenceType:
         assert EnumDocReferenceType.COMMAND == "COMMAND"
         assert EnumDocReferenceType.URL == "URL"
         assert EnumDocReferenceType.ENV_VAR == "ENV_VAR"
-        assert EnumDocReferenceType.PR_NUMBER == "PR_NUMBER"
-        assert EnumDocReferenceType.TICKET_STATE == "TICKET_STATE"
-        assert EnumDocReferenceType.LIVE_PATH_AUTHORITY == "LIVE_PATH_AUTHORITY"
 
     def test_enum_count(self) -> None:
-        # OMN-15105 added UNCITED_WORK_ITEM (10th member): a work-item table
-        # row with no OMN-ticket or PR citation, so no live checker has
-        # anything to resolve it against.
-        assert len(EnumDocReferenceType) == 10
+        assert len(EnumDocReferenceType) == 6
 
 
 @pytest.mark.unit
@@ -359,34 +351,6 @@ class TestDocReferenceExtractor:
         assert "POSTGRES_PASSWORD" in names
         assert "ENABLE_REAL_TIME_EVENTS" in names
         assert "SOME_RANDOM_WORD" not in names
-
-    def test_extract_pr_numbers(self) -> None:
-        lines = [
-            "Use omnimarket#1034, OCC #2161, and bare #1033 as references.",
-            "Ignore issue-like word #abc and heading # Not numeric.",
-        ]
-        refs = extract_pr_numbers("test.md", lines)
-        assert [ref.raw_text for ref in refs] == [
-            "omnimarket#1034",
-            "OCC#2161",
-            "#1033",
-        ]
-        assert all(ref.reference_type == EnumDocReferenceType.PR_NUMBER for ref in refs)
-
-    def test_extract_ticket_state_claims(self) -> None:
-        lines = [
-            "| OMN-12691 | Done |",
-            "OMN-12694 is In Progress now.",
-            "OMN-99999 has no explicit state claim here.",
-        ]
-        refs = extract_ticket_state_claims("test.md", lines)
-        assert [ref.raw_text for ref in refs] == [
-            "OMN-12691:Done",
-            "OMN-12694:In Progress",
-        ]
-        assert all(
-            ref.reference_type == EnumDocReferenceType.TICKET_STATE for ref in refs
-        )
 
     def test_no_freshness_check_annotation(self) -> None:
         lines = [

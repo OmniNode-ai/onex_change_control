@@ -1,28 +1,15 @@
 # SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
-"""Regression tests for OMN-8431 — CodeRabbit PR #157 findings.
+"""TDD-first regression tests for OMN-8431 — CodeRabbit PR #157 findings.
 
 CR#1 (Critical): model_task_delta_envelope — Mapping/EnumTaskStatus in TYPE_CHECKING
 CR#2 (Critical): model_verifier_output — EnumFailureClass in TYPE_CHECKING
-CR#3 (Major): model_session_contract — default halt threshold hardcoded to 5.0
+CR#3 (Major): model_overnight_contract — default halt threshold hardcoded to 5.0
 CR#4 (Major): model_session_contract — phases defaults to empty tuple
 CR#5 (Major): model_task_state_envelope — task_id auto-generated
 CR#6 (Minor): overseer/__init__.py — ModelContextBundle not exported
 CR#7 (Minor): model_worker_contract — load_worker_contract rejects Mapping types
-CR#8 (Major): model_session_halt_condition — HaltCondition missing conditional
-    validators
-
-OMN-16191: these classes were originally OCC-local duplicates (copied in for
-OMN-8431); they are deleted here and now live exclusively in
-omnibase_core.models.overseer / omnibase_core.enums.overseer (OMN-11225). The
-CR regressions this file guards against are re-pointed at the canonical
-location. ModelOvernightContract/ModelOvernightHaltCondition (the pre-OMN-11225
-names) no longer exist anywhere — OMN-11225 merged them into
-ModelSessionContract/ModelSessionHaltCondition, so CR#3 and CR#8 now exercise
-the session-contract family directly. CR#6 (ModelContextBundle export from
-``onex_change_control.overseer``) is dropped: that package no longer carries
-any wire types besides the promotion-bot policy (OMN-16191 scope), so the
-export no longer applies.
+CR#8 (Major): model_overnight_contract — HaltCondition missing conditional validators
 """
 
 from __future__ import annotations
@@ -41,7 +28,7 @@ class TestCRFinding1CriticalTaskDeltaEnvelopePydanticRuntime:
     """
 
     def test_model_task_delta_envelope_schema_builds(self) -> None:
-        from omnibase_core.models.overseer.model_task_delta_envelope import (
+        from onex_change_control.overseer.model_task_delta_envelope import (
             ModelTaskDeltaEnvelope,
         )
 
@@ -49,9 +36,11 @@ class TestCRFinding1CriticalTaskDeltaEnvelopePydanticRuntime:
         assert "task_id" in schema.get("properties", {})
 
     def test_model_task_delta_envelope_instantiate_with_status(self) -> None:
-        from omnibase_core.enums.overseer.enum_task_status import EnumTaskStatus
-        from omnibase_core.models.overseer.model_task_delta_envelope import (
+        from onex_change_control.overseer.model_task_delta_envelope import (
             ModelTaskDeltaEnvelope,
+        )
+        from onex_change_control.overseer.model_task_state_envelope import (
+            EnumTaskStatus,
         )
 
         delta = ModelTaskDeltaEnvelope(
@@ -62,7 +51,7 @@ class TestCRFinding1CriticalTaskDeltaEnvelopePydanticRuntime:
         assert delta.status == EnumTaskStatus.RUNNING
 
     def test_model_task_delta_envelope_instantiate_with_mapping_payload(self) -> None:
-        from omnibase_core.models.overseer.model_task_delta_envelope import (
+        from onex_change_control.overseer.model_task_delta_envelope import (
             ModelTaskDeltaEnvelope,
         )
 
@@ -84,7 +73,7 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
     """
 
     def test_model_verifier_output_schema_builds(self) -> None:
-        from omnibase_core.models.overseer.model_verifier_output import (
+        from onex_change_control.overseer.model_verifier_output import (
             ModelVerifierOutput,
         )
 
@@ -92,11 +81,11 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
         assert "failure_class" in schema.get("properties", {})
 
     def test_model_verifier_output_instantiate_with_failure_class(self) -> None:
-        from omnibase_core.enums.overseer.enum_failure_class import EnumFailureClass
-        from omnibase_core.enums.overseer.enum_verifier_verdict import (
+        from onex_change_control.overseer.enum_failure_class import EnumFailureClass
+        from onex_change_control.overseer.enum_verifier_verdict import (
             EnumVerifierVerdict,
         )
-        from omnibase_core.models.overseer.model_verifier_output import (
+        from onex_change_control.overseer.model_verifier_output import (
             ModelVerifierOutput,
         )
 
@@ -109,14 +98,15 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
     def test_model_verifier_output_checks_accepts_dod_receipt(self) -> None:
         from datetime import UTC, datetime
 
-        from omnibase_core.enums.overseer.enum_verifier_verdict import (
-            EnumVerifierVerdict,
-        )
         from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
         from omnibase_core.models.contracts.ticket.model_dod_receipt import (
             ModelDodReceipt,
         )
-        from omnibase_core.models.overseer.model_verifier_output import (
+
+        from onex_change_control.overseer.enum_verifier_verdict import (
+            EnumVerifierVerdict,
+        )
+        from onex_change_control.overseer.model_verifier_output import (
             ModelVerifierOutput,
         )
 
@@ -147,26 +137,24 @@ class TestCRFinding2CriticalVerifierOutputPydanticRuntime:
         assert isinstance(output.checks[0], ModelDodReceipt)
 
 
-class TestCRFinding3MajorSessionContractCostThreshold:
+class TestCRFinding3MajorOvernightContractCostThreshold:
     """CR#3 (Major): Default cost halt condition hardcoded to 5.0.
 
-    ModelSessionContract(max_cost_usd=10.0) should derive halt threshold from
+    ModelOvernightContract(max_cost_usd=10.0) should derive halt threshold from
     max_cost_usd, not hardcode 5.0.
     """
 
     def test_default_halt_conditions_use_max_cost_usd(self) -> None:
-        from omnibase_core.models.overseer.model_session_contract import (
-            ModelSessionContract,
-        )
-        from omnibase_core.models.overseer.model_session_phase_spec import (
-            ModelSessionPhaseSpec,
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightContract,
+            ModelOvernightPhaseSpec,
         )
 
-        contract = ModelSessionContract(
+        contract = ModelOvernightContract(
             session_id="test-session",
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             max_cost_usd=10.0,
-            phases=(ModelSessionPhaseSpec(phase_name="phase1"),),
+            phases=(ModelOvernightPhaseSpec(phase_name="phase1"),),
         )
         cost_conditions = [
             c for c in contract.halt_conditions if c.check_type == "cost_ceiling"
@@ -178,18 +166,16 @@ class TestCRFinding3MajorSessionContractCostThreshold:
         )
 
     def test_default_halt_conditions_still_have_phase_failure_limit(self) -> None:
-        from omnibase_core.models.overseer.model_session_contract import (
-            ModelSessionContract,
-        )
-        from omnibase_core.models.overseer.model_session_phase_spec import (
-            ModelSessionPhaseSpec,
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightContract,
+            ModelOvernightPhaseSpec,
         )
 
-        contract = ModelSessionContract(
+        contract = ModelOvernightContract(
             session_id="test-session",
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             max_cost_usd=7.5,
-            phases=(ModelSessionPhaseSpec(phase_name="phase1"),),
+            phases=(ModelOvernightPhaseSpec(phase_name="phase1"),),
         )
         failure_conditions = [
             c for c in contract.halt_conditions if c.check_type == "phase_failure_count"
@@ -206,10 +192,11 @@ class TestCRFinding4MajorSessionContractPhasesRequired:
     """
 
     def test_session_contract_requires_phases(self) -> None:
-        from omnibase_core.models.overseer.model_session_contract import (
+        from pydantic import ValidationError
+
+        from onex_change_control.overseer.model_session_contract import (
             ModelSessionContract,
         )
-        from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
             ModelSessionContract(
@@ -219,10 +206,11 @@ class TestCRFinding4MajorSessionContractPhasesRequired:
             )
 
     def test_session_contract_rejects_missing_phases(self) -> None:
-        from omnibase_core.models.overseer.model_session_contract import (
+        from pydantic import ValidationError
+
+        from onex_change_control.overseer.model_session_contract import (
             ModelSessionContract,
         )
-        from pydantic import ValidationError
 
         with pytest.raises((ValidationError, TypeError)):
             ModelSessionContract(  # type: ignore[call-arg]
@@ -231,10 +219,8 @@ class TestCRFinding4MajorSessionContractPhasesRequired:
             )
 
     def test_session_contract_accepts_non_empty_phases(self) -> None:
-        from omnibase_core.models.overseer.model_session_contract import (
+        from onex_change_control.overseer.model_session_contract import (
             ModelSessionContract,
-        )
-        from omnibase_core.models.overseer.model_session_phase_spec import (
             ModelSessionPhaseSpec,
         )
 
@@ -254,11 +240,12 @@ class TestCRFinding5MajorTaskStateEnvelopeTaskIdRequired:
     """
 
     def test_task_state_envelope_requires_task_id(self) -> None:
-        from omnibase_core.enums.overseer.enum_task_status import EnumTaskStatus
-        from omnibase_core.models.overseer.model_task_state_envelope import (
+        from pydantic import ValidationError
+
+        from onex_change_control.overseer.model_task_state_envelope import (
+            EnumTaskStatus,
             ModelTaskStateEnvelope,
         )
-        from pydantic import ValidationError
 
         with pytest.raises((ValidationError, TypeError)):
             ModelTaskStateEnvelope(  # type: ignore[call-arg]
@@ -268,8 +255,8 @@ class TestCRFinding5MajorTaskStateEnvelopeTaskIdRequired:
             )
 
     def test_task_state_envelope_accepts_explicit_task_id(self) -> None:
-        from omnibase_core.enums.overseer.enum_task_status import EnumTaskStatus
-        from omnibase_core.models.overseer.model_task_state_envelope import (
+        from onex_change_control.overseer.model_task_state_envelope import (
+            EnumTaskStatus,
             ModelTaskStateEnvelope,
         )
 
@@ -282,6 +269,20 @@ class TestCRFinding5MajorTaskStateEnvelopeTaskIdRequired:
         assert envelope.task_id == "explicit-id-123"
 
 
+class TestCRFinding6MinorModelContextBundleExported:
+    """CR#6 (Minor): ModelContextBundle not exported from overseer/__init__.py."""
+
+    def test_model_context_bundle_importable_from_overseer_package(self) -> None:
+        import onex_change_control.overseer as pkg
+
+        assert pkg.ModelContextBundle is not None
+
+    def test_model_context_bundle_in_all(self) -> None:
+        import onex_change_control.overseer as pkg
+
+        assert "ModelContextBundle" in pkg.__all__
+
+
 class TestCRFinding7MinorWorkerContractLoadAcceptsMapping:
     """CR#7 (Minor): load_worker_contract rejects valid Mapping types.
 
@@ -292,7 +293,7 @@ class TestCRFinding7MinorWorkerContractLoadAcceptsMapping:
     def test_load_worker_contract_accepts_mapping_proxy(self) -> None:
         from types import MappingProxyType
 
-        from omnibase_core.models.overseer.model_worker_contract import (
+        from onex_change_control.overseer.model_worker_contract import (
             load_worker_contract,
         )
 
@@ -302,7 +303,8 @@ class TestCRFinding7MinorWorkerContractLoadAcceptsMapping:
 
     def test_load_worker_contract_still_rejects_non_mapping(self) -> None:
         from omnibase_core.models.errors.model_onex_error import ModelOnexError
-        from omnibase_core.models.overseer.model_worker_contract import (
+
+        from onex_change_control.overseer.model_worker_contract import (
             load_worker_contract,
         )
 
@@ -316,60 +318,54 @@ class TestCRFinding7MinorWorkerContractLoadAcceptsMapping:
             load_worker_contract("not-a-mapping")
 
 
-class TestCRFinding8MajorSessionHaltConditionConditionalFields:
-    """CR#8 (Major): ModelSessionHaltCondition missing conditional field validators.
+class TestCRFinding8MajorOvernightHaltConditionConditionalFields:
+    """CR#8 (Major): ModelOvernightHaltCondition missing conditional field validators.
 
     Comments document: skill required when on_halt='dispatch_skill',
     pr+threshold_minutes required when check_type='pr_blocked_too_long',
     outcome required when check_type='required_outcome_missing'. No validators
     enforce these, so invalid structs pass schema validation silently.
-
-    Core's ModelSessionHaltCondition also enforces threshold > 0 for
-    check_type in {cost_ceiling, phase_failure_count, time_elapsed} (a stricter
-    rule OCC's local copy lacked) — fixtures below supply an explicit valid
-    threshold wherever check_type is one of those three, so each test isolates
-    the single condition it exercises.
     """
 
     def test_dispatch_skill_requires_skill_field(self) -> None:
-        from omnibase_core.models.overseer.model_session_halt_condition import (
-            ModelSessionHaltCondition,
-        )
         from pydantic import ValidationError
 
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
         with pytest.raises(ValidationError, match="skill is required"):
-            ModelSessionHaltCondition(
+            ModelOvernightHaltCondition(
                 condition_id="test",
                 description="test",
                 check_type="cost_ceiling",
-                threshold=5.0,
                 on_halt="dispatch_skill",
                 skill=None,
             )
 
     def test_dispatch_skill_accepts_skill_field(self) -> None:
-        from omnibase_core.models.overseer.model_session_halt_condition import (
-            ModelSessionHaltCondition,
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
         )
 
-        cond = ModelSessionHaltCondition(
+        cond = ModelOvernightHaltCondition(
             condition_id="test",
             description="test",
             check_type="cost_ceiling",
-            threshold=5.0,
             on_halt="dispatch_skill",
             skill="onex:pr_polish",
         )
         assert cond.skill == "onex:pr_polish"
 
     def test_pr_blocked_requires_pr_and_threshold_minutes(self) -> None:
-        from omnibase_core.models.overseer.model_session_halt_condition import (
-            ModelSessionHaltCondition,
-        )
         from pydantic import ValidationError
 
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
         with pytest.raises(ValidationError, match="pr is required"):
-            ModelSessionHaltCondition(
+            ModelOvernightHaltCondition(
                 condition_id="test",
                 description="test",
                 check_type="pr_blocked_too_long",
@@ -378,7 +374,7 @@ class TestCRFinding8MajorSessionHaltConditionConditionalFields:
             )
 
         with pytest.raises(ValidationError, match="threshold_minutes is required"):
-            ModelSessionHaltCondition(
+            ModelOvernightHaltCondition(
                 condition_id="test",
                 description="test",
                 check_type="pr_blocked_too_long",
@@ -387,11 +383,11 @@ class TestCRFinding8MajorSessionHaltConditionConditionalFields:
             )
 
     def test_pr_blocked_accepts_valid_fields(self) -> None:
-        from omnibase_core.models.overseer.model_session_halt_condition import (
-            ModelSessionHaltCondition,
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
         )
 
-        cond = ModelSessionHaltCondition(
+        cond = ModelOvernightHaltCondition(
             condition_id="test",
             description="test",
             check_type="pr_blocked_too_long",
@@ -402,13 +398,14 @@ class TestCRFinding8MajorSessionHaltConditionConditionalFields:
         assert cond.threshold_minutes == 60.0
 
     def test_required_outcome_missing_requires_outcome(self) -> None:
-        from omnibase_core.models.overseer.model_session_halt_condition import (
-            ModelSessionHaltCondition,
-        )
         from pydantic import ValidationError
 
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
+        )
+
         with pytest.raises(ValidationError, match="outcome is required"):
-            ModelSessionHaltCondition(
+            ModelOvernightHaltCondition(
                 condition_id="test",
                 description="test",
                 check_type="required_outcome_missing",
@@ -416,11 +413,11 @@ class TestCRFinding8MajorSessionHaltConditionConditionalFields:
             )
 
     def test_required_outcome_missing_accepts_outcome(self) -> None:
-        from omnibase_core.models.overseer.model_session_halt_condition import (
-            ModelSessionHaltCondition,
+        from onex_change_control.overseer.model_overnight_contract import (
+            ModelOvernightHaltCondition,
         )
 
-        cond = ModelSessionHaltCondition(
+        cond = ModelOvernightHaltCondition(
             condition_id="test",
             description="test",
             check_type="required_outcome_missing",

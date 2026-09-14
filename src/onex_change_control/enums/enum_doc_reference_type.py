@@ -16,14 +16,8 @@ class EnumDocReferenceType(StrEnum):
     FUNCTION_NAME - e.g., classify_node()
     CLASS_NAME    - e.g., ModelBaselinesSnapshotEvent
     COMMAND       - e.g., uv run pytest tests/unit/
-    URL           - e.g., http://localhost:8080  # onex-allow-internal-ip
+    URL           - e.g., http://localhost:8080
     ENV_VAR       - e.g., KAFKA_BOOTSTRAP_SERVERS
-    PR_NUMBER     - e.g., omnimarket#1034
-    TICKET_STATE  - e.g., OMN-12691 Done
-    LIVE_PATH_AUTHORITY - v2: live-path claim checked against runtime truth
-    UNCITED_WORK_ITEM - a ``| LABEL |`` work-item table row (e.g. ``| A5 |``)
-        with neither an OMN-XXXX ticket nor a repo#NNN PR citation anywhere
-        in the row, so no live-state check is possible (OMN-15105).
     """
 
     FILE_PATH = "FILE_PATH"
@@ -32,7 +26,3 @@ class EnumDocReferenceType(StrEnum):
     COMMAND = "COMMAND"
     URL = "URL"
     ENV_VAR = "ENV_VAR"
-    PR_NUMBER = "PR_NUMBER"
-    TICKET_STATE = "TICKET_STATE"
-    LIVE_PATH_AUTHORITY = "LIVE_PATH_AUTHORITY"
-    UNCITED_WORK_ITEM = "UNCITED_WORK_ITEM"

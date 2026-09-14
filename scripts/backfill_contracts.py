@@ -51,8 +51,6 @@ if _OMNI_HOME:
         sys.path.insert(0, str(_GENERATOR_DIR))
 
 
-from onex_change_control.integrations import contract_descriptor  # noqa: E402
-
 # ---------------------------------------------------------------------------
 # Custom exceptions (satisfies EM / TRY003 rules)
 # ---------------------------------------------------------------------------
@@ -143,11 +141,10 @@ emergency_bypass:
 class _LinearClient:
     """Thin HTTP wrapper around the Linear GraphQL API."""
 
+    _GRAPHQL_URL = "https://api.linear.app/graphql"
+
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
-        # Endpoint resolves from the integration contract + overlay
-        # (OMN-13563) — never a hardcoded URL literal.
-        self._graphql_url = contract_descriptor.linear_graphql_url()
 
     def get_issue(self, ticket_id: str) -> dict[str, Any] | None:
         """Fetch a Linear issue by identifier.
@@ -183,7 +180,7 @@ class _LinearClient:
         body = json.dumps(payload).encode()
 
         req = urllib.request.Request(  # noqa: S310
-            self._graphql_url,
+            self._GRAPHQL_URL,
             data=body,
             headers={
                 "Authorization": self._api_key,
@@ -422,14 +419,11 @@ def main(argv: list[str] | None = None) -> None:
     # Parse — skip argv[0] (program name) when argv is provided by tests.
     args = parser.parse_args(argv[1:] if argv is not None else None)
 
-    # Fail-fast: LINEAR_API_KEY required. Resolved via the contract-declared
-    # secret ref (OMN-13563) — the value still comes from the operator
-    # environment / Infisical store, never inlined in source.
-    try:
-        api_key = contract_descriptor.linear_api_key(required=True)
-    except ValueError as exc:
+    # Fail-fast: LINEAR_API_KEY required.
+    api_key = os.environ.get("LINEAR_API_KEY", "")
+    if not api_key:
         print(
-            f"ERROR: {exc}",
+            "ERROR: LINEAR_API_KEY is required for backfill but is not set.",
             file=sys.stderr,
         )
         sys.exit(1)

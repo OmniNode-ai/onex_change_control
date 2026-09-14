@@ -33,18 +33,11 @@ class ModelDodCheck(BaseModel):
 
     Each check has a type that determines how check_value is interpreted:
     - test_exists: check_value is a glob pattern for test files
-    - test_passes: check_value is a shell command that runs tests -- an
-      EXECUTED alias of ``command`` (OMN-16824). Both the hosted Contract
-      Compliance Check and node_dod_verify run it under
-      ``bash -o pipefail -c`` and read its exit status. It does NOT mean
-      "this PR's CI is green"; assert that explicitly with
-      ``check_type: command`` + ``gh pr checks`` if you want it.
+    - test_passes: check_value is a pytest marker or path to run
     - file_exists: check_value is a glob pattern for expected files
     - grep: check_value is a dict with 'pattern' and 'path' keys
     - command: check_value is a shell command (exit 0 = pass)
     - endpoint: check_value is a URL or path to check
-    - behavior_proven: historical attestation vocabulary retained for parsing;
-      the hosted runner reports it as non-executable WARN evidence
     - semantic_grading: check_value is a receipt path produced by
       node_pr_semantic_grader_llm_effect; the receipt gate requires a
       semantic_grading.yaml receipt at the canonical path for this evidence
@@ -54,22 +47,14 @@ class ModelDodCheck(BaseModel):
     execute under. The runner expands ``${OMNI_HOME}``, ``${PR_NUMBER}``,
     ``${REPO}``, and ``${TICKET_ID}`` template tokens before invocation, and
     is responsible for path-traversal containment checks. When ``cwd`` is
-    omitted the runner uses the product checkout under test (hosted) or
-    inherits its caller's working directory (local).
-
-    OMN-16824: a declared ``cwd`` a runner cannot resolve makes the check
-    NOT_EVALUATED -- it is never rerouted to the runner's own workspace, since
-    running the command in a different tree answers a different question under
-    this entry's name. The hosted gate checks out one repo, so a cross-repo
-    ``cwd`` belongs to an item declaring
-    ``execution_scope: local_done_gate`` (OMN-15392). Authoring reference:
-    ``docs/CHECK_TYPES.md``.
+    omitted the runner inherits its caller's working directory (legacy
+    behavior).
 
     OMN-10078: replaces the brittle ``cd ${OMNI_HOME}/<repo> && `` shell
     prefix introduced as a temporary fix in OMN-10049 / PR #448.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
     check_type: Literal[
         "test_exists",
@@ -78,7 +63,6 @@ class ModelDodCheck(BaseModel):
         "grep",
         "command",
         "endpoint",
-        "behavior_proven",
         "semantic_grading",
     ] = Field(..., description="Type of executable check")
     check_value: str | dict[str, str] = Field(
@@ -100,7 +84,7 @@ class ModelDodCheck(BaseModel):
 class ModelDodEvidenceItem(BaseModel):
     """A single DoD evidence item mapping a requirement to executable checks."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
     id: str = Field(
         ...,
@@ -122,16 +106,9 @@ class ModelDodEvidenceItem(BaseModel):
         max_length=_MAX_STRING_LENGTH,
     )
     checks: list[ModelDodCheck] = Field(
-        default_factory=list,
+        ...,
         description="Executable checks that verify this DoD item",
         max_length=_MAX_LIST_ITEMS,
-    )
-    execution_scope: Literal["hosted_and_local", "local_done_gate"] = Field(
-        default="hosted_and_local",
-        description=(
-            "Gate audience authorized to execute this evidence item. "
-            "local_done_gate items are not evaluated by hosted compliance."
-        ),
     )
     status: Literal["pending", "verified", "failed", "skipped"] = Field(
         default="pending",

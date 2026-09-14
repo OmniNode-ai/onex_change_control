@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "onex-change-control"
-version = "0.5.1"
+version = "0.5.0"
 description = "ONEX Change Control - Canonical governance + schema distribution + enforcement tooling to prevent cross-repo drift"
 authors = [
     {name = "OmniNode.ai", email = "contact@omninode.ai"},
@@ -17,26 +17,7 @@ dependencies = [
     "pyyaml>=6.0.2",
     "colorama>=0.4.6",
     "tomli_w>=1.0.0",
-    # OMN-13878: pinned to the released 0.45.0 (== former git rev dc69b726, the
-    # v0.45.0 tag commit) so the repin is a zero-behavior-change swap of git
-    # source for the identical PyPI artifact.
-    # OMN-14428: 0.45.0 lacks compute_contract_entry_sha256 /
-    # ContractEntryNotFoundError (validator_receipt_gate) and EnumProofTier
-    # (enums.ticket), which check_receipt_hardening.py and
-    # check_contract_substance_floor.py import directly. Verified by wheel
-    # inspection that the floor with all three symbols present is 0.46.5
-    # (0.46.1/0.46.3/0.46.4 are still missing the two receipt-gate symbols).
-    # OMN-16191: floor raised to 0.46.8 — the published wheel that guarantees
-    # the overseer + eval governance model families this repo now imports
-    # directly instead of duplicating locally (omnibase_core.models.overseer /
-    # omnibase_core.enums.overseer / omnibase_core.models.governance /
-    # omnibase_core.enums.governance).
-    "omnibase-core>=0.46.8,<0.47.0",
-    # OMN-15669: the canonical contract shape v1 artifact is JSON Schema
-    # (Draft 2020-12) serialized as YAML; the gate and the seam harness both
-    # validate against it. Already present transitively via the test stack —
-    # declared explicitly here because it is now runtime, not test-only.
-    "jsonschema>=4.20.0",
+    "omnibase-core>=0.36.0",
 ]
 
 [project.optional-dependencies]
@@ -62,26 +43,24 @@ check-boundary-parity = "onex_change_control.scripts.check_boundary_parity:main"
 check-todo-format = "onex_change_control.scripts.check_todo_format:main"
 check-migration-conflicts = "onex_change_control.scripts.check_migration_conflicts:main"
 check-migration-inventory = "onex_change_control.scripts.check_migration_inventory:main"
-generate-migration-inventory = "onex_change_control.scripts.generate_migration_inventory:main"
 check-drift = "onex_change_control.scripts.check_drift:main"
 check-anthropic-key-guard = "onex_change_control.scripts.check_anthropic_key_guard:main"
 check-env-var-contract = "onex_change_control.scripts.check_env_var_contract:main"
 scan-contract-dependencies = "onex_change_control.scripts.scan_contract_dependencies:main"
 validate-agent-yaml = "onex_change_control.scripts.validate_agent_yaml:main"
-validate-prod-promotion-grants = "onex_change_control.scripts.validate_prod_promotion_grants:main"
-check-platform-leads-review-tripwire = "onex_change_control.scripts.check_platform_leads_review_tripwire:main"
-check-bot-authored-authz-guard = "onex_change_control.scripts.check_bot_authored_authz_guard:main"
-check-contract-shape-v1 = "onex_change_control.validation.contract_shape_v1:main"
 generate-promotion-manifest = "onex_change_control.promotion.manifest:main"
 promotion-workflow-evidence = "onex_change_control.promotion.workflow:main"
 dev-main-cutover = "onex_change_control.promotion.cutover:main"
-promotion-staleness-monitor = "onex_change_control.promotion.staleness:main"
 
 [project.entry-points."onex.nodes"]
 node_contract_drift_compute = "onex_change_control.nodes.node_contract_drift_compute.node:NodeContractDriftCompute"
 node_contract_drift_reducer = "onex_change_control.nodes.node_contract_drift_reducer.node:NodeContractDriftReducer"
 node_contract_drift_orchestrator = "onex_change_control.nodes.node_contract_drift_orchestrator.node:NodeContractDriftOrchestrator"
 node_contract_drift_effect = "onex_change_control.nodes.node_contract_drift_effect.node:NodeContractDriftEffect"
+node_contract_dependency_compute = "onex_change_control.nodes.node_contract_dependency_compute.node:NodeContractDependencyCompute"
+node_contract_dependency_reducer = "onex_change_control.nodes.node_contract_dependency_reducer.node:NodeContractDependencyReducer"
+node_contract_dependency_effect = "onex_change_control.nodes.node_contract_dependency_effect.node:NodeContractDependencyEffect"
+node_contract_dependency_orchestrator = "onex_change_control.nodes.node_contract_dependency_orchestrator.node:NodeContractDependencyOrchestrator"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/onex_change_control"]
@@ -103,7 +82,6 @@ dev = [
     "ruff>=0.15.6",
     "types-pyyaml>=6.0.12.20250822",
     "types-colorama>=0.4.15",
-    "types-jsonschema>=4.20.0",
     "pre-commit>=4.3.0",
     # Note: omniclaude schema round-trip tests use sys.path injection (OMNI_HOME).
     # They skip gracefully when omniclaude's deps are not installed.
@@ -137,14 +115,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "src/onex_change_control/cosmetic/cli.py" = ["PLC0415"]  # Intentional lazy imports for --select filtering
 "src/onex_change_control/__main__.py" = ["T201", "PLC0415"]  # CLI output + lazy import for module-level entry point
-"src/onex_change_control/scripts/**" = ["PLC0415", "T201", "PLR0911"]  # CLI scripts use print for output; lazy imports for optional deps; OMN-14458 moved run_contract_compliance_check.py's multi-branch dispatcher here from scripts/** (which already carried this ignore)
+"src/onex_change_control/scripts/**" = ["PLC0415", "T201"]  # CLI scripts use print for output; lazy imports for optional deps
 "src/onex_change_control/kafka/**" = ["PLC0415", "S110", "PLR0913", "RUF002"]  # Lazy kafka-python import for optional dep; S110/PLR0913/RUF002 intentional
 "src/onex_change_control/scanners/**" = ["S603", "S607", "PLC0415", "PLR2004"]  # Scanners intentionally call git/find/grep via subprocess
-"scripts/ci/ci_summary_gate.py" = ["PLR0913"]  # OMN-15768: evaluate()/_report() intentionally carry the reference implementation's full parameter set (ported from omnibase_infra's proven ci_summary_gate.py); T201 already covered by the scripts/** entry below
-"tests/**" = ["S603", "S607", "PLR2004", "PLC0415", "SLF001"]  # subprocess calls (git plumbing), magic values, late imports, private member access in tests
+"tests/**" = ["S603", "PLR2004", "PLC0415", "SLF001"]  # subprocess calls, magic values, late imports, private member access in tests
 "scripts/**" = ["T201", "INP001", "PLC0415", "PLR0911"]  # CLI scripts use print; not a package; lazy imports; multi-branch dispatch functions exceed default return-count limit
-"src/onex_change_control/validation/contract_shape_v1.py" = ["T201"]  # OMN-15669: this module is a CLI gate entrypoint (check-contract-shape-v1); findings go to stdout for the CI log
-"tests/fixtures/contract_shape_v1/conformant/tests/*.py" = ["INP001"]  # OMN-15669: conformant GREEN fixture tree is DATA the gate collects, deliberately not an importable package (an __init__.py here would collide with the outer tests package)
 "src/onex_change_control/overseer/model_*.py" = ["TC001", "TC003"]  # Pydantic models require runtime type hints; TYPE_CHECKING blocks break get_type_hints()
 
 [tool.pytest.ini_options]
@@ -206,24 +181,5 @@ init_typed = false
 warn_required_dynamic_aliases = true
 warn_untyped_fields = true
 
-# OMN-13878: [tool.uv.sources] omnibase-core git override removed — core now
-# resolves from PyPI (pinned >=0.45.0,<0.46.0 in [project.dependencies], which
-# reproduces the exact artifact of the former git rev dc69b726 == v0.45.0 tag).
-
-# OMN-16518 (docs/plans/2026-08-23-cloud-ci-offload-plan.md Stage 1, S1-3):
-# explicit public-index pin. Scope, stated precisely so it is not
-# over-claimed: per uv's documented precedence
-# (docs.astral.sh/uv/concepts/configuration-files/), an env-supplied
-# UV_INDEX/UV_DEFAULT_INDEX always outranks this project-level pin, so this
-# does NOT by itself neutralize an ambient mirror env var on a runner — that
-# channel is closed by sanitizing the lock-generating workflows' own
-# environment (OMN-16517) and by the structural registry-host allowlist gate
-# on every committed uv.lock (OMN-16516), the fail-closed backstop
-# regardless of which channel produced a leak. What THIS pin defends is
-# narrower and still real: it beats a runner-level *user* uv.toml (project
-# config outranks user config), and it makes this repo's own intent
-# explicit rather than silently inheriting uv's built-in default.
-[[tool.uv.index]]
-name = "pypi"
-url = "https://pypi.org/simple"
-default = true
+[tool.uv.sources]
+omnibase-core = { git = "https://github.com/OmniNode-ai/omnibase_core", rev = "532d62aedd9e361cee6cc0033b3d6e59bcfc2456" }

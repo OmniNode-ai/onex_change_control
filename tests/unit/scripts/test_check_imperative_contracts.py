@@ -36,13 +36,6 @@ def _create_repo_with_imperative_handler(tmp_path: Path, repo_name: str) -> Path
             description: Test node
             input_model: {name: ModelTestInput, module: test}
             output_model: {name: ModelTestOutput, module: test}
-            handler_routing:
-              routing_strategy: operation_match
-              handlers:
-                - operation: run
-                  handler:
-                    name: HandlerExample
-                    module: test_pkg.nodes.node_test.handlers.handler_example
             """
         ),
         encoding="utf-8",
@@ -153,93 +146,12 @@ def test_main_fails_on_new_imperative_violation(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "repo_a" in output
-    assert "Blocking LIVE imperative violations" in output
+    assert "Unbaselined imperative violations" in output
 
 
 def test_main_no_fail_reports_without_blocking(tmp_path: Path) -> None:
     _create_repo_with_imperative_handler(tmp_path, "repo_a")
 
     exit_code = main(["--workspace-root", str(tmp_path), "--no-fail"])
-
-    assert exit_code == 0
-
-
-# ---------------------------------------------------------------------------
-# Allowlist ticket-format enforcement (OMN-11878)
-# ---------------------------------------------------------------------------
-
-
-def test_scan_repo_reports_placeholder_ticket_as_blocking(tmp_path: Path) -> None:
-    """A '# migration pending' placeholder ticket surfaces as a scan blocker."""
-    repo_root = _create_repo_with_imperative_handler(tmp_path, "repo_a")
-    (repo_root / "arch-handler-contract-compliance-allowlist.yaml").write_text(
-        textwrap.dedent(
-            """\
-            allowlisted_handlers:
-              - path: test_pkg/nodes/node_test/handlers/handler_example.py
-                violations:
-                  - hardcoded_topic
-                  - missing_handler_routing
-                ticket: '# migration pending'
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    summary = scan_repo(repo_root)
-
-    # The path is still allowlisted for the violation scan itself...
-    assert summary.allowlisted_count == 1
-    assert summary.new_violation_count == 0
-    # ...but the placeholder ticket is reported as its own blocker.
-    assert len(summary.ticket_format_violations) == 1
-    assert "handler_example.py" in summary.ticket_format_violations[0]
-
-
-def test_main_fails_on_placeholder_allowlist_ticket(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The CLI exits 1 when an allowlist entry has a placeholder ticket."""
-    repo_root = _create_repo_with_imperative_handler(tmp_path, "repo_a")
-    (repo_root / "arch-handler-contract-compliance-allowlist.yaml").write_text(
-        textwrap.dedent(
-            """\
-            allowlisted_handlers:
-              - path: test_pkg/nodes/node_test/handlers/handler_example.py
-                violations:
-                  - hardcoded_topic
-                  - missing_handler_routing
-                ticket: '# migration pending'
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    exit_code = main(["--workspace-root", str(tmp_path)])
-
-    output = capsys.readouterr().out
-    assert exit_code == 1
-    assert "ticket-format violations" in output
-
-
-def test_main_passes_with_real_ticket_on_allowlist(tmp_path: Path) -> None:
-    """A real OMN-#### ticket on the allowlist entry does not block the CLI."""
-    repo_root = _create_repo_with_imperative_handler(tmp_path, "repo_a")
-    (repo_root / "arch-handler-contract-compliance-allowlist.yaml").write_text(
-        textwrap.dedent(
-            """\
-            allowlisted_handlers:
-              - path: test_pkg/nodes/node_test/handlers/handler_example.py
-                violations:
-                  - hardcoded_topic
-                  - missing_handler_routing
-                ticket: OMN-11878
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    exit_code = main(["--workspace-root", str(tmp_path)])
 
     assert exit_code == 0
