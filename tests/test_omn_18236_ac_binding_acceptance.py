@@ -467,15 +467,25 @@ class TestFailClosed:
 
         assert _rules(findings) == ["ac_binding_ticket_unreadable"]
 
-    def test_a_contract_claiming_nothing_is_unaffected_by_an_unreadable_ticket(
+    def test_a_contract_claiming_nothing_is_red_on_an_unreadable_ticket(
         self,
     ) -> None:
-        """A contract with no claim has nothing for this gate to check, so an
-        unreadable ticket must not turn it red. The coverage gap it does have
-        is the closer's finding, reported once, by the closer."""
+        """DELIBERATELY REVERSED by OMN-18333, and the reversal is the point.
+
+        This test previously asserted that a contract claiming nothing was
+        unaffected by an unreadable ticket, on the reasoning that it had
+        nothing for this gate to check. OMN-18333 gave it something: the
+        coverage rule asks whether the TICKET declares a criterion the contract
+        fails to claim, and a contract claiming nothing is the degenerate case
+        of that question rather than an exemption from it. Leaving the old
+        scoping would have let a companion that binds nothing, for a ticket
+        nobody can read, pass silently — the exact shape step 7 exists to
+        refuse."""
         contract = _contract(claims=[])
 
-        assert check_contract_ac_bindings(_TICKET, contract, None) == []
+        findings = check_contract_ac_bindings(_TICKET, contract, None)
+
+        assert _rules(findings) == ["ac_binding_ticket_unreadable"]
 
     def test_an_unlabelled_ticket_is_named_as_such(self) -> None:
         """The fix is a ticket-authoring change, so the finding says so rather
