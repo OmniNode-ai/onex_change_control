@@ -116,18 +116,27 @@ class TestAbsentBindingHolds:
             assert label in joined
         assert _TICKET in joined
 
-    def test_an_unbindable_label_under_a_binding_nothing_contract_also_holds(
+    def test_a_suffixed_label_under_a_binding_nothing_contract_also_holds(
         self,
     ) -> None:
-        """The suffixed-label class is a HOLD when nothing is bound, for the same
-        reason the bare labels are: there is no partial claim to be misread."""
+        """Every declared criterion is a HOLD when nothing is bound, for the
+        same reason the bare labels are: there is no partial claim to be
+        misread.
+
+        REVERSED by OMN-18356: before the fix the six suffixed criteria parsed
+        as unbindable (label=None) and held on those terms; now they are real,
+        distinct labels held for ordinary non-claim, same as the other six.
+        Twelve holds, none of them the unbindable rule -- that rule now fires
+        only on a genuinely unparseable compound label (`AC2bb`), pinned
+        separately in `test_omn_18333_binds_every_declared_criterion.py`.
+        """
         findings = check_contract_ac_bindings(
             _TICKET, _binds_nothing(), _body("ticket_declares_real_label_shape.md")
         )
 
         assert refusals(findings) == []
-        assert _rules(holds(findings)).count(_UNBINDABLE) == 6
-        assert _rules(holds(findings)).count(_UNBOUND) == 6
+        assert _rules(holds(findings)).count(_UNBINDABLE) == 0
+        assert _rules(holds(findings)).count(_UNBOUND) == 12
 
     def test_an_explicitly_empty_claim_reads_as_absent_not_as_partial(self) -> None:
         """`binds_ac: []` is the same producer saying the same thing. Reading it
@@ -209,17 +218,22 @@ class TestPartialBindingIsRefused:
         assert _rules(refusals(findings)).count(_UNBOUND) == 7
 
 
-# ----------------------------------------------------- (c) the unbindable --
+# ------------------------------------------- (c) the suffixed labels, bound --
 
 
-class TestUnbindableUnderAPartialBinding:
-    def test_a_suffixed_label_is_refused_when_the_contract_binds_something(
+class TestSuffixedLabelsUnderAPartialBinding:
+    """Was `TestUnbindableUnderAPartialBinding`, REVERSED by OMN-18356 as its
+    own predecessor test anticipated ("the remedy is OMN-18356 in the reader,
+    not a downgrade here"). Before the fix these six suffixed criteria parsed
+    as no label at all and were refused as unbindable regardless of what the
+    contract claimed. The reader now parses them as their own distinct labels,
+    so a contract that binds only the six bare ordinals around them is
+    ordinary partial coverage: refused for omitting a criterion it could name
+    but did not, same as any other unbound label."""
+
+    def test_a_suffixed_label_is_unbound_when_the_contract_binds_something_else(
         self,
     ) -> None:
-        """Unchanged from the merged rule. The remedy is OMN-18356 in the reader,
-        not a downgrade here: a criterion nothing can point at is unbound, never
-        absent, and a contract that binds the bare labels around it reads as a
-        complete pass."""
         contract = {
             "ticket_id": _TICKET,
             "dod_evidence": [
@@ -235,7 +249,10 @@ class TestUnbindableUnderAPartialBinding:
         )
 
         refused = refusals(findings)
-        assert _rules(refused) == [_UNBINDABLE] * 6
+        assert _rules(refused) == [_UNBOUND] * 6
+        joined = " ".join(f.message for f in refused)
+        for label in ("AC2b", "AC2c", "AC2d", "AC2e", "AC2f", "AC2g"):
+            assert label in joined
         assert holds(findings) == []
 
 

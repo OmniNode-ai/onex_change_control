@@ -37,7 +37,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 #: A canonical acceptance-criterion label. The same closed shape the
 #: ``binds_ac`` validator enforces, so a label cannot be legal in one field and
 #: illegal in the other.
-_AC_LABEL_RE = re.compile(r"^(AC|DOD)[-_ .]?(\d+)$", re.IGNORECASE)
+#:
+#: OMN-18356: the optional single-letter SUFFIX group matches the producer's
+#: grammar (``omniclaude`` ``_CRITERION_LABEL``) exactly -- a round split into
+#: ``AC2b``/``AC2c``/... sits a letter directly after the ordinal digits, with
+#: no boundary between them (both are word characters), so a bare ``(\d+)$``
+#: never matched it. The suffix is stored AS WRITTEN (this validator does not
+#: canonicalise, same as it never has for a bare ``ac1``): ``AC2b`` and
+#: ``AC2B`` are different labels, not the same criterion written twice.
+_AC_LABEL_RE = re.compile(r"^(AC|DOD)[-_ .]?(\d+)([a-zA-Z]?)$", re.IGNORECASE)
 #: sha256, lowercase hex. Not a prefix and not a truncation: a short hash is a
 #: hash that collides sooner and reads as if it did not.
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -104,7 +112,7 @@ class ModelAcBinding(BaseModel):
         if not _AC_LABEL_RE.match(value):
             msg = (
                 "label must be an acceptance-criterion label (`AC1`, `ac-1`, "
-                f"`DoD2`); rejected: {value!r}"
+                f"`DoD2`, `AC2b`); rejected: {value!r}"
             )
             raise ValueError(msg)
         return value

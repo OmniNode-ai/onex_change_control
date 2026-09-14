@@ -228,9 +228,17 @@ class TestEveryDeclaredCriterionIsBound:
         assert _coverage(findings) == []
 
     def test_a_label_the_grammar_cannot_parse_is_unbound_never_absent(self) -> None:
-        """The brief's specific hazard: a suffixed label such as `AC2b` parses as
-        NO label upstream. Reading that as absent is how a ticket with an
-        unbindable criterion passes as fully bound."""
+        """The brief's specific hazard: a label the grammar cannot parse comes
+        back as NO label upstream. Reading that as absent is how a ticket with
+        an unbindable criterion passes as fully bound.
+
+        REVERSED by OMN-18356, which is the fixture's own subject: a single
+        suffix letter directly after the ordinal digits (`AC2b`) is no longer
+        this hazard -- it parses as its own bindable label now. The example
+        widened to a genuinely unparseable shape, two letters rather than the
+        one the grammar allows (`AC2bb`), so this test still exercises the
+        rule it names.
+        """
         contract = {
             "ticket_id": "OMN-19998",
             "dod_evidence": [{"id": "dod-001", "binds_ac": ["AC1"]}],
@@ -242,7 +250,7 @@ class TestEveryDeclaredCriterionIsBound:
 
         coverage = _coverage(findings)
         assert [f.rule for f in coverage] == [_UNBINDABLE]
-        assert "AC2b" in coverage[0].message
+        assert "AC2bb" in coverage[0].message
 
 
 class TestParityWithTheAutobinder:
@@ -256,11 +264,20 @@ class TestParityWithTheAutobinder:
     omniclaude at 3b1c66e7). Neither can import the other: omnimarket depends on
     this package, and omniclaude is a plugin repository installed in neither CI.
 
-    **Measured live 2026-09-14.** Both readers were run over the raw
-    descriptions of two real tickets and produced the IDENTICAL declared
-    sequence, suffixed labels included — OMN-18333 as `AC1 AC2 AC3 AC4 AC5`, and
-    OMN-18332 as the twelve-item sequence this fixture reproduces, with six
-    unlabelled entries where the suffixed labels sit.
+    **Measured live 2026-09-14, before OMN-18356.** Both readers were run over
+    the raw descriptions of two real tickets and produced the IDENTICAL
+    declared sequence, suffixed labels included — OMN-18333 as
+    `AC1 AC2 AC3 AC4 AC5`, and OMN-18332 as the twelve-item sequence this
+    fixture reproduces, with six unlabelled entries where the suffixed labels
+    sat.
+
+    **REVERSED by OMN-18356.** That fix landed in both the producer
+    (`omniclaude#2159`) and this reader, so the parity property this class
+    exists to prove now holds on the WIDER shape: the six suffixed criteria
+    parse as their own labels on both sides, not as six agreeing blanks. The
+    fixture and `MEASURED` below were re-measured against the fixed reader
+    rather than left pinned to the pre-fix shape, which would have made this
+    class assert a false parity.
 
     **The honest bound.** The fixture below pins THIS reader's output against
     that shape. It cannot execute the other reader, so it proves the two have
@@ -269,20 +286,21 @@ class TestParityWithTheAutobinder:
     not available at this layer.
     """
 
-    #: The declared sequence both readers produced on the real OMN-18332 body,
-    #: with the six suffixed labels (AC2b, AC2c, AC2d, AC2e, AC2f, AC2g) landing
-    #: as unlabelled on BOTH sides. That agreement is the load-bearing half: a
-    #: criterion one reader labels and the other does not is a binding the
-    #: autobinder mints and this gate then refuses.
+    #: The declared sequence both readers produce on the real OMN-18332 body
+    #: post-OMN-18356: all twelve criteria labelled, the six suffixed ones
+    #: (AC2b, AC2d, AC2c, AC2e, AC2f, AC2g, in the ticket's own bullet order)
+    #: included rather than landing as six agreeing blanks. That agreement is
+    #: the load-bearing half: a criterion one reader labels and the other does
+    #: not is a binding the autobinder mints and this gate then refuses.
     MEASURED: ClassVar[list[str]] = [
         "AC1",
         "AC2",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
+        "AC2b",
+        "AC2d",
+        "AC2c",
+        "AC2e",
+        "AC2f",
+        "AC2g",
         "AC3",
         "AC4",
         "AC5",
@@ -294,9 +312,15 @@ class TestParityWithTheAutobinder:
 
         assert [label for label, _ in declared] == self.MEASURED
 
-    def test_the_suffixed_labels_are_refused_rather_than_dropped(self) -> None:
-        """Six unbindable criteria, not six absent ones. Dropping them is how a
-        ticket whose criteria cannot be bound reads as fully bound."""
+    def test_the_suffixed_labels_are_now_bound_rather_than_unbindable(
+        self,
+    ) -> None:
+        """REVERSED by OMN-18356. Before the fix these six were unbindable
+        (label=None upstream) and refused on those terms regardless of what the
+        contract claimed. Now they are real, distinct labels this contract
+        simply never claims -- six unbound criteria, not six unbindable ones,
+        and the fix is what makes them a bindable target for a future claim at
+        all."""
         contract = {
             "ticket_id": "OMN-19998",
             "dod_evidence": [
@@ -312,7 +336,10 @@ class TestParityWithTheAutobinder:
         )
 
         coverage = _coverage(findings)
-        assert [f.rule for f in coverage] == [_UNBINDABLE] * 6
+        assert [f.rule for f in coverage] == [_UNBOUND] * 6
+        joined = " ".join(f.message for f in coverage)
+        for label in ("AC2b", "AC2c", "AC2d", "AC2e", "AC2f", "AC2g"):
+            assert label in joined
 
 
 # ------------------------------------------------- AC2 / AC3 — the controls --
