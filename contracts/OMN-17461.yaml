@@ -1,0 +1,75 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17461"
+title: "Make omnimarket's shared pre-push hook worktree-aware"
+summary: >-
+  Git linked worktrees share the common hooks directory. Replace the common absolute symlink into a mutable
+  canonical checkout with a stable bootstrap that resolves the invoking worktree's checked-out governed
+  pre-push policy, fails closed when that authority is unavailable, and never reports a vacuous pass.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: "The focused worktree-aware bootstrap regression suite passes."
+    command: "uv run pytest tests/scripts/test_install_prepush_hook.py -q"
+  - kind: "ci"
+    description: "The complete omnimarket pre-commit suite passes."
+    command: "pre-commit run --all-files"
+  - kind: "manual"
+    description: "A normal governed push reaches the remote product branch."
+    command: "git push -u origin jonah/omn-17461-worktree-aware-prepush-hook"
+  - kind: "manual"
+    description: "An independent review confirms no shared-hook bypass or stale-worktree selection remains."
+    command: "git diff --check origin/dev...9b259312a34383921a880cdfdaac23924949a723"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn17461-worktree-bootstrap-tests"
+    description: >-
+      The focused regression suite proves that the stable common hook resolves the invoking linked worktree,
+      replaces only the known primary-checkout legacy symlink, refuses an arbitrary hook, refuses a missing
+      selector or pre-push authority, and checks executable state.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/scripts/test_install_prepush_hook.py -q"
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17461/omnimarket"
+  - id: "dod-omn17461-full-precommit"
+    description: >-
+      The full omnimarket pre-commit suite validates the repository-wide governance and shell hygiene
+      surface after the worktree-aware bootstrap installer and tests are added.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: "pre-commit run --all-files"
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17461/omnimarket"
+  - id: "dod-omn17461-governed-dogfood-push"
+    description: >-
+      The product commit is remotely reachable on its declared branch after a normal push that executed
+      the checked-out governed selector through the new bootstrap. The pinned SHA makes stale-worktree
+      substitution red.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          git ls-remote --exit-code --heads origin refs/heads/jonah/omn-17461-worktree-aware-prepush-hook
+          | awk '{print $1}' | grep -qx 9b259312a34383921a880cdfdaac23924949a723
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17461/omnimarket"
+  - id: "dod-omn17461-independent-review"
+    description: >-
+      An independent reviewer rechecked the amended bootstrap and test suite, specifically the no-vacuous-pass
+      authority requirement and executable common-hook check; this local differential review probe rejects
+      malformed or whitespace-damaged reviewed product content at the remote SHA.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          git diff --check origin/dev...9b259312a34383921a880cdfdaac23924949a723 && printf 'diff-check=clean\n'
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-17461/omnimarket"
