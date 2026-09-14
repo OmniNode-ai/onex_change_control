@@ -47,11 +47,14 @@ import hashlib
 import re
 
 __all__ = [
+    "FALSIFIER_MARKERS",
     "MAX_CRITERION_HASH_INPUT_CHARS",
     "acceptance_criteria_items",
     "canonical_ac_label",
     "criteria_by_label",
     "criterion_hash",
+    "declared_criteria",
+    "falsifier_of",
     "is_ac_heading",
     "item_text",
     "normalise_criterion",
@@ -222,6 +225,88 @@ def normalise_criterion(text: str) -> str:
 def criterion_hash(text: str) -> str:
     """The sha256 hex digest identifying this criterion's current revision."""
     return hashlib.sha256(normalise_criterion(text).encode("utf-8")).hexdigest()
+
+
+#: The two spellings the admission guard accepts for a criterion's named
+#: falsifier, vendored from `omniclaude`
+#: `plugins/onex/hooks/config/ticket_creation_policy.json` (OMN-18331). This is
+#: CONFIGURATION, not a second parser: the guard refuses a create whose criterion
+#: carries neither spelling, so a criterion that reached a merged ticket without
+#: one was minted before the cutover and is out of scope by construction.
+#:
+#: Keeping the tuple here rather than importing it is the same layering fact
+#: recorded at the top of this module: `omniclaude` is a Claude Code plugin
+#: repository, not a published distribution, and it is installed in neither this
+#: repository's CI nor a developer's commit hook. A marker added upstream and
+#: missing here narrows the DECLARED set, which releases a companion this gate
+#: would otherwise refuse -- so the drift direction is toward today's behaviour,
+#: never toward a false refusal.
+FALSIFIER_MARKERS: tuple[str, ...] = ("falsifier:", "falsified by")
+
+
+def falsifier_of(item: str) -> str | None:
+    """The check a criterion names as the thing that would settle it, or ``None``.
+
+    Matched INSIDE the item rather than on a line of its own, which is the one
+    place this reader departs from whole-line anchoring. The falsifier has to be
+    part of the criterion -- written in the same act, before any outcome was
+    known -- so the item boundary supplies the anchoring instead. The LAST marker
+    wins, so a criterion whose prose happens to use the word before naming the
+    real check is read the way its author meant it.
+
+    Same rule the admission guard applies at create time and the autobinder
+    applies at mint time. A criterion this returns ``None`` for is one no
+    companion is expected to bind.
+    """
+    folded = item.casefold()
+    best: str | None = None
+    best_start = -1
+    for marker in FALSIFIER_MARKERS:
+        start = folded.rfind(marker)
+        if start == -1:
+            continue
+        tail = item[start + len(marker) :].strip(" \t:-*_")
+        if tail and start > best_start:
+            best_start, best = start, tail
+    return best
+
+
+def declared_criteria(description: str) -> list[tuple[str, str]]:
+    """``(label, text)`` for every criterion that DECLARES a falsifier.
+
+    ``label`` is ``""`` for a criterion carrying no parseable ``AC<n>`` /
+    ``DoD<n>`` ordinal. That is deliberately NOT the same as absent: a criterion
+    whose label the grammar cannot parse -- a suffixed ``AC2b``, say -- is
+    declared and can never be bound by anything, so it belongs in this list and
+    is reported as unbound rather than silently dropped. Dropping it is how a
+    ticket with an unbindable criterion reads as fully bound.
+
+    **Why the falsifier is the scope predicate, and not the criterion count.**
+    The plan's rule is about "a ticket whose criterion list declares
+    falsifiers". A ticket created before the admission guard required one
+    declares none, returns the empty list here, and is untouched by the coverage
+    rule -- which is what keeps this gate from retroactively refusing the legacy
+    corpus it was never written against.
+
+    **Stated residual.** :func:`acceptance_criteria_items` reads one item per
+    line and does not join a criterion's continuation lines, so a criterion
+    whose falsifier is written on a wrapped line is read as declaring none and
+    drops out of scope. The upstream guard joins continuations. The divergence
+    narrows this gate rather than widening it -- it can only miss a criterion,
+    never invent one -- and it is recorded here rather than papered over.
+    """
+    declared: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in acceptance_criteria_items(description):
+        if falsifier_of(item) is None:
+            continue
+        label = canonical_ac_label(item)
+        key = (label, normalise_criterion(item))
+        if key in seen:
+            continue
+        seen.add(key)
+        declared.append((label, item))
+    return declared
 
 
 def criteria_by_label(description: str) -> dict[str, str]:
