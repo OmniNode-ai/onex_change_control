@@ -36,6 +36,26 @@ This module asks both questions. Its rules, in the order they fire:
   label, so nothing in it can be bound at all. Reported in those words, because
   the fix is a ticket-authoring change and a gate that merely said "unknown
   criterion" would send somebody to edit the contract instead.
+* ``ac_binding_criterion_unbound`` — **OMN-18333.** The ticket declares a
+  falsifier for a criterion and no evidence item in the contract claims it. The
+  rule is EVERY declared criterion: a companion binding some but not all of them
+  is refused on the same terms as one binding none, because a partially bound
+  companion leaves the closer starved on exactly the criteria it omitted while
+  reading as a pass. One finding per unbound criterion, naming the label and the
+  ticket — a count would send somebody hunting.
+* ``ac_binding_criterion_unbindable`` — **OMN-18333.** The ticket declares a
+  falsifier for a criterion whose label the grammar cannot parse (``AC2b``), so
+  nothing can ever point at it. Declared-and-unbound, never absent: reading it
+  as absent is how a ticket with an unbindable criterion passes as fully bound.
+
+**Why OMN-18333 is a rule here rather than a new job.** Steps 5 and 6 of the
+mechanical closeout plan make the binding EXIST — the admission guard requires a
+named falsifier per criterion at create time, and the autobinder transcribes the
+creation-revision declaration into the companion. This rule is the refusal that
+makes it STAY. Without it the transcription is advisory and a companion that
+quietly binds nothing lands exactly as it does today. It lands inside this job
+because this job already resolves a contract's changed scope and already reads
+the ticket body, so it inherits both and adds no required status check.
 
 **What this gate deliberately does NOT do.** It does not require an acceptance.
 A draft binding — a record with a hash and no ``accepted_by`` — passes here.
@@ -57,6 +77,8 @@ from onex_change_control.validation.ac_criteria import (
     canonical_ac_label,
     criteria_by_label,
     criterion_hash,
+    declared_criteria,
+    normalise_criterion,
 )
 
 __all__ = [
@@ -64,6 +86,11 @@ __all__ = [
     "check_contract_ac_bindings",
     "check_local_ac_bindings",
 ]
+
+#: How much of an unbindable criterion is quoted back in its refusal. The point
+#: is to identify WHICH criterion, not to reprint the ticket, and an unbounded
+#: splice is how a gate message hits a transport limit.
+_CRITERION_EXCERPT_CHARS = 120
 
 
 @dataclass(frozen=True)
@@ -186,26 +213,38 @@ def check_contract_ac_bindings(
     """
     findings = check_local_ac_bindings(ticket_id, contract)
 
-    claims_anything = any(_claims(item) or _bindings(item) for item in _items(contract))
-    if not claims_anything:
-        # A contract that claims no criterion has nothing for these rules to
-        # say. That is a COVERAGE gap the closer already holds on; it is not
-        # this gate's finding, and reporting it here would double-report one
-        # fact through two mechanisms.
-        return findings
-
     if ticket_body is None:
+        # OMN-18333 widened this verdict from "contracts that claim something"
+        # to EVERY contract, and the widening is the point. The coverage rule
+        # below asks whether the TICKET declares a criterion this contract fails
+        # to claim, which is a question about a contract claiming NOTHING just
+        # as much as one claiming three of four. Leaving the old scoping in
+        # place would have meant a companion that binds nothing, for a ticket
+        # nobody can read, passing silently -- the exact shape this step exists
+        # to refuse.
         findings.append(
             AcBindingFinding(
                 rule="ac_binding_ticket_unreadable",
                 subject=ticket_id,
                 message=(
-                    "the ticket body could not be read, so no claim in this "
-                    "contract can be checked against a criterion. Unreachable "
-                    "is RED (fail-closed), never a skip"
+                    "the ticket body could not be read, so neither this "
+                    "contract's claims nor the criteria it is required to "
+                    "cover can be checked. Unreachable is RED (fail-closed), "
+                    "never a skip"
                 ),
             )
         )
+        return findings
+
+    # OMN-18333 -- EVERY declared criterion, before anything else is asked. This
+    # runs whether or not the contract claims a single criterion: binding none
+    # is the degenerate case of the rule, not an exemption from it.
+    findings.extend(_unbound_declared_criteria(ticket_id, contract, ticket_body))
+
+    claims_anything = any(_claims(item) or _bindings(item) for item in _items(contract))
+    if not claims_anything:
+        # A contract that claims no criterion has nothing left for the
+        # per-claim rules below to say.
         return findings
 
     known = criteria_by_label(ticket_body)
@@ -285,6 +324,85 @@ def _stale_pins(
                     "binding was recorded, so the binding no longer stands "
                     "and reverts to unproven until it is re-accepted "
                     "against the current text"
+                ),
+            )
+        )
+    return findings
+
+
+def _claimed_labels(contract: object) -> set[str]:
+    """Every criterion label ANY evidence item in the contract claims to bind.
+
+    The union across items, not a per-item set: a contract that proves AC1 with
+    one item and AC2 with another has bound both, and asking each item to claim
+    every criterion would refuse a correct companion.
+    """
+    labels: set[str] = set()
+    for item in _items(contract):
+        for entry in _claims(item):
+            label = canonical_ac_label(entry)
+            if label:
+                labels.add(label)
+    return labels
+
+
+def _unbound_declared_criteria(
+    ticket_id: str, contract: object, ticket_body: str
+) -> list[AcBindingFinding]:
+    """OMN-18333 — every criterion the ticket declares a falsifier for is bound.
+
+    Returns no findings for a ticket that declares no falsifier at all. That is
+    not leniency, it is scope: such a ticket is pre-cutover, the autobinder
+    transcribes nothing for it, and the closer holds it on an unbound criterion
+    exactly as it does today. Refusing it here would retroactively block the
+    legacy corpus on an authoring requirement that did not exist when it was
+    written, and would do it from a gate whose whole subject is companions.
+
+    ``superseded`` items are NOT excluded from the union. A superseded item's
+    claim was true when it was made and its evidence is preserved for audit; a
+    superseding item that re-states the claim covers the same label anyway. The
+    narrower reading would refuse a contract whose supersession chain is
+    correct, which is the wrong direction for a rule this broad.
+    """
+    declared = declared_criteria(ticket_body)
+    if not declared:
+        return []
+
+    claimed = _claimed_labels(contract)
+    findings: list[AcBindingFinding] = []
+    for label, text in declared:
+        if label and label in claimed:
+            continue
+        excerpt = normalise_criterion(text)[:_CRITERION_EXCERPT_CHARS]
+        if not label:
+            findings.append(
+                AcBindingFinding(
+                    rule="ac_binding_criterion_unbindable",
+                    subject=ticket_id,
+                    message=(
+                        f"{ticket_id} declares a falsifier for a criterion "
+                        "carrying no parseable acceptance-criterion label, so "
+                        "no evidence item can ever bind it: "
+                        f"{excerpt!r}. Give the criterion a bare `AC<n>` / "
+                        "`DoD<n>` label on the ticket -- a suffixed or "
+                        "compound label parses as no label at all, and a "
+                        "criterion nothing can point at is unbound, never absent"
+                    ),
+                )
+            )
+            continue
+        findings.append(
+            AcBindingFinding(
+                rule="ac_binding_criterion_unbound",
+                subject=ticket_id,
+                message=(
+                    f"{label} is declared with a falsifier on {ticket_id} and "
+                    "no dod_evidence item in this contract claims it via "
+                    f"binds_ac: {excerpt!r}. Every declared criterion must be "
+                    "bound -- a companion binding some but not all of them "
+                    "leaves the closer starved on exactly the ones it omitted "
+                    "while reading as a pass. This contract claims: "
+                    + (", ".join(sorted(claimed)) or "<nothing>")
                 ),
             )
         )
