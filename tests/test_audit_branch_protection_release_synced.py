@@ -31,13 +31,19 @@ exception for ``onex_change_control`` ``main``: that governance branch must
 retain both approving and code-owner review enforcement. Ordinary repositories
 continue to assert the solo-dev invariant.
 
-OMN-18287 widens that exception from ``main`` only to every audited branch of
-a review-gated repo: ``onex_change_control``'s ``dev`` carries the identical
-deliberate codeowner-only review model (``required_approving_review_count=0``,
-``require_code_owner_reviews=true``) as its ``main``, so the carve-out must
-follow the repo, not one branch of it — the pre-fix script false-failed
-``omni_home``'s ``Branch Protection Guard`` on every PR from 2026-09-01
-onward because ``dev`` fell through to the ordinary solo-dev invariant.
+OMN-18287 briefly widened that exception from ``main`` only to every audited
+branch of a review-gated repo, on the premise that ``onex_change_control``'s
+``dev`` carried the identical deliberate codeowner-only review model as its
+``main``. OMN-18346 narrows it back to ``main`` only: under the operator
+ruling at ``docs/tracking/ROLLING_WORK_LEDGER.md:7452`` ("OCC tickets are
+mechanical, like they're supposed to be"),
+``required_pull_request_reviews`` was removed from
+``onex_change_control@dev`` on 2026-09-13 (dev: reviews null; main:
+unchanged, ``require_code_owner_reviews=true`` — see omni_home CLAUDE.md
+rule 12's "verified: 2026-09-13" paragraph). The OMN-18287 premise no longer
+holds, so the carve-out reverts to ``main``-only: ``dev`` is ordinary
+solo-dev again, and reviews being enforced there would itself be the
+2026-09-04 mistake rule 12 warns against re-committing.
 
 RED/GREEN
 ---------
@@ -373,45 +379,27 @@ def test_review_gated_occ_main_fails_without_code_owner_reviews(
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert (
-        "review-gated branch requires approving and code-owner reviews" in result.stdout
+        "review-gated main requires approving and code-owner reviews" in result.stdout
     )
 
 
-_GQL_REVIEW_GATED_DEV = {
-    "data": {
-        "repository": {
-            "branchProtectionRules": {
-                "nodes": [
-                    {
-                        "pattern": "main",
-                        "requiresApprovingReviews": True,
-                        "requiresCodeOwnerReviews": True,
-                    },
-                    {
-                        "pattern": "dev",
-                        "requiresApprovingReviews": True,
-                        "requiresCodeOwnerReviews": True,
-                    },
-                ]
-            }
-        }
-    }
-}
-
-
 @pytest.mark.unit
-def test_review_gated_occ_dev_requires_approving_and_code_owner_reviews(
+def test_occ_dev_reviews_absent_passes_under_narrowed_carveout(
     tmp_path: Path,
 ) -> None:
-    """OMN-18287: OCC's dev carries the identical deliberate codeowner-only
-    review model as its main (required_approving_review_count=0,
-    require_code_owner_reviews=true), so the review-gated carve-out that
-    OMN-17491 landed for main must also apply to dev — not just main.
+    """OMN-18346 narrows the OMN-18287 dev extension back to main-only.
 
-    RED before the OMN-18287 fix: the carve-out call site is gated
-    ``branch == "main"``, so on dev the script falls through to the ordinary
-    solo-dev invariant ("approving reviews are enforced" reads as FAIL) even
-    though this is the declared-compliant shape.
+    ``_GQL_REVIEW_GATED_MAIN`` is the LIVE snapshot as of 2026-09-13: OCC main
+    true:true, OCC dev false:false (required_pull_request_reviews removed
+    from dev under the operator ruling at
+    docs/tracking/ROLLING_WORK_LEDGER.md:7452). Audited against ``dev``, this
+    must PASS under the narrowed (main-only) carve-out — dev falls to the
+    ordinary solo-dev invariant, and reviews are genuinely absent there.
+
+    RED against the OMN-18287 shape this PR reverts: with ``is_review_gated``
+    (no ``branch == "main"`` guard) dev would be routed into the review-gated
+    branch, which demands ``true:true``, and this false:false fixture would
+    FAIL — the exact false-FAIL this ticket exists to clear.
     """
     result = _run_audit(
         tmp_path,
@@ -420,24 +408,35 @@ def test_review_gated_occ_dev_requires_approving_and_code_owner_reviews(
             "onex_change_control",
             _PROTECTION_CI_SUMMARY,
             [_RULESET_MERGE_QUEUE_DISABLED],
-            gql_rules=_GQL_REVIEW_GATED_DEV,
+            gql_rules=_GQL_REVIEW_GATED_MAIN,
         ),
         branches="dev",
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "approving and code-owner reviews are enforced" in result.stdout
+    assert "approving reviews not enforced" in result.stdout
 
 
 @pytest.mark.unit
-def test_review_gated_occ_dev_fails_without_code_owner_reviews(
+def test_occ_dev_reviews_reenabled_fails_under_narrowed_carveout(
     tmp_path: Path,
 ) -> None:
-    """Approving reviews without the code-owner gate are insufficient on dev
-    either — the carve-out widens scope, it does not loosen the requirement."""
-    gql_rules = json.loads(json.dumps(_GQL_REVIEW_GATED_DEV))
+    """The inverse fixture: dev reviews re-enabled (true:true) must FAIL.
+
+    Rule 12 names re-enabling reviews on ``onex_change_control@dev`` as the
+    2026-09-04 mistake that froze the fleet. Under the OMN-18287 shape this
+    PR reverts, a review-gated ``dev`` reading true:true would wrongly PASS
+    (it matches the review-gated branch's compliant shape) and the mistake
+    would go undetected. Under the narrowed (main-only) carve-out, dev is
+    ordinary solo-dev, so true:true correctly FAILs as "approving reviews are
+    enforced (blocks solo-dev merges)".
+    """
+    gql_rules = json.loads(json.dumps(_GQL_REVIEW_GATED_MAIN))
+    gql_rules["data"]["repository"]["branchProtectionRules"]["nodes"][1][
+        "requiresApprovingReviews"
+    ] = True
     gql_rules["data"]["repository"]["branchProtectionRules"]["nodes"][1][
         "requiresCodeOwnerReviews"
-    ] = False
+    ] = True
     result = _run_audit(
         tmp_path,
         "onex_change_control",
@@ -450,9 +449,7 @@ def test_review_gated_occ_dev_fails_without_code_owner_reviews(
         branches="dev",
     )
     assert result.returncode == 1, result.stdout + result.stderr
-    assert (
-        "review-gated branch requires approving and code-owner reviews" in result.stdout
-    )
+    assert "approving reviews are enforced (blocks solo-dev merges)" in result.stdout
 
 
 @pytest.mark.unit
