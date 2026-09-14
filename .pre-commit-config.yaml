@@ -432,12 +432,27 @@ repos:
       # OMN-17495. The core scanner intentionally includes superseded receipt bases, so its live findings
       # are persistent debt, not a claimed active-supersession burn-down. This full, unbatched hook is the
       # authority: it verifies the frozen-origin ledger, exact live identity equality, and base monotonicity.
+      #
+      # OMN-17474: this was `always_run: true`, which made it the single most
+      # expensive hook in the fleet -- ~67 s median, measured over 178 replayed
+      # commits, and zero fires across every one of them. It scans the WHOLE
+      # corpus every time (`pass_filenames: false`), so it was paying that cost
+      # on commits that could not possibly have changed the corpus.
+      #
+      # The `files:` pattern below changes WHEN it runs, never WHAT it scans:
+      # the scan is still the full, unbatched corpus plus its frozen-origin
+      # ledger, so it remains the authority described above. Enforcement in CI
+      # is unchanged -- `.github/workflows/ci.yml` runs
+      # `pre-commit run --all-files`, where every corpus path is passed in and
+      # the filter therefore matches on every PR. The ledger is listed
+      # explicitly because an edit to it with no corpus change is exactly the
+      # tampering the ratchet exists to refuse, and must still trip the hook.
       - id: receipt-honesty-corpus-ratchet
         name: Receipt Honesty corpus ratchet (OMN-17495)
         entry: uv run python -m onex_change_control.validation.receipt_honesty_ratchet --corpus
         language: system
         pass_filenames: false
-        always_run: true
+        files: ^(drift/dod_receipts/.*\.ya?ml|\.onex_ratchets/omn_17495_receipt_honesty_baseline\.yaml)$
         stages: [pre-commit]
 
       - id: check-contract-substance-floor

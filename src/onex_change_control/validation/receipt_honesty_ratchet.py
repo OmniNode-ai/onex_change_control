@@ -56,6 +56,10 @@ _BASELINE_RELPATH = PurePosixPath(
     ".onex_ratchets/omn_17495_receipt_honesty_baseline.yaml"
 )
 _RECEIPTS_RELPATH = PurePosixPath("drift/dod_receipts")
+_CORPUS_HOOK_FILES_RE = (
+    r"^(drift/dod_receipts/.*\.ya?ml|"
+    r"\.onex_ratchets/omn_17495_receipt_honesty_baseline\.yaml)$"
+)
 _ORIGIN_COMMIT = "65a2adbba8a3c4f6cc57c1c7250480bfb708fac0"
 _BOOTSTRAP_BASE_COMMIT = "b2293819e69a3bf4b58107bd2b951f3a45cc377f"
 _SEED_FINDING_COUNT = 1142
@@ -1244,10 +1248,11 @@ def _check_corpus_hook(config: dict[str, Any], repo_root: Path) -> list[str]:
             failures.append(
                 "authoritative receipt-honesty hook must set pass_filenames: false"
             )
-        if hook.get("always_run") is not True:
+        files = hook.get("files")
+        if hook.get("always_run") is not True and files != _CORPUS_HOOK_FILES_RE:
             failures.append(
-                "authoritative receipt-honesty hook must be always_run and "
-                "cannot be bypassed by batching"
+                "authoritative receipt-honesty hook must either be always_run "
+                "or be scoped exactly to receipt corpus and baseline changes"
             )
         if hook.get("stages") != ["pre-commit"]:
             failures.append(
