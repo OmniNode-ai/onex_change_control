@@ -10,12 +10,17 @@ transcription is advisory and a companion that quietly binds nothing lands
 exactly as it does today.
 
 **The rule is EVERY, and the partial case is why.** A companion binding some but
-not all of the declared criteria is refused on the same terms as one binding
-none: it leaves the closer starved on exactly the criteria it omitted while the
-pull request reads as a pass. Binding none is the degenerate case of the rule,
-not the rule. The plan's step 7 row originally said "none" and was corrected
-against its own section 6 (correction D); the tests below pin the corrected
-statement.
+not all of the declared criteria is refused: it leaves the closer starved on
+exactly the criteria it omitted while the pull request reads as a pass. The
+plan's step 7 row originally said "none" and was corrected against its own
+section 6 (correction D); the tests below pin the corrected statement.
+
+**Amended 2026-09-14 by the bootstrap sequencing ruling.** A companion binding
+NOTHING is reported per criterion and HELD, not refused — absence is the
+closer's hold, partiality is the gate fact. Two legs below were deliberately
+reversed and say so in their own docstrings; the rest are unchanged. The full
+reasoning, and the deadlock that forced it, are in
+`test_omn_18333_absent_binding_holds.py`.
 
 **Why a vendored companion rather than a hand-built dict.** A fixture proves the
 fixture. `vendored_companion_OMN-18185.yaml` is the bytes of a real, merged
@@ -43,6 +48,8 @@ from onex_change_control.scripts.check_ac_binding_acceptance import main
 from onex_change_control.validation.ac_binding_acceptance import (
     check_contract_ac_bindings,
     check_local_ac_bindings,
+    holds,
+    refusals,
 )
 from onex_change_control.validation.ac_criteria import (
     declared_criteria,
@@ -176,8 +183,21 @@ class TestEveryDeclaredCriterionIsBound:
             assert label in joined
         assert len(coverage) == 7
 
-    def test_binding_none_is_the_degenerate_case_not_an_exemption(self) -> None:
-        """A contract claiming nothing at all is refused on the same terms."""
+    def test_binding_none_is_reported_per_criterion_but_does_not_refuse(
+        self,
+    ) -> None:
+        """REVERSED by the 2026-09-14 sequencing ruling, deliberately, and the
+        reversal is the whole content of this leg.
+
+        This test previously asserted that a contract claiming nothing is
+        REFUSED on the same terms as a partial one. It is not: absence is held
+        and reported, partiality is refused. The reason is in
+        `test_omn_18333_absent_binding_holds.py`'s module docstring — refusing
+        absence took the evidence path offline until a producer that did not
+        exist yet was deployed, including the change that deploys it. Every
+        criterion is still NAMED, so the coverage count below is unchanged; only
+        the severity moved.
+        """
         contract = {"ticket_id": "OMN-19998", "dod_evidence": [{"id": "dod-001"}]}
 
         findings = check_contract_ac_bindings(
@@ -185,6 +205,8 @@ class TestEveryDeclaredCriterionIsBound:
         )
 
         assert len(_coverage(findings)) == 7
+        assert refusals(findings) == []
+        assert len(holds(findings)) == 7
 
     def test_the_union_is_across_items_not_per_item(self) -> None:
         """A contract proving AC1 with one item and AC2 with another has bound
@@ -371,18 +393,34 @@ class TestCli:
 
 
 class TestFailClosed:
-    def test_an_unreadable_ticket_refuses_a_contract_that_claims_nothing(
+    def test_an_unreadable_ticket_refuses_a_contract_that_claims_something(
         self,
     ) -> None:
-        """OMN-18333 widened the unreachable verdict to every contract. The
-        coverage question is about a contract claiming NOTHING just as much as
-        one claiming three of four, so "I could not read the ticket" can no
-        longer resolve to "so it passes" on the binds-nothing path."""
+        """Unreachable is RED for a contract that claims a criterion: the
+        readable path could have refused it, so "I could not read the ticket"
+        must not resolve to "so it passes"."""
+        contract = {
+            "ticket_id": "OMN-19998",
+            "dod_evidence": [{"id": "dod-001", "binds_ac": ["AC1"]}],
+        }
+
+        findings = check_contract_ac_bindings("OMN-19998", contract, None)
+
+        assert _rules(refusals(findings)) == ["ac_binding_ticket_unreadable"]
+
+    def test_an_unreadable_ticket_holds_a_contract_that_claims_nothing(self) -> None:
+        """REVERSED with the rule it mirrors. OMN-18333 widened this verdict to
+        every contract on the grounds that the coverage rule refused a contract
+        claiming nothing. That verdict is now a hold, so refusing here would be
+        stricter than any outcome the readable path can reach -- which is not
+        failing closed, it is re-creating the deadlock on every Linear outage.
+        """
         contract = {"ticket_id": "OMN-19998", "dod_evidence": [{"id": "dod-001"}]}
 
         findings = check_contract_ac_bindings("OMN-19998", contract, None)
 
-        assert _rules(findings) == ["ac_binding_ticket_unreadable"]
+        assert refusals(findings) == []
+        assert _rules(holds(findings)) == ["ac_binding_ticket_unreadable"]
 
 
 class TestWiring:
