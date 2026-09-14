@@ -254,6 +254,26 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # is touched) must stay visible on the PR's check list -- it must
         # NOT gate CI Summary, which is exactly what SOFT_ALLOWLIST gives it.
         "Governance File Advisory Gate",
+        # OMN-18327, in the workflow file named for this job -- it is
+        # DELIBERATELY advisory while the writer-App dispatch path proves
+        # itself. It
+        # reports a PR authored by a human account whose diff touches src/,
+        # scripts/ or .github/, because change-control PRs on those surfaces
+        # are meant to be opened AS the onexbot-occ-writer App: every lane
+        # here commits under one shared account, so a human-authored PR on an
+        # owned path is un-approvable by construction, which is what froze the
+        # fleet behind OCC#9362 on 2026-09-13.
+        #
+        # It is here rather than in STRICT_GATE_JOBS for a reason that is a
+        # precondition, not a preference: no PR has yet merged through
+        # .github/workflows/open-pr-as-writer-app.yml, so the sanctioned route
+        # is unproven end to end. A REQUIRED check that refuses the only route
+        # people currently have would wedge this repo exactly the way the
+        # incident it closes did -- and onex_change_control@main carries
+        # enforce_admins:true, so a required failing check blocks
+        # administrators too. Move this string to STRICT_GATE_JOBS once one
+        # App-authored PR has merged through that path, and not before.
+        "check-human-authored-privileged-pr",
         # public-repo-hygiene.yml (OMN-18016) -- report-mode reusable hygiene
         # caller. The workflow comments state that the validator records every
         # finding and exits 0 while pre-existing public-repo residue is cleaned

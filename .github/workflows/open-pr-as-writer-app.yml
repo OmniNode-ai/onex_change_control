@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-18327: open a change-control PR AS the onexbot-occ-writer App.
+#
+# WHY THIS EXISTS. On 2026-09-13 a validator change to this repo (OCC#9362,
+# OMN-17157) went green on every required check and could not merge. The file
+# it touched is owned by @OmniNode-ai/platform-leads, `dev` required a
+# code-owner review, and every lane in this fleet commits under ONE shared
+# human account -- so the operator was the author of record and GitHub blocks
+# self-approval of your own PR. Every product PR whose OCC companion had to
+# merge first queued behind it.
+#
+# The companion publisher, the autobind and the release sync ALREADY open
+# their PRs as the App. A validator or workflow change did not, purely
+# because no sanctioned path existed for it. The operator named the fix in
+# session: "That's why we have OCC writer bot." This workflow is that path.
+# Ruling recorded verbatim at docs/tracking/ROLLING_WORK_LEDGER.md:7452.
+#
+# WHAT IT DOES. Takes a branch already pushed to this repo plus a ticket id,
+# mints a short-lived onexbot-occ-writer installation credential from the
+# existing ONEXBOT_OCC_APP_ID / ONEXBOT_OCC_PRIVATE_KEY org secrets -- the
+# same step, the same pinned action and the same org secrets that
+# evidence-import.yml already uses -- and opens (or updates) the PR as the
+# App. It creates nothing new, accepts no key as an input, and merges
+# nothing: the PR goes through every existing required check like any other.
+#
+# GUARDRAIL. `check-app-pr-branch-allowed`
+# (src/onex_change_control/scripts/check_app_pr_branch_allowed.py) refuses a
+# branch that changes a .github/workflows/ file unless the dispatching ticket
+# id appears in a line the branch ADDS to that file. This is the posture
+# check_evidence_import_allowed.py takes for its own path (where a workflow
+# change is refused OUTRIGHT), narrowed rather than dropped: a route holding
+# a privileged App identity must not become a route that quietly edits the
+# routes, and a citation in the PR body or the dispatch inputs is supplied by
+# the same caller as the branch, so only a line in the diff is independent
+# evidence.
+#
+# ACCESS. workflow_dispatch is already restricted by GitHub to identities
+# with write access to this repo, so every run is one-shot and fully audited
+# in the Actions run log. This grants no standing write access to anyone.
+
+name: Open PR as writer App
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "branch already pushed to this repo, to open a PR for"
+        required: true
+        type: string
+      ticket:
+        description: "OMN-XXXX the PR is for; cited in the body and required in any workflow-file change"
+        required: true
+        type: string
+      base_branch:
+        description: "branch to target"
+        required: false
+        default: "dev"
+        type: string
+      title:
+        description: "PR title; defaults to the branch's last commit subject"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: open-pr-as-writer-app-${{ github.event.inputs.branch }}
+  cancel-in-progress: false
+
+jobs:
+  open-pr:
+    name: Open PR as writer App
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 20
+    env:
+      BRANCH: ${{ github.event.inputs.branch }}
+      TICKET: ${{ github.event.inputs.ticket }}
+      BASE_BRANCH: ${{ github.event.inputs.base_branch || 'dev' }}
+      TITLE_INPUT: ${{ github.event.inputs.title }}
+      REPO: ${{ github.repository }}
+      DISPATCHER: ${{ github.actor }}
+    steps:
+      - name: Checkout onex_change_control
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.base_branch || 'dev' }}
+          persist-credentials: false
+
+      # Same step, same pinned action, same org secrets as evidence-import.yml.
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          enable-cache: true
+
+      - name: Sync deps
+        run: uv sync --frozen --group dev
+
+      - name: Resolve the branch
+        run: |
+          set -euo pipefail
+          git fetch origin "${BASE_BRANCH}" "${BRANCH}" --no-tags
+          if ! git rev-parse --verify "origin/${BRANCH}" >/dev/null 2>&1; then
+            echo "::error::branch ${BRANCH} does not exist on origin - push it first"
+            exit 2
+          fi
+          if [ -z "$(git rev-list "origin/${BASE_BRANCH}..origin/${BRANCH}")" ]; then
+            echo "::error::${BRANCH} has no commits ahead of ${BASE_BRANCH}"
+            exit 2
+          fi
+
+      # OMN-18327 guardrail: a workflow-file change must cite this ticket in a
+      # line the branch adds.
+      - name: Guardrail - workflow-file changes must cite the dispatching ticket
+        run: |
+          set -euo pipefail
+          uv run check-app-pr-branch-allowed \
+            --base-ref "origin/${BASE_BRANCH}" \
+            --head-ref "origin/${BRANCH}" \
+            --ticket "${TICKET}"
+
+      # Body precedence: the branch's own PR_BODY.md when it carries one,
+      # otherwise a fixed template citing the ticket. Reading the body from the
+      # branch keeps the authoring lane in control of its own PR prose without
+      # this workflow taking free text as a dispatch input.
+      - name: Resolve the PR body
+        run: |
+          set -euo pipefail
+          if git cat-file -e "origin/${BRANCH}:PR_BODY.md" 2>/dev/null; then
+            git show "origin/${BRANCH}:PR_BODY.md" > app_pr_body.md
+            echo "Using PR_BODY.md from the branch."
+          else
+            {
+              printf '%s\n\n' "${TICKET}"
+              printf '%s\n' "Opened as the onexbot-occ-writer App through the OMN-18327"
+              printf '%s\n' "dispatch path (.github/workflows/open-pr-as-writer-app.yml),"
+              printf '%s\n\n' "dispatched by @${DISPATCHER}."
+              printf '%s\n' "Change-control PRs on this repo's privileged surfaces are opened"
+              printf '%s\n' "as the App rather than under the shared human account: every lane"
+              printf '%s\n' "here commits as one person, so a human-authored PR on an owned"
+              printf '%s\n' "path is un-approvable by construction, which is what froze the"
+              printf '%s\n\n' "fleet behind OCC#9362 on 2026-09-13."
+              printf '%s\n' "This workflow merges nothing. Every existing required check gates"
+              printf '%s\n' "this PR exactly as it gates any other."
+            } > app_pr_body.md
+            echo "No PR_BODY.md on the branch; using the fixed template."
+          fi
+
+      - name: Open or update the PR as the App
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          title="${TITLE_INPUT}"
+          if [ -z "${title}" ]; then
+            title="$(git log -1 --format=%s "origin/${BRANCH}")"
+          fi
+
+          existing="$(gh pr list --repo "${REPO}" --head "${BRANCH}" \
+            --state open --json number --jq '.[0].number // empty')"
+
+          if [ -n "${existing}" ]; then
+            gh pr edit "${existing}" --repo "${REPO}" \
+              --title "${title}" --body-file app_pr_body.md
+            target="${existing}"
+          else
+            gh pr create --repo "${REPO}" \
+              --base "${BASE_BRANCH}" --head "${BRANCH}" \
+              --title "${title}" --body-file app_pr_body.md
+            target="${BRANCH}"
+          fi
+
+          # `gh pr edit` fails silently on some fields, so read the result back
+          # rather than trusting the exit status. The author line is the point
+          # of this whole workflow: it must not be a human account.
+          gh pr view "${target}" --repo "${REPO}" \
+            --json number,title,author \
+            --jq '"readback: #\(.number) author=\(.author.login) title=\(.title)"'
