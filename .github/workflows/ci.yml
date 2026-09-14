@@ -273,6 +273,44 @@ jobs:
           uv run python scripts/validation/check_receipt_hardening.py \
             --paths-file0 "$changed_paths_file"
 
+      # OMN-18304: the step above validates the FILES in the diff. A changed
+      # contract is routed to the contract-shaped check and is never expanded
+      # into that ticket's receipts, so a rename or move of a dod_evidence entry
+      # leaves every receipt bound to it stale while the receipt's own bytes are
+      # untouched and therefore unexamined. Measured on this repo's own #9327: a
+      # same-ticket union renamed one item and left the pre-rename
+      # contract_entry_sha256, which surfaced only downstream as occ-preflight
+      # reporting a hash mismatch, and was recomputed by hand.
+      #
+      # The control runs FIRST and unconditionally. A gate whose clean verdict is
+      # never shown to be falsifiable is indistinguishable from a gate that
+      # cannot fail, and this one is scoped narrowly enough that a scoping bug
+      # would silently empty it. SYNC with pre-commit hook
+      # 'check-contract-change-rebinds-receipts'.
+      - name: Contract-change rebind gate — positive control
+        run: |
+          uv run python scripts/validation/check_contract_change_rebinds_receipts.py \
+            --self-test
+      - name: Contract-change rebind gate
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || 'dev' }}
+        run: |
+          set -euo pipefail
+          base_ref="${BASE_REF#refs/heads/}"
+          git fetch origin "$base_ref" --no-tags
+          changed_contracts_file="$(mktemp)"
+          trap 'rm -f "$changed_contracts_file"' EXIT
+          git diff --name-only -z --diff-filter=ACMRT "origin/${base_ref}"...HEAD -- \
+            ':(glob)contracts/*.yaml' \
+            ':(glob)contracts/*.yml' > "$changed_contracts_file"
+          if [ ! -s "$changed_contracts_file" ]; then
+            echo "No changed contract: nothing to re-verify."
+            exit 0
+          fi
+          uv run python scripts/validation/check_contract_change_rebinds_receipts.py \
+            --paths-file0 "$changed_contracts_file" \
+            --base-rev "$(git merge-base "origin/${base_ref}" HEAD)"
+
       # OMN-14428: every gate above is scoped to the data files it validates
       # (drift/dod_receipts/, contracts/, ...), so a PR that edits the gate's
       # own code but touches zero data files never executes it. That exact
@@ -2134,10 +2172,12 @@ jobs:
     # starvation bug, not a slow check. Reducing the preamble (fetch-depth: 0
     # full-history clone plus uv provisioning on a 64-runner shared fleet) is
     # addressed below (OMN-15724): this validator has zero git/subprocess
-    # usage (single-file read of grants/prod_promotion_grants.yaml, no
-    # --pr-author/--base-ref since OMN-14814 removed dual-control), so
+    # usage (single-file read of grants/prod_promotion_grants.yaml), so
     # fetch-depth:1 is provably safe here — unlike check-bot-authored-authz-
     # guard below, which shells git merge-base and keeps fetch-depth:0.
+    # OMN-17157 restored the approver != requester check WITHOUT disturbing
+    # that: the base revision it diff-scopes against is read over the GitHub
+    # API, not out of local git history, so no deepening is needed.
     timeout-minutes: 45
     # OMN-16682: the OMN-15724 C1 job-level index override that used to sit
     # here is REMOVED. It selected the devpi cache with a ternary keyed on
@@ -2186,14 +2226,56 @@ jobs:
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
-      - name: Validate prod-promotion-grants trust anchor (OMN-14441 / OMN-14814)
+      - name: Validate prod-promotion-grants trust anchor (OMN-14441 / OMN-17157)
+        # OMN-17157 restores the approver != requester control OMN-14814
+        # removed. OMN-14814's premise was that @OmniNode-ai/platform-leads
+        # "has exactly one member", making a second approver unsatisfiable;
+        # the team has TWO members, so the control is satisfiable again.
+        #
+        # Both the requester identity and the base revision of the grants file
+        # are read from the GitHub API rather than from the checkout or the
+        # event payload: the API is the authenticated source, and this keeps
+        # the checkout at fetch-depth:1 (OMN-15724 — a full-history clone of
+        # this repo has been observed at 22m38s, and this job is one of the
+        # ci-summary `needs:` members that budget protects). `--requester` is
+        # never sourced from the YAML: a requester could hand-type any name
+        # into approved_by.
+        #
+        # Fail-closed throughout: on a pull_request with no resolvable author
+        # the step FAILS; when the base revision cannot be read, the base file
+        # is simply absent and the validator treats every entry as NEW, which
+        # refuses more, never less.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          # OMN-14814: the approved_by != PR-author dual-control check was
-          # removed (sole CODEOWNER — a second, different approver can never
-          # be supplied), so --pr-author/--base-ref are no longer passed. The
-          # schema + duplicate-id integrity checks remain fail-closed.
-          uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml
+          args=(--file grants/prod_promotion_grants.yaml)
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            pr_author="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.user.login')"
+            if [ -z "${pr_author}" ]; then
+              echo "::error::pull_request event with no resolvable PR author — the OMN-17157 self-approval check cannot be scoped. Failing closed."
+              exit 1
+            fi
+            echo "Requester (live GitHub API): ${pr_author}"
+            args+=(--requester "${pr_author}")
+
+            base_grants="$(mktemp)"
+            if gh api \
+                 "repos/${{ github.repository }}/contents/grants/prod_promotion_grants.yaml?ref=${BASE_SHA}" \
+                 --jq '.content' | base64 -d > "${base_grants}"; then
+              echo "Base revision of the grants file read at ${BASE_SHA} ($(wc -c < "${base_grants}") bytes)."
+              args+=(--base-file "${base_grants}")
+            else
+              echo "::warning::could not read the grants file at base ${BASE_SHA}; every entry will be treated as NEW (fail closed, refuses more)."
+            fi
+          else
+            echo "Not a pull_request event (${{ github.event_name }}) — schema validation only; there is no requester identity to compare against."
+          fi
+
+          uv run validate-prod-promotion-grants "${args[@]}"
 
   validate-staging-namespace-grants:
     name: validate-staging-namespace-grants
@@ -2276,24 +2358,53 @@ jobs:
 
   check-platform-leads-review-tripwire:
     name: check-platform-leads-review-tripwire
-    # OMN-14445: validate-prod-promotion-grants' approved_by != PR-author check
-    # (above) is a COMPLETE defense against forged self-approval only while
-    # @OmniNode-ai/platform-leads has exactly one member — required_pull_
-    # request_reviews (CODEOWNERS enforcement) is intentionally OFF on dev
-    # (enabling it would deadlock a solo-lead grant PR; GitHub blocks
-    # self-approval of your own PR). This job is the tripwire: it fails the
-    # moment platform-leads grows past one member while that gap remains, so
-    # the safety property can't silently expire. Unconditional (no needs/if),
-    # mirrors validate-prod-promotion-grants / no-noncanonical-lifecycle-classes.
+    # OMN-18327 RE-SCOPED THIS JOB. The name is unchanged on purpose — it is
+    # keyed in tests/test_omn_16373_cross_repo_pat_retirement.py, cited by the
+    # merged append-only contract contracts/OMN-16373.yaml, and surfaced as a
+    # check name on every PR here. Read it as an identifier, not a description.
     #
-    # NOTE: reading org team membership requires org-scoped read access the
-    # default GITHUB_TOKEN does not have (GitHub restricts it to repository-
-    # scoped resources). This job uses CROSS_REPO_PAT, verified live on this
-    # PR (run 29182101941, job 86621583642) to have sufficient scope: it read
-    # a real member count (1) and a real branch-protection fact (False) on
-    # the first push. If a future PAT rotation loses read:org scope, this
-    # job reports INCONCLUSIVE (exit 2) and fails closed via ci-summary's
-    # explicit check below — never a silent pass.
+    # It used to assert a GitHub SETTING: it FAILED whenever
+    # @OmniNode-ai/platform-leads had more than one member while
+    # required_pull_request_reviews was absent on dev. It did exactly that on
+    # 2026-09-04, eight minutes after a second lead joined, and was cleared by
+    # enabling require_code_owner_reviews — which froze the fleet. Every lane
+    # commits under one shared account, so the operator is the author of record
+    # on essentially every change-control PR and GitHub blocks self-approval;
+    # OCC#9362 sat green on every required check and unmergeable, and with it
+    # every product PR whose OCC companion had to merge first.
+    #
+    # Operator ruling, in-session, 2026-09-13, firm, recorded verbatim at
+    # docs/tracking/ROLLING_WORK_LEDGER.md:7452: change-control PRs land on
+    # machine gates only, read with the standing 2026-08-28 rule that no human
+    # review is a required check on any process until there are full-time
+    # employees. A gate demanding a review setting could then only be satisfied
+    # by breaking policy, so the subject moved.
+    #
+    # It now asserts the MACHINE dual control that replaced the review, and
+    # trips when any of three facts is false:
+    #   1. this repo's grants validator refuses a NEW entry whose approved_by
+    #      is the requester, with the reason string `self_granted` (OMN-17157)
+    #      — proved BEHAVIOURALLY, by running the real validator over a
+    #      synthetic entry, plus a positive control with a different approver;
+    #   2. the validate-prod-promotion-grants job above actually passes
+    #      --requester, without which validate_grants() runs with
+    #      requester=None and the refusal is dead code;
+    #   3. omninode_infra's scripts/validate_prod_promotion_grant.py still
+    #      refuses approved_by == requested_by against the DEPLOY DISPATCHER
+    #      and resolves it to SELF_GRANTED.
+    # Honest limit, unchanged and kept in the job's own output: no file proves
+    # a human said the words. This enforces blast radius, not authenticity.
+    #
+    # Unconditional (no needs/if), mirrors validate-prod-promotion-grants /
+    # no-noncanonical-lifecycle-classes.
+    #
+    # NOTE: fact 3 reads a PRIVATE sibling repo, which the default GITHUB_TOKEN
+    # cannot do (GitHub restricts it to repository-scoped resources). This job
+    # uses CROSS_REPO_PAT. If a future PAT rotation loses that access, this job
+    # reports INCONCLUSIVE (exit 2) and fails closed via ci-summary's explicit
+    # check below — never a silent pass. Facts 1 and 2 need no network at all,
+    # which NARROWS the original exposure: both of the old facts were live
+    # reads, and now only one is.
     #
     # OMN-16373: an INCONCLUSIVE here is far more often a RATE LIMIT than a
     # scope loss. CROSS_REPO_PAT shares one 5,000 req/hr REST bucket with
@@ -2340,8 +2451,9 @@ jobs:
           else
             echo "skip_live_tripwire=true" >> "$GITHUB_OUTPUT"
             echo "Dependency-bot PR does not change prod-promotion grants; skipping live org-private tripwire because repository secrets are withheld for this actor."
+            echo "OMN-18327: this skips facts 1-3 together rather than only the cross-repo one. Narrowing it to run the two offline facts is a follow-up, not a regression: the same PRs were skipped wholesale before."
           fi
-      - name: Check platform-leads-review tripwire (OMN-14445)
+      - name: Check prod-promotion-grant machine dual control (OMN-18327)
         if: ${{ steps.dependency-bot-tripwire-scope.outputs.skip_live_tripwire != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
@@ -2720,8 +2832,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: RED/GREEN units for the gate itself
+        # OMN-18333 adds the binds-EVERY coverage rule to this same gate, so its
+        # units run in this same step. Naming the file here is what
+        # tests/test_omn_18333_binds_every_declared_criterion.py's wiring leg
+        # asserts against, so the rule cannot be silently unwired by deleting a
+        # line from this workflow while the rule's own tests keep passing
+        # somewhere nothing runs them.
         run: |
-          uv run pytest tests/test_omn_18236_ac_binding_acceptance.py -q -p no:randomly
+          uv run pytest \
+            tests/test_omn_18236_ac_binding_acceptance.py \
+            tests/test_omn_18333_binds_every_declared_criterion.py \
+            -q -p no:randomly
       - name: Local pre-commit counterpart runs the SAME entrypoint (rule 5)
         run: |
           set -euo pipefail
