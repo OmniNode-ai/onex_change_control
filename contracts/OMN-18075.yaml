@@ -186,3 +186,51 @@ dod_evidence:
           test "$(git diff --name-only origin/dev...HEAD | sort)" = "$(printf '%s\n' contracts/OMN-18075.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.yaml drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.1.yaml drift/dod_receipts/OMN-18075/ac3-post-landing-companion-append-only-proof/command.yaml drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml | sort)" &&
           git diff --numstat origin/dev...HEAD -- contracts/OMN-18075.yaml | awk 'NR == 1 && $1 > 0 && $2 == 0 {ok=1} END {exit !ok}' &&
           printf '%s\n' 'PASS: append-only diff shape verified'
+  - id: "ac1-ac2-post-landing-companion-proof-replay"
+    description: >-
+      Post-merge replay repair for AC1 and AC2. This item supersedes the branch-relative ac1-ac2-post-landing-companion-proof
+      without editing it. It binds the real post-landing companion to immutable PR #9208 and product #2485
+      identities, then computes the classifier delta between #9208's immutable base and merge commits
+      so the proof remains valid after merge.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:ac1-ac2-post-landing-companion-proof"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          test "$(gh pr view 9208 --repo OmniNode-ai/onex_change_control --json state,mergeCommit --jq '.state + "|" + .mergeCommit.oid')" = "MERGED|6d44af9033083ea990ace384b649b2dee4f212e7" &&
+          test -s "drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml" &&
+          uv run python -c 'import pathlib, yaml; d=yaml.safe_load(pathlib.Path("contracts/OMN-18075.yaml").read_text()); assert not any(i.get("id") == "occ-self-bind-pr-9208" for i in d.get("dod_evidence", []))' &&
+          test "$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json state,mergeCommit --jq '.state + "|" + .mergeCommit.oid')" = "MERGED|08f83eebd6421528f21c9c027ef56e3f4d39a2d9" &&
+          product_merged="$(gh pr view 2485 --repo OmniNode-ai/omnimarket --json mergedAt --jq .mergedAt)" &&
+          companion_created="$(gh pr view 9208 --repo OmniNode-ai/onex_change_control --json createdAt --jq .createdAt)" &&
+          uv run python -c 'from datetime import datetime; import sys; assert datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")) > datetime.fromisoformat(sys.argv[2].replace("Z", "+00:00"))' "$companion_created" "$product_merged" &&
+          printf '%s\n' 'PASS: immutable post-landing companion identity verified'
+      - check_type: "command"
+        check_value: |-
+          classifier_root="$(mktemp -d)" &&
+          mkdir -p "$classifier_root/omnimarket/nodes/node_dod_verify/services" "$classifier_root/omnimarket/enums" &&
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_dod_verify/services/check_proof_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/nodes/node_dod_verify/services/check_proof_class.py" &&
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/enums/enum_check_proof_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/enums/enum_check_proof_class.py" &&
+          gh api "repos/OmniNode-ai/omnimarket/contents/src/omnimarket/occ_evidence_probative_class.py?ref=08f83eebd6421528f21c9c027ef56e3f4d39a2d9" --jq .content | base64 -d > "$classifier_root/omnimarket/occ_evidence_probative_class.py" &&
+          gh api "repos/OmniNode-ai/onex_change_control/contents/contracts/OMN-18075.yaml?ref=d0a067e29d036117c92d934021084bfb05e544e2" --jq .content | base64 -d > "$classifier_root/before.yaml" &&
+          gh api "repos/OmniNode-ai/onex_change_control/contents/contracts/OMN-18075.yaml?ref=6d44af9033083ea990ace384b649b2dee4f212e7" --jq .content | base64 -d > "$classifier_root/after.yaml" &&
+          CLASSIFIER_ROOT="$classifier_root" uv run python -c 'import collections, os, pathlib, sys, yaml; root=pathlib.Path(os.environ["CLASSIFIER_ROOT"]); sys.path.insert(0, str(root)); from omnimarket.nodes.node_dod_verify.services.check_proof_class import classify_command; load=lambda p: yaml.safe_load(p.read_text()); count=lambda d: collections.Counter(classify_command(c.get("check_value") or c.get("command") or "").value for i in d["dod_evidence"] for c in i.get("checks", [])); before=count(load(root / "before.yaml")); after=count(load(root / "after.yaml")); assert before["readback"] == 6 and before.total() == 19 and after["readback"] == 8 and after.total() == 22; assert after["readback"] - before["readback"] == 2 and after.total() - before.total() == 3; print({"before":{"readback":before["readback"],"total":before.total()},"after":{"readback":after["readback"],"total":after.total()}})'
+  - id: "ac3-post-landing-append-only-replay"
+    description: >-
+      Post-merge replay repair for AC3. This item supersedes the branch-relative ac3-post-landing-companion-append-only-proof
+      without editing it. The immutable GitHub file manifest for merged PR #9208 must contain exactly
+      one additions-only contract change and four newly added receipt/binding files, proving no historical
+      companion artifact was rewritten.
+    source: "manual"
+    evidence_artifact: "supersedes_dod_evidence:ac3-post-landing-companion-append-only-proof"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          files="$(gh api repos/OmniNode-ai/onex_change_control/pulls/9208/files)" &&
+          FILES_JSON="$files" uv run python -c 'import json, os; rows=json.loads(os.environ["FILES_JSON"]); by={r["filename"]:r for r in rows}; added={"drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.yaml","drift/dod_receipts/OMN-18075/ac1-ac2-post-landing-companion-proof/command.1.yaml","drift/dod_receipts/OMN-18075/ac3-post-landing-companion-append-only-proof/command.yaml","drift/occ_bindings/OMN-18075/occ-self-bind-pr-9208/command.yaml"}; expected=added | {"contracts/OMN-18075.yaml"}; assert set(by) == expected; contract=by["contracts/OMN-18075.yaml"]; assert contract["status"] == "modified" and contract["additions"] == 51 and contract["deletions"] == 0; assert all(by[p]["status"] == "added" and by[p]["deletions"] == 0 for p in added); print({"files":len(rows),"contract_additions":contract["additions"],"contract_deletions":contract["deletions"],"new_artifacts":len(added)})' &&
+          printf '%s\n' 'PASS: immutable PR #9208 append-only file manifest verified'
