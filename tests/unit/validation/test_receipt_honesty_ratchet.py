@@ -522,6 +522,29 @@ def test_wiring_is_live_and_anti_removal_anchor_is_green() -> None:
     assert ratchet.main(["--check-wiring", "--repo-root", str(_REPO_ROOT)]) == 0
 
 
+@pytest.mark.unit
+def test_corpus_hook_may_be_scoped_only_to_corpus_and_baseline_changes() -> None:
+    config = yaml.safe_load(
+        (_REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    )
+    assert ratchet._check_corpus_hook(config, _REPO_ROOT) == []
+
+    broken = copy.deepcopy(config)
+    hooks = [
+        hook
+        for repo in broken["repos"]
+        for hook in repo.get("hooks", [])
+        if hook.get("id") == "receipt-honesty-corpus-ratchet"
+    ]
+    assert len(hooks) == 1
+    hooks[0]["files"] = r"^drift/dod_receipts/.*\.ya?ml$"
+
+    assert ratchet._check_corpus_hook(broken, _REPO_ROOT) == [
+        "authoritative receipt-honesty hook must either be always_run "
+        "or be scoped exactly to receipt corpus and baseline changes"
+    ]
+
+
 def _missing_ledger_base_with_staged_attempt(
     tmp_path: Path, attempt: str
 ) -> tuple[Path, str]:
