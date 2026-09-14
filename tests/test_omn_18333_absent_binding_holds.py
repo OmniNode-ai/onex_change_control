@@ -57,7 +57,7 @@ from onex_change_control.validation.ac_binding_acceptance import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     import pytest
 
@@ -329,7 +329,7 @@ class TestCliVerdict:
     def _run(
         self,
         tmp_path: Path,
-        contract: dict[str, object],
+        contract: Mapping[str, object],
         body_name: str,
         capsys: pytest.CaptureFixture[str],
     ) -> tuple[int, str]:
