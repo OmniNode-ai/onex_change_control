@@ -44,7 +44,8 @@ This module asks both questions. Its rules, in the order they fire:
   unbound criterion, naming the label and the ticket — a count would send
   somebody hunting.
 * ``ac_binding_criterion_unbindable`` — **OMN-18333.** The ticket declares a
-  falsifier for a criterion whose label the grammar cannot parse (``AC2b``), so
+  falsifier for a criterion whose label the grammar cannot parse (a compound
+  ``AC2bb``, two letters rather than the one suffix letter OMN-18356 added), so
   nothing can ever point at it. Declared-and-unbound, never absent: reading it
   as absent is how a ticket with an unbindable criterion passes as fully bound.
 

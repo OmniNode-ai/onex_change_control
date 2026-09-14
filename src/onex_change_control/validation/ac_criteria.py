@@ -70,8 +70,18 @@ _TRAILING_EMPHASIS_RE = re.compile(r"[*_]+$")
 _TRAILING_QUALIFIER_RE = re.compile(r"\s*\([^)]*\)\s*$")
 _TASK_MARKER_RE = re.compile(r"^\[[ \t xX]\][ \t]*")
 _HEADING_ENUM_RE = re.compile(r"^\d+[.)]\s*")
+#: OMN-18356: the optional single-letter SUFFIX group matches the producer's
+#: grammar (``omniclaude`` ``_CRITERION_LABEL``) exactly -- a round split into
+#: ``AC2b``/``AC2c``/... sits a letter directly after the ordinal digits, with
+#: no boundary between them (both are word characters), so a bare ``(\d+)\b``
+#: never matched past the digits and the whole label was lost. The suffix is
+#: captured, not discarded, and read verbatim (case preserved) in
+#: :func:`canonical_ac_label`: ``AC2b`` and ``AC2B`` are different labels, not
+#: the same criterion written twice. A plain ``AC2`` is unaffected -- the
+#: suffix group matches zero characters and the boundary check falls back to
+#: its original position.
 _AC_LABEL_RE = re.compile(
-    r"^[\s>*_+-]*(?:\*\*)?\s*(AC|DOD)[-_ .]?(\d+)\b", re.IGNORECASE
+    r"^[\s>*_+-]*(?:\*\*)?\s*(AC|DOD)[-_ .]?(\d+)([a-zA-Z]?)\b", re.IGNORECASE
 )
 
 _AC_HEADING_TEXTS = frozenset(
@@ -208,7 +218,7 @@ def canonical_ac_label(text: str) -> str:
     match = _AC_LABEL_RE.match(text.strip())
     if not match:
         return ""
-    return f"{match.group(1).upper()}{int(match.group(2))}"
+    return f"{match.group(1).upper()}{int(match.group(2))}{match.group(3)}"
 
 
 def normalise_criterion(text: str) -> str:
@@ -276,9 +286,10 @@ def declared_criteria(description: str) -> list[tuple[str, str]]:
 
     ``label`` is ``""`` for a criterion carrying no parseable ``AC<n>`` /
     ``DoD<n>`` ordinal. That is deliberately NOT the same as absent: a criterion
-    whose label the grammar cannot parse -- a suffixed ``AC2b``, say -- is
-    declared and can never be bound by anything, so it belongs in this list and
-    is reported as unbound rather than silently dropped. Dropping it is how a
+    whose label the grammar cannot parse -- a compound ``AC2bb``, say, two
+    letters rather than the one the grammar allows (OMN-18356) -- is declared
+    and can never be bound by anything, so it belongs in this list and is
+    reported as unbound rather than silently dropped. Dropping it is how a
     ticket with an unbindable criterion reads as fully bound.
 
     **Why the falsifier is the scope predicate, and not the criterion count.**

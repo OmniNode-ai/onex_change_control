@@ -343,6 +343,128 @@ class TestBindingModel:
         assert item.ac_bindings == ()
 
 
+# ------------------------------------------- OMN-18356 — the suffixed grammar --
+
+
+class TestSuffixedLabelGrammar:
+    """The consumer half of OMN-18356.
+
+    The producer (`omniclaude#2159`, `_CRITERION_LABEL`) already emits labels
+    like `AC2b` and `AC10a`: a round split into `AC2b`/`AC2c`/... sits a letter
+    directly after the ordinal digits, with no boundary between them (both are
+    word characters), so a bare `(\\d+)\\b` never matched past the digits and
+    the whole label was lost. The fix there adds an optional single-letter
+    suffix group, captured verbatim (case preserved) because `AC2b` and `AC2B`
+    are different labels, not the same criterion written twice — pinned by the
+    producer's own `test_an_uppercase_suffix_is_preserved_as_written`.
+
+    This class widens BOTH consumer regexes (`ModelAcBinding._AC_LABEL_RE` and
+    `ac_criteria._AC_LABEL_RE`) to the identical grammar, so a label legal on
+    one side is legal on the other and a criterion labelled `AC2b` in a ticket
+    body can be bound by an `ac_bindings` record naming it.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "expected"),
+        [
+            ("AC2b", "AC2b"),
+            ("AC10a", "AC10a"),
+            # Case of the AC/DOD token folds, same as a bare `ac2`; the suffix
+            # letter's OWN case is preserved verbatim either way, so an
+            # all-lowercase spelling produces the identical canonical label as
+            # its mixed-case sibling.
+            ("ac2b", "AC2b"),
+            ("dod3c", "DOD3c"),
+            # Uppercase suffix preserved distinctly -- NOT folded to "AC2b".
+            ("AC2B", "AC2B"),
+            # A plain label is unaffected: the suffix group matches zero
+            # characters and the boundary check falls back to its original
+            # position.
+            ("AC2", "AC2"),
+        ],
+    )
+    def test_canonical_ac_label_accepts_the_producer_grammar(
+        self, label: str, expected: str
+    ) -> None:
+        assert canonical_ac_label(label) == expected
+
+    @pytest.mark.parametrize(
+        ("label", "expected"),
+        [
+            # Two letters is not "an optional single letter" -- no boundary
+            # exists after either the first or the second, so the whole
+            # match fails and the label is unparseable, same as before the
+            # fix. Widening to the producer's grammar must not widen PAST it.
+            ("AC2bb", ""),
+            # A separator between the digits and the letter is not the
+            # producer's shape either (the letter must sit directly adjacent
+            # to the digits). The loose, non-end-anchored match this function
+            # has always made falls back to the base ordinal, unaffected by
+            # this change.
+            ("AC2-b", "AC2"),
+            # Leading-zero digit normalisation is pre-existing behaviour this
+            # fix does not touch: `int()` on the digit group already strips
+            # it, with or without a suffix.
+            ("AC02", "AC2"),
+        ],
+    )
+    def test_canonical_ac_label_does_not_widen_past_the_producer_grammar(
+        self, label: str, expected: str
+    ) -> None:
+        assert canonical_ac_label(label) == expected
+
+    @pytest.mark.parametrize("label", ["AC2b", "AC10a", "AC2B", "ac2b", "AC2"])
+    def test_the_model_accepts_every_producer_legal_label(self, label: str) -> None:
+        binding = ModelAcBinding(label=label, criterion_hash="a" * 64)
+
+        # The model validates SHAPE and stores the value AS WRITTEN -- it does
+        # not canonicalise, the same as it already does for a bare "ac1".
+        assert binding.label == label
+
+    @pytest.mark.parametrize("label", ["AC2bb", "AC2-b", "the first one"])
+    def test_the_model_refuses_a_label_the_producer_grammar_does_not_produce(
+        self, label: str
+    ) -> None:
+        with pytest.raises(ValidationError):
+            ModelAcBinding(label=label, criterion_hash="a" * 64)
+
+    def test_a_suffixed_criterion_is_bound_by_a_matching_ac_bindings_record(
+        self,
+    ) -> None:
+        """End to end: a ticket declaring `AC2b` as its own criterion, and a
+        contract claiming exactly `AC2b`, joins -- the whole point of the fix."""
+        body = (
+            "## Acceptance criteria\n\n"
+            "- AC2: the base criterion.\n"
+            "- AC2b: a distinct sibling criterion.\n"
+        )
+        contract = _contract(claims=["AC2", "AC2b"])
+
+        findings = check_contract_ac_bindings(_TICKET, contract, body)
+
+        assert findings == []
+
+    def test_a_suffixed_criterion_is_not_satisfied_by_its_base_ordinals_claim(
+        self,
+    ) -> None:
+        """The dangerous failure mode: a contract claiming `AC2` must not be
+        read as having also claimed `AC2b` -- they are different criteria.
+        Before this fix `AC2b` parsed as no label at all and was refused as
+        `ac_binding_criterion_unbindable`; after it, it is a real declared
+        criterion that this contract has left unbound."""
+        body = (
+            "## Acceptance criteria\n\n"
+            "- AC2: the base criterion. — falsifier: uv run pytest a.py\n"
+            "- AC2b: a distinct sibling criterion. — falsifier: uv run pytest b.py\n"
+        )
+        contract = _contract(claims=["AC2"])
+
+        findings = check_contract_ac_bindings(_TICKET, contract, body)
+
+        assert _rules(findings) == ["ac_binding_criterion_unbound"]
+        assert "AC2b" in findings[0].message
+
+
 # ---------------------------------------------------------------- AC1, the gate --
 
 
