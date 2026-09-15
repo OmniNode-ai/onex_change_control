@@ -75,8 +75,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AUDIT_SCRIPT = REPO_ROOT / "scripts" / "audit_branch_protection.sh"
 
 # A repo in RELEASE_SYNCED_MAIN_REPOS, and one that is not.
+#
+# OMN-16642 moved omniclaude, which used to be the ordinary-main fixture, into
+# the release-synced set. omninode_infra is now the only repo in REPOS whose
+# main is still an ordinary PR-merge target, so it is the fixture. It is
+# private, so the repo-level "Merge Queue ruleset exists" check is skipped for
+# it -- that is a skip, not a failure, and the compliant case still exits 0.
 RELEASE_SYNCED_REPO = "omnibase_core"
-ORDINARY_REPO = "omniclaude"
+ORDINARY_REPO = "omninode_infra"
 
 _PROTECTION_NO_CONTEXTS = {
     "required_status_checks": {"strict": False, "contexts": [], "checks": []},
