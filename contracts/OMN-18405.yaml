@@ -1,0 +1,35 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18405"
+title: "omnimarket test job missing timeout-minutes hangs and starves successor runs"
+summary: >-
+  The omnimarket ci.yml `test` job (Tests split matrix) had no timeout-minutes, so a stuck shard fell
+  back to GitHub's implicit 360-minute job default. A Tests (Split 2/2) shard hung 2h05m on run 34988591973
+  (2026-09-15) and, through the workflow's non-cancelling per-ref concurrency group (OMN-14645, left unchanged),
+  starved PR #2565's successor run for the same two hours. omnimarket#2571 sets timeout-minutes: 30 on
+  the job, sized from measured p95 across 524 successful shards (7.8m, rounded up to 10m, +10m, floored
+  at the 30m minimum).
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnimarket-pr-2571"
+    description: >-
+      omnimarket PR #2571 adds timeout-minutes: 30 to the `test` job in .github/workflows/ci.yml. Content-bound
+      probe: it reads the omnimarket blob at the PR head through the GitHub API and scopes the search
+      to the `test:` job block only (stopping at the next top-level job key), so it executes against a
+      surface this OCC PR does not author, and it is falsifiable — verified GREEN at head e23276235b778a6e4cd4d9d101b306418420c0d5
+      and RED at merge-base 3038d1dabadea4973707f0228862b4aef4e09242, where the `test` job block carries
+      no timeout-minutes key at all.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          body="$(gh api 'repos/OmniNode-ai/omnimarket/contents/.github/workflows/ci.yml?ref=e23276235b778a6e4cd4d9d101b306418420c0d5'
+          --jq .content | base64 -d)" && printf '%s\n' "$body" | awk '/^  test:$/{f=1;next} f && /^  [a-zA-Z0-9_-]+:$/{exit}
+          f' | grep -q 'timeout-minutes: 30'
