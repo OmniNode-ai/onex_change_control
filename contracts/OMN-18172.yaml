@@ -171,3 +171,40 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9643 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-canary-stored-row-reads-synthetic"
+    description: >-
+      AC1 binding (Jonah, OMN-18172 comments 6509da3c, c02674f2, 9352f619, f0406df9). Runs omnibase_infra
+      #3575's integration proof at head 2dccc568 against Postgres with the forward migrations applied
+      through 106. The positive test drives the real HandlerChainCanary.handle(): it builds the /skill
+      body with governed synthetic provenance, the body becomes core's ModelDelegationRequest and is folded
+      through the real state_io dispatch seam (_make_stateful_dispatch_callback) into a real StateStoreAdapter
+      (seed RECEIVED, CAS update to COMPLETED), and the canary's own link-2 readback (_readback_projection_via_asyncpg,
+      as a throwaway role holding only the chain_canary_reader column grant) asserts projection_traffic_class=synthetic
+      and link 2 PASS on the row keyed by the handler's own probe correlation id. traffic_class is migration
+      106's STORED generated column, never written by the test, and the reader is denied payload. The
+      negative control removes provenance on the same path and the stored row reads unclassified, never
+      synthetic. Limitation, accepted by Jonah in c02674f2: omnimarket is not a dependency of omnibase_infra,
+      so node_delegation_orchestrator's StateIoCodec does not run; _DelegationWorkflowFold stands in and
+      places the request at the top-level request key that migration 106 reads, and an omnimarket-side
+      rename is outside this check. The check needs a reachable loopback Postgres: OMN18172_REQUIRE_PG=1
+      makes an absent database fail instead of skip, and OMN18172_ALLOW_LAB_PG=1 (added at 2dccc568 per
+      f0406df9) permits a run outside GitHub Actions only when the OMNIBASE_INFRA_DB_URL host is loopback;
+      a non-loopback host fails before connecting. The receipt's probe_stdout is this exact command's
+      own stdout from the .201 lab against a throwaway loopback postgres:16-alpine container provisioned
+      and migrated as ci.yml integration-guard does (scripts/run-migrations.py), removed with its volume
+      afterwards: 2 passed, 0 skipped, exit 0. CI corroboration, not the receipt: integration-guard job
+      104463700991 (run 34993355229, PR head 2dccc568) ran the file under GITHUB_ACTIONS with OMN18172_REQUIRE_PG=1
+      and -rs -v; both tests PASSED, 3 passed including the curated registration test, guard cases=3 executed=3
+      skipped=0. Live context, not bound: scheduled Chain Canary run 34934090728 (dev lane, head d10b5d712)
+      reported link_2 pass with projection_traffic_class synthetic and terminal_readback_status found;
+      that run's overall verdict was ledger_chain_incomplete (link 5 fail on missing ledger hops, outside
+      AC1). Its receipt lines are quoted verbatim in this item's receipt actual_output. Nothing is claimed
+      for AC4 or link 5.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          OMN18172_REQUIRE_PG=1 OMN18172_ALLOW_LAB_PG=1 uv run pytest tests/integration/db/test_chain_canary_stored_traffic_class_omn18172.py -q # repos/OmniNode-ai/omnibase_infra/commits/2dccc568314f0abc2c8840d97db48776a8f6fbc2
+        cwd: "${OMNI_HOME}/omnibase_infra"
