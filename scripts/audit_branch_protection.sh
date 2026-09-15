@@ -110,6 +110,18 @@ DEV_EXEMPT_REPOS=(omnistream omniweb)
 # omnibase_core, run 32473543173, 2026-08-21) that restrictions:{apps:[...]}
 # reads back correctly yet the protected-branch hook still declines the
 # release sync push, silently desyncing main. `restrictions` stays null.
+#
+# OMN-16642 added omniclaude, the last repository still on the legacy
+# manual-promotion-PR path to main. Its release.yml now carries the same
+# mint + REST fast-forward pair as the seven above, its main
+# required_status_checks are empty, and an active ruleset restricts updates to
+# refs/heads/main with onexbot-occ-writer as the only bypass actor. With that
+# move omninode_infra is the only ordinary-main repo left in REPOS, which is
+# why the test fixture for the ordinary-main assertion names it.
+#
+# Entries here are read token-by-token by
+# tests/test_audit_branch_protection_release_synced.py -- keep comments OUT of
+# the array body.
 RELEASE_SYNCED_MAIN_REPOS=(
   omnibase_core
   omnibase_infra
@@ -118,6 +130,7 @@ RELEASE_SYNCED_MAIN_REPOS=(
   omnidash
   omniintelligence
   omnimarket
+  omniclaude
 )
 
 # Repos audited on `dev` only — `main` is not audited at all.
