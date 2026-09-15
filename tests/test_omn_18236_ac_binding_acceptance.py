@@ -560,6 +560,98 @@ class TestStaleHash:
             == []
         )
 
+    def test_the_re_acceptance_counts_from_a_different_evidence_item(self) -> None:
+        """OMN-18406 AC2. Contract-scoped, because append lands on a NEW item.
+
+        The append-only gate forbids touching the merged item at all, so a
+        re-acceptance appended to it is not available either. The only reachable
+        shape is a new item, and an item-scoped rule would not see it.
+        """
+        contract = _contract(
+            claims=["AC2"],
+            bindings=[
+                {
+                    "label": "AC2",
+                    "criterion_hash": _hash_of(TICKET_BODY, "AC2"),
+                    "accepted_by": "jonahgabriel",
+                    "accepted_at": "2026-09-12T18:04:20Z",
+                }
+            ],
+        )
+        evidence = contract["dod_evidence"]
+        assert isinstance(evidence, list)
+        evidence.append(
+            {
+                "id": "dod-002-re-accepted",
+                "description": "Re-accepts AC2 against the current text.",
+                "source": "manual",
+                "status": "verified",
+                "binds_ac": ["AC2"],
+                "checks": [{"check_type": "command", "check_value": "true"}],
+                "ac_bindings": [
+                    {
+                        "label": "AC2",
+                        "criterion_hash": _hash_of(REWRITTEN_TICKET_BODY, "AC2"),
+                        "accepted_by": "jonahgabriel",
+                        "accepted_at": "2026-09-15T19:00:00Z",
+                    }
+                ],
+            }
+        )
+
+        assert (
+            check_contract_ac_bindings(_TICKET, contract, REWRITTEN_TICKET_BODY) == []
+        )
+
+    def test_a_label_whose_every_record_is_stale_still_refuses(self) -> None:
+        """OMN-18406 AC3. The release is narrow: SOME record must pin the text.
+
+        Two items, each pinning AC2 to a revision the criterion has moved past.
+        The negative control for the test above -- without it, "any match
+        releases" would be indistinguishable from "a second item releases".
+        """
+        contract = _contract(
+            claims=["AC2"],
+            bindings=[
+                {
+                    "label": "AC2",
+                    "criterion_hash": _hash_of(TICKET_BODY, "AC2"),
+                    "accepted_by": "jonahgabriel",
+                    "accepted_at": "2026-09-12T18:04:20Z",
+                }
+            ],
+        )
+        evidence = contract["dod_evidence"]
+        assert isinstance(evidence, list)
+        evidence.append(
+            {
+                "id": "dod-002-also-stale",
+                "description": "Pins AC2 to another revision it has moved past.",
+                "source": "manual",
+                "status": "verified",
+                "binds_ac": ["AC2"],
+                "checks": [{"check_type": "command", "check_value": "true"}],
+                "ac_bindings": [
+                    {
+                        "label": "AC2",
+                        "criterion_hash": "0" * 64,
+                        "accepted_by": "jonahgabriel",
+                        "accepted_at": "2026-09-13T18:04:20Z",
+                    }
+                ],
+            }
+        )
+
+        findings = check_contract_ac_bindings(_TICKET, contract, REWRITTEN_TICKET_BODY)
+
+        assert _rules(findings) == [
+            "ac_binding_stale_hash",
+            "ac_binding_stale_hash",
+        ]
+        # The refusal still names the hash the author must pin to.
+        current = _hash_of(REWRITTEN_TICKET_BODY, "AC2")
+        assert all(current in f.message for f in findings)
+
     def test_a_binding_with_no_hash_at_all_is_stale(self) -> None:
         contract = _contract(
             claims=["AC1"], bindings=[{"label": "AC1", "criterion_hash": ""}]

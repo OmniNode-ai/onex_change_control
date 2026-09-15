@@ -337,11 +337,55 @@ def check_contract_ac_bindings(
         )
         return findings
 
+    re_accepted = _labels_pinned_to_current_text(contract, known)
+
     for index, item in enumerate(_items(contract)):
         subject = f"{ticket_id} {_item_id(item, index)}"
         findings.extend(_unknown_criteria(ticket_id, subject, item, known))
-        findings.extend(_stale_pins(subject, item, known))
+        findings.extend(_stale_pins(subject, item, known, re_accepted))
     return findings
+
+
+def _labels_pinned_to_current_text(contract: object, known: dict[str, str]) -> set[str]:
+    """Labels some record ANYWHERE in this contract pins to the current text.
+
+    OMN-18406 -- WHY THIS IS CONTRACT-SCOPED AND NOT PER ITEM.
+    ----------------------------------------------------------
+    A merged ``dod_evidence`` entry is immutable: the required OCC Append-Only
+    Gate refuses an edit to one with ``kind: entry_edited`` and tells the author
+    to "Append a new item or file a supersession record instead". So the only
+    re-acceptance an author can actually perform is a NEW record, and it lands
+    on a NEW item -- never in place of the stale one, which cannot be corrected
+    and cannot be removed.
+
+    Scoring each record on its own therefore made re-acceptance impossible. The
+    stale record kept refusing after the author had done the one legal thing,
+    and the refusal's own instruction -- re-accept against the current text --
+    named an edit no gate permitted. A criterion whose text moved once could
+    never bind again.
+
+    The rule here is the one the consumer already applies. ``omnibase_infra``'s
+    evidence autoclose sweep collects every pin for a label and releases on ANY
+    match, precisely because "a re-acceptance appended beside the original is
+    the only shape the OCC append-only validator permits". This gate now reads
+    the corpus the same way, so the authoring side and the closing side can no
+    longer disagree about whether a criterion is accepted.
+
+    This narrows nothing and releases nothing new: a label still refuses unless
+    some record pins the criterion AS IT READS NOW. What it stops doing is
+    refusing a label that HAS such a record because an older, unremovable one
+    sits beside it.
+    """
+    current = {label: criterion_hash(text) for label, text in known.items()}
+    pinned: set[str] = set()
+    for item in _items(contract):
+        for binding in _bindings(item):
+            label = canonical_ac_label(str(binding.get("label") or ""))
+            if not label or label not in current:
+                continue
+            if str(binding.get("criterion_hash") or "") == current[label]:
+                pinned.add(label)
+    return pinned
 
 
 def _unknown_criteria(
@@ -368,13 +412,24 @@ def _unknown_criteria(
 
 
 def _stale_pins(
-    subject: str, item: dict[str, object], known: dict[str, str]
+    subject: str,
+    item: dict[str, object],
+    known: dict[str, str],
+    re_accepted: set[str],
 ) -> list[AcBindingFinding]:
-    """Binding records pinned to a revision the criterion has moved past."""
+    """Binding records pinned to a revision the criterion has moved past.
+
+    ``re_accepted`` carries the labels some record in this contract already
+    pins to the criterion's current text. A label in that set is not reported
+    here: the criterion HAS been re-accepted, and the stale record beside it is
+    one the author is forbidden to touch. See
+    :func:`_labels_pinned_to_current_text` for why that is the only shape a
+    re-acceptance can take.
+    """
     findings: list[AcBindingFinding] = []
     for binding in _bindings(item):
         label = canonical_ac_label(str(binding.get("label") or ""))
-        if not label:
+        if not label or label in re_accepted:
             continue
         criterion = known.get(label)
         if criterion is None:
