@@ -72,13 +72,49 @@ repos:
       # canonical omnibase_core module (OMN-14891), pinned to the same range
       # .github/workflows/git-env-scrub.yml installs so the two surfaces cannot
       # return different verdicts on the same file.
+      #
+      # DIFF-SCOPED, which is the .kb-doc-gate.yaml shape and not an exemption.
+      # This repository still carries pre-existing unguarded call sites, all of
+      # them neutralised at runtime by layer 1 and none of them allowlisted. The
+      # hook therefore asks the same question the CI job asks -- "does anything
+      # this BRANCH touches carry a new one" -- rather than the question
+      # `pre-commit run --all-files` would otherwise force it to ask, which is
+      # about work nobody in this commit wrote. It resolves that range itself
+      # rather than reading the filenames pre-commit hands it, so the answer is
+      # the same whether it is invoked by `git commit` or by `--all-files`.
+      #
+      # The range is the tracked diff against that base UNION the untracked files
+      # under tests/. A brand-new file is untracked until it is staged, and a
+      # gate that cannot see the file somebody just wrote is the gate not
+      # running.
+      #
+      # It fails CLOSED: when the base cannot be resolved the whole tests/ tree
+      # is scanned rather than nothing.
       - id: git-env-scrub
         name: Tests cannot inherit GIT_DIR and rewrite this repo (OMN-18434)
         language: python
         additional_dependencies: ['omnibase-core>=0.47.0,<0.48.0']
-        entry: python -m omnibase_core.validators.no_unguarded_git_subprocess
-        types: [python]
-        files: ^tests/.*\.py$
+        # A LITERAL block scalar, not a folded one: OMN-15479 refuses a folded
+        # scalar carrying an internal newline, because yamlfmt rewrites those
+        # newlines into a sentinel and silently changes what the file says.
+        entry: |-
+          bash -c '
+          base="$(git merge-base origin/dev HEAD 2>/dev/null)";
+          if [ -z "$base" ]; then
+            echo "git-env-scrub: base unresolved, scanning the whole tests/ tree";
+            exec python -m omnibase_core.validators.no_unguarded_git_subprocess tests;
+          fi;
+          changed="$( { git diff --name-only --diff-filter=ACMR "$base" -- tests;
+          git ls-files --others --exclude-standard -- tests; } | sed -n "/\.py$/p" | sort -u)";
+          if [ -z "$changed" ]; then
+            echo "git-env-scrub: this branch adds or modifies no test file";
+            exit 0;
+          fi;
+          echo "git-env-scrub: scanning"; echo "$changed" | sed "s/^/  /";
+          exec python -m omnibase_core.validators.no_unguarded_git_subprocess $changed
+          '
+        pass_filenames: false
+        always_run: true
         stages: [pre-commit]
 
       - id: check-yamlfmt-contamination
