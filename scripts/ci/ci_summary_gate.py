@@ -333,6 +333,14 @@ CLASSIFICATION_ONLY: dict[str, str] = {
 # which is exactly the fail-closed case this layer exists to catch, not
 # evidence the context is unsafe to assert).
 EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
+    # OMN-18434: git-env-scrub.yml, standalone and unconditional on
+    # pull_request, so it carries no paths filter and is always present. A test
+    # that shells out to git inherits GIT_DIR from the hook running it and
+    # rewrites this repository; the conftest scrub neutralises the call sites
+    # already written and this gate refuses a new one. Registered here because
+    # on this repo the CI Summary umbrella IS the enforcement surface, and a
+    # context missing from this tuple is silently unenforced.
+    "Git env scrub gate",
     "Dep Provenance Gate",  # guards.yml (OMN-16260) -- unconditional
     "validate-private-ip",  # validator-g2-ip-family.yml -- unconditional
     "validate-localhost-url",  # validator-g2-ip-family.yml -- unconditional
