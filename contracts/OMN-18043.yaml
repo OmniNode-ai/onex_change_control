@@ -141,3 +141,24 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/test_omn16290_order_by_request_time.py::TestOrderByRequestTimeReordersRealRows::test_default_ordering_is_the_contract_declared_column tests/test_omn16290_order_by_request_time.py::TestOrderByRequestTimeReordersRealRows::test_order_by_non_default_column_actually_reorders_served_rows tests/test_omn16290_order_by_request_time.py::TestOrderByRequestTimeReordersRealRows::test_order_by_direction_is_honoured_in_real_row_order tests/test_omn16290_order_by_request_time.py::TestOrderByRequestTimeReordersRealRows::test_order_by_unknown_column_rejected_never_silent_fallback tests/test_projection_api_server.py::TestProjectionQueryLimitOrderParams::test_order_by_unknown_column_rejected_with_422_not_silently_ignored -q # repos/OmniNode-ai/omnimarket/commits/d400590464949d97842446df4a510c508ca4f1d4
         cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac1-cursor-column-schema-accepted"
+    description: |-
+      AC1 binding (Jonah ruling 891b64cc: the migration is enough). Runs three focused tests at omnimarket commit 13c6cbb4 (#2455, the OMN-18043 change that declared cursor_column on the consumer-flow exposure); the same three tests are unchanged and pass on omnimarket dev 1ae66ce1. The projection_api section parser accepts a string cursor_column and carries it onto the exposure config; a nested projection_api exposures list that declares cursor_column registers every exposure with it through build_projection_topic_map; and the real node_projection_consumer_flow contract loads with cursor_column projection_cursor. A local mutation on dev that drops cursor_column from the parsed config fails all three.
+      The uniqueness/monotonic constraint is documented in OmniNode-ai/omnimarket src/omnimarket/nodes/node_projection_consumer_flow/migrations/0001_add_projection_cursor.sql at 13c6cbb43c461f2a18901ffdbbf825ff03f9b665, vendored identically by OmniNode-ai/omnibase_infra #3406 (760c3ea77d066309ce274865139f44c65373bdbf) at docker/migrations/forward/nodes/node_projection_consumer_flow/0001_add_projection_cursor.sql. Verbatim lines (blank lines omitted):
+        -- projection_cursor is a separate database-assigned, unique monotonic value
+        -- used by the projection API for a stable page boundary.
+        ALTER TABLE omninode_internal.consumer_flow_windows
+            ADD COLUMN IF NOT EXISTS projection_cursor BIGSERIAL;
+        ALTER TABLE omninode_internal.consumer_flow_windows
+            ALTER COLUMN projection_cursor SET NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_consumer_flow_windows_projection_cursor
+            ON omninode_internal.consumer_flow_windows (projection_cursor);
+      This binds schema acceptance only. It does not claim AC2 (cursor_column must be one of the declared columns, omnimarket #2564) or AC3.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/projection/test_projection_discovery.py::TestParseProjectionApiSection::test_projection_metadata_columns_are_parsed tests/unit/projection/test_projection_discovery.py::TestBuildProjectionTopicMap::test_multiple_projection_api_exposures_are_registered tests/test_omn16777_consumer_flow_contract_exposure.py::test_exposure_loads_and_is_bus_backed_with_its_full_key -q # repos/OmniNode-ai/omnimarket/commits/13c6cbb43c461f2a18901ffdbbf825ff03f9b665
+        cwd: "${OMNI_HOME}/omnimarket"
