@@ -162,3 +162,57 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/unit/projection/test_projection_discovery.py::TestParseProjectionApiSection::test_projection_metadata_columns_are_parsed tests/unit/projection/test_projection_discovery.py::TestBuildProjectionTopicMap::test_multiple_projection_api_exposures_are_registered tests/test_omn16777_consumer_flow_contract_exposure.py::test_exposure_loads_and_is_bus_backed_with_its_full_key -q # repos/OmniNode-ai/omnimarket/commits/13c6cbb43c461f2a18901ffdbbf825ff03f9b665
         cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac2-cursor-column-must-be-declared"
+    description: >-
+      AC2 binding. Validator rejects a tracked declarable projection_api exposure whose cursor_column
+      is missing or is absent from declared columns. Proof is omnimarket #2564 (merge commit 6ddbde110698d338cf2c6db23477def158a96534):
+      TestCursorColumnMustBeADeclaredColumn exercises four rejection cases (absent from columns fails;
+      baseline listing does not excuse it; write_baseline refuses to record it; nested exposure absent
+      cursor is keyed by index) and test_declared_and_listed_cursor_passes confirms the happy path. The
+      gate is wired as a pre-commit hook in .pre-commit-config.yaml at the same commit.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/validation/test_omn_18043_cursor_declared_ratchet.py::TestCursorColumnMustBeADeclaredColumn" -q # repos/OmniNode-ai/omnimarket/commits/6ddbde110698d338cf2c6db23477def158a96534
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac3-declarable-exposures-audit"
+    description: >-
+      AC3 binding. Audits all 62 projection_api exposures in the omnimarket tree and verifies the 7 declarable
+      ones. Proof is omnimarket #2564 (merge commit 6ddbde110698d338cf2c6db23477def158a96534): TestAc3DeclarableExposuresAndMeasuredGap::test_seven_declare_a_member_cursor_and_the_baseline_holds_the_other_55
+      asserts that exactly 7 exposures declare a cursor_column and the remaining 55 are held in the baseline
+      (7 + 55 = 62 total tracked exposures).
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest "tests/unit/validation/test_omn_18043_cursor_declared_ratchet.py::TestAc3DeclarableExposuresAndMeasuredGap::test_seven_declare_a_member_cursor_and_the_baseline_holds_the_other_55" -q # repos/OmniNode-ai/omnimarket/commits/6ddbde110698d338cf2c6db23477def158a96534
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac4-live-cursor-walk-non-null"
+    description: >-
+      AC4 binding. consumer_flow_windows gains unique monotonic projection_cursor (landed in omnimarket
+      #2455, vendored by omnibase_infra #3406 via 0001_add_projection_cursor.sql). Live page-boundary
+      read on onex-201 confirmed non-null next_cursor: OMN-17215's live walk (omnimarket #2566, merged)
+      read page 1 at 2026-09-16T02:38Z and returned next_cursor=26270956, proving the cursor is monotonic
+      and non-null at the first page boundary for the consumer_flow_windows projection. The probe below
+      can be re-run on .201 to re-verify.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "behavior_proven"
+        check_value: >-
+          onex-201 live walk (OMN-17215, omnimarket#2566 merged 2026-09-16). Probe: SELECT MAX(projection_cursor)
+          IS NOT NULL AS non_null FROM omninode_internal.consumer_flow_windows; Observed result at 2026-09-16T02:38Z:
+          next_cursor=26270956 on page 1, IS NOT NULL = t. Re-run on .201 with psql ${LAB_DB_URL}.
+  - id: "occ-self-bind-pr-9822"
+    description: "Binds OMN-18043 to OCC companion PR #9822 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 9822 --repo OmniNode-ai/onex_change_control --json number,state"
