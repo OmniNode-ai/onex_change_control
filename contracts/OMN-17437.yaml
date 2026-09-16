@@ -63,33 +63,30 @@ dod_evidence:
           -q --no-cov -p no:cacheprovider
   - id: "dod-occ-main-requires-codeowner-review"
     description: >-
-      Live API readback of the enforcement surface itself, which is the only evidence OMN-17437 AC-1 accepts
-      (a settings-page screenshot is explicitly rejected). Queries `repository.branchProtectionRules`
-      for `pattern: main` and errors unless the rule reports `requiresApprovingReviews: true`, `requiresCodeOwnerReviews:
-      true`, `dismissesStaleReviews: true` and `requireLastPushApproval: true`. It goes RED against the
-      pre-change state, which returned `requiresApprovingReviews: false`, `requiresCodeOwnerReviews: false`,
-      `requiredApprovingReviewCount: null` and had no `required_pull_request_reviews` object at all in
-      the REST representation. The PUT was built by round-tripping the captured BEFORE object so the whole-resource
-      replace could not silently drop an existing control; all 23 required status-check contexts, `enforce_admins`,
-      `required_linear_history` and `required_conversation_resolution` are byte-identical across the change
-      and only `required_pull_request_reviews` was added. DIVERGENCE FROM AC-1, STATED DELIBERATELY: `requiredApprovingReviewCount`
-      is 0, not >= 1. A count of 1 is branch-wide and would additionally freeze routine non-governance
-      traffic on main (migration inventory repairs, workflow backports) that no code owner owns, on a
-      branch whose only writer is a one-member team. Count 0 with `require_code_owner_reviews: true` gates
-      exactly the CODEOWNERS-covered paths — `grants/prod_promotion_grants.yaml` and `allowlists/skip_token_approvals.yaml`
-      — which is the surface this ticket is about. That enforcement claim is asserted here from the API
-      only; the behavioural proof (a PR touching the grant file reporting `reviewDecision: REVIEW_REQUIRED`)
-      is deliberately deferred until AFTER this PR lands, because running it earlier would mean opening
-      a grant-registry PR while main's auto-merge hole is still open. If that probe shows count 0 is not
+      Live REST API readback of the enforcement surface itself, which is the only evidence OMN-17437 AC-1
+      accepts (a settings-page screenshot is explicitly rejected). Queries `required_pull_request_reviews`
+      for `main` and errors unless the rule reports `require_code_owner_reviews: true`, `dismiss_stale_reviews:
+      true` and `required_approving_review_count: 0`. It goes RED against the pre-change state, which
+      returned no `required_pull_request_reviews` object at all in the REST representation. The PUT was
+      built by round-tripping the captured BEFORE object so the whole-resource replace could not silently
+      drop an existing control; all 23 required status-check contexts, `enforce_admins`, `required_linear_history`
+      and `required_conversation_resolution` are byte-identical across the change and only `required_pull_request_reviews`
+      was added. DIVERGENCE FROM AC-1, STATED DELIBERATELY: `requiredApprovingReviewCount` is 0, not >=
+      1. A count of 1 is branch-wide and would additionally freeze routine non-governance traffic on main
+      (migration inventory repairs, workflow backports) that no code owner owns, on a branch whose only
+      writer is a one-member team. Count 0 with `require_code_owner_reviews: true` gates exactly the CODEOWNERS-covered
+      paths — `grants/prod_promotion_grants.yaml` and `allowlists/skip_token_approvals.yaml` — which is
+      the surface this ticket is about. That enforcement claim is asserted here from the API only; the
+      behavioural proof (a PR touching the grant file reporting `reviewDecision: REVIEW_REQUIRED`) is
+      deliberately deferred until AFTER this PR lands, because running it earlier would mean opening a
+      grant-registry PR while main's auto-merge hole is still open. If that probe shows count 0 is not
       enforced, the count escalates to 1 and this entry is superseded.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: >-
-          gh api graphql -f query='{repository(owner:"OmniNode-ai",name:"onex_change_control"){branchProtectionRules(first:20){nodes{pattern
-          requiresApprovingReviews requiredApprovingReviewCount requiresCodeOwnerReviews dismissesStaleReviews
-          requireLastPushApproval}}}}' --jq '.data.repository.branchProtectionRules.nodes[] | select(.pattern=="main")
-          | if (.requiresApprovingReviews == true and .requiresCodeOwnerReviews == true and .dismissesStaleReviews
-          == true and .requireLastPushApproval == true) then "PASS" else error("onex_change_control@main
-          does not require code-owner approving review") end'
+          gh api repos/OmniNode-ai/onex_change_control/branches/main/protection/required_pull_request_reviews
+          --jq 'if (.require_code_owner_reviews == true and .dismiss_stale_reviews == true and .required_approving_review_count
+          == 0) then "PASS" else error("onex_change_control@main does not require code-owner review on
+          CODEOWNERS-covered paths") end'
