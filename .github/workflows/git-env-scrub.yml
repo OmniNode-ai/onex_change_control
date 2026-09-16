@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# OMN-18434 — a test that shells out to git must not be able to rewrite this
+# repository.
+#
+# Git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_COMMON_DIR into
+# the environment of every hook it runs, and those override both `cwd=` and
+# `git -C`. A fixture doing `git init` in a temp directory therefore targets the
+# invoking repository when pytest runs under a hook. On 2026-09-16 that
+# re-initialized a shared canonical clone in this fleet.
+#
+# Two layers, and this job is the second:
+#
+#   1. tests/conftest.py strips every inherited GIT_* variable at
+#      pytest_configure and again per test. That neutralises every call site
+#      already written, which is why this job is a ratchet rather than a sweep.
+#   2. this job refuses a NEW unguarded call site, so the count cannot grow.
+#
+# The validator is the canonical omnibase_core one (OMN-14891), installed from
+# PyPI at the same version range the `git-env-scrub` pre-commit hook declares,
+# so the local verdict and this one cannot diverge.
+#
+# SCOPE IS THE FILES THIS PULL REQUEST CHANGES, and that is a ratchet, not an
+# exemption: this repository still carries pre-existing unguarded call sites,
+# every one of them neutralised at runtime by layer 1 and none of them
+# allowlisted. There is no suppression annotation, no skip input and no path
+# exception anywhere in this file.
+
+name: Git env scrub
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-env-scrub-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  git-env-scrub:
+    name: Git env scrub gate
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the canonical validator
+        run: python -m pip install --upgrade pip 'omnibase-core>=0.47.0,<0.48.0'
+
+      # The gate reports nothing when the module is missing, which reads exactly
+      # like a clean bill of health. Asserting the import is what stops a failed
+      # install from becoming a green no-op.
+      - name: The canonical validator is present
+        run: python -c "import omnibase_core.validators.no_unguarded_git_subprocess as m; print(m.__file__)"
+
+      - name: No unguarded git subprocess call site among the changed tests
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE_REF"
+          base="$(git merge-base "origin/$BASE_REF" HEAD)"
+          echo "merge base: $base"
+          # sed, not grep: an empty selection is a legitimate outcome here and
+          # grep would exit 1 on it. The usual shell idiom for forgiving that
+          # exit code would forgive a real failure of the command in front of it
+          # just as silently, so the filter is written not to need forgiving.
+          changed="$(git diff --name-only --diff-filter=ACMR "$base" HEAD -- tests | sed -n '/\.py$/p')"
+          if [ -z "$changed" ]; then
+            echo "no test files added or modified by this pull request"
+            exit 0
+          fi
+          echo "scanning:"
+          echo "$changed" | sed 's/^/  /'
+          # shellcheck disable=SC2086
+          python -m omnibase_core.validators.no_unguarded_git_subprocess $changed
+
+# The discriminator pair proving the scrub actually defeats an inherited
+# GIT_DIR lives at tests/test_git_env_isolation_omn18434.py and runs in this
+# repository's own test job, which has the full environment its conftest needs.
+# Re-running it here would mean installing that environment twice.
