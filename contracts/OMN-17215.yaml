@@ -125,3 +125,64 @@ dod_evidence:
         check_value: |-
           git rev-parse 6e6f0d6a3348b79e8e30b7559566e9c8d87e0ef8^{commit} 60c9a97e03db3fefa27fbafeb8a2567873aa5bea^{commit} fa7f0d26f37a638f3985c1b19c43728a118a7dba^{commit} && added=$(git diff --no-renames --diff-filter=A --name-only 6e6f0d6a3348b79e8e30b7559566e9c8d87e0ef8^1 6e6f0d6a3348b79e8e30b7559566e9c8d87e0ef8 -- ':(glob)**/scripts/**' && git diff --no-renames --diff-filter=A --name-only 60c9a97e03db3fefa27fbafeb8a2567873aa5bea^1 60c9a97e03db3fefa27fbafeb8a2567873aa5bea -- ':(glob)**/scripts/**' && git diff --no-renames --diff-filter=A --name-only fa7f0d26f37a638f3985c1b19c43728a118a7dba^1 fa7f0d26f37a638f3985c1b19c43728a118a7dba -- ':(glob)**/scripts/**') && [ -z "$added" ] && git grep -c '^app = FastAPI(' fa7f0d26f37a638f3985c1b19c43728a118a7dba -- src/omnimarket/projection/api_server.py && ! git grep -nE "/metrics[\"'/?]|make_asgi_app|Instrumentator" fa7f0d26f37a638f3985c1b19c43728a118a7dba -- src/omnimarket/projection/ && git grep -c '^class ' fa7f0d26f37a638f3985c1b19c43728a118a7dba -- 'src/omnimarket/nodes/node_projection_consumer_flow/*.py' && ! git grep -nE '^[[:space:]]*class[[:space:]]+Plugin|^[[:space:]]*class[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\([^)]*Plugin|^[[:space:]]+([A-Za-z0-9_]+\.)*Plugin[A-Za-z0-9_]*,?$' fa7f0d26f37a638f3985c1b19c43728a118a7dba -- 'src/omnimarket/projection/*.py' 'src/omnimarket/nodes/node_projection_consumer_flow/*.py' # repos/OmniNode-ai/omnimarket/commits/fa7f0d26f37a638f3985c1b19c43728a118a7dba
         cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac1-live-set-compare-cursor-walk"
+    description: >-
+      AC1 binding: every consumer group present in consumer_flow_windows for the current window is reachable
+      through the API by paging. Live walk on .201 confirmed: 398 groups in both DB and API, symmetric
+      set-compare SHA256 match b794130ed6dc94dfd9733b4f2118a0b0557ec8fc4bf862277b46550c4f5c0c5f, 547 rows
+      across 2 pages. The fix is in omnimarket PR #2566 (merged, merge commit bc21f733): SnapshotCache.get_rows(...,
+      unbounded=False) keyword, both API call sites pass unbounded=True, key-arity reader guard in apply_message
+      to drop legacy 3-part keys (per Jonah 18f7baea). The check exercises the real SnapshotCache with
+      more rows than contract.limit, walks via the since cursor, and asserts every row is reached exactly
+      once (symmetric: missing AND extras).
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/projection/test_omn17215_cursor_walk_passes_contract_limit.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac2-next-cursor-non-null-on-truncation"
+    description: >-
+      AC2 binding: next_cursor is non-null whenever the result set is truncated. The fix is in omnimarket
+      PR #2566 (merged, merge commit bc21f733). The cursor walk test asserts that next_cursor is not None
+      when the number of rows exceeds the contract limit, proving the API correctly signals truncation
+      to the caller.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/projection/test_omn17215_cursor_walk_passes_contract_limit.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac3-complete-set-vs-page-one"
+    description: >-
+      AC3 binding: the response distinguishes "complete set" from "page 1 of N". The fix is in omnimarket
+      PR #2566 (merged, merge commit bc21f733). The cursor walk test asserts that a page with next_cursor
+      not None is a truncated page (page 1 of N), and the final page with next_cursor None is the complete-set
+      signal, proving the API exposes the distinction to callers.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/projection/test_omn17215_cursor_walk_passes_contract_limit.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac4-non-idle-sorts-ahead-of-idle"
+    description: >-
+      AC4 binding: non-IDLE states sort ahead of IDLE. The fix is in omnimarket PR #2560 (merged, merge
+      commit 60c9a97e), refined in PR #2562 (merged, merge commit fa7f0d26), with the key-arity guard
+      and live deployment in PR #2566. The check asserts the three-tier CASE expression: FLOWING sorts
+      between the attention states and IDLE. Per Jonah 765a41f8, AC4 was held until the cursor walk passed
+      row 500; the live walk reached 547 rows, satisfying that gate.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_omn16777_consumer_flow_contract_exposure.py::test_declared_rank_is_three_tiers_with_flowing_between_attention_and_idle
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
