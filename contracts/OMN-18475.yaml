@@ -45,3 +45,46 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/db/test_migrate_image_copy_set_omn18475.py -q
         cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-rebuilt-image-carries-the-baseline"
+    description: >-
+      AC3. The rebuilt migrate image contains the file at the path the apply one-shot reads. Probed against
+      the image the lab overlay builds from this repository's own dev head, with /migrations/MANIFEST
+      in the same probe as the positive control — an image that answered "absent" to both would be an
+      unreadable image rather than a missing layer. Unproven until an image built from the merged tree
+      exists; the pre-change measurement is recorded on the ticket and shows absent against present.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          docker run --rm --entrypoint ls "$ONEX_CLOUD_MIGRATE_IMAGE" /migrations/scripts/00_baseline_schema.sql
+          /migrations/MANIFEST
+    binds_ac:
+      - "AC3"
+  - id: "dod-lane-apply-succeeds-from-empty"
+    description: >-
+      AC4. On the .201 compose dev lane, after the deploy path consumes an image built from the merged
+      tree, the apply one-shot exits 0 and omninode_cloud carries a non-zero table count. The count is
+      read against the image's own MANIFEST entry count as the positive control. A live-lane observation,
+      not re-executable from a CI checkout; the readback and the deploy agent command id are recorded
+      on the ticket.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          docker inspect -f '{{.State.ExitCode}}' omnibase-infra-cloud-migration
+    binds_ac:
+      - "AC4"
+  - id: "dod-baseline-is-idempotent-on-a-non-empty-database"
+    description: >-
+      AC5. The baseline is applied unconditionally on every run, before the manifest loop and outside
+      schema_migrations bookkeeping, so a second run against an already-migrated database re-executes
+      it. It is written to be a no-op there — CREATE EXTENSION IF NOT EXISTS, CREATE TABLE IF NOT EXISTS
+      — and the proof is the second run exiting 0 with its applied/already/skipped tail line showing the
+      corpus already applied. Unproven until that second run exists.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          docker logs omnibase-infra-cloud-migration 2>&1 | grep -c 'omninode_cloud migration complete'
+    binds_ac:
+      - "AC5"
