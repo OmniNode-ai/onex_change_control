@@ -125,6 +125,7 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     "check-platform-leads-review-tripwire",
     "Contract Corpus Ratchets (OMN-15411)",
     "yamlfmt Contamination Ratchet (OMN-15479)",
+    "Expiring DoD Check Gate (OMN-18641)",
     "Supersession Binding Ratchet (OMN-15459)",
     # OMN-13888. Two-way set equality between the whole orphan corpus and its
     # frozen shrink-only baseline. STRICT, not SKIPPABLE, and it carries no
