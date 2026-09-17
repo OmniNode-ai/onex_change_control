@@ -86,11 +86,6 @@ _MANIFEST_REQUIRED_FIELDS = frozenset(
     }
 )
 
-#: Union of everything any kind requires. Retained under its historical name
-#: because it is the set a reader looking for "the grant schema" expects to
-#: find; the per-kind sets above are what validation actually uses.
-_REQUIRED_FIELDS = _COMMON_REQUIRED_FIELDS | _IMAGE_REQUIRED_FIELDS
-
 # OMN-13424 single-use lifecycle markers. OPTIONAL (absent == not consumed);
 # tolerated as extras so a consumed grant can carry its provenance before the
 # prune job removes it. `target_kind` is optional in the same sense: it may be
