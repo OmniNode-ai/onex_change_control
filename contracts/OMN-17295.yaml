@@ -200,3 +200,143 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9962 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-documented-lane-probe-names-its-broker"
+    description: >-
+      AC1 binding, positive half: "There is a documented, single command that causes the DEPLOYED orchestrator
+      to make the accept/climb decision, and its result is read back from a lane-side surface." The mechanism
+      landed under OMN-17304 (locus resolution + the fail-closed dispatch gate) and omnibase_core#1633
+      (client mode); what was missing was that the DOCUMENTED command could not be run. OMN-16871 made
+      a shared-bus delegation naming no broker a refusal, and the two examples in the delegate command's
+      own help were not moved with it, so the one command this criterion is about exited 1 before publishing
+      anything. omnibase_infra#3676 adds the lane selector to both. Read remotely at the merge commit
+      rather than from a local checkout, so the check answers a question about the landed source.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=549897b417f460093b7fc0cd820549139a676855" --jq '.content' | base64 -d)"; grep -qF 'onex delegate "document the router" --bus kafka --lane dev --locus deployed-lane' <<< "$body"
+  - id: "ac1-negative-control-at-the-parent-commit"
+    description: >-
+      AC1 binding, negative control. The same remote read against the parent commit e1a94246a8242f5460f8f809d4201de6e5c264bc
+      must find the example WITHOUT the lane selector and must NOT find the corrected form. Without it
+      the positive check cannot tell "this change fixed the documentation" from "it was already correct
+      and this changed nothing" -- and a green positive half alone is not evidence for the criterion.
+      That distinction is the whole reason AC1 was falsifiable by running the documented command: verbatim,
+      pre-image, it refused as naming no broker and published nothing.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/cli_delegate.py?ref=e1a94246a8242f5460f8f809d4201de6e5c264bc" --jq '.content' | base64 -d)"; grep -qF 'onex delegate "document the router" --bus kafka --locus deployed-lane' <<< "$body" && ! grep -qF -- '--bus kafka --lane dev --locus deployed-lane' <<< "$body"
+  - id: "ac1-behaviour-documented-examples-resolve"
+    description: >-
+      AC1 binding, behaviour half. The regression test reads the delegate command's OWN help output, extracts
+      every shared-bus example, and puts each through the real resolve_lane_target against a declared-lane
+      fixture; a companion test refuses the vacuous pass where the example is simply deleted. Asserted
+      rather than reviewed because the two surfaces are edited by different changes: a refusal tightened
+      in delegate_lane silently invalidates an example string in cli_delegate with nothing in between
+      to notice. Fails on the pre-image quoting the refusal text.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/cli/test_delegate_locus.py::TestTheDocumentedLaneProbeIsRunnable -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac2-receipt-names-the-resolving-executor"
+    description: >-
+      AC2 binding: "A probe whose orchestrator resolved locally CANNOT be reported as a lane probe --
+      onex delegate states in its own output which orchestrator resolved it, so 'did this run on the lane'
+      is answerable from the receipt alone, not by cross-checking docker logs by hand." The receipt summary
+      model carries handler_locus, wire_correlation_id, orchestrator_distribution and dispatch_target;
+      the locus decision is threaded into it rather than being logged and lost. Read remotely at the merge
+      commit. Live confirmation, 2026-09-17 against the .201 dev lane: the receipt for correlation 88405181-5ed1-429a-b99b-d152827350c2
+      reported handler_locus=dispatched, its own wire_correlation_id, orchestrator_distribution "omnimarket
+      0.4.111 (<local venv path>)" -- the distribution that supplied the wire description, named as local
+      so it cannot be misread as the executor -- and a dispatch_target naming the command topic, the broker
+      and the two live consumer groups bound to it.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/model_receipt_runtime_summary.py?ref=549897b417f460093b7fc0cd820549139a676855" --jq '.content' | base64 -d)"; for f in handler_locus wire_correlation_id orchestrator_distribution dispatch_target; do grep -q "    $f: " <<< "$body" || exit 1; done
+  - id: "ac2-behaviour-dispatched-run-hosts-nothing"
+    description: >-
+      AC2 binding, behaviour half. The locus suite pins both directions: a deployed-lane run hosts no
+      handlers in the CLI process, an in-process run still does, an unknown or empty consumer-group answer
+      REFUSES instead of quietly running here, and a refused lane probe dispatches nothing at all. The
+      counter-assertions matter as much as the positive ones -- "always refuse" would satisfy a fail-closed
+      test while destroying the offline flow.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/cli/test_delegate_locus.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac3-falsifier-run-recorded-on-dev-lane"
+    description: |-
+      AC3 binding: "issue the probe, then grep the lane's omninode-runtime / omninode-runtime-effects
+      logs for the correlation id and get NON-ZERO hits. Today that grep returns zero, which is the RED
+      state this ticket exists to fix." Run 2026-09-17 against the .201 dev lane (compose project
+      omnibase-infra, broker port 19092) from the canonical CLI as dev-cli-stickybeatz-studio over
+      SASL/SCRAM-SHA-256:
+
+        run 1, correlation 3ed275cf-804a-473b-ac4b-a2f158b3d912, 47.7 s, terminal completed
+          omninode-runtime hits=27   omninode-runtime-effects hits=3
+        run 2 (the documented command verbatim), correlation 88405181-5ed1-429a-b99b-d152827350c2,
+          46.9 s, terminal completed
+          omninode-runtime hits=27   omninode-runtime-effects hits=3
+
+      Lane side for run 2, the accept/climb decision made THERE:
+        handler_inference_intent: HandlerInferenceIntent succeeded: model=Qwen3.6-35B-A3B tokens=1107
+          latency=26539ms correlation_id=88405181-5ed1-429a-b99b-d152827350c2
+        service_dispatch_result_applier: Published output event to the delegate-skill-completed topic
+          (correlation_id=88405181-...)
+
+      And the projection row on the lane's own database (omnidash_analytics.delegation_events):
+        88405181-5ed1-429a-b99b-d152827350c2 | Qwen3.6-35B-A3B | quality=1.000 | escalations=0 | local
+
+      escalations=0 is the accept decision; the terminal was read back from the broker, not from local
+      stdout. Negative control taken in the same pass: an in-memory transport with a deployed-lane locus
+      exits 1 with the incoherence refusal, no model call and no receipt.
+
+      Stated plainly rather than implied: a GitHub-hosted runner has no route to that lane, so the live
+      half of this criterion is a recorded readback and not re-executable here. What IS re-executable is
+      the structural half below -- the receipt hands the caller the wire correlation id that the grep is
+      run with. The ticket's own CORRECTION of 2026-08-31 notes that a lane-log grep is not by itself
+      discriminating (it was non-zero before the fix too, via dual execution); the discriminating facts
+      are recorded above with it -- handler_locus=dispatched, a CLI hosting nothing, and a projection
+      row written by the lane for this run's correlation.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/receipt_mode.py?ref=549897b417f460093b7fc0cd820549139a676855" --jq '.content' | base64 -d)"; grep -q 'wire_correlation_id=' <<< "$body" && grep -q 'dispatch_target=' <<< "$body"
+  - id: "ac4-restatement-target-exists-in-the-cli"
+    description: >-
+      AC4 binding. AC4 was completed 2026-08-31 by restating the other tickets' lane-leg acceptances against
+      this ticket's outcome: OMN-16932 was restated and marked superseded by the deployed-lane locus (comment
+      b4b3d88b), and the OMN-16773 chain canary was found to need NO restatement because it fires HTTP
+      ingress rather than the CLI (comment 77ad9b7c) -- one of the two premises in this ticket's own description
+      turned out to be false. A restatement is only worth anything if the surface it points at exists,
+      so what is checked here is exactly that: the delegate command really does expose the locus selector
+      with a deployed-lane value at the merge commit. The Linear comments themselves are the record of
+      the sweep and are cited above rather than re-read by a check.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/enums/enum_delegate_locus.py?ref=549897b417f460093b7fc0cd820549139a676855" --jq '.content' | base64 -d)"; grep -q 'deployed-lane' <<< "$body"

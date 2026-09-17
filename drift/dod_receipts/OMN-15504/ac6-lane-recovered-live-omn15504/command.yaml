@@ -1,0 +1,83 @@
+---
+actual_output: |-
+  PASS: the declared check was executed verbatim and exited 0. Read-only against the .201 dev lane after the deploy agent's own rebuild at ~09:42Z on 2026-09-17, which is the stronger reading because the finding's claim was that a restart did not clear the livelock. The check carries a broker positive control and three negative controls, all of which fail as they should. The bound commit is the omnimarket merge whose behaviour this proves on the lane.
+check_type: command
+check_value: |
+  repos/OmniNode-ai/omnimarket/commits/4ec159dbdea82841a6f0ab37dcc4e91365708ecc
+  ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 'bash -s' <<'PROBE'
+  set -euo pipefail
+  TOPIC='onex.cmd.omnimarket.delegate-skill.v1'
+  LIVE="local.omnimarket.node_delegate_skill_orchestrator.consume.1.2.0.__i.runtime-effects.__t.${TOPIC}"
+  RETIRED="local.omnimarket.node_delegate_skill_orchestrator.consume.1.1.0.__i.runtime-effects.__t.${TOPIC}"
+  RPK_USER=$(docker exec omninode-runtime-effects printenv KAFKA_SASL_USERNAME </dev/null)
+  RPK_PASS=$(docker exec omninode-runtime-effects printenv KAFKA_SASL_PASSWORD </dev/null)
+  RPK_SASL_MECHANISM=$(docker exec omninode-runtime-effects printenv KAFKA_SASL_MECHANISM </dev/null)
+  export RPK_USER RPK_PASS RPK_SASL_MECHANISM
+  rpkx(){ docker exec -e RPK_USER -e RPK_PASS -e RPK_SASL_MECHANISM omnibase-infra-redpanda rpk "$@" </dev/null; }
+  # Every grep here uses -c with stdout discarded, never -q: -q closes the pipe
+  # early, rpk takes SIGPIPE, and under `pipefail` that is exit 141 -- a false
+  # RED that looks exactly like a finding. Measured on this very check.
+  has(){ grep -cE "$1" >/dev/null; }
+  drained(){ awk -v t="$TOPIC" '$1==t{seen=1;ok=($3==$5 && $6==0)} END{exit !(seen&&ok)}'; }
+  test "$(rpkx topic list | grep -c .)" -gt 100
+  D=$(rpkx group describe "$LIVE")
+  printf '%s\n' "$D" | has '^STATE +Stable'
+  printf '%s\n' "$D" | has '^MEMBERS +[1-9]'
+  printf '%s\n' "$D" | drained
+  sleep 90
+  D=$(rpkx group describe "$LIVE")
+  printf '%s\n' "$D" | drained
+  rpkx group describe "$RETIRED" | awk -v t="$TOPIC" '$1==t{seen=1;ok=($3>317)} END{exit !(seen&&ok)}'
+  L=$(docker logs omninode-runtime-effects </dev/null 2>&1)
+  printf '%s\n' "$L" | has 'Joined group|OffsetCommit|delegate-skill'
+  if printf '%s\n' "$L" | grep -c 'UnknownMemberIdError' >/dev/null; then
+    echo "AC6 FAIL: UnknownMemberIdError present after the rebuild" >&2; exit 1
+  fi
+  echo "AC6 PASS"
+  PROBE
+commit_sha: 4ec159dbdea82841a6f0ab37dcc4e91365708ecc
+contract_entry_sha256: sha256:0f901774ea138ac53ec049dcc697720b65fb661dff3b3ae8bde9aac3e59a84db
+contract_sha256: sha256:44f9cb46b113ed1f4bb436fe9af31c24bdb7a78ec558a2b08e3aaa5edad6f307
+evidence_item_id: ac6-lane-recovered-live-omn15504
+exit_code: 0
+probe_command: |
+  repos/OmniNode-ai/omnimarket/commits/4ec159dbdea82841a6f0ab37dcc4e91365708ecc
+  ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 'bash -s' <<'PROBE'
+  set -euo pipefail
+  TOPIC='onex.cmd.omnimarket.delegate-skill.v1'
+  LIVE="local.omnimarket.node_delegate_skill_orchestrator.consume.1.2.0.__i.runtime-effects.__t.${TOPIC}"
+  RETIRED="local.omnimarket.node_delegate_skill_orchestrator.consume.1.1.0.__i.runtime-effects.__t.${TOPIC}"
+  RPK_USER=$(docker exec omninode-runtime-effects printenv KAFKA_SASL_USERNAME </dev/null)
+  RPK_PASS=$(docker exec omninode-runtime-effects printenv KAFKA_SASL_PASSWORD </dev/null)
+  RPK_SASL_MECHANISM=$(docker exec omninode-runtime-effects printenv KAFKA_SASL_MECHANISM </dev/null)
+  export RPK_USER RPK_PASS RPK_SASL_MECHANISM
+  rpkx(){ docker exec -e RPK_USER -e RPK_PASS -e RPK_SASL_MECHANISM omnibase-infra-redpanda rpk "$@" </dev/null; }
+  # Every grep here uses -c with stdout discarded, never -q: -q closes the pipe
+  # early, rpk takes SIGPIPE, and under `pipefail` that is exit 141 -- a false
+  # RED that looks exactly like a finding. Measured on this very check.
+  has(){ grep -cE "$1" >/dev/null; }
+  drained(){ awk -v t="$TOPIC" '$1==t{seen=1;ok=($3==$5 && $6==0)} END{exit !(seen&&ok)}'; }
+  test "$(rpkx topic list | grep -c .)" -gt 100
+  D=$(rpkx group describe "$LIVE")
+  printf '%s\n' "$D" | has '^STATE +Stable'
+  printf '%s\n' "$D" | has '^MEMBERS +[1-9]'
+  printf '%s\n' "$D" | drained
+  sleep 90
+  D=$(rpkx group describe "$LIVE")
+  printf '%s\n' "$D" | drained
+  rpkx group describe "$RETIRED" | awk -v t="$TOPIC" '$1==t{seen=1;ok=($3>317)} END{exit !(seen&&ok)}'
+  L=$(docker logs omninode-runtime-effects </dev/null 2>&1)
+  printf '%s\n' "$L" | has 'Joined group|OffsetCommit|delegate-skill'
+  if printf '%s\n' "$L" | grep -c 'UnknownMemberIdError' >/dev/null; then
+    echo "AC6 FAIL: UnknownMemberIdError present after the rebuild" >&2; exit 1
+  fi
+  echo "AC6 PASS"
+  PROBE
+probe_stdout: AC6 PASS
+run_timestamp: '2026-09-17T10:24:54Z'
+runner: claude:opus5:subagent lane=omn15504-ingress-backpressure-build-0923
+schema_version: 1.0.0
+status: PASS
+ticket_id: OMN-15504
+verifier: lane-executed probe, declared check run verbatim
+working_dir: null
