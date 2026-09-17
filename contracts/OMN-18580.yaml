@@ -1,0 +1,67 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18580"
+title: "A superseded CI run must not hold its own concurrency group"
+summary: >
+  A job-level `if: always()` runs even when the workflow has been cancelled, so with `cancel-in-progress:
+  true` a superseded run stays in_progress for that job's full duration and GitHub will not start the
+  successor while the group is occupied. Measured on three OCC autobind companions on 2026-09-17, the
+  successor's first job starting 3-4 seconds after the superseded run's `Pre-commit` finished each time:
+  OCC#10006 9m07s, OCC#10038 14m17s, OCC#10039 16m10s. This contract covers the cancellation half only.
+  It deliberately binds NO acceptance criterion: OMN-18580's AC1-AC5 are about `CI Summary` polling, failing
+  closed and not re-evaluating once its inputs resolve, and none of them is met by this change. The evidence
+  closer therefore holds the ticket open on all five, which is the correct outcome.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "The onex_change_control PR's own checks are green."
+    command: "gh pr checks ${PR_NUMBER} --repo OmniNode-ai/onex_change_control"
+  - kind: "tests"
+    description: >-
+      The cancellation ratchet, written RED first: 2 failed / 1 passed against the unmodified workflows,
+      5 passed after. It scans every workflow in the repo and validates its own exemption set against
+      `.github/required-checks.yaml`.
+    command: "uv run pytest tests/ci/test_cancellation_is_honored_omn18580.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-omn18580-stall-job-honors-cancellation"
+    description: >-
+      The job that held the group is guarded. `ci.yml`'s `pre-commit` was the longest job in the workflow
+      and the entire measured delay; it now carries `!cancelled()` instead of a leading `always()`. The
+      check reads the landed file and counts the guard, so it fails closed if the guard is removed.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run python -c "import yaml,sys; c=str(yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['pre-commit']['if']); sys.exit(0 if '!cancelled()' in c and 'always()' not in c else 1)"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-omn18580-required-context-unweakened"
+    description: >-
+      The fail-closed direction, and the reason the remedy stops where it does. A job whose `if:` goes
+      false reports `skipped`, and branch protection counts a skipped REQUIRED check as PASSING, where
+      a cancelled job reports `cancelled` and blocks. So `ci-summary` keeps `always()` -- this repo's
+      own `reject-required-check-skip-vector` guard refused the change and the refusal was taken rather
+      than routed around -- and `pre-commit`'s guard is scoped to the dev arm because the manifest records
+      `Pre-commit` as required on `main`. The check asserts both halves against the landed files.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run python -c "import yaml,sys; w=yaml.safe_load(open('.github/workflows/ci.yml')); c=' '.join(str(w['jobs']['pre-commit']['if']).split()); a=str(w['jobs']['ci-summary']['if']); m=yaml.safe_load(open('.github/required-checks.yaml')); req={(g.get('workflow'),(g.get('job_path') or [None])[0]) for g in m['gates'] if g.get('mode')=='REQUIRED'}; arm=\"(github.event_name != 'pull_request' || github.base_ref != 'dev')\"; sys.exit(0 if a=='always()' and ('ci.yml','ci-summary') in req and ('ci.yml','pre-commit') in req and arm in c and c.index(arm) < c.index('!cancelled()') else 1)"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-omn18580-ratchet-is-enforced"
+    description: >-
+      The ratchet runs over every workflow in the repository, not only the files this change touched,
+      and its exempt set is validated against `.github/required-checks.yaml` rather than taken on trust
+      -- so it cannot grow by someone adding a name to it. Five tests, RED first at 2 failed / 1 passed.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/ci/test_cancellation_is_honored_omn18580.py -q
+        cwd: "${OMNI_HOME}/onex_change_control"
