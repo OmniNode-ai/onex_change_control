@@ -63,13 +63,12 @@ dod_evidence:
           -q --no-cov -p no:cacheprovider
   - id: "dod-occ-main-requires-codeowner-review"
     description: >-
-      Live REST API readback of the enforcement surface itself, which is the only evidence OMN-17437 AC-1
+      Live GraphQL readback of the enforcement surface itself, which is the only evidence OMN-17437 AC-1
       accepts (a settings-page screenshot is explicitly rejected). Reads the `main` branch-protection
-      object and errors unless its `required_pull_request_reviews` member reports `require_code_owner_reviews:
-      true`, `dismiss_stale_reviews: true` and `required_approving_review_count: 0`. This uses the full
-      REST protection readback instead of the GraphQL `branchProtectionRules` surface or the narrower
-      review-rule subresource, which are forbidden to the PR workflow App token and would make the proof
-      depend on a local human token. It goes RED against the pre-change state, which returned `require_code_owner_reviews:
+      rule and errors unless it reports `requiresCodeOwnerReviews: true`, `dismissesStaleReviews: true`
+      and `requiredApprovingReviewCount: 0`. This uses GraphQL `branchProtectionRules` because the full
+      REST protection readback is forbidden to the PR workflow App token and would make the proof depend
+      on a local human token. It goes RED against the pre-change state, which returned `requiresCodeOwnerReviews:
       false`. The PUT was built by round-tripping the captured BEFORE object so the whole-resource replace
       could not silently drop an existing control; all 23 required status-check contexts, `enforce_admins`,
       `required_linear_history` and `required_conversation_resolution` are byte-identical across the change
@@ -88,7 +87,10 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: >-
-          gh api repos/OmniNode-ai/onex_change_control/branches/main/protection --jq 'if (.required_pull_request_reviews.require_code_owner_reviews
-          == true and .required_pull_request_reviews.dismiss_stale_reviews == true and .required_pull_request_reviews.required_approving_review_count
-          == 0) then "PASS" else error("onex_change_control@main does not require code-owner review on
-          CODEOWNERS-covered paths") end'
+          gh api graphql -f owner=OmniNode-ai -f name=onex_change_control -f query='query($owner:String!,
+          $name:String!) { repository(owner:$owner, name:$name) { branchProtectionRules(first:20) { nodes
+          { pattern requiresCodeOwnerReviews dismissesStaleReviews requiredApprovingReviewCount } } }
+          }' --jq '.data.repository.branchProtectionRules.nodes[] | select(.pattern == "main") | if (.requiresCodeOwnerReviews
+          == true and .dismissesStaleReviews == true and .requiredApprovingReviewCount == 0) then "PASS"
+          else error("onex_change_control@main does not require code-owner review on CODEOWNERS-covered
+          paths") end'
