@@ -2037,6 +2037,53 @@ jobs:
       - name: Contamination-ratchet CI wiring is intact (anti-removal anchor)
         run: uv run python scripts/validation/check_yamlfmt_contamination.py --check-wiring
 
+  expiring-dod-check-gate:
+    name: Expiring DoD Check Gate (OMN-18641)
+    # OMN-18641. A check that fetches an artifact at a PINNED sha and then
+    # asserts that artifact is recent RELATIVE TO NOW is true the day it is
+    # authored and false forever after. The sha cannot change, so the artifact
+    # cannot get newer, so the predicate can only rot -- and no action anywhere
+    # restores it.
+    #
+    # contracts/OMN-13034.yaml carried three such pairs. On 2026-09-17 the
+    # newest crossed its seven-day horizon and took Contract Compliance Check to
+    # 2/17 PASS, 13 WARN, 2 BLOCK, which blocked every OCC companion bound to
+    # that ticket -- killing omnibase_infra#3726 and every successor it would
+    # have had. The contract's own prose shows the shape was accepted rather
+    # than missed: "each refresh of the census must re-point this probe at its
+    # own head". That is a treadmill, and this gate is what ends it.
+    #
+    # WIRED AS ENFORCEMENT, NOT DETECTION (rule 5). Refusing the shape at
+    # authoring time tells a human who is present; finding it later surfaces as
+    # a red gate on somebody else's unrelated PR a week afterwards.
+    #
+    # UNCONDITIONAL BY DESIGN, matching the ratchets above: no needs:, no if:,
+    # no paths filter. The whole corpus is scanned because a contract that is
+    # not touched by this PR can still have expired since the last one.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: No DoD check expires by construction, across the whole corpus
+        run: uv run python scripts/validation/check_expiring_dod_checks.py
+      - name: Gate RED/GREEN controls, including the two allowed pinned shapes
+        run: |
+          uv run pytest \
+            tests/test_expiring_dod_checks_omn18641.py \
+            -q -p no:randomly
+
   supersession-binding-ratchet:
     name: Supersession Binding Ratchet (OMN-15459)
     # OMN-15459. Supersession is the REPAIR primitive of an append-only receipt
