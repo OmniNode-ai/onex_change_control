@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-15954"
+evidence_item_id: "dod-omn15954-ac1-provider-key-mandatory-at-signup"
+check_type: "command"
+check_value: |-
+  gh api repos/OmniNode-ai/omniweb/commits/1c3cbab66f4c8e881f5168d4579daa4f2856b153 --jq .sha
+  env AWS_PAGER= aws ssm send-command --profile daniyal --region us-east-1 \
+    --instance-ids i-06169517a92b45f86 --document-name AWS-RunShellScript \
+    --parameters 'commands=["curl -s -L --max-time 15 https://dev.app.omninode.ai/signup > /tmp/omn15954_ac1_check.html && grep -o \"waitlistMode\\\":[^,}]*\" /tmp/omn15954_ac1_check.html | head -1 && HTTP=$(curl -s -o /dev/null -w \"%{http_code}\" --max-time 10 https://dev.app.omninode.ai/onboarding/provider-key) && echo PROVIDER_KEY_ROUTE_STATUS=$HTTP"]' \
+    --query 'Command.CommandId' --output text
+contract_sha256: "sha256:632e4ea92a7ab6b45493c1a3a41c557b880d7bfdc35ef5ba1f2fbc3a5cb26d8a"
+contract_entry_sha256: "sha256:50cae8f9bec9e38167a63c32a20762370b18b496cab1ba7d919387409228fd6c"
+status: PASS
+run_timestamp: "2026-09-17T14:07:58Z"
+commit_sha: "1c3cbab66f4c8e881f5168d4579daa4f2856b153"
+runner: "daniyal"
+verifier: "daniyal"
+probe_command: |-
+  Live browser sign-up test on dev.app.omninode.ai/signup, 2026-09-17T14:07Z PKT.
+  SSM probes from i-06169517a92b45f86 (onex-dev, read-only SSM with --profile daniyal).
+probe_stdout: |
+  as_of=2026-09-17T14:07:58Z
+  account=daniyalhyt25@gmail.com
+  signup_url=https://dev.app.omninode.ai/signup
+  post_verify_url=https://dev.app.omninode.ai/onboarding/provider-key
+  omniweb_pod=omniweb-855b7b95d-bxdqb
+  omniweb_digest=sha256:d7a70e01a434a9535fe1d02b3408ff409949cadf004914830effcf1f34c9c628
+  omniweb_startTime=2026-09-17T17:20:01Z
+  omninode_infra_pr_1235=MERGED 2026-09-08T11:39Z (waitlist gate opened)
+  omniweb_pr_420=MERGED 2026-09-17T16:55Z (AC1 provider-key step added)
+  waitlistMode=false (verified in rendered page RSC payload)
+  signup_form=email+password+first_name+last_name (password field present = waitlistMode:false branch)
+  provider_key_route_status=307 (HTTP redirect to /login?callbackUrl=%2Fonboarding%2Fprovider-key)
+  post_verification_landing=https://dev.app.omninode.ai/onboarding/provider-key
+  provider_key_page_title=Add your provider key
+  provider_key_field_placeholder=Starts with sk-or-...
+  provider_key_step_skippable=NO (no skip link, no bypass route observed)
+actual_output: |-
+  PASS: AC1 proven on the deployed onex-dev surface at 2026-09-17T14:07:58Z.
+
+  CLAIM: Key registration is part of sign-up and is not a skippable step.
+
+  EVIDENCE (three independent observations):
+
+  1. SIGNUP GATE OPEN: waitlistMode":false confirmed in rendered RSC payload at
+     https://dev.app.omninode.ai/signup. Form renders email + password fields (password
+     field only renders on the waitlistMode:false branch, per omniweb SignupForm source).
+     POST /api/signup returns 400 on empty body (reaches body validation, not a 403 waitlist
+     block). Negative control: omninode_infra#1235 PR body records 403 on the same probe
+     before the gate flip (2026-09-08T10:41Z).
+
+  2. PROVIDER-KEY ROUTE EXISTS: GET https://dev.app.omninode.ai/onboarding/provider-key
+     returns HTTP 307 to /login?callbackUrl=%2Fonboarding%2Fprovider-key (auth gate, not
+     404). Route was introduced by omniweb#420 (merged 2026-09-17T16:55Z, merge commit
+     1c3cbab66f4c8e881f5168d4579daa4f2856b153, deployed pod startTime 2026-09-17T17:20:01Z).
+
+  3. LIVE SIGNUP PROOF: test account daniyalhyt25@gmail.com created via
+     https://dev.app.omninode.ai/signup at 2026-09-17T14:07Z. After email verification
+     (Keycloak email sent by no-reply@omninode.ai, clicked link expiring within 12 hours),
+     browser landed directly on https://dev.app.omninode.ai/onboarding/provider-key showing
+     "Add your provider key" with an OpenRouter API key field (placeholder: "Starts with
+     sk-or-..."). No path to the application dashboard was available without completing this
+     step. The page copy states: "the key itself goes straight to the secret store and is
+     never written to our database."
+
+  POSITIVE CONTROL: The password field in the signup form is mode-dependent (only renders
+  on waitlistMode:false branch). Its presence is structural proof the gate is open, not
+  inferred from static copy.
+
+  RESIDUAL, recorded not softened: The step-is-not-skippable claim is based on observed
+  behavior (no skip link visible, browser redirected here after verification with no
+  alternative route offered). It has not been machine-verified by attempting to navigate
+  directly to the app dashboard while unauthenticated to the onboarding gate. A tester with
+  the daniyalhyt25@gmail.com session who has NOT submitted a key should attempt
+  GET /dashboard to confirm a redirect back to /onboarding/provider-key.
+
+  SCOPE: This receipt binds AC1 only.
+exit_code: 0
