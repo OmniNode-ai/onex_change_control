@@ -344,3 +344,60 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9741 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # OMN-10856 AC5 load-and-drain harness, authored 2026-09-17.
+  # Companion for omninode_infra#1541.
+  #
+  # NOTHING HERE BINDS AC5, DELIBERATELY. AC5 is settled by measuring a running
+  # system -- "consumer group lag returns to zero under test load" -- and every
+  # check below reads the repository tree or a receipt. The OMN-18577
+  # static-to-live proof-class rule refuses exactly that pairing, and it is
+  # right to: a pytest proves the harness decides correctly, never that lag
+  # drained on onex-dev. Ticking AC5 is the ticket owner's call and needs its
+  # Evidence-citations entry, not a binding minted here.
+  #
+  # WHAT THIS COMPANION DOES CARRY. The 2026-09-15 AC5 NOT MET note named the
+  # gap precisely: `scripts/msk_consumer_group_health_check.py` "measures lag
+  # and can enforce --require-zero-lag, but generates no load; it is a
+  # drain-verifier, not a load generator", and "no raw producer was used and no
+  # live publish was attempted". #1541 closes both. These items prove the
+  # harness exists and decides correctly, and record the live run that was
+  # taken with it.
+  # ---------------------------------------------------------------------------
+  - id: "dod-omn10856-ac5-harness-decides-correctly"
+    description: |-
+      The load-and-drain mode's decision logic, against protocol-shaped fakes
+      with a test-driven clock -- no test sleeps and none needs a cluster.
+      Six cases: a drain inside the bound passes; the load half actually
+      publishes N records to the named topic (a drain with no publish would
+      pass vacuously); lag still present at the bound is exit 1, measured and
+      failing rather than unknown; a topic no group consumes refuses at exit 2
+      rather than reading zero lag as a drain; the report carries the OMN-13363
+      caveat that a drain proves consumption and not work; and the stated bound
+      plus every poll appear in the record, so "within a stated bound" is
+      checkable rather than asserted.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/scripts/test_msk_load_and_drain_omn10856_ac5.py -q --no-cov -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omninode_infra"
+  - id: "dod-omn10856-ac5-live-drain-observed"
+    description: |-
+      The live run, recorded because CI cannot re-perform it: the harness runs
+      by `kubectl exec` inside a runtime pod on onex-dev over that pod's own
+      IAM-SASL identity, which no hosted runner can reach. Per the OMN-14051
+      non-hermetic rule the probe is run out of band and its receipt is what
+      CI reads. Two runs on 2026-09-17 against
+      `onex.evt.omnimarket.node-generation-completed.v1`: baseline 0, 10
+      published, observed peak 10 (== published, the positive control that the
+      publish landed and was visible), final 0, drained in 5.123s and 5.168s
+      against a stated 120s bound. This records a measurement; it does not
+      declare AC5 met.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-10856/dod-omn10856-ac5-live-drain-observed/command.yaml"
