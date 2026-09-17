@@ -1117,6 +1117,30 @@ def test_commit_sha_cross_repo_hint_resolves_passes() -> None:
     assert queried_repos == ["OmniNode-ai/omnimarket"]
 
 
+def test_commit_sha_rsd_hint_resolves_against_rsd() -> None:
+    """GREEN — OMN-18426: a cited RSD commit resolves in RSD, not in OCC."""
+    real_rsd_sha = FULL_REMOTE_SHA
+    resolver, queried_repos = _recording_commit_resolver(
+        {
+            ("OmniNode-ai/RSD", real_rsd_sha): 200,
+        }
+    )
+    receipt = _receipt_model(
+        commit_sha=real_rsd_sha,
+        probe_command=(
+            "gh api repos/OmniNode-ai/RSD/contents/.pre-commit-config.yaml"
+            f"?ref={real_rsd_sha} --jq .content"
+        ),
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        resolver,
+        [],
+    )
+    assert violations == []
+    assert queried_repos == ["OmniNode-ai/RSD"]
+
+
 def test_product_authority_404_is_missing_without_occ_fallback() -> None:
     receipt = _receipt_model(
         commit_sha=FULL_REMOTE_SHA,

@@ -992,6 +992,10 @@ _KNOWN_REPO_HINTS: frozenset[str] = frozenset(
         "omnicrush",
         "omninode_bridge",
         "omnicursor",
+        # OMN-18426: RSD carries org hook config and its PRs get hand-authored
+        # OCC companions; without it a real RSD commit_sha resolves against
+        # onex_change_control and reads as fabricated.
+        "RSD",
     )
 ) | frozenset({"jonahgabriel/steel_onslaught"})
 

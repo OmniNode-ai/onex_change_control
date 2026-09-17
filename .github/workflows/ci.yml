@@ -149,7 +149,45 @@ jobs:
     # STRICT_GATE_JOBS in scripts/ci/ci_summary_gate.py (not
     # SKIPPABLE_GATE_JOBS), so a `skipped` conclusion -- for either reason --
     # already fails `CI Summary` closed; no change to that file was needed.
-    if: always() && (github.event_name != 'pull_request' || github.base_ref != 'dev' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci:ready'))
+    #
+    # OMN-18580 -- `!cancelled()`, NOT `always()`. This job is the longest in
+    # the workflow (9-16 minutes measured on 2026-09-17) and `always()` is
+    # documented to run a job even when the workflow has been CANCELLED. With
+    # `cancel-in-progress: true` above, a superseded run therefore stayed
+    # `in_progress` for this job's full duration, and GitHub will not start
+    # the successor while the concurrency group is held -- so the run on the
+    # head sha sat at `status=pending` with ZERO jobs created for that whole
+    # time. Measured on three OCC autobind companions in one day, each time
+    # with the successor's first job starting 3-4 seconds after this job
+    # finished on the superseded run: OCC#10006 9m07s, OCC#10038 14m17s,
+    # OCC#10039 16m10s. `!cancelled()` is identical to `always()` on every run
+    # that is not cancelled -- same behaviour on success, failure and skip of
+    # everything in `needs:` -- so the admission gate below is untouched; the
+    # only run whose behaviour changes is one that has already been superseded
+    # and whose result nobody will read. Pinned by
+    # tests/ci/test_cancellation_is_honored_omn18580.py. The `${{ }}` wrapper
+    # is required, not cosmetic: a bare leading `!` is YAML's tag indicator,
+    # so `if: !cancelled() && ...` is a parse error rather than a condition.
+    #
+    # THE GUARD IS SCOPED TO THE DEV ARM ON PURPOSE. A job whose `if:` goes
+    # false reports `skipped`, and GitHub branch protection counts a skipped
+    # REQUIRED check as PASSING -- where a cancelled job reports `cancelled`
+    # and blocks. `.github/required-checks.yaml` records `Pre-commit` as a
+    # required context on `main` (`branch: main`), so an unscoped guard would
+    # convert a blocking signal into a passing one there. Scoped like this the
+    # two arms are:
+    #   * push / merge_group / main- or hotfix-targeting PR -- unchanged, the
+    #     job runs exactly as it does today, cancellation included, so the
+    #     promotion-boundary guarantee root CLAUDE.md rule 4 asks for is intact;
+    #   * dev-targeting PR -- the job is skipped on a CANCELLED run only. That
+    #     cannot silent-pass either: `CI Summary` is the single required
+    #     context on `dev`, it carries `Pre-commit` in STRICT_GATE_JOBS (not
+    #     SKIPPABLE_GATE_JOBS), and it fails closed on a `skipped` conclusion.
+    # For any run that is NOT cancelled the whole expression is identical to
+    # the `always() && (A || B || C || D)` it replaces: `(A || B) || (C || D)`.
+    if: >-
+      ${{ (github.event_name != 'pull_request' || github.base_ref != 'dev')
+        || (!cancelled() && (!github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'ci:ready'))) }}
     runs-on: >-
       ${{
         (github.event_name == 'pull_request' &&
@@ -455,10 +493,12 @@ jobs:
     needs: [zone-filter, test, contract-compliance]
     # Run when test was successful or skipped (zone-filter docs-only path).
     # Skip only when contract-compliance failed/cancelled or test outright failed.
-    if: |
-      always() && needs.zone-filter.outputs.docs_only != 'true'
+    # OMN-18580: `!cancelled()` rather than `always()` -- see the `pre-commit`
+    # job for the mechanism. Identical on every run that is not cancelled.
+    if: >-
+      ${{ !cancelled() && needs.zone-filter.outputs.docs_only != 'true'
         && needs.contract-compliance.result == 'success'
-        && (needs.test.result == 'success' || needs.test.result == 'skipped')
+        && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
@@ -2842,9 +2882,17 @@ jobs:
         # line from this workflow while the rule's own tests keep passing
         # somewhere nothing runs them.
         run: |
+          # OMN-18577 adds the proof-class rule (an item whose every check only
+          # reads the repository tree may not bind a criterion settled by
+          # measuring a running system) and the `supersedes_ac_binding`
+          # retirement, both inside this same gate. Its test file is named here
+          # for the same reason the two above are: one of its tests reads this
+          # very line out of ci.yml, so the rule cannot be unwired by deleting
+          # it while its own tests keep passing somewhere nothing runs them.
           uv run pytest \
             tests/test_omn_18236_ac_binding_acceptance.py \
             tests/test_omn_18333_binds_every_declared_criterion.py \
+            tests/test_omn_18577_static_evidence_on_live_criterion.py \
             -q -p no:randomly
       - name: Local pre-commit counterpart runs the SAME entrypoint (rule 5)
         run: |
@@ -2940,6 +2988,23 @@ jobs:
     # and polls this run's own job list (L1/L2/L3) plus the PR head's
     # commits/{sha}/check-runs (L4, cross-workflow contexts) until a terminal
     # verdict, converting PENDING to FAILURE at the deadline below.
+    # OMN-18580 -- THIS JOB DELIBERATELY KEEPS `always()`, and is the one
+    # exception to the ratchet in tests/ci/test_cancellation_is_honored_omn18580.py.
+    # `CI Summary` is a REQUIRED status context, and GitHub branch protection
+    # counts a SKIPPED required check as PASSING. So `!cancelled()` here would
+    # not merely silence a stale verdict -- it would mean that cancelling the
+    # run on a PR's head sha skips this job and the PR becomes mergeable with
+    # no CI evidence at all. That is a live silent-pass bypass and a strictly
+    # worse defect than the stall this ticket closes. The repo's own
+    # `reject-required-check-skip-vector` hook (OMN-15241) refuses the change,
+    # correctly, and the refusal was taken rather than worked around.
+    #
+    # Keeping `always()` here costs nothing against the stall: measured on the
+    # three superseded OCC autobind companion runs on 2026-09-17 this job
+    # concluded in 17s, 18s and 17s (13:40:33Z, 16:20:24Z, 16:23:30Z). The
+    # 9-16 minute hold was `pre-commit`, which is not a required context in
+    # its own right -- it is asserted by THIS job's STRICT_GATE_JOBS, which
+    # fails closed on a `skipped` conclusion, so gating it cannot silent-pass.
     if: always()
     timeout-minutes: 100
     # `checks: read` (OMN-16130) -- an explicit `permissions:` block sets every

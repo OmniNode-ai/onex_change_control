@@ -207,8 +207,14 @@ CORE_KNOWS_AC_BINDINGS = "ac_bindings" in ModelContractDodItem.model_fields
 
 _BINDS_AC_FIELD = "binds_ac"
 _AC_BINDINGS_FIELD = "ac_bindings"
+#: OMN-18577. Core has never carried this field, so it is always withheld.
+_AC_BINDING_RETIREMENT_FIELD = "supersedes_ac_binding"
 #: The OCC-local item fields core's model would refuse as unknown.
-_OCC_LOCAL_ITEM_FIELDS = (_BINDS_AC_FIELD, _AC_BINDINGS_FIELD)
+_OCC_LOCAL_ITEM_FIELDS = (
+    _BINDS_AC_FIELD,
+    _AC_BINDINGS_FIELD,
+    _AC_BINDING_RETIREMENT_FIELD,
+)
 
 
 def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
@@ -249,6 +255,9 @@ def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
         for field, core_knows in (
             (_BINDS_AC_FIELD, CORE_KNOWS_BINDS_AC),
             (_AC_BINDINGS_FIELD, CORE_KNOWS_AC_BINDINGS),
+            # Core carries no retirement field at any released version, so this
+            # one is unconditionally hidden from it.
+            (_AC_BINDING_RETIREMENT_FIELD, False),
         )
         if not core_knows
     )
