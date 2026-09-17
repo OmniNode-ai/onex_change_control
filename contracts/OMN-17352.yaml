@@ -27,6 +27,35 @@ emergency_bypass:
   justification: ""
   follow_up_ticket_id: ""
 dod_evidence:
+  - id: "write-path-hashes-and-never-inserts-plaintext"
+    description: |-
+      The hosted half, and the answer to the residual the probe could not settle. The probe proves what
+      is IN the store; this proves what the code PUTS there, at a pinned commit, from a runner with no
+      cluster access. It is deliberately not offered as the ticket's proof surface -- the ticket says a
+      code reading is not that -- but the substance floor requires one hosted, falsifiable, outside-its-
+      own-diff check, and a read of the write path in another repository at a pinned sha is exactly that.
+
+      Pinned at omninode_infra 618d99a6cf423b2c7e0994564dcc74bc4b7e5b60, docker/onex-api/auth_api_keys.py:
+
+      - `_hash_key` (line 174) is `hashlib.sha256(raw_key.encode("utf-8")).hexdigest()`. This settles the
+        residual both earlier runs disclosed: the digest is specifically SHA-256, which neither the
+        2026-09-08 nor the 2026-09-17 store read could establish from the stored bytes alone.
+      - `create_api_key` (line 291) computes the digest at line 319 and the file contains exactly ONE
+        `INSERT INTO tenant_api_keys`, at line 333, naming three columns: tenant_id, name, key_hash.
+        The plaintext key exists only as a local and is returned to the caller in the response; it is
+        never a bound parameter of an insert.
+
+      Both checks are fail-closed -- a failed content fetch yields an empty body and `grep -qF` exits
+      non-zero -- and both go RED the moment the hashing is weakened or a plaintext column is written.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_api_keys.py?ref=618d99a6cf423b2c7e0994564dcc74bc4b7e5b60' --jq '.content' | base64 -d | grep -qF 'hashlib.sha256(raw_key.encode("utf-8")).hexdigest()'
+      - check_type: "command"
+        check_value: |-
+          gh api 'repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_api_keys.py?ref=618d99a6cf423b2c7e0994564dcc74bc4b7e5b60' --jq '.content' | base64 -d | grep -qF 'INSERT INTO tenant_api_keys (tenant_id, name, key_hash)'
   - id: "store-read-recovers-no-usable-key-2026-09-17"
     description: |-
       The whole criterion, re-executed independently on 2026-09-17 by lane m4-stalled-carriers-triage-1415
