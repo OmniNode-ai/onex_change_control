@@ -63,17 +63,16 @@ dod_evidence:
           -q --no-cov -p no:cacheprovider
   - id: "dod-occ-main-requires-codeowner-review"
     description: >-
-      Live GraphQL API readback of the enforcement surface itself, which is the only evidence OMN-17437
-      AC-1 accepts (a settings-page screenshot is explicitly rejected). Queries the `main` branch-protection
-      rule and errors unless it reports `requiresCodeOwnerReviews: true`, `dismissesStaleReviews: true`,
-      `requiresApprovingReviews: true` and `requiredApprovingReviewCount: 0`. The REST `required_pull_request_reviews`
-      endpoint returns the same fields but requires branch-administration scope; the PR workflow token
-      cannot read it, so this check uses the GraphQL branch-protection surface the original investigation
-      used. It goes RED against the pre-change state, which returned `requiresCodeOwnerReviews: false`
-      and `requiresApprovingReviews: false`. The PUT was built by round-tripping the captured BEFORE object
-      so the whole-resource replace could not silently drop an existing control; all 23 required status-check
-      contexts, `enforce_admins`, `required_linear_history` and `required_conversation_resolution` are
-      byte-identical across the change and only `required_pull_request_reviews` was added. DIVERGENCE
+      Live REST API readback of the enforcement surface itself, which is the only evidence OMN-17437 AC-1
+      accepts (a settings-page screenshot is explicitly rejected). Reads the `main` branch-protection
+      required-pull-request-review rule and errors unless it reports `require_code_owner_reviews: true`,
+      `dismiss_stale_reviews: true` and `required_approving_review_count: 0`. This uses the REST surface
+      that the PR workflow token can read in CI; the GraphQL `branchProtectionRules` surface is forbidden
+      to that App token and would make the proof depend on a local human token. It goes RED against the
+      pre-change state, which returned `require_code_owner_reviews: false`. The PUT was built by round-tripping
+      the captured BEFORE object so the whole-resource replace could not silently drop an existing control;
+      all 23 required status-check contexts, `enforce_admins`, `required_linear_history` and `required_conversation_resolution`
+      are byte-identical across the change and only `required_pull_request_reviews` was added. DIVERGENCE
       FROM AC-1, STATED DELIBERATELY: `requiredApprovingReviewCount` is 0, not >= 1. A count of 1 is branch-wide
       and would additionally freeze routine non-governance traffic on main (migration inventory repairs,
       workflow backports) that no code owner owns, on a branch whose only writer is a one-member team.
@@ -88,10 +87,7 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: >-
-          gh api graphql -f owner=OmniNode-ai -f name=onex_change_control -f query='query($owner:String!,
-          $name:String!) { repository(owner:$owner, name:$name) { branchProtectionRules(first:100) { nodes
-          { pattern requiresApprovingReviews requiresCodeOwnerReviews requiredApprovingReviewCount dismissesStaleReviews
-          } } } }' --jq '.data.repository.branchProtectionRules.nodes[] | select(.pattern=="main") | if
-          (.requiresCodeOwnerReviews == true and .dismissesStaleReviews == true and .requiresApprovingReviews
-          == true and .requiredApprovingReviewCount == 0) then "PASS" else error("onex_change_control@main
-          does not require code-owner review on CODEOWNERS-covered paths") end'
+          gh api repos/OmniNode-ai/onex_change_control/branches/main/protection/required_pull_request_reviews
+          --jq 'if (.require_code_owner_reviews == true and .dismiss_stale_reviews == true and .required_approving_review_count
+          == 0) then "PASS" else error("onex_change_control@main does not require code-owner review on
+          CODEOWNERS-covered paths") end'
