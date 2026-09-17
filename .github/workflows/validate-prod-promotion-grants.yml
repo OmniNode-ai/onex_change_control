@@ -11,6 +11,23 @@
 #
 # Required-status-check name: `validate-grants / validate-prod-promotion-grants`
 # Wire via: Settings → Branches → dev → Require status checks → add the name above.
+#
+# OMN-18579: this inline validator is the grant schema AS ENFORCED ON `main`,
+# which is the branch grants are actually authored on and resolved from. `dev`
+# retired this workflow under OMN-14441 in favour of
+# `src/onex_change_control/scripts/validate_prod_promotion_grants.py`; that
+# module does not exist on this branch, so OMN-18566's `target_kind` arm did
+# not reach the authoring path and a manifest grant was unauthorable. The
+# schema below is ported from that module verbatim in meaning.
+#
+# The schema lives in two copies on this branch: here, and mirrored in
+# `tests/test_prod_promotion_grants.py` (run by the `test` job, which the
+# REQUIRED `CI Summary` context declares in `needs:`). That duplication is
+# pre-existing. It is now PINNED rather than merely noted:
+# `tests/test_prod_promotion_grants_manifest_kind.py` reads the module-level
+# constants below out of this heredoc with `ast` and asserts the mirror equals
+# them, so the two copies cannot silently disagree — which they already did,
+# over the OMN-13424 lifecycle markers.
 
 name: Validate Prod Promotion Grants
 
@@ -65,23 +82,69 @@ jobs:
           import yaml
 
           GRANT_FILE = "grants/prod_promotion_grants.yaml"
-          REQUIRED_FIELDS = {
+
+          # OMN-18566 / OMN-18579: the target kind. A grant authorizes ONE
+          # promotion, and there are two shapes it can take -- an image digest,
+          # or a rendered kustomize overlay. `image` is the DEFAULT precisely
+          # so that every entry written before this field existed keeps its
+          # exact meaning: absent target_kind IS target_kind: image,
+          # byte-for-byte, on both halves of the gate.
+          TARGET_KIND_IMAGE = "image"
+          DEFAULT_TARGET_KIND = "image"
+          VALID_TARGET_KINDS = {"image", "manifest"}
+
+          # Fields every grant carries, whatever it promotes.
+          COMMON_REQUIRED_FIELDS = {
               "grant_id",
               "runtime_lane",
-              "image_digest",
               "promotion_batch_id",
               "approved_by",
               "expires_at",
               "created_at",
               "reason",
           }
+          # Fields an `image` grant carries and a `manifest` grant must NOT.
+          IMAGE_REQUIRED_FIELDS = {"image_digest"}
+          # Fields a `manifest` grant carries and an `image` grant must NOT.
+          #
+          #   manifest_path     the kustomize overlay the promotion applies.
+          #   manifest_subtree  the repo-relative directory every file the
+          #                     overlay's kustomization tree references must lie
+          #                     under -- THE APPROVED BLAST RADIUS. Declared
+          #                     rather than derived from manifest_path because a
+          #                     real overlay reaches outside its own directory:
+          #                     k8s/data-plane/postgres/backup/overlays/public
+          #                     declares its only resource as `../../base`, so
+          #                     "everything under manifest_path" would refuse the
+          #                     very overlay this kind exists to authorize.
+          #                     manifest_path must lie inside it, segment-wise.
+          #   manifest_ref      the omninode_infra commit (full 40 lowercase hex)
+          #                     the overlay renders at. The dispatch-time gate
+          #                     refuses unless the checkout it is about to apply
+          #                     IS that commit.
+          #   rendered_digest   sha256 over the canonical render. The
+          #                     dispatch-time gate recomputes it and refuses on a
+          #                     mismatch; no caller can assert it.
+          #
+          # A manifest grant is NOT a lighter grant: the @main fetch, CODEOWNERS
+          # review, absolute expires_at, approved_by != requested_by at dispatch,
+          # single-use consumption and unique grant_id all apply identically.
+          MANIFEST_REQUIRED_FIELDS = {
+              "manifest_path",
+              "manifest_subtree",
+              "manifest_ref",
+              "rendered_digest",
+          }
           # OMN-13424 single-use lifecycle markers. OPTIONAL (absent == not
           # consumed); tolerated as extras so a consumed grant can carry its
-          # provenance before the prune job removes it.
+          # provenance before the prune job removes it. `target_kind` is
+          # optional in the same sense: it may be written out explicitly, and
+          # its absence means `image`.
           OPTIONAL_FIELDS = {
               "consumed",
               "consumed_at",
               "consumed_by_correlation_id",
+              "target_kind",
           }
           UUID_RE = re.compile(
               r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -89,6 +152,18 @@ jobs:
 
           GRANT_ID_RE = re.compile(r"^grant-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
           IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+          # Same shape as an image digest. Spelled separately so the two can
+          # diverge without one silently inheriting the other's rule.
+          RENDERED_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+          # A full 40-hex commit sha. An abbreviation is ambiguous and a branch
+          # name is not a commit -- a grant must name the exact tree the
+          # approver read.
+          MANIFEST_REF_RE = re.compile(r"^[0-9a-f]{40}$")
+          # A repo-relative kustomize path under `k8s/`. Anchored to `k8s/` so a
+          # grant cannot point at scripts, workflows or anything else in the
+          # repository, and segment-checked below so no `.` or `..` component
+          # can escape the tree.
+          MANIFEST_PATH_RE = re.compile(r"^k8s/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$")
           # ISO-8601 UTC: 2026-06-21T12:00:00Z or 2026-06-21T12:00:00+00:00
           ISO8601_RE = re.compile(
               r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$"
@@ -142,14 +217,46 @@ jobs:
                   errors.append(f"{prefix}: must be a mapping, got {type(entry).__name__}")
                   continue
 
+              # The two kinds' target fields are MUTUALLY EXCLUSIVE, not merely
+              # independently optional. A grant naming both an image digest and
+              # a manifest path describes two different promotions, and the
+              # dispatch-time gate would have to guess which one the approver
+              # meant.
+              kind = entry.get("target_kind", DEFAULT_TARGET_KIND)
+              if not isinstance(kind, str) or kind not in VALID_TARGET_KINDS:
+                  errors.append(
+                      f"{prefix}: target_kind must be one of "
+                      f"{sorted(VALID_TARGET_KINDS)}, got: {kind!r}. Omit it for "
+                      f"an image promotion; it defaults to {DEFAULT_TARGET_KIND!r}."
+                  )
+                  continue
+
+              if kind == TARGET_KIND_IMAGE:
+                  required = COMMON_REQUIRED_FIELDS | IMAGE_REQUIRED_FIELDS
+                  forbidden = MANIFEST_REQUIRED_FIELDS
+              else:
+                  required = COMMON_REQUIRED_FIELDS | MANIFEST_REQUIRED_FIELDS
+                  forbidden = IMAGE_REQUIRED_FIELDS
+
               present = set(entry.keys())
-              missing_fields = REQUIRED_FIELDS - present
-              extra_fields = present - REQUIRED_FIELDS - OPTIONAL_FIELDS
+              missing_fields = required - present
+              forbidden_present = forbidden & present
+              extra_fields = present - required - forbidden - OPTIONAL_FIELDS
               if missing_fields:
-                  errors.append(f"{prefix}: missing required fields: {sorted(missing_fields)}")
+                  errors.append(
+                      f"{prefix}: missing required fields for target_kind "
+                      f"{kind!r}: {sorted(missing_fields)}"
+                  )
+              if forbidden_present:
+                  errors.append(
+                      f"{prefix}: fields {sorted(forbidden_present)} do not "
+                      f"belong to a target_kind {kind!r} grant. The two kinds' "
+                      "target fields are mutually exclusive: one grant "
+                      "authorizes one promotion."
+                  )
               if extra_fields:
                   errors.append(f"{prefix}: unexpected fields: {sorted(extra_fields)}")
-              if missing_fields or extra_fields:
+              if missing_fields or forbidden_present or extra_fields:
                   continue
 
               # OMN-13424 optional lifecycle marker types.
@@ -176,11 +283,59 @@ jobs:
                       f"{prefix}: grant_id must match 'grant-<uuid4>', got: {gid!r}"
                   )
 
-              digest = entry["image_digest"]
-              if not isinstance(digest, str) or not IMAGE_DIGEST_RE.match(digest):
-                  errors.append(
-                      f"{prefix}: image_digest must match 'sha256:<64hex>', got: {digest!r}"
-                  )
+              if kind == TARGET_KIND_IMAGE:
+                  digest = entry["image_digest"]
+                  if not isinstance(digest, str) or not IMAGE_DIGEST_RE.match(digest):
+                      errors.append(
+                          f"{prefix}: image_digest must match 'sha256:<64hex>', got: {digest!r}"
+                      )
+              else:
+                  shape_errors = []
+                  for field in ("manifest_path", "manifest_subtree"):
+                      value = entry[field]
+                      if not isinstance(value, str) or not value.strip():
+                          shape_errors.append(
+                              f"{prefix}: {field} must be a non-empty string, got: {value!r}"
+                          )
+                      elif any(seg in {".", ".."} for seg in value.split("/")):
+                          shape_errors.append(
+                              f"{prefix}: {field} contains a '.' or '..' segment "
+                              f"({value!r}). A grant must name the exact tree the "
+                              "approver read; a relative segment lets an approved "
+                              "grant resolve somewhere else."
+                          )
+                      elif not MANIFEST_PATH_RE.match(value):
+                          shape_errors.append(
+                              f"{prefix}: {field} must be a repo-relative path "
+                              f"under 'k8s/' with no leading or trailing slash, "
+                              f"got: {value!r}"
+                          )
+                  ref = entry["manifest_ref"]
+                  if not isinstance(ref, str) or not MANIFEST_REF_RE.match(ref):
+                      shape_errors.append(
+                          f"{prefix}: manifest_ref must be a full 40-character "
+                          f"lowercase hex commit sha, got: {ref!r}. An "
+                          "abbreviation is ambiguous and a branch name is not a "
+                          "commit."
+                      )
+                  rendered = entry["rendered_digest"]
+                  if not isinstance(rendered, str) or not RENDERED_DIGEST_RE.match(rendered):
+                      shape_errors.append(
+                          f"{prefix}: rendered_digest must match 'sha256:<64hex>', got: {rendered!r}"
+                      )
+                  if not shape_errors:
+                      # Segment-wise, not startswith: `k8s/a/backup-other`
+                      # starts with `k8s/a/backup` and is NOT inside it.
+                      path = entry["manifest_path"]
+                      subtree = entry["manifest_subtree"]
+                      if not (path == subtree or path.startswith(subtree + "/")):
+                          shape_errors.append(
+                              f"{prefix}: manifest_path {path!r} does not lie "
+                              f"inside manifest_subtree {subtree!r}. The subtree "
+                              "is the approved blast radius; a path outside it "
+                              "describes a promotion the approver did not bound."
+                          )
+                  errors.extend(shape_errors)
 
               # Validate timestamp fields and enforce expires_at > created_at
               ts_parsed: dict[str, datetime | None] = {}

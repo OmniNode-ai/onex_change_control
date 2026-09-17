@@ -1,0 +1,143 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18579"
+title: "occ main: bring the OMN-18566 non-image target kind to the branch grants are authored on, and
+  pin the two copies of the schema against drift"
+summary: >
+  OMN-18566 added `target_kind: image | manifest` to the prod-promotion grant in two places: the dispatch-time
+  gate in omninode_infra (#1524, squash a5d95fa24a25b25f33e5b86f1b09093758e6ae16) and the onex_change_control
+  DEV validator module (#9977, squash a40877eae47d46684458ded78483ee29b644f3ad). Neither reaches the branch
+  a grant is actually authored on. Grants are resolved from `@main`, and they are authored by `hotfix/*`
+  PRs targeting `main` directly — `main-target-guard.yml` admits exactly two head shapes, `dev` with a
+  promotion receipt and `hotfix/*` with hotfix-evidence and backmerge lines — and the last fifteen main-targeting
+  PRs are all of the second shape. `main` is not release-synced; this repo has no `release.yml` at all.
+  Via the API, `compare/main...dev` reports `status: diverged`, `ahead_by: 6723`, `behind_by: 90`. On
+  `main` the grant schema lives in TWO copies, and `src/onex_change_control/scripts/validate_prod_promotion_grants.py`
+  — the module OMN-18566 edited, and the module `omni_home/CLAUDE.md` rules 2a and 12 cite as the authoring-time
+  control — is NOT one of them, because it does not exist on this branch. The copies are the inline heredoc
+  validator in `.github/workflows/validate-prod-promotion-grants.yml`, and the mirror of its constants
+  in `tests/test_prod_promotion_grants.py`, which the `test` job runs and which `ci-summary` (the REQUIRED
+  `CI Summary` context) declares in `needs:`. So a manifest grant was refused twice here and could not
+  be authored at all, holding OMN-18493's public-cluster Postgres backup overlay and OMN-16753. This change
+  ports the schema to both copies verbatim in meaning, and adds the drift test the two-copy arrangement
+  has never had: it reads the workflow's own module-level constants out of the heredoc with `ast` and
+  asserts the mirror equals them. That test immediately found a live disagreement — the workflow has tolerated
+  the OMN-13424 `consumed*` lifecycle markers since that ticket and the mirror never did, so a consumed
+  grant written to the anchor would have passed `validate-prod-promotion-grants` and failed the required
+  `CI Summary`. Nothing is weakened: an entry with no `target_kind` validates exactly as before, the two
+  kinds' target fields are mutually exclusive, unknown fields are still refused, and no grant is authored,
+  approved or consumed by this change. No prod, stability or judge mutation; no cluster is contacted;
+  branch protection is not touched.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "Both copies of main's prod-promotion grant schema accept a well-formed manifest grant,
+      refuse every field-mix error by name, leave image entries unchanged in meaning, and cannot drift
+      apart without a red test."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-manifest-kind-accepted-on-main"
+    description: >-
+      Falsifiable behavioural assertion over this branch's own tree. `tests/test_prod_promotion_grants_manifest_kind.py`
+      exercises the schema mirror on a manifest grant shaped like the real OMN-18493 overlay and asserts:
+      a well-formed manifest entry validates; an unknown `target_kind` is refused naming the field; a
+      `manifest_path` outside its declared `manifest_subtree` is refused naming the subtree; the subtree
+      bound is SEGMENT-WISE, so a sibling directory sharing a name prefix (`.../backup-other` against
+      `.../backup`) does not count as inside it; a path outside `k8s/` is refused; a `.`/`..` segment
+      is refused; an abbreviated commit sha and a branch name are both refused as `manifest_ref`; and
+      a malformed `rendered_digest` is refused naming the field. Each refusal test is paired with the
+      positive control `test_the_real_public_overlay_is_inside_its_declared_subtree`, so a validator that
+      refused everything could not pass this set. Mutual exclusion is asserted in both directions and
+      per field: a manifest grant carrying `image_digest` is refused, an image grant carrying any one
+      of the four manifest fields is refused, and a manifest grant missing any one of its four fields
+      or any one of the seven common fields is refused with that field NAMED rather than with a generic
+      failure. RED->GREEN captured locally, without touching the working tree: `origin/main`'s inline
+      validator was extracted from `git show origin/main:.github/workflows/validate-prod-promotion-grants.yml`
+      into a scratch file and run against a fixture carrying the well-formed manifest grant — it exits
+      1 with "missing required fields: ['image_digest']" and "unexpected fields: ['manifest_path', 'manifest_ref',
+      'manifest_subtree', 'rendered_digest', 'target_kind']"; the post-change validator exits 0 on the
+      same byte-identical fixture. The pre-change mirror produced the same two errors.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_prod_promotion_grants_manifest_kind.py tests/test_prod_promotion_grants.py
+          -q --no-cov -p no:cacheprovider
+  - id: "dod-image-entries-unchanged-on-main"
+    description: >-
+      The default is the whole reason an optional field is safe here, so it is asserted rather than argued.
+      `TestImageEntriesAreUnchangedInMeaning` asserts that an entry with no `target_kind` validates (it
+      IS an image grant), that spelling `target_kind: image` out changes nothing, that `image_digest`
+      stays required for an image grant, that a manifest entry sitting in the same anchor does not change
+      an image entry's verdict, and — as the positive control that the schema was widened and not opened
+      — that an unrelated unknown field is still refused. The live anchor on this branch is `entries:
+      []` at rest and still validates. Verified against the workflow's own inline validator too, not only
+      the mirror: the heredoc was extracted and run against a fixture carrying an image grant with no
+      `target_kind` (exit 0), an image grant carrying `manifest_path` (exit 1, naming `manifest_path`),
+      and the live anchor file itself (exit 0, "entries: [] at rest").
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_prod_promotion_grants_manifest_kind.py::TestImageEntriesAreUnchangedInMeaning
+          tests/test_prod_promotion_grants.py::TestGrantSchemaValidation -q --no-cov -p no:cacheprovider
+  - id: "dod-schema-copies-cannot-drift"
+    description: >-
+      `main` keeps the grant schema in two copies and always has; OMN-14441 retired that duplication on
+      `dev` by moving the schema into one module, and that module does not exist here. Rather than leave
+      the duplication governed by convention, `TestTheTwoCopiesOfTheSchemaDoNotDrift` reads the workflow's
+      module-level constants — COMMON_REQUIRED_FIELDS, IMAGE_REQUIRED_FIELDS, MANIFEST_REQUIRED_FIELDS,
+      OPTIONAL_FIELDS, VALID_TARGET_KINDS — out of the PYEOF heredoc with `ast.literal_eval` and asserts
+      each equals the mirror's. It is read with `ast` and never `exec`, because the heredoc runs the whole
+      validation at import time and executing it here would validate the live anchor as a side effect
+      of a schema test. The heredoc is located through the PARSED workflow YAML rather than off the raw
+      file, so a change to the surrounding workflow shape cannot silently make the test read nothing,
+      and `test_the_reader_finds_a_real_heredoc` is the positive control that fails if the parse comes
+      back short — without it every constant assertion would pass vacuously on an empty read. This test
+      found a REAL pre-existing disagreement on its first run: the workflow has tolerated the OMN-13424
+      `consumed`/`consumed_at`/`consumed_by_correlation_id` lifecycle markers since that ticket, and the
+      mirror carried no optional set at all, so a consumed grant in the anchor would have passed `validate-prod-promotion-grants`
+      and failed the `test` job, turning the required `CI Summary` red for a shape the anchor's own validator
+      declares legal. Measured directly before the fix: the mirror returned "Entry[0]: unexpected fields:
+      ['consumed', 'consumed_at', 'consumed_by_correlation_id']" on an entry the workflow accepts. The
+      mirror now carries the optional set and the lifecycle type checks, and this test pins the agreement.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_prod_promotion_grants_manifest_kind.py::TestTheTwoCopiesOfTheSchemaDoNotDrift
+          -q --no-cov -p no:cacheprovider
+  - id: "dod-main-migration-inventory-resync"
+    description: >-
+      Blocker found by running this PR's own CI rather than reasoned about: `Migration Inventory Sync`
+      is a REQUIRED context on `main` and was already red before this branch, for five migrations that
+      exist in sibling repos and are absent from main's inventory -- omnibase_infra `docker/migrations/forward/105_create_ledger_chain.sql`
+      and `106_add_delegation_workflow_state_traffic_class.sql`, and omninode_infra `db/migrations/20260910_gateway_workflows_terminal_provenance.sql`,
+      `20260911_gateway_workflows_terminal_credential_source.sql` and `20260913_gateway_workflows_terminal_rule_evaluations.sql`.
+      It is the same recurring class OMN-16130 and OMN-17145 repaired before, and it blocks every main-target
+      PR until someone registers the files, so it is fixed here rather than declared pre-existing. `dev`'s
+      inventory already lists all five; the entries are ported to main with their real table lists read
+      out of each SQL file rather than copied blank, and a comment records that 104 is not a gap -- no
+      `104_*.sql` exists in that directory, the number was skipped. RED->GREEN with a positive control,
+      both against the same repos-root so the only variable is the inventory: `origin/main`'s inventory
+      extracted to a scratch file exits 1 with exactly those five UNLISTED_FILE errors, and this branch's
+      exits 0 with "Migration inventory: all files accounted for." The control matters here because a
+      first local run read a stale installed copy of the boundaries package and reported the pre-change
+      errors against the post-change source; passing `--inventory` explicitly removes that ambiguity,
+      and the exit status is read directly rather than after a pipe.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run check-migration-inventory --inventory src/onex_change_control/boundaries/migration_inventory.yaml
+          --repos-root /tmp/repos

@@ -38,16 +38,71 @@ _GRANT_ID_RE = re.compile(
 )
 _IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$")
-_REQUIRED_FIELDS = frozenset(
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_RENDERED_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MANIFEST_REF_RE = re.compile(r"^[0-9a-f]{40}$")
+_MANIFEST_PATH_RE = re.compile(r"^k8s/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$")
+
+# OMN-18566 / OMN-18579: the target kind. A grant authorizes ONE promotion, and
+# there are two shapes it can take — an image digest, or a rendered kustomize
+# overlay. `image` is the DEFAULT precisely so that every entry written before
+# this field existed keeps its exact meaning: absent target_kind IS
+# target_kind: image, byte-for-byte.
+_TARGET_KIND_IMAGE = "image"
+_TARGET_KIND_MANIFEST = "manifest"
+_DEFAULT_TARGET_KIND = _TARGET_KIND_IMAGE
+_VALID_TARGET_KINDS = frozenset({_TARGET_KIND_IMAGE, _TARGET_KIND_MANIFEST})
+
+#: Fields every grant carries, whatever it promotes.
+_COMMON_REQUIRED_FIELDS = frozenset(
     {
         "grant_id",
         "runtime_lane",
-        "image_digest",
         "promotion_batch_id",
         "approved_by",
         "expires_at",
         "created_at",
         "reason",
+    }
+)
+#: Fields an `image` grant carries and a `manifest` grant must NOT.
+_IMAGE_REQUIRED_FIELDS = frozenset({"image_digest"})
+#: Fields a `manifest` grant carries and an `image` grant must NOT.
+#:
+#: `manifest_subtree` is a separate field rather than a derivation from
+#: `manifest_path` because a real overlay's kustomization tree reaches OUTSIDE
+#: its own directory — k8s/data-plane/postgres/backup/overlays/public declares
+#: its only resource as `../../base`. A rule of "every referenced file lies
+#: under manifest_path" would refuse the very overlay this kind exists to
+#: authorize. Declaring the subtree makes the approved blast radius explicit
+#: and reviewable, and it is what omninode_infra's dispatch-time gate bounds
+#: the transitive kustomization tree against.
+_MANIFEST_REQUIRED_FIELDS = frozenset(
+    {
+        "manifest_path",
+        "manifest_subtree",
+        "manifest_ref",
+        "rendered_digest",
+    }
+)
+
+# OMN-13424 single-use lifecycle markers. OPTIONAL (absent == not consumed);
+# tolerated as extras so a consumed grant can carry its provenance before the
+# prune job removes it. `target_kind` is optional in the same sense: it may be
+# written out explicitly, and its absence means `image`.
+#
+# This set is NEW in this mirror (OMN-18579). The workflow validator has
+# tolerated the `consumed*` markers since OMN-13424; this file did not, so the
+# two copies of the schema disagreed about a shape the anchor's own validator
+# declares legal. tests/test_prod_promotion_grants_manifest_kind.py now reads
+# the workflow's constants and asserts they equal these, so they cannot
+# disagree again without a red test.
+_OPTIONAL_FIELDS = frozenset(
+    {
+        "consumed",
+        "consumed_at",
+        "consumed_by_correlation_id",
+        "target_kind",
     }
 )
 
@@ -66,18 +121,124 @@ def _well_formed_entry() -> dict[str, Any]:
     }
 
 
+def _resolve_target_kind(entry: dict[str, Any]) -> Any:
+    """The kind this entry promotes. Absent means `image` (OMN-18566)."""
+    return entry.get("target_kind", _DEFAULT_TARGET_KIND)
+
+
 def _check_entry_fields(idx: int, entry: dict[str, Any], errors: list[str]) -> bool:
-    """Check that entry has exactly the required fields. Returns True if ok."""
+    """Check that entry carries exactly its kind's fields. Returns True if ok.
+
+    The two kinds' target fields are MUTUALLY EXCLUSIVE, not merely
+    independently optional. A grant naming both an image digest and a manifest
+    path describes two different promotions, and the dispatch-time gate would
+    have to guess which one the approver meant.
+    """
+    prefix = f"Entry[{idx}]"
+    kind = _resolve_target_kind(entry)
+    if not isinstance(kind, str) or kind not in _VALID_TARGET_KINDS:
+        errors.append(
+            f"{prefix}: target_kind must be one of {sorted(_VALID_TARGET_KINDS)}, "
+            f"got: {kind!r}. Omit it for an image promotion; it defaults to "
+            f"{_DEFAULT_TARGET_KIND!r}."
+        )
+        return False
+
+    if kind == _TARGET_KIND_IMAGE:
+        required = _COMMON_REQUIRED_FIELDS | _IMAGE_REQUIRED_FIELDS
+        forbidden = _MANIFEST_REQUIRED_FIELDS
+    else:
+        required = _COMMON_REQUIRED_FIELDS | _MANIFEST_REQUIRED_FIELDS
+        forbidden = _IMAGE_REQUIRED_FIELDS
+
     present = set(entry.keys())
-    missing_fields = _REQUIRED_FIELDS - present
-    extra_fields = present - _REQUIRED_FIELDS
+    missing_fields = required - present
+    forbidden_present = forbidden & present
+    extra_fields = present - required - forbidden - _OPTIONAL_FIELDS
     if missing_fields:
         errors.append(
-            f"Entry[{idx}]: missing required fields: {sorted(missing_fields)}"
+            f"{prefix}: missing required fields for target_kind {kind!r}: "
+            f"{sorted(missing_fields)}"
+        )
+    if forbidden_present:
+        errors.append(
+            f"{prefix}: fields {sorted(forbidden_present)} do not belong to a "
+            f"target_kind {kind!r} grant. The two kinds' target fields are "
+            "mutually exclusive: one grant authorizes one promotion."
         )
     if extra_fields:
-        errors.append(f"Entry[{idx}]: unexpected fields: {sorted(extra_fields)}")
-    return not (missing_fields or extra_fields)
+        errors.append(f"{prefix}: unexpected fields: {sorted(extra_fields)}")
+    return not (missing_fields or forbidden_present or extra_fields)
+
+
+def _is_inside(path: str, subtree: str) -> bool:
+    """Whether `path` is `subtree` itself or lies beneath it.
+
+    Segment-wise, not `startswith`: `k8s/a/backup-other` starts with
+    `k8s/a/backup` and is NOT inside it.
+    """
+    if path == subtree:
+        return True
+    return path.startswith(subtree + "/")
+
+
+def _check_manifest_path_shape(prefix: str, field: str, value: Any) -> list[str]:
+    """A manifest path must name a bounded, repo-relative tree under `k8s/`."""
+    if not isinstance(value, str) or not value.strip():
+        return [f"{prefix}: {field} must be a non-empty string, got: {value!r}"]
+    if any(segment in {".", ".."} for segment in value.split("/")):
+        return [
+            f"{prefix}: {field} contains a '.' or '..' segment ({value!r}). A "
+            "grant must name the exact tree the approver read; a relative "
+            "segment lets an approved grant resolve somewhere else."
+        ]
+    if not _MANIFEST_PATH_RE.match(value):
+        return [
+            f"{prefix}: {field} must be a repo-relative path under 'k8s/' with "
+            f"no leading or trailing slash, got: {value!r}"
+        ]
+    return []
+
+
+def _check_kind_formats(prefix: str, entry: dict[str, Any], errors: list[str]) -> None:
+    """Shape-check the fields that belong to this entry's target kind."""
+    if _resolve_target_kind(entry) == _TARGET_KIND_IMAGE:
+        digest = entry["image_digest"]
+        if not isinstance(digest, str) or not _IMAGE_DIGEST_RE.match(digest):
+            errors.append(f"{prefix}: image_digest invalid: {digest!r}")
+        return
+
+    shape_errors: list[str] = []
+    shape_errors.extend(
+        _check_manifest_path_shape(prefix, "manifest_path", entry["manifest_path"])
+    )
+    shape_errors.extend(
+        _check_manifest_path_shape(
+            prefix, "manifest_subtree", entry["manifest_subtree"]
+        )
+    )
+    ref = entry["manifest_ref"]
+    if not isinstance(ref, str) or not _MANIFEST_REF_RE.match(ref):
+        shape_errors.append(
+            f"{prefix}: manifest_ref must be a full 40-character lowercase hex "
+            f"commit sha, got: {ref!r}. An abbreviation is ambiguous and a "
+            "branch name is not a commit."
+        )
+    rendered = entry["rendered_digest"]
+    if not isinstance(rendered, str) or not _RENDERED_DIGEST_RE.match(rendered):
+        shape_errors.append(
+            f"{prefix}: rendered_digest must match 'sha256:<64hex>', got: {rendered!r}"
+        )
+    if not shape_errors and not _is_inside(
+        entry["manifest_path"], entry["manifest_subtree"]
+    ):
+        shape_errors.append(
+            f"{prefix}: manifest_path {entry['manifest_path']!r} does not lie "
+            f"inside manifest_subtree {entry['manifest_subtree']!r}. The "
+            "subtree is the approved blast radius; a path outside it describes "
+            "a promotion the approver did not bound."
+        )
+    errors.extend(shape_errors)
 
 
 def _parse_iso8601(ts: str) -> datetime | None:
@@ -89,19 +250,24 @@ def _parse_iso8601(ts: str) -> datetime | None:
         return None
 
 
-def _check_entry_formats(idx: int, entry: dict[str, Any], errors: list[str]) -> None:
-    """Validate field formats for an entry known to have all required fields."""
-    prefix = f"Entry[{idx}]"
+def _check_lifecycle_markers(
+    prefix: str, entry: dict[str, Any], errors: list[str]
+) -> None:
+    """OMN-13424 lifecycle marker types, mirroring the workflow validator."""
+    if "consumed" in entry and not isinstance(entry["consumed"], bool):
+        errors.append(f"{prefix}: consumed must be a bool, got: {entry['consumed']!r}")
+    if "consumed_at" in entry:
+        ca = entry["consumed_at"]
+        if not isinstance(ca, str) or not _ISO8601_RE.match(ca):
+            errors.append(f"{prefix}: consumed_at invalid: {ca!r}")
+    if "consumed_by_correlation_id" in entry:
+        cc = entry["consumed_by_correlation_id"]
+        if not isinstance(cc, str) or not _UUID_RE.match(cc):
+            errors.append(f"{prefix}: consumed_by_correlation_id invalid: {cc!r}")
 
-    gid = entry["grant_id"]
-    if not isinstance(gid, str) or not _GRANT_ID_RE.match(gid):
-        errors.append(f"{prefix}: grant_id invalid: {gid!r}")
 
-    digest = entry["image_digest"]
-    if not isinstance(digest, str) or not _IMAGE_DIGEST_RE.match(digest):
-        errors.append(f"{prefix}: image_digest invalid: {digest!r}")
-
-    # Validate timestamp fields and enforce expires_at > created_at
+def _check_timestamps(prefix: str, entry: dict[str, Any], errors: list[str]) -> None:
+    """Timestamp shapes, and expires_at strictly after created_at."""
     ts_parsed: dict[str, datetime | None] = {}
     for ts_field in ("expires_at", "created_at"):
         ts = entry[ts_field]
@@ -120,6 +286,18 @@ def _check_entry_formats(idx: int, entry: dict[str, Any], errors: list[str]) -> 
             f"created_at={entry['created_at']!r})"
         )
 
+
+def _check_entry_formats(idx: int, entry: dict[str, Any], errors: list[str]) -> None:
+    """Validate field formats for an entry known to have all its kind's fields."""
+    prefix = f"Entry[{idx}]"
+
+    gid = entry["grant_id"]
+    if not isinstance(gid, str) or not _GRANT_ID_RE.match(gid):
+        errors.append(f"{prefix}: grant_id invalid: {gid!r}")
+
+    _check_kind_formats(prefix, entry, errors)
+    _check_timestamps(prefix, entry, errors)
+
     for str_field in (
         "runtime_lane",
         "promotion_batch_id",
@@ -129,6 +307,8 @@ def _check_entry_formats(idx: int, entry: dict[str, Any], errors: list[str]) -> 
         val = entry[str_field]
         if not isinstance(val, str) or not val.strip():
             errors.append(f"{prefix}: {str_field} must be non-empty string")
+
+    _check_lifecycle_markers(prefix, entry, errors)
 
 
 def _validate_entries(entries: list[dict[str, Any]]) -> list[str]:
