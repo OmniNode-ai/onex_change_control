@@ -31,6 +31,63 @@ Checks enforced (integrity, NEW as of OMN-14441):
     - No two entries share a `grant_id` (a duplicate would let two grants
       of the same identity resolve ambiguously downstream).
 
+TARGET KIND (OMN-18566, operator ruling 2026-09-17T10:33:11Z, verbatim "1",
+recorded at omni_home docs/tracking/ROLLING_WORK_LEDGER.md:4077):
+    A grant entry gains an OPTIONAL `target_kind` of "image" (the default) or
+    "manifest". An entry that OMITS the field IS an image grant, byte-for-byte
+    in meaning -- that is what keeps every grant already written, and every
+    tool that has never heard of the field, working unchanged on both halves
+    of the gate.
+
+    Common to both kinds: grant_id, runtime_lane, promotion_batch_id,
+    approved_by, expires_at, created_at, reason.
+
+    target_kind: image -- REQUIRED, and forbidden on a manifest grant:
+      image_digest      "sha256:<64hex>" of the image being promoted.
+
+    target_kind: manifest -- ALL REQUIRED, and forbidden on an image grant:
+      manifest_path     repo-relative kustomize overlay under `k8s/` that the
+                        promotion applies, e.g.
+                        k8s/data-plane/postgres/backup/overlays/public
+      manifest_subtree  repo-relative directory under `k8s/` that every file
+                        the overlay's kustomization tree references must lie
+                        under. THE APPROVED BLAST RADIUS. Declared rather than
+                        derived from manifest_path because a real overlay
+                        reaches outside its own directory -- the public backup
+                        overlay's only resource is `../../base` -- so
+                        "everything under manifest_path" would refuse the very
+                        overlays this kind exists to authorize. manifest_path
+                        must lie inside it, segment-wise.
+      manifest_ref      the omninode_infra commit sha (full 40 lowercase hex)
+                        the overlay renders at. The dispatch-time gate refuses
+                        unless the checkout it is about to apply IS that
+                        commit.
+      rendered_digest   "sha256:<64hex>" over the CANONICAL render of
+                        manifest_path at manifest_ref: the UTF-8 bytes of the
+                        compact, recursively key-sorted JSON array of the
+                        objects `kubectl kustomize <manifest_path>` emits,
+                        ordered by (apiVersion, kind, namespace, name). The
+                        dispatch-time gate recomputes it and refuses on a
+                        mismatch; no caller can assert it.
+
+    The two kinds' target fields are MUTUALLY EXCLUSIVE. A grant naming both
+    an image digest and a manifest path describes two different promotions and
+    the gate would have to guess which one the approver meant.
+
+    A manifest grant is NOT a lighter grant: the @main fetch, CODEOWNERS
+    review, absolute expires_at, approved_by != requested_by at BOTH authoring
+    and dispatch time, single-use consumption and unique grant_id all apply to
+    it identically.
+
+    WHY THIS REFERENCE LIVES HERE and not in the anchor's own header. That file
+    is a guarded authorization surface: `check-bot-authored-authz-guard`
+    refuses any BOT-authored change to `grants/**`, because a machine writer
+    must never mint its own authorization. This module lives under `src/`,
+    which `check-human-authored-privileged-pr` requires to be authored BY the
+    writer App. One PR cannot satisfy both gates, so the schema and its
+    enforcement cannot move in one change, and the enforcing module is the
+    honest home for the reference.
+
 Self-approval REFUSED again (OMN-17157, restoring OMN-14441):
     `approved_by` must not be the identity that REQUESTED the grant. The
     failure carries the reason string `self_granted` — the same token

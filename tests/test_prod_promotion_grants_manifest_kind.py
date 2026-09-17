@@ -314,12 +314,27 @@ class TestSelfApprovalCoversTheManifestKind:
         assert any(SELF_GRANTED_REASON in error for error in errors), errors
 
 
-class TestAnchorDocumentsTheKind:
-    """The anchor's own header is what a human authoring a grant reads."""
+class TestTheValidatorDocumentsTheKind:
+    """The schema is documented where a bot-authored PR may document it.
 
-    def test_the_grants_file_header_describes_the_manifest_kind(self) -> None:
-        anchor = Path(__file__).parent.parent / "grants" / "prod_promotion_grants.yaml"
-        text = anchor.read_text(encoding="utf-8")
+    NOT in the anchor's own header, and that is a structural constraint rather
+    than a preference. `grants/prod_promotion_grants.yaml` is a guarded
+    authorization surface: `check-bot-authored-authz-guard` refuses any
+    BOT-authored change to it, because a machine writer must never mint its own
+    authorization. This module lives under `src/`, which
+    `check-human-authored-privileged-pr` requires to be authored BY the writer
+    App. One PR cannot satisfy both, so the two files cannot move together and
+    the field reference lives here, in the module that enforces it.
+    """
+
+    def test_the_validator_documents_every_manifest_field(self) -> None:
+        source = (
+            Path(__file__).parent.parent
+            / "src"
+            / "onex_change_control"
+            / "scripts"
+            / "validate_prod_promotion_grants.py"
+        ).read_text(encoding="utf-8")
         for token in (
             "target_kind",
             "manifest_path",
@@ -327,4 +342,23 @@ class TestAnchorDocumentsTheKind:
             "manifest_ref",
             "rendered_digest",
         ):
-            assert token in text, token
+            assert token in source, token
+
+    def test_the_refusals_name_the_field_a_grant_author_must_fix(
+        self, tmp_path: Path
+    ) -> None:
+        """Documentation a reader never opens is worth less than a good error.
+
+        Every manifest field's refusal names the field, so an author who gets
+        it wrong is told which one rather than sent to a header.
+        """
+        for field in (
+            "manifest_path",
+            "manifest_subtree",
+            "manifest_ref",
+            "rendered_digest",
+        ):
+            entry = _manifest_entry()
+            del entry[field]
+            errors = _errors(tmp_path, entry)
+            assert any(field in error for error in errors), field

@@ -1,0 +1,79 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18566"
+title: "Non-image target kind in the prod-promotion grant"
+summary: >
+  Operator ruling 2026-09-17T10:33:11Z (in-session, verbatim "1"): non-image production changes on the
+  public cluster are authorized by a non-image target kind in the prod-promotion grant, under the same
+  anti-self-issuance controls as an image promotion. This contract covers the AUTHORING half in onex_change_control
+  -- the schema the trust anchor accepts. The dispatch half lands in omninode_infra and carries its own
+  evidence.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: |-
+      The manifest target kind validates, its fields are shape-checked, the two
+      kinds' target fields are mutually exclusive, and an entry with no
+      target_kind is byte-equivalent in meaning to one that spells image out.
+    command: |-
+      uv run pytest tests/test_prod_promotion_grants_manifest_kind.py -q
+  - kind: "tests"
+    description: |-
+      Regression: the pre-existing grants-schema suite and the platform-leads
+      review tripwire both still pass, so neither half of the OMN-17157 dual
+      control was disturbed by the new kind.
+    command: |-
+      uv run pytest tests/test_prod_promotion_grants.py tests/unit/scripts/test_check_platform_leads_review_tripwire.py -q
+  - kind: "ci"
+    description: "PR CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-manifest-kind-schema"
+    description: >
+      AC1/AC7: a well-formed manifest grant validates, every field-mix error is refused naming the offending
+      field, and a self-approved manifest grant is refused as self_granted at authoring time.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_prod_promotion_grants_manifest_kind.py::TestManifestKindAccepted tests/test_prod_promotion_grants_manifest_kind.py::TestKindsAreMutuallyExclusive tests/test_prod_promotion_grants_manifest_kind.py::TestSelfApprovalCoversTheManifestKind -q
+  - id: "dod-image-entries-unchanged"
+    description: >
+      AC2: an entry with no target_kind validates exactly as before, and a manifest entry alongside an
+      image entry changes no image verdict.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/test_prod_promotion_grants_manifest_kind.py::TestImageEntriesAreByteEquivalentInMeaning tests/test_prod_promotion_grants.py -q
+  - id: "dod-dual-control-intact"
+    description: >
+      The OMN-18327 platform-leads tripwire proves the authoring-time self-approval refusal behaviourally,
+      with a positive control, and still passes over the widened validator.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/scripts/test_check_platform_leads_review_tripwire.py -q
+  - id: "dod-anchor-still-valid"
+    description: >
+      The live trust anchor still validates through the widened entrypoint, so no existing grant path
+      was disturbed.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run validate-prod-promotion-grants --file grants/prod_promotion_grants.yaml
+  - id: "dod-deploy-assessment"
+    description: "Deploy-scope DoD: this change ships no runtime contract and deploys nothing."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/pulls/${PR_NUMBER}/files --paginate --jq '.[].filename' | grep -c .
