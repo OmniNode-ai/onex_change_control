@@ -1,0 +1,88 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-17352"
+title: "Dashboard API keys are unrecoverable from a direct store read"
+summary: |-
+  OMN-17352 asks one question and its proof surface is a probe, not a diff: does a direct read of the
+  credential store, performed by an identity holding database access, recover anything usable as a
+  credential. There is no product pull request for this ticket and there should not be one. The ticket
+  has sat In Review since 2026-09-08 with the probe executed and no contract for the closer to read,
+  so dod_verify returned CONTRACT_MISSING and the OMN-13856 gate could never act on evidence that was
+  already complete. This contract is that missing artifact. It records two independent executions of
+  the read, eleven days apart, by two different lanes, and it states plainly which leg of each one is
+  load-bearing and which is vacuous.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: >-
+      A direct read of `tenant_api_keys` on the staging serving database, executed as the database role
+      the application itself connects with, showing that every stored value is a digest and that no plaintext
+      column exists. Retained as SSM command invocations on EC2 instance i-06169517a92b45f86.
+    command: "aws ssm get-command-invocation --command-id ee62c6b4-ead6-4bd2-9051-575252bbd4c5 --instance-id
+      i-06169517a92b45f86 --query Status --output text"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "store-read-recovers-no-usable-key-2026-09-17"
+    description: |-
+      The whole criterion, re-executed independently on 2026-09-17 by lane m4-stalled-carriers-triage-1415
+      rather than inherited from the 2026-09-08 record. Surface: AWS EC2 instance i-06169517a92b45f86
+      (omninode-k3s-dev-system), namespace onex-dev, pod onex-api-798fdddc76-ql2zr, container onex-api,
+      reached read-only over SSM with --comment m4-stalled-carriers-triage-1415. No mutation, no credential
+      minted, no credential revoked, no value printed at any point.
+
+      Connected as database role role_omninode_cloud on database omninode_cloud -- that is the identity the
+      ticket's proof surface names, an identity holding database access, and it is the same role the
+      deployed application connects with rather than a superuser standing in for one.
+
+      The table carries eight columns and exactly one credential column:
+      id uuid, tenant_id uuid, name text, key_hash text, created_at timestamptz, last_used_at timestamptz,
+      revoked_at timestamptz, is_active boolean. A filter for plaintext-shaped credential column names
+      returns the empty list. There is no plaintext column to read.
+
+      Aggregate over every row, not a sample: ROWS=307, KEY_HASH_64HEX=307, KEY_HASH_NOT_64HEX=0,
+      KEY_HASH_LOOKS_LIKE_LIVE_KEY=0. The partition is exhaustive -- 307 + 0 = 307 -- which is its own
+      control: it proves both the match and the non-match operators discriminate, so the zero is a real
+      absence rather than a broken predicate. Every stored value is a 64-character lowercase hex digest,
+      and none has the shape of an `onxk_` product credential. The 2026-09-08 run saw 38 rows; the table
+      has grown eightfold since and the property still holds for every row, which is the thing a single
+      historical reading could not tell you.
+
+      HONEST LIMIT, stated rather than buried. The refusal leg re-run today is VACUOUS ON ITS OWN. Presenting
+      a stored key_hash on the X-API-Key header of /v1/whoami returned 401 -- but so did a request carrying
+      no credential at all, and so did a structurally invalid key, all three in the same run against the
+      same pod. A 401 that every input produces carries no information about this input. What rescues the
+      leg is the EARLIER run: on 2026-09-08 the executing lane minted a disposable key, got 200 on the same
+      path, then presented the stored hash and got 401 (SSM invocations b7790a37, dbf0269b, 3f552276,
+      recorded in Linear comment c6cdbd41 with the header corrected from Bearer to X-API-Key in comment
+      1d88131a). That run had the 200 positive control this one deliberately does not, because reproducing
+      it means minting and revoking a credential and this lane holds no consent row for a credential
+      lifecycle action. So the two runs are complements: 2026-09-08 carries the discriminating refusal,
+      2026-09-17 carries the exhaustive at-rest shape over an eightfold larger table.
+
+      RESIDUAL, unchanged from the executor's own disclosure: that the digest is specifically SHA-256 rests
+      on a prior source audit, not on either run. Both runs prove the stored value is a 64-hex digest with
+      no plaintext alongside it and that it does not authenticate. The criterion as written asks exactly
+      that and no more.
+
+      RETENTION LIMIT on the checks below: SSM retains command invocation output for 30 days, so these
+      checks answer until roughly 2026-10-17 and are unreadable after. That is a property of the evidence
+      class -- a one-shot cluster probe -- and not a defect in the binding. The narrative above is the
+      durable record.
+    source: "manual"
+    status: "verified"
+    execution_scope: "local_done_gate"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          aws ssm get-command-invocation --command-id ee62c6b4-ead6-4bd2-9051-575252bbd4c5 --instance-id i-06169517a92b45f86 --query StandardOutputContent --output text | grep -qF 'ROWS=307 KEY_HASH_64HEX=307 KEY_HASH_NOT_64HEX=0 KEY_HASH_LOOKS_LIKE_LIVE_KEY=0'
+      - check_type: "command"
+        check_value: |-
+          aws ssm get-command-invocation --command-id ee62c6b4-ead6-4bd2-9051-575252bbd4c5 --instance-id i-06169517a92b45f86 --query StandardOutputContent --output text | grep -qF 'PLAINTEXT_SHAPED_COLUMNS=[]'
+      - check_type: "command"
+        check_value: |-
+          aws ssm get-command-invocation --command-id 66c5aab0-3266-4e75-86d3-5cb5fb4ae7a6 --instance-id i-06169517a92b45f86 --query StandardOutputContent --output text | grep -qF 'A. stored key_hash presented as X-API-Key  -> HTTP 401'
