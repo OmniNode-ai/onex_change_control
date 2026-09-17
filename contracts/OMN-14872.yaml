@@ -43,3 +43,135 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9545 --repo OmniNode-ai/onex_change_control --json number,state"
+
+  # --- AC bindings added 2026-09-17 by lane omn14872-receipt-content-build-1138 ---
+  # This ticket carried no acceptance criteria from 2026-07-20 until 2026-09-17, so
+  # every entry above it is unbound and stays that way: the Append-Only Gate holds a
+  # merged entry immutable, and none of them is edited here. The criteria themselves
+  # were written onto the Linear description the same day and are quoted in each
+  # description below. Three separate merged PRs carry the mechanism, so the checks
+  # are pinned to 3586e65dc9621dc4a555a47405d31ae1a0628fba (omnibase_infra#3640, merged
+  # 2026-09-16), the commit at which all three defences and every one of their
+  # regressions are simultaneously present, rather than to any one PR's own head. The
+  # earlier candidate f7b90f48 (#3545) was rejected on measurement, not on preference:
+  # two of AC4's four regressions did not exist yet at that commit.
+
+  - id: "ac1-correlation-join-refuses-a-foreign-receipt"
+    description: >-
+      AC1: "The stdout receipt of a shared-bus delegation renders THIS run's payload, never another run's."
+      The mechanism is the correlation join in receipt_mode.py: _declared_correlation_ids collects every
+      correlation the stored content claims at BOTH levels (the envelope's own and its nested payload's),
+      and _verify_workflow_data_correlation requires SET EQUALITY with this run's id, so a mixed envelope
+      carrying this run's id alongside a foreign one refuses too rather than passing on a membership test.
+      Read remotely at the pinned merge commit, not from a local checkout, so the check answers a question
+      about the landed source. The regression that pins it reproduces this ticket's own 2026-08-31 recurrence
+      shape: a retained prior-run envelope carrying the prompt "reply with the single word: ok" and the
+      previous night's envelope_timestamp, served under this run's id.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          src="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/receipt_mode.py?ref=3586e65dc9621dc4a555a47405d31ae1a0628fba" --jq '.content' | base64 -d)"; tst="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/cli/test_cli_node_receipt.py?ref=3586e65dc9621dc4a555a47405d31ae1a0628fba" --jq '.content' | base64 -d)"; grep -q 'def _declared_correlation_ids' <<< "$src" && grep -q 'def _verify_workflow_data_correlation' <<< "$src" && grep -q 'if declared == {expected}:' <<< "$src" && grep -q 'def test_real_dispatch_path_refuses_a_stale_terminal_envelope' <<< "$tst"
+
+  - id: "ac2-run-scoped-state-root-present"
+    description: >-
+      AC2, the positive half: "Two invocations sharing one --state-root each keep and render their own
+      result." resolve_run_state_root keys the runtime's state root by run_id, so two peers sharing a
+      --state-root have no shared address to collide on and there is no write/read window to serialise.
+      Pinned together with the two regressions that prove the behaviour rather than the name: one at unit
+      level over a shared root, and one driving two REAL processes over a shared root and asserting on
+      CONTENT, which is the cross-boundary regression this ticket has asked for since 2026-08-02.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          src="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/receipt_mode.py?ref=3586e65dc9621dc4a555a47405d31ae1a0628fba" --jq '.content' | base64 -d)"; u="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/cli/test_omn16533_run_scoped_workflow_result.py?ref=3586e65dc9621dc4a555a47405d31ae1a0628fba" --jq '.content' | base64 -d)"; i="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/integration/test_omn16533_cross_process_run_scoped_state.py?ref=3586e65dc9621dc4a555a47405d31ae1a0628fba" --jq '.content' | base64 -d)"; grep -q 'def resolve_run_state_root' <<< "$src" && grep -q 'def test_a_second_invocation_cannot_clobber_the_first_runs_result' <<< "$u" && grep -q 'def test_each_process_reports_its_own_result_not_the_others' <<< "$i"
+
+  - id: "ac2-negative-control-absent-at-the-earlier-merge"
+    description: >-
+      AC2, the negative control. The same remote read against omnibase_infra#3540's own merge commit 7a832ddbc1784c050e2fb5bea662ec1b825a006e,
+      which is THIS ticket's product PR and lands three weeks of receipt-mode work, must NOT find resolve_run_state_root
+      -- it arrived a day later on #3545. The pair is what makes the entry above a reading of a tree rather
+      than a constant that would pass against any sha. It also records honestly that this ticket's own
+      PR did not close AC2 by itself; a sibling ticket's PR did.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          src="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/cli/receipt_mode.py?ref=7a832ddbc1784c050e2fb5bea662ec1b825a006e" --jq '.content' | base64 -d)"; ! grep -q 'def resolve_run_state_root' <<< "$src"
+
+  - id: "ac3-shared-socket-concurrency-regression-present"
+    description: >-
+      AC3: "Concurrent invocations sharing one emit socket cannot corrupt each other's process-global
+      receipt state." The regression holds the first caller inside the receipt critical section and asserts
+      the second cannot reach its runtime until the first is explicitly released -- a causal assertion,
+      not a timing-based race probe that would pass by luck on a fast machine. It then asserts each caller's
+      stdout receipt names its own correlation and its own result marker, that neither's capture log or
+      artifact carries the other's content, and that the host process's root logging handlers, level,
+      disabled flag and two env vars are all restored.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          tst="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/cli/test_cli_node_receipt.py?ref=3586e65dc9621dc4a555a47405d31ae1a0628fba" --jq '.content' | base64 -d)"; grep -q 'def test_shared_socket_concurrent_runs_are_serialized_and_isolated' <<< "$tst" && grep -q 'class TestReceiptModeInProcessIsolation' <<< "$tst"
+
+  - id: "ac4-fail-closed-refusals-present"
+    description: >-
+      AC4: "Fail-closed is the default, and a refusal says what to grep." Three distinct shapes each refuse
+      rather than render -- a stored receipt naming a foreign correlation, one naming no correlation at
+      all, and a run that reports COMPLETED yet stored no terminal envelope and no handler result. The
+      third matters because a content-free file is the one shape that could otherwise pass a join by having
+      nothing to disagree with. The refusal names the wire correlation so the operator can grep the lane
+      for the command that was actually published.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          tst="$(gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/unit/cli/test_cli_node_receipt.py?ref=3586e65dc9621dc4a555a47405d31ae1a0628fba" --jq '.content' | base64 -d)"; grep -q 'def test_two_stored_receipts_the_wrong_one_is_refused' <<< "$tst" && grep -q 'def test_absent_correlation_fails_closed' <<< "$tst" && grep -q 'def test_completed_with_no_receipt_still_fails_closed' <<< "$tst" && grep -q 'def test_explanation_names_the_wire_correlation_to_grep' <<< "$tst"
+
+  - id: "ac1-ac2-ac3-ac4-behavior-proof"
+    description: >-
+      Behaviour proof for AC1 through AC4: the three suites that carry every regression cited above, run
+      together. 48 tests. Named as one entry rather than four because the suites are the same on each
+      run and splitting them would report the same green four times as though it were four independent
+      proofs.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1", "AC2", "AC3", "AC4"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/cli/test_cli_node_receipt.py tests/unit/cli/test_omn16533_run_scoped_workflow_result.py tests/integration/test_omn16533_cross_process_run_scoped_state.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
+
+  - id: "ac5-receipt-and-projection-agree-per-correlation"
+    description: >-
+      AC5: "Live on the deployed lane, the stdout receipt and the durable projection row agree, per correlation."
+      The live half was taken on 2026-09-17 against the .201 dev lane -- four delegations, two sequential
+      and two concurrent, all sharing one --state-root and the default emit socket, each carrying a distinct
+      token in its prompt. Every stdout receipt carried its own correlation, its own prompt and its own
+      response, with zero foreign tokens; the delegation_events row for each of the four correlations
+      carried that same run's token; a random UUID returned zero rows as the negative control against
+      407 total rows as the positive one. STATED LIMIT: that half needs the .201 lane and a live LLM endpoint,
+      so a verifier cannot re-run it; it is recorded in the ticket comment and the ledger TERMINAL row
+      rather than re-executed here. What this check re-runs is the deterministic half of the same claim
+      -- two REAL processes, one shared state root, each receipt asserted to carry its own content and
+      none of the other's -- which is the part a machine can answer on demand.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/integration/test_omn16533_cross_process_run_scoped_state.py -q
+        cwd: "${OMNI_HOME}/omnibase_infra"
