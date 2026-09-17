@@ -121,3 +121,149 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9602 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # OMN-16504 acceptance binding, authored 2026-09-17.
+  #
+  # Everything above this line is `source: generated` provenance minted by
+  # autobind across this ticket's six merged PRs. None of it declares `binds_ac`,
+  # so under OMN-18125 (2026-09-10) none of it counts toward the AC-coverage
+  # denominator — `_ac_coverage_gap` counts only checks that declare they cover
+  # one of this ticket's criteria. The four items below are that declaring set:
+  # one probative check per criterion, 1:1 against the four labelled ACs in the
+  # Linear description.
+  #
+  # Two of the four assert against a receipt rather than probing directly. That
+  # is the OMN-14051 non-hermetic rule, not a shortcut: AC3's measurement is a
+  # read-only kubectl sweep of the public cluster reached over an SSM
+  # port-forward, and AC4's is a Linear API read. Neither is reachable from a
+  # hosted runner with the allowlisted check-value clients (`aws` is not in the
+  # allowlist at all), so the probe is run out of band and its receipt is the
+  # thing CI greps.
+  # ---------------------------------------------------------------------------
+  - id: "dod-dev-fingerprint-guard-landed"
+    description: |-
+      AC1's falsifier, asserted positively in both halves rather than by absence.
+      omnibase_infra#3574 carries the guard in `scripts/seed-keycloak-clients.py`;
+      omninode_infra#1479 wires the consumer-held value into the apply path. The
+      second check reads the Job manifest on `omninode_infra@dev` and asserts
+      `ONEX_API_CONSUMER_CLIENT_SECRET` is sourced from `onex-runtime-credentials`
+      -- the Secret the runtime consumers actually authenticate with -- and NOT
+      from `keycloak-smtp-credentials`, whose same-named `KEYCLOAK_CLIENT_SECRET`
+      key holds omniweb's secret. That collision is what made the 2026-08-25
+      diagnosis ambiguous, and a check asserting only that the variable EXISTS
+      passes on exactly the wrong wiring. Negative control run 2026-09-17: the
+      manifest was copied, the env var rewired to `keycloak-smtp-credentials`,
+      and the strict form below refused it while the weak form still passed.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -o pipefail -c 'test "$(gh api repos/OmniNode-ai/omnibase_infra/commits/d638822e22fe3783f572b03113c976c4eee361c0 --jq .sha)" = d638822e22fe3783f572b03113c976c4eee361c0';
+          bash -o pipefail -c 'test "$(gh api repos/OmniNode-ai/omnibase_infra/pulls/3574 --jq .merged)" = true && test "$(gh api repos/OmniNode-ai/omninode_infra/pulls/1479 --jq .merged)" = true'
+      - check_type: "command"
+        check_value: |-
+          bash -o pipefail -c 'gh api repos/OmniNode-ai/omninode_infra/contents/k8s/onex-dev/jobs/seed-keycloak-clients-job.yaml?ref=dev --jq .content | base64 -d | grep -A4 "name: ONEX_API_CONSUMER_CLIENT_SECRET" | grep -q "name: onex-runtime-credentials"'
+    binds_ac:
+      - "AC1"
+  - id: "dod-guard-pinned-by-test"
+    description: |-
+      AC2's falsifier. The guard is only durable if removing it turns CI red, so
+      the test that pins it is asserted to exist on `omnibase_infra@dev` and to
+      contain a fingerprint comparison rather than merely importing the module.
+      The `grep -ci` makes this asserting rather than a bare fetch: a non-zero
+      count is the assertion, and the exact number is deliberately NOT pinned
+      here. It read 16 and then 17 within one afternoon of 2026-09-17 as the
+      file moved on `dev`, so a pinned count would encode a passing test as a
+      failing one on the next unrelated edit.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -o pipefail -c 'gh api repos/OmniNode-ai/omnibase_infra/contents/tests/unit/scripts/test_seed_keycloak_clients_consumer_secret_fingerprint_guard.py?ref=dev --jq .content | base64 -d | grep -ci "fingerprint"'
+    binds_ac:
+      - "AC2"
+  - id: "dod-prod-consumer-inventory"
+    description: |-
+      AC3's falsifier. Settles the step-4 remainder open since 2026-08-27, and
+      settles it as a negative: there is no onex-prod copy of
+      `KEYCLOAK_CLIENT_SECRET` to verify, because no workload on the public
+      cluster holds an `onex-api` client secret at all. The receipt records the
+      whole-cluster inventory, both sweep dates (2026-09-15 and an unchanged
+      re-run 2026-09-17), every holder's sha256-first-12 fingerprint and byte
+      length, and the zero-introspection/zero-401 failure signal. No value was
+      printed and nothing on the cluster was modified.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16504/dod-prod-consumer-inventory/command.yaml"
+    binds_ac:
+      - "AC3"
+  - id: "dod-spinoffs-tracked"
+    description: |-
+      AC4's falsifier. The receipt records each spinoff's identifier, assignee,
+      due date and open lifecycle category as read from the Linear API, so a
+      ticket that was created and then left undated would not satisfy it -- which is the failure
+      this criterion exists to catch, this ticket itself having carried
+      `dueDate: null` for 23 days.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          grep -q '^status: PASS$' "$CONTRACT_REPO_DIR/drift/dod_receipts/OMN-16504/dod-spinoffs-tracked/command.yaml"
+    binds_ac:
+      - "AC4"
+  - id: "occ-self-bind-pr-10019"
+    description: "OCC companion PR #10019 -- self-bind for OMN-16504 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10019 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-retire-ac3-static-binding"
+    description: |-
+      Withdraws `dod-prod-consumer-inventory`'s claim on AC3, refused by the
+      OMN-18577 proof-class rule as a hand-written static->live binding.
+
+      The refusal is correct and is NOT worked around here. AC3 is settled by
+      measuring a running system; the bound check only greps a receipt in this
+      repository, and a grep proves a file was written, never that the cluster
+      was read. Adding a `proposed_by` would downgrade the finding from REFUSED
+      to REPORTED, but that field records machine transcription and this binding
+      was hand-authored, so claiming it would be false provenance.
+
+      Rewording AC3 to something a grep can settle was the other available exit
+      and is refused on the same grounds: the criterion's whole content is the
+      live measurement, and editing a criterion to fit the proof available is
+      the laundering these gates exist to prevent.
+
+      The measurement itself is NOT withdrawn. The receipt at
+      `drift/dod_receipts/OMN-16504/dod-prod-consumer-inventory/command.yaml`
+      stands, with its full inventory, both sweep dates and every fingerprint;
+      it is a human-run measurement under operator credentials, and this
+      retirement changes only what it is allowed to CLAIM automatically. AC3
+      therefore reads as a reasoned, visible gap
+      (`ac_binding_criterion_retired_unbound`, REPORTED) rather than as a
+      manufactured pass -- which is the right outcome for a criterion only a
+      human with cluster access can currently settle.
+
+      The proof that WOULD bind AC3 is a check reading a scheduled probe
+      workflow's own run history, since that contacts a live lane rather than
+      the tree. No such workflow exists; it is OMN-18583's deliverable. When it
+      lands, AC3 binds to it and this retirement is superseded in turn.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          bash -o pipefail -c 'python3 -c "import yaml,sys; c=yaml.safe_load(open(\"contracts/OMN-16504.yaml\")); i=[x for x in c[\"dod_evidence\"] if x[\"id\"]==\"dod-prod-consumer-inventory\"][0]; v=[k[\"check_value\"] for k in i[\"checks\"]]; sys.exit(0 if all(w.strip().startswith(\"grep \") for w in v) else 1)"'
+    supersedes_ac_binding:
+      - item: "dod-prod-consumer-inventory"
+        label: "AC3"
+        reason: >-
+          AC3 is settled by measuring a running production cluster. The retired item only greps a receipt
+          file in this repository, so it proves the receipt exists but does not itself contact the cluster
+          or observe the live workload inventory.
