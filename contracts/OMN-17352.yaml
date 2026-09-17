@@ -45,17 +45,21 @@ dod_evidence:
         The plaintext key exists only as a local and is returned to the caller in the response; it is
         never a bound parameter of an insert.
 
-      Both checks are fail-closed -- a failed content fetch yields an empty body and `grep -qF` exits
-      non-zero -- and both go RED the moment the hashing is weakened or a plaintext column is written.
+      Both checks buffer the fetched body into a variable before matching rather than piping an
+      unbounded producer into `grep -q`: an early-exiting consumer SIGPIPEs the producer, and the
+      dod_verify runner's `bash -o pipefail` turns that 141 into a false RED on evidence that is
+      actually present (OMN-15411 rule E). Both are still fail-closed -- a failed fetch leaves the body
+      empty and the match fails -- and both go RED the moment the hashing is weakened or a plaintext
+      column is written.
     source: "manual"
     status: "verified"
     checks:
       - check_type: "command"
         check_value: |-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_api_keys.py?ref=618d99a6cf423b2c7e0994564dcc74bc4b7e5b60' --jq '.content' | base64 -d | grep -qF 'hashlib.sha256(raw_key.encode("utf-8")).hexdigest()'
+          body="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_api_keys.py?ref=618d99a6cf423b2c7e0994564dcc74bc4b7e5b60' --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'hashlib.sha256(raw_key.encode("utf-8")).hexdigest()'
       - check_type: "command"
         check_value: |-
-          gh api 'repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_api_keys.py?ref=618d99a6cf423b2c7e0994564dcc74bc4b7e5b60' --jq '.content' | base64 -d | grep -qF 'INSERT INTO tenant_api_keys (tenant_id, name, key_hash)'
+          body="$(gh api 'repos/OmniNode-ai/omninode_infra/contents/docker/onex-api/auth_api_keys.py?ref=618d99a6cf423b2c7e0994564dcc74bc4b7e5b60' --jq '.content' | base64 -d)" && printf '%s' "$body" | grep -qF 'INSERT INTO tenant_api_keys (tenant_id, name, key_hash)'
   - id: "store-read-recovers-no-usable-key-2026-09-17"
     description: |-
       The whole criterion, re-executed independently on 2026-09-17 by lane m4-stalled-carriers-triage-1415
