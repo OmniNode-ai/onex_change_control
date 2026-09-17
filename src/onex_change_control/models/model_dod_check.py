@@ -27,6 +27,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from onex_change_control.models.model_ac_binding import (
     ModelAcBinding,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
 )
+from onex_change_control.models.model_ac_binding_retirement import (
+    ModelAcBindingRetirement,  # noqa: TC001  Why: Pydantic model needs runtime type for field annotation
+)
 
 # Security constraints to prevent DoS attacks
 _MAX_STRING_LENGTH = 10000
@@ -198,6 +201,30 @@ class ModelDodEvidenceItem(BaseModel):
             "Per-criterion binding records: the criterion hash each `binds_ac` "
             "label was pinned to, and who accepted it. An entry with no "
             "`accepted_by` is a draft proposal, not evidence."
+        ),
+    )
+    # OMN-18577. RETIRING A BINDING A MERGED ITEM CANNOT BE EDITED TO REMOVE.
+    #
+    # A merged `dod_evidence` entry is immutable -- the OCC Append-Only Gate
+    # refuses an edit and directs the author to append. So a binding that turns
+    # out to be wrong (an item whose checks cannot settle the criterion its
+    # label names) had no exit at all: it could not be removed, and the one
+    # add-only supersession marker that existed is read by the DoD verifier's
+    # evidence collector, never by the acceptance-criterion binding gate.
+    #
+    # An entry here is read BY THAT GATE. The retired binding stays in the
+    # contract with its acceptance record intact for audit; what changes is that
+    # the gate stops counting it as a claim, so the criterion reverts to unbound.
+    # A retirement naming an item this contract does not declare, a label that
+    # item never bound, or no reason is REFUSED and takes no effect -- a typo
+    # must not be able to silently withdraw a real binding.
+    supersedes_ac_binding: tuple[ModelAcBindingRetirement, ...] = Field(
+        default=(),
+        max_length=_MAX_LIST_ITEMS,
+        description=(
+            "Bindings on OTHER evidence items in this contract that this item "
+            "retires, each naming the item, the criterion label, and why that "
+            "item's checks cannot settle that criterion."
         ),
     )
     linear_dod_text: str | None = Field(
