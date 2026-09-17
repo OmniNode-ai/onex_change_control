@@ -40,6 +40,52 @@
 #   created_at:         ISO-8601 UTC datetime when the grant was created
 #   reason:             human-readable justification for the promotion
 #
+# TARGET KIND (OMN-18566, operator ruling 2026-09-17T10:33:11Z, verbatim "1"):
+#   target_kind:        "image" (default) or "manifest". OPTIONAL. An entry
+#                       that omits it IS an image grant, byte-for-byte in
+#                       meaning -- every grant written before this field
+#                       existed keeps its exact behaviour on both halves of
+#                       the gate.
+#
+# For target_kind: image -- REQUIRED, and forbidden on a manifest grant:
+#   image_digest:       sha256 digest of the image being promoted (above)
+#
+# For target_kind: manifest -- ALL REQUIRED, and forbidden on an image grant:
+#   manifest_path:      repo-relative kustomize overlay under `k8s/` that the
+#                       promotion applies, e.g.
+#                       k8s/data-plane/postgres/backup/overlays/public
+#   manifest_subtree:   repo-relative directory under `k8s/` that every file
+#                       the overlay's kustomization tree references must lie
+#                       under. This is the APPROVED BLAST RADIUS. It is a
+#                       separate field rather than a derivation from
+#                       manifest_path because a real overlay reaches outside
+#                       its own directory (the public backup overlay's only
+#                       resource is `../../base`), so "everything under
+#                       manifest_path" would refuse the very overlays this
+#                       kind exists to authorize.
+#   manifest_ref:       the omninode_infra commit sha (full 40 lowercase hex)
+#                       the overlay renders at. The dispatch-time gate refuses
+#                       unless the checkout it is about to apply IS this
+#                       commit, so the approver's tree and the applied tree
+#                       cannot diverge.
+#   rendered_digest:    "sha256:<64hex>" over the CANONICAL render of
+#                       manifest_path at manifest_ref. The dispatch-time gate
+#                       recomputes this itself and refuses on a mismatch; it
+#                       is never asserted by a caller. Canonical form: the
+#                       UTF-8 bytes of the compact, recursively key-sorted
+#                       JSON array of the objects `kubectl kustomize
+#                       <manifest_path>` emits, ordered by (apiVersion, kind,
+#                       namespace, name).
+#
+# The two kinds' target fields are MUTUALLY EXCLUSIVE. A grant naming both an
+# image digest and a manifest path describes two different promotions, and the
+# gate would have to guess which one the approver meant; that entry is refused.
+#
+# A manifest grant is NOT a lighter grant. The @main fetch, CODEOWNERS review,
+# absolute expires_at, approved_by != requested_by at BOTH authoring and
+# dispatch time, single-use consumption and unique grant_id all apply to it
+# identically.
+#
 # Optional single-use lifecycle markers (OMN-13424; absent == not consumed):
 #   consumed:                    bool — once a promotion using this grant reaches a
 #                                terminal deploy state, mark true (or remove the entry)
@@ -59,6 +105,10 @@
 #   - grant_id must match pattern: grant-[0-9a-f-]{36}; no two entries may
 #     share a grant_id (OMN-14441)
 #   - image_digest must match pattern: sha256:[0-9a-f]{64}
+#   - rendered_digest must match the same pattern; manifest_ref must match
+#     [0-9a-f]{40}; manifest_path and manifest_subtree must be repo-relative
+#     paths under k8s/ with no '.' or '..' segment, and manifest_path must
+#     lie inside manifest_subtree
 #   - expires_at and created_at must be ISO-8601 UTC datetimes
 #   - expires_at must be after created_at
 #   - NO EXPIRED ENTRY may remain (OMN-13424): a grant whose expires_at is in the
