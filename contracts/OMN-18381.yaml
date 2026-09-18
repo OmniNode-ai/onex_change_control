@@ -42,3 +42,178 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 9579 --repo OmniNode-ai/onex_change_control --json number,state"
+  # ---------------------------------------------------------------------------
+  # OMN-18381 acceptance binding, authored 2026-09-17.
+  #
+  # The sweep's hold on this ticket was a PROOF-CLASS gap, not a missing check:
+  # "2/6 checks verified, 0 failed -- and not one of them executed the claimed
+  # behavior. Every passing check binds merge state (a PR is merged) or is a
+  # surrogate (a file exists, a generic suite ran)." The three items above are
+  # exactly that: two `gh pr view` merge probes and a generic OCC suite.
+  #
+  # The six items below each run a test runner against a class written for one
+  # criterion, at cwd `${OMNI_HOME}/omninode_infra`. Every class carries a
+  # demonstrated negative control -- the artifact was mutated and the matching
+  # test observed to fail, then reverted (omninode_infra#1539):
+  #
+  #   AC1/AC2  seam -> runs-on: ubuntu-latest   3 failed, 11 passed
+  #   AC3      hourly -> 15-minute cadence      1 failed, 13 passed
+  #   AC4      bucket renamed                   1 failed, 13 passed
+  #   AC5      staleness bar id stripped        1 failed, 13 passed
+  #   AC6      aws probe removed                2 failed, 12 passed
+  #   restored                                 14 passed
+  #
+  # ORDERING. The test file lands in omninode_infra#1539, which is gated by
+  # `OCC Companion Merged Gate (OMN-15214)` on this companion -- so this merges
+  # first and #1539 second. The receipts below record local runs of each class
+  # against that branch; the checks resolve against merged `dev` once #1539
+  # lands, which is the same order OMN-16504 used (OCC#7214 before #1019).
+  # ---------------------------------------------------------------------------
+  - id: "dod-omn18381-ac1-placement-seam"
+    description: |-
+      AC1 -- both board jobs route through `vars.OMNI_TRUSTED_CI_RUNS_ON_JSON`,
+      parsed with fromJSON, and no job pins a runner literal. Placement is read
+      from the PARSED workflow rather than grepped: publish-beta-board.yml
+      contains the string `self-hosted` inside an error message, so a grep-based
+      assertion flags prose as a fleet literal. 4 tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/commits/eb81dc81e05a0b1f5d8a74991d5a30f6a3727f51 --jq .sha >/dev/null;
+          uv run pytest tests/ci/test_board_fleet_placement_omn18381.py::TestAc1PlacementGoesThroughTheSeam -q --no-cov -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omninode_infra"
+    binds_ac:
+      - "AC1"
+  - id: "dod-omn18381-ac2-independent-of-hosted-billing"
+    description: |-
+      AC2 -- the board publishes without depending on hosted-runner billing.
+      Asserts INDEPENDENCE, which is a property of the tree, and deliberately
+      not that the fleet is up or that the budget was raised: the org Actions
+      budget was still $600 with prevent_further_usage true when this was
+      written. 2 tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/commits/eb81dc81e05a0b1f5d8a74991d5a30f6a3727f51 --jq .sha >/dev/null;
+          uv run pytest tests/ci/test_board_fleet_placement_omn18381.py::TestAc2IndependenceFromHostedBilling -q --no-cov -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omninode_infra"
+    binds_ac:
+      - "AC2"
+  - id: "dod-omn18381-ac3-hourly-cadence"
+    description: |-
+      AC3 -- exactly one cron, with a single-fire minute field, so the cadence
+      is hourly while on the fleet. The 15-minute cadence returning is a
+      separate decision and this refuses it until then. 1 test.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/commits/eb81dc81e05a0b1f5d8a74991d5a30f6a3727f51 --jq .sha >/dev/null;
+          uv run pytest tests/ci/test_board_fleet_placement_omn18381.py::TestAc3CadenceIsHourlyWhileOnTheFleet -q --no-cov -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omninode_infra"
+    binds_ac:
+      - "AC3"
+  - id: "dod-omn18381-ac4-adopted-resources-not-renamed"
+    description: |-
+      AC4 -- the S3 bucket and CloudFront distribution are still named in the
+      workflow. #1462 has Terraform adopting both by name, so a rename orphans
+      the adopted resource and publishes where nobody is reading. 2 tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/commits/eb81dc81e05a0b1f5d8a74991d5a30f6a3727f51 --jq .sha >/dev/null;
+          uv run pytest tests/ci/test_board_fleet_placement_omn18381.py::TestAc4TheAdoptedResourcesAreNotRenamed -q --no-cov -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omninode_infra"
+    binds_ac:
+      - "AC4"
+  - id: "dod-omn18381-ac5-page-states-its-own-age"
+    description: |-
+      AC5 -- the generator emits a staleness element with a baked
+      `data-generated` timestamp whose age is recomputed in the reader's
+      browser. This is the criterion that answers the incident: on 2026-09-11
+      and again on 2026-09-14 the board froze while showing no sign of being
+      frozen. A staleness signal needing a publish to update cannot fire in the
+      one case it exists for. 3 tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/commits/eb81dc81e05a0b1f5d8a74991d5a30f6a3727f51 --jq .sha >/dev/null;
+          uv run pytest tests/ci/test_board_fleet_placement_omn18381.py::TestAc5ThePageStatesItsOwnAge -q --no-cov -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omninode_infra"
+    binds_ac:
+      - "AC5"
+  - id: "dod-omn18381-ac6-missing-aws-named-cause"
+    description: |-
+      AC6 -- the publish job probes for the aws CLI before using it and raises a
+      GitHub error annotation naming both the CLI and the fleet, so a tooling
+      gap is distinguishable from a credential or permission failure rather
+      than surfacing opaquely inside an upload step. 2 tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/commits/eb81dc81e05a0b1f5d8a74991d5a30f6a3727f51 --jq .sha >/dev/null;
+          uv run pytest tests/ci/test_board_fleet_placement_omn18381.py::TestAc6MissingAwsFailsWithANamedCause -q --no-cov -p no:cacheprovider
+        cwd: "${OMNI_HOME}/omninode_infra"
+    binds_ac:
+      - "AC6"
+  - id: "occ-self-bind-pr-10064"
+    description: "Binds OMN-18381 to OCC companion PR #10064 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10064 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1539"
+    description: "PR #1539 on OmniNode-ai/omninode_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1539 --repo OmniNode-ai/omninode_infra --json number,state"
+    binds_ac:
+      - "AC1"
+      - "AC2"
+      - "AC3"
+      - "AC4"
+      - "AC5"
+      - "AC6"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "da664239e70c2e4191bfd5d0ecf4ac94145a4870264128bfffb434f8ed906fdb"
+        proposed_by: "occ-autobind"
+      - label: "AC2"
+        criterion_hash: "90ea8bf276e01ebed82d8c4021e9d821d12134d000e5871acaf70cb4605f4dfb"
+        proposed_by: "occ-autobind"
+      - label: "AC3"
+        criterion_hash: "c24eb247614a0d8138da178064b8118c627d58f1709f1313d871981877a33d9b"
+        proposed_by: "occ-autobind"
+      - label: "AC4"
+        criterion_hash: "476bdbec389b27cde70122c57f9bedea97c3f11726c3d6749ebb2fad959fd2b2"
+        proposed_by: "occ-autobind"
+      - label: "AC5"
+        criterion_hash: "c2519ed36ce5018531d86737f8fe73ffbe6ec21903e77fdb48fa1e4f3835d49f"
+        proposed_by: "occ-autobind"
+      - label: "AC6"
+        criterion_hash: "a6c287c1a8eba472686b606e31eb90855bcc863f204f85fa36e1db6b41209dde"
+        proposed_by: "occ-autobind"
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1539-ci"
+    description: "PR #1539 on OmniNode-ai/omninode_infra — product diff scope check (OMN-14425)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 1539 --repo OmniNode-ai/omninode_infra --json files"
+  - id: "occ-self-bind-pr-10063"
+    description: "OCC companion PR #10063 — self-bind for OMN-18381 (OMN-14650)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10063 --repo OmniNode-ai/onex_change_control --json number,state"
