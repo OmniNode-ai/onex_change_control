@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from scripts.validation.check_runner_routing import (
     FORK_AWARE_ROUTE,
@@ -312,8 +316,10 @@ def test_this_repository_has_no_hardcoded_runner_label() -> None:
 ROUTE_RUNS_ON = "${{ fromJSON(needs.route.outputs.runs_on) }}"
 
 
-def _route_consumer(job: dict[str, object]) -> list[str]:
-    return validate_route_consumer(workflow_path="wf.yml", job_name="consumer", job=job)
+def _route_consumer(job: Mapping[str, object]) -> list[str]:
+    return validate_route_consumer(
+        workflow_path="wf.yml", job_name="consumer", job=dict(job)
+    )
 
 
 def test_route_consumer_with_the_needs_edge_passes() -> None:
