@@ -37,6 +37,10 @@
 #      is surfaced as an informational NOTE (not asserted / not failed) and is
 #      flagged for the operator in OMN-14683. Promote to a hard dev assertion
 #      once every receipt-gate repo requires `verify / verify` on dev.
+#   4a. "Lane Identity Gate" is a required status check (DEV only, for repos in
+#      LANE_IDENTITY_GATE_REQUIRED_REPOS — OMN-18288). Asserted rather than
+#      noted: the context has one producing repo and one reportable branch, so
+#      there is no cross-repo inconsistency to be tolerant of.
 #   5. delete_branch_on_merge is true (repo setting — checked once per repo).
 #   6. A "Merge Queue" ruleset exists (public repos — checked once per repo).
 #
@@ -179,6 +183,27 @@ RECEIPT_GATE_REQUIRED_REPOS=(
   onex_change_control
 )
 
+# ──────────────────────────────────────────────────────────────────────
+# Lane Identity Gate on `dev` (OMN-18288)
+# ──────────────────────────────────────────────────────────────────────
+# The gate reported on omniclaude`s dev from 2026-09-13 and could not block
+# anything: it was absent from required_status_checks, which is advisory
+# detection and is the gap omni_home CLAUDE.md rule 5 names directly.
+#
+# DEV ONLY, and the asymmetry is deliberate rather than an omission. omniclaude
+# is a release-synced-main repo, so its main carries an EMPTY
+# required_status_checks by design (OMN-16289 / OMN-16642) and a PR-shaped
+# context asserted there would block the release sync rather than gate
+# anything -- the same reason the Receipt Gate is skipped on release-synced
+# main above.
+#
+# ONE REPO, and it stays one until a second repo carries the gate. The module
+# it protects (scripts/lane_identity.py) lives only in omniclaude, so listing a
+# repo here that does not produce the context would assert a context that can
+# never report and wedge every pull request in it. Add a repo to this list in
+# the same change that gives it the workflow, never before.
+LANE_IDENTITY_GATE_REQUIRED_REPOS=(omniclaude)
+
 FAILURES=0
 TOTAL_CHECKS=0
 # Per-repo compliance flag (global; reset at the top of each check_repo).
@@ -237,6 +262,16 @@ is_review_gated_main() {
 requires_receipt_gate() {
   local repo="$1"
   for p in "${RECEIPT_GATE_REQUIRED_REPOS[@]}"; do
+    if [[ "$p" == "$repo" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+requires_lane_identity_gate() {
+  local repo="$1"
+  for p in "${LANE_IDENTITY_GATE_REQUIRED_REPOS[@]}"; do
     if [[ "$p" == "$repo" ]]; then
       return 0
     fi
@@ -502,6 +537,43 @@ check_branch() {
     else
       echo "    [${branch}] NOTE: \"verify / verify\" Receipt Gate absent on dev (dev not asserted — flagged for operator, OMN-14683)"
       emit_jsonl "$repo" "$branch" "required_check_receipt_gate" "NOTE" "absent; dev not asserted (flagged)"
+    fi
+  fi
+
+  # 5. "Lane Identity Gate" — asserted on DEV only (OMN-18288).
+  #
+  # ASSERTED, not noted. The Receipt Gate above is informational on dev because
+  # its coverage across repos is inconsistent and a hard assertion would fail
+  # honest repos. This context has exactly one producing repo and exactly one
+  # branch it can report on, so there is nothing inconsistent to be tolerant
+  # of: it is either required on omniclaude dev or the gate it names is
+  # advisory, which is the state OMN-18288 exists to end.
+  #
+  # The expectation moves in the SAME change that flips live branch protection,
+  # which is the criterion's own wording. The alternative ordering -- flip
+  # first, update the guard later -- makes the Branch Protection Guard red on
+  # every omni_home pull request in the interval, which is how the 2026-08-24
+  # to 2026-09-13 nine-day red window happened (see the release-synced-main
+  # block above and rule 12's "verified: 2026-09-13" paragraph).
+  if [[ "$branch" == "dev" ]] && requires_lane_identity_gate "$repo"; then
+    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+    local lane_identity_gate
+    lane_identity_gate=$(printf '%s' "$protection" | jq -r '
+      (
+        (.required_status_checks.contexts // [])
+        + ((.required_status_checks.checks // []) | map(.context))
+      )
+      | map(select(. == "Lane Identity Gate"))
+      | length
+    ')
+    if [[ "$lane_identity_gate" -ge 1 ]]; then
+      echo "    [${branch}] PASS: \"Lane Identity Gate\" is a required status check"
+      emit_jsonl "$repo" "$branch" "required_check_lane_identity_gate" "PASS" "Lane Identity Gate required"
+    else
+      echo "    [${branch}] FAIL: \"Lane Identity Gate\" not found in required status checks — the gate reports but cannot block (OMN-18288)"
+      emit_jsonl "$repo" "$branch" "required_check_lane_identity_gate" "FAIL" "Lane Identity Gate missing"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
     fi
   fi
 }
