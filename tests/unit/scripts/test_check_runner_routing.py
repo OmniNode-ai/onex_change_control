@@ -13,6 +13,7 @@ from scripts.validation.check_runner_routing import (
     expected_selector,
     hardcoded_label_violations,
     validate_index_env,
+    validate_route_consumer,
     validate_runs_on,
     validate_workflows,
 )
@@ -302,3 +303,97 @@ def test_empty_label_set_finds_nothing() -> None:
 def test_this_repository_has_no_hardcoded_runner_label() -> None:
     """The live check, over the real tree, with the label set that broke CI."""
     assert validate_workflows(REPO_ROOT, labels=LABELS) == []
+
+
+# ---------------------------------------------------------------------------
+# OMN-18031 -- V2 route consumers must declare the `needs:` edge
+# ---------------------------------------------------------------------------
+
+ROUTE_RUNS_ON = "${{ fromJSON(needs.route.outputs.runs_on) }}"
+
+
+def _route_consumer(job: dict[str, object]) -> list[str]:
+    return validate_route_consumer(workflow_path="wf.yml", job_name="consumer", job=job)
+
+
+def test_route_consumer_with_the_needs_edge_passes() -> None:
+    assert _route_consumer({"needs": ["route"], "runs-on": ROUTE_RUNS_ON}) == []
+    assert _route_consumer({"needs": "route", "runs-on": ROUTE_RUNS_ON}) == []
+
+
+def test_route_consumer_without_the_needs_edge_is_rejected() -> None:
+    """POSITIVE CONTROL for the check above.
+
+    A consumer missing the edge resolves its runs-on to an empty string and
+    never schedules -- an ABSENT job, not a red one. If this assertion ever
+    stops producing a violation, the check has quietly stopped checking, which
+    is the failure mode this module was rewritten to design against.
+    """
+    for job in (
+        {"runs-on": ROUTE_RUNS_ON},
+        {"needs": ["zone-filter"], "runs-on": ROUTE_RUNS_ON},
+        {"needs": "zone-filter", "runs-on": ROUTE_RUNS_ON},
+    ):
+        violations = _route_consumer(job)
+        assert len(violations) == 1, f"{job!r} was silently accepted"
+        assert "does not declare 'route' in needs" in violations[0]
+
+
+def test_route_consumer_check_is_keyed_on_the_job_the_expression_names() -> None:
+    """The edge is checked against the job the expression reads, not a literal.
+
+    A workflow free to call its route job something else must still be checked
+    against that name, and must not be excused by a `needs:` on the name this
+    repository happens to use.
+    """
+    job = {
+        "needs": ["route"],
+        "runs-on": "${{ fromJSON(needs.placement.outputs.runs_on) }}",
+    }
+    violations = _route_consumer(job)
+    assert len(violations) == 1
+    assert "needs.placement.outputs.runs_on" in violations[0]
+    assert (
+        _route_consumer(
+            {
+                "needs": ["placement"],
+                "runs-on": "${{ fromJSON(needs.placement.outputs.runs_on) }}",
+            }
+        )
+        == []
+    )
+
+
+def test_non_route_jobs_are_untouched_by_the_route_consumer_check() -> None:
+    """Every other shape in this repository is out of scope, including the
+    seam expression every non-consumer job still carries and a `uses:` job
+    that declares no runs-on at all."""
+    assert _route_consumer({"runs-on": FORK_AWARE_ROUTE}) == []
+    assert _route_consumer({"uses": "./.github/workflows/reusable.yml"}) == []
+    assert _route_consumer({"runs-on": ["self-hosted", "omnibase-ci"]}) == []
+
+
+def test_live_route_consumer_in_this_repository_declares_its_edge() -> None:
+    """The live check, over the real tree.
+
+    ci.yml's `expiring-dod-check-gate` is the one wired V2 consumer
+    (OMN-18031); if its `needs: [route]` edge is ever dropped the job stops
+    scheduling silently, so this asserts it against the real file rather than
+    a fixture.
+    """
+    import yaml
+
+    doc = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    consumers = {
+        job_id: job
+        for job_id, job in doc["jobs"].items()
+        if isinstance(job.get("runs-on"), str) and "outputs.runs_on" in job["runs-on"]
+    }
+    assert consumers, "no V2 route consumer found in ci.yml"
+    for job_id, job in consumers.items():
+        assert (
+            validate_route_consumer(workflow_path="ci.yml", job_name=job_id, job=job)
+            == []
+        )

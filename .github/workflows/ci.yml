@@ -23,6 +23,69 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # OMN-18031. Per-run runner routing, adopted here from the omnibase_infra
+  # pilot (027fe4ef8ba4a15560a4f08ff612980d435afc44, PR #3283; consumer wiring
+  # 6b47feea6, PR #3291; node refactor 341ac00cfac9b0f7e42498de265ace7006fdfa72,
+  # OMN-18412, PR #3604). This job asks the routing COMPUTE node
+  # `node_ci_runner_route_compute`, reached through a pinned cross-repo
+  # reusable, which runs-on label set this workflow's jobs should use. No
+  # decision, no threshold and no policy file lives in this repository: the
+  # caller vendors nothing, and a second copy of the decision is exactly the
+  # drift the node exists to prevent.
+  #
+  # THE SEAM IS READ AS A CEILING AND NEVER WRITTEN. Routing may only ever
+  # DOWNGRADE from what `vars.OMNI_TRUSTED_CI_RUNS_ON_JSON` already allows.
+  # Nothing in this workflow writes any Actions variable at any scope
+  # (CLAUDE.md rule 14, single-owner); flipping the seam remains a separate,
+  # claimed, single-owner action and is not this ticket.
+  #
+  # IT IS INERT TODAY AND THAT IS THE POINT. Read back live on 2026-09-18,
+  # this repository's trusted seam is '["ubuntu-latest"]' at BOTH the
+  # organization scope and this repository's own shadow, so the node returns
+  # that seam verbatim and every job below -- the one consumer included --
+  # lands exactly where it landed before. The evidence this change carries is
+  # that a runs-on RESOLVED FROM THE ROUTE OUTPUT scheduled and ran; it is
+  # never a claim that any job moved onto the lab, because none did.
+  #
+  # ONE CONSUMER IS WIRED: `expiring-dod-check-gate`. It is the cheapest job in
+  # this workflow that runs unconditionally on every pull_request event, is not
+  # container-backed, is not lane-bound, resolves its placement through the
+  # shared V1 seam expression, and is NOT a required context -- which maximises
+  # how often the new shape is exercised while keeping what a routing defect
+  # costs to a single job. The required-context exclusion is not preference:
+  # this repo's `reject-required-check-skip-vector` hook refuses a `needs:`
+  # edge on a required context that carries no `if: always()`, because a
+  # skipped job satisfies branch protection. A non-required consumer reaches
+  # merge only through `CI Summary`, whose STRICT registry fails on `skipped`,
+  # so the edge is fail-closed there. EVERY OTHER JOB IN THIS FILE STILL READS
+  # THE V1 SEAM EXPRESSION DIRECTLY and moves only on separate evidence.
+  #
+  # FAIL-CLOSED ON ANY PROBE ERROR. The reusable carries a floor: if the
+  # decision module cannot run at all it still emits hosted labels rather than
+  # an empty string, because an empty runs-on makes a consuming job fail to
+  # SCHEDULE -- a failure with no log to read. A refusal (a private caller whose
+  # only allowed placement is hosted) exits non-zero instead of being papered
+  # over; that arm cannot fire here, because this repository is PUBLIC (read
+  # back live 2026-09-18: `gh api repos/OmniNode-ai/onex_change_control --jq
+  # .visibility` -> public).
+  #
+  # Registered in scripts/ci/ci_summary_gate.py STRICT_GATE_JOBS as
+  # "Runner Route (OMN-18031) / route". THAT REGISTRATION IS HALF THE
+  # MECHANISM: the default-deny sweep already fails CI Summary when a
+  # registered job FAILS, but an unregistered job that is `skipped` or ABSENT
+  # yields SUCCESS -- so without the entry, deleting this job would silently
+  # retire per-run routing on a fully green run, and because routing is
+  # deliberately inert at the current seam value nothing about job PLACEMENT
+  # would change to reveal it.
+  route:
+    name: Runner Route (OMN-18031)
+    uses: OmniNode-ai/omniclaude/.github/workflows/route-runner-reusable.yml@b6ba84ef6c9ba3f220204c3d672de1da5131132c
+    with:
+      workflow_path: .github/workflows/ci.yml
+    secrets:
+      RUNNER_FLEET_STATUS_TOKEN: ${{ secrets.RUNNER_FLEET_STATUS_TOKEN }}
+      CROSS_REPO_PAT: ${{ secrets.CROSS_REPO_PAT }}
+
   # Zone filter (OMN-10475): short-circuit heavy jobs on docs-only and
   # declarative-evidence-only PRs. Most OCC traffic is contract+receipt
   # YAML in contracts/ and drift/dod_receipts/, both DOCS zone now.
@@ -2057,16 +2120,42 @@ jobs:
     # authoring time tells a human who is present; finding it later surfaces as
     # a red gate on somebody else's unrelated PR a week afterwards.
     #
-    # UNCONDITIONAL BY DESIGN, matching the ratchets above: no needs:, no if:,
-    # no paths filter. The whole corpus is scanned because a contract that is
-    # not touched by this PR can still have expired since the last one.
-    runs-on: >-
-      ${{
-        (github.event_name == 'pull_request' &&
-            github.event.pull_request.head.repo.full_name != github.repository)
-        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
-        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
-      }}
+    # UNCONDITIONAL BY DESIGN, matching the ratchets above: no if:, no paths
+    # filter. The whole corpus is scanned because a contract that is not
+    # touched by this PR can still have expired since the last one.
+    #
+    # OMN-18031: this job is the FIRST and, for now, the ONLY job in this
+    # repository whose PLACEMENT resolves from the per-run route decision
+    # instead of the V1 seam expression read at the call site. `needs: [route]`
+    # is a SCHEDULING edge, not a content precondition -- nothing about WHEN
+    # this gate runs or WHAT it scans changed, and it keeps no `if:`.
+    #
+    # WHY THIS JOB AND NOT THE CHEAPEST ONE OVERALL. `validate-contracts` is
+    # cheaper still, but it is a REQUIRED context on `main`, and this repo's
+    # `reject-required-check-skip-vector` hook correctly refuses a `needs:`
+    # edge on a required context with no `if: always()`: GitHub's implicit
+    # job-level `if:` is `success()` over `needs:`, a skipped job satisfies
+    # branch protection, and the edge would therefore have been a live silent-
+    # pass bypass. This job is not a required context -- it reaches merge only
+    # through `CI Summary`, whose STRICT registry fails on `skipped` -- so the
+    # same edge here is fail-closed. That gate finding is the reason the
+    # consumer moved; see the PR body.
+    #
+    # `needs: [route]` IS LOAD-BEARING TWICE: without the edge the expression
+    # resolves to nothing and the job fails to SCHEDULE, which surfaces as an
+    # absent job rather than a failing one; and the route job is fail-closed,
+    # so a probe fault yields hosted labels rather than a red gate.
+    # scripts/validation/check_runner_routing.py now asserts the edge
+    # structurally for any job whose runs-on reads a route output.
+    #
+    # PLACEMENT IS UNCHANGED TODAY. With this repo's trusted seam at
+    # '["ubuntu-latest"]' the node returns the seam verbatim and this job lands
+    # exactly where it landed before. Fork isolation is not restated here and
+    # that is the point: routing holds it in ONE place, ahead of every capacity
+    # signal, instead of inline at every selector call site in this file.
+    needs: [route]
+    # OMNI_RUNNER_SELECTOR_V2 - placement comes from the route job's decision.
+    runs-on: ${{ fromJSON(needs.route.outputs.runs_on) }}
     timeout-minutes: 20
     permissions:
       contents: read

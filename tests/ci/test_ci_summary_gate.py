@@ -64,6 +64,14 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 # required-checks.yaml's `job_path` Shape B/C documentation for the same jobs.
 COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     ("ci.yml", "merge-hold-gate"): "merge-hold-gate / evaluate",
+    # OMN-18031: the route job calls omniclaude's cross-repo
+    # route-runner-reusable.yml, whose inner job is named `route`, so GitHub
+    # surfaces the check-run as "<caller job name> / route". The caller job
+    # DOES carry its own `name:`, so without this entry the default
+    # `job.get("name", job_id)` resolution would look for the uncomposed
+    # "Runner Route (OMN-18031)" and report the registered composed name as an
+    # unclassified job.
+    ("ci.yml", "route"): "Runner Route (OMN-18031) / route",
     # OMN-16260: these four jobs' original standalone files (call-occ-
     # autobind.yml, call-occ-companion-effect.yml, pr-title-check.yml,
     # required-check-skip-guard-caller.yml) were consolidated into
@@ -165,6 +173,10 @@ def test_every_strict_and_skippable_name_resolves_to_a_live_ci_yml_job() -> None
     live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", "merge-hold-gate")]] = (
         "merge-hold-gate"
     )
+    # OMN-18031: `route` has a local `name:`, but the registered gate entry is
+    # the COMPOSED check-run name, so resolve it through the override table the
+    # same way.
+    live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", "route")]] = "route"
 
     for name in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS:
         assert name in live_names, f"{name!r} does not match any live ci.yml job name"
