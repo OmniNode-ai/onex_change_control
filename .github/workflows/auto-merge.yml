@@ -101,6 +101,17 @@
 # nightly-promote.yml and staleness-monitor.yml in this repo; no new
 # credential is minted. Only the two merge-state-MUTATING steps carry it; the
 # read-only resolve step stays on GITHUB_TOKEN.
+# OMN-17922 (2026-09-18, second pass): COMPANIONS ARM PROMPTLY, NOT
+# EVENTUALLY. The first pass made bot companions arm at all; arming still
+# waited on `check_suite: completed` delivery, so a companion whose eligibility
+# check went green in ~60s sat unarmed for 3-18 minutes (four measured on this
+# repo 2026-09-18; table in the eligibility step below) and four lanes armed one
+# by hand that morning. The eligibility step now polls its own reading on the
+# companion `opened` path, bounded, instead of taking it once. No gate was
+# relaxed: SUCCESS is still the only arming state, a concluded FAILURE still
+# exits 1, and an exhausted budget defers exactly as before. Pinned by
+# tests/ci/test_auto_merge_companion_poll_omn17922.py, which executes the step's
+# own bash against a scripted Checks API.
 name: Auto-Merge
 
 on:
@@ -186,23 +197,34 @@ jobs:
           # Any other author, or the App with any other title, does not arm.
           # This is deliberately not "any Bot": dependabot, github-actions and
           # any future App stay outside the gate.
+          # OMN-17922 (2026-09-18): `companion` names the ONE shape whose
+          # eligibility reading is worth waiting for in-run — the OCC writer
+          # App's `evidence(` PR. It is strictly narrower than `arm`: the
+          # `jonahgabriel` identity arms but is never a companion, so no human
+          # PR pays for the poll. Nothing gates ON `companion` except the poll
+          # budget; it grants no authority `arm` does not already grant.
           ARM=false
+          COMPANION=false
           case "$ACTOR" in
             jonahgabriel)
               ARM=true
               ;;
             app/onexbot-occ-writer|onexbot-occ-writer\[bot\])
               case "$TITLE" in
-                "evidence("*) ARM=true ;;
+                "evidence("*)
+                  ARM=true
+                  COMPANION=true
+                  ;;
                 *) ARM=false ;;
               esac
               ;;
           esac
-          echo "actor=${ACTOR} title=${TITLE} arm=${ARM}"
+          echo "actor=${ACTOR} title=${TITLE} arm=${ARM} companion=${COMPANION}"
           {
             echo "pr=$PR"
             echo "actor=$ACTOR"
             echo "arm=$ARM"
+            echo "companion=$COMPANION"
             echo "skip=false"
           } >> "$GITHUB_OUTPUT"
 
@@ -215,6 +237,46 @@ jobs:
       # - FAILURE → hard fail; log reason and exit 1 to surface the block.
       # merge_group events skip this step; branch protection enforces occ-preflight
       # as a required status check for the merge group itself.
+      #
+      # OMN-17922 (2026-09-18): BOUNDED WAIT ON THE COMPANION `opened` PATH.
+      # OMN-17922 made bot-authored OCC evidence companions arm at all. It did
+      # not make them arm PROMPTLY, because the decision above is taken once per
+      # event and the `pull_request: opened` run reaches this step before the
+      # companion's own eligibility check has started. Arming then waits for a
+      # `check_suite: completed` event, and that delivery is neither immediate
+      # nor one-per-PR. Measured on this repo 2026-09-18, four companions opened
+      # in one window:
+      #
+      #   PR      opened     eligibility SUCCESS   armed      wasted
+      #   10179   08:15:07   08:16:01 (+54s)       08:28:27   12m26s
+      #   10181   08:15:51   08:16:47 (+56s)       08:28:28   11m41s
+      #   10180   08:15:29   —                     08:33:42   18m13s
+      #   10183   08:31:39   08:32:43 (+64s)       08:35:47    3m04s
+      #
+      # In every case eligibility was green inside ~60s and the companion then
+      # sat unarmed for minutes, while the product PR behind it stayed BLOCKED on
+      # its `OCC Companion Merged Gate (OMN-15214)` check. Four lanes hand-armed
+      # a companion on the morning of 2026-09-18 for exactly this reason
+      # (FRICTION rows in docs/tracking/ROLLING_WORK_LEDGER.md).
+      #
+      # The fix is a bounded poll, NOT a relaxed gate. Nothing about WHAT is
+      # required changed: SUCCESS is still the only state that arms, a concluded
+      # FAILURE still hard-fails, and exhausting the budget defers exactly as
+      # before, leaving the existing check_suite path to arm later. The poll is
+      # scoped to the one shape that measurably suffers — the OCC writer App's
+      # `evidence(` companion, on the `pull_request` event — so human PRs, the
+      # check_suite re-attempt path and workflow_dispatch are byte-identical in
+      # behaviour and cost. A `pull_request`-triggered run of this job takes
+      # ~16s today; at ~12 companions/hour the added runner time is well under a
+      # minute per companion and under 15 minutes per hour in total.
+      #
+      # Deliberately NOT done here: arming before eligibility concludes on the
+      # grounds that `occ-preflight / eligibility` is a required status check on
+      # `dev` and GitHub would hold the merge anyway. That is true today and is
+      # a property of branch protection, which this workflow cannot read with
+      # `secrets.GITHUB_TOKEN`; making it readable would put the PAT on a third,
+      # read-only step. A gate that stays fail-closed on its own evidence is
+      # worth more than the last ~60 seconds.
       - name: Check OCC eligibility preflight status
         id: occ_gate
         if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.arm == 'true' && github.event_name != 'merge_group'
@@ -222,6 +284,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ steps.resolve.outputs.pr }}
+          # OMN-17922: the poll budget is non-zero for exactly one shape — a bot
+          # OCC evidence companion on its own `opened` event. Every other actor,
+          # title and event resolves to 0 and takes a single reading, which is
+          # the pre-OMN-17922-poll behaviour unchanged.
+          ELIGIBILITY_POLL_SECONDS: >-
+            ${{ (steps.resolve.outputs.companion == 'true' && github.event_name == 'pull_request') && '180' || '0' }}
+          ELIGIBILITY_POLL_INTERVAL_SECONDS: "10"
         run: |
           set -euo pipefail
 
@@ -242,44 +311,76 @@ jobs:
           # selected run's status controls pass, fail, or defer. A queued run can omit
           # `started_at`; the API exposes no creation timestamp to establish its order,
           # so defer rather than inventing an ordering rule.
-          if check_pages="$(gh api \
-            "repos/${GH_REPO}/commits/${head_sha}/check-runs?per_page=100" \
-            --paginate --slurp 2>&1)"; then
-            if ! check_result="$(printf '%s' "$check_pages" | jq -cer '
-              if type != "array" then
-                error("check-runs pages must be an array")
-              elif any(.[]; if type != "object" then true elif (has("check_runs") | not) then true elif (.check_runs | type) != "array" then true else false end) then
-                error("every check-runs page must be an object with an array check_runs field")
-              else
-                .
-              end
-              | [.[] | .check_runs[]
-                  | if type != "object" then error("check-runs entry must be an object") elif (has("name") | not) or ((.name | type) != "string") then error("check-runs entry name missing or invalid") else . end
-                  | select(.name == "eligibility" or .name == "occ-preflight / eligibility")]
-              | if any(.[]; ((.started_at | type) != "string") or (.started_at == "")) then
-                  {conclusion: null, status: "in_progress", defer_reason: "missing_started_at"}
+          #
+          # OMN-17922: this reading is a function so the poll below re-takes it
+          # whole. Every failure path still yields '{}', i.e. missing/missing,
+          # which is a deferring (never an arming) reading. It writes the reading
+          # to a FILE rather than stdout, because its `::warning::` lines have to
+          # reach stdout for Actions to parse them as workflow commands, and a
+          # command-substituted function would capture them into the reading.
+          eligibility_file="$(mktemp)"
+          read_eligibility() {
+            local check_pages check_result
+            if check_pages="$(gh api \
+              "repos/${GH_REPO}/commits/${head_sha}/check-runs?per_page=100" \
+              --paginate --slurp 2>&1)"; then
+              if ! check_result="$(printf '%s' "$check_pages" | jq -cer '
+                if type != "array" then
+                  error("check-runs pages must be an array")
+                elif any(.[]; if type != "object" then true elif (has("check_runs") | not) then true elif (.check_runs | type) != "array" then true else false end) then
+                  error("every check-runs page must be an object with an array check_runs field")
                 else
-                  (sort_by([
-                    .started_at,
-                    (.id as $id | if ($id | type) == "number" then $id elif ($id | type) == "string" then ($id | tonumber) else error("check run id missing or invalid") end)
-                  ]) | last // {})
-                end')"; then
-              echo "::warning::Could not parse paginated OCC eligibility checks for PR #${PR}; deferring auto-merge"
+                  .
+                end
+                | [.[] | .check_runs[]
+                    | if type != "object" then error("check-runs entry must be an object") elif (has("name") | not) or ((.name | type) != "string") then error("check-runs entry name missing or invalid") else . end
+                    | select(.name == "eligibility" or .name == "occ-preflight / eligibility")]
+                | if any(.[]; ((.started_at | type) != "string") or (.started_at == "")) then
+                    {conclusion: null, status: "in_progress", defer_reason: "missing_started_at"}
+                  else
+                    (sort_by([
+                      .started_at,
+                      (.id as $id | if ($id | type) == "number" then $id elif ($id | type) == "string" then ($id | tonumber) else error("check run id missing or invalid") end)
+                    ]) | last // {})
+                  end')"; then
+                echo "::warning::Could not parse paginated OCC eligibility checks for PR #${PR}; deferring auto-merge"
+                check_result='{}'
+              fi
+            else
+              echo "::warning::Could not query paginated OCC eligibility checks for PR #${PR}; deferring auto-merge"
               check_result='{}'
             fi
-          else
-            echo "::warning::Could not query paginated OCC eligibility checks for PR #${PR}; deferring auto-merge"
-            check_result='{}'
-          fi
+            printf '%s' "$check_result" > "$eligibility_file"
+          }
 
-          conclusion="$(printf '%s' "$check_result" | jq -r '.conclusion // "missing"')"
-          status="$(printf '%s' "$check_result" | jq -r '.status // "missing"')"
+          # OMN-17922: poll until the reading is TERMINAL (completed) or the
+          # budget runs out. A zero budget takes exactly one reading. The
+          # deadline is computed once, so a slow API call shortens the poll
+          # rather than extending the job past its budget.
+          poll_seconds="${ELIGIBILITY_POLL_SECONDS:-0}"
+          interval_seconds="${ELIGIBILITY_POLL_INTERVAL_SECONDS:-10}"
+          case "$poll_seconds" in ''|*[!0-9]*) poll_seconds=0 ;; esac
+          case "$interval_seconds" in ''|*[!0-9]*|0) interval_seconds=10 ;; esac
+          deadline=$(( $(date +%s) + poll_seconds ))
+          attempts=0
+
+          while :; do
+            read_eligibility
+            check_result="$(cat "$eligibility_file")"
+            attempts=$(( attempts + 1 ))
+            conclusion="$(printf '%s' "$check_result" | jq -r '.conclusion // "missing"')"
+            status="$(printf '%s' "$check_result" | jq -r '.status // "missing"')"
+            [ "$status" = "completed" ] && break
+            [ "$(date +%s)" -lt "$deadline" ] || break
+            echo "occ-preflight status=${status} conclusion=${conclusion} — waiting ${interval_seconds}s (attempt ${attempts}, budget ${poll_seconds}s)"
+            sleep "$interval_seconds"
+          done
 
           if [ "$(printf '%s' "$check_result" | jq -r '.defer_reason // empty')" = "missing_started_at" ]; then
             echo "::warning::An OCC eligibility check for PR #${PR} has no started_at; its recency is ambiguous, so auto-merge will defer"
           fi
 
-          echo "occ-preflight status=${status} conclusion=${conclusion}"
+          echo "occ-preflight status=${status} conclusion=${conclusion} after ${attempts} reading(s), budget ${poll_seconds}s"
 
           if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
             echo "OCC eligibility: PASS — proceeding to arm auto-merge"
