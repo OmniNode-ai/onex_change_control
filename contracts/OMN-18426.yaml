@@ -413,14 +413,17 @@ dod_evidence:
         check_value: "gh pr view 10041 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
   - id: "ac1-ac2-hook-on-all-fifteen-default-branches"
     description: >-
-      AC1 and AC2, read live on the default branch of each of the 15 repos named in the ticket. For every
-      repo the check resolves the default branch from the API (never assumed to be dev -- RSD, knowledge-base
-      and knowledge-base-internal are main), reads .pre-commit-config.yaml at that branch, and asserts:
-      strip-ai-coauthor-trailer is declared exactly once with stages [commit-msg] (AC1); default_install_hook_types
-      contains commit-msg and every other installable stage the file actually uses, and default_stages
-      is [pre-commit] whenever the file has stageless hooks (AC2, ruling c21f38c8). It prints a PASS/FAIL
-      line per repo and exits non-zero naming the repos if any one of the 15 fails, so a single regressed
-      repo cannot pass.
+      AC1 and AC2, read live on the default branch of each of the 15 repos named in the ticket, in a SINGLE
+      GraphQL request: per repo it asks for the default branch NAME (never assumed to be dev -- RSD, knowledge-base
+      and knowledge-base-internal are main) and the text of .pre-commit-config.yaml at that branch, since
+      HEAD: resolves the default branch server-side. It then asserts: strip-ai-coauthor-trailer is declared
+      exactly once with stages [commit-msg] (AC1); default_install_hook_types contains commit-msg and
+      every other installable stage the file actually uses, and default_stages is [pre-commit] whenever
+      the file has stageless hooks (AC2, ruling c21f38c8). It prints a PASS/FAIL line per repo and exits
+      non-zero naming the repos if any one of the 15 fails, so a single regressed repo cannot pass. One
+      request rather than thirty because this runs inside the compliance runner's 60-second per-check
+      budget after dozens of other API calls: the per-repo REST version failed there on 2026-09-18 while
+      passing standalone, and the runner truncates the underlying gh error to 200 characters.
     source: "manual"
     status: "verified"
     binds_ac: ["AC1", "AC2"]
@@ -428,24 +431,41 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           python3 - <<'PY'
-          import base64, json, subprocess, sys
+          """AC1 + AC2 for OMN-18426, read live from the default branch of all 15 repos in ONE API call."""
+          import json
+          import subprocess
+          import sys
+
           import yaml
 
           REPOS = ["RSD", "knowledge-base", "knowledge-base-internal", "omnibase_compat", "omnibase_core",
                    "omnibase_infra", "omnibase_spi", "omniclaude", "omnidash", "omniintelligence",
                    "omnimarket", "omnimemory", "omninode_infra", "omniweb", "onex_change_control"]
-          INSTALLABLE = {"pre-commit", "pre-push", "commit-msg", "prepare-commit-msg", "post-commit", "post-checkout", "post-merge"}
+          INSTALLABLE = {"pre-commit", "pre-push", "commit-msg", "prepare-commit-msg", "post-commit",
+                         "post-checkout", "post-merge"}
 
-
-          def gh(path):
-              return json.loads(subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout)
-
+          # One GraphQL request for every repo: the default branch NAME (never assumed to be dev) and the
+          # text of .pre-commit-config.yaml at that branch (HEAD: resolves the default branch server-side).
+          parts = "\n".join(
+              'r{i}: repository(owner: "OmniNode-ai", name: "{name}") {{ '
+              'defaultBranchRef {{ name }} '
+              'object(expression: "HEAD:.pre-commit-config.yaml") {{ ... on Blob {{ text }} }} }}'.format(i=i, name=name)
+              for i, name in enumerate(REPOS)
+          )
+          result = subprocess.run(["gh", "api", "graphql", "-f", "query=query {\n" + parts + "\n}"],
+                                  check=True, capture_output=True, text=True)
+          data = json.loads(result.stdout)["data"]
 
           failures = []
-          for repo in REPOS:
-              branch = gh(f"repos/OmniNode-ai/{repo}")["default_branch"]
-              blob = gh(f"repos/OmniNode-ai/{repo}/contents/.pre-commit-config.yaml?ref={branch}")
-              cfg = yaml.safe_load(base64.b64decode(blob["content"])) or {}
+          for i, repo in enumerate(REPOS):
+              node = data["r{}".format(i)]
+              branch = (node.get("defaultBranchRef") or {}).get("name")
+              blob = node.get("object")
+              if not branch or not blob or not blob.get("text"):
+                  failures.append(repo)
+                  print("{}: FAIL no .pre-commit-config.yaml on default branch {}".format(repo, branch))
+                  continue
+              cfg = yaml.safe_load(blob["text"]) or {}
               hooks = [h for r in cfg.get("repos", []) for h in r.get("hooks", [])]
               strip = [h for h in hooks if h.get("id") == "strip-ai-coauthor-trailer"]
               install = cfg.get("default_install_hook_types") or []
@@ -454,23 +474,24 @@ dod_evidence:
               problems = []
               # AC1: wired exactly once, commit-msg only
               if len(strip) != 1 or strip[0].get("stages") != ["commit-msg"]:
-                  problems.append(f"AC1 strip hook={[h.get('stages') for h in strip]}")
-              # AC2: installed by default; install list names every installable stage used;
+                  problems.append("AC1 strip hook={}".format([h.get("stages") for h in strip]))
+              # AC2: installed by default; the install list names every installable stage used;
               # stageless hooks pinned to pre-commit
               if "commit-msg" not in install:
-                  problems.append(f"AC2 default_install_hook_types={install}")
-              missing = sorted(used - set(install) - {"pre-commit"} if install else used)
+                  problems.append("AC2 default_install_hook_types={}".format(install))
+              missing = sorted(used - set(install) - {"pre-commit"}) if install else sorted(used)
               if install and missing:
-                  problems.append(f"AC2 install list lacks used stages {missing}")
+                  problems.append("AC2 install list lacks used stages {}".format(missing))
               if stageless and cfg.get("default_stages") != ["pre-commit"]:
-                  problems.append(f"AC2 {len(stageless)} stageless hooks but default_stages={cfg.get('default_stages')}")
-              print(f"{repo} {branch}: {'PASS' if not problems else 'FAIL ' + '; '.join(problems)}")
+                  problems.append("AC2 {} stageless hooks but default_stages={}".format(len(stageless), cfg.get("default_stages")))
+              print("{} {}: {}".format(repo, branch, "PASS" if not problems else "FAIL " + "; ".join(problems)))
               if problems:
                   failures.append(repo)
+
           if failures:
-              print(f"FAIL: {len(failures)} of {len(REPOS)} repos: {failures}")
+              print("FAIL: {} of {} repos: {}".format(len(failures), len(REPOS), failures))
               sys.exit(1)
-          print(f"PASS: AC1 and AC2 hold on all {len(REPOS)} default branches")
+          print("PASS: AC1 and AC2 hold on all {} default branches".format(len(REPOS)))
           PY
   - id: "ac3-behaviour-strips-ai-trailer-keeps-human"
     description: >-
