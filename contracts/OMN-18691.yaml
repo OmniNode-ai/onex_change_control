@@ -1,0 +1,107 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18691"
+title: "The fleet's CI bus moves to a dedicated broker on its own compose project"
+summary: >
+  The fleet's CI bus was the DEV LANE's own Redpanda: omnimarket config/ci_bus_lanes.yaml declared the
+  CI bus as lane `dev`, whose broker is the Redpanda of compose project `omnibase-infra`. That lane is
+  a fully mutable test platform the deploy agent rebuilds on nearly every runtime-affecting merge, so
+  every rebuild was a window in which the fleet could not publish evidence. On 2026-09-18 the agent's
+  compose-up watchdog (a hardcoded 300s per-phase ceiling) fired under host load1 ~28/32 and killed the
+  lane's recreate partway through; redpanda was left REMOVED and every Receipt Gate in the org was red
+  for ~35 minutes, on pull requests that had nothing to do with the dev lane. Operator ruling, in-session
+  2026-09-18T14:21:54Z, verbatim "dedicated broker is fine" (omni_home docs/tracking/ROLLING_WORK_LEDGER.md:4277).
+  NOT adopted in the same ruling: the stability-test lane's Redpanda, which is where the stability-proven
+  promotion premise is resolved from on the compose path. This is PHASE 1, repository work only. omnibase_infra
+  adds the compose project `omninode-ci-bus` (one Redpanda on 21092/21644, its own network and volume,
+  and three one-shots for topic creation, the SCRAM principal and the SASL flip), a lane-census entry,
+  and an isolation ratchet over the four Docker namespaces plus host ports. omnimarket declares the `ci-bus`
+  lane with its transport and adds a ratchet refusing a runtime lane's broker for the CI bus. It covers
+  the PUBLISH leg only, stated in both PRs rather than implied: every consumer of every CI-bus topic declares
+  runtime_profiles [effects] and is hosted by omninode-runtime-effects, a dev-lane service wired to one
+  hardcoded bootstrap, and the runtime kernel cannot consume from two buses. A publish stops failing and
+  a command waits durably through a rebuild; handling still waits for the consumer. The cutover therefore
+  attaches a consumer BEFORE repointing any publisher, and an interlock test fails the moment a workflow
+  selects the new lane. Host bring-up is phase 2 and needs its own OPERATOR-CONSENT row naming the `ci-bus-publisher`
+  credential (Operating Rule 22), which no agent can issue; nothing on the lab host was mutated by this
+  change, and all host contact was read-only.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #3764 (omnibase_infra) and PR #2648 (omnimarket) CI checks green"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: |-
+      Behavior proof derived from the PRs' own diffs: the ratchets they add. AC2's falsifier is
+      that the test is absent or passes when the CI-bus entry is repointed back to a lane broker;
+      the omnimarket module drives every refusal through the same function the passing case uses,
+      so each refusal is proven to fire rather than assumed to.
+    command: "uv run pytest tests/unit/scripts/test_ci_bus_dedicated_broker_omn18691.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3764"
+    description: |-
+      PR #3764 on OmniNode-ai/omnibase_infra — the dedicated compose project exists, declares its
+      own project name (AC1: a broker no routine lane rebuild tears down), and is registered in the
+      lane census so a running container cannot be invisible.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/docker/docker-compose.ci-bus.yml?ref=bfc12cd0f77efb1d34e9b9c2c29dd508a399e154" --jq '.content' | base64 -d | grep -c '^name: omninode-ci-bus$'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/deploy/lane-census/lane-manifest.yaml?ref=bfc12cd0f77efb1d34e9b9c2c29dd508a399e154" --jq '.content' | base64 -d | grep -c 'compose_project: omninode-ci-bus'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3764/files --paginate --jq '.[].filename' | grep -cFx 'tests/unit/docker/test_ci_bus_broker_isolation_omn18691.py'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2648"
+    description: |-
+      PR #2648 on OmniNode-ai/omnimarket — the CI bus is declared at a DEDICATED endpoint, not the
+      dev lane's (AC1), and a ratchet refuses a runtime lane's endpoint for it (AC2).
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/config/ci_bus_lanes.yaml?ref=9b2a21cf1b01b11eacbff989b705a27d3e170000" --jq '.content' | base64 -d | grep -c 'omninode-pc.tail75df5e.ts.net:21092'
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/tests/unit/scripts/test_ci_bus_dedicated_broker_omn18691.py?ref=9b2a21cf1b01b11eacbff989b705a27d3e170000" --jq '.content' | base64 -d | grep -c 'def assert_ci_bus_endpoint_is_dedicated'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2648/files --paginate --jq '.[].filename' | grep -cFx 'config/ci_bus_lanes.yaml'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: |-
+      Diff-derived behavior proof (OMN-16434) for the omnimarket half. Runs the ratchet this change
+      adds, whose refusals are each driven through the same function the passing case uses — the
+      guard is proven to fire, which is exactly AC2's falsifier.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/scripts/test_ci_bus_dedicated_broker_omn18691.py -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-ac3-publishers-still-fail-closed"
+    description: |-
+      AC3 — publishers keep failing closed exactly as they do today, with no widening of the
+      false-green surface. This is satisfied by NON-MODIFICATION and is proven that way rather than
+      asserted: neither PR touches any publisher, and the new lane declares a concrete broker with
+      an explicit transport, so the OMN-18012 fail-fast and the OMN-14639 flush()-timeout behaviour
+      are reached unchanged. The first check proves no publisher script is in either PR's file list
+      by asking jq for the COUNT of matching filenames and requiring that count to be exactly zero.
+      Counting rather than matching is deliberate: a plain grep for an absent pattern exits non-zero,
+      so the expected result would be indistinguishable from a broken command. The second check
+      proves the new lane declares a transport, which is what keeps the publisher from guessing it
+      (OMN-18012) instead of failing fast.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2648/files --paginate --jq '[.[].filename] | map(select(test("^scripts/publish_|^scripts/trigger_rebuild_on_merge"))) | length' | grep -cx 0
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/config/ci_bus_lanes.yaml?ref=9b2a21cf1b01b11eacbff989b705a27d3e170000" --jq '.content' | base64 -d | grep -c 'security_protocol: SASL_PLAINTEXT'
