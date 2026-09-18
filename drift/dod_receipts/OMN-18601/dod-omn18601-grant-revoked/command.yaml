@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant-revoked
+check_type: command
+check_value: |-
+  grep -Eq '^entries: \[\]$' grants/prod_promotion_grants.yaml
+contract_sha256: "sha256:cc54e249c076d80cdb267cee325f6c67a0eeaef04f99f21c446b18d647d28960"
+contract_entry_sha256: "sha256:961ff774a228a99224fc418e32521f01d0ce9a2ed237916f6dc698c951f145c1"
+status: PASS
+run_timestamp: '2026-09-18T23:51:27Z'
+commit_sha: 6c54c74f8c86c2d1ac5d1e7d21a78eba145e7e6e
+runner: occ-grant-revoke-omn18601
+verifier: occ-grant-revoke-omn18601-verifier
+probe_command: |-
+  # The item's own check, run against BOTH trees.
+  grep -Eq '^entries: \[\]$' grants/prod_promotion_grants.yaml
+  #   tree 1 = the revoked registry this PR produces
+  #   tree 2 = onex_change_control@main at 6c54c74f8, where the entry is still live
+probe_stdout: |-
+  [revoked tree   ] exit=0   entries: []
+  [main 6c54c74f8 ] exit=1   POSITIVE CONTROL: grant-90f8e729 is still live there
+
+  # Header preservation: the 629 comment lines above `entries:` are byte-identical.
+     sha256(head -629 main)    == sha256(head -629 revoked)   -> equal
+     diff main..revoked         -> 41 insertions / 16 deletions
+
+  # What the 16 deletions are: the single grant entry and its twelve fields.
+  # What the 41 insertions are: the REVOKED header block recording why.
+actual_output: |-
+  PASS, and the control is the half that makes it a measurement. The check exits 0 against the
+  registry this revocation produces and exits 1 against onex_change_control@main at 6c54c74f8,
+  where grant-90f8e729-c65c-4693-9bc0-b0df390f2d2e is still live. A check that was silently broken
+  would have exited 0 on BOTH trees; it did not.
+
+  Deliberately NOT written as an absence-grep on the grant id. The revocation header names that id
+  on purpose, so `! grep -Fq 'grant-90f8e729'` would match the comment and report a false failure --
+  the shape OCC#8670 used is unsafe here for exactly that reason.
+
+  WHAT IS REMOVED: one manifest grant naming rendered_digest sha256:33b54afe at manifest_ref
+  8279e2ca. It was consumed in substance by deploy-onex-prod.yml run 35392020746 -- every gate
+  premise passed, three objects applied to onex-prod, live readback confirmed -- and then the
+  workload failed to admit under the restricted pod-security profile, DeadlineExceeded with zero
+  pods. omninode_infra#1563 moves the render to sha256:976ef4de, so this entry could only ever
+  re-authorize a manifest production refuses.
+
+  NOTHING IN PRODUCTION IS MUTATED. Removing an authorization is not a workload change.
