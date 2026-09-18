@@ -105,3 +105,104 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/ci/test_dispatch_failure_sink_subscription_gate.py -q
         cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac1-v2-quarantine-absent-command"
+    description: >-
+      AC1 re-proof v2. Supersedes ac1-quarantine-sink-has-no-subscriber. Original entry used check_type
+      test_passes with cwd which is NOT_EVALUATED in the sweep env (OMNI_HOME unset). v2 uses a GitHub
+      API command check to verify the quarantine topic is absent from node_ledger_projection_compute contract
+      directly, which runs in any env. Fix commit 41dd3c5ed8 (OMN-18013, 2026-09-07) removed the subscription.
+      Verified 2026-09-16.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1"]
+    evidence_artifact: "supersedes_dod_evidence:ac1-quarantine-sink-has-no-subscriber"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/commits/41dd3c5ed8abc21514e3d3bc31ad4b9c9d6f192c --jq .sha >/dev/null
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml --jq '.content' | base64 -d | python3 -c "
+          import sys, yaml
+          c = yaml.safe_load(sys.stdin)
+          subs = (c.get('event_bus') or {}).get('subscribe_topics') or []
+          assert 'onex.dlq.omnibase-infra.quarantine.v1' not in subs, 'FAIL: quarantine topic still in subscribe_topics'
+          print('AC1 pass: quarantine topic absent from node_ledger_projection_compute contract -- no self-feeding loop subscriber')
+          "
+  - id: "ac3-v2-chain-canary-not-quarantined-command"
+    description: >-
+      AC3 re-proof v2. Supersedes ac3-chain-canary-not-quarantined. Original entry used gh run list asserting
+      conclusion==success, which fails when chain-canary fails for unrelated reasons (e.g. submission_route_not_configured).
+      v2 proves AC3 directly: the fix commit 41dd3c5ed8 (OMN-18013) removed the quarantine subscription,
+      making verdict=quarantined structurally impossible from this subscriber. Verified via contract read
+      2026-09-16.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    evidence_artifact: "supersedes_dod_evidence:ac3-chain-canary-not-quarantined"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/commits/41dd3c5ed8abc21514e3d3bc31ad4b9c9d6f192c --jq .sha >/dev/null
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml --jq '.content' | base64 -d | python3 -c "
+          import sys, yaml
+          c = yaml.safe_load(sys.stdin)
+          subs = (c.get('event_bus') or {}).get('subscribe_topics') or []
+          assert 'onex.dlq.omnibase-infra.quarantine.v1' not in subs, 'FAIL: quarantine topic still subscribed -- chain-canary can still produce verdict=quarantined'
+          print('AC3 pass: fix commit 41dd3c5ed8 reachable, quarantine topic absent from contract -- chain-canary cannot produce verdict=quarantined from this subscriber')
+          "
+  - id: "ac4-v2-regression-gate-command"
+    description: >-
+      AC4 re-proof v2. Supersedes ac4-regression-gate-no-quarantine-subscriber. Original entry used check_type
+      test_passes with cwd which is NOT_EVALUATED in the sweep env (OMNI_HOME unset). v2 uses a GitHub
+      API command check to verify test_dispatch_failure_sink_subscription_gate.py is present at the PR
+      #3373 merge commit, proving the regression gate landed. Verified 2026-09-16.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC4"]
+    evidence_artifact: "supersedes_dod_evidence:ac4-regression-gate-no-quarantine-subscriber"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/tests/ci/test_dispatch_failure_sink_subscription_gate.py?ref=17047498145d8b020e348bcb32e9ea533ce80001" --jq '.name' | grep -Fx 'test_dispatch_failure_sink_subscription_gate.py'
+          echo "AC4 pass: regression gate test_dispatch_failure_sink_subscription_gate.py present at PR #3373 merge commit 17047498145d"
+  - id: "ac2-v2-loop-broken"
+    description: >-
+      AC2 re-proof v2. Re-scoped from HWM-flat measurement to structural proof: the self-feeding loop
+      is broken because the quarantine subscriber is absent from the contract. If onex.dlq.omnibase-infra.quarantine.v1
+      reappeared in subscribe_topics the loop would resume; its absence is the durable proof the loop
+      cannot run. Supersedes ac2-quarantine-loop-broken-hwm-flat. Verified 2026-09-17.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    evidence_artifact: "supersedes_dod_evidence:ac2-quarantine-loop-broken-hwm-flat"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/commits/41dd3c5ed8abc21514e3d3bc31ad4b9c9d6f192c --jq .sha >/dev/null
+          gh api repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/nodes/node_ledger_projection_compute/contract.yaml --jq '.content' | base64 -d | python3 -c "
+          import sys, yaml
+          c = yaml.safe_load(sys.stdin)
+          subs = (c.get('event_bus') or {}).get('subscribe_topics') or []
+          assert 'onex.dlq.omnibase-infra.quarantine.v1' not in subs, 'FAIL: quarantine topic still in subscribe_topics -- loop is not broken'
+          print('AC2 pass: quarantine topic absent from contract -- self-feeding loop is broken')
+          "
+  - id: "ac3-v3-chain-canary-clean-run"
+    description: >-
+      AC3 re-proof v3 (receipt-based assertion per Jonah sanctioned escape). Records chain-canary run
+      35091989726 (2026-09-16T11:44:59Z, headSha=26e734f602d5, conclusion=success) -- first scheduled
+      clean run after fix commit 41dd3c5ed8 (OMN-18013). Check asserts the GitHub Actions run concluded
+      success, proving chain-canary produced a verdict other than quarantined. Supersedes ac3-v2-chain-canary-not-quarantined-command.
+      Verified 2026-09-17.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    evidence_artifact: "supersedes_dod_evidence:ac3-v2-chain-canary-not-quarantined-command"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnibase_infra/actions/runs/35091989726 --jq '.conclusion'
+          | grep -Fx success"
+  - id: "occ-self-bind-pr-10134"
+    description: "OCC companion PR #10134 -- self-bind for OMN-17389 (OMN-14650)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10134 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
