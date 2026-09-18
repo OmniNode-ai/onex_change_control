@@ -1,0 +1,125 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-18426
+evidence_item_id: ac1-ac2-hook-on-all-fifteen-default-branches
+check_type: command
+check_value: |-
+  python3 - <<'PY'
+  import base64, json, subprocess, sys
+  import yaml
+
+  REPOS = ["RSD", "knowledge-base", "knowledge-base-internal", "omnibase_compat", "omnibase_core",
+           "omnibase_infra", "omnibase_spi", "omniclaude", "omnidash", "omniintelligence",
+           "omnimarket", "omnimemory", "omninode_infra", "omniweb", "onex_change_control"]
+  INSTALLABLE = {"pre-commit", "pre-push", "commit-msg", "prepare-commit-msg", "post-commit", "post-checkout", "post-merge"}
+
+
+  def gh(path):
+      return json.loads(subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout)
+
+
+  failures = []
+  for repo in REPOS:
+      branch = gh(f"repos/OmniNode-ai/{repo}")["default_branch"]
+      blob = gh(f"repos/OmniNode-ai/{repo}/contents/.pre-commit-config.yaml?ref={branch}")
+      cfg = yaml.safe_load(base64.b64decode(blob["content"])) or {}
+      hooks = [h for r in cfg.get("repos", []) for h in r.get("hooks", [])]
+      strip = [h for h in hooks if h.get("id") == "strip-ai-coauthor-trailer"]
+      install = cfg.get("default_install_hook_types") or []
+      used = {s for h in hooks for s in (h.get("stages") or [])} & INSTALLABLE
+      stageless = [h["id"] for h in hooks if not h.get("stages")]
+      problems = []
+      # AC1: wired exactly once, commit-msg only
+      if len(strip) != 1 or strip[0].get("stages") != ["commit-msg"]:
+          problems.append(f"AC1 strip hook={[h.get('stages') for h in strip]}")
+      # AC2: installed by default; install list names every installable stage used;
+      # stageless hooks pinned to pre-commit
+      if "commit-msg" not in install:
+          problems.append(f"AC2 default_install_hook_types={install}")
+      missing = sorted(used - set(install) - {"pre-commit"} if install else used)
+      if install and missing:
+          problems.append(f"AC2 install list lacks used stages {missing}")
+      if stageless and cfg.get("default_stages") != ["pre-commit"]:
+          problems.append(f"AC2 {len(stageless)} stageless hooks but default_stages={cfg.get('default_stages')}")
+      print(f"{repo} {branch}: {'PASS' if not problems else 'FAIL ' + '; '.join(problems)}")
+      if problems:
+          failures.append(repo)
+  if failures:
+      print(f"FAIL: {len(failures)} of {len(REPOS)} repos: {failures}")
+      sys.exit(1)
+  print(f"PASS: AC1 and AC2 hold on all {len(REPOS)} default branches")
+  PY
+contract_sha256: sha256:20888f457a6054b9e3328654936d8edede5fe04de348ff03973a2de24df1774b
+contract_entry_sha256: sha256:8afa9956102c51ccc31b63f5cc6285d1f11a10634df47054f9ba7012394fb24f
+status: PASS
+run_timestamp: '2026-09-18T01:38:27Z'
+commit_sha: fc73fa33cc9cef8a3005f1a8ed74288a7a8322ab
+runner: manual-closure
+verifier: gh api + PyYAML
+probe_command: |-
+  python3 - <<'PY'
+  import base64, json, subprocess, sys
+  import yaml
+
+  REPOS = ["RSD", "knowledge-base", "knowledge-base-internal", "omnibase_compat", "omnibase_core",
+           "omnibase_infra", "omnibase_spi", "omniclaude", "omnidash", "omniintelligence",
+           "omnimarket", "omnimemory", "omninode_infra", "omniweb", "onex_change_control"]
+  INSTALLABLE = {"pre-commit", "pre-push", "commit-msg", "prepare-commit-msg", "post-commit", "post-checkout", "post-merge"}
+
+
+  def gh(path):
+      return json.loads(subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout)
+
+
+  failures = []
+  for repo in REPOS:
+      branch = gh(f"repos/OmniNode-ai/{repo}")["default_branch"]
+      blob = gh(f"repos/OmniNode-ai/{repo}/contents/.pre-commit-config.yaml?ref={branch}")
+      cfg = yaml.safe_load(base64.b64decode(blob["content"])) or {}
+      hooks = [h for r in cfg.get("repos", []) for h in r.get("hooks", [])]
+      strip = [h for h in hooks if h.get("id") == "strip-ai-coauthor-trailer"]
+      install = cfg.get("default_install_hook_types") or []
+      used = {s for h in hooks for s in (h.get("stages") or [])} & INSTALLABLE
+      stageless = [h["id"] for h in hooks if not h.get("stages")]
+      problems = []
+      # AC1: wired exactly once, commit-msg only
+      if len(strip) != 1 or strip[0].get("stages") != ["commit-msg"]:
+          problems.append(f"AC1 strip hook={[h.get('stages') for h in strip]}")
+      # AC2: installed by default; install list names every installable stage used;
+      # stageless hooks pinned to pre-commit
+      if "commit-msg" not in install:
+          problems.append(f"AC2 default_install_hook_types={install}")
+      missing = sorted(used - set(install) - {"pre-commit"} if install else used)
+      if install and missing:
+          problems.append(f"AC2 install list lacks used stages {missing}")
+      if stageless and cfg.get("default_stages") != ["pre-commit"]:
+          problems.append(f"AC2 {len(stageless)} stageless hooks but default_stages={cfg.get('default_stages')}")
+      print(f"{repo} {branch}: {'PASS' if not problems else 'FAIL ' + '; '.join(problems)}")
+      if problems:
+          failures.append(repo)
+  if failures:
+      print(f"FAIL: {len(failures)} of {len(REPOS)} repos: {failures}")
+      sys.exit(1)
+  print(f"PASS: AC1 and AC2 hold on all {len(REPOS)} default branches")
+  PY
+probe_stdout: |
+  RSD main: PASS
+  knowledge-base main: PASS
+  knowledge-base-internal main: PASS
+  omnibase_compat dev: PASS
+  omnibase_core dev: PASS
+  omnibase_infra dev: PASS
+  omnibase_spi dev: PASS
+  omniclaude dev: PASS
+  omnidash dev: PASS
+  omniintelligence dev: PASS
+  omnimarket dev: PASS
+  omnimemory dev: PASS
+  omninode_infra dev: PASS
+  omniweb dev: PASS
+  onex_change_control dev: PASS
+  PASS: AC1 and AC2 hold on all 15 default branches
+actual_output: 'PASS: AC1 and AC2 hold on all 15 default branches, read live from the GitHub API.'
+exit_code: 0
+pr_number: null
+branch: lakshman/omn-18426-closure-evidence

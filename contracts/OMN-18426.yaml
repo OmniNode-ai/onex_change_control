@@ -411,3 +411,140 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 10041 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
+  - id: "ac1-ac2-hook-on-all-fifteen-default-branches"
+    description: >-
+      AC1 and AC2, read live on the default branch of each of the 15 repos named in the ticket. For every
+      repo the check resolves the default branch from the API (never assumed to be dev -- RSD, knowledge-base
+      and knowledge-base-internal are main), reads .pre-commit-config.yaml at that branch, and asserts:
+      strip-ai-coauthor-trailer is declared exactly once with stages [commit-msg] (AC1); default_install_hook_types
+      contains commit-msg and every other installable stage the file actually uses, and default_stages
+      is [pre-commit] whenever the file has stageless hooks (AC2, ruling c21f38c8). It prints a PASS/FAIL
+      line per repo and exits non-zero naming the repos if any one of the 15 fails, so a single regressed
+      repo cannot pass.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC1", "AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 - <<'PY'
+          import base64, json, subprocess, sys
+          import yaml
+
+          REPOS = ["RSD", "knowledge-base", "knowledge-base-internal", "omnibase_compat", "omnibase_core",
+                   "omnibase_infra", "omnibase_spi", "omniclaude", "omnidash", "omniintelligence",
+                   "omnimarket", "omnimemory", "omninode_infra", "omniweb", "onex_change_control"]
+          INSTALLABLE = {"pre-commit", "pre-push", "commit-msg", "prepare-commit-msg", "post-commit", "post-checkout", "post-merge"}
+
+
+          def gh(path):
+              return json.loads(subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout)
+
+
+          failures = []
+          for repo in REPOS:
+              branch = gh(f"repos/OmniNode-ai/{repo}")["default_branch"]
+              blob = gh(f"repos/OmniNode-ai/{repo}/contents/.pre-commit-config.yaml?ref={branch}")
+              cfg = yaml.safe_load(base64.b64decode(blob["content"])) or {}
+              hooks = [h for r in cfg.get("repos", []) for h in r.get("hooks", [])]
+              strip = [h for h in hooks if h.get("id") == "strip-ai-coauthor-trailer"]
+              install = cfg.get("default_install_hook_types") or []
+              used = {s for h in hooks for s in (h.get("stages") or [])} & INSTALLABLE
+              stageless = [h["id"] for h in hooks if not h.get("stages")]
+              problems = []
+              # AC1: wired exactly once, commit-msg only
+              if len(strip) != 1 or strip[0].get("stages") != ["commit-msg"]:
+                  problems.append(f"AC1 strip hook={[h.get('stages') for h in strip]}")
+              # AC2: installed by default; install list names every installable stage used;
+              # stageless hooks pinned to pre-commit
+              if "commit-msg" not in install:
+                  problems.append(f"AC2 default_install_hook_types={install}")
+              missing = sorted(used - set(install) - {"pre-commit"} if install else used)
+              if install and missing:
+                  problems.append(f"AC2 install list lacks used stages {missing}")
+              if stageless and cfg.get("default_stages") != ["pre-commit"]:
+                  problems.append(f"AC2 {len(stageless)} stageless hooks but default_stages={cfg.get('default_stages')}")
+              print(f"{repo} {branch}: {'PASS' if not problems else 'FAIL ' + '; '.join(problems)}")
+              if problems:
+                  failures.append(repo)
+          if failures:
+              print(f"FAIL: {len(failures)} of {len(REPOS)} repos: {failures}")
+              sys.exit(1)
+          print(f"PASS: AC1 and AC2 hold on all {len(REPOS)} default branches")
+          PY
+  - id: "ac3-behaviour-strips-ai-trailer-keeps-human"
+    description: >-
+      AC3, behaviour. Runs the hand-authored behaviour proof, which loads the hook's configured entry
+      out of .pre-commit-config.yaml and runs it the way pre-commit runs it (entry plus the commit-message
+      file, pass_filenames true) rather than reimplementing the regex: the Claude trailer at noreply@anthropic.com
+      is removed case-insensitively, the human Co-Authored-By trailer and the body survive byte-for-byte,
+      and both non-trailer shapes named in AC3 -- a person named Claude at another address, and the trailer
+      text quoted mid-line -- are left untouched. A missing perl interpreter fails the run instead of
+      skipping it.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/unit/test_strip_ai_coauthor_trailer_hook.py -q"
+  - id: "ac3-negative-control-falsifiers-turn-red"
+    description: >-
+      AC3's negative control: the proof above is red-capable against the two falsifiers the criterion
+      names. Hermetically, in a temp tree (the worktree is never mutated), the hook entry is replaced
+      first by one that strips nothing and then by one that strips any line mentioning Claude, and the
+      same test file is run against each. Both must report pytest FAILURES; an erroring or collecting
+      run is rejected by name, because a test that crashes has not run and cannot be read as red.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          python3 - <<'PY'
+          """AC3 negative control: both falsifiers the criterion names must turn the proof red."""
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          TEST = Path("tests/unit/test_strip_ai_coauthor_trailer_hook.py")
+          CONFIG = Path(".pre-commit-config.yaml")
+          MUTANTS = {
+              "an entry that strips nothing": "true",
+              "an entry that strips every line mentioning Claude": "perl -i -ne 'print unless /claude/i'",
+          }
+
+          results = []
+          for label, entry in MUTANTS.items():
+              with tempfile.TemporaryDirectory() as work:
+                  root = Path(work)
+                  (root / "tests" / "unit").mkdir(parents=True)
+                  shutil.copy(TEST, root / "tests" / "unit" / TEST.name)
+                  original = CONFIG.read_text()
+                  mutated = re.sub(r"entry: perl -i -ne .*\n", "entry: " + entry + "\n", original, count=1)
+                  if mutated == original:
+                      sys.exit("CONTROL BROKEN: the mutation did not apply for " + label)
+                  (root / CONFIG.name).write_text(mutated)
+                  run = subprocess.run(
+                      ["uv", "run", "pytest", str(root / "tests" / "unit" / TEST.name), "-q", "-p", "no:cacheprovider"],
+                      capture_output=True, text=True,
+                  )
+                  tail = run.stdout.strip().splitlines()[-1] if run.stdout.strip() else run.stderr.strip()[-200:]
+                  if " failed" not in tail:
+                      sys.exit("CONTROL BROKEN: " + label + " did not turn the proof red: " + tail)
+                  if "error" in tail:
+                      sys.exit("CONTROL BROKEN: " + label + " errored instead of failing: " + tail)
+                  results.append((label, tail))
+
+          print("PASS both falsifiers named in AC3 turn the behaviour test red")
+          for label, tail in results:
+              print("  " + label + ": " + tail)
+          PY
+  - id: "occ-self-bind-pr-10125"
+    description: "Binds OMN-18426 to OCC closure PR #10125 (self-bind)."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10125 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
