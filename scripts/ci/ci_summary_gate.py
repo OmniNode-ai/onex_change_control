@@ -141,6 +141,24 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     "merge-hold-gate / evaluate",
     "Contract Shape v1 (OMN-15669)",
     "Acceptance-Criterion Binding Gate (OMN-18236)",
+    # OMN-18031: the per-run runner routing decision, adopted from the
+    # omnibase_infra pilot. THIS LINE IS HALF THE MECHANISM, on the identical
+    # reasoning as the corpus-ratchet entries above: the L3 default-deny sweep
+    # already fails this gate when a registered job FAILS, but an unregistered
+    # job that is `skipped` or ABSENT yields SUCCESS. Without this entry,
+    # deleting the `route` job from ci.yml would silently retire per-run
+    # routing on a fully green run -- and because routing is deliberately INERT
+    # while this repo's trusted seam reads '["ubuntu-latest"]', nothing about
+    # job PLACEMENT would change to reveal it. The only observable difference
+    # between "routing works and chose hosted" and "routing is gone" is a
+    # decision artifact nobody is required to read, which is the exact
+    # silent-retirement shape this tuple exists for. The job is unconditional
+    # in ci.yml (no needs/if), so a skip is anomalous and never a legitimate
+    # opt-out. Composed "<caller display name> / <inner job name>" shape, same
+    # as "merge-hold-gate / evaluate" above; renaming either half breaks this
+    # registration, which COMPOSED_NAME_OVERRIDES in tests/ci/
+    # test_ci_summary_gate.py pins.
+    "Runner Route (OMN-18031) / route",
 )
 
 # ---------------------------------------------------------------------------
