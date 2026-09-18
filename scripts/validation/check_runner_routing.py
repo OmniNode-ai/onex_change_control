@@ -170,6 +170,67 @@ def hardcoded_label_violations(
     ]
 
 
+# OMN-18031. A V2 route consumer names the route job inside its own runs-on:
+# `${{ fromJSON(needs.<job id>.outputs.runs_on) }}`. The job id is captured so
+# the `needs:` edge can be checked against the job the expression actually
+# reads, rather than against a hardcoded name.
+ROUTE_OUTPUT_RE = re.compile(r"needs\.([A-Za-z0-9_-]+)\.outputs\.runs_on")
+
+
+def validate_route_consumer(
+    *, workflow_path: str, job_name: str, job: dict[str, object]
+) -> list[str]:
+    """Return violations for a V2 route consumer missing its `needs:` edge.
+
+    OMN-18031. A job whose ``runs-on`` resolves from a route job's ``runs_on``
+    output MUST declare that job in ``needs:``. Without the edge the ``needs``
+    context does not carry the job, the expression resolves to an empty string,
+    and the consumer FAILS TO SCHEDULE -- which surfaces as an absent job, not
+    as a red one. That is the same silent shape this module's hardcoded-label
+    check was rewritten to avoid: a gate, or here a job, that quietly stops
+    existing.
+
+    WHY THIS READS THE PARSED VALUE AND NOTHING ELSE. This repository's
+    "Verify centralized runner routing standard" step used to grep workflow
+    FILES for label literals and went red on 2026-09-11 over an unrelated prose
+    comment, taking the required CI Summary and every OCC companion with it. A
+    gate that reads file text will eventually fire on documentation about
+    itself. So this check reads only the YAML-parsed ``runs-on`` and ``needs``
+    values: comments, ``name:`` fields and step scripts are structurally out of
+    scope.
+
+    DELIBERATELY NOT CHECKED: the ``OMNI_RUNNER_SELECTOR_V2`` marker comment the
+    omnibase_infra audit requires. It is a COMMENT, invisible to the parser, so
+    asserting it would mean reintroducing exactly the text scan named above.
+    The ``needs:`` edge is the half that is both structural and load-bearing.
+    """
+    runs_on = job.get("runs-on")
+    if not isinstance(runs_on, str):
+        return []
+    match = ROUTE_OUTPUT_RE.search(runs_on)
+    if match is None:
+        return []
+    route_job = match.group(1)
+
+    needs = job.get("needs")
+    if isinstance(needs, str):
+        declared = {needs}
+    elif isinstance(needs, list):
+        declared = {str(item) for item in needs}
+    else:
+        declared = set()
+
+    if route_job in declared:
+        return []
+    return [
+        f"{workflow_path}:{job_name} resolves its runs-on from "
+        f"needs.{route_job}.outputs.runs_on but does not declare "
+        f"{route_job!r} in needs; without that edge the expression resolves "
+        "to an empty string and the job fails to schedule, which surfaces as "
+        "an absent job rather than a failing one (OMN-18031)"
+    ]
+
+
 def routing_labels_from_env() -> set[str]:
     """Labels the live selector variables currently resolve to.
 
@@ -216,6 +277,13 @@ def _validate_job(
                 labels=labels,
             )
         )
+    # OMN-18031: a job whose runs-on reads a route job's output must declare
+    # the `needs:` edge that makes that output reachable.
+    violations.extend(
+        validate_route_consumer(
+            workflow_path=workflow_path, job_name=job_name, job=job
+        )
+    )
     # OMN-16682: job-level env, plus every step's env, since a step env pins
     # the index just as effectively as a job env does.
     violations.extend(
