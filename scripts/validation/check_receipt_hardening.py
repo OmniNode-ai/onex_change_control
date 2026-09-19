@@ -225,6 +225,52 @@ which is a corpus-wide retro-audit outside this PR's "gate extensions only"
 scope (operator ruling R-c); it is recorded here, not silently, per that
 same scope decision.
 
+DERIVED_VERIFIER (OMN-18778), the ninth invariant
+-------------------------------------------------
+Invariant 3 above rejects a PASS receipt whose verifier is a GENERIC alias.
+Nothing anywhere in this gate compared ``verifier`` to ``runner``, and the one
+place in the platform that did — ``ModelDodReceipt`` Rule 1, raw string
+equality, PASS downgraded to ADVISORY — has a measured surface of 28 files out
+of 27,449 on dev (0.1%), and zero in the fourteen days before this rule landed.
+
+That is not a corpus without self-attestation. It is a rule one character
+defeats. The shape every producer actually writes is the runner handle plus a
+segment: ``omn18543-ac-binding`` verified by ``omn18543-ac-binding-verifier``
+(four receipts, 2026-09-18T20:45:45Z), ``claude-code`` by
+``claude-code-review`` (300), ``codex`` by ``codex-runtime-verifier`` (131).
+Appending ``-verifier`` is the natural thing an actor writes when it re-reads
+its own work, and it converts a self-attestation into a passing gate without
+anyone intending an evasion.
+
+The rule: a PASS receipt whose ``verifier`` is its ``runner``, or an affix
+extension of it, once separators are normalized, does not name an independent
+verifier. Segment-boundary affixes only — a handle that merely shares a token
+is not refused, because ``manual`` -> ``lakshman-manual-focused-test`` names a
+different person. The 91% of the post-cutoff corpus that passes is where the
+mechanical producers live (``node_pr_lifecycle_fix_effect``,
+``node_occ_companion_compute``, ``node_occ_observation_effect``, all naming
+``occ-evidence-source-autobind`` / ``occ-observation-append``); every shape it
+refuses is a hand-authored session handle.
+
+THIS IS NOT AN IDENTITY CHECK, and must not become one. Comparing the git
+author of the product commit against the git author of the receipt commit was
+built, shadow-measured at 78.9% would-block, and RULED OUT on 2026-07-21
+(OMN-14890 Canceled, ``omnimarket#1851`` closed unmerged): with one developer,
+that axis flags a corpus whose authorship is correct, and 54.4 of those 78.9
+points were unresolvable-repo inconclusives rather than findings. This rule
+compares two strings the same actor writes, so its claim is narrow by
+construction — it refuses a receipt that does not even CLAIM a second actor,
+and says nothing about whether a claimed one is real. That remains the
+reproducibility direction (OMN-14393), not an identity comparison.
+
+Pre-existing violations are frozen in
+``.onex_ratchets/omn_18778_derived_verifier_baseline.yaml`` and suppressed for
+this rule only. A BASELINE and not a cutoff date, for the reason the orphan
+baseline states and this rule inherits verbatim: ``run_timestamp`` is
+producer-written and the newest entries were minted the same day the rule was
+written, so no date separates legacy from live. The file's ``open_repairs:``
+list carries receipts that are pre-existing but deliberately NOT suppressed.
+
 ORPHAN_BINDING (OMN-13888), the eighth invariant
 ------------------------------------------------
 Invariant 2 above accepts a whole-file ``contract_sha256`` when no
@@ -530,6 +576,124 @@ def _is_denylisted_verifier(verifier: str) -> bool:
     if normalized in DENYLISTED_VERIFIERS:
         return True
     return any(p.match(normalized) for p in DENYLISTED_VERIFIER_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# OMN-18778 rule DERIVED_VERIFIER — a verifier handle derived from the runner
+# handle names the same actor.
+# ---------------------------------------------------------------------------
+#
+# The denylist above rejects GENERIC verifier aliases. It says nothing about
+# the relationship between the two handles, and neither did anything else:
+# before this rule, ``runner`` and ``verifier`` were never compared to each
+# other anywhere in this gate.
+#
+# ``ModelDodReceipt.enforce_adversarial_invariants`` does compare them, by raw
+# string equality, downgrading PASS to ADVISORY when they match. Measured over
+# every receipt on dev carrying both fields (27,449 files, 2026-09-18), that
+# rule's surface is 28 files — 0.1% — and 0 in the last 14 days. It is not
+# that self-attestation is rare. It is that equality is defeated by one
+# character, and producers are built to spend it: the runner handle plus a
+# suffix is the natural thing an actor writes when it re-reads its own work.
+#
+# The measured shapes, PASS receipts at/after HARDENING_CUTOFF (n=15,965):
+#
+#   verifier extends runner   1,262   7.9%   'claude-code' -> 'claude-code-review'
+#   runner extends verifier      90   0.6%   'codex-local' -> 'codex'
+#   identical after normalizing  28   0.2%   'claude-omn15717-reland'
+#                                            -> 'claude/omn15717-reland'
+#   unrelated                14,529  91.0%
+#
+# The 91% that passes is not an accident of naming: it is where the mechanical
+# producers live. ``node_pr_lifecycle_fix_effect`` (5,440),
+# ``node_occ_companion_compute`` (4,827) and ``node_occ_observation_effect``
+# (1,138) all name ``occ-evidence-source-autobind`` / ``occ-observation-append``
+# and are untouched by this rule. Every shape it refuses is a hand-authored
+# session handle.
+#
+# WHAT THIS IS NOT. It is not an author-identity or independence check. That
+# axis was ruled out on 2026-07-21 (OMN-14890 Canceled, omnimarket#1851 closed
+# unmerged): with one developer, comparing the git author of the product commit
+# against the git author of the receipt commit blocks 78.9% of a corpus whose
+# authorship is CORRECT, and 54.4 of those points were inconclusive
+# repo-resolution failures rather than findings at all. Do not reintroduce it
+# here. This rule compares two strings the same actor writes, and its claim is
+# correspondingly narrow: it refuses a receipt that does not even CLAIM a
+# second actor. It cannot tell whether a claimed second actor is real.
+#
+# NORMALIZATION IS THE POINT, not incidental. Comparison is on
+# ``normalize_handle`` output, so ``claude-omn15717-reland`` and
+# ``claude/omn15717-reland`` are the same handle. The model's raw-string rule
+# misses exactly that pair.
+
+DERIVED_VERIFIER_TICKET = "OMN-18778"
+DERIVED_VERIFIER_RULE = "[DERIVED_VERIFIER]"
+DERIVED_VERIFIER_BASELINE_PATH = Path(
+    ".onex_ratchets/omn_18778_derived_verifier_baseline.yaml"
+)
+
+_HANDLE_SEPARATOR_RUN = re.compile(r"[^a-z0-9]+")
+
+
+def normalize_handle(value: str) -> str:
+    """Case-fold a runner/verifier handle and collapse separator runs to ``-``.
+
+    ``Claude/OMN-15717 reland`` and ``claude-omn-15717-reland`` normalize to
+    the same string. Pure function.
+    """
+    return _HANDLE_SEPARATOR_RUN.sub("-", value.strip().lower()).strip("-")
+
+
+def derived_verifier_relation(runner: str, verifier: str) -> str | None:
+    """Name how ``verifier`` derives from ``runner``, or ``None`` if it does not.
+
+    Three derivations, all of which mean one actor named itself twice:
+
+    * ``identical`` — same handle once separators are normalized.
+    * ``verifier extends runner`` — the runner handle plus a segment
+      (``x`` -> ``x-readback``, ``x`` -> ``x-verifier``).
+    * ``runner extends verifier`` — the converse (``codex-local`` -> ``codex``).
+
+    Extension is checked on a SEGMENT boundary, so ``codex`` -> ``codexter`` is
+    not a derivation and neither is ``manual`` -> ``lakshman-manual-focused``
+    (which shares a token but is not an affix). A handle that merely shares
+    tokens with the other is NOT refused: token-subset matching was measured
+    and rejected, because it flags ``manual`` -> ``lakshman-manual-focused-test``,
+    where the verifier names a different person. Pure function.
+    """
+    normalized_runner = normalize_handle(runner)
+    normalized_verifier = normalize_handle(verifier)
+    if not normalized_runner or not normalized_verifier:
+        return None
+    if normalized_runner == normalized_verifier:
+        return "identical"
+    if normalized_verifier.startswith(f"{normalized_runner}-"):
+        return "verifier extends runner"
+    if normalized_runner.startswith(f"{normalized_verifier}-"):
+        return "runner extends verifier"
+    return None
+
+
+def _derived_verifier_violation(receipt: ModelDodReceipt) -> str | None:
+    """The DERIVED_VERIFIER fragment for one receipt, or ``None`` if clean.
+
+    Scoped to PASS receipts, like the denylist rule beside it: an ADVISORY or
+    FAIL receipt makes no independence claim to refuse. Pure function.
+    """
+    if receipt.status is not EnumReceiptStatus.PASS:
+        return None
+    relation = derived_verifier_relation(receipt.runner, receipt.verifier)
+    if relation is None:
+        return None
+    return (
+        f"{DERIVED_VERIFIER_RULE} PASS receipt names verifier "
+        f"{receipt.verifier!r} against runner {receipt.runner!r} — "
+        f"{relation} under separator normalization "
+        f"({DERIVED_VERIFIER_TICKET}). A handle derived from the runner's is "
+        "the same actor re-reading its own work, and a PASS receipt may not "
+        "rest on it. Name a verifier the runner does not control, or record "
+        "the receipt as ADVISORY."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1431,6 +1595,35 @@ def load_orphan_corpus_expected(baseline_path: Path) -> frozenset[str]:
     return load_orphan_baseline(baseline_path) | load_orphan_open_repairs(baseline_path)
 
 
+def load_derived_verifier_baseline(baseline_path: Path) -> frozenset[str]:
+    """The SUPPRESSED set: pre-existing DERIVED_VERIFIER receipts (OMN-18778).
+
+    Same shape and semantics as ``load_orphan_baseline`` — receipt POSIX paths,
+    ``violations:`` only. A BASELINE and not a cutoff date for the reason the
+    orphan baseline gives and this rule inherits verbatim: ``run_timestamp`` is
+    producer-written, and the newest derived-verifier receipts in this corpus
+    were minted the same day the rule was written (2026-09-18T20:45:45Z), so no
+    date separates legacy from live. An enumerated path list does, and it names
+    the debt instead of hiding it behind a comparison.
+    """
+    return _orphan_baseline_list(baseline_path, "violations")
+
+
+def load_derived_verifier_open_repairs(baseline_path: Path) -> frozenset[str]:
+    """Derived-verifier receipts under active repair.
+
+    Corpus members, deliberately NOT suppressed.
+    """
+    return _orphan_baseline_list(baseline_path, "open_repairs")
+
+
+def load_derived_verifier_corpus_expected(baseline_path: Path) -> frozenset[str]:
+    """Every derived-verifier receipt the corpus is expected to contain."""
+    return load_derived_verifier_baseline(
+        baseline_path
+    ) | load_derived_verifier_open_repairs(baseline_path)
+
+
 def _contract_declares_item(contract_path: Path, evidence_item_id: str) -> bool | None:
     """Whether ``contract_path`` declares ``evidence_item_id`` (None = unreadable)."""
     try:
@@ -1579,6 +1772,10 @@ def _receipt_binding_violations(
             f"{receipt.verifier!r} (OMN-13060/A-5). Name an identifiable "
             "independent verifier."
         )
+
+    derived_verifier = _derived_verifier_violation(receipt)
+    if derived_verifier is not None:
+        violations.append(derived_verifier)
 
     violations.extend(_absolute_path_violations(receipt))
     violations.extend(_stdout_emittability_violations(receipt))
@@ -2348,6 +2545,135 @@ def run_orphan_corpus(
     return 1
 
 
+def _derived_verifier_findings(receipts_root: Path) -> list[str]:
+    """Every post-cutoff DERIVED_VERIFIER receipt in the corpus, as POSIX paths.
+
+    Uses the SAME eligibility the live rule uses — supersession redirection via
+    ``_effective_check_path``, the ``HARDENING_CUTOFF`` legacy exemption, the
+    PASS scoping, and ``derived_verifier_relation`` as the one predicate — so a
+    path this returns is exactly a path the gate would flag if the file were in
+    a PR's changed set, and the baseline cannot drift from the rule it
+    suppresses.
+    """
+    findings: list[str] = []
+    seen: set[Path] = set()
+    for path in sorted(receipts_root.rglob("*.yaml")):
+        effective = _effective_check_path(path)
+        if effective in seen or not effective.is_file():
+            continue
+        seen.add(effective)
+        raw = _load_mapping(effective)
+        if raw is None:
+            continue
+        node = (
+            raw.get("replacement") if isinstance(raw.get("replacement"), dict) else raw
+        )
+        if not isinstance(node, dict):
+            continue
+        run_ts = _extract_receipt_timestamp(node)
+        if run_ts is None or run_ts < HARDENING_CUTOFF:
+            continue
+        status = node.get("status") or raw.get("status")
+        if not isinstance(status, str) or status.strip().upper() != "PASS":
+            continue
+        runner = node.get("runner") or raw.get("runner")
+        verifier = node.get("verifier") or raw.get("verifier")
+        if not isinstance(runner, str) or not isinstance(verifier, str):
+            continue
+        if derived_verifier_relation(runner, verifier) is not None:
+            findings.append(effective.as_posix())
+    return findings
+
+
+def run_derived_verifier_corpus(receipts_root: Path, baseline_path: Path) -> int:
+    """Corpus ratchet: set-equality against the frozen baseline, both directions."""
+    observed = set(_derived_verifier_findings(receipts_root))
+    baseline = load_derived_verifier_corpus_expected(baseline_path)
+    new_violations = sorted(observed - baseline)
+    stale_baseline = sorted(baseline - observed)
+    print(
+        f"Scanned {receipts_root} for {DERIVED_VERIFIER_TICKET} derived-verifier "
+        f"receipts: {len(observed)} finding(s); baseline {len(baseline)}."
+    )
+    if not new_violations and not stale_baseline:
+        print("Corpus matches the frozen derived-verifier baseline exactly.")
+        return 0
+    if new_violations:
+        print(
+            f"\nNEW derived-verifier receipts absent from {baseline_path} "
+            f"({len(new_violations)}):"
+        )
+        for entry in new_violations:
+            print(f"  - {entry}")
+        print(
+            "\nDo NOT pad the baseline. Mint the receipt naming a verifier the "
+            "runner does not control, or record it as ADVISORY."
+        )
+    if stale_baseline:
+        print(
+            f"\nBaseline entries that no longer derive ({len(stale_baseline)}) — "
+            "shrink the baseline in the same PR that repaired them:"
+        )
+        for entry in stale_baseline:
+            print(f"  - {entry}")
+    return 1
+
+
+def write_derived_verifier_baseline(receipts_root: Path, baseline_path: Path) -> int:
+    """Regenerate the frozen derived-verifier baseline (repair PRs only)."""
+    open_repairs = sorted(load_derived_verifier_open_repairs(baseline_path))
+    entries = [
+        entry
+        for entry in _derived_verifier_findings(receipts_root)
+        if entry not in set(open_repairs)
+    ]
+    header = (
+        "---\n"
+        "# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.\n"
+        "# SPDX-License-Identifier: MIT\n"
+        "#\n"
+        f"# Frozen, shrink-only baseline of pre-existing {DERIVED_VERIFIER_TICKET}\n"
+        "# DERIVED_VERIFIER receipts across drift/dod_receipts/**: post-\n"
+        "# HARDENING_CUTOFF PASS receipts whose verifier handle is the runner\n"
+        "# handle, or an affix extension of it, once separators are normalized.\n"
+        "#\n"
+        "# WHY A BASELINE AND NOT A CUTOFF DATE: run_timestamp is producer-written,\n"
+        "# and the newest entries here were minted the same day the rule landed,\n"
+        "# so no date separates 'legacy' from 'live'. An enumerated path list\n"
+        "# does, and it names the debt instead of hiding it behind a comparison.\n"
+        "#\n"
+        "# WHY NOT A BACK-FILL: rewriting a merged receipt's verifier field is\n"
+        "# exactly what the OCC Append-Only Gate rejects as receipt_file_mutated,\n"
+        "# and a relabelled verifier is the defect, not the repair. Repair is\n"
+        "# append-only: mint a net-new receipt (or supersession) naming a verifier\n"
+        "# the runner does not control, then shrink this file in the same PR.\n"
+        "#\n"
+        "# RATCHET DISCIPLINE: this list may only SHRINK. A newly minted\n"
+        "# derived-verifier receipt is a hard failure on the per-receipt rule.\n"
+        "#\n"
+        "# open_repairs: corpus members that are deliberately NOT suppressed, so\n"
+        "# the gate names them to whichever lane next stages them.\n"
+        "#\n"
+        "# Regenerate (repair PRs only):\n"
+        "#   uv run python scripts/validation/check_receipt_hardening.py \\\n"
+        "#     --write-derived-verifier-baseline\n"
+        "violations:\n"
+    )
+    body = "".join(f"  - {entry}\n" for entry in entries)
+    open_block = (
+        "open_repairs:\n" + "".join(f"  - {entry}\n" for entry in open_repairs)
+        if open_repairs
+        else "open_repairs: []\n"
+    )
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(header + body + open_block)
+    print(
+        f"Wrote {len(entries)} suppressed and {len(open_repairs)} open "
+        f"{DERIVED_VERIFIER_TICKET} entries to {baseline_path}."
+    )
+    return 0
+
+
 def write_orphan_baseline(
     receipts_root: Path, contracts_dir: Path, baseline_path: Path
 ) -> int:
@@ -2802,24 +3128,49 @@ def check_receipt_file(  # noqa: PLR0913
     commit_sha_resolver: CommitShaResolver | None = None,
     infrastructure_diagnostics: list[str] | None = None,
     orphan_baseline: frozenset[str] | None = None,
+    derived_verifier_baseline: frozenset[str] | None = None,
 ) -> list[str]:
     """Return violation strings for one receipt file (empty = clean).
 
     ``orphan_baseline`` suppresses the ORPHAN_BINDING rule for the frozen,
     shrink-only set of pre-existing orphan receipts (OMN-13888) — see
     ``load_orphan_baseline`` and the module docstring.
+    ``derived_verifier_baseline`` does the same for DERIVED_VERIFIER
+    (OMN-18778). Both are keyed on path alone, and every other rule stays
+    enforced on a baselined file.
     """
-    return _drop_baselined_orphans(
+    return _drop_baselined_rule(
         receipt_path,
-        _check_receipt_file_unbaselined(
+        _drop_baselined_orphans(
             receipt_path,
-            contracts_dir,
-            supersession_baseline,
-            commit_sha_resolver,
-            infrastructure_diagnostics,
+            _check_receipt_file_unbaselined(
+                receipt_path,
+                contracts_dir,
+                supersession_baseline,
+                commit_sha_resolver,
+                infrastructure_diagnostics,
+            ),
+            orphan_baseline,
         ),
-        orphan_baseline,
+        derived_verifier_baseline,
+        DERIVED_VERIFIER_RULE,
     )
+
+
+def _drop_baselined_rule(
+    receipt_path: Path,
+    violations: list[str],
+    baseline: frozenset[str] | None,
+    rule_tag: str,
+) -> list[str]:
+    """Filter ``rule_tag`` fragments for a path in ``baseline``.
+
+    Suppression is keyed on the receipt PATH alone — a receipt names exactly
+    one ``evidence_item_id``, so there is no second dimension to key on.
+    """
+    if not baseline or receipt_path.as_posix() not in baseline:
+        return violations
+    return [v for v in violations if rule_tag not in v]
 
 
 def _drop_baselined_orphans(
@@ -2923,6 +3274,7 @@ def _check_staged_file(  # noqa: PLR0913
     commit_sha_resolver: CommitShaResolver,
     infrastructure_diagnostics: list[str],
     orphan_baseline: frozenset[str] = frozenset(),
+    derived_verifier_baseline: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Route one staged file to the contract- or receipt-shaped check (OMN-15710).
 
@@ -2939,6 +3291,7 @@ def _check_staged_file(  # noqa: PLR0913
         commit_sha_resolver,
         infrastructure_diagnostics,
         orphan_baseline,
+        derived_verifier_baseline,
     )
 
 
@@ -3204,6 +3557,30 @@ def main(  # noqa: C901, PLR0912, PLR0915
         help="Pre-commit config inspected by --check-commit-sha-wiring.",
     )
     parser.add_argument(
+        "--derived-verifier-baseline",
+        default=str(DERIVED_VERIFIER_BASELINE_PATH),
+        help=(
+            f"Frozen shrink-only baseline of pre-existing {DERIVED_VERIFIER_TICKET} "
+            "DERIVED_VERIFIER receipts (verifier handle derived from the runner's)."
+        ),
+    )
+    parser.add_argument(
+        "--derived-verifier-corpus",
+        action="store_true",
+        help=(
+            "Scan every receipt in the corpus for derived verifier handles and "
+            "assert set equality against the frozen baseline in both directions."
+        ),
+    )
+    parser.add_argument(
+        "--write-derived-verifier-baseline",
+        action="store_true",
+        help=(
+            "Regenerate the frozen derived-verifier baseline. Repair PRs only — "
+            "never run this to make a newly minted receipt pass."
+        ),
+    )
+    parser.add_argument(
         "--orphan-baseline",
         default=str(ORPHAN_BASELINE_PATH),
         help=(
@@ -3255,6 +3632,16 @@ def main(  # noqa: C901, PLR0912, PLR0915
     )
 
     orphan_baseline_path = Path(args.orphan_baseline)
+    derived_verifier_baseline_path = Path(args.derived_verifier_baseline)
+
+    if args.write_derived_verifier_baseline:
+        return write_derived_verifier_baseline(
+            Path(args.receipts_root), derived_verifier_baseline_path
+        )
+    if args.derived_verifier_corpus:
+        return run_derived_verifier_corpus(
+            Path(args.receipts_root), derived_verifier_baseline_path
+        )
 
     if args.write_orphan_baseline:
         return write_orphan_baseline(
@@ -3315,6 +3702,9 @@ def main(  # noqa: C901, PLR0912, PLR0915
 
     supersession_baseline = load_supersession_baseline(baseline_path)
     orphan_baseline = load_orphan_baseline(orphan_baseline_path)
+    derived_verifier_baseline = load_derived_verifier_baseline(
+        derived_verifier_baseline_path
+    )
     try:
         commit_sha_resolver = CommitShaResolver(rest_budget=args.commit_sha_rest_budget)
     except ValueError as exc:
@@ -3362,6 +3752,7 @@ def main(  # noqa: C901, PLR0912, PLR0915
                 commit_sha_resolver,
                 infrastructure_diagnostics,
                 orphan_baseline,
+                derived_verifier_baseline,
             )
         )
 
