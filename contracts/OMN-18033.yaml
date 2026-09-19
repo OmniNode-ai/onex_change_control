@@ -99,3 +99,55 @@ dod_evidence:
       - check_type: "command"
         check_value: |-
           for r in omnibase_compat omnibase_spi omnibase_infra omniclaude omnidash omniintelligence omnimarket omnimemory omninode_infra onex_change_control omnigemini omnibase; do body="$(gh api "repos/OmniNode-ai/$r/contents/.pre-commit-config.yaml" --jq '.content' | base64 -d)" && grep -qF 'validate-gitignore-baseline' <<< "$body" || { echo "missing: $r"; exit 1; }; done && echo 12/12
+  - id: "dod-omn18033-retire-autobind-tree-only-bindings"
+    description: >-
+      Retires the two bindings `dod-OmniNode-ai-omnibase_core-pr-1710` carries. That item is an Evidence-Source
+      autobind: its checks read `contents/scripts/insert_hook_block.py` and the PR's own file list, so
+      they prove the code was written and nothing about what any repository holds or what the validator
+      does. AC1 is settled by reading `.pre-commit-config.yaml` from each of the twelve declared targets'
+      own live default branches — the criterion says so in terms, and a grep of omnibase_core's tree cannot
+      answer it. AC2 is settled by running the validator twice against a checkout with one managed pattern
+      removed and requiring a non-zero exit naming that block. Both are bound correctly elsewhere in this
+      contract: `ac1-hook-present-on-every-declared-target` measures the twelve branches and currently
+      records FAIL at 0/12, and `ac2-validator-refuses-an-altered-managed-block` runs the validator and
+      is verified. Nothing is deleted — the autobind item and its acceptance records stay for audit, and
+      the append-only rule is untouched. This corrects the evidence record so AC1 and AC2 rest on checks
+      that measure them, following `dod-omn17214-retire-nonprobative-bindings` (OMN-18577).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env -u PYTHONPATH uv run python -c "
+          import sys, yaml
+          d = yaml.safe_load(open('contracts/OMN-18033.yaml'))
+          items = {i['id']: i for i in d['dod_evidence']}
+          sup = items['dod-OmniNode-ai-omnibase_core-pr-1710']
+          bodies = ' '.join(c['check_value'] for c in sup['checks'])
+          assert 'contents/' in bodies and 'pulls/' in bodies, 'superseded item is not tree-only'
+          for verb in ('psql', 'rpk ', 'docker ', 'pre-commit run', 'validators.gitignore_baseline'):
+              assert verb not in bodies, f'superseded item does contact {verb!r}; premise is wrong'
+          ac1 = items['ac1-hook-present-on-every-declared-target']
+          ac2 = items['ac2-validator-refuses-an-altered-managed-block']
+          assert ac1['binds_ac'] == ['AC1'], ac1.get('binds_ac')
+          assert ac2['binds_ac'] == ['AC2'], ac2.get('binds_ac')
+          assert 'validators.gitignore_baseline' in ac2['checks'][0]['check_value']
+          assert 'contents/.pre-commit-config.yaml' in ac1['checks'][0]['check_value']
+          print('OK retirement premise holds: superseded checks are tree-only; AC1/AC2 bound to checks that measure them')
+          "
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_core-pr-1710"
+        label: "AC1"
+        reason: >-
+          AC1 requires the hook to be present in `.pre-commit-config.yaml` on each of the twelve declared
+          targets' own live default branches, read per branch rather than from a propagation run's success
+          report. The superseded item's checks read omnibase_core's own tree and the PR's file list; neither
+          contacts any target repository, so the binding cannot settle the criterion in either direction.
+          Measured 2026-09-19: 0 of 12.
+      - item: "dod-OmniNode-ai-omnibase_core-pr-1710"
+        label: "AC2"
+        reason: >-
+          AC2 requires the validator to refuse an altered managed block — it is settled by running the
+          validator against a checkout with one managed pattern removed and requiring a non-zero exit
+          naming that block. The superseded item runs no validator; it greps a source file for a function
+          definition. It is bound correctly by `ac2-validator-refuses-an-altered-managed-block`, which
+          runs it and is verified.
