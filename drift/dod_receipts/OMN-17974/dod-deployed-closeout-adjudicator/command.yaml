@@ -1,0 +1,100 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-17974
+evidence_item_id: dod-deployed-closeout-adjudicator
+check_type: command
+check_value: |-
+  bash -euo pipefail <<'CHECK'
+  gh api repos/OmniNode-ai/omnimarket/commits/77064d698f1dacaf02834e691c249c9fcee3a9dc --jq .sha | grep -Fx 77064d698f1dacaf02834e691c249c9fcee3a9dc
+  ssh -T -o BatchMode=yes -o ConnectTimeout=6 192.168.86.201 'docker exec -i -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONOPTIMIZE=0 omninode-runtime-effects uv run --no-sync python -' <<'PY'
+  import asyncio
+  import hashlib
+  import json
+  from pathlib import Path
+  from uuid import UUID
+  from omnibase_core.models.events.model_event_envelope import ModelEventEnvelope
+  import omnimarket.events.runtime_closeout as receipt_module
+  import omnimarket.nodes.node_runtime_closeout_orchestrator.handlers.handler_runtime_closeout_orchestrator as handler_module
+  expected = (
+      (receipt_module, "3b72572b0fcf129399ac4372a4d8520d72d6326a1aa7cf141f39362ab4bcaeb5"),
+      (handler_module, "a7a4be30c678cfc636fb3d40eeea1d6c1d92fee675150b0457900682b9de0b89"),
+  )
+  for module, digest in expected:
+      actual = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+      print(json.dumps({"module": module.__name__, "expected_sha256": digest, "actual_sha256": actual}), flush=True)
+      assert actual == digest, "installed source differs from reviewed Market commit"
+  assert receipt_module.ModelCloseoutReceipt.model_fields["proof_set"].is_required()
+  run_id = UUID("17974000-0000-4000-8000-000000000001")
+  envelope = ModelEventEnvelope(
+      event_type="onex.evt.omnimarket.closeout-proof-matrix-completed.v1",
+      correlation_id=run_id,
+      payload={
+          "start": {"correlation_id": str(run_id), "runtime_lane": "dev", "proof_set": "full"},
+          "proof_matrix": {"correlation_id": str(run_id), "cell_verdicts": []},
+      },
+  )
+  output = asyncio.run(handler_module.HandlerRuntimeCloseoutOrchestrator().handle(envelope))
+  assert len(output.events) == 1
+  receipt = output.events[0].payload
+  assert receipt.final_phase is receipt_module.EnumCloseoutPhase.BLOCKED
+  assert receipt.recommendation is receipt_module.EnumCloseoutRecommendation.HOLD
+  assert receipt.correlation_id == run_id
+  assert receipt.proof_set is receipt_module.EnumProofSet.FULL
+  print(json.dumps({"source_commit": "77064d698f1dacaf02834e691c249c9fcee3a9dc", "phase": receipt.final_phase, "recommendation": receipt.recommendation, "proof_set": receipt.proof_set, "published_events": 0}))
+  PY
+  CHECK
+status: FAIL
+run_timestamp: '2026-09-06T11:00:47.785900Z'
+commit_sha: 77064d698f1dacaf02834e691c249c9fcee3a9dc
+runner: codex:/root
+verifier: codex:/root/a4_obligation_map
+probe_command: |-
+  bash -euo pipefail <<'CHECK'
+  gh api repos/OmniNode-ai/omnimarket/commits/77064d698f1dacaf02834e691c249c9fcee3a9dc --jq .sha | grep -Fx 77064d698f1dacaf02834e691c249c9fcee3a9dc
+  ssh -T -o BatchMode=yes -o ConnectTimeout=6 192.168.86.201 'docker exec -i -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONOPTIMIZE=0 omninode-runtime-effects uv run --no-sync python -' <<'PY'
+  import asyncio
+  import hashlib
+  import json
+  from pathlib import Path
+  from uuid import UUID
+  from omnibase_core.models.events.model_event_envelope import ModelEventEnvelope
+  import omnimarket.events.runtime_closeout as receipt_module
+  import omnimarket.nodes.node_runtime_closeout_orchestrator.handlers.handler_runtime_closeout_orchestrator as handler_module
+  expected = (
+      (receipt_module, "3b72572b0fcf129399ac4372a4d8520d72d6326a1aa7cf141f39362ab4bcaeb5"),
+      (handler_module, "a7a4be30c678cfc636fb3d40eeea1d6c1d92fee675150b0457900682b9de0b89"),
+  )
+  for module, digest in expected:
+      actual = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+      print(json.dumps({"module": module.__name__, "expected_sha256": digest, "actual_sha256": actual}), flush=True)
+      assert actual == digest, "installed source differs from reviewed Market commit"
+  assert receipt_module.ModelCloseoutReceipt.model_fields["proof_set"].is_required()
+  run_id = UUID("17974000-0000-4000-8000-000000000001")
+  envelope = ModelEventEnvelope(
+      event_type="onex.evt.omnimarket.closeout-proof-matrix-completed.v1",
+      correlation_id=run_id,
+      payload={
+          "start": {"correlation_id": str(run_id), "runtime_lane": "dev", "proof_set": "full"},
+          "proof_matrix": {"correlation_id": str(run_id), "cell_verdicts": []},
+      },
+  )
+  output = asyncio.run(handler_module.HandlerRuntimeCloseoutOrchestrator().handle(envelope))
+  assert len(output.events) == 1
+  receipt = output.events[0].payload
+  assert receipt.final_phase is receipt_module.EnumCloseoutPhase.BLOCKED
+  assert receipt.recommendation is receipt_module.EnumCloseoutRecommendation.HOLD
+  assert receipt.correlation_id == run_id
+  assert receipt.proof_set is receipt_module.EnumProofSet.FULL
+  print(json.dumps({"source_commit": "77064d698f1dacaf02834e691c249c9fcee3a9dc", "phase": receipt.final_phase, "recommendation": receipt.recommendation, "proof_set": receipt.proof_set, "published_events": 0}))
+  PY
+  CHECK
+probe_stdout: |
+  77064d698f1dacaf02834e691c249c9fcee3a9dc
+  {"module": "omnimarket.events.runtime_closeout", "expected_sha256": "3b72572b0fcf129399ac4372a4d8520d72d6326a1aa7cf141f39362ab4bcaeb5", "actual_sha256": "073ad8692e19aa80e0e9dd3c0caa537c90025eb0bc0a30c6ecc2d49b80bcad98"}
+exit_code: 1
+duration_ms: 3698
+pr_number: 2324
+contract_entry_sha256: sha256:db761f61a234d8162747c82c541ace5119705d6e6e2152592311948de55bbcc0
+branch: codex/omn-17974-closeout-proof-adjudication
+diff_attestations: []
+no_source_change: false
