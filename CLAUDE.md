@@ -56,6 +56,46 @@ This repo has no runtime contracts, so it has no `deploy-gate.yml`. Do NOT add o
 deploy-gate as a required context here: a required check that never reports wedges every
 merge on the branch indefinitely.
 
+## Privileged paths: open the PR as the writer App, never `gh pr create`
+
+A change here touching **`src/`, `scripts/` or `.github/`** is a privileged change, and a
+human-authored PR for one is refused by `check-human-authored-privileged-pr`. Every lane in
+this fleet commits under one shared account, so such a PR is un-approvable by construction —
+GitHub blocks self-approval — which is what froze the fleet behind OCC#9362 on 2026-09-13.
+
+Push the branch as normal, then open the PR through the dispatch path instead of `gh pr create`:
+
+```bash
+git push -u origin <branch>
+gh workflow run open-pr-as-writer-app.yml -f branch=<branch> -f ticket=<OMN-...>
+```
+
+`open-pr-as-writer-app.yml` creates no branch and pushes nothing — it opens a PR for a branch
+**already pushed**, as the `onexbot-occ-writer` App. The push itself is the sanctioned path's
+first step, which is why the pre-push hint below does not refuse it.
+
+**If you already opened a human PR, close it first.** The workflow *edits* an existing open PR
+rather than re-authoring it, so re-dispatching alone leaves the author of record human and the
+gate keeps refusing:
+
+```bash
+gh pr close <n> --repo OmniNode-ai/onex_change_control
+gh workflow run open-pr-as-writer-app.yml -f branch=<branch> -f ticket=<OMN-...>
+```
+
+Watch for an OCC companion minted against the PR number you just closed; you may need to merge
+`dev` into the branch to pick up its successor.
+
+The `check-privileged-path-push` pre-push hook (OMN-18804) prints the same command when a push
+touches one of those prefixes. It is a hint, not a gate — it exits non-zero only when the branch
+already carries an open human-authored PR, and it advises rather than blocks when the PR state
+cannot be read. The mechanical gate is `check-human-authored-privileged-pr` in CI.
+
+A genuine human hotfix — a person repairing the CI the App path runs on — passes by carrying the
+whole-line human-author escape annotation in the PR body, naming a ticket. The exact literal is
+in `check_human_authored_privileged_pr`'s docstring and is deliberately not spelled in prose that
+a body-parsing gate might read.
+
 ## Schema purity (D-008)
 
 `models/` and `enums/` modules must be pure — no env reads, no filesystem access, no

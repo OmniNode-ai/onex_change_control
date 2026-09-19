@@ -88,6 +88,13 @@ COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     ("guards.yml", "pr-title"): "pr-title / check-title",
     ("docs-validate.yml", "call"): "call / validate-docs",
     ("kb-doc-gate.yml", "kb-doc-gate"): "kb-doc-gate / kb-doc-gate",
+    # OMN-18796: the advisory-job gate's caller job carries no local `name:`,
+    # so the default resolution would look for the bare job id and report the
+    # registered composed check-run name as an unclassified job.
+    (
+        "advisory-job-gate.yml",
+        "advisory-job-gate",
+    ): "advisory-job-gate / advisory-job-gate",
     (
         "guards.yml",
         "required-check-skip-guard",

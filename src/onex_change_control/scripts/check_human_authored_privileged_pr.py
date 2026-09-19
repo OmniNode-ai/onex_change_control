@@ -127,6 +127,28 @@ PRIVILEGED_PATH_PREFIXES: Final[tuple[str, ...]] = (
 #: How many privileged paths the refusal message names before it elides.
 MAX_NAMED_PATHS: Final[int] = 10
 
+#: The ONE definition of the recovery command a refused lane runs, rendered
+#: both here and by the OMN-18804 pre-push hint that imports it. Three lanes
+#: in one window read a refusal that named the workflow FILE and had to work
+#: the dispatch out for themselves, one at a time; a message that costs
+#: 10-15 minutes to act on is not a message, it is a puzzle.
+RECOVERY_COMMAND_TEMPLATE: Final[str] = (
+    "gh workflow run open-pr-as-writer-app.yml -f branch={branch} -f ticket={ticket}"
+)
+
+#: Rendered into a refusal, where the branch and ticket are not known: a
+#: visible placeholder is better than a guess a lane might paste unread.
+BRANCH_PLACEHOLDER: Final[str] = "<branch>"
+TICKET_PLACEHOLDER: Final[str] = "<OMN-...>"
+
+
+def _recovery_command_line() -> str:
+    """The dispatch command as a refused lane reads it, placeholders and all."""
+    return RECOVERY_COMMAND_TEMPLATE.format(
+        branch=BRANCH_PLACEHOLDER, ticket=TICKET_PLACEHOLDER
+    )
+
+
 #: The in-body escape, matched as a WHOLE LINE (leading/trailing whitespace
 #: tolerated) with a ticket id. Built from parts so this module's own source
 #: does not contain the assembled literal on one line — a file that spells its
@@ -217,7 +239,10 @@ def evaluate(
         "2026-09-13.\n"
         "Push your branch, then dispatch "
         ".github/workflows/open-pr-as-writer-app.yml with that branch and "
-        "your ticket id; it opens the PR as the App.\n"
+        "your ticket id; it opens the PR as the App. It EDITS an open PR "
+        "rather than re-authoring it, so close this one first:\n\n"
+        "    gh pr close <this PR> --repo OmniNode-ai/onex_change_control\n"
+        f"    {_recovery_command_line()}\n\n"
         "For a genuine human hotfix, add the human-author escape annotation "
         "on a line of its own in the PR body, naming the ticket "
         "(see this module's docstring for the exact form — it is deliberately "
