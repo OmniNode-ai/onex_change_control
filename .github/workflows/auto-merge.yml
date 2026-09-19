@@ -112,6 +112,47 @@
 # exits 1, and an exhausted budget defers exactly as before. Pinned by
 # tests/ci/test_auto_merge_companion_poll_omn17922.py, which executes the step's
 # own bash against a scripted Checks API.
+#
+# OMN-18797 (2026-09-19): THE BUDGET WAS SHORTER THAN THE QUEUE, AND ITS STATED
+# FALLBACK DID NOT ARRIVE. The second OMN-17922 pass assumed the eligibility
+# check is merely SLOW TO CONCLUDE. Under a merge burst it is slow to START:
+# occ#10322 (evidence for omniclaude#2255) opened 01:08:45Z, its Auto-Merge run
+# took 18 readings of `status=missing conclusion=missing` and gave up at
+# 01:12:07Z, and its `occ-preflight / eligibility` check-run was CREATED at
+# 01:13:56Z — 112 seconds AFTER the poll stopped — started 01:13:59Z and
+# concluded SUCCESS at 01:14:35Z. The job was queued, not slow:
+# actions/runs/35411720602/jobs reports created_at 01:13:56Z against a run whose
+# startedAt is 01:08:54Z, five minutes of runner queueing.
+#
+# The deferral comment said it was "leaving the existing check_suite path to arm
+# later". That path is real (runs 35414814097, 35411370615 and 35408670382 each
+# resolved a companion) but it is sparse and not one-per-PR: between 01:02:31Z
+# and 02:03:56Z not one Auto-Merge run fired on any event while at least six
+# check suites completed on that head. The companion stayed mergeable and
+# unarmed for 26 minutes and a human merged it by hand.
+#
+# Two changes, neither of which relaxes a gate and neither of which touches a
+# credential:
+#
+#   1. The companion budget is 900s, and it covers `workflow_dispatch` as well
+#      as `pull_request`, so re-dispatching this workflow for a stuck companion
+#      is a real recovery rather than one more single reading.
+#   2. An exhausted budget on the companion path FAILS the run instead of
+#      deferring green. An unarmed companion behind a green run is
+#      indistinguishable from one nothing ever looked at.
+#
+# Deliberately NOT done: re-dispatching this workflow on exhaustion, which is
+# the shape that would survive a lost runner. `workflow_dispatch` sent with
+# `secrets.GITHUB_TOKEN` creates no run (Actions-recursion prevention), and the
+# `onexbot-occ-writer` installation (148180820) holds `actions: read`, not
+# write — read live 2026-09-19 from /orgs/OmniNode-ai/installations, where
+# `onexbot` (123040063) is also read-only on Actions. So no existing identity
+# can dispatch, and the only remaining credential is `CROSS_REPO_PAT`, whose
+# reads in this job are ratcheted at exactly two by OMN-16373
+# (tests/test_omn_16373_cross_repo_pat_retirement.py). Widening that ratchet, or
+# granting the App Actions:write, is an authorization decision and not this
+# change's to make. Pinned by
+# tests/ci/test_auto_merge_companion_budget_omn18797.py.
 name: Auto-Merge
 
 on:
@@ -133,8 +174,23 @@ permissions:
   pull-requests: write
   checks: read
 
+# OMN-18797: key the group by the PR on EVERY path that carries one.
+# `github.event.pull_request.number` is empty on the check_suite and
+# workflow_dispatch paths, so the previous expression collapsed every such run
+# for every PR into one `Auto-Merge-refs/heads/dev` group under
+# `cancel-in-progress: true` — one PR's re-attempt cancelled another PR's, and
+# the check_suite path is the only automatic re-attempt this workflow has. A
+# property an event does not carry indexes to null in an expression, so each
+# alternative simply falls through on the events it does not apply to, and
+# `github.ref` stays the last-resort key for an event with no PR at all.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event.pull_request.number
+      || github.event.inputs.pr_number
+      || github.event.check_suite.pull_requests[0].number
+      || github.ref
+    }}
   cancel-in-progress: true
 
 jobs:
@@ -288,9 +344,22 @@ jobs:
           # OCC evidence companion on its own `opened` event. Every other actor,
           # title and event resolves to 0 and takes a single reading, which is
           # the pre-OMN-17922-poll behaviour unchanged.
+          # OMN-18797: 180s was shorter than the queue. The measured worst case
+          # is 5m05s from companion open to the eligibility JOB BEING CREATED
+          # (occ#10322, 2026-09-19), against a budget that expired at 3m22s.
+          # 900s carries ~2.5x that margin and costs nothing in the ordinary
+          # case, where the poll exits on the first terminal reading in ~16s.
+          # The budget also covers `workflow_dispatch`, so re-dispatching this
+          # workflow at a stuck companion is a real recovery path rather than
+          # one more single reading.
           ELIGIBILITY_POLL_SECONDS: >-
-            ${{ (steps.resolve.outputs.companion == 'true' && github.event_name == 'pull_request') && '180' || '0' }}
+            ${{ (steps.resolve.outputs.companion == 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')) && '900' || '0' }}
           ELIGIBILITY_POLL_INTERVAL_SECONDS: "10"
+          # OMN-18797: scopes the fail-closed exhaustion below to the same shape
+          # the budget is scoped to. The check_suite path keeps its silent
+          # deferral: a late event finding a still-pending check is ordinary,
+          # and it carries no budget to have exhausted.
+          COMPANION: ${{ steps.resolve.outputs.companion }}
         run: |
           set -euo pipefail
 
@@ -388,6 +457,20 @@ jobs:
           elif [ "$status" = "completed" ] && { [ "$conclusion" = "failure" ] || [ "$conclusion" = "action_required" ]; }; then
             echo "::error::OCC PREFLIGHT FAILED for PR #${PR} (head ${head_sha}). Auto-merge will not arm until OCC eligibility is satisfied."
             echo "::error::Add a passing receipt to drift/dod_receipts/ in onex_change_control for all dod_evidence items cited in this PR's ticket contract."
+            exit 1
+          elif [ "${COMPANION:-false}" = "true" ] && [ "$poll_seconds" -gt 0 ]; then
+            # OMN-18797: a companion that spent its whole budget without a
+            # terminal reading is NOT armed, and saying so quietly is how
+            # occ#10322 went unnoticed for 26 minutes. The run goes red. It is
+            # not a required check on `dev` (read back live 2026-09-19: the four
+            # required contexts are CI Summary, required-check-skip-guard /
+            # check-skip-vectors, verify / verify and occ-preflight /
+            # eligibility) and this job is not in CI Summary's
+            # EXPECTED_EXTERNAL_CONTEXTS, so a red run raises an alarm without
+            # blocking anything. Arming is not foreclosed either: a later
+            # check_suite event still runs this workflow and still arms.
+            echo "defer=true" >> "$GITHUB_OUTPUT"
+            echo "::error::companion PR #${PR} is NOT armed: OCC eligibility read ${status}/${conclusion} and never reached success across ${attempts} reading(s) within a ${poll_seconds}s budget. Check occ-preflight on head ${head_sha} — if it is green now, arm with: gh workflow run auto-merge.yml --repo ${GH_REPO} -f pr_number=${PR}"
             exit 1
           else
             # PENDING or missing: defer. Auto-merge workflow re-fires on check_suite completion.
