@@ -69,3 +69,332 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 10364 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3846"
+    description: "PR #3846 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/compute_workspace_provenance.py?ref=0427cdcab152235f5789ab7b0598b6c961cc960c --jq '.content' | base64 -d | grep -c 'def _digest_files'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3846/files --paginate --jq '.[].filename' | grep -cFx 'scripts/runtime_build/compute_workspace_provenance.py'
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "325a7ef0823882f8b9f08d7ecf43409460108bde31910ca6aa7731d671c136f4"
+        proposed_by: "occ-autobind"
+      - label: "AC2"
+        criterion_hash: "7871d4406aa6fba31b3e4acf7213165e05a1a41e3ad43fe34e379345146f4688"
+        proposed_by: "occ-autobind"
+  - id: "occ-self-bind-pr-10443"
+    description: "Binds OMN-18033 to OCC companion PR #10443 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10443 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac2-validator-refuses-an-altered-managed-block"
+    description: >-
+      AC2 binding: the gitignore baseline validator asserts the spec rather than merely being present.
+      Runs the validator twice against a throwaway tree built from omnibase_core's own `.gitignore` and
+      its own `architecture-handshakes/gitignore-baseline.yaml`, both read at the SAME commit (`5d562ab4`)
+      — once clean, which must exit 0, and once with the managed pattern `.env` removed from the `universal`
+      block, which must exit non-zero AND name that block, which is exactly AC2's falsifier. Negative
+      control run 2026-09-19: substituting a command that always succeeds for the validator makes this
+      check exit 1, so it cannot pass vacuously. Reworked 2026-09-19 a second time because the hosted
+      Contract Compliance runner could not execute the previous form. That form installed the validator
+      with `uv --with "omnibase-core @ git+https://..."`; on the runner the clean leg failed in 7.5 s
+      and said nothing, because that leg discarded its own stderr. This form clones nothing and discards
+      no stream. It reads both files with `gh api`, the one mechanism that job is already proven to execute,
+      writes the spec where the validator's own `_locate_spec` looks first (`<root>/architecture-handshakes/`),
+      and runs the validator from this repository's synced project environment. Pinning the spec and the
+      `.gitignore` to the same omnibase_core commit is the invariant that matters — reading either from
+      a different commit would make a clean file look altered — and fetching the spec explicitly holds
+      it whatever omnibase_core version the environment carries. The surface read is another repository,
+      not this PR's own tree.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: |-
+          T="$(mktemp -d)" && REF=5d562ab415bcbeb60eb852f5fb6d80b455da1624 && mkdir -p "$T/architecture-handshakes" && gh api "repos/OmniNode-ai/omnibase_core/contents/.gitignore?ref=$REF" --jq '.content' | base64 -d > "$T/.gitignore" && gh api "repos/OmniNode-ai/omnibase_core/contents/architecture-handshakes/gitignore-baseline.yaml?ref=$REF" --jq '.content' | base64 -d > "$T/architecture-handshakes/gitignore-baseline.yaml" && env -u PYTHONPATH uv run python -m omnibase_core.validators.gitignore_baseline "$T" && sed -i.bak '/^\.env$/d' "$T/.gitignore" && { altered_out="$(env -u PYTHONPATH uv run python -m omnibase_core.validators.gitignore_baseline "$T" 2>&1)"; altered_rc=$?; } && [ "$altered_rc" -ne 0 ] && grep -q "block 'universal'" <<< "$altered_out" && rm -rf "$T" && echo OK
+  - id: "dod-omn18033-retire-autobind-tree-only-bindings"
+    description: >-
+      Retires the two bindings `dod-OmniNode-ai-omnibase_core-pr-1710` carries. That item is an Evidence-Source
+      autobind: its checks read `contents/scripts/insert_hook_block.py` and the PR's own file list, so
+      they prove the code was written and nothing about what any repository holds or what the validator
+      does. AC2 is settled by running the validator twice against a tree with one managed pattern removed
+      and requiring a non-zero exit naming that block; it is bound to `ac2-validator-refuses-an-altered-managed-block`,
+      which does exactly that and is verified. AC1 is settled by reading `.pre-commit-config.yaml` from
+      each of the twelve declared targets' own default branches, and its binding is retired WITHOUT a
+      replacement — the reason is recorded on the retirement entry below rather than implied here. The
+      check asserts that no HAND-AUTHORED item claims AC1; a later Evidence-Source autobind may transcribe
+      the criterion onto a generated item again, and the binding gate reports that as a hold owned by
+      the producer rather than refusing it, so pinning the whole claim set here would make this contract
+      fail on somebody else's mint. Nothing is deleted from the landed record: the autobind item and its
+      acceptance records stay for audit, and the append-only rule is untouched. This corrects the evidence
+      record so the criteria that are bound rest on checks that measure them, and the one that is not
+      is visibly withdrawn with its reason, following `dod-omn17214-retire-nonprobative-bindings` (OMN-18577).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          env -u PYTHONPATH uv run python -c "
+          import yaml
+          d = yaml.safe_load(open('contracts/OMN-18033.yaml'))
+          items = {i['id']: i for i in d['dod_evidence']}
+          sup = items['dod-OmniNode-ai-omnibase_core-pr-1710']
+          bodies = ' '.join(c['check_value'] for c in sup['checks'])
+          assert 'contents/' in bodies and 'pulls/' in bodies, 'superseded item is not tree-only'
+          for verb in ('psql', 'rpk ', 'docker ', 'pre-commit run', 'validators.gitignore_baseline'):
+              assert verb not in bodies, f'superseded item does contact {verb!r}; premise is wrong'
+          ac2 = items['ac2-validator-refuses-an-altered-managed-block']
+          assert ac2['binds_ac'] == ['AC2'], ac2.get('binds_ac')
+          assert 'validators.gitignore_baseline' in ac2['checks'][0]['check_value']
+          retired = {(e['item'], e['label']) for i in d['dod_evidence'] for e in i.get('supersedes_ac_binding', [])}
+          assert ('dod-OmniNode-ai-omnibase_core-pr-1710', 'AC1') in retired, retired
+          assert ('dod-OmniNode-ai-omnibase_core-pr-1710', 'AC2') in retired, retired
+          hand = {label for i in d['dod_evidence'] if i.get('source') == 'manual' for label in i.get('binds_ac', []) if (i['id'], label) not in retired}
+          assert hand == {'AC2'}, f'expected AC2 alone to be hand-bound, got {sorted(hand)}'
+          print('OK retirement premise holds: superseded checks are tree-only; AC2 is hand-bound to a check that runs the validator; no hand-authored item claims AC1')
+          "
+    supersedes_ac_binding:
+      - item: "dod-OmniNode-ai-omnibase_core-pr-1710"
+        label: "AC1"
+        reason: >-
+          AC1 requires the hook to be present in `.pre-commit-config.yaml` on each of the twelve declared
+          targets' own default branches, read per branch rather than from a propagation run's success
+          report. The superseded item's checks read omnibase_core's own tree and the PR's file list; neither
+          contacts any target repository, so the binding cannot settle the criterion in either direction.
+          AC1 is left UNBOUND by any hand-authored item rather than rebound, and that is the honest state
+          rather than an oversight. Measured live 2026-09-19 it stands at 0 of 12: every declared target
+          lacks the hook, ten adoption PRs are open and carry the change (omnidash#323, omninode_infra#1572,
+          omnibase_compat#211, omnibase_spi#309, omnibase_infra#3813, omniclaude#2264, omniintelligence#920,
+          omnimarket#2670, omnimemory#520, onex_change_control#10368), and two declared targets — omnigemini
+          and omnibase — carry no `.pre-commit-config.yaml` at all, so twelve of twelve is unreachable
+          until that is ruled on (raised on OMN-18557). A bound item carrying that census was authored
+          and then withdrawn: its check can only ever record FAIL, a non-PASS receipt makes this companion
+          permanently ineligible to merge, and that in turn holds the ten adoption PRs that are the only
+          thing which can make AC1 true. Binding it to a check that reads each target's tree also cannot
+          settle it on the OMN-18577 proof-class rule, because the criterion's own text names a live surface.
+          The evidence closer holds OMN-18033 unclosed on the unbound criterion, which is the correct
+          outcome while the rollout is incomplete. Rebind AC1 in a follow-up companion once the adoptions
+          land and the census can pass.
+      - item: "dod-OmniNode-ai-omnibase_core-pr-1710"
+        label: "AC2"
+        reason: >-
+          AC2 requires the validator to refuse an altered managed block — it is settled by running the
+          validator against a tree with one managed pattern removed and requiring a non-zero exit naming
+          that block. The superseded item runs no validator; it greps a source file for a function definition.
+          It is bound correctly by `ac2-validator-refuses-an-altered-managed-block`, which runs it and
+          is verified.
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3813"
+    description: >-
+      PR #3813 on OmniNode-ai/omnibase_infra — OMN-18033 adoption PR binding. Binds OMN-18033's merged
+      companion evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 9f4801a38937 directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_infra/contents/.pre-commit-config.yaml?ref=9f4801a38937eb26f7696003ae54d7f415ed273b" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3813/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omniclaude-pr-2264"
+    description: >-
+      PR #2264 on OmniNode-ai/omniclaude — OMN-18033 adoption PR binding. Binds OMN-18033's merged companion
+      evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 799a995b3a2e directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omniclaude/contents/.pre-commit-config.yaml?ref=799a995b3a2e8cb2745edba17866d2fdd7ef3c82" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniclaude/pulls/2264/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omninode_infra-pr-1572"
+    description: >-
+      PR #1572 on OmniNode-ai/omninode_infra — OMN-18033 adoption PR binding. Binds OMN-18033's merged
+      companion evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 026809fe4e38 directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omninode_infra/contents/.pre-commit-config.yaml?ref=026809fe4e38b37b2beed6da5200830dafb79207" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omninode_infra/pulls/1572/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omnimarket-pr-2670"
+    description: >-
+      PR #2670 on OmniNode-ai/omnimarket — OMN-18033 adoption PR binding. Binds OMN-18033's merged companion
+      evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit f250fb344be3 directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimarket/contents/.pre-commit-config.yaml?ref=f250fb344be362d15eb4db88a0bb872d988a728a" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/pulls/2670/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omnimemory-pr-520"
+    description: >-
+      PR #520 on OmniNode-ai/omnimemory — OMN-18033 adoption PR binding. Binds OMN-18033's merged companion
+      evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 749412bbf37f directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnimemory/contents/.pre-commit-config.yaml?ref=749412bbf37ffe1751fd54a3f9bc9616e7a6012e" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimemory/pulls/520/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omniintelligence-pr-920"
+    description: >-
+      PR #920 on OmniNode-ai/omniintelligence — OMN-18033 adoption PR binding. Binds OMN-18033's merged
+      companion evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 762b008ec509 directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omniintelligence/contents/.pre-commit-config.yaml?ref=762b008ec50912ec285142a8f9aa3aefe09ec2ca" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omniintelligence/pulls/920/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omnidash-pr-323"
+    description: >-
+      PR #323 on OmniNode-ai/omnidash — OMN-18033 adoption PR binding. Binds OMN-18033's merged companion
+      evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 6a897df412c9 directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnidash/contents/.pre-commit-config.yaml?ref=6a897df412c9cbaf8f60a10492c2733fa9deb956" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnidash/pulls/323/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omnibase_spi-pr-309"
+    description: >-
+      PR #309 on OmniNode-ai/omnibase_spi — OMN-18033 adoption PR binding. Binds OMN-18033's merged companion
+      evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 44275561cbd7 directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_spi/contents/.pre-commit-config.yaml?ref=44275561cbd7acee46054565ca694425e29f8388" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_spi/pulls/309/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'
+  - id: "dod-OmniNode-ai-omnibase_compat-pr-211"
+    description: >-
+      PR #211 on OmniNode-ai/omnibase_compat — OMN-18033 adoption PR binding. Binds OMN-18033's merged
+      companion evidence to this product PR. The autobinder did not mint this item: its orchestrator idempotency
+      check no-ops once the product PR body already carries a companion binding, which is the gap OMN-16336
+      and OMN-17506 own, so ten adoption PRs opened against one already-bound companion received no per-PR
+      item and the merge-eligibility gate reported every one of them pr_ticket_mismatch. Hand-authored
+      here in the autobinder's own item shape rather than by re-triggering it. Both checks are content-bound
+      and read the PR's own head commit 23a0c2c99dc1 directly — the first asserts the adopted hook id
+      is present in that commit's `.pre-commit-config.yaml`, the second asserts the PR's own file list
+      names that path — so neither reads a propagation run's success report. Negative control executed
+      2026-09-19T19:41:55Z: the first check's identical form against OmniNode-ai/omnibase_infra `dev`,
+      where the hook is absent, prints 0 and exits 1, so the check cannot pass vacuously. This item carries
+      no `binds_ac`: it is structural provenance for the rollout, and AC1 remains withdrawn and unbound
+      exactly as the retirement entry above records.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api "repos/OmniNode-ai/omnibase_compat/contents/.pre-commit-config.yaml?ref=23a0c2c99dc14b3f0eb4220e137303bc7de18361" --jq '.content' | base64 -d | grep -c 'id: validate-gitignore-baseline'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_compat/pulls/211/files --paginate --jq '.[].filename' | grep -cFx '.pre-commit-config.yaml'

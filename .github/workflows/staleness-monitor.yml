@@ -374,52 +374,64 @@ jobs:
           retention-days: 365
           if-no-files-found: warn
 
+      # OMN-18817: the verdict is about STALENESS, not about this job's own
+      # plumbing. Before this change the step failed whenever a required
+      # notification could not confirm itself and never failed on staleness
+      # at all, so with both channels unwired it was red on every run for
+      # 118 days (122 retained runs, 117 failure, 5 cancelled, zero success)
+      # while the number it exists to publish went unread.
+      #
+      # The decision now lives in `promotion-staleness-monitor verdict`, in
+      # Python, under test (tests/promotion/test_staleness_verdict_omn18817.py),
+      # rather than in shell here. A notifier that did not fire is a warning
+      # naming its reason; a repo past the threshold whose own release
+      # workflow advances the target branch is the failure; a repo past the
+      # threshold whose release workflow does NOT is reported and excluded,
+      # because its gap is an absent mechanism rather than an unpromoted
+      # backlog. That posture is read per repo from the checkout that was
+      # measured -- never a repo-name list, which is what goes stale.
       - name: Evaluate monitor outcome
         id: evaluate
         if: always()
         shell: bash
+        env:
+          REPORT_PATH: ${{ env.EVIDENCE_DIR }}/staleness_report.json
+          REPORT_GENERATED: ${{ steps.generate-report.outcome == 'success' }}
+          LINEAR_REQUIRED: ${{ steps.report.outputs.requires_linear_ticket }}
+          LINEAR_NOTIFIED: ${{ steps.linear-ticket.outputs.notified }}
+          LINEAR_REASON: ${{ steps.linear-ticket.outputs.reason }}
+          LINEAR_OUTCOME: ${{ steps.linear-ticket.outcome }}
+          SLACK_REQUIRED: ${{ steps.report.outputs.requires_slack_alert }}
+          SLACK_NOTIFIED: ${{ steps.slack-alert.outputs.notified }}
+          SLACK_REASON: ${{ steps.slack-alert.outputs.reason }}
+          SLACK_OUTCOME: ${{ steps.slack-alert.outcome }}
         run: |
           set -uo pipefail
-          FAIL=0
-          REASONS=""
 
-          if [ "${{ steps.generate-report.outcome }}" != "success" ]; then
-            FAIL=1
-            REASONS="${REASONS}staleness report generation did not succeed (outcome=${{ steps.generate-report.outcome }}); "
+          if [ ! -f "$REPORT_PATH" ]; then
+            echo "::error::no staleness report at ${REPORT_PATH}; the monitor measured nothing this run"
+            exit 1
           fi
 
-          UNREADABLE_COUNT="${{ steps.report.outputs.unreadable_repo_count }}"
-          UNREADABLE_LIST="${{ steps.report.outputs.unreadable_repos }}"
-          if [ -n "$UNREADABLE_COUNT" ] && [ "$UNREADABLE_COUNT" != "0" ]; then
-            echo "::warning::monitor could not read ${UNREADABLE_COUNT} repo(s) this run: ${UNREADABLE_LIST}"
-          fi
-
-          if [ "${{ steps.report.outputs.requires_linear_ticket }}" = "true" ] \
-             && [ "${{ steps.linear-ticket.outputs.notified }}" != "true" ]; then
-            FAIL=1
-            REASONS="${REASONS}P1 staleness ticket was required but not confirmed created (linear-ticket outcome=${{ steps.linear-ticket.outcome }}); "
-          fi
-
-          if [ "${{ steps.report.outputs.requires_slack_alert }}" = "true" ] \
-             && [ "${{ steps.slack-alert.outputs.notified }}" != "true" ]; then
-            FAIL=1
-            REASONS="${REASONS}Slack staleness alert was required but not confirmed sent (slack-alert outcome=${{ steps.slack-alert.outcome }}); "
-          fi
+          set +e
+          uv run promotion-staleness-monitor verdict \
+            --report "$REPORT_PATH" \
+            --report-generated "${REPORT_GENERATED}" \
+            --notifier "linear-ticket:${LINEAR_REQUIRED:-false}:${LINEAR_NOTIFIED:-false}:${LINEAR_REASON:-}:${LINEAR_OUTCOME:-}" \
+            --notifier "slack-alert:${SLACK_REQUIRED:-false}:${SLACK_NOTIFIED:-false}:${SLACK_REASON:-}:${SLACK_OUTCOME:-}" \
+            | tee "$EVIDENCE_DIR/monitor_verdict.txt"
+          # The verdict's exit status, not tee's (a pipeline reports the LAST
+          # command). Reading $? here would report tee and make every run green.
+          VERDICT_STATUS="${PIPESTATUS[0]}"
+          set -e
 
           {
             echo "## Promotion Staleness Monitor"
             echo ""
-            echo "- max_staleness_days: ${{ steps.report.outputs.max_staleness_days }}"
-            echo "- requires_linear_ticket: ${{ steps.report.outputs.requires_linear_ticket }} (notified: ${{ steps.linear-ticket.outputs.notified }})"
-            echo "- requires_slack_alert: ${{ steps.report.outputs.requires_slack_alert }} (notified: ${{ steps.slack-alert.outputs.notified }})"
-            echo "- unreadable_repos (${UNREADABLE_COUNT:-0}): ${UNREADABLE_LIST:-none}"
+            sed -e 's/^::warning:://' -e 's/^::error:://' "$EVIDENCE_DIR/monitor_verdict.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$FAIL" = "1" ]; then
-            echo "::error::promotion staleness monitor did not complete its job this run: ${REASONS}"
-            exit 1
-          fi
-          echo "Monitor completed; every required notification fired (or none were required this run)."
+          exit "$VERDICT_STATUS"
 
       - name: Alert on monitor failure
         if: failure()
