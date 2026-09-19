@@ -4,9 +4,9 @@ ticket_id: OMN-18601
 evidence_item_id: dod-omn18601-grant3-values
 check_type: command
 check_value: |-
-  grep -Fq 'grant-823154a7-18ab-4d54-8d3c-3a2e859d1f87' grants/prod_promotion_grants.yaml && grep -Fq 'manifest_ref: b828ec9e65f873149c97d94cbefa9133b9574e5d' grants/prod_promotion_grants.yaml && grep -Fq 'rendered_digest: sha256:976ef4de626144f156a6a227c3b881066e07273476a5f19f00b96e6e454fad06' grants/prod_promotion_grants.yaml && grep -Fq 'manifest_subtree: k8s/keycloak-seed' grants/prod_promotion_grants.yaml && ! grep -Fq 'grant-aeae215d-d796-4141-a0a9-7b5fd0c22055' grants/prod_promotion_grants.yaml
-contract_sha256: "sha256:b3c70360826c66540efcbd174f37aa5c16bd1a068e00b464353aa5409e6448c4"
-contract_entry_sha256: "sha256:447ee8f755525a7da47d329163829b93a287f3b8e96ddf3873e0bbcf05272cc2"
+  python3 -c "import yaml,sys; e=yaml.safe_load(open('grants/prod_promotion_grants.yaml'))['entries']; sys.exit(0 if len(e)==1 and e[0]['grant_id']=='grant-823154a7-18ab-4d54-8d3c-3a2e859d1f87' and e[0]['manifest_ref']=='b828ec9e65f873149c97d94cbefa9133b9574e5d' and e[0]['rendered_digest']=='sha256:976ef4de626144f156a6a227c3b881066e07273476a5f19f00b96e6e454fad06' and e[0]['manifest_subtree']=='k8s/keycloak-seed' and e[0]['runtime_lane']=='prod' and e[0]['target_kind']=='manifest' else 1)"
+contract_sha256: "sha256:5eda5086cde318d61daf676a07d8bef47bf0a3bea7211c6335f542ce5b66019a"
+contract_entry_sha256: "sha256:2aa12152cc3f183202a99336e48d57de2181d04e48348a11e11e69de8a354f16"
 status: PASS
 run_timestamp: '2026-09-19T20:26:10Z'
 commit_sha: a7b185cb2ac63f8e072445c7baf048a081dac4ab
@@ -55,3 +55,20 @@ actual_output: |-
   WHY THE REF HAD TO MOVE AT ALL. The gate reads manifest_ref from its own checkout with `git rev-parse
   HEAD`, so an entry naming ad45e2cc would be refused the moment main advanced past it — regardless of
   whether the tree it names still renders correctly.
+  CHECK CONVERTED FROM A STRING CHAIN TO A STRUCTURAL PARSE, after the string form FAILED on this PR's
+  own first CI run. Its last clause was `! grep -Fq 'grant-aeae215d…'`, asserting the superseded entry was
+  gone — and the registry's supersession header names that id ON PURPOSE, so the absence-grep matched a
+  COMMENT and reported a false failure. Measured rather than guessed: the old id appears twice in the file,
+  at lines 672 and 712, both comment lines, while `entries` contains exactly one entry, the new grant.
+
+  THE WARNING WAS ALREADY IN THIS FILE. dod-omn18601-grant-revoked's description says the check
+  "deliberately does NOT grep for the absence of the grant id, because the revocation header above names it
+  on purpose and such a check would match the comment and report a false failure -- the shape OCC#8670 used
+  is unsafe here for exactly that reason." That text was read earlier in this same session and the unsafe
+  shape was written anyway, one item away from it.
+
+  WHAT THE REPLACEMENT ASSERTS, and why it is stronger rather than merely different. It parses the registry
+  and tests a property of the `entries` LIST: exactly one entry, whose grant_id, manifest_ref,
+  rendered_digest, manifest_subtree, runtime_lane and target_kind all match. Comments cannot affect it, and
+  it additionally pins the entry COUNT, which the string chain never did — a second, unrelated entry could
+  have satisfied every grep in the old form.
