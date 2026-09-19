@@ -69,29 +69,33 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 10364 --repo OmniNode-ai/onex_change_control --json number,state"
-  - id: "dod-OmniNode-ai-omnibase_infra-pr-3846"
-    description: "PR #3846 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
-    source: "generated"
+  - id: "ac2-validator-refuses-an-altered-managed-block"
+    description: >-
+      AC2 binding: the gitignore baseline validator asserts the spec rather than merely being present.
+      Runs the canonical hook entry twice against a throwaway copy of omnibase_core's own .gitignore —
+      once clean, which must exit 0, and once with the managed pattern `.env` removed from the `universal`
+      block, which must exit non-zero naming that block. Negative control run 2026-09-19: substituting
+      a command that always succeeds for the validator makes this check exit 1, so it cannot pass vacuously.
+      Uses `uv run python` rather than a bare `python3`, per OMN-18756.
+    source: "manual"
+    status: "verified"
+    binds_ac: ["AC2"]
     checks:
       - check_type: "command"
         check_value: |-
-          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/compute_workspace_provenance.py?ref=0427cdcab152235f5789ab7b0598b6c961cc960c --jq '.content' | base64 -d | grep -c 'def _digest_files'
-      - check_type: "command"
-        check_value: |-
-          gh api repos/OmniNode-ai/omnibase_infra/pulls/3846/files --paginate --jq '.[].filename' | grep -cFx 'scripts/runtime_build/compute_workspace_provenance.py'
-    binds_ac:
-      - "AC1"
-      - "AC2"
-    ac_bindings:
-      - label: "AC1"
-        criterion_hash: "325a7ef0823882f8b9f08d7ecf43409460108bde31910ca6aa7731d671c136f4"
-        proposed_by: "occ-autobind"
-      - label: "AC2"
-        criterion_hash: "7871d4406aa6fba31b3e4acf7213165e05a1a41e3ad43fe34e379345146f4688"
-        proposed_by: "occ-autobind"
-  - id: "occ-self-bind-pr-10443"
-    description: "Binds OMN-18033 to OCC companion PR #10443 (self-bind)."
-    source: "generated"
+          T="$(mktemp -d)" && cp .gitignore "$T/.gitignore" && env -u PYTHONPATH uv run python -m omnibase_core.validators.gitignore_baseline "$T" >/dev/null 2>&1 && sed -i.bak '/^\.env$/d' "$T/.gitignore" && ! env -u PYTHONPATH uv run python -m omnibase_core.validators.gitignore_baseline "$T" >/dev/null 2>&1 && rm -rf "$T" && echo OK
+        cwd: "${OMNI_HOME}/omnibase_core"
+  - id: "ac1-hook-present-on-every-declared-target"
+    description: >-
+      AC1 binding: every repository named in the gitignore-baseline-hook propagation carries validate-gitignore-baseline
+      in its .pre-commit-config.yaml, read from that repository's own live default branch rather than
+      from a propagation run's success report. Status is pending, not verified: measured 0 of 12 on 2026-09-19.
+      Bound so the criterion is visibly unmet rather than unbound and invisible; it moves to verified
+      when the 12-repo rollout lands.
+    source: "manual"
+    status: "pending"
+    binds_ac: ["AC1"]
     checks:
       - check_type: "command"
-        check_value: "gh pr view 10443 --repo OmniNode-ai/onex_change_control --json number,state"
+        check_value: |-
+          for r in omnibase_compat omnibase_spi omnibase_infra omniclaude omnidash omniintelligence omnimarket omnimemory omninode_infra onex_change_control omnigemini omnibase; do body="$(gh api "repos/OmniNode-ai/$r/contents/.pre-commit-config.yaml" --jq '.content' | base64 -d)" && grep -qF 'validate-gitignore-baseline' <<< "$body" || { echo "missing: $r"; exit 1; }; done && echo 12/12
