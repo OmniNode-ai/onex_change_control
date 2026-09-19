@@ -69,63 +69,81 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 10364 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnibase_infra-pr-3846"
+    description: "PR #3846 on OmniNode-ai/omnibase_infra — Evidence-Source autobind."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/contents/scripts/runtime_build/compute_workspace_provenance.py?ref=0427cdcab152235f5789ab7b0598b6c961cc960c --jq '.content' | base64 -d | grep -c 'def _digest_files'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnibase_infra/pulls/3846/files --paginate --jq '.[].filename' | grep -cFx 'scripts/runtime_build/compute_workspace_provenance.py'
+    binds_ac:
+      - "AC1"
+      - "AC2"
+    ac_bindings:
+      - label: "AC1"
+        criterion_hash: "325a7ef0823882f8b9f08d7ecf43409460108bde31910ca6aa7731d671c136f4"
+        proposed_by: "occ-autobind"
+      - label: "AC2"
+        criterion_hash: "7871d4406aa6fba31b3e4acf7213165e05a1a41e3ad43fe34e379345146f4688"
+        proposed_by: "occ-autobind"
+  - id: "occ-self-bind-pr-10443"
+    description: "Binds OMN-18033 to OCC companion PR #10443 (self-bind)."
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10443 --repo OmniNode-ai/onex_change_control --json number,state"
   - id: "ac2-validator-refuses-an-altered-managed-block"
     description: >-
       AC2 binding: the gitignore baseline validator asserts the spec rather than merely being present.
-      Runs the validator twice against a throwaway copy of omnibase_core's own .gitignore — once clean,
-      which must exit 0, and once with the managed pattern `.env` removed from the `universal` block,
-      which must exit non-zero AND name that block, which is exactly AC2's falsifier. Negative control
-      run 2026-09-19: substituting a command that always succeeds for the validator makes this check exit
-      1, so it cannot pass vacuously. Reworked 2026-09-19 so the hosted gate can execute it. It previously
-      ran at cwd `${OMNI_HOME}/omnibase_core`, which is empty on a hosted runner, so the gate returned
-      NOT-EVALUATED and the binding settled nothing. It now fetches that .gitignore over the GitHub API
-      and installs the validator from a pinned wheel, so it needs no local checkout. Repointed to dev's
-      tip after omnibase_core#1710 merged 2026-09-19T15:45:29Z; it previously named that PR's own branch
-      sha, which a squash merge leaves on no branch at all. The fetch and the wheel name the SAME omnibase_core
-      sha: the validator compares the spec packaged in that wheel against that same commit's .gitignore,
-      and reading either from a different commit would make a clean file look altered. The surface read
-      is another repository, not this PR's own tree.
+      Runs the validator twice against a throwaway tree built from omnibase_core's own `.gitignore` and
+      its own `architecture-handshakes/gitignore-baseline.yaml`, both read at the SAME commit (`5d562ab4`)
+      — once clean, which must exit 0, and once with the managed pattern `.env` removed from the `universal`
+      block, which must exit non-zero AND name that block, which is exactly AC2's falsifier. Negative
+      control run 2026-09-19: substituting a command that always succeeds for the validator makes this
+      check exit 1, so it cannot pass vacuously. Reworked 2026-09-19 a second time because the hosted
+      Contract Compliance runner could not execute the previous form. That form installed the validator
+      with `uv --with "omnibase-core @ git+https://..."`; on the runner the clean leg failed in 7.5 s
+      and said nothing, because that leg discarded its own stderr. This form clones nothing and discards
+      no stream. It reads both files with `gh api`, the one mechanism that job is already proven to execute,
+      writes the spec where the validator's own `_locate_spec` looks first (`<root>/architecture-handshakes/`),
+      and runs the validator from this repository's synced project environment. Pinning the spec and the
+      `.gitignore` to the same omnibase_core commit is the invariant that matters — reading either from
+      a different commit would make a clean file look altered — and fetching the spec explicitly holds
+      it whatever omnibase_core version the environment carries. The surface read is another repository,
+      not this PR's own tree.
     source: "manual"
     status: "verified"
     binds_ac: ["AC2"]
     checks:
       - check_type: "command"
         check_value: |-
-          T="$(mktemp -d)" && gh api "repos/OmniNode-ai/omnibase_core/contents/.gitignore?ref=5d562ab415bcbeb60eb852f5fb6d80b455da1624" --jq '.content' | base64 -d > "$T/.gitignore" && env -u PYTHONPATH uv run --isolated --no-project --with "omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core.git@5d562ab415bcbeb60eb852f5fb6d80b455da1624" python -m omnibase_core.validators.gitignore_baseline "$T" >/dev/null 2>&1 && sed -i.bak '/^\.env$/d' "$T/.gitignore" && env -u PYTHONPATH uv run --isolated --no-project --with "omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core.git@5d562ab415bcbeb60eb852f5fb6d80b455da1624" python -m omnibase_core.validators.gitignore_baseline "$T" 2>&1 | grep -q "block 'universal'" && rm -rf "$T" && echo OK
-  - id: "ac1-hook-present-on-every-declared-target"
-    description: >-
-      AC1 binding: every repository named in the gitignore-baseline-hook propagation carries validate-gitignore-baseline
-      in its .pre-commit-config.yaml, read from that repository's own live default branch rather than
-      from a propagation run's success report. Status is pending, not verified: measured 0 of 12 on 2026-09-19.
-      Bound so the criterion is visibly unmet rather than unbound and invisible; it moves to verified
-      when the 12-repo rollout lands.
-    source: "manual"
-    status: "pending"
-    binds_ac: ["AC1"]
-    checks:
-      - check_type: "command"
-        check_value: |-
-          for r in omnibase_compat omnibase_spi omnibase_infra omniclaude omnidash omniintelligence omnimarket omnimemory omninode_infra onex_change_control omnigemini omnibase; do body="$(gh api "repos/OmniNode-ai/$r/contents/.pre-commit-config.yaml" --jq '.content' | base64 -d)" && grep -qF 'validate-gitignore-baseline' <<< "$body" || { echo "missing: $r"; exit 1; }; done && echo 12/12
+          T="$(mktemp -d)" && REF=5d562ab415bcbeb60eb852f5fb6d80b455da1624 && mkdir -p "$T/architecture-handshakes" && gh api "repos/OmniNode-ai/omnibase_core/contents/.gitignore?ref=$REF" --jq '.content' | base64 -d > "$T/.gitignore" && gh api "repos/OmniNode-ai/omnibase_core/contents/architecture-handshakes/gitignore-baseline.yaml?ref=$REF" --jq '.content' | base64 -d > "$T/architecture-handshakes/gitignore-baseline.yaml" && env -u PYTHONPATH uv run python -m omnibase_core.validators.gitignore_baseline "$T" && sed -i.bak '/^\.env$/d' "$T/.gitignore" && { altered_out="$(env -u PYTHONPATH uv run python -m omnibase_core.validators.gitignore_baseline "$T" 2>&1)"; altered_rc=$?; } && [ "$altered_rc" -ne 0 ] && grep -q "block 'universal'" <<< "$altered_out" && rm -rf "$T" && echo OK
   - id: "dod-omn18033-retire-autobind-tree-only-bindings"
     description: >-
       Retires the two bindings `dod-OmniNode-ai-omnibase_core-pr-1710` carries. That item is an Evidence-Source
       autobind: its checks read `contents/scripts/insert_hook_block.py` and the PR's own file list, so
       they prove the code was written and nothing about what any repository holds or what the validator
-      does. AC1 is settled by reading `.pre-commit-config.yaml` from each of the twelve declared targets'
-      own live default branches — the criterion says so in terms, and a grep of omnibase_core's tree cannot
-      answer it. AC2 is settled by running the validator twice against a checkout with one managed pattern
-      removed and requiring a non-zero exit naming that block. Both are bound correctly elsewhere in this
-      contract: `ac1-hook-present-on-every-declared-target` measures the twelve branches and currently
-      records FAIL at 0/12, and `ac2-validator-refuses-an-altered-managed-block` runs the validator and
-      is verified. Nothing is deleted — the autobind item and its acceptance records stay for audit, and
-      the append-only rule is untouched. This corrects the evidence record so AC1 and AC2 rest on checks
-      that measure them, following `dod-omn17214-retire-nonprobative-bindings` (OMN-18577).
+      does. AC2 is settled by running the validator twice against a tree with one managed pattern removed
+      and requiring a non-zero exit naming that block; it is bound to `ac2-validator-refuses-an-altered-managed-block`,
+      which does exactly that and is verified. AC1 is settled by reading `.pre-commit-config.yaml` from
+      each of the twelve declared targets' own default branches, and its binding is retired WITHOUT a
+      replacement — the reason is recorded on the retirement entry below rather than implied here. The
+      check asserts that no HAND-AUTHORED item claims AC1; a later Evidence-Source autobind may transcribe
+      the criterion onto a generated item again, and the binding gate reports that as a hold owned by
+      the producer rather than refusing it, so pinning the whole claim set here would make this contract
+      fail on somebody else's mint. Nothing is deleted from the landed record: the autobind item and its
+      acceptance records stay for audit, and the append-only rule is untouched. This corrects the evidence
+      record so the criteria that are bound rest on checks that measure them, and the one that is not
+      is visibly withdrawn with its reason, following `dod-omn17214-retire-nonprobative-bindings` (OMN-18577).
     source: "manual"
     checks:
       - check_type: "command"
         check_value: |-
           env -u PYTHONPATH uv run python -c "
-          import sys, yaml
+          import yaml
           d = yaml.safe_load(open('contracts/OMN-18033.yaml'))
           items = {i['id']: i for i in d['dod_evidence']}
           sup = items['dod-OmniNode-ai-omnibase_core-pr-1710']
@@ -133,28 +151,43 @@ dod_evidence:
           assert 'contents/' in bodies and 'pulls/' in bodies, 'superseded item is not tree-only'
           for verb in ('psql', 'rpk ', 'docker ', 'pre-commit run', 'validators.gitignore_baseline'):
               assert verb not in bodies, f'superseded item does contact {verb!r}; premise is wrong'
-          ac1 = items['ac1-hook-present-on-every-declared-target']
           ac2 = items['ac2-validator-refuses-an-altered-managed-block']
-          assert ac1['binds_ac'] == ['AC1'], ac1.get('binds_ac')
           assert ac2['binds_ac'] == ['AC2'], ac2.get('binds_ac')
           assert 'validators.gitignore_baseline' in ac2['checks'][0]['check_value']
-          assert 'contents/.pre-commit-config.yaml' in ac1['checks'][0]['check_value']
-          print('OK retirement premise holds: superseded checks are tree-only; AC1/AC2 bound to checks that measure them')
+          retired = {(e['item'], e['label']) for i in d['dod_evidence'] for e in i.get('supersedes_ac_binding', [])}
+          assert ('dod-OmniNode-ai-omnibase_core-pr-1710', 'AC1') in retired, retired
+          assert ('dod-OmniNode-ai-omnibase_core-pr-1710', 'AC2') in retired, retired
+          hand = {label for i in d['dod_evidence'] if i.get('source') == 'manual' for label in i.get('binds_ac', []) if (i['id'], label) not in retired}
+          assert hand == {'AC2'}, f'expected AC2 alone to be hand-bound, got {sorted(hand)}'
+          print('OK retirement premise holds: superseded checks are tree-only; AC2 is hand-bound to a check that runs the validator; no hand-authored item claims AC1')
           "
     supersedes_ac_binding:
       - item: "dod-OmniNode-ai-omnibase_core-pr-1710"
         label: "AC1"
         reason: >-
           AC1 requires the hook to be present in `.pre-commit-config.yaml` on each of the twelve declared
-          targets' own live default branches, read per branch rather than from a propagation run's success
+          targets' own default branches, read per branch rather than from a propagation run's success
           report. The superseded item's checks read omnibase_core's own tree and the PR's file list; neither
           contacts any target repository, so the binding cannot settle the criterion in either direction.
-          Measured 2026-09-19: 0 of 12.
+          AC1 is left UNBOUND by any hand-authored item rather than rebound, and that is the honest state
+          rather than an oversight. Measured live 2026-09-19 it stands at 0 of 12: every declared target
+          lacks the hook, ten adoption PRs are open and carry the change (omnidash#323, omninode_infra#1572,
+          omnibase_compat#211, omnibase_spi#309, omnibase_infra#3813, omniclaude#2264, omniintelligence#920,
+          omnimarket#2670, omnimemory#520, onex_change_control#10368), and two declared targets — omnigemini
+          and omnibase — carry no `.pre-commit-config.yaml` at all, so twelve of twelve is unreachable
+          until that is ruled on (raised on OMN-18557). A bound item carrying that census was authored
+          and then withdrawn: its check can only ever record FAIL, a non-PASS receipt makes this companion
+          permanently ineligible to merge, and that in turn holds the ten adoption PRs that are the only
+          thing which can make AC1 true. Binding it to a check that reads each target's tree also cannot
+          settle it on the OMN-18577 proof-class rule, because the criterion's own text names a live surface.
+          The evidence closer holds OMN-18033 unclosed on the unbound criterion, which is the correct
+          outcome while the rollout is incomplete. Rebind AC1 in a follow-up companion once the adoptions
+          land and the census can pass.
       - item: "dod-OmniNode-ai-omnibase_core-pr-1710"
         label: "AC2"
         reason: >-
           AC2 requires the validator to refuse an altered managed block — it is settled by running the
-          validator against a checkout with one managed pattern removed and requiring a non-zero exit
-          naming that block. The superseded item runs no validator; it greps a source file for a function
-          definition. It is bound correctly by `ac2-validator-refuses-an-altered-managed-block`, which
-          runs it and is verified.
+          validator against a tree with one managed pattern removed and requiring a non-zero exit naming
+          that block. The superseded item runs no validator; it greps a source file for a function definition.
+          It is bound correctly by `ac2-validator-refuses-an-altered-managed-block`, which runs it and
+          is verified.
