@@ -1,0 +1,56 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant3-values
+check_type: command
+check_value: |-
+  grep -Fq 'grant-823154a7-18ab-4d54-8d3c-3a2e859d1f87' grants/prod_promotion_grants.yaml && grep -Fq 'manifest_ref: b828ec9e65f873149c97d94cbefa9133b9574e5d' grants/prod_promotion_grants.yaml && grep -Fq 'rendered_digest: sha256:976ef4de626144f156a6a227c3b881066e07273476a5f19f00b96e6e454fad06' grants/prod_promotion_grants.yaml && grep -Fq 'manifest_subtree: k8s/keycloak-seed' grants/prod_promotion_grants.yaml && ! grep -Fq 'grant-aeae215d-d796-4141-a0a9-7b5fd0c22055' grants/prod_promotion_grants.yaml
+contract_sha256: "sha256:b3c70360826c66540efcbd174f37aa5c16bd1a068e00b464353aa5409e6448c4"
+contract_entry_sha256: "sha256:447ee8f755525a7da47d329163829b93a287f3b8e96ddf3873e0bbcf05272cc2"
+status: PASS
+run_timestamp: '2026-09-19T20:26:10Z'
+commit_sha: a7b185cb2ac63f8e072445c7baf048a081dac4ab
+runner: occ-grant3-staging-lane
+verifier: occ-grant3-staging-verifier
+probe_command: |-
+  # The item's own chain, run against BOTH trees. <file> = (1) the registry this PR produces,
+  # (2) onex_change_control@main a7b185cb2, where grant-aeae215d is still the live entry.
+  for v in grant-823154a7-... 'manifest_ref: b828ec9e...' 'rendered_digest: sha256:976ef4de...' \
+           'manifest_subtree: k8s/keycloak-seed'; do grep -Fq "$v" <file>; done
+  ! grep -Fq 'grant-aeae215d-...' <file>     # the superseded entry must be GONE
+  #
+  # And the digest, RECOMPUTED at the new ref rather than carried forward, in a checkout of
+  # repos/OmniNode-ai/omninode_infra detached at b828ec9e:
+  python3 -c "... manifest_promotion_render.rendered_digest(load_documents(kubectl kustomize ...))"
+probe_stdout: |-
+  # staged tree vs onex_change_control@main a7b185cb2
+    grant-823154a7-18ab-...        staged exit=0   main exit=1
+    manifest_ref: b828ec9e...      staged exit=0   main exit=1
+    rendered_digest: sha256:976... staged exit=0   main exit=0   <- SHARED, see below
+    manifest_subtree: k8s/...      staged exit=0   main exit=0   <- SHARED, see below
+    ! grant-aeae215d-...           staged exit=0   main exit=1
+
+  # the digest recomputed at b828ec9e
+  objects: 3
+  rendered_digest: sha256:976ef4de626144f156a6a227c3b881066e07273476a5f19f00b96e6e454fad06
+  guard present at this sha: 17 references to OMN-15812   (was 0 at ad45e2cc)
+actual_output: |-
+  PASS. The registry carries grant-823154a7-18ab-4d54-8d3c-3a2e859d1f87 naming manifest_ref
+  b828ec9e65f873149c97d94cbefa9133b9574e5d, and the superseded grant-aeae215d is gone.
+
+  WHAT THE CONTROL DOES AND DOES NOT SEPARATE, said precisely because two of the five greps match on BOTH
+  trees. rendered_digest and manifest_subtree are IDENTICAL between the two entries, so those two clauses
+  cannot distinguish them and are not claimed to: they assert the fields are present and correct, nothing
+  more. The discriminating clauses are the grant id, the manifest_ref, and the negated absence of the old
+  id, and all three invert between the trees. A chain whose every clause matched on main would have proven
+  only that the file mentions some grant.
+
+  ONLY ONE FIELD MOVED, and it was recomputed rather than assumed. manifest_ref goes ad45e2cc -> b828ec9e
+  because omninode_infra#1583 moved main; rendered_digest was recomputed at b828ec9e with that repository's
+  own scripts/manifest_promotion_render.py and came back EQUAL to the previous cycle's value, which is the
+  expected result and worth checking rather than asserting: #1583 edited .github/workflows/deploy-onex-prod.yml
+  and touched nothing under k8s/keycloak-seed. path, subtree, lane, approver and digest are unchanged.
+
+  WHY THE REF HAD TO MOVE AT ALL. The gate reads manifest_ref from its own checkout with `git rev-parse
+  HEAD`, so an entry naming ad45e2cc would be refused the moment main advanced past it — regardless of
+  whether the tree it names still renders correctly.

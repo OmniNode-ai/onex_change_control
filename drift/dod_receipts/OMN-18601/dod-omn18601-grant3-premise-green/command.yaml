@@ -1,0 +1,64 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant3-premise-green
+check_type: command
+check_value: |-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-18601/dod-omn18601-grant3-premise-green/command.yaml
+contract_sha256: "sha256:b3c70360826c66540efcbd174f37aa5c16bd1a068e00b464353aa5409e6448c4"
+contract_entry_sha256: "sha256:4d2ab3b42e7a99f62c7e42242a8eed572a4913c34fb620393c86fe3d0dad986e"
+status: PASS
+run_timestamp: '2026-09-19T20:31:40Z'
+commit_sha: a7b185cb2ac63f8e072445c7baf048a081dac4ab
+runner: occ-grant3-premise-lane
+verifier: occ-grant3-premise-verifier
+probe_command: |-
+  # Dispatched AFTER omninode_infra#1583 merged, so the receipt is recorded at the commit this grant
+  # names rather than at the previous cycle's ref.
+  gh workflow run deploy-onex-staging.yml --repo OmniNode-ai/omninode_infra --ref main
+  gh run view 35467179416 --repo OmniNode-ai/omninode_infra --json status,conclusion
+  gh api repos/OmniNode-ai/omninode_infra/actions/runs/35467179416 --jq '.head_sha, .head_branch'
+  gh run view 35467179416 --repo OmniNode-ai/omninode_infra --log | grep '\[staging-apply\]'
+  gh run view 35467179416 --repo OmniNode-ai/omninode_infra --log \
+    | grep -c 'k8s/keycloak-seed/overlays/dev-system=k8s/keycloak-seed'
+probe_stdout: |-
+  status=completed conclusion=success
+  head_sha=b828ec9e65f873149c97d94cbefa9133b9574e5d branch=main
+
+  [staging-apply] wrote .../staging-apply-receipt.json:
+    verdict=GREEN cluster=dev-system sha=b828ec9e65f873149c97d94cbefa9133b9574e5d
+    applied=['k8s/data-plane/postgres/backup/overlays/dev-system',
+             'k8s/keycloak-seed/overlays/dev-system']
+
+  # the subtree mapping the emitter was invoked with
+  --applied "k8s/keycloak-seed/overlays/dev-system=k8s/keycloak-seed"   -> 1 occurrence
+actual_output: |-
+  PASS. The premise promote-manifest resolves is met at the ref this grant names, which had to be produced
+  afresh rather than reused: the previous cycle's receipt was recorded at ad45e2cc, and b828ec9e supersedes
+  it, so resolve_staging_apply would have found nothing bound to the new promoted commit.
+
+  THE THREE THINGS THAT MAKE IT BIND. The verdict is GREEN; the recorded sha is
+  b828ec9e65f873149c97d94cbefa9133b9574e5d, equal to this grant's manifest_ref; and the applied set names
+  k8s/keycloak-seed/overlays/dev-system, mapped to the k8s/keycloak-seed subtree the grant declares, so the
+  resolver binds THIS subtree rather than reading SUBTREE_UNBOUND — which is the same outcome as "a
+  different component converged" and would refuse the dispatch. The receipt is accepted for at most 24
+  hours from 2026-09-20T20:30:12Z, which outlasts the grant's own 2026-09-20T20:23:15Z expiry, so the grant
+  is the binding constraint rather than the receipt.
+
+  A SECOND COMPONENT IS IN THE SAME RECEIPT and that is expected rather than a problem:
+  k8s/data-plane/postgres/backup/overlays/dev-system converged in the same run. The emitter records each
+  component separately and a component that FAILED to converge cannot ride a sibling's green into a
+  promotion of the same tree, which is why the receipt names components rather than carrying one verdict.
+
+  BOUND SELECTION, NOT JUST BOUND ENFORCEMENT. resolve_staging_apply matches on the receipt's own recorded
+  sha rather than the run's head sha, which is load-bearing: deploy-onex-staging is also triggered by
+  workflow_run, where GitHub attributes the run to the default branch while the receipt records the
+  TRIGGERING commit, so a `--commit` filter would miss a perfectly good receipt. On the 2026-09-18 prod run
+  that selector was observed skipping four newer completed staging runs to select the one recorded at the
+  promoted commit.
+
+  WHAT THIS PREMISE DOES NOT PROVE, and it is the open defect rather than a caveat. Staging enforces no
+  pod-security profile on any of its fourteen namespaces, so a GREEN apply establishes that the overlay
+  APPLIED, not that the Job RAN. It read GREEN for the revoked grant-90f8e729's manifest too, which
+  production then refused at admission. That is OMN-18764, it is open, and on this cycle the
+  both-defects-covered item is what stands in for it.

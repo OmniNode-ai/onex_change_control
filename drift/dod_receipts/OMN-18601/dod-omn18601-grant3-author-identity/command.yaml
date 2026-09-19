@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant3-author-identity
+check_type: command
+check_value: |-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-18601/dod-omn18601-grant3-author-identity/command.yaml
+contract_sha256: "sha256:b3c70360826c66540efcbd174f37aa5c16bd1a068e00b464353aa5409e6448c4"
+contract_entry_sha256: "sha256:eae3e570b25abc934003da589887c02144c11afe01f81156d389b2de23f303b7"
+status: PASS
+run_timestamp: '2026-09-19T20:26:10Z'
+commit_sha: a7b185cb2ac63f8e072445c7baf048a081dac4ab
+runner: occ-grant3-identity-lane
+verifier: occ-grant3-identity-verifier
+probe_command: |-
+  # Scoped to the ENTRY, not to the file, which is the whole point of this receipt existing.
+  python3 -c "
+  import yaml
+  e = [x for x in yaml.safe_load(open('grants/prod_promotion_grants.yaml'))['entries']
+       if x['grant_id'] == 'grant-823154a7-18ab-4d54-8d3c-3a2e859d1f87']
+  assert len(e) == 1
+  print('entries in file      :', len(yaml.safe_load(open('grants/prod_promotion_grants.yaml'))['entries']))
+  print('this entry approved_by:', e[0]['approved_by'])
+  "
+  gh api user --jq .login                       # the authoring identity
+  gh api repos/OmniNode-ai/onex_change_control/branches/main/protection \
+    --jq '.required_pull_request_reviews.require_code_owner_reviews, .enforce_admins.enabled'
+probe_stdout: |-
+  entries in file      : 1
+  this entry approved_by: jonahgabriel
+
+  gh api user --jq .login          jake-b-omni
+  require_code_owner_reviews       true
+  enforce_admins                   true
+  CODEOWNERS  grants/prod_promotion_grants.yaml @OmniNode-ai/platform-leads
+
+  approved_by (jonahgabriel) != PR author (jake-b-omni)           -> authoring-time refusal satisfied
+  approved_by (jonahgabriel) != intended dispatcher (jake-b-omni) -> dispatch-time refusal satisfied
+actual_output: |-
+  PASS, and the probe is deliberately ENTRY-SCOPED rather than a grep of the file, which is the lesson the
+  previous cycle's item recorded on its way out.
+
+  WHY THE SHAPE CHANGED. A live `grep -Fq 'approved_by: jonahgabriel' grants/prod_promotion_grants.yaml`
+  does not invert when an entry is replaced, because every entry on this path carries the same approver. It
+  keeps PASSING while silently measuring whichever entry happens to be present — a check that passes for
+  the wrong reason, which is worse than one that fails for the right one, because the red gets fixed and the
+  false green gets trusted. This probe parses the registry, selects the entry by grant_id, asserts exactly
+  one match, and reads approved_by off THAT entry.
+
+  THE FACT ITSELF is mechanical and unchanged. approved_by names jonahgabriel, a real GitHub login rather
+  than a placeholder, because omninode_infra's scripts/validate_prod_promotion_grant.py refuses any entry
+  whose approved_by equals the dispatching identity under outcome self_granted. A synthetic value would
+  compare unequal to EVERY dispatcher and would silently disable the only mechanical anti-self-approval
+  control on this path. It differs from the PR author and from the intended dispatcher, both jake-b-omni.
+
+  WHO CAN LAND IT, measured. main requires code-owner review with admins enforced, CODEOWNERS assigns this
+  file to @OmniNode-ai/platform-leads (jonahgabriel and jake-b-omni), and GitHub refuses an approving review
+  on one's own pull request — so jonahgabriel alone can approve this. That is the property the registry
+  exists to have: the author of an authorization is structurally barred from blessing it.
+
+  WHAT THIS DOES NOT CLAIM: no file anywhere proves a human said the words behind approved_by. The
+  CODEOWNERS-gated merge is that act.

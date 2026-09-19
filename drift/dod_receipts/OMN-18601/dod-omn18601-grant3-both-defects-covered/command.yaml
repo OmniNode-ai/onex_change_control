@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant3-both-defects-covered
+check_type: command
+check_value: |-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-18601/dod-omn18601-grant3-both-defects-covered/command.yaml
+contract_sha256: "sha256:b3c70360826c66540efcbd174f37aa5c16bd1a068e00b464353aa5409e6448c4"
+contract_entry_sha256: "sha256:3d72796672bc75bd4f7f1c2da29617fadf991211ba402c78ca0284e0f87e752b"
+status: PASS
+run_timestamp: '2026-09-19T20:26:10Z'
+commit_sha: a7b185cb2ac63f8e072445c7baf048a081dac4ab
+runner: occ-grant3-coverage-lane
+verifier: occ-grant3-coverage-verifier
+probe_command: |-
+  # DEFECT ONE, admissibility, in a checkout of repos/OmniNode-ai/omninode_infra detached at
+  # repos/OmniNode-ai/omninode_infra/commits/b828ec9e65f873149c97d94cbefa9133b9574e5d:
+  python3 check_admissible.py k8s/keycloak-seed/overlays/prod        # at b828ec9e
+  python3 check_admissible.py k8s/keycloak-seed/overlays/prod        # CONTROL, at 8279e2ca
+  #
+  # DEFECT TWO, immutability. Presence of the guard, counted in the file at both refs:
+  grep -c 'OMN-15812' .github/workflows/deploy-onex-prod.yml         # at b828ec9e, then at ad45e2cc
+  # and its DETECTION, probed against LIVE onex-prod over SSM on i-0e596e8b557e27785,
+  # comment omn18601-guard-detection-probe. Server dry-run persists nothing; no delete issued:
+  kubectl apply --server-side --force-conflicts \
+    --field-manager=onex-prod-manifest-apply --dry-run=server -f <rendered Job>
+  # CONTROL, same dry-run on a mutable object in the same namespace:
+  kubectl -n onex-prod get cm seed-keycloak-desired-clients-4888bkdm6h -o json | kubectl apply ... --dry-run=server -f -
+probe_stdout: |-
+  # DEFECT ONE
+  [at b828ec9e]  k8s/keycloak-seed/overlays/prod: 3 object(s), 1 workload(s)
+                   [OK] Job/seed-keycloak-clients admits under restricted        exit=0
+  [at 8279e2ca]  CONTROL
+                   [X] Job/seed-keycloak-clients would be REFUSED by restricted:
+                         - allowPrivilegeEscalation must be false (got ABSENT)
+                         - capabilities.drop must include ALL (got ABSENT)      exit=1
+
+  # DEFECT TWO — presence
+  OMN-15812 references in deploy-onex-prod.yml:  b828ec9e = 17   ad45e2cc = 0
+
+  # DEFECT TWO — detection, against live onex-prod
+  LIVE_JOB: d612f3af-7e5d-4e23-9ff8-d97f1507cf02
+  DRYRUN:   The Job "seed-keycloak-clients" is invalid: spec.template: ... field is immutable
+  MATCHES_GUARD_LITERAL: 1
+  CONTROL:  configmap/seed-keycloak-desired-clients-4888bkdm6h serverside-applied (server dry run)
+actual_output: |-
+  PASS on both defects, each with a control that inverts, which is what distinguishes this from the two
+  previous cycles where one premise was proven and another was never examined.
+
+  DEFECT ONE, ADMISSIBILITY — proven at the grant's own ref. The render at b828ec9e admits under the
+  restricted profile; the same checker REFUSES the same Job at 8279e2ca and names both absent fields. This
+  defect was already covered at ad45e2cc by omninode_infra#1580, and covering it alone was NOT enough:
+  run 35465514637 passed every identity premise, applied two of three objects, and still could not apply
+  the Job.
+
+  DEFECT TWO, IMMUTABILITY — the one that stopped the last attempt. A batch/v1 Job's spec.template cannot
+  be updated, so the inert Job onex-prod has held since 2026-09-18 (uid d612f3af, zero pods ever admitted)
+  blocked the corrected manifest. deploy-onex-prod.yml at b828ec9e carries 17 references to the OMN-15812
+  pre-apply guard where the same file at ad45e2cc carried 0 — presence, counted. And the guard's DETECTION
+  fires on this exact conflict: the server dry-run of the rendered Job returns the immutable-field error
+  the guard's IMMUTABLE_CONFLICT_RE matches, at match count 1, while the SAME dry-run on the ConfigMap in
+  the same namespace SUCCEEDS. A dry-run failing on both would have proven nothing about immutability.
+
+  WHAT REMAINS UNCOVERED, named rather than left for someone to discover. OMN-18764 is open: the
+  staging-apply premise proves an overlay APPLIED, not that a Job RAN, and staging enforces no pod-security
+  profile on any of its namespaces — so the receipt this grant depends on will read GREEN whether or not the
+  Job can run in production. The admissibility measurement above is what stands in for that, by hand, for
+  this dispatch only. And the guard's DELETE branch is unexercised, because exercising it would mutate
+  production; its correctness rests on it being the staging guard's own step, which has run that path since
+  OMN-15812, with detection deciding whether it runs at all.
+
+  SO WHAT THIS ITEM CLAIMS, exactly: b828ec9e is the first commit at which both KNOWN premise defects on
+  this path are covered. It does not claim there is no third.
