@@ -7,11 +7,13 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from onex_change_control.promotion.manifest import DEFAULT_PROMOTION_REPOS
@@ -54,6 +56,139 @@ class ModelPromotionFailureRoute(BaseModel):
     requires_user_skip_review: bool = False
 
 
+RELEASE_WORKFLOW_PATH = Path(".github") / "workflows" / "release.yml"
+
+#: Posture reasons. Read, never listed: an exclusion keyed on a repository
+#: NAME is a table that goes stale, and a stale exclusion table is the defect
+#: this module was changed to remove (OMN-18817).
+POSTURE_SYNCED = "release_workflow_syncs_target"
+POSTURE_NO_WORKFLOW = "no_release_workflow"
+POSTURE_NO_SYNC_STEP = "release_workflow_has_no_target_sync_step"
+POSTURE_UNREADABLE = "release_workflow_unreadable"
+
+
+def _step_text(step: object) -> str:
+    """Every string a step could carry a ref update in, joined."""
+    if not isinstance(step, dict):
+        return ""
+    parts: list[str] = []
+    run = step.get("run")
+    if isinstance(run, str):
+        parts.append(run)
+    with_block = step.get("with")
+    if isinstance(with_block, dict):
+        parts.extend(str(value) for value in with_block.values())
+    return "\n".join(parts)
+
+
+def _read_release_workflow(repo_path: Path, source_branch: str | None) -> str | None:
+    """The release workflow's text, read from the SOURCE branch when named.
+
+    Reading the working tree would read whatever branch happens to be
+    checked out. That is the exact trap this function exists to avoid: a
+    repo whose target branch is months behind has a months-old copy of its
+    own release workflow there, so a posture read against it can report
+    that a sync step does not exist when the source branch has carried one
+    for some time. `git show <ref>:<path>` is exact and independent of the
+    checkout.
+    """
+    if source_branch is not None:
+        for ref in (f"origin/{source_branch}", source_branch):
+            completed = subprocess.run(  # noqa: S603  Why: fixed argv, no shell.
+                [  # noqa: S607  Why: `git` from PATH, repo convention.
+                    "git",
+                    "-C",
+                    str(repo_path),
+                    "show",
+                    f"{ref}:{RELEASE_WORKFLOW_PATH.as_posix()}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            if completed.returncode == 0:
+                return completed.stdout
+        return None
+    workflow = repo_path / RELEASE_WORKFLOW_PATH
+    if not workflow.is_file():
+        return None
+    try:
+        return workflow.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def resolve_release_sync_posture(
+    *, repo_path: Path, target_branch: str, source_branch: str | None = None
+) -> tuple[bool, str]:
+    """Is this checkout's target branch advanced by its own release workflow?
+
+    Answered STRUCTURALLY, from the parsed workflow rather than from a text
+    search: a release workflow can carry ``refs/heads/<target>`` in a header
+    comment describing a mechanism it no longer has, and a substring match
+    cannot tell that apart from a workflow that moves the ref. Only a step's
+    own ``run`` body or ``with`` values count.
+
+    Fails CLOSED. A workflow that cannot be parsed returns ``True`` — an
+    exclusion is an excuse and an unproven one is not granted, so the repo
+    stays in the failure set with its reason recorded.
+
+    Returns ``(is_release_synced, reason)``.
+    """
+    text = _read_release_workflow(repo_path, source_branch)
+    if text is None:
+        return False, POSTURE_NO_WORKFLOW
+    try:
+        document = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return True, POSTURE_UNREADABLE
+    if not isinstance(document, dict):
+        return True, POSTURE_UNREADABLE
+
+    needle = f"refs/heads/{target_branch}"
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return False, POSTURE_NO_SYNC_STEP
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if needle in _step_text(step):
+                return True, POSTURE_SYNCED
+    return False, POSTURE_NO_SYNC_STEP
+
+
+class ModelMonitorNotifier(BaseModel):
+    """One notification channel's self-reported state for this run."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    required: bool
+    notified: bool
+    reason: str | None = None
+    outcome: str | None = None
+
+
+class ModelMonitorVerdict(BaseModel):
+    """The monitor's own pass/fail, and why.
+
+    ``ok`` is derived from ``failures`` at construction, so a verdict cannot
+    claim success while carrying a failure, nor the reverse.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ok: bool
+    failures: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    summary_lines: tuple[str, ...] = ()
+
+
 class ModelPromotionStalenessRepo(BaseModel):
     """Per-repository dev/main staleness measurement."""
 
@@ -71,6 +206,11 @@ class ModelPromotionStalenessRepo(BaseModel):
     newest_unpromoted_commit_at: datetime | None = None
     staleness_seconds: int = Field(ge=0)
     staleness_days: float = Field(ge=0)
+    #: Whether this checkout's own release workflow advances the target
+    #: branch. Defaults True so a caller that has not resolved posture keeps
+    #: the repo in the failure set rather than silently excusing it.
+    target_is_release_synced: bool = True
+    release_sync_reason: str = ""
 
 
 class ModelPromotionStalenessReport(BaseModel):
@@ -323,6 +463,100 @@ def build_staleness_report(  # noqa: PLR0913
     )
 
 
+def evaluate_monitor_verdict(
+    *,
+    report: ModelPromotionStalenessReport,
+    notifiers: tuple[ModelMonitorNotifier, ...],
+    report_generated: bool,
+) -> ModelMonitorVerdict:
+    """Decide whether the monitor itself passed, and say why (OMN-18817).
+
+    The inversion this function carries is the whole point. Before it, the
+    job failed when a required notification could not confirm itself and
+    never failed on staleness at all -- so with both channels unwired it was
+    red on every run, for 118 days, while the number it exists to publish
+    went unread. Now:
+
+    * a required notifier that did not fire is a WARNING naming its reason;
+    * a repo past the threshold whose target branch IS advanced by its own
+      release workflow is the FAILURE;
+    * a repo past the threshold whose target branch is NOT so advanced is a
+      WARNING -- its gap is an absent mechanism, not an unpromoted backlog,
+      and it is reported rather than dropped;
+    * a report that could not be generated is still a failure, because
+      measuring is the one piece of plumbing that IS the job.
+
+    ``ok`` is derived from ``failures``, never asserted alongside them.
+    """
+    failures: list[str] = []
+    warnings: list[str] = []
+    summary: list[str] = []
+
+    if not report_generated:
+        failures.append(
+            "staleness report generation did not succeed; the monitor "
+            "measured nothing this run"
+        )
+
+    for notifier in notifiers:
+        if notifier.required and not notifier.notified:
+            warnings.append(
+                f"notifier {notifier.name} did not confirm "
+                f"(reason={notifier.reason or 'unknown'}, "
+                f"outcome={notifier.outcome or 'unknown'}). Alerting is "
+                "degraded; the staleness verdict below is unaffected."
+            )
+
+    if report.unreadable_repos:
+        warnings.append(
+            f"{len(report.unreadable_repos)} repo(s) could not be read this "
+            f"run: {', '.join(report.unreadable_repos)}. Their staleness is "
+            "UNKNOWN, not clean."
+        )
+
+    threshold = report.linear_ticket_threshold_days
+    over = tuple(
+        repo
+        for repo in sorted(report.repos, key=lambda item: -item.staleness_days)
+        if repo.staleness_days > threshold
+    )
+    for repo in over:
+        line = (
+            f"{repo.repo}: {repo.staleness_days}d behind "
+            f"{repo.target_branch}, {repo.unpromoted_commit_count} "
+            "unpromoted commit(s)"
+        )
+        if repo.target_is_release_synced:
+            failures.append(
+                f"{line} — past the {threshold}-day promotion threshold "
+                f"and its release workflow does advance {repo.target_branch}, "
+                "so this is a real unreleased backlog"
+            )
+        else:
+            warnings.append(
+                f"{line} — excluded from the verdict: "
+                f"{repo.release_sync_reason or POSTURE_NO_SYNC_STEP}. The gap "
+                "is an absent mechanism, not an unpromoted backlog"
+            )
+
+    summary.append(f"max_staleness_days: {report.max_staleness_days}")
+    summary.append(f"threshold_days: {threshold}")
+    for repo in sorted(report.repos, key=lambda item: -item.staleness_days):
+        summary.append(
+            f"- {repo.repo}: {repo.staleness_days}d, "
+            f"{repo.unpromoted_commit_count} unpromoted, "
+            f"release_synced={repo.target_is_release_synced} "
+            f"({repo.release_sync_reason or 'unresolved'})"
+        )
+
+    return ModelMonitorVerdict(
+        ok=not failures,
+        failures=tuple(failures),
+        warnings=tuple(warnings),
+        summary_lines=tuple(summary),
+    )
+
+
 def generate_staleness_report(  # noqa: PLR0913
     *,
     workspace: Path,
@@ -345,17 +579,32 @@ def generate_staleness_report(  # noqa: PLR0913
     unreadable: list[str] = list(unreadable_repos)
     for repo in repos:
         try:
-            measurements.append(
-                measure_repo_staleness(
-                    repo_path=workspace / repo,
-                    repo=repo,
-                    source_branch=source_branch,
-                    target_branch=target_branch,
-                    now=now,
-                )
+            measured = measure_repo_staleness(
+                repo_path=workspace / repo,
+                repo=repo,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                now=now,
             )
         except (RuntimeError, subprocess.CalledProcessError, OSError):
             unreadable.append(repo)
+            continue
+        # Posture is resolved from the checkout that was just measured, so
+        # the exclusion and the measurement can never describe different
+        # trees.
+        synced, reason = resolve_release_sync_posture(
+            repo_path=workspace / repo,
+            target_branch=target_branch,
+            source_branch=source_branch,
+        )
+        measurements.append(
+            measured.model_copy(
+                update={
+                    "target_is_release_synced": synced,
+                    "release_sync_reason": reason,
+                }
+            )
+        )
     return build_staleness_report(
         repos=tuple(measurements),
         evaluated_at=now,
@@ -403,7 +652,39 @@ def _parse_args() -> argparse.Namespace:
     )
     report.add_argument("--output", type=Path, required=True)
     report.add_argument("--evaluated-at")
+
+    verdict = subparsers.add_parser("verdict")
+    verdict.add_argument("--report", type=Path, required=True)
+    verdict.add_argument(
+        "--notifier",
+        action="append",
+        default=[],
+        help=(
+            "One channel's self-reported state as "
+            "name:required:notified:reason:outcome. Repeatable. A channel "
+            "that did not confirm is a WARNING, never a failure (OMN-18817)."
+        ),
+    )
+    verdict.add_argument(
+        "--report-generated",
+        default="true",
+        help="false when the measurement step itself did not succeed.",
+    )
     return parser.parse_args()
+
+
+def _parse_notifier(value: str) -> ModelMonitorNotifier:
+    parts = value.split(":", 4)
+    while len(parts) < 5:  # noqa: PLR2004  Why: the five declared fields.
+        parts.append("")
+    name, required, notified, reason, outcome = parts
+    return ModelMonitorNotifier(
+        name=name or "unnamed",
+        required=required.strip().casefold() == "true",
+        notified=notified.strip().casefold() == "true",
+        reason=reason or None,
+        outcome=outcome or None,
+    )
 
 
 def _parse_optional_datetime(value: str | None) -> datetime | None:
@@ -428,6 +709,32 @@ def main() -> int:
         )
         write_json(args.output, payload)
         return 0
+
+    if args.command == "verdict":
+        report = ModelPromotionStalenessReport.model_validate_json(
+            args.report.read_text(encoding="utf-8")
+        )
+        outcome = evaluate_monitor_verdict(
+            report=report,
+            notifiers=tuple(_parse_notifier(item) for item in args.notifier),
+            report_generated=args.report_generated.strip().casefold() != "false",
+        )
+        # `sys.stdout.write` rather than `print`: this module is `src/`
+        # library code, where the repo's lint forbids `print`, and the
+        # workflow reads these lines as GitHub annotations.
+        for line in outcome.summary_lines:
+            sys.stdout.write(f"{line}\n")
+        for warning in outcome.warnings:
+            sys.stdout.write(f"::warning::{warning}\n")
+        for failure in outcome.failures:
+            sys.stdout.write(f"::error::{failure}\n")
+        if outcome.ok:
+            sys.stdout.write(
+                "Monitor verdict: PASS - no release-synced repository is past "
+                "the promotion threshold.\n"
+            )
+            return 0
+        return 1
 
     msg = f"unknown command: {args.command}"
     raise ValueError(msg)
