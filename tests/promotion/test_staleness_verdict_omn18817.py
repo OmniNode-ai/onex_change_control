@@ -45,6 +45,7 @@ from onex_change_control.promotion.staleness import (
     EnumPromotionFailureState,
     ModelMonitorNotifier,
     ModelPromotionStalenessRepo,
+    ModelPromotionStalenessReport,
     build_staleness_report,
     evaluate_monitor_verdict,
     resolve_release_sync_posture,
@@ -80,7 +81,9 @@ def _repo(
     )
 
 
-def _report(*repos: ModelPromotionStalenessRepo, unreadable: tuple[str, ...] = ()):
+def _report(
+    *repos: ModelPromotionStalenessRepo, unreadable: tuple[str, ...] = ()
+) -> ModelPromotionStalenessReport:
     return build_staleness_report(
         repos=repos,
         evaluated_at=EVALUATED_AT,
