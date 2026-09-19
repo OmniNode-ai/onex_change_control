@@ -1,0 +1,77 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18770"
+title: "C3 data: error-fingerprint exposure — a ranked, bus-backed runtime-error surface"
+summary: >
+  OCC contract for OmniNode-ai/omnimarket PR #2664 (C3 of epic OMN-18767, the lab observability tab).
+  Adds node_projection_runtime_error_fingerprints, a contract-first reducer over onex.evt.omnibase-infra.runtime-error.v1
+  that DERIVES the error category from the event's own evidence instead of copying the producer's stamp,
+  re-derives the fingerprint over the derived category, accumulates occurrence_count atomically in SQL,
+  and publishes fingerprint-keyed snapshot deltas to onex.snapshot.projection.runtime-error-fingerprints.v1
+  with correlation_id as a first-class column. The surface it replaces held 69 rows on the .201 dev lane
+  with 100% error_category unknown, because the only classifier in the pipeline was an eight-entry logger-NAME
+  prefix map evaluated by the producer and no emitting logger name matched a prefix in it.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #2664 CI checks green"
+    command: "gh pr checks 2664 --repo OmniNode-ai/omnimarket"
+  - kind: "tests"
+    description: |-
+      Behavior proof for PR #2664 on OmniNode-ai/omnimarket: the AC-pinned unit
+      suite and the golden chain the PR adds. Executed at cwd
+      `${OMNI_HOME}/omnimarket`.
+    command: "uv run pytest tests/test_omn18770_runtime_error_fingerprints.py tests/test_golden_chain_projection_runtime_error_fingerprints.py
+      -q"
+  - kind: "manual"
+    description: |-
+      Lab readback quoted in the PR body with the host named (doctrine rule 24).
+      On the .201 dev lane (compose project omnibase-infra): max(last_seen_at)
+      on omnidash_analytics.omninode_internal.runtime_error_fingerprints
+      advanced from 2026-09-10 05:15:03 to 2026-09-19 00:03:16 across one
+      further runtime-error occurrence; the unknown share of the category
+      census fell from 100% to 75.7%; and a fingerprint-keyed snapshot delta
+      was published to the lane broker and consumed back at high-watermark 1.
+    command: "gh pr view 2664 --repo OmniNode-ai/omnimarket --json body --jq .body | grep -c '192.168.86.201'"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-deploy"
+    description: >-
+      Deploy probe for PR #2664 on OmniNode-ai/omnimarket. Hermetic content-addressed form (OMN-14505
+      / OCC OMN-14051 guard): it reads the merge SHA's own tree from the forge, so its exit status depends
+      on whether the landed code carries the mechanism, and it cannot be satisfied by any receipt or contract
+      this PR authors. It greps for the tier-3 classifier table, which is the symbol that distinguishes
+      this change from a copy of the producer's logger-prefix map — the flat ordering without it categorised
+      an aiokafka.producer failure as kafka_consumer.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_runtime_error_fingerprints/handlers/handler_projection_runtime_error_fingerprints.py?ref=d5405589537d9809a4ea869918e25589f773ff82 --jq '.content' | base64 -d | grep -c '_UNSIDED_EXCEPTION_RULES'
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_runtime_error_fingerprints/contract.yaml?ref=d5405589537d9809a4ea869918e25589f773ff82 --jq '.content' | base64 -d | grep -c 'bus_backed: true'
+  - id: "dod-occ-diff-derived-behavior-proof"
+    description: >-
+      PR #2664 on OmniNode-ai/omnimarket — diff-derived behavior proof (OMN-16434). The AC-pinned suite
+      and the golden chain, both added by this PR, both RED before the mechanism.
+    source: "generated"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/test_omn18770_runtime_error_fingerprints.py tests/test_golden_chain_projection_runtime_error_fingerprints.py
+          -q"
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "dod-vendored-migration-parity"
+    description: >-
+      The node-owned migration is vendored into omnibase_infra, which omnimarket's vendor-parity gate
+      requires BEFORE the product PR can pass — the ordering that stops the node-migration-sync drift
+      class (OMN-14975 and six prior tickets). omnibase_infra PR #3795.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 3795 --repo OmniNode-ai/omnibase_infra --json number,state"
