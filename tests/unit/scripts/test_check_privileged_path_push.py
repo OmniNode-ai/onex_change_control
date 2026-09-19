@@ -33,7 +33,10 @@ around within a day.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from onex_change_control.scripts.check_privileged_path_push import (
     PRIVILEGED_PATH_PREFIXES,
@@ -204,3 +207,42 @@ class TestGateRefusalNamesTheCommandOMN18804:
         )
         assert allowed is False
         assert RECOVERY_PREFIX in message
+
+
+class TestHookDeclarationOMN18804:
+    """The hook's wiring, asserted rather than reviewed.
+
+    Both properties below were wrong at some point in this ticket's own
+    construction, which is why they are pinned: the first governed push
+    reported `Passed` and printed nothing, because pre-commit swallows a
+    passing hook's output unless the declaration asks otherwise.
+    """
+
+    @staticmethod
+    def _hook() -> dict[str, object]:
+        config = yaml.safe_load(
+            (
+                Path(__file__).resolve().parents[3] / ".pre-commit-config.yaml"
+            ).read_text()
+        )
+        for repo in config["repos"]:
+            for hook in repo.get("hooks", []):
+                if hook.get("id") == "check-privileged-path-push":
+                    return dict(hook)
+        pytest.fail(
+            "check-privileged-path-push is not declared in .pre-commit-config.yaml"
+        )
+
+    def test_it_is_verbose_so_a_passing_run_is_actually_read(self) -> None:
+        assert self._hook().get("verbose") is True
+
+    def test_it_runs_at_pre_push_only(self) -> None:
+        assert self._hook().get("stages") == ["pre-push"]
+
+    def test_its_file_filter_covers_every_privileged_prefix(self) -> None:
+        """A filter narrower than the gate would hint on only some refusals."""
+        import re
+
+        pattern = re.compile(str(self._hook()["files"]))
+        for prefix in PRIVILEGED_PATH_PREFIXES:
+            assert pattern.match(f"{prefix}thing.py"), prefix
