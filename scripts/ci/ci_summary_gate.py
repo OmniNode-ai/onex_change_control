@@ -360,6 +360,17 @@ EXPECTED_EXTERNAL_CONTEXTS: tuple[str, ...] = (
     # on this repo the CI Summary umbrella IS the enforcement surface, and a
     # context missing from this tuple is silently unenforced.
     "Git env scrub gate",
+    # OMN-18796 (epic OMN-18775): the no-new-advisory-job gate, called from
+    # .github/workflows/advisory-job-gate.yml against the omniclaude reusable
+    # pinned by commit. Standalone and unconditional on pull_request -- no
+    # `branches:` filter and no `paths:` filter -- so it is always present on
+    # every pull-request shape this repository produces, including the
+    # hotfix/* pull requests that target `main`. Registered here because on
+    # this repo the CI Summary umbrella IS the enforcement surface, and a
+    # context missing from this tuple is silently unenforced. The census
+    # counted 7 advisory settings and 9 pull-request-reachable verification
+    # jobs here, none of which any check could have refused.
+    "advisory-job-gate / advisory-job-gate",
     "Dep Provenance Gate",  # guards.yml (OMN-16260) -- unconditional
     "validate-private-ip",  # validator-g2-ip-family.yml -- unconditional
     "validate-localhost-url",  # validator-g2-ip-family.yml -- unconditional
