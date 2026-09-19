@@ -1,0 +1,51 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant2-author-identity
+check_type: command
+check_value: |-
+  grep -Fq 'approved_by: jonahgabriel' grants/prod_promotion_grants.yaml && ! grep -Fq 'approved_by: jake-b-omni' grants/prod_promotion_grants.yaml
+contract_sha256: "sha256:8a0128be269e5a8ad1c302b7201189379fce665ecd0f473304badccbf076d057"
+contract_entry_sha256: "sha256:cf70923a19b935b4d6bc1e9dae2ea181ced079249e4522101e2905f9739532e6"
+status: PASS
+run_timestamp: '2026-09-19T17:52:40Z'
+commit_sha: 16a3db81400f7d7f1096ebdb46c56a90f8b14883
+runner: occ-grant2-identity-lane
+verifier: occ-grant2-identity-verifier
+probe_command: |-
+  grep -Fq 'approved_by: jonahgabriel' grants/prod_promotion_grants.yaml
+  ! grep -Fq 'approved_by: jake-b-omni' grants/prod_promotion_grants.yaml
+  gh api user --jq .login                       # the authoring identity
+  gh api repos/OmniNode-ai/onex_change_control/branches/main/protection \
+    --jq '.required_pull_request_reviews.require_code_owner_reviews,
+          .required_pull_request_reviews.required_approving_review_count,
+          .enforce_admins.enabled'
+  gh api repos/OmniNode-ai/onex_change_control/contents/.github/CODEOWNERS | grep prod_promotion
+probe_stdout: |-
+  approved_by: jonahgabriel        present   exit=0
+  approved_by: jake-b-omni         absent    exit=0 (negated)
+  gh api user --jq .login          jake-b-omni
+
+  require_code_owner_reviews       true
+  required_approving_review_count  0
+  enforce_admins                   true
+  CODEOWNERS  grants/prod_promotion_grants.yaml @OmniNode-ai/platform-leads
+
+  approved_by (jonahgabriel) != PR author (jake-b-omni)           -> authoring-time check satisfied
+  approved_by (jonahgabriel) != intended dispatcher (jake-b-omni) -> dispatch-time check satisfied
+actual_output: |-
+  PASS. approved_by names a real GitHub login rather than a placeholder, which matters mechanically: the
+  consumer enforces approved_by != requested_by against github.actor, so a synthetic value would compare
+  unequal to EVERY dispatcher and would silently disable the only mechanical anti-self-approval check on
+  this path. It differs from both the PR author and the intended dispatcher, so the authoring-time refusal
+  in this repository and the dispatch-time refusal in omninode_infra are each satisfied on their own terms
+  rather than by assertion.
+
+  WHO CAN LAND THIS, measured rather than assumed. main requires code-owner review with admins enforced,
+  and CODEOWNERS assigns grants/prod_promotion_grants.yaml to @OmniNode-ai/platform-leads, whose members
+  are jonahgabriel and jake-b-omni. GitHub refuses an approving review on one's own pull request, so the
+  only person who can approve this PR is jonahgabriel. That is the property the registry exists to have:
+  the author of an authorization is structurally barred from blessing it.
+
+  WHAT THIS DOES NOT CLAIM: no file anywhere proves a human said the words behind approved_by. The
+  CODEOWNERS-gated merge is that act, which is why this PR must be landed by a person.

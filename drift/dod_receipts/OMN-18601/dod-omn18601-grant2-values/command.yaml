@@ -1,0 +1,47 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant2-values
+check_type: command
+check_value: |-
+  grep -Fq 'grant-aeae215d-d796-4141-a0a9-7b5fd0c22055' grants/prod_promotion_grants.yaml && grep -Fq 'target_kind: manifest' grants/prod_promotion_grants.yaml && grep -Fq 'manifest_path: k8s/keycloak-seed/overlays/prod' grants/prod_promotion_grants.yaml && grep -Fq 'manifest_subtree: k8s/keycloak-seed' grants/prod_promotion_grants.yaml && grep -Fq 'manifest_ref: ad45e2cc1a8bbd0c4524e62783ee8fd84532e00c' grants/prod_promotion_grants.yaml && grep -Fq 'rendered_digest: sha256:976ef4de626144f156a6a227c3b881066e07273476a5f19f00b96e6e454fad06' grants/prod_promotion_grants.yaml && ! grep -Eq '^entries: \[\]$' grants/prod_promotion_grants.yaml
+contract_sha256: "sha256:8a0128be269e5a8ad1c302b7201189379fce665ecd0f473304badccbf076d057"
+contract_entry_sha256: "sha256:b36c3924a9cad5d7adb39bc5ddfd7f41a4730c2b4273f9dd4ae881169fa63086"
+status: PASS
+run_timestamp: '2026-09-19T17:52:40Z'
+commit_sha: 16a3db81400f7d7f1096ebdb46c56a90f8b14883
+runner: occ-grant2-staging-lane
+verifier: occ-grant2-staging-verifier
+probe_command: |-
+  # The item's own six-grep chain plus the at-rest check, run against BOTH trees.
+  # <file> = (1) the staged registry this PR produces, (2) onex_change_control@main 16a3db814
+  for v in grant-aeae215d-... 'target_kind: manifest' 'manifest_path: ...' \
+           'manifest_subtree: ...' 'manifest_ref: ad45e2cc...' 'rendered_digest: sha256:976ef4de...'; do
+    grep -Fq "$v" <file>; done
+  grep -Eq '^entries: \[\]$' <file>
+probe_stdout: |-
+  # Each of the six target-field strings, staged tree vs main.
+    grant-aeae215d-d796-...     staged exit=0   main exit=1
+    target_kind: manifest       staged exit=0   main exit=1
+    manifest_path: k8s/...      staged exit=0   main exit=1
+    manifest_subtree: k8s/...   staged exit=0   main exit=1
+    manifest_ref: ad45e2cc...   staged exit=0   main exit=1
+    rendered_digest: sha256:976ef4de...  staged exit=0   main exit=1
+
+  # The at-rest check, which must invert between the two trees.
+    main   'entries: []'  exit=0   POSITIVE CONTROL: main is at rest after OCC#10302
+    staged 'entries: []'  exit=1   the replacement entry is present
+actual_output: |-
+  PASS, and the control is the half that makes it a measurement. All six target-field strings are present
+  in the staged registry and absent from onex_change_control@main at 16a3db814, and the at-rest assertion
+  inverts in the same direction. A chain broken by a mistyped grant id or a grep that never matched would
+  have exited non-zero on BOTH trees; it did not.
+
+  WHAT IS ADDED: exactly one entry, grant-aeae215d-d796-4141-a0a9-7b5fd0c22055, target_kind manifest,
+  authorizing k8s/keycloak-seed/overlays/prod at omninode_infra ad45e2cc into onex-prod. No image_digest
+  field is present, because the two kinds' target fields are mutually exclusive.
+
+  HOW IT DIFFERS FROM THE REVOKED grant-90f8e729, in exactly two fields: manifest_ref moves 8279e2ca ->
+  ad45e2cc and rendered_digest moves sha256:33b54afe -> sha256:976ef4de. Both moves trace to one file,
+  k8s/keycloak-seed/base/seed-keycloak-clients-job.yaml, which now carries the securityContext production
+  requires. The path, the subtree, the lane and the approver are unchanged.

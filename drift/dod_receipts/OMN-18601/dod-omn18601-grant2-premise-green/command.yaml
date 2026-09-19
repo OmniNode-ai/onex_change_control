@@ -1,0 +1,55 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-grant2-premise-green
+check_type: command
+check_value: |-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-18601/dod-omn18601-grant2-premise-green/command.yaml
+contract_sha256: "sha256:8a0128be269e5a8ad1c302b7201189379fce665ecd0f473304badccbf076d057"
+contract_entry_sha256: "sha256:31a42a8592dea0fef510bef867e0d39afe8b1ab90be39617758ad8cb6095fb10"
+status: PASS
+run_timestamp: '2026-09-19T17:52:40Z'
+commit_sha: 16a3db81400f7d7f1096ebdb46c56a90f8b14883
+runner: occ-grant2-premise-lane
+verifier: occ-grant2-premise-verifier
+probe_command: |-
+  # deploy-onex-staging was dispatched at ref main AFTER omninode_infra#1580 merged, so the receipt it
+  # emits is recorded at the promoted commit rather than at a dev head.
+  gh workflow run deploy-onex-staging.yml --repo OmniNode-ai/omninode_infra --ref main
+  gh run view 35458357503 --repo OmniNode-ai/omninode_infra --json conclusion
+  gh api repos/OmniNode-ai/omninode_infra/actions/runs/35458357503 --jq '.head_sha, .head_branch'
+  gh run view 35458357503 --repo OmniNode-ai/omninode_infra --log | grep '\[staging-apply\]'
+probe_stdout: |-
+  staging run 35458357503 at ref main: success
+  head_sha=ad45e2cc1a8bbd0c4524e62783ee8fd84532e00c branch=main started=2026-09-19T17:31:35Z
+
+  [staging-apply] wrote .../staging-apply-receipt.json:
+    verdict=GREEN cluster=dev-system sha=ad45e2cc1a8bbd0c4524e62783ee8fd84532e00c
+    applied=['k8s/keycloak-seed/overlays/dev-system=k8s/keycloak-seed' ...]
+
+  # the overlay-apply step that produced it
+  Apply the Keycloak reconcile overlay (dev-system only, OMN-18601)
+    --field-manager=onex-staging-keycloak-seed-apply -k k8s/keycloak-seed/overlays/dev-system
+    Apply managers owning Job = onex-staging-keycloak-seed-apply
+actual_output: |-
+  PASS. The premise promote-manifest resolves is met at authoring time, which the revoked grant's was
+  not: at that point main was 8279e2ca and no staging-apply receipt existed there at all, so a dispatch
+  would have been refused for want of the receipt rather than for the reason that eventually mattered.
+
+  THE THREE THINGS THAT MAKE IT BIND. The verdict is GREEN; the recorded sha is
+  ad45e2cc1a8bbd0c4524e62783ee8fd84532e00c, equal to this grant's manifest_ref; and the applied mapping
+  names k8s/keycloak-seed/overlays/dev-system=k8s/keycloak-seed, so resolve_staging_apply binds THIS
+  subtree instead of reading SUBTREE_UNBOUND — which is the same outcome as "a different component
+  converged" and would refuse the dispatch. The receipt is accepted for at most 24 hours, so it is fresh
+  until 2026-09-20T17:38:11Z.
+
+  DEV NOISE CANNOT STEAL THE SELECTION. omninode_infra#1551 changed the selector to match a completed
+  staging run whose RECORDED sha equals the promoted ref, rather than taking the most recent successful
+  run. On the 2026-09-18 prod run that behaviour was observed directly: it skipped four newer completed
+  staging runs to select the one recorded at the promoted commit.
+
+  WHAT THIS PREMISE DOES NOT PROVE, named rather than glossed. Staging enforces no pod-security profile
+  on any of its fourteen namespaces, so a GREEN apply there establishes that the overlay APPLIED, not
+  that the Job RAN. It went green for the revoked grant's manifest too, which production then refused at
+  admission. That is OMN-18764, it is open, and the admissibility item is what covers the gap for this
+  dispatch.
