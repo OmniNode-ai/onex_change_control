@@ -1,0 +1,61 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18601
+evidence_item_id: dod-omn18601-prod-job-guard-placed-and-bounded
+check_type: command
+check_value: |-
+  grep -q '^status: PASS$' drift/dod_receipts/OMN-18601/dod-omn18601-prod-job-guard-placed-and-bounded/command.yaml
+contract_sha256: "sha256:7036d5eb5f223a16991a055520370809b19bdabf90512d8dcb23fa796c7eccd2"
+contract_entry_sha256: "sha256:aed893e5177d60c40dd0f732b2bd06584da0de422a6691015d10528cd9b08e11"
+status: PASS
+run_timestamp: '2026-09-19T20:18:30Z'
+commit_sha: 93f1c240692098f5c60ff27ec8d87376a1913050
+runner: occ-prod-job-guard-structure-lane
+verifier: occ-prod-job-guard-structure-verifier
+probe_command: |-
+  # Asserted by PARSING the workflow at repos/OmniNode-ai/omninode_infra/commits/9326f415, never by
+  # reading it. Ordering by step index, and the safety properties over the step's EXECUTABLE lines only,
+  # because the guard's own comments discuss the cluster-wide sweep it refuses to perform and matching
+  # those would be a false positive — which this checker hit on its first run and was corrected for.
+  python3 - <<'EOF'
+  d = yaml.safe_load(open('.github/workflows/deploy-onex-prod.yml'))
+  names = [s.get('name') for s in d['jobs']['promote-manifest']['steps']]
+  gate, guard, apply_ = <indices of the three steps by name>
+  assert gate < guard < apply_
+  code = <guard body with comment lines stripped>
+  assert 'get jobs' not in code and 'JOBS=(' in code
+  for needle in ('field is immutable','--dry-run=server','delete job','fail-closed',
+                 'idempotency allowlist'): assert needle in body
+  EOF
+probe_stdout: |-
+  promote-manifest steps: 19
+        12 Resolve the staging-apply receipt (OMN-18566)
+    <-- 13 Enforce prod-promotion grant — manifest (OMN-18566)
+    <-- 14 Pre-apply guard — recreate immutable batch/v1 Jobs on template conflict (OMN-15812)
+    <-- 15 Apply the approved manifest overlay (OMN-18566)
+        16 Verify the applied objects — LIVE readback (OMN-18566)
+  executable lines: 94 | comment lines: 58
+
+  OK: workflow parses, guard sits between the gate and the apply, fail-closed paths present
+actual_output: |-
+  PASS. The workflow parses, and the guard is step 14 of promote-manifest — strictly after the gate at 13
+  and strictly before the apply at 15. That ordering is the security property, not a stylistic one: after
+  the gate means the guard cannot delete anything on a dispatch the grant did not authorize, and before
+  the apply means it unblocks the step that was failing. The post-apply live readback at 16 is unaffected
+  and still asserts every rendered object exists in the namespace the overlay declared.
+
+  BOUNDED, ASSERTED OVER EXECUTABLE LINES. The guard's 94 executable lines contain no cluster-wide
+  `get jobs` sweep and do carry an explicit JOBS allowlist. That is the staging original's stated safety
+  property: a recreate re-runs the Job from scratch, so membership requires established idempotency, and
+  seed-keycloak-clients.py's docstring guarantees a re-run against an already-correct realm produces all
+  op=unchanged lines and exits 0 — GET-then-PUT/POST per client, no destructive step. The checker reads
+  executable lines only because the guard's 58 comment lines discuss the sweep it refuses to do; matching
+  those produced a false positive on the first run, which was corrected rather than worked around by
+  loosening the assertion.
+
+  TWO DEPARTURES FROM THE STAGING PORT, both fail-closed and both deliberate. The namespace is DERIVED
+  from the rendered objects rather than hardcoded, because this arm is generic over manifest_path while
+  the staging lane applies one fixed overlay; a render whose Jobs disagree about their namespace refuses
+  rather than picking one. And a Job that conflicts but is NOT on the allowlist fails the job closed
+  naming itself — because skipping it would reproduce this outage on a Job nobody had examined, and
+  deleting it would re-run work nobody had established is safe to repeat.
