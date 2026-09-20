@@ -1,0 +1,160 @@
+name: OCC Self-Bind Mint (OMN-18921)
+
+# A hand-authored evidence companion on this repository owes TWO artifacts: the
+# receipt under drift/dod_receipts/<ticket>/ its author came here to write, and
+# a second, structural receipt at
+# drift/occ_bindings/<ticket>/occ-self-bind-pr-<n>/command.yaml binding the
+# ticket to this pull request. Nothing said so until the eligibility check had
+# already failed with missing_occ_self_bind, which costs a full CI cycle each
+# time -- five occurrences since 2026-08-25 (OCC#10260, #10341, #10356, #10368,
+# #10554).
+#
+# OMN-16353 shipped the DIAGNOSTIC for this and it works: lanes that read it are
+# right first time. But it fires after the push, so it removed diagnosis time
+# and not the cycle. Two of those five lanes are named occ-companion-repair-*,
+# which is the clearest signal available that the remedy did not remove the
+# work. This workflow mints the artifact instead of describing it.
+#
+# WHY A pull_request WORKFLOW AND NOT A PRE-PUSH HOOK. The artifact names the
+# pull request number, which does not exist until the pull request is opened --
+# after the first push. A pre-push hook could only reprint the advice that
+# already exists. The same constraint is recorded on omnimarket's behaviour-proof
+# backfill, whose self-bind is likewise a post-create step.
+#
+# WHY THIS TERMINATES. The mint pushes one commit, which fires `synchronize` and
+# runs this workflow a second time. On that run the artifact exists, so the
+# script writes nothing and no push happens. There is no third run. The mint is
+# also gated on the eligibility verdict itself, so a pull request that owes
+# nothing never reaches the write step at all.
+#
+# WHY THE PUSH IS DELIBERATE AND ITS CREDENTIAL IS NOT A FALLBACK. The point of
+# pushing is that the resulting fresh pull_request event re-runs the eligibility
+# check, which then passes -- the author never sees a red preflight and never
+# has to act. That requires the push to TRIGGER CI, which an App-token push does
+# only when the checkout does not persist the job's own GITHUB_TOKEN and no
+# expression silently substitutes it when the mint fails. Both conditions are
+# met below on purpose: persist-credentials is false, and the token expression
+# carries no `|| github.token` fallback, so a failed mint fails the step rather
+# than pushing as an identity whose push is suppressed.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  # Per pull request, and NOT cancel-in-progress: a cancelled run that has
+  # already written the file but not pushed leaves the author exactly where
+  # this workflow exists to stop them being.
+  group: occ-self-bind-mint-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  mint:
+    name: Mint the owed OCC self-bind
+    # Forks cannot be pushed to and carry no secrets, so the mint is skipped
+    # rather than half-run. A fork companion still gets the OMN-16353
+    # diagnostic, which is the pre-existing behaviour for that case.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout the pull request head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          # Load-bearing: a persisted GITHUB_TOKEN extraheader overrides any
+          # credential in the push URL below, which is exactly how an earlier
+          # measurement concluded App-token pushes are suppressed when what it
+          # actually measured was GITHUB_TOKEN (OMN-18273).
+          persist-credentials: false
+
+      - name: Mint onexbot-occ-writer app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.ONEXBOT_OCC_APP_ID }}
+          private-key: ${{ secrets.ONEXBOT_OCC_PRIVATE_KEY }}
+          owner: OmniNode-ai
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          enable-cache: true
+
+      - name: Sync deps
+        run: uv sync --frozen --group dev
+
+      - name: Mint the self-bind when the gate says one is owed
+        id: mint
+        env:
+          # No `|| github.token`. A failed mint must fail here, not push as an
+          # identity whose push is suppressed and leave a companion that looks
+          # handled and is not.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          # Build the snapshot occ-preflight builds, field for field. That
+          # workflow loops over EVERY commit on the pull request and passes
+          # both a sha and a message per commit, and the validator's ticket
+          # binding searches those messages as well as the title and branch.
+          # Passing only the head sha measured a DIFFERENT verdict on a
+          # companion bound through its commit message -- pr_ticket_mismatch
+          # instead of missing_occ_self_bind -- so the mint would exit 0
+          # reporting success while the author still paid the round.
+          gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
+            --json commits \
+            --jq '.commits[].oid' > /tmp/pr_commit_shas.txt
+          gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
+            --json commits \
+            --jq '.commits[].messageHeadline' > /tmp/pr_commit_texts.txt
+          commit_args=()
+          while IFS= read -r sha; do
+            [ -n "$sha" ] && commit_args+=(--pr-commit-sha "$sha")
+          done < /tmp/pr_commit_shas.txt
+          while IFS= read -r text; do
+            [ -n "$text" ] && commit_args+=(--pr-commit-text "$text")
+          done < /tmp/pr_commit_texts.txt
+
+          uv run python scripts/ci/mint_occ_self_bind.py \
+            --repo "${{ github.repository }}" \
+            --pr-number "${PR_NUMBER}" \
+            --commit-sha "${HEAD_SHA}" \
+            --branch "${HEAD_REF}" \
+            --pr-title "${PR_TITLE}" \
+            --pr-body "${PR_BODY}" \
+            "${commit_args[@]}" \
+            --repo-root . \
+            --write
+
+      - name: Commit and push the minted self-bind
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Scoped to the structural tree ONLY. The mint writes nowhere else,
+          # and staging by path rather than by -A means a stray file from any
+          # other step can never ride along on an evidence commit.
+          if [ -z "$(git status --porcelain -- drift/occ_bindings)" ]; then
+            echo "No self-bind was minted; nothing to push."
+            exit 0
+          fi
+          git config user.name "onexbot-occ-writer[bot]"
+          git config user.email \
+            "onexbot-occ-writer[bot]@users.noreply.github.com"
+          git add -- drift/occ_bindings
+          git commit -m "evidence(OMN-18921): mint the owed OCC self-bind for PR #${PR_NUMBER}"
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" \
+            "HEAD:refs/heads/${HEAD_REF}"
