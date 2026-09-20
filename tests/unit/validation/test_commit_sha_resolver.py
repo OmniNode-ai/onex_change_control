@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from onex_change_control.validation.commit_sha_resolver import (
+    CommitShaResolution,
     CommitShaResolver,
     EnumCommitShaOutcome,
     EnumCommitShaUnavailableCategory,
@@ -445,7 +446,7 @@ def _resolve_once(
     status: int,
     headers: dict[str, str] | None = None,
     body: str | None = None,
-) -> object:
+) -> CommitShaResolution:
     runner = FakeRunner(
         lambda command: _completed(
             command, status=1, stdout=_http(status, headers, body)
