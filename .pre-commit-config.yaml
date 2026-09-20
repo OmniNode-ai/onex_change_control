@@ -227,6 +227,39 @@ repos:
         files: ^(src/onex_change_control/|tests/).*\.py$  # Check both source and tests for consistency with CI
         pass_filenames: true  # Only check changed files, not entire codebase
         stages: [pre-push]  # Moved to pre-push: ~1-5s for changed files only
+
+      # OMN-18804: tell a lane about the writer-App path at PUSH time.
+      #
+      # `check-human-authored-privileged-pr` (OMN-18327) refuses a
+      # human-authored PR touching src/, scripts/ or .github/. Nothing said so
+      # until the PR was already open, and three lanes in one window each paid
+      # 10-15 minutes for the close-and-reopen (OCC#10338 -> #10341,
+      # OCC#10339 -> #10342, and the CI Summary lane).
+      #
+      # It is a HINT, not a gate, and deliberately does not refuse the push
+      # itself in the ordinary case: open-pr-as-writer-app.yml creates no
+      # branch and pushes nothing -- it opens a PR for a branch ALREADY
+      # pushed -- so refusing the privileged push would refuse the first half
+      # of the very path the message points at. It exits non-zero only for the
+      # one state that cannot be repaired in place: a privileged push onto a
+      # branch whose open PR is human-authored, which the App workflow would
+      # merely EDIT rather than re-author. An unreadable PR state advises.
+      #
+      # `files:` is the same prefix set the gate refuses on, so pre-commit
+      # runs this on privileged pushes only and it costs nothing otherwise.
+      # `verbose: true` is LOAD-BEARING, not cosmetic. pre-commit swallows a
+      # hook's stdout/stderr when it passes, and this hook's whole purpose is
+      # to be READ on a pass -- measured on the first governed push of this
+      # branch, where it reported `Passed` and printed nothing at all. A hint
+      # nobody sees is the defect it was written to close.
+      - id: check-privileged-path-push
+        name: privileged paths -> open the PR as the writer App
+        entry: uv run check-privileged-path-push
+        language: system
+        files: ^(src/|scripts/|\.github/)
+        pass_filenames: true
+        verbose: true
+        stages: [pre-push]
       - id: validate-string-versions
         name: Reject string version anti-patterns (Python + YAML)
         language: system
@@ -813,6 +846,21 @@ repos:
         pass_filenames: false
         files: '^\.github/(workflows/.*\.ya?ml|required-checks\.yaml)$'
         stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      - id: validate-gitignore-baseline
+        name: Gitignore Baseline Validator (OMN-12453)
+        description: |
+          Assert that every managed block declared in architecture-handshakes/gitignore-baseline.yaml appears VERBATIM in the target repo's .gitignore. Enforces universal block on all repos; python block on repos that contain pyproject.toml. Suppress all findings for a file with: # gitignore-ok: <reason>
+        language: python
+        entry: python -m omnibase_core.validators.gitignore_baseline
+        pass_filenames: false
+        stages:
+          - pre-commit
+        additional_dependencies:
+          - omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core.git@5d562ab415bcbeb60eb852f5fb6d80b455da1624
+
 # Configuration
 # OMN-14672 (DRIFT-2a fix): every stage a hook uses MUST be installed by
 # `pre-commit install`. Previously [pre-commit, pre-push] only, so the

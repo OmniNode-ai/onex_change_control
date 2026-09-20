@@ -1,0 +1,99 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-16360
+title: Name the cause behind an unavailable commit-SHA resolution
+summary: 'Receipt hardening already models a commit claim as present, absent or unavailable (OMN-17501).
+  This contract covers the remaining half of that ticket''s acceptance criteria: an unavailable result
+  must carry an actionable category with its retry, reset and auth evidence, rather than a bare HTTP status
+  that reads identically for causes whose remedies are opposite. It also covers a defect found in the
+  same read, where a session halted by one probe replayed that probe''s text under later claims'' own
+  repositories and SHAs, presenting a request that was never sent as a measurement. This is a default-deny
+  governance contract over a CI validation gate: it makes no receipt-repair, pull-request, deployment
+  or runtime-verification claim, and it relaxes nothing — every case named here still refuses and still
+  exits non-zero.'
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: Mock-only focused controls cover each unavailable category (primary rate limit, secondary
+      rate limit, permission, authentication, upstream 5xx, malformed response, transport failure, exhausted
+      budget), the replayed-halt case, and a positive control on a resolvable SHA that produces no diagnostic
+      at all. Selected by explicit node id rather than by whole file, so the hosted compliance runner
+      re-executes every control inside its budget, and a rename that drops a control breaks this contract
+      rather than silently narrowing it. No live GitHub API access.
+    command: uv run pytest tests/unit/validation/test_commit_sha_resolver.py tests/test_check_receipt_hardening.py::test_spent_quota_diagnostic_is_not_mistakable_for_a_permission_fault
+      tests/test_check_receipt_hardening.py::test_permission_diagnostic_states_that_re_running_will_not_help
+      tests/test_check_receipt_hardening.py::test_diagnostic_prints_retry_after_on_a_secondary_limit tests/test_check_receipt_hardening.py::test_upstream_5xx_is_not_rendered_as_a_rate_limit_or_a_permission
+      tests/test_check_receipt_hardening.py::test_a_second_receipt_in_a_halted_session_is_not_reported_as_probed
+      tests/test_check_receipt_hardening.py::test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all
+      -q
+  - kind: tests
+    description: The static wiring probe proves the bounded resolver remains fail-closed and staged after
+      the diagnostic change, so a richer message cannot have been bought by loosening the gate.
+    command: uv run python scripts/validation/check_receipt_hardening.py --check-commit-sha-wiring
+  - kind: tests
+    description: The two rate-limit remedies name the endpoint a reader reaches for first and say why
+      it cannot answer. gh api rate_limit reports the primary bucket of whoever runs it, so in CI it describes
+      a different identity from the step's token, and it cannot see a secondary limit at all. Selected
+      by explicit node id for the same reason as the item above.
+    command: uv run pytest tests/unit/validation/test_commit_sha_resolver.py tests/test_check_receipt_hardening.py::test_spent_quota_diagnostic_is_not_mistakable_for_a_permission_fault
+      tests/test_check_receipt_hardening.py::test_permission_diagnostic_states_that_re_running_will_not_help
+      tests/test_check_receipt_hardening.py::test_diagnostic_prints_retry_after_on_a_secondary_limit tests/test_check_receipt_hardening.py::test_upstream_5xx_is_not_rendered_as_a_rate_limit_or_a_permission
+      tests/test_check_receipt_hardening.py::test_a_second_receipt_in_a_halted_session_is_not_reported_as_probed
+      tests/test_check_receipt_hardening.py::test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all
+      tests/test_check_receipt_hardening.py::test_rate_limit_remedies_warn_off_the_check_that_cannot_answer
+      -q
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-unavailable-category-controls
+    description: Mock-only controls prove each unavailable cause renders a distinct category and remedy,
+      that an unrecognised shape is classified as unexpected rather than guessed into a plausible category,
+      and that a claim never sent to GitHub reports itself as not probed and names the probe that halted
+      the session. Each control also asserts the outcome is still the unavailable one, so the suite fails
+      if a nicer message is ever bought by letting a case pass. A positive control on a resolvable SHA
+      yields zero diagnostics, which is what keeps the two absence assertions from passing vacuously.
+    source: manual
+    execution_scope: hosted_and_local
+    checks:
+      - check_type: test_passes
+        check_value: uv run pytest tests/unit/validation/test_commit_sha_resolver.py tests/test_check_receipt_hardening.py::test_spent_quota_diagnostic_is_not_mistakable_for_a_permission_fault
+          tests/test_check_receipt_hardening.py::test_permission_diagnostic_states_that_re_running_will_not_help
+          tests/test_check_receipt_hardening.py::test_diagnostic_prints_retry_after_on_a_secondary_limit
+          tests/test_check_receipt_hardening.py::test_upstream_5xx_is_not_rendered_as_a_rate_limit_or_a_permission
+          tests/test_check_receipt_hardening.py::test_a_second_receipt_in_a_halted_session_is_not_reported_as_probed
+          tests/test_check_receipt_hardening.py::test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all
+          -q
+  - id: dod-fail-closed-wiring-unchanged
+    description: Static wiring proves the bounded commit-SHA resolver is still invoked fail-closed from
+      the staged pre-commit surface and from CI's single NUL-delimited changed-file input. The diagnostic
+      change touches rendering only; this is the check that would fail if it had touched admission.
+    source: manual
+    execution_scope: local_done_gate
+    checks:
+      - check_type: command
+        check_value: uv run python scripts/validation/check_receipt_hardening.py --check-commit-sha-wiring
+        cwd: ${OMNI_HOME}/omni_worktrees/OMN-16360/onex_change_control
+  - id: dod-rate-limit-remedy-caveat
+    description: A remedy that correctly names a rate limit, and does not say that the obvious check cannot
+      confirm it, still sends the reader to a command that is structurally incapable of answering. Two
+      lanes ran that command on 2026-09-20 and drew opposite wrong conclusions from it. This control asserts
+      both remedies name the endpoint literal, that the secondary remedy carries its explanatory clause,
+      and that each case still reports its own correct category, so a nicer sentence cannot be bought
+      by blurring the classification. It is a net-new item rather than an edit of the item above, which
+      is immutable once merged.
+    source: manual
+    execution_scope: hosted_and_local
+    checks:
+      - check_type: test_passes
+        check_value: uv run pytest tests/unit/validation/test_commit_sha_resolver.py tests/test_check_receipt_hardening.py::test_spent_quota_diagnostic_is_not_mistakable_for_a_permission_fault
+          tests/test_check_receipt_hardening.py::test_permission_diagnostic_states_that_re_running_will_not_help
+          tests/test_check_receipt_hardening.py::test_diagnostic_prints_retry_after_on_a_secondary_limit
+          tests/test_check_receipt_hardening.py::test_upstream_5xx_is_not_rendered_as_a_rate_limit_or_a_permission
+          tests/test_check_receipt_hardening.py::test_a_second_receipt_in_a_halted_session_is_not_reported_as_probed
+          tests/test_check_receipt_hardening.py::test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all
+          tests/test_check_receipt_hardening.py::test_rate_limit_remedies_warn_off_the_check_that_cannot_answer
+          -q

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
 from omnibase_core.validation.validator_receipt_gate import (
     compute_contract_entry_sha256,
@@ -51,6 +52,7 @@ POST_OMN15461_CUTOFF_TS = "2026-08-19T13:00:00+00:00"
 PRE_OMN15461_CUTOFF_TS = "2026-08-19T11:00:00+00:00"
 FULL_LOCAL_SHA = "c" * 40
 FULL_REMOTE_SHA = "8" * 40
+OTHER_REMOTE_SHA = "7" * 40
 
 # OMN-15459 (S2 family binding): a supersession replacement must reference an
 # anchor the item it supersedes actually declares. The two wrappers below exist
@@ -2255,3 +2257,546 @@ def test_behavior_proof_backfill_receipt_bound_to_the_merge_commit_is_refused() 
 
     assert len(violations) == 1
     assert "[COMMIT_SHA_REPOSITORY]" in violations[0]
+
+
+# ---------------------------------------------------------------------------
+# OMN-18778 — DERIVED_VERIFIER.
+#
+# The rule these tests pin exists because the platform's only runner/verifier
+# comparison, ``ModelDodReceipt`` Rule 1, is raw string equality: measured over
+# every receipt on dev carrying both fields on 2026-09-18, it had a surface of
+# 28 files out of 27,449 and zero in the preceding fourteen days, while 1,380
+# post-cutoff PASS receipts named a verifier that was the runner handle plus or
+# minus one segment. The fixture in
+# ``test_incident_receipt_is_refused_by_the_live_gate`` is the 2026-09-18
+# occurrence itself, byte-for-byte from
+# ``drift/dod_receipts/OMN-18543/dod-omn18543-ac1-dormant-member-excused/command.yaml``.
+# ---------------------------------------------------------------------------
+
+DERIVED_VERIFIER_TAG = "[DERIVED_VERIFIER]"
+
+# Verbatim from the 2026-09-18T20:45:45Z occurrence. Only the fields the gate
+# reads are carried; the handles are exact.
+INCIDENT_RUNNER = "omn18543-ac-binding"
+INCIDENT_VERIFIER = "omn18543-ac-binding-verifier"
+
+
+def _derived_verifier_violations(tmp_path: Path, **overrides: object) -> list[str]:
+    """Run the gate over one receipt and return only DERIVED_VERIFIER fragments."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(contract_sha256=_contract_sha(contract), **overrides),
+    )
+    return [
+        v
+        for v in check_receipt_file(receipt, tmp_path / "contracts")
+        if DERIVED_VERIFIER_TAG in v
+    ]
+
+
+def test_incident_receipt_is_refused_by_the_live_gate(tmp_path: Path) -> None:
+    """The 2026-09-18 occurrence, as its own handles, is refused.
+
+    This is the positive control for the whole rule: before OMN-18778 these
+    four receipts merged carrying a verifier that was the runner plus
+    ``-verifier``, and every gate in the repo passed them.
+    """
+    violations = _derived_verifier_violations(
+        tmp_path, runner=INCIDENT_RUNNER, verifier=INCIDENT_VERIFIER
+    )
+    assert len(violations) == 1
+    assert INCIDENT_VERIFIER in violations[0]
+    assert "verifier extends runner" in violations[0]
+
+
+def test_incident_receipt_passed_every_pre_existing_rule() -> None:
+    """Negative control on the OLD controls: the incident shape defeats them.
+
+    ``ModelDodReceipt`` Rule 1 does not demote it (the strings differ) and the
+    verifier denylist does not name it (it is not a generic alias). If this
+    test ever fails, some other rule started covering the shape and
+    DERIVED_VERIFIER's justification needs re-reading rather than patching.
+    """
+    receipt = ModelDodReceipt.model_validate(
+        _receipt_data(runner=INCIDENT_RUNNER, verifier=INCIDENT_VERIFIER)
+    )
+    assert receipt.status is not EnumReceiptStatus.ADVISORY
+    assert not check_receipt_hardening._is_denylisted_verifier(INCIDENT_VERIFIER)
+
+
+def test_verifier_extending_runner_fails(tmp_path: Path) -> None:
+    """The dominant corpus shape: ``claude-code`` -> ``claude-code-review``."""
+    violations = _derived_verifier_violations(
+        tmp_path, runner="claude-code", verifier="claude-code-review"
+    )
+    assert len(violations) == 1
+    assert "verifier extends runner" in violations[0]
+
+
+def test_runner_extending_verifier_fails(tmp_path: Path) -> None:
+    """The converse shape: ``codex-local`` -> ``codex``, 206 receipts on dev."""
+    violations = _derived_verifier_violations(
+        tmp_path, runner="codex-local", verifier="codex"
+    )
+    assert len(violations) == 1
+    assert "runner extends verifier" in violations[0]
+
+
+def test_separator_laundered_equality_fails(tmp_path: Path) -> None:
+    """``claude/x`` and ``claude-x`` are one handle; the core model's raw ``==``
+    does not see it, so this rule is not redundant with Rule 1."""
+    data = _receipt_data(
+        runner="claude-omn15717-reland", verifier="claude/omn15717-reland"
+    )
+    parsed = ModelDodReceipt.model_validate(data)
+    assert parsed.status is EnumReceiptStatus.PASS, (
+        "premise: the core model leaves this PASS, which is why the rule exists"
+    )
+
+    violations = _derived_verifier_violations(
+        tmp_path,
+        runner="claude-omn15717-reland",
+        verifier="claude/omn15717-reland",
+    )
+    assert len(violations) == 1
+    assert "identical" in violations[0]
+
+
+def test_mechanical_producer_pair_passes(tmp_path: Path) -> None:
+    """The honest population is untouched.
+
+    ``node_pr_lifecycle_fix_effect`` / ``node_occ_companion_compute`` /
+    ``node_occ_observation_effect`` account for 11,405 PASS receipts on dev and
+    none of them derives. A change that reddens this test has broken the gate
+    for every mechanically minted receipt in the repo.
+    """
+    for runner, verifier in (
+        ("node_pr_lifecycle_fix_effect", "occ-evidence-source-autobind"),
+        ("node_occ_companion_compute", "occ-evidence-source-autobind"),
+        ("node_occ_observation_effect", "occ-observation-append"),
+        ("codex", "jonah"),
+        ("jonah-local", "jonahgabriel"),
+    ):
+        assert (
+            _derived_verifier_violations(tmp_path, runner=runner, verifier=verifier)
+            == []
+        ), f"{runner!r} -> {verifier!r} is not a derivation"
+
+
+def test_shared_token_is_not_a_derivation(tmp_path: Path) -> None:
+    """Token overlap is deliberately NOT refused.
+
+    ``manual`` -> ``lakshman-manual-focused-test`` shares a token, and the
+    verifier names a different person. A token-subset predicate was measured
+    against the corpus and rejected for exactly this case.
+    """
+    assert (
+        _derived_verifier_violations(
+            tmp_path, runner="manual", verifier="lakshman-manual-focused-test"
+        )
+        == []
+    )
+
+
+def test_extension_is_segment_bounded_not_substring(tmp_path: Path) -> None:
+    """``codex`` -> ``codexter`` is a different handle, not an extension."""
+    assert (
+        _derived_verifier_violations(tmp_path, runner="codex", verifier="codexter")
+        == []
+    )
+
+
+def test_derived_verifier_on_non_pass_status_is_exempt(tmp_path: Path) -> None:
+    """A FAIL receipt makes no independence claim, so there is none to refuse."""
+    assert (
+        _derived_verifier_violations(
+            tmp_path,
+            status="FAIL",
+            runner=INCIDENT_RUNNER,
+            verifier=INCIDENT_VERIFIER,
+        )
+        == []
+    )
+
+
+def test_derived_verifier_pre_cutoff_is_exempt(tmp_path: Path) -> None:
+    """Legacy receipts stay exempt, like every other rule in this gate."""
+    assert (
+        _derived_verifier_violations(
+            tmp_path,
+            run_timestamp=PRE_CUTOFF_TS,
+            runner=INCIDENT_RUNNER,
+            verifier=INCIDENT_VERIFIER,
+        )
+        == []
+    )
+
+
+def test_baseline_suppresses_derived_verifier_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """A baselined path loses DERIVED_VERIFIER and keeps every other rule."""
+    contract = _write_contract(tmp_path)
+    receipt = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            runner=INCIDENT_RUNNER,
+            verifier=INCIDENT_VERIFIER,
+        ),
+    )
+    unsuppressed = check_receipt_file(receipt, tmp_path / "contracts")
+    assert any(DERIVED_VERIFIER_TAG in v for v in unsuppressed)
+
+    suppressed = check_receipt_file(
+        receipt,
+        tmp_path / "contracts",
+        derived_verifier_baseline=frozenset({receipt.as_posix()}),
+    )
+    assert not any(DERIVED_VERIFIER_TAG in v for v in suppressed)
+
+    # Same baselined path, now also carrying a denylisted verifier: the OTHER
+    # rule still fires, so suppression is rule-scoped rather than file-scoped.
+    # ``local-pytest`` is on the denylist AND is a prefix of the runner, so one
+    # receipt trips both rules and only DERIVED_VERIFIER may be suppressed.
+    denylisted = _write_receipt(
+        tmp_path,
+        _receipt_data(
+            contract_sha256=_contract_sha(contract),
+            runner="local-pytest-rerun",
+            verifier="local-pytest",
+        ),
+    )
+    still_flagged = check_receipt_file(
+        denylisted,
+        tmp_path / "contracts",
+        derived_verifier_baseline=frozenset({denylisted.as_posix()}),
+    )
+    assert not any(DERIVED_VERIFIER_TAG in v for v in still_flagged)
+    assert any("session-local verifier alias" in v for v in still_flagged)
+
+
+def test_derived_verifier_relation_table() -> None:
+    """The pure predicate, stated as a table."""
+    relation = check_receipt_hardening.derived_verifier_relation
+    assert relation("x", "x") == "identical"
+    assert relation("X ", " x") == "identical"
+    assert relation("a/b", "a-b") == "identical"
+    assert relation("x", "x-readback") == "verifier extends runner"
+    assert relation("x-readback", "x") == "runner extends verifier"
+    assert relation("x", "xy") is None
+    assert relation("x", "y") is None
+    assert relation("", "x") is None
+    assert relation("x", "   ") is None
+
+
+def test_incident_receipts_are_open_repairs_not_suppressed() -> None:
+    """The five 2026-09-18 receipts are named by the gate, not hidden by it.
+
+    They are merged and immutable, so the rule cannot retroactively block
+    them — but putting them in ``violations:`` would suppress the one shape
+    this ticket exists to refuse. They live in ``open_repairs:`` instead,
+    which is a corpus member that is NOT suppressed.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    baseline = repo_root / check_receipt_hardening.DERIVED_VERIFIER_BASELINE_PATH
+    suppressed = check_receipt_hardening.load_derived_verifier_baseline(baseline)
+    open_repairs = check_receipt_hardening.load_derived_verifier_open_repairs(baseline)
+
+    incident = {
+        "drift/dod_receipts/OMN-10856/dod-omn10856-ac5-load-and-drain/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac1-dormant-member-excused/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac2-carve-out-is-earned/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac3-reconciler-notes-unreachable/command.yaml",
+        "drift/dod_receipts/OMN-18543/dod-omn18543-ac4-fail-closed-direction/command.yaml",
+    }
+    assert incident <= open_repairs
+    assert not (incident & suppressed)
+
+
+def test_baseline_is_shrink_only_against_the_live_corpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every baselined path still derives, so the baseline names real debt.
+
+    A stale entry means a receipt was repaired and the baseline was not shrunk
+    in the same PR; a missing one means a producer regressed.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    baseline_path = repo_root / check_receipt_hardening.DERIVED_VERIFIER_BASELINE_PATH
+    expected = check_receipt_hardening.load_derived_verifier_corpus_expected(
+        baseline_path
+    )
+    # The scan emits paths relative to the root it is handed, and the baseline
+    # holds repo-relative ones, so it runs from the repo root exactly as the
+    # --derived-verifier-corpus CLI mode does.
+    monkeypatch.chdir(repo_root)
+    observed = set(
+        check_receipt_hardening._derived_verifier_findings(Path("drift/dod_receipts"))
+    )
+    assert observed - expected == set(), "new derived-verifier receipts, not baselined"
+    assert expected - observed == set(), "stale baseline entries; shrink the baseline"
+
+
+# ---------------------------------------------------------------------------
+# OMN-16360: the operator diagnostic must name the CAUSE, not just the status.
+#
+# These assert on the rendered text rather than on the resolution object, so
+# they are meaningful against any implementation that emits the diagnostic.
+# ---------------------------------------------------------------------------
+
+
+def _occurrence_resolver(
+    status: int,
+    headers: dict[str, str],
+    message: str | None,
+) -> CommitShaResolver:
+    """A no-network resolver that replays one recorded GitHub answer."""
+
+    header_lines = "\n".join(f"{k}: {v}" for k, v in headers.items())
+    body = json.dumps({"message": message}) if message is not None else "{}"
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=f"HTTP/2 {status}\n{header_lines}\n\n{body}",
+            stderr="",
+        )
+
+    return CommitShaResolver(runner=runner)
+
+
+def test_spent_quota_diagnostic_is_not_mistakable_for_a_permission_fault() -> None:
+    """The 2026-09-20 occurrence, replayed at the text layer.
+
+    The rendered line carried only ``http_status=403``, which reads as a
+    credential or installation-scope fault. The quota reset four minutes
+    later and the identical gate passed, so the text sent the reader to the
+    wrong remedy.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+        "API rate limit exceeded for installation ID 12345678.",
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    # Fail-closed is unchanged: no receipt-defect label, and the caller still
+    # receives an infrastructure diagnostic it must treat as nonzero.
+    assert violations == []
+    assert len(diagnostics) == 1
+    line = diagnostics[0]
+    assert line.startswith("[INFRASTRUCTURE_UNAVAILABLE]")
+    assert "category=RATE_LIMIT_PRIMARY" in line
+    assert "rate_limit_remaining=0" in line
+    assert "rate_limit_reset=1789900200" in line
+    assert "OmniNode-ai/omnibase_infra" in line
+    assert FULL_REMOTE_SHA in line
+    assert "remedy=" in line
+    assert "NOT a permission" in line
+
+
+def test_permission_diagnostic_states_that_re_running_will_not_help() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "4998"},
+        "Resource not accessible by integration",
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    line = diagnostics[0]
+    assert "category=PERMISSION" in line
+    assert "re-running will not help" in line
+    assert "RATE_LIMIT" not in line
+
+
+def test_diagnostic_prints_retry_after_on_a_secondary_limit() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"retry-after": "60", "x-ratelimit-remaining": "4998"},
+        "You have exceeded a secondary rate limit",
+    )
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert "category=RATE_LIMIT_SECONDARY" in diagnostics[0]
+    assert "retry_after=60" in diagnostics[0]
+
+
+def test_upstream_5xx_is_not_rendered_as_a_rate_limit_or_a_permission() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(502, {}, "Server Error")
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert "category=UPSTREAM_ERROR" in diagnostics[0]
+    assert "RATE_LIMIT" not in diagnostics[0]
+    assert "PERMISSION" not in diagnostics[0]
+
+
+def test_a_second_receipt_in_a_halted_session_is_not_reported_as_probed() -> None:
+    """The half of the occurrence that was a fabricated measurement.
+
+    Two diagnostics were emitted for two SHAs in two repositories. Only the
+    first was ever sent to GitHub: the second replayed the first's detail
+    under its own repo and SHA with the status stripped, so the line asserts
+    a probe that did not happen.
+    """
+
+    first = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    second = _receipt_model(
+        commit_sha=OTHER_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/onex_change_control/commits/{OTHER_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+        "API rate limit exceeded for installation ID 12345678.",
+    )
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        first, resolver, diagnostics
+    )
+    check_receipt_hardening._commit_sha_existence_violations(
+        second, resolver, diagnostics
+    )
+
+    assert len(diagnostics) == 2
+    replayed = diagnostics[1]
+    assert "category=SESSION_HALTED" in replayed
+    assert "not_probed=true" in replayed
+    assert f"halted_by=OmniNode-ai/omnibase_infra@{FULL_REMOTE_SHA}" in replayed
+    assert "http_status=" not in replayed, (
+        "a replay must not present the halting probe's status as its own"
+    )
+
+
+def test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all() -> None:
+    """The control for the four assertions above.
+
+    Each test above asserts a substring is PRESENT in a diagnostic, and two
+    assert substrings are ABSENT. An absence assertion passes vacuously if no
+    diagnostic is produced, so this is the input known to produce the other
+    outcome: a resolvable SHA yields zero diagnostics and zero violations,
+    which proves the list above was populated by the failure and not by the
+    harness.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", FULL_REMOTE_SHA): 200}
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    assert diagnostics == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_rate_limit_remedies_warn_off_the_check_that_cannot_answer() -> None:
+    """The obvious check a reader reaches for is the one that misleads them.
+
+    Two lanes independently ran `gh api rate_limit` on 2026-09-20 and drew
+    opposite wrong conclusions from it. It reports the PRIMARY bucket of
+    whoever runs it, so in CI it describes a different identity from the
+    step's token, and it cannot see a secondary limit at all — one lane's
+    shell was refused as rate-limited for six minutes while that endpoint
+    read a full quota. A remedy that names a rate limit without saying this
+    sends the reader to a command that is structurally incapable of
+    confirming or refuting it.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    primary: list[str] = []
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _occurrence_resolver(
+            403,
+            {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+            "API rate limit exceeded for installation ID 12345678.",
+        ),
+        primary,
+    )
+    secondary: list[str] = []
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _occurrence_resolver(
+            403,
+            {"retry-after": "60", "x-ratelimit-remaining": "4998"},
+            "You have exceeded a secondary rate limit",
+        ),
+        secondary,
+    )
+
+    assert "gh api rate_limit" in primary[0]
+    assert "different identity" in primary[0]
+    assert "gh api rate_limit" in secondary[0]
+    assert "cannot see a secondary limit" in secondary[0]
+    # Still fail-closed, and still the right category on each.
+    assert "category=RATE_LIMIT_PRIMARY" in primary[0]
+    assert "category=RATE_LIMIT_SECONDARY" in secondary[0]
