@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING
 import pytest
 
 from onex_change_control.validation.commit_sha_resolver import (
+    CommitShaResolution,
     CommitShaResolver,
     EnumCommitShaOutcome,
+    EnumCommitShaUnavailableCategory,
 )
 
 if TYPE_CHECKING:
@@ -409,3 +411,178 @@ def test_remote_cache_isolated_by_repository() -> None:
         is EnumCommitShaOutcome.REACHABLE_REMOTE
     )
     assert len(runner.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# OMN-16360: UNAVAILABLE is one outcome with several opposite remedies.
+#
+# These controls pin the CATEGORY, not the verdict. Every case below stays
+# UNAVAILABLE, which is asserted in each test so a future change that
+# loosens fail-closed to buy a nicer message turns them red.
+# ---------------------------------------------------------------------------
+
+# The exact response shape measured on onex_change_control job 106062659651
+# (2026-09-20T10:25:23Z): HTTP 403, an hourly reset four minutes out, a spent
+# quota, and no retry-after. The gate rendered it as a bare "HTTP 403", which
+# reads as a permission fault; the quota reset at 10:30:00Z and the same gate
+# passed at 10:32:06Z.
+_OCCURRENCE_HEADERS = {
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1789900200",
+}
+_OCCURRENCE_BODY = json.dumps(
+    {
+        "message": (
+            "API rate limit exceeded for installation ID 12345678. "
+            "If you reach out to GitHub Support for help, please include the "
+            "request ID."
+        ),
+        "documentation_url": "https://docs.github.com/rest/overview/rate-limits",
+    }
+)
+
+
+def _resolve_once(
+    status: int,
+    headers: dict[str, str] | None = None,
+    body: str | None = None,
+) -> CommitShaResolution:
+    runner = FakeRunner(
+        lambda command: _completed(
+            command, status=1, stdout=_http(status, headers, body)
+        )
+    )
+    return CommitShaResolver(runner=runner).remote_resolution(
+        "OmniNode-ai/omnibase_infra", FULL_SHA
+    )
+
+
+def test_spent_quota_403_is_named_a_primary_rate_limit_not_a_bare_status() -> None:
+    resolution = _resolve_once(403, _OCCURRENCE_HEADERS, _OCCURRENCE_BODY)
+
+    assert resolution.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert resolution.category is EnumCommitShaUnavailableCategory.RATE_LIMIT_PRIMARY
+    assert resolution.rate_limit_remaining == "0"
+    assert resolution.reset_at == "1789900200"
+    assert resolution.retry_after is None
+    assert resolution.api_message is not None
+    assert "rate limit exceeded" in resolution.api_message
+
+
+def test_out_of_scope_403_is_named_a_permission_refusal() -> None:
+    """The same status and a healthy quota is the opposite remedy.
+
+    A permission refusal never clears by waiting, so it must not render
+    identically to the quota case above.
+    """
+
+    resolution = _resolve_once(
+        403,
+        {"x-ratelimit-remaining": "4998", "x-ratelimit-reset": "1789900200"},
+        json.dumps({"message": "Resource not accessible by integration"}),
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert resolution.category is EnumCommitShaUnavailableCategory.PERMISSION
+    assert resolution.rate_limit_remaining == "4998"
+
+
+def test_secondary_limit_is_distinguished_and_keeps_retry_after() -> None:
+    resolution = _resolve_once(
+        403,
+        {"retry-after": "60", "x-ratelimit-remaining": "4998"},
+        json.dumps({"message": "You have exceeded a secondary rate limit"}),
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert resolution.category is EnumCommitShaUnavailableCategory.RATE_LIMIT_SECONDARY
+    assert resolution.retry_after == "60"
+
+
+def test_401_is_authentication_and_5xx_is_upstream() -> None:
+    unauthorized = _resolve_once(401, None, json.dumps({"message": "Bad credentials"}))
+    upstream = _resolve_once(502, None, json.dumps({"message": "Server Error"}))
+
+    assert unauthorized.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert unauthorized.category is EnumCommitShaUnavailableCategory.AUTHENTICATION
+    assert upstream.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert upstream.category is EnumCommitShaUnavailableCategory.UPSTREAM_ERROR
+
+
+def test_unrecognised_403_shape_is_not_guessed_into_a_category() -> None:
+    """A confidently wrong category is worse than an unnamed one."""
+
+    resolution = _resolve_once(403, {"x-ratelimit-remaining": "4998"}, "not json")
+
+    assert resolution.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert resolution.category is EnumCommitShaUnavailableCategory.UNEXPECTED_STATUS
+    assert resolution.api_message is None
+
+
+def test_replayed_halt_says_it_never_probed_and_names_the_failing_probe() -> None:
+    """The second claim in a halted session is not a measurement of itself.
+
+    Before OMN-16360 the replay carried the FIRST probe's detail while naming
+    the second claim's own repo and SHA, with the status stripped — a
+    diagnostic asserting a probe that never ran. The 2026-09-20 occurrence
+    emitted exactly that for a SHA in a different repository.
+    """
+
+    runner = FakeRunner(
+        lambda command: _completed(
+            command,
+            status=1,
+            stdout=_http(403, _OCCURRENCE_HEADERS, _OCCURRENCE_BODY),
+        )
+    )
+    resolver = CommitShaResolver(runner=runner)
+    probed = resolver.remote_resolution("OmniNode-ai/omnibase_infra", FULL_SHA)
+    replayed = resolver.remote_resolution("OmniNode-ai/onex_change_control", OTHER_SHA)
+
+    assert len(runner.calls) == 1, "the second claim must not spend a call"
+    assert probed.category is EnumCommitShaUnavailableCategory.RATE_LIMIT_PRIMARY
+    assert probed.halted_by_repo is None, "a measured probe is not a replay"
+
+    assert replayed.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert replayed.category is EnumCommitShaUnavailableCategory.SESSION_HALTED
+    assert replayed.halted_by_repo == "OmniNode-ai/omnibase_infra"
+    assert replayed.halted_by_sha == FULL_SHA
+    assert replayed.status_code is None, (
+        "a replay must not present the halting probe's status as its own"
+    )
+
+
+def test_exhausted_budget_is_named_and_spends_no_process() -> None:
+    runner = FakeRunner(lambda command: _completed(command, stdout=_http(200)))
+    resolver = CommitShaResolver(rest_budget=0, runner=runner)
+    resolution = resolver.remote_resolution("OmniNode-ai/omnibase_infra", FULL_SHA)
+
+    assert resolution.outcome is EnumCommitShaOutcome.UNAVAILABLE
+    assert resolution.category is EnumCommitShaUnavailableCategory.BUDGET_EXHAUSTED
+    assert runner.calls == []
+
+
+def test_positive_control_a_resolvable_sha_has_no_unavailable_category() -> None:
+    """The control for every assertion above.
+
+    Each test in this block asserts a category on a failing probe. If the
+    resolver stopped classifying, or stopped probing at all, those could pass
+    vacuously only if a clean probe ALSO produced a category. This is the
+    input known to return rows: a healthy 200 resolves, and carries no
+    category and no halt attribution.
+    """
+
+    runner = FakeRunner(
+        lambda command: _completed(
+            command, stdout=_http(200, {"x-ratelimit-remaining": "4999"})
+        )
+    )
+    resolution = CommitShaResolver(runner=runner).remote_resolution(
+        "OmniNode-ai/omnibase_infra", FULL_SHA
+    )
+
+    assert resolution.outcome is EnumCommitShaOutcome.REACHABLE_REMOTE
+    assert resolution.category is None
+    assert resolution.halted_by_repo is None
+    assert resolution.rate_limit_remaining == "4999"
+    assert len(runner.calls) == 1
