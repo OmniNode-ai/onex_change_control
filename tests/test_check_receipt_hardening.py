@@ -2751,3 +2751,52 @@ def test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all() -> None:
     assert violations == []
     assert diagnostics == []
     assert queried_repos == ["OmniNode-ai/omnibase_infra"]
+
+
+def test_rate_limit_remedies_warn_off_the_check_that_cannot_answer() -> None:
+    """The obvious check a reader reaches for is the one that misleads them.
+
+    Two lanes independently ran `gh api rate_limit` on 2026-09-20 and drew
+    opposite wrong conclusions from it. It reports the PRIMARY bucket of
+    whoever runs it, so in CI it describes a different identity from the
+    step's token, and it cannot see a secondary limit at all — one lane's
+    shell was refused as rate-limited for six minutes while that endpoint
+    read a full quota. A remedy that names a rate limit without saying this
+    sends the reader to a command that is structurally incapable of
+    confirming or refuting it.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    primary: list[str] = []
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _occurrence_resolver(
+            403,
+            {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+            "API rate limit exceeded for installation ID 12345678.",
+        ),
+        primary,
+    )
+    secondary: list[str] = []
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt,
+        _occurrence_resolver(
+            403,
+            {"retry-after": "60", "x-ratelimit-remaining": "4998"},
+            "You have exceeded a secondary rate limit",
+        ),
+        secondary,
+    )
+
+    assert "gh api rate_limit" in primary[0]
+    assert "different identity" in primary[0]
+    assert "gh api rate_limit" in secondary[0]
+    assert "cannot see a secondary limit" in secondary[0]
+    # Still fail-closed, and still the right category on each.
+    assert "category=RATE_LIMIT_PRIMARY" in primary[0]
+    assert "category=RATE_LIMIT_SECONDARY" in secondary[0]
