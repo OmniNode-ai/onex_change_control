@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 OmniNode.ai Inc.
+# SPDX-License-Identifier: MIT
+#
+# Reusable AI co-author trailer gate (OMN-18426).
+#
+# WHY A CI CHECK AND NOT JUST THE HOOK
+#
+# `strip-ai-coauthor-trailer` is declared on the commit-msg stage in all
+# fifteen repos that have a .pre-commit-config.yaml, with a byte-identical
+# entry, and it works when pre-commit runs it. It still cannot keep the
+# trailer off a default branch: measured 2026-09-19, 986 commits across
+# fourteen repos carry `Co-authored-by: ... <noreply@anthropic.com>`, the most
+# recent that same day, and every recent one has
+# `committer=GitHub <noreply@github.com>` — a server-side squash merge.
+# GitHub composes the squash message from the branch's commits and re-emits
+# their trailers. A commit-msg hook runs on `git commit`, on a workstation, so
+# it is not in that path at all.
+#
+# This gate reads the pull request's own commits, where the trailer still is.
+#
+# Usage in a caller repo:
+#
+#   jobs:
+#     no-ai-coauthor-trailer:
+#       uses: OmniNode-ai/onex_change_control/.github/workflows/no-ai-coauthor-trailer-reusable.yml@main
+#       permissions:
+#         contents: read
+#         pull-requests: read
+#
+# NOT REQUIRED BY DEFAULT. Adding this workflow makes the check appear on a
+# pull request; it does not make it blocking. Making it a required context is
+# a branch-protection decision, and on onex_change_control@main
+# (enforce_admins: true) a required failing check wedges merges for
+# administrators too — see governance-file-advisory-gate.yml.
+
+name: No AI Co-author Trailer (Reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-trailers:
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    steps:
+      - name: Checkout onex_change_control
+        uses: actions/checkout@v7
+        with:
+          repository: OmniNode-ai/onex_change_control
+          path: onex_change_control
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Check the pull request's commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TARGET_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Guard: workflow_call must be triggered by a pull_request event.
+          if [[ -z "${PR_NUMBER:-}" ]]; then
+            echo "[FAIL] PR_NUMBER is empty — this workflow must be called from a pull_request event."
+            exit 1
+          fi
+
+          # --slurp because --paginate alone concatenates one array per page,
+          # which is not a single JSON document. gh refuses --slurp together
+          # with --jq, so the payload is shaped in Python, which also removes
+          # any dependency on jq being present on a self-hosted runner.
+          gh api "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/commits" \
+            --paginate --slurp > commits.json
+
+          # The checker exits 2 on an empty or malformed payload rather than
+          # reporting a clean result from a fetch that did not happen.
+          python3 onex_change_control/src/onex_change_control/scripts/check_no_ai_coauthor_trailer.py < commits.json

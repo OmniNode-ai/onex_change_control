@@ -299,6 +299,11 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # up. It is an advisory visibility surface for this PR, not a CI Summary
         # blocker; enforcement happens when the gate flips out of report mode.
         "public-repo-hygiene",
+        # OMN-18426 -- advisory reusable-workflow caller.  The workflow
+        # deliberately adds visibility without becoming a required branch
+        # protection context, so it must remain outside the gate tiers while
+        # still being classified by the completeness anchor.
+        "no-ai-coauthor-trailer",
     }
 )
 
