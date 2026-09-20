@@ -1478,11 +1478,16 @@ def _commit_sha_existence_violations(
 _UNAVAILABLE_REMEDIES: dict[EnumCommitShaUnavailableCategory, str] = {
     EnumCommitShaUnavailableCategory.RATE_LIMIT_PRIMARY: (
         "the calling identity's hourly REST quota is spent; re-run after "
-        "rate_limit_reset — this is NOT a permission or credential fault"
+        "rate_limit_reset — this is NOT a permission or credential fault. "
+        "Do not try to confirm it with 'gh api rate_limit': that reports the "
+        "primary bucket of whoever runs it, which in CI is a different "
+        "identity from this step's token"
     ),
     EnumCommitShaUnavailableCategory.RATE_LIMIT_SECONDARY: (
         "GitHub applied a secondary/abuse limit; honour retry_after before "
-        "re-running, and reduce concurrent API pressure"
+        "re-running, and reduce concurrent API pressure. 'gh api rate_limit' "
+        "cannot see a secondary limit at all and will report a full quota "
+        "while calls are still being refused"
     ),
     EnumCommitShaUnavailableCategory.PERMISSION: (
         "the credential is valid but is not scoped to this repository; widen "
