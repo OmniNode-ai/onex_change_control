@@ -38,11 +38,14 @@ assert _spec.loader is not None
 checker = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checker)
 
-# The entry shipped in all fifteen .pre-commit-config.yaml files, byte for byte.
-HOOK_ENTRY = (
-    r"print unless /^co-authored-by:.*<(?:noreply\@anthropic\.com|"
-    r"claude\@omninode\.ai|cursoragent\@cursor\.com|codex\@omninode\.ai)>/i"
+# Derive the fixture entry from the same maintained vocabulary the branch gate
+# reads.  The hook entry is still checked against this repo's shipped config
+# below, so a list change cannot silently leave the parity fixture stale.
+MACHINE_IDENTITIES = checker.MACHINE_IDENTITIES
+_PERL_IDENTITIES = "|".join(
+    identity.replace("@", r"\@").replace(".", r"\.") for identity in MACHINE_IDENTITIES
 )
+HOOK_ENTRY = rf"print unless /^co-authored-by:.*<(?:{_PERL_IDENTITIES})>/i"
 
 STRIPPED = [
     "Co-authored-by: Claude <noreply@anthropic.com>",
