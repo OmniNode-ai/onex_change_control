@@ -39,20 +39,25 @@ checker = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checker)
 
 # The entry shipped in all fifteen .pre-commit-config.yaml files, byte for byte.
-HOOK_ENTRY = r"print unless /^co-authored-by:.*claude.*noreply\@anthropic\.com/i"
+HOOK_ENTRY = (
+    r"print unless /^co-authored-by:.*<(?:noreply\@anthropic\.com|"
+    r"claude\@omninode\.ai|cursoragent\@cursor\.com|codex\@omninode\.ai)>/i"
+)
 
 STRIPPED = [
     "Co-authored-by: Claude <noreply@anthropic.com>",
     "Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>",
     "CO-AUTHORED-BY: CLAUDE <NOREPLY@ANTHROPIC.COM>",
     "co-authored-by: claude sonnet 4.6 <noreply@anthropic.com>",
+    "Co-authored-by: Claude (AI Assistant) <claude@omninode.ai>",
+    "Co-authored-by: Cursor <cursoragent@cursor.com>",
+    "Co-authored-by: Codex Merge Controller <codex@omninode.ai>",
 ]
 KEPT = [
     "Co-Authored-By: Lakshman Patel <lp141015@gmail.com>",
     "Co-authored-by: jonahgabriel <jonah@omninode.ai>",
-    # AC3 requires a person named Claude at another address to survive. Note the
-    # shape is NOT hypothetical in the other direction: see
-    # test_known_gap_real_ai_identities_at_other_addresses below.
+    # A person named Claude at an address outside the maintained machine list
+    # remains a human co-author.
     "Co-Authored-By: Claude Dubois <claude@example.com>",
     "Body quoting Co-Authored-By: Claude <noreply@anthropic.com> mid-sentence.",
     "  Co-Authored-By: Claude <noreply@anthropic.com>",
@@ -315,50 +320,25 @@ def test_indented_trailer_is_not_a_trailer_git_folds_it() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("identity", "measured_count"),
+    "identity",
     [
-        ("Claude (AI Assistant) <claude@omninode.ai>", 84),
-        ("Cursor <cursoragent@cursor.com>", 14),
-        ("codex <codex@omninode.ai>", 3),
+        "Claude (AI Assistant) <claude@omninode.ai>",
+        "Cursor <cursoragent@cursor.com>",
+        "codex <codex@omninode.ai>",
     ],
 )
-def test_known_gap_real_ai_identities_at_other_addresses(
-    identity: str, measured_count: int
-) -> None:
-    """Documents a REAL gap, measured, not a hypothetical.
-
-    The fleet-wide rule requires both `claude` and `noreply@anthropic.com`, so
-    these are not caught. They are not invented fixtures: scanning all twenty
-    clones' default branches for commits since 2026-01-01 on 2026-09-19 found
-    986 trailers the rule catches and 104 it does not, of which these three
-    identities are the whole population. Recorded on OMN-18426.
-
-    This test asserts CURRENT behaviour so the gap is visible in the suite
-    rather than implied by its absence. If the rule is ever widened, this test
-    fails loudly and must be updated deliberately — which is the point.
-    """
+def test_maintained_machine_identities_are_caught(identity: str) -> None:
+    """The re-keyed rule catches every maintained machine identity."""
     line = f"Co-authored-by: {identity}"
-    assert measured_count > 0
-    assert checker.offending_lines(f"subject\n\n{line}\n") == [], (
-        f"{identity} is now caught; the widening was deliberate, so update this test "
-        f"and the coverage figures on OMN-18426"
-    )
+    assert checker.offending_lines(f"subject\n\n{line}\n") == [line]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "line",
-    [
-        "Co-authored-by: Clàudé <noreply@anthropic.com>",
-        "Co-authored-by: Claude <noreply@mail.anthropic.com>",
-    ],
-)
-def test_known_gap_name_and_domain_variants(line: str) -> None:
-    """Two theoretical bypasses, recorded so they are not mistaken for coverage.
+def test_machine_email_is_caught_independent_of_display_name() -> None:
+    line = "Co-authored-by: Clàudé <noreply@anthropic.com>"
+    assert checker.offending_lines(f"subject\n\n{line}\n") == [line]
 
-    Neither has ever appeared in the fleet corpus — unlike the identities in
-    test_known_gap_real_ai_identities_at_other_addresses, which have. They are
-    here because a reader should be able to see the rule's exact boundary
-    without re-deriving it from the regex.
-    """
+
+def test_unlisted_anthropic_domain_is_kept() -> None:
+    line = "Co-authored-by: Claude <noreply@mail.anthropic.com>"
     assert checker.offending_lines(f"subject\n\n{line}\n") == []

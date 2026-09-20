@@ -30,11 +30,17 @@ workstation. It is not in that path.
 So the trailer has to be caught while it is still on the branch, which is what
 this check does.
 
-PARITY WITH THE HOOK IS THE POINT
+MACHINE-IDENTITY LIST
+
+The maintained machine identities currently in scope are the assistant at both
+of its observed addresses, Cursor, and the Codex family. Matching is by exact
+email address, not by display name: a human named Claude at another address is
+still a human co-author and remains untouched.
 
 The pattern below is the same one the hook's perl entry uses:
 
-    perl -i -ne 'print unless /^co-authored-by:.*claude.*noreply\\@anthropic\\.com/i'
+    perl -i -ne 'print unless /^co-authored-by:.*<(?:noreply\\@anthropic\\.com|'
+    'claude\\@omninode\\.ai|cursoragent\\@cursor\\.com|codex\\@omninode\\.ai)>/i'
 
 Deliberately identical, including the `^` anchor. A gate stricter than the
 hook would fail PRs the hook considers clean, and an author who fixed the
@@ -50,14 +56,15 @@ import re
 import sys
 from pathlib import Path
 
-# Same expression as the pre-commit hook's perl entry, same anchor, same
+# Same identity list as the pre-commit hook's perl entry, same anchor and
 # case-insensitivity. Do not tighten one without the other.
 _AI_COAUTHOR_RE = re.compile(
-    r"^co-authored-by:.*claude.*noreply@anthropic\.com", re.IGNORECASE
+    r"^co-authored-by:.*<(?:noreply@anthropic\.com|claude@omninode\.ai|cursoragent@cursor\.com|codex@omninode\.ai)>",
+    re.IGNORECASE,
 )
 
 _REMEDIATION = """
-A Co-authored-by trailer naming Claude at noreply@anthropic.com is present on
+A Co-authored-by trailer matching the maintained machine-identity list is present on
 a commit in this pull request.
 
 It matters here and not only locally: a squash merge composes its message from
