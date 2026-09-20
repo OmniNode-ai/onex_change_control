@@ -247,6 +247,18 @@ GATE_JOBS: tuple[str, ...] = STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS
 # ---------------------------------------------------------------------------
 SOFT_ALLOWLIST: frozenset[str] = frozenset(
     {
+        # occ-self-bind-mint.yml (OMN-18921) -- an ACTION job, not a report,
+        # and deliberately non-blocking anyway. It mints the structural
+        # self-bind a hand-authored companion owes and pushes it, so the
+        # resulting fresh event clears `occ-preflight / eligibility`. Gating
+        # merge on it would add no enforcement and would add a real outage
+        # mode: the job mints an App installation token, so a token or secrets
+        # outage would wedge every pull request in this repository behind a
+        # job whose only purpose is to SAVE a round. The enforcement layer is
+        # `occ-preflight / eligibility`, which is already strict and which
+        # this job exists to satisfy -- if the mint fails, eligibility stays
+        # red and blocks on its own, with the mint's own red job naming why.
+        "Mint the owed OCC self-bind",
         # ci.yml:384-411 -- `continue-on-error: true` on the one substantive
         # step, with an inline comment: "non-blocking report; pre-commit hook
         # is the blocking surface." The job can never conclude anything but
