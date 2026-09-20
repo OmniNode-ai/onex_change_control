@@ -52,6 +52,7 @@ POST_OMN15461_CUTOFF_TS = "2026-08-19T13:00:00+00:00"
 PRE_OMN15461_CUTOFF_TS = "2026-08-19T11:00:00+00:00"
 FULL_LOCAL_SHA = "c" * 40
 FULL_REMOTE_SHA = "8" * 40
+OTHER_REMOTE_SHA = "7" * 40
 
 # OMN-15459 (S2 family binding): a supersession replacement must reference an
 # anchor the item it supersedes actually declares. The two wrappers below exist
@@ -2536,3 +2537,217 @@ def test_baseline_is_shrink_only_against_the_live_corpus(
     )
     assert observed - expected == set(), "new derived-verifier receipts, not baselined"
     assert expected - observed == set(), "stale baseline entries; shrink the baseline"
+
+
+# ---------------------------------------------------------------------------
+# OMN-16360: the operator diagnostic must name the CAUSE, not just the status.
+#
+# These assert on the rendered text rather than on the resolution object, so
+# they are meaningful against any implementation that emits the diagnostic.
+# ---------------------------------------------------------------------------
+
+
+def _occurrence_resolver(
+    status: int,
+    headers: dict[str, str],
+    message: str | None,
+) -> CommitShaResolver:
+    """A no-network resolver that replays one recorded GitHub answer."""
+
+    header_lines = "\n".join(f"{k}: {v}" for k, v in headers.items())
+    body = json.dumps({"message": message}) if message is not None else "{}"
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=f"HTTP/2 {status}\n{header_lines}\n\n{body}",
+            stderr="",
+        )
+
+    return CommitShaResolver(runner=runner)
+
+
+def test_spent_quota_diagnostic_is_not_mistakable_for_a_permission_fault() -> None:
+    """The 2026-09-20 occurrence, replayed at the text layer.
+
+    The rendered line carried only ``http_status=403``, which reads as a
+    credential or installation-scope fault. The quota reset four minutes
+    later and the identical gate passed, so the text sent the reader to the
+    wrong remedy.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+        "API rate limit exceeded for installation ID 12345678.",
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    # Fail-closed is unchanged: no receipt-defect label, and the caller still
+    # receives an infrastructure diagnostic it must treat as nonzero.
+    assert violations == []
+    assert len(diagnostics) == 1
+    line = diagnostics[0]
+    assert line.startswith("[INFRASTRUCTURE_UNAVAILABLE]")
+    assert "category=RATE_LIMIT_PRIMARY" in line
+    assert "rate_limit_remaining=0" in line
+    assert "rate_limit_reset=1789900200" in line
+    assert "OmniNode-ai/omnibase_infra" in line
+    assert FULL_REMOTE_SHA in line
+    assert "remedy=" in line
+    assert "NOT a permission" in line
+
+
+def test_permission_diagnostic_states_that_re_running_will_not_help() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "4998"},
+        "Resource not accessible by integration",
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    line = diagnostics[0]
+    assert "category=PERMISSION" in line
+    assert "re-running will not help" in line
+    assert "RATE_LIMIT" not in line
+
+
+def test_diagnostic_prints_retry_after_on_a_secondary_limit() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"retry-after": "60", "x-ratelimit-remaining": "4998"},
+        "You have exceeded a secondary rate limit",
+    )
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert "category=RATE_LIMIT_SECONDARY" in diagnostics[0]
+    assert "retry_after=60" in diagnostics[0]
+
+
+def test_upstream_5xx_is_not_rendered_as_a_rate_limit_or_a_permission() -> None:
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(502, {}, "Server Error")
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert "category=UPSTREAM_ERROR" in diagnostics[0]
+    assert "RATE_LIMIT" not in diagnostics[0]
+    assert "PERMISSION" not in diagnostics[0]
+
+
+def test_a_second_receipt_in_a_halted_session_is_not_reported_as_probed() -> None:
+    """The half of the occurrence that was a fabricated measurement.
+
+    Two diagnostics were emitted for two SHAs in two repositories. Only the
+    first was ever sent to GitHub: the second replayed the first's detail
+    under its own repo and SHA with the status stripped, so the line asserts
+    a probe that did not happen.
+    """
+
+    first = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    second = _receipt_model(
+        commit_sha=OTHER_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/onex_change_control/commits/{OTHER_REMOTE_SHA}"
+        ),
+    )
+    resolver = _occurrence_resolver(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1789900200"},
+        "API rate limit exceeded for installation ID 12345678.",
+    )
+    diagnostics: list[str] = []
+
+    check_receipt_hardening._commit_sha_existence_violations(
+        first, resolver, diagnostics
+    )
+    check_receipt_hardening._commit_sha_existence_violations(
+        second, resolver, diagnostics
+    )
+
+    assert len(diagnostics) == 2
+    replayed = diagnostics[1]
+    assert "category=SESSION_HALTED" in replayed
+    assert "not_probed=true" in replayed
+    assert f"halted_by=OmniNode-ai/omnibase_infra@{FULL_REMOTE_SHA}" in replayed
+    assert "http_status=" not in replayed, (
+        "a replay must not present the halting probe's status as its own"
+    )
+
+
+def test_positive_control_a_resolvable_sha_emits_no_diagnostic_at_all() -> None:
+    """The control for the four assertions above.
+
+    Each test above asserts a substring is PRESENT in a diagnostic, and two
+    assert substrings are ABSENT. An absence assertion passes vacuously if no
+    diagnostic is produced, so this is the input known to produce the other
+    outcome: a resolvable SHA yields zero diagnostics and zero violations,
+    which proves the list above was populated by the failure and not by the
+    harness.
+    """
+
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        probe_command=(
+            f"gh api repos/OmniNode-ai/omnibase_infra/commits/{FULL_REMOTE_SHA}"
+        ),
+    )
+    resolver, queried_repos = _recording_commit_resolver(
+        {("OmniNode-ai/omnibase_infra", FULL_REMOTE_SHA): 200}
+    )
+    diagnostics: list[str] = []
+
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, diagnostics
+    )
+
+    assert violations == []
+    assert diagnostics == []
+    assert queried_repos == ["OmniNode-ai/omnibase_infra"]

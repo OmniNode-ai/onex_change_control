@@ -509,6 +509,7 @@ from onex_change_control.validation.commit_sha_resolver import (
     CommitShaResolution,
     CommitShaResolver,
     EnumCommitShaOutcome,
+    EnumCommitShaUnavailableCategory,
     is_full_commit_sha,
 )
 
@@ -1474,21 +1475,88 @@ def _commit_sha_existence_violations(
     ]
 
 
+_UNAVAILABLE_REMEDIES: dict[EnumCommitShaUnavailableCategory, str] = {
+    EnumCommitShaUnavailableCategory.RATE_LIMIT_PRIMARY: (
+        "the calling identity's hourly REST quota is spent; re-run after "
+        "rate_limit_reset — this is NOT a permission or credential fault"
+    ),
+    EnumCommitShaUnavailableCategory.RATE_LIMIT_SECONDARY: (
+        "GitHub applied a secondary/abuse limit; honour retry_after before "
+        "re-running, and reduce concurrent API pressure"
+    ),
+    EnumCommitShaUnavailableCategory.PERMISSION: (
+        "the credential is valid but is not scoped to this repository; widen "
+        "the App installation or token scope — re-running will not help"
+    ),
+    EnumCommitShaUnavailableCategory.AUTHENTICATION: (
+        "the credential was absent, expired or rejected; check that the step "
+        "exports a token — re-running will not help"
+    ),
+    EnumCommitShaUnavailableCategory.UPSTREAM_ERROR: (
+        "GitHub returned a server error; re-run once it recovers"
+    ),
+    EnumCommitShaUnavailableCategory.MALFORMED_RESPONSE: (
+        "the API answer could not be read as the requested commit object"
+    ),
+    EnumCommitShaUnavailableCategory.TRANSPORT: (
+        "the API subprocess did not complete; check runner network and the "
+        "gh CLI"
+    ),
+    EnumCommitShaUnavailableCategory.BUDGET_EXHAUSTED: (
+        "this invocation's bounded REST budget is spent; raise "
+        "--commit-sha-rest-budget or reduce the changed-receipt set"
+    ),
+    EnumCommitShaUnavailableCategory.SESSION_HALTED: (
+        "this SHA was NOT probed — an earlier probe halted the session; fix "
+        "that probe's cause and this claim resolves with it"
+    ),
+    EnumCommitShaUnavailableCategory.LOCAL_INDEX: (
+        "the local remote-tracking index could not be built; check the "
+        "checkout"
+    ),
+}
+
+
 def _commit_sha_unavailable_message(result: CommitShaResolution) -> str:
-    """Render an operator diagnostic without a receipt-defect label."""
+    """Render an operator diagnostic without a receipt-defect label.
+
+    OMN-16360: the category and the remedy are the point. Every cause here
+    renders the same fail-closed refusal, but a spent quota clears itself at
+    the next reset while a permission refusal never does, and a reader who
+    cannot tell them apart investigates the wrong one. On 2026-09-20 an
+    undifferentiated "GitHub API returned HTTP 403" sent a lane looking for a
+    token fault; the quota reset four minutes later and the same gate passed.
+    """
 
     metadata = [
         f"repo={result.repo or _DEFAULT_COMMIT_SHA_REPO}",
         f"sha={result.sha}",
     ]
+    if result.category is not None:
+        metadata.append(f"category={result.category.value}")
     if result.status_code is not None:
         metadata.append(f"http_status={result.status_code}")
+    if result.rate_limit_remaining is not None:
+        metadata.append(f"rate_limit_remaining={result.rate_limit_remaining}")
     if result.reset_at is not None:
         metadata.append(f"rate_limit_reset={result.reset_at}")
     if result.retry_after is not None:
         metadata.append(f"retry_after={result.retry_after}")
+    if result.api_message is not None:
+        metadata.append(f"api_message={result.api_message}")
+    # A replayed halt names the probe that actually failed, so the diagnostic
+    # is never read as a measurement of this repository and SHA.
+    if result.halted_by_repo is not None and result.halted_by_sha is not None:
+        metadata.append(
+            f"not_probed=true, halted_by={result.halted_by_repo}"
+            f"@{result.halted_by_sha}"
+        )
     if result.detail is not None:
         metadata.append(f"detail={result.detail}")
+    if result.category is not None:
+        remedy = _UNAVAILABLE_REMEDIES.get(result.category)
+        if remedy is not None:
+            metadata.append(f"remedy={remedy}")
     return (
         "[INFRASTRUCTURE_UNAVAILABLE] commit SHA resolution unavailable ("
         + ", ".join(metadata)
