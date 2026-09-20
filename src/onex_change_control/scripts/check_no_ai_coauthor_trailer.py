@@ -56,10 +56,36 @@ import re
 import sys
 from pathlib import Path
 
-# Same identity list as the pre-commit hook's perl entry, same anchor and
-# case-insensitivity. Do not tighten one without the other.
+import yaml
+
+_VOCABULARY_PATH = Path(__file__).resolve().parents[3] / ".public-repo-hygiene.yaml"
+
+
+def _load_machine_identities() -> tuple[str, ...]:
+    """Load the one maintained machine-identity list, failing closed on drift."""
+    try:
+        data = yaml.safe_load(_VOCABULARY_PATH.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        message = f"cannot read machine-identity vocabulary: {_VOCABULARY_PATH}"
+        raise RuntimeError(message) from exc
+    identities = data.get("machine_identities") if isinstance(data, dict) else None
+    if (
+        not isinstance(identities, list)
+        or not identities
+        or any(not isinstance(identity, str) or not identity for identity in identities)
+        or len(set(identities)) != len(identities)
+    ):
+        message = f"invalid machine-identity vocabulary in {_VOCABULARY_PATH}"
+        raise RuntimeError(message)
+    return tuple(identities)
+
+
+MACHINE_IDENTITIES = _load_machine_identities()
+_MACHINE_IDENTITY_PATTERN = "|".join(
+    re.escape(identity) for identity in MACHINE_IDENTITIES
+)
 _AI_COAUTHOR_RE = re.compile(
-    r"^co-authored-by:.*<(?:noreply@anthropic\.com|claude@omninode\.ai|cursoragent@cursor\.com|codex@omninode\.ai)>",
+    rf"^co-authored-by:.*<(?:{_MACHINE_IDENTITY_PATTERN})>",
     re.IGNORECASE,
 )
 
