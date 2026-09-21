@@ -3277,11 +3277,27 @@ jobs:
               echo '{"check_runs": []}' > /tmp/ci_summary_check_runs.json
             fi
 
+            # OMN-18972: the workflow runs on this same head, read ONLY to
+            # resolve which EVENT wrote each check-run so the L5 default-deny
+            # sweep can skip non-pull-request rows. A failed fetch leaves the
+            # file ABSENT, under which every row's event is unknown and every
+            # row is SWEPT -- the stricter reading, so a transient API error
+            # cannot exempt a check from the sweep.
+            rm -f /tmp/ci_summary_workflow_runs.json
+            if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+              fetch_paginated \
+                "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" \
+                '{workflow_runs: (map(.workflow_runs) | add)}' \
+                /tmp/ci_summary_workflow_runs.json \
+                '' || rm -f /tmp/ci_summary_workflow_runs.json
+            fi
+
             set +e
             uv run python scripts/ci/ci_summary_gate.py \
               --jobs-file /tmp/ci_summary_jobs.json \
               --run-attempt "${RUN_ATTEMPT}" \
               --check-runs-file /tmp/ci_summary_check_runs.json \
+              --workflow-runs-file /tmp/ci_summary_workflow_runs.json \
               --event-name "${EVENT_NAME}"
             code=$?
             set -e
