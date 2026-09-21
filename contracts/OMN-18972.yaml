@@ -18,30 +18,55 @@ evidence_requirements:
     description: "CI passes on the pull request"
     command: "gh pr checks"
 dod_evidence:
+  # Every item below is a falsifiable statement about THIS change that is
+  # provable on the head, before merge. They are deliberately not the usual
+  # pull-request lifecycle probes: an item whose check is "required contexts
+  # are green" cannot pass while the eligibility gate that reads these very
+  # receipts is red, so a lifecycle-shaped contract is circular here and can
+  # never be satisfied. The merge itself remains the fresh-event definition of
+  # done and is not claimed by any receipt.
   - id: "dod-001"
-    description: "PR opened"
+    description: >-
+      The gate module exposes the layer-5 default-deny sweep and holds it to the strict bar, where the
+      only passing conclusion is success.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh pr view ${PR_NUMBER} --json state -q .state --repo ${REPO}"
+        check_value: >-
+          python3 -c "import ast,sys; src=open('scripts/ci/ci_summary_gate.py').read(); assert 'def evaluate_external_sweep'
+          in src; assert 'SWEEP_GOOD_CONCLUSIONS: frozenset[str] = frozenset({\"success\"})' in src; print('OK')"
   - id: "dod-002"
-    description: "PR merged"
+    description: >-
+      The poller wires the layer in: it fetches the head's workflow runs, passes both new flags and the
+      event name, and clears the stale index between polls. Without this the module is inert.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh pr view ${PR_NUMBER} --json mergedAt -q .mergedAt --repo ${REPO}"
+        check_value: >-
+          python3 -c "import yaml; j=yaml.safe_load(open('.github/workflows/ci.yml'))['jobs']['ci-summary'];
+          s=[x for x in j['steps'] if 'ci_summary_gate.py' in str(x.get('run') or '')][0]['run']; assert
+          'actions/runs?head_sha=' in s; assert '--workflow-runs-file' in s; assert '--event-name' in
+          s; assert 'rm -f /tmp/ci_summary_workflow_runs.json' in s; print('OK')"
   - id: "dod-003"
-    description: "Tests pass in CI"
+    description: >-
+      The umbrella's own test suite passes on this head, including the layer-5 cases, the exclusion registry
+      validation and the control that stripping the registry makes every real head fail.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "gh pr checks ${PR_NUMBER} --watch --repo ${REPO}"
+        check_value: "uv run pytest tests/ci/test_ci_summary_gate.py -q"
   - id: "dod-004"
-    description: "Pre-commit hooks clean"
+    description: >-
+      Every shipped exclusion entry carries a reason, an owning ticket, an added date and an absolute
+      expiry, and none of them has expired.
     source: "generated"
     checks:
       - check_type: "command"
-        check_value: "pre-commit run --all-files"
+        check_value: >-
+          uv run python -c "from datetime import UTC, datetime; from scripts.ci.ci_summary_gate import
+          EXTERNAL_SWEEP_EXCLUSIONS as E, validate_sweep_exclusions as v, active_sweep_exclusions as a;
+          assert v(E) == [], v(E); assert a(E, now=datetime.now(UTC))[1] == (), a(E, now=datetime.now(UTC))[1];
+          print('OK', len(E), 'entries')"
 emergency_bypass:
   enabled: false
   justification: ""
