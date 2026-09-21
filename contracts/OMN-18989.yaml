@@ -1,0 +1,83 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-18989
+title: A declared closed label set reaches the provider as a constraint, not only the prompt
+summary: >-
+  A classification answer whose label was NOT in the requested set passed the delegation quality gate
+  at 1.0. Asked in prose for one of HEALTH_SIGNAL or INSTRUMENTATION_DEFECT, the served Qwen3.8-27B returned
+  the corrupted token INSTRUMENTEMENT_DEFECT and the run terminalised completed against a 0.8 bar with
+  no failed gates, three times out of three. Correlations a75a211c-0828-4714-ad7e-610f226529fe and 582e957c-d2bf-49c8-83e7-5e545d0e7765,
+  plus a direct endpoint probe. HALF THE REMEDY WAS ALREADY SHIPPED and is pinned rather than rebuilt:
+  the gate validates a declared response_contract with a real JSON-Schema validator, so an enum is already
+  enforced inbound and the violation already names the offending token. The failing run simply declared
+  no contract. What was missing is the OUTBOUND half, which the codebase itself had already named as blocked
+  on "a capability field on the binding contract". This adds that field, defaulting OFF, carries it onto
+  the RESOLVED backend so an escalation to another rung cannot reuse the previous rung's capability, forwards
+  the caller's schema verbatim so the shape the provider enforces cannot drift from the shape the gate
+  grades, and declares support on exactly one backend on the strength of a live probe. A backend that
+  does not declare support, or a caller that declared no contract, sends nothing and behaves byte-identically
+  to before. THE LIMIT IS STATED RATHER THAN IMPLIED: this closes the vocabulary defect and not the wrong-in-vocabulary
+  defect. A label outside the declared set becomes mechanically impossible; a wrong label that IS in the
+  set stays invisible to every check here and always will.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: ci
+    description: CI passes on the product pull request.
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-deploy-module-importable-omn18989"
+    description: >-
+      LIVE DEPLOY PROBE. The runtime the dev lane is actually running can import the new module and its
+      entry point. This is falsifiable in the useful direction and that is what makes it a measurement
+      rather than a restatement: the identical command FAILS against any runtime built before this change,
+      because omnimarket.delegation.structured_output does not exist there. It reads the DEPLOYED interpreter
+      rather than any receipt, contract or file this pull request authors, so it cannot be satisfied by
+      text written here.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c 'from omnimarket.delegation.structured_output
+          import provider_response_format_for_contract'"
+  - id: "dod-deploy-capability-declared-omn18989"
+    description: >-
+      LIVE DEPLOY PROBE, and the one that matters for behaviour. The binding contract the deployed runtime
+      reads declares structured-output support on local-heavy-reasoning. Without this the module above
+      is inert: the directive is only sent where a backend declares support, so a runtime carrying the
+      code but not the declaration would change nothing. Fails against any runtime deployed before this
+      change, where the key is absent from the binding.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "docker exec ${RUNTIME_CONTAINER:-omninode-runtime} python -c 'import pathlib,sys,yaml,omnimarket;
+          c=yaml.safe_load((pathlib.Path(omnimarket.__file__).parent/\"configs\"/\"bifrost_delegation.yaml\").read_text());
+          sys.exit(0 if any(b.get(\"backend_id\")==\"local-heavy-reasoning\" and b.get(\"supports_response_format_json_schema\")
+          is True for b in c[\"backends\"]) else 1)'"
+  - id: "dod-merge-commit-carries-the-change-omn18989"
+    description: >-
+      HERMETIC CONTENT CHECK at the merge sha, the form this gate sanctions for the portion of the change
+      that is compute-only. It reads the merged tree through the API rather than any local working copy,
+      and names the symbol the fix introduces rather than a phrase this contract chose, so it cannot pass
+      on a merge that dropped the change.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh api repos/OmniNode-ai/omnimarket/contents/src/omnimarket/delegation/structured_output.py?ref=${MERGE_SHA}
+          --jq .content | base64 -d | grep -q 'def provider_response_format_for_contract'"
+  - id: "dod-ci-green-omn18989"
+    description: Product pull request reached a green terminal state in CI.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - id: "dod-merged-omn18989"
+    description: Product pull request merged.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view ${PR_NUMBER} --json mergedAt -q .mergedAt --repo ${REPO}"
