@@ -1504,8 +1504,7 @@ _UNAVAILABLE_REMEDIES: dict[EnumCommitShaUnavailableCategory, str] = {
         "the API answer could not be read as the requested commit object"
     ),
     EnumCommitShaUnavailableCategory.TRANSPORT: (
-        "the API subprocess did not complete; check runner network and the "
-        "gh CLI"
+        "the API subprocess did not complete; check runner network and the gh CLI"
     ),
     EnumCommitShaUnavailableCategory.BUDGET_EXHAUSTED: (
         "this invocation's bounded REST budget is spent; raise "
@@ -1516,8 +1515,7 @@ _UNAVAILABLE_REMEDIES: dict[EnumCommitShaUnavailableCategory, str] = {
         "that probe's cause and this claim resolves with it"
     ),
     EnumCommitShaUnavailableCategory.LOCAL_INDEX: (
-        "the local remote-tracking index could not be built; check the "
-        "checkout"
+        "the local remote-tracking index could not be built; check the checkout"
     ),
 }
 
@@ -1553,8 +1551,7 @@ def _commit_sha_unavailable_message(result: CommitShaResolution) -> str:
     # is never read as a measurement of this repository and SHA.
     if result.halted_by_repo is not None and result.halted_by_sha is not None:
         metadata.append(
-            f"not_probed=true, halted_by={result.halted_by_repo}"
-            f"@{result.halted_by_sha}"
+            f"not_probed=true, halted_by={result.halted_by_repo}@{result.halted_by_sha}"
         )
     if result.detail is not None:
         metadata.append(f"detail={result.detail}")
@@ -1578,22 +1575,29 @@ def _supersession_candidates(receipt_path: Path) -> list[Path]:
 
 
 def _active_supersession_candidate(receipt_path: Path) -> Path | None:
-    """Select the highest numeric direct supersession for ``receipt_path``.
+    """Select the highest-sequence direct supersession for ``receipt_path``.
 
     A lower clean record must never mask a newer broken record: the receipt
-    supersession model resolves the highest numeric token as authoritative.
+    supersession model resolves the highest token as authoritative.
+
+    OMN-19050: ordering is by dotted-numeric sequence, not by ``int(token)``,
+    so an attempt-scoped correction outranks the record it corrects. Under
+    the prior form a re-executed record was skipped outright — its token was
+    non-digit — and the FAIL it was filed against stayed active forever.
     """
 
     target = receipt_path.as_posix()
-    matches: list[tuple[int, Path]] = []
+    matches: list[tuple[tuple[int, ...], Path]] = []
     for candidate in _supersession_candidates(receipt_path):
-        token = _supersede_token(candidate)
+        sequence = _supersede_sequence(_supersede_token(candidate))
         data = _load_mapping(candidate)
-        if token is None or not token.isdigit() or data is None:
+        if sequence is None or data is None:
             continue
         if data.get("supersedes") == target:
-            matches.append((int(token), candidate))
-    return max(matches, default=(0, None), key=lambda item: item[0])[1]
+            matches.append((sequence, candidate))
+    if not matches:
+        return None
+    return max(matches, key=lambda item: item[0])[1]
 
 
 def _chained_supersession_errors(receipt_path: Path) -> list[str]:
@@ -2028,7 +2032,14 @@ SUPERSESSION_BASELINE_PATH = Path(
 )
 RECEIPTS_ROOT = Path("drift/dod_receipts")
 
-_SUPERSEDE_TOKEN_RE = re.compile(r"\.supersede\.([^.]+)\.ya?ml$")
+# OMN-19050: the token is everything between ".supersede." and the extension,
+# dots included. The prior "[^.]+" excluded them, so an ATTEMPT-SCOPED record —
+# "<check>.supersede.<pr>.<n>.yaml", which a re-executed check now mints —
+# matched nothing, returned a None token, and was skipped by every caller with
+# no error. That silent drop let the FAIL record it was filed to correct keep
+# being selected as the active one. Mirrors the same widening in
+# omnibase_core.validation.validator_receipt_supersession.
+_SUPERSEDE_TOKEN_RE = re.compile(r"\.supersede\.([^/]+)\.ya?ml$")
 _PATH_TOKEN_RE = re.compile(
     r"[A-Za-z0-9_][A-Za-z0-9_./-]*"
     r"\.(?:py|ts|tsx|js|jsx|ya?ml|sh|sql|md|toml|json|cfg|ini|txt)\b"
@@ -2084,6 +2095,32 @@ def _normalize_check(value: object) -> str:
 def _supersede_token(path: Path) -> str | None:
     match = _SUPERSEDE_TOKEN_RE.search(path.name)
     return match.group(1) if match else None
+
+
+def _supersede_sequence(token: str | None) -> tuple[int, ...] | None:
+    """Total order over a dotted-numeric supersede token (OMN-19050).
+
+    ``"2751"`` → ``(2751,)`` and ``"2751.0002"`` → ``(2751, 2)``, so an
+    attempt-scoped record sorts strictly after the bare-PR record it extends
+    by plain tuple comparison. A single-component token keys to a 1-tuple and
+    compares exactly as the prior ``int(token)`` did, so every existing chain
+    orders as before.
+
+    ``None`` for a non-numeric token (``"2010-head"``) or no token at all,
+    which keeps those out of the ordering exactly as ``str.isdigit`` did.
+
+    This must agree with ``_sequence_key`` in
+    ``omnibase_core.validation.validator_receipt_supersession``: that module
+    decides which record is ACTIVE for merge eligibility, this one decides
+    which record gets validated. The two disagreeing is how a broken record
+    passes the gate and then decides a merge.
+    """
+    if token is None:
+        return None
+    parts = token.split(".")
+    if not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
 
 
 @cache
@@ -2212,7 +2249,7 @@ def _cohort_members(path: Path) -> tuple[Path, ...]:
 
 
 @cache
-def _repaired_targets(  # noqa: C901
+def _repaired_targets(
     item_dir: Path, contracts_dir: Path
 ) -> frozenset[str]:
     """Paths in ``item_dir`` cured by a net-new, itself-clean repair record.
@@ -2258,13 +2295,14 @@ def _repaired_targets(  # noqa: C901
         target = item_dir / declared.name
         if target == candidate or not target.is_file():
             continue
-        repair_token = _supersede_token(candidate)
-        target_token = _supersede_token(target)
-        if repair_token is None or target_token is None:
+        # OMN-19050: dotted-numeric sequence, so an attempt-scoped repair
+        # ("<pr>.<n>") outranks the bare-PR record it repairs. The prior
+        # int() comparison refused both tokens outright as non-digit.
+        repair_sequence = _supersede_sequence(_supersede_token(candidate))
+        target_sequence = _supersede_sequence(_supersede_token(target))
+        if repair_sequence is None or target_sequence is None:
             continue
-        if not (repair_token.isdigit() and target_token.isdigit()):
-            continue
-        if int(repair_token) <= int(target_token):
+        if repair_sequence <= target_sequence:
             continue
         if _supersession_violations(
             candidate, contracts_dir, baseline=frozenset(), follow_repairs=False
