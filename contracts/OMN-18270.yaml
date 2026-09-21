@@ -1,0 +1,109 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-18270
+title: Nine tickets bind criteria their bodies never label and are unclosable through the binding path
+summary: |-
+  The binding path had a reader and no writer, so every repair was a person
+  retyping criteria into Linear. This change adds the writer: the contract's
+  own acceptance-criteria model renders into a managed section of the ticket
+  body, idempotently, through the same label grammar the OMN-18236 gate reads
+  it back with.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: |-
+      A contract with eight labelled criteria renders eight, and the OMN-18236
+      reader resolves all eight back out of the rendered section. The count is
+      taken from the resolver, never from the bullets, because a renderer that
+      emitted a shape its own reader could not parse would serialize criteria
+      and leave the gate seeing none.
+    command: uv run pytest tests/test_omn_18270_ac_section_serializer.py -q
+  - kind: tests
+    description: |-
+      The OMN-18236 and OMN-18333 binding gates are unchanged by this addition,
+      re-run together with the schema-purity gate over the new module.
+    command: uv run pytest tests/test_omn_18236_ac_binding_acceptance.py tests/test_omn_18333_absent_binding_holds.py
+      tests/test_omn_18333_binds_every_declared_criterion.py tests/test_check_schema_purity.py -q
+  - kind: ci
+    description: PR CI checks green
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: renders-eight-and-the-gate-reads-eight-back
+    description: |-
+      The round trip, which is the load-bearing property. What this module
+      renders is parsed back by `validation.ac_criteria.criteria_by_label` --
+      the same reader the OMN-18236 validator and the evidence closer resolve
+      bindings with -- and the assertion is on the resolver's output, not on a
+      bullet count. A renderer whose labels the gate spells differently would
+      produce a ticket that looks serialized and resolves nothing, which is the
+      defect this change exists to remove.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_18270_ac_section_serializer.py::test_eight_criteria_render_as_eight_and_read_back_as_eight
+          tests/test_omn_18270_ac_section_serializer.py::test_rendered_labels_survive_the_readers_awkward_shapes
+          -q
+  - id: refuses-a-binding-the-model-does-not-enumerate
+    description: |-
+      The refusal that makes the process safe to run unattended, and the exact
+      shape OMN-18167 hit. A contract binding AC1..AC8 against a model that
+      enumerates none is refused rather than rendered short: rendering would
+      emit an empty section over a ticket whose contract claims eight criteria,
+      and the gate would read what was rendered -- a silent downgrade wearing
+      the costume of a repair. The partial case is refused on the same rule,
+      because a section carrying AC1 and AC2 reads as a complete rendering and
+      nothing downstream distinguishes it from a model that has four.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_18270_ac_section_serializer.py::test_label_bound_but_absent_from_the_model_is_refused
+          tests/test_omn_18270_ac_section_serializer.py::test_partially_absent_bound_label_is_refused
+          tests/test_omn_18270_ac_section_serializer.py::test_cli_exits_one_on_the_omn_18167_shape -q
+  - id: idempotent-on-an-unchanged-model
+    description: |-
+      Re-running on an unchanged model changes nothing, asserted as byte
+      equality of the planned body and as a false `changed` flag. A planner
+      that rewrote an identical section would mint a Linear revision per sweep
+      and make every ticket look edited on a day nobody edited one. A changed
+      model rewrites the managed span only, and the prose above and below it
+      survives byte for byte.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_18270_ac_section_serializer.py::test_rerunning_on_an_unchanged_model_changes_nothing
+          tests/test_omn_18270_ac_section_serializer.py::test_body_carrying_the_section_is_updated_in_place
+          -q
+  - id: a-hand-written-criteria-section-stops-the-write
+    description: |-
+      Eight of this ticket's nine were repaired by hand on 2026-09-21.
+      Appending a managed section to one of those would leave two criteria
+      sections in one body, and the reader reads both -- two texts under one
+      label, first occurrence winning silently. Refused, so a human decides
+      which survives.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_18270_ac_section_serializer.py::test_unmanaged_acceptance_section_in_the_body_is_refused
+          tests/test_omn_18270_ac_section_serializer.py::test_managed_section_is_not_mistaken_for_an_unmanaged_one
+          -q
+  - id: the-cli-is-a-registered-entry-point
+    description: |-
+      Installed as a console entry point beside every other gate CLI this
+      package exposes, rather than as a loose file under `scripts/`, which this
+      repository's scripts guard default-denies.
+    source: manual
+    status: verified
+    checks:
+      - check_type: grep
+        check_value: grep -q 'onex-serialize-ac-section = "onex_change_control.scripts.serialize_ac_section:main"'
+          pyproject.toml
