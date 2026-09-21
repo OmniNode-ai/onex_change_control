@@ -1,0 +1,136 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18945"
+title: "occ: make the self_granted refusal and its behavioural positive control run on the branch prod-promotion
+  grants are actually authored on"
+summary: >
+  The OMN-17157 authoring-time self-approval refusal and the OMN-18327 behavioural tripwire built to prove
+  that refusal had not been removed both live on `dev` only. Prod-promotion grants are not authored on
+  `dev`. They are authored by `hotfix/*` pull requests targeting `main` — `main-target-guard.yml` admits
+  exactly two head shapes, `dev` carrying a promotion receipt and `hotfix/*` carrying hotfix-evidence
+  and backmerge lines, and every recent grant PR is the second — and `main` carries no `src/onex_change_control/scripts/validate_prod_promotion_grants.py`
+  at all. So a control and its own positive control shared one blind spot: both reported green, on a branch
+  no grant travels through. The gap is a gate's BRANCH PLACEMENT, which nothing in the fleet reads, which
+  is why it survived two tickets that were each individually correct. Measured RED on `main`: its inline
+  schema validator, extracted from its own workflow through the parsed YAML and run over an entry whose
+  `approved_by` is the pull-request author, prints PASS and exits 0 — that validator is the only gate
+  this branch has over the grants file. This change adds the refusal to `main` as its own module with
+  a REQUIRED requester argument, wires it as an unconditional `ci.yml` job held by `ci-summary`'s `needs:`
+  so it BLOCKS under the already-required `CI Summary` context, and adds a test module that proves the
+  behaviour with paired positive controls and parses `ci.yml` to prove the placement. A companion on `dev`
+  gives the tripwire a fourth fact that reads `main` over the API and trips when that job, its requester,
+  its unconditionality or its place in the rollup is removed, because nothing else reads across the branch
+  boundary. Nothing on `dev` is loosened, the dispatch-time gate in omninode_infra is untouched, no grant
+  is authored, approved or consumed, the anchor stays `entries: []` at rest, and no branch protection
+  is changed — the refusal is reachable through a context that is already required.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "A grant entry NEW in the change whose approved_by is the pull-request author is refused
+      on the main-targeting path, only such an entry is refused, and the refusal is reachable and blocking
+      on that branch rather than merely present."
+    command: "see dod_evidence check_values"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-self-approval-refused-on-main"
+    description: >-
+      Falsifiable behavioural assertion over this branch's own tree, run against the REAL validator rather
+      than a description of it. `tests/test_prod_promotion_grant_self_approval.py` asserts: a new entry
+      whose `approved_by` equals the requester is refused with the reason string `self_granted`; the comparison
+      is casefolded, so three capitalisations of the same login are each refused (GitHub logins are case-insensitive,
+      and an un-casefolded compare would launder a self-approval past the check while resolving to the
+      same account everywhere else); a PRE-EXISTING entry carrying the same `approved_by` is NOT refused,
+      so an unrelated pull request opened by someone who shares a login with the approver of an untouched
+      entry never trips it; a NEW self-approved entry sitting beside a carried-forward pre-existing one
+      IS still refused, naming `Entry[1]`, which is the control against a too-broad reading of diff scoping;
+      an absent, missing, unparseable or wrong-shaped base file fails CLOSED in all four cases, treating
+      every entry as new, because an unreadable base is not evidence that an entry is pre-existing; `entries:
+      []` at rest passes; a non-string `approved_by` is left to the schema validator so one defect is
+      not reported by two checks; and an unreadable or missing anchor is a REFUSAL under its own distinct
+      `unreadable_grants_file` token rather than a silent pass. Every refusal assertion is paired with
+      the positive control `test_positive_control_a_peer_approved_entry_is_not_refused`, which additionally
+      asserts the entry was CONSIDERED (`checked_entry_count == 1`) rather than skipped — a pass over
+      zero considered entries is not a positive control, and without the pairing a validator that refused
+      every grant would satisfy the refusal tests and prove nothing. `--requester` is REQUIRED on this
+      CLI, unlike the `dev` one where it is optional and a separate tripwire fact exists purely to prove
+      CI remembers to pass it; omitting it is a usage error (exit 2), which makes the dead-code failure
+      mode structurally unavailable here instead of separately policed. The registered console-script
+      entry point is exercised as a real process, so a module that worked only via import cannot leave
+      the CI step red on the first grant pull request. RED->GREEN captured without touching the working
+      tree: `origin/main`'s inline validator was extracted with `git show origin/main:.github/workflows/validate-prod-promotion-grants.yml`,
+      located through the PARSED workflow YAML rather than off the raw file, dedented and run against
+      a fixture carrying a grant whose `approved_by` is the pull-request author — it printed "PASS: grants/prod_promotion_grants.yaml
+      - 1 grant(s) validated successfully" and exited 0. The new validator refuses the byte-identical
+      fixture with `self_granted` and exits 1, and passes the same fixture with a different approver at
+      exit 0.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_prod_promotion_grant_self_approval.py -q --no-cov -p no:cacheprovider
+  - id: "dod-refusal-blocks-on-this-branch"
+    description: >-
+      The whole subject of this ticket is PLACEMENT, so placement is asserted as mechanically as behaviour
+      rather than argued in prose. `TestTheRefusalIsWiredOnThisBranch` parses `.github/workflows/ci.yml`
+      as YAML — never greps it, because a `--requester` in a comment or in a different job is not the
+      same fact — and asserts four things: the `prod-promotion-grant-self-approval` job exists; it passes
+      `--requester` in its own steps; it is UNCONDITIONAL, carrying no `if:` and no `needs:`, because
+      `ci-summary` fails only on `failure` and `cancelled` so a SKIPPED job is indistinguishable from
+      a passing one and a gate that can be skipped into silence is the exact class this ticket removes;
+      and `ci-summary` declares it in `needs:`, which is what makes the refusal BLOCK rather than merely
+      report. That last one is load-bearing and was measured, not assumed: read live on 2026-09-21, `main`'s
+      `required_status_checks` lists 23 contexts and the standalone `validate-prod-promotion-grants` workflow
+      is NOT among them, so a refusal outside the required rollup would report red beside a green required
+      context and merge anyway. Two positive controls guard the set against a vacuous read: `test_positive_control_the_reader_found_a_real_job`
+      fails if the parse produced an empty job, without which the `if:`/`needs:` ABSENCE checks would
+      all pass by accident; and `test_positive_control_the_rollup_read_is_not_vacuous` anchors on two
+      jobs that have been in that rollup since long before this ticket, so a reader looking at the wrong
+      node fails loudly. The pull-request trigger is asserted to cover `main`, since a refusal in a workflow
+      that does not run on the branch gates nothing. RED measured against `origin/main`'s `ci.yml` by
+      pointing the same module at it: 1 failed, 3 errors — the job fixture unresolvable and `ci-summary`
+      not holding the job.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/test_prod_promotion_grant_self_approval.py::TestTheRefusalIsWiredOnThisBranch
+          -q --no-cov -p no:cacheprovider
+  - id: "dod-dev-tripwire-watches-main"
+    description: >-
+      A refusal that a later change can quietly delete is a gate with a timer on it, and nothing in the
+      fleet reads across the branch boundary, so the `dev` tripwire gains a fourth fact: `authoring_time_refusal_present_on_main`
+      reads `main` over the API — a `dev` checkout does not contain `main`'s tree, which is the whole
+      point — and requires the module with BOTH its markers (`self_granted` and the casefolded comparison,
+      on the same reasoning as `PROMOTION_GATE_MARKERS`: the reason could survive while the compare that
+      makes it un-launderable is dropped, and the compare could survive while the reason is renamed out
+      of alignment), the job, its `--requester`, its unconditionality, and its place in `ci-summary`'s
+      `needs:`. Every failing sub-fact is named in one read rather than one re-run per missing half. Facts
+      1 to 3 are unchanged and `evaluate` takes the new fact as an OPTIONAL argument defaulting to None,
+      so every existing caller and its tests keep their exact meaning; `TestEvaluateCarriesTheMainFactOMN18945`
+      asserts that explicitly. A defect this fact's FIRST LIVE RUN exposed is fixed with it: the shared
+      failure classifier reads HTTP 404 as a permission signature, which is correct for the org-private
+      cross-repo read and wrong for a read of this repository, where a 404 means the file is ABSENT. Measured
+      against the real `main` before the module existed, the gate printed "TOKEN PROBLEM, NOT A POLICY
+      VIOLATION ... restore a valid CROSS_REPO_PAT" and exited 2 for a file that was simply not there
+      — sending an operator to rotate a credential that was never broken, the same misdiagnosis class
+      OMN-16373 removed from the rate-limit path, and turning the one condition this fact exists to catch
+      into an INCONCLUSIVE. The reclassification is deliberately narrow: only the not-found signature
+      is affected, pinned by the verbatim production stderr, and `test_a_genuine_permission_failure_is_still_inconclusive`
+      is the control that a scope or credential failure still fails closed. LIVE RED against the real
+      `main` before the companion lands, naming all three absent sub-facts; it goes GREEN when the main-targeting
+      pull request merges, and that RED is the live proof the fact works. This item's check runs on the
+      `dev` companion's tree, where the tripwire module lives.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest tests/unit/scripts/test_check_platform_leads_review_tripwire.py -q --no-cov -p
+          no:cacheprovider
