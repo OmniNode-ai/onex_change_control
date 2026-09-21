@@ -81,7 +81,9 @@ from typing import Any
 from onex_change_control.models.model_ac_section_plan import ModelAcSectionPlan
 from onex_change_control.validation.ac_criteria import (
     canonical_ac_label,
+    criteria_by_label,
     is_ac_heading,
+    normalise_criterion,
 )
 
 __all__ = [
@@ -307,6 +309,90 @@ def upsert_acceptance_criteria_section(body: str, section: str) -> str:
     return f"{body.rstrip()}\n\n{section}\n"
 
 
+def _managed_span(body: str) -> str | None:
+    """The sentinel-delimited span ``body`` carries, or ``None`` for no span.
+
+    Sentinels included, so what comes back is exactly what a previous run
+    wrote and whatever Linear has since made of it.
+    """
+    start = body.find(BEGIN_MARKER)
+    end = body.find(END_MARKER)
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return body[start : end + len(END_MARKER)]
+
+
+def _criteria_as_the_reader_sees_them(text: str) -> list[tuple[str, str]]:
+    """``(label, normalised criterion)`` for ``text``, through the OMN-18236 reader.
+
+    Both sides of the comparison below go through this, so neither can read the
+    criteria differently from the gate that resolves the binding.
+
+    A LIST and not a mapping, so the comparison is order-sensitive.
+    :func:`criteria_from_contract` renders in the contract's declaration order
+    and refuses to sort it, on the stated grounds that an author who declares
+    ``AC3`` before ``AC1`` has made a choice a renderer should not quietly
+    correct. A body whose criteria are in a different order from the model's is
+    therefore not yet a faithful rendering of that model, even though the gate
+    resolves by label and would pass either way, and saying so here keeps this
+    module's two halves agreeing about what order means.
+    """
+    return [
+        (label, normalise_criterion(criterion))
+        for label, criterion in criteria_by_label(text).items()
+    ]
+
+
+def _already_renders(body: str, section: str) -> bool:
+    """True when ``body``'s managed span already carries exactly ``section``'s criteria.
+
+    **Why this is not a byte comparison, which is what it replaced.** Linear
+    does not store the bytes it is given. Measured on the first real apply, to
+    OMN-18167 on 2026-09-21 — 5,878 characters out, 5,883 back — its markdown
+    normaliser rewrote the managed section on save: ``- `` bullets became
+    ``* ``, and ``_emphasis_`` became ``*emphasis*``. Not one criterion changed.
+    A byte comparison therefore reported a difference on every subsequent run,
+    forever, and a corpus sweep would have rewritten byte-identical criteria
+    into every serialized ticket on every pass — a Linear revision per ticket
+    per run, each one looking like an edit a person made.
+
+    So the question asked here is the one that actually matters: does the body
+    already carry these criteria, as the reader that resolves bindings reads
+    them. The bullet character is consumed by ``_LIST_ITEM_RE`` in
+    :mod:`onex_change_control.validation.ac_criteria` (``[-*+]``), so a hyphen
+    and an asterisk bullet yield the identical item text and compare equal
+    without this module knowing anything about Linear's normaliser. The
+    alternative — emitting whatever markdown Linear happens to normalise to —
+    guesses at an undocumented third-party formatter and breaks the next time
+    that formatter changes.
+
+    Equality holds in BOTH directions and in order: a model that SHRANK does
+    not match a body still rendering the criterion it dropped, and neither does
+    a model whose criteria were reordered. Matching only "every declared
+    criterion appears" would leave a stale criterion live in Linear under a
+    label the contract no longer binds.
+
+    **What this does NOT soften.** A criterion edited by hand inside the
+    managed span reads back as different text and plans as ``CHANGED``, so the
+    next run overwrites it. The direction of authority is unchanged by this
+    comparison: the contract is the model and the span is generated output.
+    Tolerating drift there would turn "idempotent" into "stops correcting the
+    body", which is the opposite of what this section is for.
+
+    **The stated limit.** Only criteria are compared. A change confined to the
+    heading or the provenance line no longer forces a rewrite, because neither
+    is a criterion and neither is anything the gate reads. That is deliberate
+    and is the price of comparing meaning rather than bytes; a run that needs
+    those re-emitted has to change a criterion or clear the span by hand.
+    """
+    span = _managed_span(body)
+    if span is None:
+        return False
+    return _criteria_as_the_reader_sees_them(span) == _criteria_as_the_reader_sees_them(
+        section
+    )
+
+
 def plan_acceptance_criteria_update(
     ticket_id: str, contract: Mapping[str, Any], body: str
 ) -> ModelAcSectionPlan:
@@ -331,6 +417,8 @@ def plan_acceptance_criteria_update(
         )
         raise AcSectionRefusalError(RULE_UNMANAGED_SECTION, message)
     new_body = upsert_acceptance_criteria_section(body, section)
+    if _already_renders(body, section):
+        new_body = body
     criteria = criteria_from_contract(contract)
     return ModelAcSectionPlan(
         ticket_id=ticket_id,
