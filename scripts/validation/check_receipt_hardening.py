@@ -1584,6 +1584,32 @@ def _active_supersession_candidate(receipt_path: Path) -> Path | None:
     so an attempt-scoped correction outranks the record it corrects. Under
     the prior form a re-executed record was skipped outright — its token was
     non-digit — and the FAIL it was filed against stayed active forever.
+
+    THIS DELIBERATELY APPLIES NO COMMIT-IDENTITY GUARD, and that is a
+    divergence from ``omnibase_core``'s ``resolve_supersession``, not an
+    oversight. Measured over four cases while countersigning OMN-19050, the
+    two agree on three and disagree on one: a PASS record re-filed at the
+    FAIL's own ``commit_sha``. The resolver refuses it; this selects it.
+
+    Keep it that way. The two answer different questions:
+
+    * the resolver decides which receipt is ACTIVE for merge eligibility,
+      where refusing a same-head PASS is the entire point of its guard — a
+      chain must not become a retry-until-green channel;
+    * this decides which record must be REVIEWED, and its invariant, stated
+      in the first paragraph above, is that a lower clean record must never
+      mask a newer broken one. It selects the highest and refuses nothing.
+
+    Adding the guard here would not harden this gate, it would open a hole.
+    A deselected same-head PASS stops being the validation target, and per
+    the comment in ``_effective_check_path`` a non-selected supersession
+    keeps its own S1/S2 checks but cannot validate its replacement — so the
+    NEWEST replacement receipt would go unhardened while an older one was
+    checked in its place.
+
+    If the duplicated ordering is ever collapsed (OMN-19111), share
+    ``_sequence_key`` and never ``_guarded_winner``: the ordering is the
+    shared part, and the commit-identity guard is the part that is not.
     """
 
     target = receipt_path.as_posix()
@@ -2249,9 +2275,7 @@ def _cohort_members(path: Path) -> tuple[Path, ...]:
 
 
 @cache
-def _repaired_targets(
-    item_dir: Path, contracts_dir: Path
-) -> frozenset[str]:
+def _repaired_targets(item_dir: Path, contracts_dir: Path) -> frozenset[str]:
     """Paths in ``item_dir`` cured by a net-new, itself-clean repair record.
 
     Merged receipts are immutable, so a mis-paired supersession is repaired by
