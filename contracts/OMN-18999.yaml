@@ -15,6 +15,18 @@ evidence_requirements:
     description: |-
       OWED, not claimed. PR #3929 on OmniNode-ai/omnibase_infra changes no pytest target, so this producer cannot derive a behavior-class check from its diff and mints none - the changed surface (docker/catalog/database-topology/dogfood.yaml, docker/catalog/database-topology/judge.yaml, docker/catalog/database-topology/lakshman.yaml, docker/catalog/database-topology/local.yaml) is unproven by this contract. A behavior proof must be hand-authored as a `source: manual` dod_evidence item before OMN-15911's flip conjunct can be satisfied. Recorded here rather than papered over with a ticket-independent suite that would read as proof (OMN-16434).
     command: "uv run pytest <hand-authored target> -q"
+  - kind: "tests"
+    description: |-
+      CLAIMED, and hand-authored rather than owed. PR #2757 on OmniNode-ai/omnimarket is
+      the declaration-only step 1 of this ticket's three-part order, and the producer
+      declined it with skip:NO_RED_DERIVABLE_CHECK for the same class of reason it
+      declined #3929. It is nonetheless proven, because a RED-derivable check exists
+      along the manifest-to-generator-to-census chain: see dod_evidence item
+      dod-occ-diff-derived-behavior-proof-pr-2757, whose receipt records both
+      the passing run at the head and the failing run against the merge-base ownership
+      manifest. This entry is scoped to #2757 alone and changes nothing about the #3929
+      requirement above, which stays OWED.
+    command: "uv run pytest tests/unit/scripts/test_application_relation_inventory.py -q"
 emergency_bypass:
   enabled: false
   justification: ""
@@ -133,3 +145,62 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 10690 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-OmniNode-ai-omnimarket-pr-2757"
+    description: |-
+      PR #2757 on OmniNode-ai/omnimarket - hand-authored OMN-15247 evidence for the
+      declaration-only catalog ownership entry that registers
+      omninode_internal.prod_promotion_gate_decisions. The occ-autobind producer
+      TERMINALLY declined to mint a companion for head
+      818738d4d5b57c17152c88915e66e50278f246c0 with skip:NO_RED_DERIVABLE_CHECK, so this
+      item is hand-authored by a lane other than the one that authored the product PR.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 2757 --repo OmniNode-ai/omnimarket --json number,state,headRefName,headRefOid"
+      - check_type: "command"
+        check_value: |-
+          files="$(gh api repos/OmniNode-ai/omnimarket/pulls/2757/files --paginate --jq '.[].filename' | sort)"
+          grep -qFx 'scripts/application-relation-ownership.yaml' <<< "$files"
+          grep -qFx 'docs/evidence/OMN-15423-relation-inventory.json' <<< "$files"
+          grep -qFx 'tests/unit/scripts/test_application_relation_inventory.py' <<< "$files"
+          test "$(wc -l <<< "$files" | tr -d ' ')" = "5"
+          ! grep -q '^src/' <<< "$files"
+      - check_type: "command"
+        check_value: |-
+          body="$(gh api 'repos/OmniNode-ai/omnimarket/contents/scripts/application-relation-ownership.yaml?ref=818738d4d5b57c17152c88915e66e50278f246c0' --jq '.content' | base64 -d)"
+          case "$body" in
+            *'- name: prod_promotion_gate_decisions'*) ;;
+            *) exit 1 ;;
+          esac
+          case "$body" in
+            *'schema: omninode_internal'*) ;;
+            *) exit 1 ;;
+          esac
+          case "$body" in
+            *'role: prod_promotion_gate_decisions_projection_table'*) ;;
+            *) exit 1 ;;
+          esac
+      - check_type: "command"
+        check_value: |-
+          inv="$(gh api 'repos/OmniNode-ai/omnimarket/contents/docs/evidence/OMN-15423-relation-inventory.json?ref=818738d4d5b57c17152c88915e66e50278f246c0' --jq '.content' | base64 -d)"
+          test "$(jq -r '.retained_live_census.source_declared_tables' <<< "$inv")" = "79"
+          test "$(jq -r '.retained_live_census.source_created_tables' <<< "$inv")" = "69"
+  - id: "dod-occ-diff-derived-behavior-proof-pr-2757"
+    description: |-
+      PR #2757 on OmniNode-ai/omnimarket - diff-derived behavior proof (OMN-16434) for a
+      diff the producer classified as having no RED-derivable check.
+
+      The producer's classification is about what IT can derive from changed-file
+      candidates, and it is correct on its own terms. A RED-derivable check does exist
+      here, but only along a three-hop chain the producer does not follow: the changed
+      ownership manifest feeds the generator, the generator builds the census, and the
+      changed test asserts the census. The proof below runs the HEAD test selection
+      against the HEAD tree (GREEN) and the same HEAD test selection against the
+      merge-base ownership manifest (RED), which is what makes it falsifying rather than
+      merely passing.
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/unit/scripts/test_application_relation_inventory.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
