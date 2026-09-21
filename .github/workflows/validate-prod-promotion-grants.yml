@@ -9,8 +9,18 @@
 # Mixing the skip-token bypass registry with the promotion grant registry would
 # create an audit-trail cross-contamination risk.
 #
-# Required-status-check name: `validate-grants / validate-prod-promotion-grants`
-# Wire via: Settings → Branches → dev → Require status checks → add the name above.
+# Required-status-check name: `validate-prod-promotion-grants` (OMN-18950).
+# Wire via: Settings → Branches → main → Require status checks → add that name.
+#
+# MEASURED, NOT ASSERTED. This workflow is not reusable and no other workflow
+# calls it, so the check-run name is this job's own `name:` with no
+# `<caller-job> / ` prefix. Run 35578429786 reports exactly one job, named
+# `validate-prod-promotion-grants`. The value recorded here until OMN-18950 —
+# `validate-grants / validate-prod-promotion-grants` — named a caller job that
+# does not exist in this file, and it named `dev`, which retired this workflow
+# entirely. Requiring either would have blocked its branch on a context nothing
+# ever reports. That is the defect the silent-gates review catalogues as
+# "required contexts named after entrypoints they do not run".
 #
 # OMN-18579: this inline validator is the grant schema AS ENFORCED ON `main`,
 # which is the branch grants are actually authored on and resolved from. `dev`
@@ -32,10 +42,16 @@
 name: Validate Prod Promotion Grants
 
 on:
+  # OMN-18950: NO `paths:` filter here, deliberately. A path-filtered workflow
+  # creates no check run at all on a pull request that does not match, and a
+  # branch protection requiring that context reports it as permanently
+  # `expected` — the pull request is blocked with nothing to click and no job
+  # to rerun. This job is REQUIRED on `main`, so it must reach a conclusion on
+  # EVERY pull request. What the path filter used to decide is now decided by
+  # the `scope` step, after the check run exists.
   pull_request:
-    paths:
-      - "grants/prod_promotion_grants.yaml"
-    types: [opened, edited, synchronize, reopened]
+    branches: [dev, main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
   # merge_group does NOT support paths filter per GitHub Actions docs — always run.
   merge_group:
   # Also validate on push to dev/main so stale grants are caught at landing.
@@ -64,6 +80,48 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # Two commits: on a pull request the checked-out HEAD is the
+          # `refs/pull/N/merge` merge commit, and the scope step below needs
+          # its first parent (the base branch tip) to diff against. Nothing
+          # here walks history, so a full clone would buy nothing.
+          fetch-depth: 2
+
+      - name: Decide whether this change touches the grant anchor
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          GRANT_FILE="grants/prod_promotion_grants.yaml"
+
+          # Default is ENFORCE. `push` reaches here only through the path
+          # filter above, and `merge_group` has always validated
+          # unconditionally; neither changes behaviour under OMN-18950.
+          enforce=1
+          reason="event '${EVENT_NAME}' is already scoped to the anchor"
+
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            # HEAD is the merge commit; HEAD^1 is the base branch tip. Their
+            # tree difference IS the net effect of merging this pull request,
+            # which is the question the gate actually asks. Uses git only, so
+            # it needs no token, no API and no extra permission scope.
+            if ! base="$(git rev-parse --verify --quiet 'HEAD^1')"; then
+              enforce=1
+              reason="HEAD has no first parent, so the merge base is unresolvable; enforcing (fails closed)"
+            elif ! changed="$(git diff --name-only "${base}" HEAD -- "${GRANT_FILE}")"; then
+              enforce=1
+              reason="could not diff ${GRANT_FILE} against ${base}; enforcing (fails closed)"
+            elif [ -n "${changed}" ]; then
+              enforce=1
+              reason="${GRANT_FILE} is changed by this pull request"
+            else
+              enforce=0
+              reason="${GRANT_FILE} is not changed by this pull request"
+            fi
+          fi
+
+          echo "enforce=${enforce}" >> "${GITHUB_OUTPUT}"
+          echo "scope: ${reason} (enforce=${enforce})"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -74,8 +132,11 @@ jobs:
         run: pip install pyyaml
 
       - name: Validate prod_promotion_grants.yaml schema
+        env:
+          GRANT_VALIDATION_ENFORCE: ${{ steps.scope.outputs.enforce }}
         run: |
           python - <<'PYEOF'
+          import os
           import sys
           import re
           from datetime import datetime, timezone
@@ -179,32 +240,66 @@ jobs:
                   return None
 
 
+          # OMN-18950. `0` only when the `scope` step proved this pull request
+          # leaves the anchor untouched; `1` on every other path, including
+          # every path where scope could not be determined. Absent means
+          # enforce, so running this heredoc by hand validates for real.
+          ENFORCE = os.environ.get("GRANT_VALIDATION_ENFORCE", "1") != "0"
+
+
+          def finish(headline: str, details: list[str]) -> None:
+              """The one place this validator exits non-zero.
+
+              Under ENFORCE a finding is a red check, exactly as before. Under
+              advisory the SAME finding is still computed and still printed, as
+              a workflow annotation, and the check goes green — because this
+              pull request does not touch the anchor and a required context
+              must not block unrelated work on a pre-existing state. Nothing is
+              suppressed: the failing path is intact for every change that
+              touches the anchor, which is every change that can create one.
+              """
+              if ENFORCE:
+                  print(f"FAIL: {headline}")
+                  for detail in details:
+                      print(f"  - {detail}")
+                  sys.exit(1)
+              print(f"::warning title=Grant anchor would not validate::{headline}")
+              for detail in details:
+                  print(f"  - {detail}")
+              print(
+                  f"ADVISORY: this change does not touch {GRANT_FILE}, so the "
+                  "finding above is reported and not enforced here. Any change "
+                  "that touches the anchor fails on it."
+              )
+              sys.exit(0)
+
+
           errors = []
 
           try:
               with open(GRANT_FILE) as f:
                   data = yaml.safe_load(f)
           except Exception as exc:
-              print(f"FAIL: Cannot parse {GRANT_FILE}: {exc}")
-              sys.exit(1)
+              finish(f"Cannot parse {GRANT_FILE}: {exc}", [])
 
           if not isinstance(data, dict):
-              print(f"FAIL: {GRANT_FILE} must be a YAML mapping at the top level")
-              sys.exit(1)
+              finish(f"{GRANT_FILE} must be a YAML mapping at the top level", [])
 
           if set(data.keys()) != {"entries"}:
               extra = set(data.keys()) - {"entries"}
               missing = {"entries"} - set(data.keys())
+              top_level = []
               if missing:
-                  print(f"FAIL: {GRANT_FILE} missing top-level key 'entries'")
+                  top_level.append(f"{GRANT_FILE} missing top-level key 'entries'")
               if extra:
-                  print(f"FAIL: {GRANT_FILE} has unexpected top-level keys: {sorted(extra)}")
-              sys.exit(1)
+                  top_level.append(
+                      f"{GRANT_FILE} has unexpected top-level keys: {sorted(extra)}"
+                  )
+              finish(f"{GRANT_FILE} has an invalid top-level shape", top_level)
 
           entries = data["entries"]
           if not isinstance(entries, list):
-              print(f"FAIL: {GRANT_FILE} 'entries' must be a list")
-              sys.exit(1)
+              finish(f"{GRANT_FILE} 'entries' must be a list", [])
 
           # entries: [] is valid (at-rest state)
           if len(entries) == 0:
@@ -376,10 +471,7 @@ jobs:
                   )
 
           if errors:
-              print(f"FAIL: {GRANT_FILE} has {len(errors)} schema violation(s):")
-              for err in errors:
-                  print(f"  - {err}")
-              sys.exit(1)
+              finish(f"{GRANT_FILE} has {len(errors)} schema violation(s)", errors)
 
           print(f"PASS: {GRANT_FILE} — {len(entries)} grant(s) validated successfully")
           PYEOF
