@@ -292,13 +292,13 @@ class TestTheRefusalIsWiredOnThisBranch:
     """
 
     @pytest.fixture(scope="class")
-    def workflow(self) -> dict[str, Any]:
+    def workflow(self) -> dict[Any, Any]:
         loaded = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
         assert isinstance(loaded, dict), f"{CI_WORKFLOW} did not parse as a mapping"
         return loaded
 
     @pytest.fixture(scope="class")
-    def job(self, workflow: dict[str, Any]) -> dict[str, Any]:
+    def job(self, workflow: dict[Any, Any]) -> dict[str, Any]:
         jobs = workflow.get("jobs")
         assert isinstance(jobs, dict), "ci.yml declares no jobs mapping"
         found = jobs.get(SELF_APPROVAL_JOB)
@@ -364,7 +364,7 @@ class TestTheRefusalIsWiredOnThisBranch:
         )
 
     def test_positive_control_the_rollup_read_is_not_vacuous(
-        self, workflow: dict[str, Any]
+        self, workflow: dict[Any, Any]
     ) -> None:
         """A `needs:` list that parsed as empty would make the test above
         fail loudly rather than pass quietly, but a list that parsed as some
@@ -380,12 +380,17 @@ class TestTheRefusalIsWiredOnThisBranch:
         assert "pre-commit" in needs, anchor
 
     def test_the_pull_request_trigger_covers_this_branch(
-        self, workflow: dict[str, Any]
+        self, workflow: dict[Any, Any]
     ) -> None:
         """The refusal is only reachable if `ci.yml` runs on PRs targeting the
         branch grants are authored against.
+
+        YAML 1.1 resolves a bare `on:` key to the boolean True, so the key is
+        looked up both ways rather than assuming which one this parser gave.
         """
-        triggers = workflow.get(True, workflow.get("on"))
+        triggers = workflow.get(True)
+        if triggers is None:
+            triggers = workflow.get("on")
         assert isinstance(triggers, dict), "ci.yml declares no trigger mapping"
         branches = triggers["pull_request"]["branches"]
         assert "main" in branches, (
