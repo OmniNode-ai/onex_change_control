@@ -1,0 +1,118 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19046
+title: Contracts enumerate no acceptance criteria, so the DoD-to-Linear serializer has no input
+summary: |-
+  OMN-18270 landed the writer that renders a contract's
+  requirements[].acceptance[] into a ticket's acceptance-criteria section, and
+  it could not repair a single ticket: 0 of 9,275 contracts carried a
+  requirements key. This gives the writer its first input, on the ticket the
+  operator named as the first case, and proves the whole path end to end
+  against the validator that actually blocks merges.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: |-
+      The C6 contract's model and its binding agree, the rendered section reads
+      back through the OMN-18236 reader as the eight labels the contract binds,
+      and the merge-blocking validator refuses the body as it was and passes the
+      serialized one with no hand edit between the two runs.
+    command: uv run pytest tests/test_omn_19046_c6_contract_binds_its_own_model.py -q
+  - kind: tests
+    description: |-
+      The OMN-18270 serializer and the OMN-18236 binding gate are unchanged by
+      this addition; no source file is touched by this change at all.
+    command: uv run pytest tests/test_omn_18270_ac_section_serializer.py tests/test_omn_18236_ac_criteria.py
+      tests/test_omn_18236_ac_binding_acceptance.py -q
+  - kind: ci
+    description: PR CI checks green
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: the-binding-finally-has-a-model
+    description: |-
+      The defect this ticket closes, asserted on the live contract rather than
+      on a fixture copy of it. From PR #9240 on 2026-09-12 until now,
+      contracts/OMN-18167.yaml bound AC1..AC8 against a model that enumerated
+      nothing -- what the 2026-09-12 closeout adjudication called "eight names
+      with no referents". Equality is asserted in BOTH directions deliberately:
+      a criterion nothing binds is itself a refusal under
+      ac_binding_criterion_unbound, so padding the model to cover one of the
+      bound check's provenance pins would break the contract rather than
+      improve it. The falsifier leg is included in the same item because a
+      criterion with no named falsifier is prose that reads like a requirement,
+      which is the failure mode one level up from the one being fixed.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19046_c6_contract_binds_its_own_model.py::test_every_bound_label_is_enumerated_by_the_models_own_criteria
+          tests/test_omn_19046_c6_contract_binds_its_own_model.py::test_each_criterion_names_the_check_that_would_settle_it
+          -q
+  - id: the-gate-flips-across-serialization
+    description: |-
+      The load-bearing end-to-end claim, driven through
+      check_contract_ac_bindings -- the validator that blocks merges -- and not
+      through the reader it is built on. The "after" body is taken from
+      plan_acceptance_criteria_update rather than typed into the test, so no
+      hand edit can sit between the refusal and the pass; that gap is exactly
+      how a repair gets credited to a process a person actually performed. The
+      pre-serialization body is the real one, fetched from Linear, so the
+      refusal being reproduced is the refusal that was actually there.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19046_c6_contract_binds_its_own_model.py::test_the_gate_refuses_the_body_as_it_was_and_passes_the_serialized_one
+          tests/test_omn_19046_c6_contract_binds_its_own_model.py::test_the_rendered_section_reads_back_as_the_eight_labels_it_binds
+          -q
+  - id: the-write-was-additive-on-a-ticket-already-done
+    description: |-
+      OMN-18167 was Done before this change and is Done after it. A serializer
+      that reflowed the body would rewrite a closed ticket's history for a
+      cosmetic reason, so the original text is asserted to survive as a literal
+      PREFIX rather than merely to be present somewhere -- "still in there
+      somewhere" is what a reflow also satisfies.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19046_c6_contract_binds_its_own_model.py::test_serialization_only_appends_and_leaves_the_prose_byte_for_byte
+          -q
+  - id: binding-survives-linears-normaliser
+    description: |-
+      The finding only an actual write could produce, pinned so it cannot
+      regress silently. OMN-18270 never wrote to Linear, so nobody had seen a
+      managed section come back. Linear rewrites it on save: "- " bullets become
+      "* " and _emphasis_ becomes *emphasis*. The criterion text is untouched
+      and the reader's list-item grammar accepts either bullet, so the eight
+      labels still resolve and the gate still passes. The fixture is the real
+      post-write body, so this asserts what Linear actually stores rather than
+      what a normaliser was assumed to do. The failure mode it guards is silent:
+      if the reader ever narrowed to one bullet character, every serialized
+      ticket in the corpus would resolve to zero criteria while looking
+      perfectly serialized in the UI.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_omn_19046_c6_contract_binds_its_own_model.py::test_the_gate_still_passes_the_body_after_linear_normalised_it
+          -q
+  - id: no-source-file-is-touched-by-this-change
+    description: |-
+      The scope claim, made mechanical. This change is a contract, a test and
+      two fixtures; it adds no producer, no generator and no ingest step,
+      because none is needed to make this ticket work -- the model is authored
+      and the BODY is what a process writes. Asserting the absence of a src/
+      diff is also what keeps this PR out of the privileged-path rule, which
+      would otherwise refuse it as human-authored.
+    source: manual
+    status: verified
+    checks:
+      - check_type: command
+        check_value: test -z "$(git diff --name-only origin/dev...HEAD -- src/ scripts/ .github/)"
