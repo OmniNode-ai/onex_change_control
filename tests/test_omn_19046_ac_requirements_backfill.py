@@ -32,7 +32,11 @@ from onex_change_control.serialization.ac_requirements import (
     ModelRequirementsPlan,
     plan_requirements_backfill,
 )
-from onex_change_control.validation.ac_criteria import criteria_by_label, criterion_hash
+from onex_change_control.validation.ac_criteria import (
+    canonical_ac_label,
+    criteria_by_label,
+    criterion_hash,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -134,6 +138,40 @@ class TestItFillsAnAbsentModel:
         plan = _plan(text, BODY)
         assert plan.changed is False
         assert "requirements:\n" not in plan.new_text
+
+
+class TestLabelSpellingIsCanonicalised:
+    """A ``DoD3`` binding gets a ``DOD3`` criterion id, and that is deliberate."""
+
+    def test_a_mixed_case_binding_yields_the_canonical_id(self) -> None:
+        """Measured on batch 1: OMN-15922 binds DoD1..DoD8, written as DOD1..DOD8.
+
+        Both sides go through ``canonical_ac_label`` before anything compares
+        them -- the serializer canonicalises the criterion id and the bound
+        label alike, and the binding model accepts either spelling -- so the
+        sets are equal where it counts. The id is written canonically rather
+        than echoing the contract's spelling so that this producer and the
+        OMN-19038 autobind producer, which uppercases from the same reader,
+        cannot emit two spellings of one label into one corpus.
+
+        A raw string comparison of ids against ``binds_ac`` entries FAILS here
+        and is the wrong comparison; this test exists so that failure is
+        recognised as expected rather than investigated again.
+        """
+        text = _contract_text().replace(
+            'binds_ac: ["AC1", "AC2"]', 'binds_ac: ["DoD1", "DoD2"]'
+        )
+        body = BODY.replace("AC1:", "DoD1:").replace("AC2:", "DoD2:")
+        plan = _plan(text, body)
+        assert plan.changed is True
+        parsed = yaml.safe_load(plan.new_text)
+        ids = [c["id"] for c in parsed["requirements"][0]["acceptance"]]
+        assert ids == ["DOD1", "DOD2"]
+        bound = parsed["dod_evidence"][0]["binds_ac"]
+        assert bound == ["DoD1", "DoD2"]
+        assert {canonical_ac_label(i) for i in ids} == {
+            canonical_ac_label(b) for b in bound
+        }
 
 
 class TestItIsIdempotentThroughTheReader:
