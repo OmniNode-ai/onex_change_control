@@ -60,6 +60,34 @@ by asking the commits endpoint, once per packaged path, for the commits on
 intersecting by sha with the compare set. The intersection is what makes it
 exact: ``since`` alone would over-report commits already contained in the tag.
 
+FAILING CLOSED IS NOT THE SAME AS FAILING MUTELY (OMN-19098)
+------------------------------------------------------------
+Until 2026-09-21 every non-zero ``gh`` exit collapsed into one ``ProbeError``
+shape, so an empty API quota was indistinguishable from a dead repo, a
+malformed response or a real staleness finding. On 2026-09-21 the
+``onexbot-occ-writer`` installation bucket (id 148180820) emptied at 19:41Z.
+Four runs failed between 19:40:57Z and 19:43:32Z, each emitting seven or
+eight per-repo ERROR rows, and the single infrastructure event was diagnosed
+four separate times while it cascaded into ``CI Summary`` and blocked
+unrelated merges. The measured cost of that conflation was about an hour.
+
+So a quota refusal now has its own verdict (``QUOTA_EXHAUSTED``), its own
+exception (``QuotaExhaustedError``) and its own machine-readable outcome
+token (``OCC_QUOTA_EXHAUSTED``) printed on its own line in stdout, in the
+JSON and in the step summary, with the bucket reset time where it can be
+read.
+
+Three things this deliberately does NOT do:
+
+* It does not make quota exhaustion a pass. The exit code is still 1. A run
+  that could not read the roster has not shown the roster is fresh.
+* It does not retry. Retrying inside an exhausted window adds load to the
+  saturated bucket, so a quota row also SUPPRESSES the positive control,
+  which is a second full sweep that could not succeed anyway.
+* It does not skip the job. ``CI Summary`` L4 layer is success-only and a
+  skipped external context fails closed, so the job runs unconditionally on
+  every pull request exactly as before.
+
 FAIL-CLOSED, EVERYWHERE
 -----------------------
 Every unreadable repo, truncated compare, malformed tag list or unparseable
@@ -92,6 +120,8 @@ Usage::
 Exit codes:
     0 — every enforced repo is fresh (and the zero was proven by its control)
     1 — at least one enforced repo is stale, or the sweep could not see
+        (including a quota refusal — see ``OCC_QUOTA_EXHAUSTED`` above, which
+        changes what the run SAYS, never whether it blocks)
     2 — configuration/usage error (bad policy file, no ``gh``, bad arguments)
 """
 
@@ -133,6 +163,35 @@ VERDICT_STALE = "STALE"
 VERDICT_STALE_UNENFORCED = "STALE_UNENFORCED"
 VERDICT_ERROR = "ERROR"
 
+#: A read failed because the API quota for the acting identity was empty, not
+#: because the repo is stale, unreadable or misconfigured. This is a DISTINCT
+#: verdict rather than an ``ERROR`` row on purpose: on 2026-09-21 the
+#: onexbot-occ-writer installation bucket emptied at 19:41Z and every roster
+#: read in the same run failed together, which surfaced as seven independent
+#: per-repo failures and was diagnosed four separate times. One infrastructure
+#: event must read as one infrastructure event.
+VERDICT_QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
+
+#: The machine-readable token a downstream consumer greps for. It is emitted
+#: on its own line in stdout and in the step summary, so recognising a breadth
+#: event never requires parsing a human sentence or reading a job log.
+OUTCOME_QUOTA_EXHAUSTED = "OCC_QUOTA_EXHAUSTED"
+
+#: GitHub's primary rate-limit refusal, as ``gh`` surfaces it on stderr. Both
+#: spellings are real: an installation token says "for installation ID <n>", a
+#: user token says "for user ID <n>". Matching the shared prefix catches both
+#: without pinning an id. Verbatim sample (run 35646352206, 2026-09-21):
+#:
+#:   gh: API rate limit exceeded for installation ID 148180820. ... (HTTP 403)
+_RATE_LIMIT_SIGNATURE = re.compile(r"API rate limit exceeded", re.IGNORECASE)
+
+#: The secondary limit is a different mechanism (burst/abuse detection) with
+#: the same operational meaning here: the identity cannot read right now, and
+#: retrying immediately makes it worse.
+_SECONDARY_LIMIT_SIGNATURE = re.compile(
+    r"secondary rate limit|exceeded a secondary rate limit", re.IGNORECASE
+)
+
 
 class PolicyError(Exception):
     """Operator-facing misuse: unreadable or malformed policy file."""
@@ -140,6 +199,47 @@ class PolicyError(Exception):
 
 class ProbeError(Exception):
     """A repo could not be read. Always an ERROR row, never a zero."""
+
+
+class QuotaExhaustedError(ProbeError):
+    """The acting identity API quota is empty. Distinct from ProbeError.
+
+    WHY THIS SUBCLASSES ``ProbeError`` RATHER THAN SITTING BESIDE IT. Every
+    existing ``except ProbeError`` site in this module is a fail-closed site:
+    it turns an unreadable repo into a non-zero exit. Quota exhaustion must
+    keep failing closed at every one of those sites, and a sibling class would
+    have required editing each catch to re-establish that -- with any one
+    missed catch silently becoming a pass. Subclassing makes the fail-closed
+    posture the default and the distinct handling the explicit opt-in, which
+    is the safe direction for this failure to be missed in.
+
+    The type is still distinct: ``type(exc) is ProbeError`` is False, callers
+    that care catch ``QuotaExhaustedError`` FIRST, and the verdict, the outcome
+    token and the exit path all differ.
+
+    ``reset_at`` is best-effort. It comes from the ``/rate_limit`` endpoint,
+    which GitHub documents as not counting against the limit it reports, so
+    reading it during an exhaustion costs nothing. When that read itself fails
+    the field stays ``None`` and the report says the reset time is unknown
+    rather than inventing one.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reset_at: datetime | None = None,
+        secondary: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.reset_at = reset_at
+        self.secondary = secondary
+
+    @property
+    def reset_detail(self) -> str:
+        if self.reset_at is None:
+            return "reset time unknown"
+        return f"resets at {self.reset_at.astimezone(UTC).isoformat()}"
 
 
 # ---------------------------------------------------------------------------
@@ -338,8 +438,48 @@ def _gh(args: list[str]) -> str:
         raise ProbeError(f"gh {' '.join(args)}: timed out after 180s") from exc
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")[:400]
+        secondary = bool(_SECONDARY_LIMIT_SIGNATURE.search(detail))
+        if secondary or _RATE_LIMIT_SIGNATURE.search(detail):
+            raise QuotaExhaustedError(
+                f"gh {' '.join(args)}: exit {proc.returncode}: {detail}",
+                reset_at=_read_rate_limit_reset(),
+                secondary=secondary,
+            )
         raise ProbeError(f"gh {' '.join(args)}: exit {proc.returncode}: {detail}")
     return proc.stdout
+
+
+def _read_rate_limit_reset() -> datetime | None:
+    """Best-effort reset time for the exhausted bucket.
+
+    GitHub documents ``/rate_limit`` as not counting against the limit it
+    reports, so this is safe to call at the exact moment the bucket is empty
+    -- which is the only moment it is useful.
+
+    Never raises. A reset time we could not read is reported as unknown; an
+    invented one would be worse than none, because a lane would wait on it.
+    This deliberately does NOT go through ``_gh``: that function raises on a
+    non-zero exit, and this helper is called from inside that raise path.
+    """
+    try:
+        proc = subprocess.run(
+            ["gh", "api", "rate_limit", "--jq", ".resources.core.reset"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = (proc.stdout or "").strip()
+    if not raw.isdigit():
+        return None
+    try:
+        return datetime.fromtimestamp(int(raw), tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _semver(tag: str) -> tuple[int, int, int]:
@@ -441,6 +581,9 @@ class Finding:
     age_hours: float = 0.0
     detail: str = ""
     deferral_ticket: str = ""
+    #: Only populated on a QUOTA_EXHAUSTED row. Empty string means the reset
+    #: time could not be read, never that the bucket resets now.
+    quota_reset_at: str = ""
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -488,6 +631,24 @@ def evaluate(
     for policy_repo in repos if repos is not None else policy.repos:
         try:
             base_ref, total, hits = measure_repo(policy_repo, base_override=base_override)
+        except QuotaExhaustedError as exc:
+            # MUST precede the ProbeError arm: QuotaExhaustedError subclasses
+            # it, so the broader arm would swallow this one and re-create the
+            # exact conflation this verdict exists to remove.
+            findings.append(
+                Finding(
+                    repo=policy_repo.repo,
+                    verdict=VERDICT_QUOTA_EXHAUSTED,
+                    detail=(
+                        f"{'secondary ' if exc.secondary else ''}API quota exhausted, "
+                        f"{exc.reset_detail}: {exc}"
+                    ),
+                    quota_reset_at=(
+                        exc.reset_at.astimezone(UTC).isoformat() if exc.reset_at else ""
+                    ),
+                )
+            )
+            continue
         except ProbeError as exc:
             findings.append(
                 Finding(repo=policy_repo.repo, verdict=VERDICT_ERROR, detail=str(exc))
@@ -800,13 +961,22 @@ def main(argv: list[str] | None = None) -> int:
     stale = [f for f in findings if f.verdict == VERDICT_STALE]
     errors = [f for f in findings if f.verdict == VERDICT_ERROR]
     unenforced = [f for f in findings if f.verdict == VERDICT_STALE_UNENFORCED]
+    quota = [f for f in findings if f.verdict == VERDICT_QUOTA_EXHAUSTED]
 
     control: ControlResult | None = None
-    needs_control = not stale and not errors and not args.no_positive_control
+    # The control is a SECOND full sweep. Running it while the bucket is empty
+    # spends more of the quota that just ran out and cannot succeed anyway, so
+    # a quota row suppresses it. This is the do-not-retry-inside-an-exhausted-
+    # window rule: a retry adds load to the saturated resource.
+    needs_control = (
+        not stale and not errors and not quota and not args.no_positive_control
+    )
     if needs_control:
         control = run_positive_control(policy, now=now)
 
-    exit_code = 1 if (stale or errors) else 0
+    # Quota exhaustion STILL FAILS CLOSED. Naming the cause does not excuse it:
+    # a run that could not read the roster has not shown the roster is fresh.
+    exit_code = 1 if (stale or errors or quota) else 0
     if control is not None and not control.passed:
         exit_code = 1
 
@@ -821,6 +991,11 @@ def main(argv: list[str] | None = None) -> int:
                     "stale": len(stale),
                     "stale_unenforced": len(unenforced),
                     "errors": len(errors),
+                    "quota_exhausted": len(quota),
+                    "outcome": OUTCOME_QUOTA_EXHAUSTED if quota else "",
+                    "quota_reset_at": next(
+                        (f.quota_reset_at for f in quota if f.quota_reset_at), ""
+                    ),
                     "positive_control": (
                         {"ran": True, "passed": control.passed, "detail": control.detail}
                         if control is not None
@@ -843,6 +1018,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         if control is not None:
             print(control.detail)
+        if quota:
+            reset = next((f.quota_reset_at for f in quota if f.quota_reset_at), "")
+            print(
+                f"{OUTCOME_QUOTA_EXHAUSTED}: {len(quota)} roster read(s) refused because "
+                f"the acting identity API quota was empty, "
+                + (f"resets at {reset}." if reset else "reset time unknown.")
+            )
+            print(
+                "This is an infrastructure limit, not a staleness finding and not a "
+                "defect in the repos named above. The gate still fails closed: a run "
+                "that could not read the roster has not shown the roster is fresh. Do "
+                "not rerun immediately -- a retry inside an exhausted window adds load "
+                "to the saturated bucket. Wait for the reset."
+            )
         if errors:
             print(f"REFUSED: {len(errors)} repo(s) could not be read. A blind sweep is not a pass.")
         if stale:
@@ -851,7 +1040,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"than {policy.max_age_hours:g}h. Cut a release. The unenforced roster in "
                 f"{args.policy.name} is shrink-only and is not a way out of this."
             )
-        elif not errors:
+        elif not errors and not quota:
             print(
                 f"PASS: no enforced repo is stale beyond {policy.max_age_hours:g}h"
                 + (
@@ -860,7 +1049,15 @@ def main(argv: list[str] | None = None) -> int:
                     else "."
                 )
             )
-        _write_step_summary("## Release staleness\n\n```\n" + table + "\n```")
+        summary = "## Release staleness\n\n```\n" + table + "\n```"
+        if quota:
+            reset = next((f.quota_reset_at for f in quota if f.quota_reset_at), "")
+            summary += (
+                f"\n\n**{OUTCOME_QUOTA_EXHAUSTED}** -- this run was refused by an API "
+                "quota limit, not by a staleness finding. "
+                + (f"Resets at `{reset}`." if reset else "Reset time unknown.")
+            )
+        _write_step_summary(summary)
 
     return exit_code
 
