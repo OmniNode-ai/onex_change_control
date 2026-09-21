@@ -31,6 +31,7 @@ import pytest
 from onex_change_control.serialization.ac_section import (
     BEGIN_MARKER,
     END_MARKER,
+    RULE_UNENUMERATED_BINDING,
     AcSectionRefusalError,
     bound_labels,
     criteria_from_contract,
@@ -384,3 +385,74 @@ def test_cli_reports_unchanged_without_rewriting(tmp_path: Any, capsys: Any) -> 
 
     assert code == 0
     assert "UNCHANGED OMN-00003" in capsys.readouterr().out
+
+
+# -- The gate itself, not a stand-in for it ---------------------------------
+#
+# Every test above resolves the rendered section with `criteria_by_label`, the
+# OMN-18236 READER. That is the right unit boundary, but it is not the thing
+# that blocks a merge: `check-ac-binding-acceptance` is. The two below drive
+# that CLI end to end, so the claim "serializing this body satisfies the gate"
+# is enforced here instead of asserted in a pull-request body, and a future
+# change to either side that breaks the pairing fails in CI rather than
+# silently rendering a section the gate declines to read.
+#
+# They are a matched pair on purpose. The positive control proves the gate
+# flips RED -> GREEN; the negative control proves a REFUSED contract leaves it
+# RED, so a refusal can never be mistaken for a repair.
+
+
+def _gate(contract_path: Any, bodies_path: Any) -> int:
+    from onex_change_control.scripts.check_ac_binding_acceptance import main as gate
+
+    return gate([str(contract_path), "--ticket-bodies", str(bodies_path)])
+
+
+def test_serialization_flips_the_real_omn_18236_gate_from_refusal_to_pass(
+    tmp_path: Any,
+) -> None:
+    """POSITIVE CONTROL, through the merge-blocking CLI rather than its reader.
+
+    Before serialization the gate refuses with ``ac_binding_ticket_unlabelled``
+    -- the contract binds criteria the body does not label. After, it exits 0
+    on bytes this module produced and nobody edited.
+    """
+    import json
+
+    contract = _contract(criteria=_eight(), binds=[label for label, _ in _eight()])
+    path = _write_contract(tmp_path, "OMN-00042", contract)
+
+    before = tmp_path / "before.json"
+    before.write_text(json.dumps({"OMN-00042": "prose only\n"}), encoding="utf-8")
+    assert _gate(path, before) == 1
+
+    plan = plan_acceptance_criteria_update("OMN-00042", contract, "prose only\n")
+    after = tmp_path / "after.json"
+    after.write_text(json.dumps({"OMN-00042": plan.new_body}), encoding="utf-8")
+
+    assert _gate(path, after) == 0
+
+
+def test_a_refused_contract_leaves_the_gate_refusing(tmp_path: Any) -> None:
+    """NEGATIVE CONTROL: the OMN-18167 shape, end to end.
+
+    The contract binds ``AC1``..``AC8`` and enumerates none. The serializer
+    refuses, nothing is written, and the gate is still RED afterwards. Without
+    this, a refusal that quietly emitted an empty section would read as a pass
+    on the positive control alone.
+    """
+    import json
+
+    contract = _contract(criteria=[], binds=[label for label, _ in _eight()])
+    path = _write_contract(tmp_path, "OMN-00043", contract)
+    bodies = tmp_path / "bodies.json"
+    bodies.write_text(json.dumps({"OMN-00043": "prose only\n"}), encoding="utf-8")
+
+    assert _gate(path, bodies) == 1
+
+    with pytest.raises(AcSectionRefusalError) as refusal:
+        plan_acceptance_criteria_update("OMN-00043", contract, "prose only\n")
+    assert refusal.value.rule == RULE_UNENUMERATED_BINDING
+
+    # The body was never rewritten, so the gate's verdict is unchanged.
+    assert _gate(path, bodies) == 1
