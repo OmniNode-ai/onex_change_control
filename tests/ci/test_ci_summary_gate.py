@@ -1848,6 +1848,11 @@ class TestSweepExclusions:
             "PEP 604 Type Union Check (UP007)",
             "occ-autobind",
             "occ-companion-effect",
+            # Absent from the measured window and observed live on this
+            # ticket's own pull request, which the sweep refused until they
+            # were named. See their reasons in the module.
+            "occ-autobind / outcome",
+            "occ-companion-effect / mint status",
         }
 
     def test_every_entry_carries_a_reason_an_owner_and_both_dates(self) -> None:

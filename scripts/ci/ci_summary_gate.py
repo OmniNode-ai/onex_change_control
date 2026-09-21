@@ -904,6 +904,48 @@ EXTERNAL_SWEEP_EXCLUSIONS: dict[str, SweepExclusion] = {
         added="2026-09-21",
         expires="2026-12-20",
     ),
+    # THESE TWO WERE NOT IN THE MEASURED WINDOW, and that is the finding
+    # rather than an oversight to hide. The 16-PR window above contained no
+    # App-written mint-status or outcome row at all, so the registry shipped
+    # without them; both then appeared live on this very pull request and the
+    # sweep refused it. The layer worked exactly as designed. What failed was
+    # the premise that a 16-PR window enumerates a population, and the lesson
+    # is written here rather than in a commit message because the next person
+    # to add an entry from a window needs to read it.
+    #
+    # Their mechanism is the same one their siblings in omnibase_infra,
+    # omniclaude and omnibase_core already carry: a status row written by a
+    # GitHub App rather than by Actions, whose neutral conclusion is a
+    # placeholder rather than a verdict about the head.
+    "occ-autobind / outcome": SweepExclusion(
+        reason=(
+            "Observed live on onex_change_control#10642 at neutral, and ABSENT "
+            "from the 16-PR window this registry was otherwise measured from: "
+            "that window carried no App-written outcome row at all. It is a "
+            "status row written by a GitHub App rather than by Actions, and a "
+            "neutral conclusion from that producer is a placeholder rather "
+            "than a verdict about the head. It is also the context recorded "
+            "as printing the wrong label on its own success path. Without "
+            "this entry the gate reads a placeholder as a refusal, which is "
+            "what it did before the entry existed."
+        ),
+        ticket="OMN-18939",
+        added="2026-09-21",
+        expires="2026-12-20",
+    ),
+    "occ-companion-effect / mint status": SweepExclusion(
+        reason=(
+            "Observed live on onex_change_control#10642 at neutral, and "
+            "absent from the measured 16-PR window for the same reason as the "
+            "autobind outcome row beside it. Same producer family and same "
+            "placeholder mechanism: a GitHub App writes the row and its "
+            "neutral conclusion states nothing about the head. Without this "
+            "entry the gate blocks on a non-verdict."
+        ),
+        ticket="OMN-18939",
+        added="2026-09-21",
+        expires="2026-12-20",
+    ),
     "occ-companion-effect": SweepExclusion(
         reason=(
             "The check was skipped on 16 of 16 heads, with no success "
