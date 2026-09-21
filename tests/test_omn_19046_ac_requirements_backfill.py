@@ -29,6 +29,7 @@ from onex_change_control.serialization.ac_requirements import (
     RULE_TICKET_UNREADABLE,
     RULE_UNKNOWN_CRITERION,
     AcRequirementsRefusalError,
+    ModelRequirementsPlan,
     plan_requirements_backfill,
 )
 from onex_change_control.validation.ac_criteria import criteria_by_label, criterion_hash
@@ -78,7 +79,7 @@ def _live_pins() -> dict[str, str]:
     return {label: criterion_hash(text) for label, text in known.items()}
 
 
-def _plan(text: str, body: str | None):
+def _plan(text: str, body: str | None) -> ModelRequirementsPlan:
     return plan_requirements_backfill("OMN-19046", yaml.safe_load(text), text, body)
 
 
