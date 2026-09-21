@@ -75,7 +75,23 @@ that both of them exist rather than asserting that a human reviewed anything.
      Read over the GitHub API, org-private, with the same credential and the
      same retry/classification machinery the original reads used.
 
-Any of the three missing is a TRIP (exit 1). The check is fail-closed on an
+  4. AUTHORING TIME, ON THE BRANCH GRANTS ARE ACTUALLY AUTHORED ON
+     (OMN-18945). Facts 1 and 2 are about THIS checkout, which is `dev`.
+     Grants are not authored on `dev`: they are authored by `hotfix/*` pull
+     requests targeting `main`, the only other head shape
+     `main-target-guard.yml` admits, and `main` carries no
+     `validate_prod_promotion_grants.py` at all. So the refusal AND the
+     tripwire built to prove the refusal had not been removed shared one
+     blind spot, and both reported green on a branch no grant travels
+     through. `main` now carries its own refusal
+     (`validate_prod_promotion_grant_self_approval.py`) held unconditionally
+     under its own required `CI Summary` rollup, and this fact reads that
+     branch over the API and requires the module, the job, its
+     `--requester`, its unconditionality, and its place in `ci-summary`'s
+     `needs:`. Nothing else in the fleet reads across the branch boundary,
+     so without this fact a removal on `main` is invisible from here.
+
+Any of the four missing is a TRIP (exit 1). The check is fail-closed on an
 unreadable fact (exit 2), exactly as before.
 
 THE HONEST LIMIT, KEPT
@@ -95,8 +111,9 @@ Usage:
     uv run check-platform-leads-review-tripwire
 
 Exit codes:
-    0: safe — both machine refusals exist and the authoring-time one is wired.
-    1: TRIPPED — at least one of the three facts is false. The prod-promotion
+    0: safe — the machine refusals exist, the authoring-time one is wired,
+       and it is enforceable on the branch grants are authored on.
+    1: TRIPPED — at least one of the four facts is false. The prod-promotion
        grant's dual control has lost a half; say which one in the message.
     2: INCONCLUSIVE — a fact could not be determined (token scope, an
        unreadable `ci.yml`, or an unclassified GitHub API failure). Treated
@@ -136,6 +153,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import re
 import subprocess
 import sys
@@ -161,6 +179,52 @@ GRANTS_VALIDATOR_JOB: Final[str] = "validate-prod-promotion-grants"
 #: The flag whose ABSENCE makes the authoring-time refusal dead code:
 #: `validate_grants` skips the self-approval check when `requester is None`.
 REQUESTER_FLAG: Final[str] = "--requester"
+
+#: OMN-18945. The fourth fact: the same authoring-time refusal, ON THE BRANCH
+#: PROD-PROMOTION GRANTS ARE ACTUALLY AUTHORED ON.
+#:
+#: Facts 1 and 2 above prove the refusal behaves and is wired IN THIS
+#: CHECKOUT, which is `dev`. Grants are not authored on `dev`. They are
+#: authored by `hotfix/*` pull requests targeting `main`, which is the only
+#: shape `main-target-guard.yml` admits besides a promotion PR from `dev`, and
+#: `main` carries no `validate_prod_promotion_grants.py` at all. So the
+#: control and the tripwire built to prove the control had not been removed
+#: shared one blind spot, and both reported green on a branch no grant travels
+#: through. The `main` side now carries its own refusal and its own
+#: behavioural positive control; this fact is what notices if either is
+#: removed, because nothing else reads across the branch boundary.
+#:
+#: Read over the API rather than from this checkout: a `dev` checkout does not
+#: contain `main`'s `ci.yml`, and the whole point of the fact is that the two
+#: branches' contents differ.
+MAIN_BRANCH_REF: Final[str] = "main"
+#: The `main` job that carries the refusal, and the rollup that must hold it.
+#: `CI Summary` is a required context on `main`; the standalone
+#: `validate-prod-promotion-grants` workflow there is NOT, which is why the
+#: refusal had to go in `ci.yml` and why being in this `needs:` list is the
+#: fact that makes it block rather than merely report.
+MAIN_SELF_APPROVAL_JOB: Final[str] = "prod-promotion-grant-self-approval"
+MAIN_CI_SUMMARY_JOB: Final[str] = "ci-summary"
+#: The module `main`'s job invokes. Its presence is checked alongside the job,
+#: because a wired job calling a module that does not exist is a red run on
+#: the first grant PR, not a control.
+MAIN_SELF_APPROVAL_MODULE: Final[str] = (
+    "src/onex_change_control/scripts/validate_prod_promotion_grant_self_approval.py"
+)
+#: Two INDEPENDENT markers in that module, on the same reasoning as
+#: `PROMOTION_GATE_MARKERS`: the refusal reason could survive while the
+#: casefolded comparison that makes it un-launderable is dropped, and the
+#: comparison could survive while the reason is renamed out of alignment with
+#: the other two halves.
+MAIN_SELF_APPROVAL_MARKERS: Final[tuple[str, ...]] = (
+    "self_granted",
+    "casefold()",
+)
+#: What `gh api` prints when a path does not exist at a ref. On a read of
+#: THIS repo that means the file is ABSENT; the shared classifier would
+#: otherwise read the same 404 as a token-scope failure, because that is what
+#: it means for the org-private cross-repo read.
+NOT_FOUND_SIGNATURE: Final[str] = "Not Found (HTTP 404)"
 
 #: The promotion-time half of the dual control, in the separate private repo
 #: that owns the k3s prod-promotion gate.
@@ -727,6 +791,218 @@ def authoring_time_refusal_wired(ci_workflow: Path) -> tuple[bool, str]:
     )
 
 
+def _read_repo_file_at_ref(
+    path: str,
+    ref: str,
+    *,
+    repo: str,
+    credential_origin: str,
+    deadline: float | None,
+) -> str | None:
+    """Raw contents of one file in THIS repo at another ref, over the API.
+
+    A `dev` checkout does not contain `main`'s tree, and fetching the whole
+    other branch to read two files would cost more than the gate is worth.
+
+    Returns ``None`` when the API says the path is NOT FOUND, which for a
+    read of THIS repo means the file is absent — a FACT the caller reports as
+    a trip, not a failure to determine one. That distinction is why this
+    helper exists rather than a bare `_run_gh_checked` call: the shared
+    classifier reads a 404 as a permission signature, which is correct for
+    the org-private cross-repo read (GitHub returns 404 for a repository the
+    token cannot see) and WRONG here. Measured on 2026-09-21 against the real
+    `main`, before the module it looks for existed: the gate reported
+    "TOKEN PROBLEM, NOT A POLICY VIOLATION ... restore a valid CROSS_REPO_PAT"
+    and exit 2, for a file that was simply not there. An absent refusal
+    reported as an unreadable one sends an operator to rotate a credential
+    that was never broken — the exact misdiagnosis OMN-16373 removed from the
+    rate-limit path.
+    """
+    try:
+        result = _run_gh_checked(
+            [
+                "api",
+                # `ref` in the query string, not through `--field`: a
+                # `--field` forces a POST, which this read is not.
+                f"repos/{repo}/contents/{path}?ref={ref}",
+                "--header",
+                "Accept: application/vnd.github.raw",
+            ],
+            action=f"could not read {repo}:{path}@{ref}",
+            credential_origin=credential_origin,
+            deadline=deadline,
+        )
+    except TripwireInconclusiveError as exc:
+        if NOT_FOUND_SIGNATURE in str(exc):
+            return None
+        raise
+    return result.stdout
+
+
+def _main_refusal_job_failures(jobs: dict[str, Any], ref: str) -> list[str]:
+    """Sub-facts about the refusal JOB itself on the other branch.
+
+    Split out of `authoring_time_refusal_present_on_main` so each half stays
+    under the complexity bar and so the job checks and the rollup check can
+    be read, and changed, independently.
+    """
+    job = jobs.get(MAIN_SELF_APPROVAL_JOB)
+    if not isinstance(job, dict):
+        return [
+            f"{DEFAULT_CI_WORKFLOW}@{ref} declares no "
+            f"`{MAIN_SELF_APPROVAL_JOB}` job, so the authoring-time refusal "
+            "runs nowhere on the branch prod-promotion grants are authored on"
+        ]
+    failures: list[str] = []
+    if "if" in job or "needs" in job:
+        failures.append(
+            f"`{MAIN_SELF_APPROVAL_JOB}`@{ref} carries an `if:` or a "
+            "`needs:`, so it can be SKIPPED — and the ci-summary rollup "
+            "fails only on `failure` and `cancelled`, which makes a skip "
+            "indistinguishable from a pass"
+        )
+    steps = job.get("steps")
+    run_text = "\n".join(
+        str(step.get("run", ""))
+        for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict)
+    )
+    if REQUESTER_FLAG not in run_text:
+        failures.append(
+            f"`{MAIN_SELF_APPROVAL_JOB}`@{ref} never passes "
+            f"`{REQUESTER_FLAG}`, so it has no identity to compare "
+            "approved_by against"
+        )
+    return failures
+
+
+def _main_rollup_failures(jobs: dict[str, Any], ref: str) -> list[str]:
+    """The sub-fact that makes the refusal BLOCK rather than merely report.
+
+    `CI Summary` is the required context on the other branch and the
+    standalone grants workflow is not, so a refusal outside that rollup
+    reports red beside a green required context and merges anyway.
+    """
+    summary = jobs.get(MAIN_CI_SUMMARY_JOB)
+    summary_needs = summary.get("needs") if isinstance(summary, dict) else None
+    if not isinstance(summary_needs, list):
+        return [
+            f"{DEFAULT_CI_WORKFLOW}@{ref} has no `{MAIN_CI_SUMMARY_JOB}` job "
+            "with a `needs:` list, so nothing there can hold the refusal "
+            "under a required context"
+        ]
+    if MAIN_SELF_APPROVAL_JOB not in summary_needs:
+        return [
+            f"`{MAIN_CI_SUMMARY_JOB}`@{ref} does not declare "
+            f"`{MAIN_SELF_APPROVAL_JOB}` in `needs:`, so the refusal runs but "
+            "cannot block a grant PR: `CI Summary` is the required context on "
+            f"{ref} and the standalone grants workflow is not"
+        ]
+    return []
+
+
+def authoring_time_refusal_present_on_main(
+    *,
+    repo: str,
+    ref: str = MAIN_BRANCH_REF,
+    credential_origin: str = "unknown",
+    deadline: float | None = None,
+) -> tuple[bool, str]:
+    """Prove the refusal exists, is unconditional, and BLOCKS on `main`.
+
+    Four sub-facts, each of which has been the whole failure on its own at
+    some point in this fleet's history:
+
+      1. the module exists on `main` and still carries both markers;
+      2. `main`'s `ci.yml` declares the job that invokes it;
+      3. that job passes a requester, without which it compares nothing; and
+      4. `ci-summary` declares the job in `needs:`, which is what makes the
+         refusal BLOCK — `CI Summary` is required on `main` and the standalone
+         grants workflow is not, so a refusal outside that rollup reports red
+         beside a green required context and merges anyway.
+
+    A job carrying an `if:` or a `needs:` is treated as FAILING sub-fact 2:
+    `ci-summary` fails on `failure` and `cancelled` only, so a skipped job is
+    indistinguishable from a passing one.
+
+    Network and permission failures raise `TripwireInconclusiveError` and are
+    reported as INCONCLUSIVE by the caller, never as a pass.
+    """
+    missing: list[str] = []
+
+    module_source = _read_repo_file_at_ref(
+        MAIN_SELF_APPROVAL_MODULE,
+        ref,
+        repo=repo,
+        credential_origin=credential_origin,
+        deadline=deadline,
+    )
+    if module_source is None:
+        missing.append(
+            f"{MAIN_SELF_APPROVAL_MODULE} does not exist at {ref} — there is "
+            "no authoring-time self-approval refusal at all on the branch "
+            "prod-promotion grants are authored on"
+        )
+    else:
+        absent_markers = [
+            m for m in MAIN_SELF_APPROVAL_MARKERS if m not in module_source
+        ]
+        if absent_markers:
+            missing.append(
+                f"{MAIN_SELF_APPROVAL_MODULE}@{ref} is missing marker(s) "
+                f"{absent_markers!r} — the authoring-time refusal on the "
+                "branch grants are authored on has been removed or reworded "
+                "out of alignment with the other two halves"
+            )
+
+    workflow_source = _read_repo_file_at_ref(
+        DEFAULT_CI_WORKFLOW,
+        ref,
+        repo=repo,
+        credential_origin=credential_origin,
+        deadline=deadline,
+    )
+    if workflow_source is None:
+        msg = (
+            f"{DEFAULT_CI_WORKFLOW} does not exist at {ref}; cannot confirm "
+            "the refusal is wired there"
+        )
+        raise TripwireInconclusiveError(msg)
+    try:
+        workflow = yaml.safe_load(workflow_source)
+    except yaml.YAMLError as exc:
+        msg = (
+            f"could not parse {DEFAULT_CI_WORKFLOW}@{ref} to confirm the "
+            f"refusal is wired on {ref}: {exc}"
+        )
+        raise TripwireInconclusiveError(msg) from exc
+
+    jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
+    if not isinstance(jobs, dict):
+        msg = (
+            f"{DEFAULT_CI_WORKFLOW}@{ref} has no `jobs:` mapping; cannot "
+            "confirm the refusal is wired there"
+        )
+        raise TripwireInconclusiveError(msg)
+
+    missing.extend(_main_refusal_job_failures(jobs, ref))
+    missing.extend(_main_rollup_failures(jobs, ref))
+
+    if missing:
+        joined = "\n      - ".join(missing)
+        return False, (
+            f"the authoring-time refusal is not enforceable on {ref}, the "
+            "branch prod-promotion grants are actually authored on "
+            f"(OMN-18945):\n      - {joined}"
+        )
+    return True, (
+        f"{ref} carries {MAIN_SELF_APPROVAL_MODULE} with both markers, "
+        f"declares `{MAIN_SELF_APPROVAL_JOB}` unconditionally with "
+        f"`{REQUESTER_FLAG}`, and holds it in `{MAIN_CI_SUMMARY_JOB}`'s "
+        "`needs:` under the required `CI Summary` context"
+    )
+
+
 def promotion_time_refusal_present(
     repo: str,
     path: str,
@@ -778,25 +1054,30 @@ def evaluate(
     authoring: tuple[bool, str],
     wired: tuple[bool, str],
     promotion: tuple[bool, str],
+    on_main: tuple[bool, str] | None = None,
 ) -> tuple[bool, str]:
     """Pure decision logic, isolated from I/O so it is directly unit-testable.
 
     Returns (safe, message). Every failing fact is named, not just the first:
     an operator reading this at 3am should learn which halves of the dual
     control are gone in one read, not one re-run per missing half.
+
+    `on_main` (OMN-18945) defaults to None so every existing caller and test
+    keeps its exact meaning; the CLI always supplies it.
     """
     authoring_ok, authoring_detail = authoring
     wired_ok, wired_detail = wired
     promotion_ok, promotion_detail = promotion
-    failures = [
-        detail
-        for ok, detail in (
-            (authoring_ok, f"AUTHORING-TIME REFUSAL: {authoring_detail}"),
-            (wired_ok, f"AUTHORING-TIME REFUSAL NOT WIRED: {wired_detail}"),
-            (promotion_ok, f"PROMOTION-TIME REFUSAL: {promotion_detail}"),
-        )
-        if not ok
+    facts = [
+        (authoring_ok, f"AUTHORING-TIME REFUSAL: {authoring_detail}"),
+        (wired_ok, f"AUTHORING-TIME REFUSAL NOT WIRED: {wired_detail}"),
+        (promotion_ok, f"PROMOTION-TIME REFUSAL: {promotion_detail}"),
     ]
+    if on_main is not None:
+        facts.append(
+            (on_main[0], f"AUTHORING-TIME REFUSAL ABSENT ON main: {on_main[1]}")
+        )
+    failures = [detail for ok, detail in facts if not ok]
     if failures:
         joined = "\n  - ".join(failures)
         return False, (
@@ -807,11 +1088,15 @@ def evaluate(
             "review stands behind them. Restore the missing half; do not "
             f"re-add a required review to compensate.\n  - {joined}"
         )
+    on_main_line = (
+        f"  - enforceable on main: {on_main[1]}\n" if on_main is not None else ""
+    )
     return True, (
         "PASS: the machine dual control on prod-promotion grants is intact.\n"
         f"  - authoring time: {authoring_detail}\n"
         f"  - wired in CI: {wired_detail}\n"
         f"  - promotion time: {promotion_detail}\n"
+        f"{on_main_line}"
         "  - honest limit (CLAUDE.md rule 12): no file proves a human said "
         "the words. This enforces blast radius, not operator authenticity."
     )
@@ -828,6 +1113,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--promotion-gate-repo", default=DEFAULT_PROMOTION_GATE_REPO)
     parser.add_argument("--promotion-gate-path", default=DEFAULT_PROMOTION_GATE_PATH)
     parser.add_argument("--promotion-gate-ref", default=DEFAULT_PROMOTION_GATE_REF)
+    parser.add_argument(
+        "--this-repo",
+        default=os.environ.get("GITHUB_REPOSITORY", "OmniNode-ai/onex_change_control"),
+        help=(
+            "This repository, used to read the authoring-time refusal on "
+            "`main` over the API (OMN-18945). Defaults to the runner's own "
+            "GITHUB_REPOSITORY so a fork cannot be asserted against upstream."
+        ),
+    )
+    parser.add_argument(
+        "--main-ref",
+        default=MAIN_BRANCH_REF,
+        help="The branch prod-promotion grants are authored on.",
+    )
     parser.add_argument(
         "--credential-origin",
         default="unknown",
@@ -852,6 +1151,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             credential_origin=args.credential_origin,
             deadline=retry_deadline,
         )
+        on_main = authoring_time_refusal_present_on_main(
+            repo=args.this_repo,
+            ref=args.main_ref,
+            credential_origin=args.credential_origin,
+            deadline=retry_deadline,
+        )
     except TripwireDeferredRateLimitError as exc:
         print(f"TRIPWIRE DEFERRED: {exc}", file=sys.stderr)
         return 0
@@ -862,7 +1167,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"authoring-time refusal behaves: {authoring[0]}")
     print(f"authoring-time refusal wired in CI: {wired[0]}")
     print(f"promotion-time refusal present: {promotion[0]}")
-    safe, message = evaluate(authoring=authoring, wired=wired, promotion=promotion)
+    print(f"authoring-time refusal enforceable on {args.main_ref}: {on_main[0]}")
+    safe, message = evaluate(
+        authoring=authoring, wired=wired, promotion=promotion, on_main=on_main
+    )
     print(message, file=sys.stderr if not safe else sys.stdout)
     return 0 if safe else 1
 
