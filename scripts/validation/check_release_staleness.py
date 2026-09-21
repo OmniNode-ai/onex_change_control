@@ -689,34 +689,6 @@ def fetch_path_commits(
     return result
 
 
-def commits_touching(repo: str, branch: str, path: str, since: datetime) -> set[str]:
-    """Shas on ``branch`` touching ``path`` at or after ``since``.
-
-    Single-pair form, kept for callers that genuinely have one pair. A sweep
-    uses ``fetch_path_commits`` instead, which answers every pair in one
-    document.
-    """
-    answer = fetch_path_commits([(repo, branch, path, since)])[(repo, path)]
-    if isinstance(answer, str):
-        raise ProbeError(answer)
-    return answer
-
-
-def _commits_touching_rest(repo: str, branch: str, path: str, since: datetime) -> set[str]:
-    """The pre-OMN-19099 REST read. Retained only as the fallback shape."""
-    since_iso = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    out = _gh(
-        [
-            "api",
-            "--paginate",
-            f"repos/{ORG}/{repo}/commits?sha={branch}&path={path}&since={since_iso}&per_page=100",
-            "--jq",
-            ".[].sha",
-        ]
-    )
-    return {line.strip() for line in out.splitlines() if line.strip()}
-
-
 # ---------------------------------------------------------------------------
 # The measurement
 # ---------------------------------------------------------------------------
@@ -842,37 +814,6 @@ def measure_roster(
         measured[name] = (bases[name], len(unreleased), hits)
 
     return measured, errors
-
-
-def measure_repo(
-    policy_repo: RepoPolicy,
-    *,
-    base_override: str | None = None,
-) -> tuple[str, int, list[CommitRef]]:
-    """Return ``(base_ref, unreleased_total, unreleased_packaged_commits)``."""
-    if base_override is None:
-        base_ref = list_release_tags(policy_repo.repo)[-1]
-    else:
-        base_ref = base_override
-
-    unreleased = compare_commits(policy_repo.repo, base_ref, policy_repo.branch)
-    if not unreleased:
-        return base_ref, 0, []
-
-    # `since` is the range's own earliest commit, NOT the tag's date: a tag can
-    # sit on a commit whose timestamp is later than an unreleased sibling's
-    # (rebases, squashes, and an out-of-order merge all produce that), and
-    # anchoring on the tag date would silently drop those.
-    since = min(commit.committed_at for commit in unreleased)
-    in_range = {commit.sha: commit for commit in unreleased}
-
-    packaged: set[str] = set()
-    for path in policy_repo.packaged_paths:
-        packaged |= commits_touching(policy_repo.repo, policy_repo.branch, path, since)
-
-    hits = [in_range[sha] for sha in packaged & in_range.keys()]
-    hits.sort(key=lambda commit: commit.committed_at)
-    return base_ref, len(unreleased), hits
 
 
 def evaluate(
