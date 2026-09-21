@@ -68,10 +68,10 @@ The two defect tests were run against unmodified `origin/dev` before the fix exi
 ```
 FAILED test_replanning_a_body_linear_stored_changes_nothing
 FAILED test_the_comparison_reuses_the_reader_rather_than_parsing_again
-2 failed, 4 passed
+2 failed, 6 passed
 ```
 
-The four that passed are the controls, and the first of them is the one that makes the rest mean anything: it asserts the premise directly — the stored fixture and the bytes this module renders are **not** byte-equal, and the difference is the bullet. Without it, the idempotence test could pass because the bytes happened to match and would prove nothing about normalisation.
+The six that passed are the controls, and the first of them is the one that makes the rest mean anything: it asserts the premise directly — the stored fixture and the bytes this module renders are **not** byte-equal, and the difference is the bullet. Without it, the idempotence test could pass because the bytes happened to match and would prove nothing about normalisation.
 
 After the change, eight pass: the two defect tests, the premise control, and five behavioural controls covering a rewritten criterion, a shrunk model, a reordered model, a hand-edited criterion inside the span, and a body carrying no span at all. The fixture is the real post-write body of OMN-18167, committed under OMN-19046 and reused here rather than copied, so there is one recorded answer to what Linear actually stores and not two.
 
@@ -81,7 +81,14 @@ Only criteria are compared. A change confined to the heading or the provenance l
 
 ## Verification
 
-- 183 passed across the serializer, the OMN-18236 binding gate, the OMN-18333 pair, the OMN-19046 contract suite and schema purity.
+- 209 passed across the serializer, the OMN-18236 binding gate, the OMN-18333 pair, the OMN-18056 gate, the OMN-19046 contract suite and schema purity.
 - `mypy src/ --strict` clean, 184 files. `ruff check` and `ruff format` clean.
-- Live end-to-end against the real ticket: serializer `UNCHANGED` exit 0, gate exit 0.
+- Live, against the body Linear holds for OMN-18167 right now rather than a fixture copy of it: fetched over the API at 5,883 characters, `sha256` prefix `0f242755335a1f28`, `updatedAt` 2026-09-21T18:28:36Z. The serializer was run against those bytes twice in a row and printed `UNCHANGED OMN-18167 (8 criteria: AC1, AC2, AC3, AC4, AC5, AC6, AC7, AC8)` both times, exit 0 both times. `check-ac-binding-acceptance` against the same bytes exits 0. Nothing was written: this CLI is dry-run by construction and has no apply path, and the ticket's `updatedAt` is unchanged.
 - `pre-commit` was run scoped to the changed files rather than `--all-files`, which exceeded a ten-minute budget on this host in an earlier pass on this repository; CI is the full gate.
+
+## Delegation
+
+Both runs on the deployed dev lane over the bus, terminals read from `.onex_state/runs/<run_id>/receipt.json` rather than from the console.
+
+- READY control — run `368af148-9b1e-43c2-873c-f8322219ff75`, correlation `5a31fb83-d1a8-4f93-bed7-52d2b1059853`, status `success`, response `READY`, quality 1.0, `Qwen3.8-27B`.
+- Summarization subtask — run `c9c28c3b-a611-44bf-bd41-6bbaeaf095f3`, correlation `b358ece6-c2f0-42a1-a161-23d3cf59699e`, status `success`, quality 1.0. Given the defect described without naming Linear or this repository, it returned: *a serializer's byte-for-byte comparison of rendered markdown caused perpetual false-positive change detections because the ticket system automatically converted hyphen bullets to asterisks upon saving.* That is the same failure this change removes, restated by something that never saw the code.
