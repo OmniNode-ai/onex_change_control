@@ -153,11 +153,22 @@
 # granting the App Actions:write, is an authorization decision and not this
 # change's to make. Pinned by
 # tests/ci/test_auto_merge_companion_budget_omn18797.py.
+# OMN-19216 (2026-09-22): RE-ADD `ready_for_review` to the pull_request
+# trigger, by operator decision. OMN-14777 dropped it because the ready
+# flip force-armed PRs someone meant to hold; since then a PR opened as a
+# draft was never armed by its flip and needed a manual arming step. Now
+# the OMN-18179 hold gate (a hold label, or auto-merge disabled after its
+# last enable, refuses to arm) carries the draft-hold that trigger
+# removal used to provide, so the flip no longer arms a held PR.
+# Arming stays limited to the allowed author (the resolve step reads the
+# PR author from the payload, not the sender who flipped it), and the
+# Enable step returns early when the PR is already armed, so a ready flip
+# racing a check_suite or review event cannot arm twice.
 name: Auto-Merge
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, ready_for_review]
   pull_request_review:
     types: [submitted, dismissed]
   check_suite:
@@ -612,6 +623,14 @@ jobs:
           PR: ${{ steps.resolve.outputs.pr }}
         run: |
           set -euo pipefail
+          # OMN-19216: a ready flip, a check_suite completion and a review can each
+          # reach this step for one PR. An already-armed PR is left alone rather
+          # than armed a second time.
+          armed="$(gh pr view "$PR" --repo "$GH_REPO" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+          if [ "$armed" = "true" ]; then
+            echo "PR #${PR} is already armed; not arming again (OMN-19216)."
+            exit 0
+          fi
           # The merge method is set by a queue when the actual PR base has one, so
           # queue-backed bases require bare --auto. A no-queue base requires an
           # explicit method in non-interactive gh; this repository permits squash only.
