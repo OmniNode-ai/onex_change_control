@@ -6,6 +6,32 @@ summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #2449."
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
+requirements:
+  - id: "req-transcribed-acceptance-criteria"
+    statement: |-
+      The acceptance criteria this ticket's author declared, transcribed from the ticket body. The ticket body is the source and this block is the copy; each criterion's id is the label the sibling binds_ac entry claims.
+    acceptance:
+      - id: "AC1"
+        statement: |-
+          AC1 — the handler bounds itself, and the bound is checked on the WAIT.** `HandlerDelegateSkill.handle()` returns a terminal within a contract-declared wall-clock budget even when the dispatch port never resolves. *Probe:* `uv run pytest tests/unit/nodes/node_delegate_skill_orchestrator/test_handler_delegate_skill_budget_omn15504.py` in `omnimarket`. Falsified by a `handle()` that outlives its budget against a port that blocks without returning. Red-before is required: the test must hang on pre-fix code.
+      - id: "AC2"
+        statement: |-
+          AC2 — the budget expiry is a typed terminal, not a provider accusation.** The over-budget terminal is `ModelDelegateSkillFailed` with `status="timeout"` and `terminal_failure_cause=None`. A handler-imposed budget is not a fact the provider reported, and `EnumDelegationTerminalFailureCause` is documented as naming only what the provider reported (OMN-16998). *Probe:* `test_budget_expiry_terminal_is_a_timeout_not_a_provider_failure` in that module. Falsified by a `provider_error` cause on a run where no provider answered.
+      - id: "AC3"
+        statement: |-
+          AC3 — the margin is a contract invariant, not a coincidence.** The declared budget is strictly less than `delegation_runtime_dispatch.wait_timeout_seconds`, and the loader refuses a contract where it is not. *Probe:* `test_contract_budget_is_strictly_below_the_ports_wait` plus its positive control `test_loader_refuses_a_contract_whose_budget_does_not_pre_empt_the_port`. Falsified by a loader that accepts equality — which is exactly the shape that produced this outage.
+      - id: "AC4"
+        statement: |-
+          AC4 — the dev lane stops being the odd one out.** All three dev-lane runtime consumer services (`omninode-runtime`, `runtime-effects`, `runtime-worker`) declare `KAFKA_MAX_POLL_INTERVAL_MS` at no less than the stability lane's value. *Probe:* `uv run pytest tests/unit/scripts/test_omn15504_dev_lane_consumer_poll_interval.py` in `omnibase_infra`. Falsified by any of the three missing the declaration. The comparison is against the stability lane rather than a literal, so the assertion still has a referent if lanes drift together.
+      - id: "AC5"
+        statement: |-
+          AC5 — a downstream stall is not reported as an ingress fault.** When the ingress consumes its entire budget and then reports a dispatch timeout, the `terminal_missing` verdict attributes the silence to the chain and points at the command topic's consumer. An ingress that refuses *inside* its budget keeps its own distinct wording. *Probe:* `uv run pytest tests/unit/nodes/node_chain_canary_effect/test_handler_chain_canary_stall_attribution_omn15504.py`. Falsified by the accusatory phrasing surviving on the budget-exhausted path, or by a real refusal losing its attribution.
+      - id: "AC6"
+        statement: |-
+          AC6 — the lane recovers, proven read-only on live state.** After the release and the deploy agent's own rebuild of the `.201` dev lane: the consumer group's committed offset advances past 317 and lag drains to 0 under a positive control, and no `UnknownMemberIdError` appears in the consumer log after the rebuild. *Probe:* `rpk group describe` for the `node_delegate_skill_orchestrator` consume group, read over `ssh jonah@192.168.86.201`, with a second group read in the same command as the positive control, plus `docker logs` on `omninode-runtime-effects`. Falsified by a static lag or a fifth eviction cycle.
+      - id: "AC7"
+        statement: |-
+          AC7 — the chain canary proves links 1–4.** One `chain-canary.yml` dispatch reads links 1 through 4 PASS. Link 5 (ledger replay) is owed by OMN-16964 and is expected red; it does not falsify this. Run id recorded on this ticket.
 evidence_requirements:
   - kind: "ci"
     description: "PR #2449 product diff scope present"

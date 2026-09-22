@@ -7,6 +7,29 @@ summary: >
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
+requirements:
+  - id: "req-transcribed-acceptance-criteria"
+    statement: |-
+      The acceptance criteria this ticket's author declared, transcribed from the ticket body. The ticket body is the source and this block is the copy; each criterion's id is the label the sibling binds_ac entry claims.
+    acceptance:
+      - id: "AC5"
+        statement: |-
+          AC5 — No new file under `scripts/**`, no `/metrics` endpoint, no polling loop, no `Plugin*` subclass (epic [OMN-16776](https://linear.app/omninode/issue/OMN-16776) hard constraint; plan §4.2 item 6 currently PASSES — do not regress it).
+      - id: "AC1"
+        statement: |-
+          AC1 — Every consumer group present in `consumer_flow_windows` for the current window is reachable through `GET /projection/onex.snapshot.projection.consumer-flow.v1`, by paging if necessary. Proof: a script that walks the exposure and set-compares its group set against `select distinct consumer_group … where window_start > now() - interval '10 minutes'`, showing an empty difference. **Falsified by** any group in the table with no reachable row.
+      - id: "AC2"
+        statement: |-
+          AC2 — `next_cursor` is non-null whenever the result set is truncated, and following it reaches the remainder. **Falsified by** a truncated response that still carries `next_cursor: null` — that is the current defect and it must fail before the change (prove RED).
+      - id: "AC3"
+        statement: |-
+          AC3 — The exposure's response distinguishes "this is the complete set" from "this is page 1 of N". **Falsified by** a client being unable to tell the two apart from the response alone.
+      - id: "AC4"
+        statement: |-
+          AC4 — The default page is ordered so it is *useful* when truncated, not alphabetically arbitrary: non-`IDLE` states (`STALLED`/`STARVED`/`UNKNOWN`) sort ahead of `IDLE`. Today the ordering is `window_end DESC` and the 53 dropped groups are dropped by tie-break, so a genuinely stalled consumer can fall off the page while 494 IDLE rows occupy it. **Falsified by** a STALLED row being unreachable while IDLE rows are served.
+      - id: "AC6"
+        statement: |-
+          AC6 — A skipped heartbeat window does not leave the exposure serving the gap row for a pair whose observed row was written from the same source message. The writer publishes the `UNKNOWN` gap row and then the observed row for the same `(consumer_group, topic)` inside one invocation, both stamped with that message's `source_offset`, and `apply_message` drops the second as a stale replay — so the served row carries the gap row's NULL counters instead of the observed window. Proof: a test that drives `ConsumerFlowProjectionWriter` through a `window_sequence` gap into the real `SnapshotCache.apply_message` and asserts the served row for that pair is the observed window with its counters. **Falsified by** a served `UNKNOWN` row for a pair whose same-window observed row was written in the same invocation. Pre-existing, not introduced by the `key_columns` change; carried here rather than on a sibling because the fix is in the same writer/cache path (comment `480cb3d0`, ruled 2026-09-15).
 evidence_requirements:
   - kind: "ci"
     description: "PR #2396 CI checks green"
