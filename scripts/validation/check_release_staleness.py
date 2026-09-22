@@ -77,9 +77,25 @@ every time: 50 REST requests per run against the eight-repo roster, about
 hour. It was 22% of every App-authenticated run in that window.
 
 Batched: the tag reads (11 paginated REST calls became 1 GraphQL document,
-2 when a repo has more than 100 tags) and the packaged-path history (24 REST
-calls became 1). Measured together: 18 requests for an eight-repo roster
-against 50, pinned by ``MAX_REQUESTS_PER_SWEEP`` in the test file.
+2 when any repo carries more than 100 tags) and the packaged-path history
+(24 REST calls became 1).
+
+Measured together, against 50 before: **18 requests on the test fixture and
+19 on the live roster.** Those two numbers differ for one reason and it is
+worth stating rather than rounding away — the fixture gives every repo a
+single tag, so its tag phase is one document, while the live roster's
+omnimarket carries 148 and needs a second page. Both were measured, the
+19 independently. Quoting only the 18 would understate the live cost and,
+worse, would make the next reader compute the remaining headroom under
+``MAX_REQUESTS_PER_SWEEP`` as 2 when it is actually 1.
+
+The budget is a CEILING at 20 rather than a pin at the measured number, on
+purpose. A pin would fail the moment any roster repo crossed 100 tags, which
+is a tag-count change and not a batching regression, and the pressure would
+then be to weaken the assertion. What actually catches de-batching is the
+companion test asserting growth PER REPO, since a lost batch shows up as the
+document count multiplying with the roster rather than as a single number
+creeping.
 
 NOT batched: ``compare``. Its truncation refusal — a collected commit count
 short of the API's own ``total_commits`` refuses rather than under-reporting —
