@@ -68,13 +68,90 @@ RELEASE_ON_MERGE_PATHS = ["src", "pyproject.toml", "uv.lock"]
 # gh stub
 # ---------------------------------------------------------------------------
 
+#: The stub answers BOTH transports, because OMN-19099 moved the tag and
+#: path-history reads from REST to GraphQL while leaving ``compare`` on REST.
+#: A stub that only spoke REST would have made the batched path untestable,
+#: and a stub that only spoke GraphQL would have hidden the compare contract.
+#:
+#: GraphQL rules are declared per repo and the stub ASSEMBLES the multi-alias
+#: response itself, which is the only way to exercise the real batching: one
+#: document carries every repo, so a fixture keyed by whole-query substring
+#: could never represent it.
 _STUB = """#!/usr/bin/env python3
-import json, os, sys
+import json, os, re, sys
 
 argv = " ".join(sys.argv[1:])
+log = os.environ.get("GH_STUB_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as handle:
+        kind = "graphql" if "graphql" in argv else argv[:120]
+        handle.write(argv.split(" ")[0] + " " + kind + "\\n")
 with open(os.environ["GH_STUB_FIXTURE"], encoding="utf-8") as handle:
     rules = json.load(handle)
+
+gql_tags, gql_history, gql_errors = {}, {}, {}
+gql_fail = None
 for rule in rules:
+    gql_tags.update(rule.get("gql_tags", {}))
+    gql_history.update(rule.get("gql_history", {}))
+    gql_errors.update(rule.get("gql_error", {}))
+    if "gql_fail" in rule:
+        gql_fail = rule["gql_fail"]
+
+if "graphql" in argv:
+    # A TRANSPORT-level refusal, distinct from `gql_error` above. `gql_error`
+    # is a partial document: HTTP 200, exit 0, an `errors` array naming the
+    # aliases that did not resolve. A 403 is not that -- `gh` exits non-zero
+    # and writes to stderr, and that is the shape the quota classifier reads.
+    # Modelling a 403 as a partial document would test the wrong branch.
+    if gql_fail is not None:
+        sys.stderr.write(gql_fail.get("stderr", ""))
+        sys.exit(gql_fail.get("exit", 1))
+    data, errors = {}, []
+    tag_q = re.findall(
+        r'(\\w+): repository\\(owner: "[^"]+", name: "([^"]+)"\\) \\{ refs\\(', argv
+    )
+    hist_q = re.findall(
+        r'(\\w+): repository\\(owner: "[^"]+", name: "([^"]+)"\\) \\{ '
+        r'object\\(expression: "[^"]+"\\) \\{ \\.\\.\\. on Commit \\{ '
+        r'history\\(path: "([^"]+)"',
+        argv,
+    )
+    for alias, repo in tag_q:
+        if repo in gql_errors:
+            errors.append({"message": gql_errors[repo], "path": [alias]})
+            data[alias] = None
+            continue
+        names = gql_tags.get(repo, [])
+        data[alias] = {
+            "refs": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                "nodes": [{"name": n} for n in names],
+            }
+        }
+    for alias, repo, path in hist_q:
+        if repo in gql_errors:
+            errors.append({"message": gql_errors[repo], "path": [alias]})
+            data[alias] = None
+            continue
+        shas = (gql_history.get(repo) or {}).get(path, [])
+        data[alias] = {
+            "object": {
+                "history": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [{"oid": s} for s in shas],
+                }
+            }
+        }
+    payload = {"data": data}
+    if errors:
+        payload["errors"] = errors
+    sys.stdout.write(json.dumps(payload))
+    sys.exit(0)
+
+for rule in rules:
+    if "match" not in rule:
+        continue
     if rule["match"] in argv:
         sys.stdout.write(rule.get("stdout", ""))
         sys.stderr.write(rule.get("stderr", ""))
@@ -86,7 +163,7 @@ sys.exit(97)
 
 def _install_gh_stub(tmp_path: Path, rules: list[dict[str, object]]) -> dict[str, str]:
     bindir = tmp_path / "bin"
-    bindir.mkdir(exist_ok=True)
+    bindir.mkdir(parents=True, exist_ok=True)
     stub = bindir / "gh"
     stub.write_text(_STUB, encoding="utf-8")
     stub.chmod(0o755)
@@ -95,8 +172,23 @@ def _install_gh_stub(tmp_path: Path, rules: list[dict[str, object]]) -> dict[str
     env = dict(os.environ)
     env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
     env["GH_STUB_FIXTURE"] = str(fixture)
+    env["GH_STUB_LOG"] = str(tmp_path / "gh_calls.log")
     env.pop("GITHUB_STEP_SUMMARY", None)
     return env
+
+
+def _call_count(env: dict[str, str]) -> int:
+    """How many times the sweep invoked ``gh``.
+
+    This is the budget's falsifier. It counts PROCESS INVOCATIONS, so one
+    GraphQL document spanning eight repos counts once -- which is exactly the
+    property the batching claims and therefore the one worth pinning.
+    """
+    path = Path(env["GH_STUB_LOG"])
+    if not path.exists():
+        return 0
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return len([line for line in lines if line.strip()])
 
 
 def _iso(hours_ago: float) -> str:
@@ -119,10 +211,13 @@ def _repo_rules(
     packaged path (defaults to all of them).
     """
     rules: list[dict[str, object]] = [
+        # Tags now arrive over GraphQL (OMN-19099). The REST rule is kept
+        # beside it so the single-repo REST fallback stays exercised.
+        {"gql_tags": {repo: list(tags)}},
         {
             "match": f"repos/OmniNode-ai/{repo}/tags",
             "stdout": "".join(f"{t}\n" for t in tags),
-        }
+        },
     ]
     for base, commits in compare.items():
         # `?per_page=100` MUST precede `?per_page=1`: the stub matches on the
@@ -155,12 +250,18 @@ def _repo_rules(
             "stdout": "".join(f"{s}\n" for s in union),
         }
     )
+    # Every packaged path answers with the same union, matching the REST rule
+    # above: the commits endpoint was never keyed by base ref either.
+    rules.append(
+        {"gql_history": {repo: {p: list(union) for p in RELEASE_ON_MERGE_PATHS}}}
+    )
     return rules
 
 
 def _policy(
     tmp_path: Path, entries: list[dict[str, object]], max_age_hours: int = 24
 ) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "policy.yaml"
     path.write_text(
         yaml.safe_dump(
@@ -303,11 +404,12 @@ def test_unreadable_repo_is_an_error_row_not_a_silent_zero(tmp_path: Path) -> No
     env = _install_gh_stub(
         tmp_path,
         [
+            {"gql_error": {"omnimarket": "Could not resolve to a Repository"}},
             {
                 "match": "repos/OmniNode-ai/omnimarket/tags",
                 "stdout": "",
                 "exit": 1,
-            }
+            },
         ],
     )
     result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
@@ -337,13 +439,24 @@ _REAL_403_STDERR = (
 
 
 def _quota_403_rules(repo: str = "omnimarket") -> list[dict[str, object]]:
+    """A 403 on the roster read, on BOTH transports.
+
+    OMN-19099 moved the tag read from REST to GraphQL, so the REST rule alone
+    would no longer be reached by a sweep and these tests would have gone
+    quietly vacuous -- passing, because an unstubbed GraphQL tag read returns
+    an empty tag list, which is an ERROR row for an entirely different reason.
+    The GraphQL rule is what actually exercises the classifier now; the REST
+    rule is kept so the single-repo fallback path stays covered by the same
+    fixture.
+    """
     return [
+        {"gql_fail": {"stderr": _REAL_403_STDERR, "exit": 1}},
         {
             "match": f"repos/OmniNode-ai/{repo}/tags",
             "stdout": "",
             "stderr": _REAL_403_STDERR,
             "exit": 1,
-        }
+        },
     ]
 
 
@@ -427,18 +540,26 @@ def test_a_non_quota_gh_failure_is_still_a_generic_error(tmp_path: Path) -> None
     env = _install_gh_stub(
         tmp_path,
         [
+            # On the GraphQL transport too, for the reason spelled in
+            # ``_quota_403_rules``: without it this control passes on an empty
+            # tag list rather than on the 404 it claims to be classifying,
+            # which would make the negative half of the pair prove nothing.
+            {"gql_fail": {"stderr": "gh: Not Found (HTTP 404)\n", "exit": 1}},
             {
                 "match": "repos/OmniNode-ai/omnimarket/tags",
                 "stdout": "",
                 "stderr": "gh: Not Found (HTTP 404)\n",
                 "exit": 1,
-            }
+            },
         ],
     )
     result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "ERROR" in result.stdout
+    assert "404" in result.stdout, (
+        "the control must classify the 404, not an empty tag list"
+    )
     assert "QUOTA_EXHAUSTED" not in result.stdout
     assert "OCC_QUOTA_EXHAUSTED" not in result.stdout
 
@@ -515,6 +636,15 @@ def test_secondary_rate_limit_is_also_a_quota_outcome(tmp_path: Path) -> None:
         tmp_path,
         [
             {
+                "gql_fail": {
+                    "stderr": (
+                        "gh: You have exceeded a secondary rate limit. Please wait a "
+                        "few minutes before you try again. (HTTP 403)\n"
+                    ),
+                    "exit": 1,
+                }
+            },
+            {
                 "match": "repos/OmniNode-ai/omnimarket/tags",
                 "stdout": "",
                 "stderr": (
@@ -522,7 +652,7 @@ def test_secondary_rate_limit_is_also_a_quota_outcome(tmp_path: Path) -> None:
                     "minutes before you try again. (HTTP 403)\n"
                 ),
                 "exit": 1,
-            }
+            },
         ],
     )
     result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
@@ -530,6 +660,91 @@ def test_secondary_rate_limit_is_also_a_quota_outcome(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stdout + result.stderr
     assert "OCC_QUOTA_EXHAUSTED" in result.stdout
     assert "secondary" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Where the two changes meet (OMN-19098 quota x OMN-19099 batching)
+# ---------------------------------------------------------------------------
+#
+# These two pin the seam, not either feature. Both features were green in
+# isolation on their own branches; the ways they can break are ways only the
+# MERGED module can break, so neither side's suite could have caught them.
+
+
+def test_a_quota_refusal_of_a_batched_document_is_quota_for_every_repo_it_covered(
+    tmp_path: Path,
+) -> None:
+    """The batched roster read is ONE request covering every repo.
+
+    So an empty bucket refuses one document and stops us reading all of them.
+    Every repo the document covered must therefore report QUOTA_EXHAUSTED, and
+    none may report a generic ERROR: an ERROR row asserts something about the
+    repo, and we learned nothing about any of these repos.
+
+    This is the one place batching made the quota arm BROADER. Before
+    OMN-19099 the per-repo loop gave quota rows only to the repos not yet
+    read, so the same outage produced a mix of verdicts for one cause.
+    """
+    roster = ["omnimarket", "omnibase_core", "omnibase_infra"]
+    env = _install_gh_stub(
+        tmp_path, [{"gql_fail": {"stderr": _REAL_403_STDERR, "exit": 1}}]
+    )
+    result = _run(
+        env,
+        "--policy",
+        str(_policy(tmp_path, [_enforced(r) for r in roster])),
+        "--json",
+    )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert payload["outcome"] == "OCC_QUOTA_EXHAUSTED"
+    assert payload["quota_exhausted"] == len(roster)
+    verdicts = {f["repo"]: f["verdict"] for f in payload["findings"]}
+    assert verdicts == dict.fromkeys(roster, "QUOTA_EXHAUSTED"), verdicts
+    assert payload["errors"] == 0
+    # Fails closed, exactly as it did before batching.
+    assert payload["positive_control"]["ran"] is False
+
+
+def test_a_quota_refusal_on_the_unbatched_compare_leg_is_still_a_quota_row(
+    tmp_path: Path,
+) -> None:
+    """``compare`` is deliberately still REST, so it is the one per-repo catch.
+
+    That catch is an ``except ProbeError``, and ``QuotaExhaustedError``
+    subclasses ``ProbeError`` -- so without an explicit re-raise the broader
+    arm swallows the quota case and records a generic per-repo error string,
+    losing the distinct verdict, the reset time and the outcome token. The
+    tag phase cannot cover this: it is batched, and its refusal propagates
+    from a different place entirely.
+
+    RED before the re-raise in ``measure_roster`` phase 2: this reported
+    ERROR.
+    """
+    env = _install_gh_stub(
+        tmp_path,
+        [
+            # Tags resolve fine; the bucket empties on the compare leg.
+            {"gql_tags": {"omnimarket": ["v0.4.22"]}},
+            {
+                "match": "omnimarket/compare/",
+                "stdout": "",
+                "stderr": _REAL_403_STDERR,
+                "exit": 1,
+            },
+        ],
+    )
+    result = _run(
+        env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])), "--json"
+    )
+
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert payload["outcome"] == "OCC_QUOTA_EXHAUSTED"
+    assert payload["quota_exhausted"] == 1
+    assert payload["errors"] == 0
+    assert payload["findings"][0]["verdict"] == "QUOTA_EXHAUSTED"
 
 
 def test_truncated_compare_refuses_rather_than_under_reporting(tmp_path: Path) -> None:
@@ -541,6 +756,7 @@ def test_truncated_compare_refuses_rather_than_under_reporting(tmp_path: Path) -
     env = _install_gh_stub(
         tmp_path,
         [
+            {"gql_tags": {"omnimarket": ["v0.4.22"]}},
             {"match": "repos/OmniNode-ai/omnimarket/tags", "stdout": "v0.4.22\n"},
             {
                 "match": "omnimarket/compare/v0.4.22...dev?per_page=100",
@@ -559,10 +775,11 @@ def test_repo_with_no_release_tags_is_an_error(tmp_path: Path) -> None:
     env = _install_gh_stub(
         tmp_path,
         [
+            {"gql_tags": {"omnimarket": []}},
             {
                 "match": "repos/OmniNode-ai/omnimarket/tags",
                 "stdout": "sprint-2026-09\nv1\n",
-            }
+            },
         ],
     )
     result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
@@ -673,6 +890,183 @@ def test_unenforced_entry_without_a_ticket_is_rejected(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # The live configuration, and the wiring anchors
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Request budget and per-commit attribution (OMN-19099)
+# ---------------------------------------------------------------------------
+
+#: The pinned budget. Measured before this change: 50 requests for the live
+#: eight-repo roster (1 token mint, 11 paginated tag reads, 8 compare totals,
+#: 6 compare pages, 24 path reads). Raising this constant is the ONLY way to
+#: make an over-budget implementation pass, which is the point: a budget that
+#: lives in a comment is not a budget.
+MAX_REQUESTS_PER_SWEEP = 20
+
+#: The roster the live policy carries, so the budget is measured against the
+#: real shape rather than a convenient two-repo one.
+_ROSTER = [
+    "omnimarket",
+    "omnibase_core",
+    "omnibase_infra",
+    "omnibase_spi",
+    "omnibase_compat",
+    "omnimemory",
+    "omniintelligence",
+    "omniclaude",
+]
+
+
+def _full_roster_fixture() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Eight repos, each with unreleased packaged commits inside the window."""
+    rules: list[dict[str, object]] = []
+    entries: list[dict[str, object]] = []
+    for index, repo in enumerate(_ROSTER):
+        tag = f"v0.{index}.1"
+        sha = f"{index}aaaaaa"
+        rules.extend(
+            _repo_rules(
+                repo,
+                tags=[tag],
+                compare={tag: [(sha, _iso(2))]},
+            )
+        )
+        entries.append(_unenforced(repo))
+    return rules, entries
+
+
+def test_a_full_roster_sweep_stays_inside_the_request_budget(tmp_path: Path) -> None:
+    """AC1/AC5/AC6 — the measured saving, pinned so it cannot silently regress.
+
+    The pre-change implementation issued 50 requests for this roster. The
+    batched one issues a small constant: one document for every repo's tags,
+    one for every (repo, path) history, and the per-repo compare reads that
+    deliberately stayed on REST.
+    """
+    rules, entries = _full_roster_fixture()
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env, "--policy", str(_policy(tmp_path, entries)), "--no-positive-control"
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    count = _call_count(env)
+    assert count <= MAX_REQUESTS_PER_SWEEP, (
+        f"{count} gh invocations for an {len(_ROSTER)}-repo roster, budget is "
+        f"{MAX_REQUESTS_PER_SWEEP}\n{result.stdout}"
+    )
+
+
+def test_the_batch_does_not_scale_with_roster_size(tmp_path: Path) -> None:
+    """The saving is structural, not a smaller constant.
+
+    A batched read costs the same one document whether it covers two repos or
+    eight. Measuring both and asserting the tag and history reads did not
+    multiply is what distinguishes batching from a micro-optimisation that
+    would quietly return to 50 as the roster grows.
+    """
+    two_rules: list[dict[str, object]] = []
+    two_entries: list[dict[str, object]] = []
+    for index, repo in enumerate(_ROSTER[:2]):
+        tag = f"v0.{index}.1"
+        two_rules.extend(
+            _repo_rules(repo, tags=[tag], compare={tag: [(f"{index}aaaaaa", _iso(2))]})
+        )
+        two_entries.append(_unenforced(repo))
+    small_env = _install_gh_stub(tmp_path / "small", two_rules)
+    small = _run(
+        small_env,
+        "--policy",
+        str(_policy(tmp_path, two_entries)),
+        "--no-positive-control",
+    )
+    assert small.returncode == 0, small.stdout + small.stderr
+
+    rules, entries = _full_roster_fixture()
+    big_env = _install_gh_stub(tmp_path / "big", rules)
+    big = _run(
+        big_env,
+        "--policy",
+        str(_policy(tmp_path / "big_policy_dir", entries)),
+        "--no-positive-control",
+    )
+    assert big.returncode == 0, big.stdout + big.stderr
+
+    # Going from 2 repos to 8 adds only the per-repo compare reads (2 each),
+    # never more tag or history documents.
+    growth = _call_count(big_env) - _call_count(small_env)
+    assert growth <= 2 * (len(_ROSTER) - 2), (
+        f"roster grew by 6 repos and the call count grew by {growth}; the "
+        "batched reads are multiplying per repo"
+    )
+
+
+def test_the_oldest_packaged_commit_is_reported_not_the_oldest_commit(
+    tmp_path: Path,
+) -> None:
+    """AC7 — per-commit attribution survives the batching.
+
+    This is the control for the route that was REJECTED during design: reading
+    the packaged set off ``compare``'s ``files`` array. That array is the
+    aggregate diff of the whole range, so an implementation using it would
+    report the range's oldest commit here (96h, stale) instead of the oldest
+    PACKAGED commit (2h, fresh). The gate measures how long release debt has
+    been sitting, so the difference is a wrong verdict, not a rounding error.
+    """
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.4.22"],
+        compare={
+            "v0.4.22": [
+                ("docsold", _iso(96)),  # oldest in range, docs only
+                ("srcnew1", _iso(2)),  # newest in range, packaged
+            ]
+        },
+        packaged={"v0.4.22": ["srcnew1"]},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env,
+        "--policy",
+        str(_policy(tmp_path, [_enforced("omnimarket")])),
+        "--no-positive-control",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "FRESH" in result.stdout
+    assert "STALE" not in result.stdout
+    # The packaged count is what separates this from the rejected route: the
+    # range holds two commits and exactly one of them is packaged.
+    assert "2          1" in result.stdout
+
+
+def test_one_unreadable_repo_in_a_batch_is_one_error_row(tmp_path: Path) -> None:
+    """Batching must not turn one dead repo into a dead roster.
+
+    GraphQL answers a partial document with data for the aliases that resolved
+    and an errors array naming the ones that did not. Attributing that to the
+    whole document would recreate, at the transport layer, the exact
+    one-event-reads-as-eight-failures conflation that made the 2026-09-21
+    quota exhaustion take an hour to diagnose.
+    """
+    rules = _repo_rules(
+        "omnimarket", tags=["v0.4.22"], compare={"v0.4.22": [("aaaa111", _iso(2))]}
+    )
+    rules.append({"gql_error": {"omnibase_core": "Could not resolve to a Repository"}})
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env,
+        "--policy",
+        str(
+            _policy(tmp_path, [_unenforced("omnimarket"), _unenforced("omnibase_core")])
+        ),
+        "--no-positive-control",
+    )
+
+    assert "ERROR" in result.stdout, result.stdout + result.stderr
+    assert "omnibase_core" in result.stdout
+    # omnimarket resolved in the same document and must still be measured.
+    assert "FRESH" in result.stdout
 
 
 def test_live_policy_and_baseline_agree() -> None:
