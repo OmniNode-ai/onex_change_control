@@ -38,6 +38,10 @@ from onex_change_control.scripts.check_platform_leads_review_tripwire import (
     GH_MAX_ATTEMPTS,
     GH_SECONDARY_RATE_LIMIT_MIN_WAIT_SECONDS,
     GRANTS_VALIDATOR_JOB,
+    MAIN_CI_SUMMARY_JOB,
+    MAIN_SELF_APPROVAL_JOB,
+    MAIN_SELF_APPROVAL_MARKERS,
+    MAIN_SELF_APPROVAL_MODULE,
     PROMOTION_GATE_MARKERS,
     REQUESTER_FLAG,
     SELF_GRANTED_REASON,
@@ -48,6 +52,7 @@ from onex_change_control.scripts.check_platform_leads_review_tripwire import (
     _diagnose,
     _run_gh_checked,
     authoring_time_refusal_behaves,
+    authoring_time_refusal_present_on_main,
     authoring_time_refusal_wired,
     classify_gh_failure,
     evaluate,
@@ -781,6 +786,13 @@ class TestCliMainOMN18327:
                 f"{MODULE}.authoring_time_refusal_behaves", return_value=authoring
             ),
             mock.patch(f"{MODULE}.authoring_time_refusal_wired", return_value=wired),
+            # OMN-18945: fact 4 is patched to a pass here so these existing
+            # cases keep asserting exactly what they asserted before, and do
+            # not start making a live API call. The fact has its own tests.
+            mock.patch(
+                f"{MODULE}.authoring_time_refusal_present_on_main",
+                return_value=(True, "ok"),
+            ),
             promotion_patch as promotion_mock,
         ):
             return main(argv), promotion_mock
@@ -817,3 +829,300 @@ class TestCliMainOMN18327:
         code, promotion_mock = self._run(["--credential-origin", "fallback"])
         assert code == 0
         assert promotion_mock.call_args.kwargs["credential_origin"] == "fallback"
+
+
+class TestAuthoringTimeRefusalPresentOnMainOMN18945:
+    """Fact 4 — the refusal is enforceable on the branch grants are authored on.
+
+    Facts 1 and 2 read THIS checkout, which is `dev`. Grants are authored by
+    `hotfix/*` pull requests targeting `main`, and `main` carries no
+    `validate_prod_promotion_grants.py` at all, so the control and the
+    tripwire built to prove the control had not been removed shared one blind
+    spot. Nothing else in the fleet reads across the branch boundary, so
+    every sub-fact below is one a removal on `main` would otherwise make
+    invisible from here.
+
+    The API read is stubbed at `_read_repo_file_at_ref`, so these exercise
+    the real parsing and the real decision logic with no network.
+    """
+
+    REPO = "OmniNode-ai/onex_change_control"
+
+    GOOD_MODULE = (
+        'SELF_GRANTED_REASON = "self_granted"\n'
+        "if approved_by.casefold() == requester_key:\n"
+    )
+
+    @staticmethod
+    def _workflow(
+        *,
+        job_present: bool = True,
+        requester: bool = True,
+        conditional: str | None = None,
+        in_summary: bool = True,
+    ) -> str:
+        jobs: list[str] = []
+        if job_present:
+            cond = f"    {conditional}\n" if conditional else ""
+            flag = " --requester X" if requester else ""
+            jobs.append(
+                f"  {MAIN_SELF_APPROVAL_JOB}:\n"
+                f"{cond}"
+                "    steps:\n"
+                f"      - run: uv run some-validator{flag}\n"
+            )
+        needs = ["test", "pre-commit"]
+        if in_summary:
+            needs.append(MAIN_SELF_APPROVAL_JOB)
+        jobs.append(
+            f"  {MAIN_CI_SUMMARY_JOB}:\n"
+            f"    needs: [{', '.join(needs)}]\n"
+            "    steps:\n"
+            "      - run: echo ok\n"
+        )
+        return "jobs:\n" + "".join(jobs)
+
+    def _call(self, module_src: str, workflow_src: str) -> tuple[bool, str]:
+        with mock.patch(
+            f"{MODULE}._read_repo_file_at_ref",
+            side_effect=lambda path, _ref, **_kw: (
+                module_src if path == MAIN_SELF_APPROVAL_MODULE else workflow_src
+            ),
+        ):
+            return authoring_time_refusal_present_on_main(repo=self.REPO)
+
+    def test_passes_when_main_carries_a_wired_blocking_refusal(self) -> None:
+        ok, detail = self._call(self.GOOD_MODULE, self._workflow())
+        assert ok is True, detail
+
+    @pytest.mark.parametrize("marker", MAIN_SELF_APPROVAL_MARKERS)
+    def test_trips_when_either_module_marker_is_gone(self, marker: str) -> None:
+        """Two INDEPENDENT markers, both required.
+
+        The reason string could survive while the casefolded comparison that
+        makes it un-launderable is dropped, and the comparison could survive
+        while the reason is renamed out of alignment with the other halves.
+        """
+        ok, detail = self._call(
+            self.GOOD_MODULE.replace(marker, "REMOVED"), self._workflow()
+        )
+        assert ok is False
+        assert marker in detail
+
+    def test_trips_when_main_has_no_such_job(self) -> None:
+        ok, detail = self._call(
+            self.GOOD_MODULE, self._workflow(job_present=False, in_summary=False)
+        )
+        assert ok is False
+        assert "declares no" in detail
+        assert MAIN_SELF_APPROVAL_JOB in detail
+
+    def test_trips_when_the_job_omits_the_requester(self) -> None:
+        ok, detail = self._call(self.GOOD_MODULE, self._workflow(requester=False))
+        assert ok is False
+        assert REQUESTER_FLAG in detail
+
+    @pytest.mark.parametrize(
+        "conditional", ["if: github.event_name == 'pull_request'", "needs: [test]"]
+    )
+    def test_trips_when_the_job_can_be_skipped(self, conditional: str) -> None:
+        """A skipped job is indistinguishable from a passing one.
+
+        `ci-summary` fails on `failure` and `cancelled` only, so an `if:` or a
+        `needs:` converts the refusal into something that can go quiet.
+        """
+        ok, detail = self._call(
+            self.GOOD_MODULE, self._workflow(conditional=conditional)
+        )
+        assert ok is False
+        assert "SKIPPED" in detail
+
+    def test_trips_when_the_required_rollup_does_not_hold_the_job(self) -> None:
+        """The whole point of the placement fact.
+
+        `CI Summary` is the required context on `main` and the standalone
+        grants workflow is not, so a refusal outside that rollup reports red
+        beside a green required context and merges anyway.
+        """
+        ok, detail = self._call(self.GOOD_MODULE, self._workflow(in_summary=False))
+        assert ok is False
+        assert MAIN_CI_SUMMARY_JOB in detail
+
+    def test_every_failing_sub_fact_is_named_not_just_the_first(self) -> None:
+        ok, detail = self._call(
+            self.GOOD_MODULE.replace("self_granted", "X"),
+            self._workflow(requester=False, in_summary=False),
+        )
+        assert ok is False
+        assert MAIN_SELF_APPROVAL_MODULE in detail
+        assert REQUESTER_FLAG in detail
+        assert MAIN_CI_SUMMARY_JOB in detail
+
+    def test_an_unparseable_workflow_is_inconclusive_not_a_pass(self) -> None:
+        with pytest.raises(TripwireInconclusiveError):
+            self._call(self.GOOD_MODULE, "jobs: [unclosed\n")
+
+    def test_a_workflow_with_no_jobs_mapping_is_inconclusive(self) -> None:
+        with pytest.raises(TripwireInconclusiveError):
+            self._call(self.GOOD_MODULE, "on: push\n")
+
+    def test_an_unreadable_branch_propagates_as_inconclusive(self) -> None:
+        """A branch this job cannot read is not a branch that is fine."""
+        with (
+            mock.patch(
+                f"{MODULE}._read_repo_file_at_ref",
+                side_effect=TripwireInconclusiveError("HTTP 403"),
+            ),
+            pytest.raises(TripwireInconclusiveError),
+        ):
+            authoring_time_refusal_present_on_main(repo=self.REPO)
+
+    def test_the_ref_read_is_main_and_the_repo_is_not_hardcoded_upstream(
+        self,
+    ) -> None:
+        """A fork must be asserted against itself, not against upstream."""
+        seen: list[tuple[str, str, str]] = []
+
+        def _record(path: str, ref: str, **kwargs: object) -> str:
+            seen.append((path, ref, str(kwargs["repo"])))
+            return (
+                self.GOOD_MODULE
+                if path == MAIN_SELF_APPROVAL_MODULE
+                else self._workflow()
+            )
+
+        with mock.patch(f"{MODULE}._read_repo_file_at_ref", side_effect=_record):
+            authoring_time_refusal_present_on_main(repo="someone/fork")
+        assert {ref for _, ref, _ in seen} == {"main"}
+        assert {repo for _, _, repo in seen} == {"someone/fork"}
+
+
+class TestEvaluateCarriesTheMainFactOMN18945:
+    OK = (True, "detail")
+
+    def test_a_failing_main_fact_trips_the_whole_gate(self) -> None:
+        safe, message = evaluate(
+            authoring=self.OK,
+            wired=self.OK,
+            promotion=self.OK,
+            on_main=(False, "ci-summary does not hold the job"),
+        )
+        assert safe is False
+        assert "ABSENT ON main" in message
+
+    def test_the_pass_message_reports_the_main_fact(self) -> None:
+        safe, message = evaluate(
+            authoring=self.OK,
+            wired=self.OK,
+            promotion=self.OK,
+            on_main=(True, "main carries it"),
+        )
+        assert safe is True
+        assert "enforceable on main" in message
+
+    def test_omitting_the_main_fact_keeps_every_existing_caller_unchanged(
+        self,
+    ) -> None:
+        """Default None, so the three-fact callers and their tests above keep
+        their exact meaning rather than silently gaining a fourth.
+        """
+        safe, message = evaluate(authoring=self.OK, wired=self.OK, promotion=self.OK)
+        assert safe is True
+        assert "enforceable on main" not in message
+
+
+class TestCliRunsTheMainFactOMN18945:
+    def test_exit_1_when_the_refusal_is_not_enforceable_on_main(self) -> None:
+        with (
+            mock.patch(
+                f"{MODULE}.authoring_time_refusal_behaves", return_value=(True, "ok")
+            ),
+            mock.patch(
+                f"{MODULE}.authoring_time_refusal_wired", return_value=(True, "ok")
+            ),
+            mock.patch(
+                f"{MODULE}.promotion_time_refusal_present", return_value=(True, "ok")
+            ),
+            mock.patch(
+                f"{MODULE}.authoring_time_refusal_present_on_main",
+                return_value=(False, "no job on main"),
+            ),
+        ):
+            assert main([]) == 1
+
+    def test_the_cli_defaults_to_this_repo_and_main(self) -> None:
+        with (
+            mock.patch(
+                f"{MODULE}.authoring_time_refusal_behaves", return_value=(True, "ok")
+            ),
+            mock.patch(
+                f"{MODULE}.authoring_time_refusal_wired", return_value=(True, "ok")
+            ),
+            mock.patch(
+                f"{MODULE}.promotion_time_refusal_present", return_value=(True, "ok")
+            ),
+            mock.patch(
+                f"{MODULE}.authoring_time_refusal_present_on_main",
+                return_value=(True, "ok"),
+            ) as on_main_mock,
+        ):
+            assert main([]) == 0
+        assert on_main_mock.call_args.kwargs["ref"] == "main"
+        assert on_main_mock.call_args.kwargs["repo"].endswith("onex_change_control")
+
+
+class TestAbsentIsNotUnreadableOMN18945:
+    """A 404 on a read of THIS repo is an absent file, not a token problem.
+
+    Measured live on 2026-09-21, before `main` carried the module: the gate
+    reported "TOKEN PROBLEM, NOT A POLICY VIOLATION ... restore a valid
+    CROSS_REPO_PAT" and exited 2 for a file that was simply not there. That
+    sends an operator to rotate a credential that was never broken — the same
+    misdiagnosis class OMN-16373 removed from the rate-limit path — and it
+    turns the one condition this fact exists to catch into an INCONCLUSIVE.
+    """
+
+    #: The verbatim `gh api` stderr for a path that does not exist at a ref,
+    #: captured from the live read above. Pinned as a literal so a refactor
+    #: of the classifier cannot silently reintroduce the misdiagnosis.
+    PRODUCTION_NOT_FOUND_STDERR = "gh: Not Found (HTTP 404)"
+
+    def test_a_missing_module_on_main_trips_rather_than_going_inconclusive(
+        self,
+    ) -> None:
+        workflow_src = TestAuthoringTimeRefusalPresentOnMainOMN18945._workflow()
+
+        not_found = f"could not read it: {self.PRODUCTION_NOT_FOUND_STDERR}"
+
+        def _gh(args: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            """Only the module 404s; the workflow read succeeds.
+
+            Patched at the `gh` seam rather than at `_read_repo_file_at_ref`
+            so the reclassification under test is the real one.
+            """
+            if MAIN_SELF_APPROVAL_MODULE in args[1]:
+                raise TripwireInconclusiveError(not_found)
+            return _completed(returncode=0, stdout=workflow_src)
+
+        with mock.patch(f"{MODULE}._run_gh_checked", side_effect=_gh):
+            ok, detail = authoring_time_refusal_present_on_main(
+                repo="OmniNode-ai/onex_change_control"
+            )
+        assert ok is False, "an absent refusal must TRIP, not go inconclusive"
+        assert "does not exist at main" in detail
+
+    def test_a_genuine_permission_failure_is_still_inconclusive(self) -> None:
+        """The control that keeps the fix narrow.
+
+        Only the not-found signature is reclassified; a scope or rate-limit
+        failure must still fail closed as INCONCLUSIVE rather than be read as
+        a missing refusal.
+        """
+        with mock.patch(f"{MODULE}._run_gh_checked") as gh:
+            gh.side_effect = TripwireInconclusiveError(
+                "TOKEN PROBLEM: gh: Bad credentials (HTTP 401)"
+            )
+            with pytest.raises(TripwireInconclusiveError):
+                authoring_time_refusal_present_on_main(
+                    repo="OmniNode-ai/onex_change_control"
+                )
