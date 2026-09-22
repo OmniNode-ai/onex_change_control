@@ -39,10 +39,11 @@ def _steps() -> list[dict[str, Any]]:
 
 
 def _enable_step() -> tuple[int, dict[str, Any]]:
-    for i, step in enumerate(_steps()):
-        if step.get("name") == "Enable auto-merge":
-            return i, step
-    pytest.fail("no 'Enable auto-merge' step")
+    found = [
+        (i, s) for i, s in enumerate(_steps()) if s.get("name") == "Enable auto-merge"
+    ]
+    assert len(found) == 1, "expected exactly one 'Enable auto-merge' step"
+    return found[0]
 
 
 def test_pull_request_trigger_includes_ready_for_review() -> None:
