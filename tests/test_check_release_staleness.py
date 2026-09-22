@@ -33,6 +33,7 @@ must not be usable as a way to make a red repo quiet.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -76,6 +77,7 @@ with open(os.environ["GH_STUB_FIXTURE"], encoding="utf-8") as handle:
 for rule in rules:
     if rule["match"] in argv:
         sys.stdout.write(rule.get("stdout", ""))
+        sys.stderr.write(rule.get("stderr", ""))
         sys.exit(rule.get("exit", 0))
 sys.stderr.write("gh stub: no rule matched: " + argv + "\\n")
 sys.exit(97)
@@ -313,6 +315,221 @@ def test_unreadable_repo_is_an_error_row_not_a_silent_zero(tmp_path: Path) -> No
     assert result.returncode == 1, result.stdout + result.stderr
     assert "ERROR" in result.stdout
     assert "A blind sweep is not a pass" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Quota exhaustion is its own outcome (OMN-19098)
+# ---------------------------------------------------------------------------
+
+#: The exact stderr GitHub returned on 2026-09-21, from onex_change_control run
+#: 35646352206 at 19:41:22Z. Recorded verbatim rather than paraphrased: the
+#: whole point of this family of tests is that the MESSAGE is what the
+#: classifier keys on, so a test that invents its own wording proves nothing
+#: about the message we actually receive.
+_REAL_403_STDERR = (
+    "gh: API rate limit exceeded for installation ID 148180820. If you reach out "
+    "to GitHub Support for help, please include the request ID "
+    "0C46:3642D5:80757F:1A42E9E:6AB18861 and timestamp 2026-09-21 19:41:22 UTC. "
+    "For more on scraping GitHub and how it may affect your rights, please review "
+    "our Terms of Service (https://docs.github.com/en/site-policy/github-terms/"
+    "github-terms-of-service) (HTTP 403)\n"
+)
+
+
+def _quota_403_rules(repo: str = "omnimarket") -> list[dict[str, object]]:
+    return [
+        {
+            "match": f"repos/OmniNode-ai/{repo}/tags",
+            "stdout": "",
+            "stderr": _REAL_403_STDERR,
+            "exit": 1,
+        }
+    ]
+
+
+def test_quota_403_is_its_own_verdict_not_a_generic_error(tmp_path: Path) -> None:
+    """AC1/AC2 — the defect this ticket exists to remove.
+
+    Before OMN-19098 this produced an ERROR row identical in shape to a dead
+    repo, which is how one emptied bucket read as seven independent repo
+    failures on 2026-09-21 and was diagnosed four separate times.
+    """
+    env = _install_gh_stub(tmp_path, _quota_403_rules())
+    result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
+
+    assert "QUOTA_EXHAUSTED" in result.stdout, result.stdout + result.stderr
+    assert "OCC_QUOTA_EXHAUSTED" in result.stdout
+    # The generic verdict must NOT also be claimed: the row is one thing or the
+    # other, and reporting both would leave the conflation in place.
+    assert "ERROR      " not in result.stdout
+    assert "A blind sweep is not a pass" not in result.stdout
+
+
+def test_quota_403_still_fails_closed(tmp_path: Path) -> None:
+    """AC5 — naming the cause does not excuse the failure.
+
+    A run that could not read the roster has not shown the roster is fresh.
+    """
+    env = _install_gh_stub(tmp_path, _quota_403_rules())
+    result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "PASS:" not in result.stdout
+
+
+def test_quota_403_reports_the_reset_time_when_it_can_read_it(tmp_path: Path) -> None:
+    """AC2 — the token carries when the bucket clears.
+
+    ``/rate_limit`` does not count against the limit it reports, so it is safe
+    to read at the exact moment the bucket is empty.
+    """
+    rules: list[dict[str, object]] = [
+        *_quota_403_rules(),
+        {"match": "api rate_limit", "stdout": "1790028807\n"},
+    ]
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(
+        env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])), "--json"
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["outcome"] == "OCC_QUOTA_EXHAUSTED"
+    assert payload["quota_exhausted"] == 1
+    # 1790028807 is 2026-09-21T21:33:27+00:00. Asserting a parseable timestamp
+    # rather than a literal keeps this from pinning the fixture's own arithmetic.
+    reset = datetime.fromisoformat(payload["quota_reset_at"])
+    assert reset.tzinfo is not None
+    assert reset.year == 2026
+
+
+def test_unreadable_reset_reports_unknown_never_an_invented_time(
+    tmp_path: Path,
+) -> None:
+    """An unknown reset must stay unknown. A lane would wait on a wrong one."""
+    env = _install_gh_stub(tmp_path, _quota_403_rules())
+    result = _run(
+        env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])), "--json"
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["outcome"] == "OCC_QUOTA_EXHAUSTED"
+    assert payload["quota_reset_at"] == ""
+    assert "reset time unknown" in payload["findings"][0]["detail"]
+
+
+def test_a_non_quota_gh_failure_is_still_a_generic_error(tmp_path: Path) -> None:
+    """AC4, negative control — the classifier must not swallow everything.
+
+    A checker that calls every failure a quota failure is exactly as useless as
+    one that calls none of them that, and it would hide real defects behind an
+    infrastructure excuse.
+    """
+    env = _install_gh_stub(
+        tmp_path,
+        [
+            {
+                "match": "repos/OmniNode-ai/omnimarket/tags",
+                "stdout": "",
+                "stderr": "gh: Not Found (HTTP 404)\n",
+                "exit": 1,
+            }
+        ],
+    )
+    result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "ERROR" in result.stdout
+    assert "QUOTA_EXHAUSTED" not in result.stdout
+    assert "OCC_QUOTA_EXHAUSTED" not in result.stdout
+
+
+def test_a_real_staleness_finding_does_not_acquire_the_quota_token(
+    tmp_path: Path,
+) -> None:
+    """AC3, positive control — the ordinary verdict is unchanged.
+
+    Pairs with the negative control above: together they show the new branch
+    fires on exactly one of the two populations, which is the only evidence
+    that distinguishes a classifier from a relabelling.
+    """
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.4.22"],
+        compare={"v0.4.22": [("aaaa111", _iso(96))]},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "STALE" in result.stdout
+    assert "QUOTA_EXHAUSTED" not in result.stdout
+    assert "OCC_QUOTA_EXHAUSTED" not in result.stdout
+
+
+def test_quota_exhaustion_suppresses_the_positive_control(tmp_path: Path) -> None:
+    """Do not retry inside an exhausted window.
+
+    The control is a SECOND full sweep. Running it while the bucket is empty
+    spends more of the quota that just ran out and cannot succeed anyway.
+    """
+    env = _install_gh_stub(tmp_path, _quota_403_rules())
+    result = _run(
+        env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])), "--json"
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["positive_control"]["ran"] is False
+
+
+def test_quota_error_type_is_distinct_from_probe_error() -> None:
+    """AC1 at the type level, not just the rendered output.
+
+    ``QuotaExhaustedError`` subclasses ``ProbeError`` deliberately, so that
+    every existing fail-closed catch keeps working. This pins BOTH halves of
+    that decision: the type is distinct, and the subclass relationship holds.
+    """
+    spec = importlib.util.spec_from_file_location("_staleness_under_test", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec: the module defines frozen dataclasses, and
+    # ``dataclasses`` resolves annotations through ``sys.modules[cls.__module__]``,
+    # which is None for a module that was created but never registered.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    assert module.QuotaExhaustedError is not module.ProbeError
+    assert issubclass(module.QuotaExhaustedError, module.ProbeError)
+    exc = module.QuotaExhaustedError("boom")
+    assert type(exc) is not module.ProbeError
+    assert exc.reset_at is None
+    assert exc.reset_detail == "reset time unknown"
+
+
+def test_secondary_rate_limit_is_also_a_quota_outcome(tmp_path: Path) -> None:
+    """The secondary limit is a different mechanism, same operational meaning."""
+    env = _install_gh_stub(
+        tmp_path,
+        [
+            {
+                "match": "repos/OmniNode-ai/omnimarket/tags",
+                "stdout": "",
+                "stderr": (
+                    "gh: You have exceeded a secondary rate limit. Please wait a few "
+                    "minutes before you try again. (HTTP 403)\n"
+                ),
+                "exit": 1,
+            }
+        ],
+    )
+    result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "OCC_QUOTA_EXHAUSTED" in result.stdout
+    assert "secondary" in result.stdout
 
 
 def test_truncated_compare_refuses_rather_than_under_reporting(tmp_path: Path) -> None:
