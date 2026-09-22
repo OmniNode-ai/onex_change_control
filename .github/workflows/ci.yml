@@ -690,6 +690,103 @@ jobs:
             --receipts-dir drift/dod_receipts \
             "${changed_receipts[@]}"
 
+  prod-promotion-grant-self-approval:
+    name: Prod Promotion Grant Self-Approval
+    permissions:
+      contents: read
+    # OMN-18945. The authoring-time `self_granted` refusal, ON THE BRANCH
+    # PROD-PROMOTION GRANTS ARE ACTUALLY AUTHORED ON.
+    #
+    # WHY IT IS HERE AND NOT ONLY ON `dev`. The OMN-17157 control and the
+    # behavioural tripwire built to prove that control had not been removed
+    # both live on `dev` only. Grants are authored by `hotfix/*` pull requests
+    # targeting THIS branch — `main-target-guard.yml` admits `dev` with a
+    # promotion receipt and `hotfix/*` with hotfix evidence, and every recent
+    # grant PR is the second shape. So the refusal and its own positive
+    # control shared one blind spot: both reported green, on a branch no
+    # grant travels through. Nothing on `dev` is loosened by this job; the
+    # dispatch-time gate in omninode_infra, which compares against the deploy
+    # dispatcher rather than the PR author, is a third refusal and is
+    # likewise untouched.
+    #
+    # WHY IN ci.yml AND NOT A STANDALONE WORKFLOW: `CI Summary` is a required
+    # context on this branch and `validate-prod-promotion-grants` is NOT —
+    # read live 2026-09-21, main's `required_status_checks` lists 23 contexts
+    # and the standalone grants workflow is not among them. A refusal in a
+    # non-required workflow reports and blocks nothing, which is the failure
+    # class this ticket exists to remove. A job here is held by `ci-summary`
+    # in `needs:` below, so it blocks without any branch-protection change.
+    #
+    # UNCONDITIONAL BY DESIGN: no `needs:`, no `if:`, no paths filter. A skip
+    # here would be indistinguishable from a pass — `ci-summary` fails only on
+    # `failure` and `cancelled` — so the job always runs and decides for
+    # itself. `tests/test_prod_promotion_grant_self_approval.py` asserts all
+    # four of those facts (job present, unconditional, passes `--requester`,
+    # held by ci-summary) by PARSING this file, so removing any of them is a
+    # red test rather than something a reviewer has to notice.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Refuse a self-approved prod-promotion grant (OMN-18945)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GRANTS_FILE: grants/prod_promotion_grants.yaml
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            echo "::notice::event is '${EVENT_NAME}', which carries no pull-request author."
+            echo "There is no requesting identity to compare approved_by against, so this"
+            echo "check is INAPPLICABLE rather than passing. The comparison is made on the"
+            echo "pull_request event, before the merge-queue or push SHA exists."
+            exit 0
+          fi
+
+          if [[ -z "${PR_AUTHOR}" ]]; then
+            echo "::error::the pull-request author is empty, so the self-approval"
+            echo "::error::comparison cannot be made. Failing closed: an unresolvable"
+            echo "::error::requester is not evidence that a grant was approved by someone else."
+            exit 1
+          fi
+
+          # The base copy of the anchor, so the refusal fires only on entries
+          # this change ADDS. Read over the API rather than a git fetch: the
+          # checkout above persists no credentials, and a same-repo contents
+          # read needs only the default token. Fail CLOSED on any failure —
+          # with no base file every entry is treated as new, which refuses
+          # more, never less.
+          base_args=()
+          base_file="${RUNNER_TEMP:-/tmp}/base_prod_promotion_grants.yaml"
+          if gh api "repos/${GITHUB_REPOSITORY}/contents/${GRANTS_FILE}?ref=${BASE_REF}" \
+               --header "Accept: application/vnd.github.raw" > "${base_file}" 2>/dev/null; then
+            base_args=(--base-file "${base_file}")
+            echo "Base copy of ${GRANTS_FILE} read at ${BASE_REF}; the check is diff-scoped."
+          else
+            echo "::warning::could not read ${GRANTS_FILE} at ${BASE_REF}. Failing CLOSED:"
+            echo "::warning::every entry is treated as new. An unreadable base is not"
+            echo "::warning::evidence that an entry is pre-existing."
+          fi
+
+          uv run validate-prod-promotion-grant-self-approval \
+            --file "${GRANTS_FILE}" \
+            --requester "${PR_AUTHOR}" \
+            "${base_args[@]}"
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -699,7 +796,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, prod-promotion-grant-self-approval]
     if: always()
     steps:
       - name: Check all jobs passed
