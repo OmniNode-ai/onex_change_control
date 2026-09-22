@@ -156,10 +156,58 @@ SEQUENCE_CONTRACT: list[tuple[str, tuple[int, ...] | None]] = [
 def test_ordering_matches_the_cross_repo_contract(
     token: str, expected: tuple[int, ...] | None
 ) -> None:
-    """The gate and the eligibility resolver must rank records identically.
+    """The gate and the eligibility resolver must ORDER records identically.
 
-    A disagreement means the gate validates one record while the merge is
-    decided by another -- the record that passed review is not the record
+    A disagreement here means the gate validates one record while the merge
+    is decided by another -- the record that passed review is not the record
     that counts.
+
+    Ordering only. The two deliberately select different WINNERS on one
+    case; see the test below.
     """
     assert _supersede_sequence(token) == expected
+
+
+@pytest.mark.unit
+def test_gate_selects_a_same_head_pass_that_the_resolver_refuses(
+    tmp_path: Path,
+) -> None:
+    """The gate applies no commit-identity guard, and must not start.
+
+    OMN-19111. Countersigning OMN-19050 measured both implementations over
+    four cases; they agree on three and disagree on this one. A PASS record
+    re-filed at the FAIL's own ``commit_sha`` is refused by the resolver,
+    because a chain must not become a retry-until-green channel, and is
+    SELECTED here, because this gate's job is to put the newest record
+    through hardening rather than to judge it.
+
+    Adding the guard here would open a hole rather than close one: a
+    deselected same-head PASS stops being the validation target, so the
+    newest replacement receipt would go unhardened while an older one was
+    checked in its place.
+
+    The resolver half of this pair cannot be asserted from this repository
+    until its ``omnibase-core`` pin carries the fix; that is AC5 of
+    OMN-19111, and this test is the half that can run today.
+    """
+    key_dir = tmp_path / "drift" / "dod_receipts" / TICKET / ITEM
+    key_dir.mkdir(parents=True, exist_ok=True)
+    base = key_dir / f"{CHECK}.yaml"
+    base.write_text("status: PENDING\n", encoding="utf-8")
+    same_head = "b" * 40
+    for token, status in ((str(2751), "FAIL"), ("2751.0002", "PASS")):
+        (key_dir / f"{CHECK}.supersede.{token}.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "supersedes": base.as_posix(),
+                    "replacement": {"status": status, "commit_sha": same_head},
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    active = _active_supersession_candidate(base)
+
+    assert active is not None
+    assert active.name == f"{CHECK}.supersede.2751.0002.yaml"

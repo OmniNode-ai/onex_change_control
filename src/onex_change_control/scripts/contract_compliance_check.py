@@ -848,6 +848,30 @@ def _substitute_tokens(
     )
 
 
+def _validate_substitution_context(
+    cmd: str, pr_number: int, repo: str, ticket_id: str
+) -> str | None:
+    """Reject unsafe or incomplete values before shell substitution.
+
+    Placeholder values are inserted into a command before ``bash -c`` runs it.
+    The normal CI call supplies a positive integer PR, an ``org/repo`` slug and
+    an ``OMN-<number>`` ticket, so validating those shapes keeps the historical
+    placeholder contract while preventing shell metacharacters from entering
+    the command through runner context.
+    """
+    if ("${PR_NUMBER}" in cmd or "{pr}" in cmd) and (
+        not isinstance(pr_number, int) or pr_number <= 0
+    ):
+        return "Invalid PR number for command placeholder"
+    if ("${REPO}" in cmd or "{repo}" in cmd) and not _REPO_PATTERN.fullmatch(repo):
+        return "Invalid repository for command placeholder"
+    if ("${TICKET_ID}" in cmd or "{ticket_id}" in cmd) and not re.fullmatch(
+        r"OMN-[0-9]+", ticket_id
+    ):
+        return "Invalid ticket ID for command placeholder"
+    return None
+
+
 def _maybe_demote_precommit(cmd_str: str) -> tuple[str, str] | None:
     """Return a (result, detail) WARN tuple if a pre-commit cmd should be
     skipped because the binary is genuinely absent. Returns None to indicate
@@ -1026,7 +1050,7 @@ def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
     genuinely absent AND the process is running in CI. Installing pre-commit
     on the runner opts back in to full enforcement.
     """
-    if repo and not _REPO_PATTERN.match(repo):
+    if repo and not _REPO_PATTERN.fullmatch(repo):
         return (
             _RESULT_BLOCK,
             f"Invalid --repo '{repo}': must match org/repo (alphanumeric, -, _, .)",
@@ -1036,7 +1060,13 @@ def _check_command(  # noqa: PLR0913 -- one parameter per contract-check field
     if decline is not None:
         return _RESULT_NOT_EVALUATED, decline
 
-    cmd_str = _substitute_tokens(str(_check_value), pr_number, repo, ticket_id)
+    raw_cmd = str(_check_value)
+    invalid_context = _validate_substitution_context(
+        raw_cmd, pr_number, repo, ticket_id
+    )
+    if invalid_context is not None:
+        return _RESULT_BLOCK, invalid_context
+    cmd_str = _substitute_tokens(raw_cmd, pr_number, repo, ticket_id)
 
     demoted = _maybe_demote_precommit(cmd_str)
     if demoted is not None:
