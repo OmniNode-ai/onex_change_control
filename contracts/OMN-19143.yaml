@@ -98,11 +98,24 @@ dod_evidence:
       each of the 25 files reproduces that file's pre-change bytes exactly.
       Measured before the commit, 25 of 25, and visible in the diff as 413
       insertions against zero deletions.
+
+      CHECK HARDENED by the certifying second actor after it was caught
+      FAILING OPEN, claim unchanged. As authored the check counted deletion
+      lines in `gh pr diff` and compared the count to zero. When the actor
+      ran it the GitHub API answered HTTP 403, rate limit exceeded; `gh`
+      printed its error to stderr and nothing to stdout, `grep -c` counted
+      zero lines in an empty diff, and the check reported the property as
+      HELD. A check that cannot read the diff must not certify the diff, so
+      the count is now guarded by a non-empty diff and a floor on the
+      insertion count, and an unreadable diff fails the chain instead of
+      satisfying it. The property itself was then confirmed against the local
+      object store, which needs no API: 600 insertions and 0 deletions over
+      the whole pull request, no file carrying a single deletion.
     source: manual
     checks:
       - check_type: command
         check_value: |-
-          test "$(gh pr diff ${PR_NUMBER} --repo ${REPO} | grep -c '^-[^-]')" = "0"
+          d=$(gh pr diff ${PR_NUMBER} --repo ${REPO}) && test -n "$d" && test "$(printf '%s\n' "$d" | grep -c '^+[^+]')" -ge 413 && test "$(printf '%s\n' "$d" | grep -c '^-[^-]')" = "0"
   - id: re-running-the-producer-writes-nothing
     description: |-
       Idempotence under OMN-19054's rule, which is that the comparison goes
