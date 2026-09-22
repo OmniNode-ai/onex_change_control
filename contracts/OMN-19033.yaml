@@ -1,0 +1,86 @@
+---
+schema_version: "1.0.0"
+ticket_id: OMN-19033
+title: "fix(OMN-19033): make Validate Prod Promotion Grants reachable on every PR to main so it can be
+  required"
+summary: >
+  `.github/workflows/validate-prod-promotion-grants.yml` lives on `main` only and was path-filtered to
+  `grants/prod_promotion_grants.yaml`. GitHub creates no check run at all for a pull request that misses
+  a path filter, so requiring that context would have reported it as permanently `expected` and blocked
+  every pull request to `main` that does not touch the grant anchor, with no job to rerun. The workflow
+  header also advertised the required-context name `validate-grants / validate-prod-promotion-grants`
+  on `dev`: there is no `validate-grants` caller job in that file, the workflow is not reusable, and `dev`
+  retired the workflow entirely under OMN-14441. Run 35578429786 reports exactly one job, named `validate-prod-promotion-grants`.
+  This change removes the path filter, scopes the trigger to `dev` and `main`, moves the decision the
+  filter used to make into a `scope` step inside the job so it runs after the check run exists, and corrects
+  the advertised context name. Enforcement is unchanged for every change that touches the anchor and is
+  the default whenever scope cannot be determined.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "The trigger reaches every gated pull request, the advertised context name is the one
+      the job reports, and the failing path is intact under enforcement."
+    command: "uv run pytest tests/test_prod_promotion_grants_required_context.py -q"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-trigger-reaches-every-gated-pr"
+    description: >-
+      The `pull_request` trigger carries no `paths` or `paths-ignore` filter, covers both `dev` and `main`,
+      and the job carries no job-level `if:` that would skip it and report no conclusion. Proven RED before
+      proven green: reintroducing the path filter into the trigger turns `test_the_pull_request_trigger_has_no_path_filter`
+      red, and removing it turns it green again.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants_required_context.py::TestTheTriggerCanReachEveryGatedPullRequest
+          -q"
+  - id: "dod-advertised-context-name-is-real"
+    description: >-
+      The single `# Required-status-check name:` line in the workflow header names exactly the string
+      the job reports, which is the job's own `name:` with no caller prefix because the workflow is not
+      reusable. This is the OMN-18950 defect class applied to itself: the previously advertised string
+      named a caller job that does not exist in the file.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants_required_context.py::TestTheRequiredContextStringIsWhatTheJobActuallyReports
+          -q"
+  - id: "dod-failing-path-intact-and-fails-closed"
+    description: >-
+      Under enforcement the validator is exactly as red as before: malformed, expired, unparseable, non-mapping
+      and unexpected-top-level-key anchors each exit 1. Enforcement is the DEFAULT when `GRANT_VALIDATION_ENFORCE`
+      is unset, so an indeterminate scope validates for real rather than waving through. Paired with the
+      positive control that a valid at-rest anchor passes in every mode, so the red assertions are not
+      red for an unrelated reason. Each case runs the workflow's OWN inline validator, extracted from
+      the parsed workflow YAML and executed as a subprocess, not a copy of it.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants_required_context.py::TestTheFailingPathIsIntact
+          -q"
+  - id: "dod-advisory-arm-reports-rather-than-hides"
+    description: >-
+      When the anchor is out of scope the same findings are still computed and printed as a workflow annotation
+      before the job exits 0, and the notice names why it did not block. An advisory pass that prints
+      nothing would be the silent gate this ticket's parent class exists to refuse.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants_required_context.py::TestTheAdvisoryArmReportsRatherThanHides
+          -q"
+  - id: "dod-two-schema-copies-still-pinned"
+    description: >-
+      The pre-existing OMN-18579 drift test reads the workflow's module-level constants out of its `PYEOF`
+      heredoc with `ast` and asserts the mirror in `tests/test_prod_promotion_grants.py` equals them.
+      Restructuring the workflow must not break that contract, and its positive control asserts the heredoc
+      read back is a real one rather than an empty parse.
+    source: "generated"
+    checks:
+      - check_type: "command"
+        check_value: "uv run pytest tests/test_prod_promotion_grants_manifest_kind.py::TestTheTwoCopiesOfTheSchemaDoNotDrift
+          -q"
