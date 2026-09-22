@@ -214,9 +214,25 @@ dod_evidence:
       With either expected path removed from the comparison string it exits 1,
       and with a third path added it exits 1, so the equality is doing the work
       rather than the substring.
+
+      WHY THE PATH LIST COMES FROM THE FORGE AND NOT FROM `git diff`, which is
+      the second defect this item had to fix rather than inherit. The first
+      version of this check read the same set with
+      `git diff --name-only origin/dev...HEAD`, exactly as the item it
+      supersedes does. That form is measured GREEN locally and, in CI, prints
+      `fatal: origin/dev...HEAD: no merge base` and exits 1 -- the checkout
+      there is shallow, so the merge base does not exist in it at all. The
+      check was therefore not measuring the property in CI; it was erroring,
+      and its exit code happened to look like a verdict. The superseded item
+      carries the SAME latent defect, which means its red in CI was never
+      evidence about the source diff either. Reading the changed-file list from
+      the forge's own pull-request API needs no history depth, so it cannot be
+      silenced by a shallow clone; and because it reports the pull request's
+      files rather than the runner's checkout, a truncated or unresolvable
+      response fails the equality rather than emptying it into a pass.
     source: manual
     evidence_artifact: supersedes_dod_evidence:no-source-file-is-touched-by-this-change
     checks:
       - check_type: command
-        check_value: test "$(git diff --name-only origin/dev...HEAD -- src/ scripts/ .github/ | sort |
-          paste -sd, -)" = "src/onex_change_control/scripts/backfill_ac_requirements.py,src/onex_change_control/serialization/ac_requirements.py"
+        check_value: test "$(gh api repos/OmniNode-ai/onex_change_control/pulls/10756/files --paginate
+          --jq '.[].filename' | grep -E '^(src|scripts|[.]github)/' | sort | paste -sd, -)" = "src/onex_change_control/scripts/backfill_ac_requirements.py,src/onex_change_control/serialization/ac_requirements.py"
