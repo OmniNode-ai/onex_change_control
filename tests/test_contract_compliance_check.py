@@ -421,6 +421,34 @@ def test_check_command_invalid_repo_blocks(tmp_path: Path) -> None:
     assert "Invalid" in detail
 
 
+def test_check_command_placeholder_context_rejects_invalid_ticket(
+    tmp_path: Path,
+) -> None:
+    """Runner placeholders must not admit shell metacharacters."""
+    result, detail = _check_command(
+        "printf '%s' '${TICKET_ID}'",
+        tmp_path,
+        pr_number=1,
+        repo="OmniNode-ai/omnimarket",
+        ticket_id="OMN-1; touch /tmp/pwned",
+    )
+    assert result == _RESULT_BLOCK
+    assert detail == "Invalid ticket ID for command placeholder"
+
+
+def test_check_command_placeholder_context_requires_positive_pr(
+    tmp_path: Path,
+) -> None:
+    result, detail = _check_command(
+        'gh pr view "${PR_NUMBER}" --repo "${REPO}"',
+        tmp_path,
+        pr_number=0,
+        repo="OmniNode-ai/omnimarket",
+    )
+    assert result == _RESULT_BLOCK
+    assert detail == "Invalid PR number for command placeholder"
+
+
 def test_check_command_precommit_missing_not_ci_warns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
