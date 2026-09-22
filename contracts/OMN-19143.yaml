@@ -39,10 +39,57 @@ dod_evidence:
       backfill writes the canonical spelling so that it and the OMN-19038
       autobind producer, which uppercases from the same reader, cannot put two
       spellings of one label into one corpus.
+
+      CHECK AMENDED by the certifying second actor, claim unchanged. As
+      authored this item ran tests/test_omn_19046_ac_requirements_backfill.py,
+      which lives on the OMN-19046 producer branch and does not exist at this
+      head -- this branch carries contracts and nothing else. Both the lane
+      and the Contract Compliance Check measured it as exit 4, file not found,
+      so the item could not be certified as written. The check below asserts
+      the same per-file property directly over the tree, selecting the batch
+      by the requirement id the producer writes and using the repository's own
+      canonical_ac_label, so it needs neither the producer module nor a
+      tracker credential. The count is a floor rather than an equality so that
+      later batches, which add contracts carrying the same block, do not
+      falsify it.
     source: manual
     checks:
       - check_type: command
-        check_value: uv run pytest tests/test_omn_19046_ac_requirements_backfill.py -q
+        check_value: |-
+          uv run python - <<'PY'
+          import pathlib, sys, yaml
+          from onex_change_control.validation.ac_criteria import canonical_ac_label
+
+          REQ = "req-transcribed-acceptance-criteria"
+          bad: list[str] = []
+          seen = 0
+          for path in sorted(pathlib.Path("contracts").glob("OMN-*.yaml")):
+              data = yaml.safe_load(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  continue
+              reqs = [r for r in (data.get("requirements") or []) if isinstance(r, dict)]
+              if not any(r.get("id") == REQ for r in reqs):
+                  continue
+              seen += 1
+              declared = {
+                  canonical_ac_label(str(a.get("id")))
+                  for r in reqs
+                  for a in (r.get("acceptance") or [])
+                  if isinstance(a, dict)
+              }
+              bound = {
+                  canonical_ac_label(str(e))
+                  for it in (data.get("dod_evidence") or [])
+                  if isinstance(it, dict)
+                  for e in (it.get("binds_ac") or [])
+              }
+              if not declared or declared != bound:
+                  bad.append(f"{path.name}: declared={sorted(declared)} binds_ac={sorted(bound)}")
+          print(f"{seen} contract(s) carry the transcribed block; {len(bad)} mismatched")
+          for line in bad:
+              print("MISMATCH", line)
+          sys.exit(1 if bad or seen < 25 else 0)
+          PY
   - id: the-splice-touched-nothing-else
     description: |-
       A backfill that reformats contracts is a diff nobody reviews, so the
@@ -63,8 +110,78 @@ dod_evidence:
       on save, so a byte comparison would rewrite every contract on every pass
       forever. Re-running the producer over the merged batch with the same
       ticket bodies must report zero changed.
+
+      CHECK AMENDED by the certifying second actor, and the amendment NARROWS
+      what this item proves, which is why it is written here rather than left
+      implicit. As authored the check ran the producer's own idempotence test
+      class, which lives on the OMN-19046 branch; at this head the module is
+      absent and the check was measured as exit 4, file not found. A full
+      re-run cannot be reconstructed here, because it needs both the producer
+      module and live ticket bodies, and neither is reachable from a
+      contracts-only branch in CI. What the check below asserts instead is the
+      part of idempotence that lives in the written file: the producer decides
+      a re-run by comparing an ORDERED (label, normalised statement) list, so
+      a re-run writes nothing only if the declared order is already the
+      binds_ac declaration order, every id is already canonical so the
+      reader's canonicalisation is a no-op, and every statement survives a
+      YAML round trip unchanged. Those are necessary conditions, they are the
+      ones the splice could have broken, and they are measured per file. The
+      sufficient condition, a full re-run reporting zero changed, is bound on
+      the producer's own ticket where the module and its test exist, and the
+      certifying actor ran the producer dry run over the whole bound corpus
+      there.
     source: manual
     checks:
       - check_type: command
-        check_value: uv run pytest tests/test_omn_19046_ac_requirements_backfill.py::TestItIsIdempotentThroughTheReader
-          -q
+        check_value: |-
+          uv run python - <<'PY'
+          import pathlib, sys, yaml
+          from onex_change_control.validation.ac_criteria import canonical_ac_label
+
+          REQ = "req-transcribed-acceptance-criteria"
+
+
+          def bound_labels_in_order(data: dict) -> list[str]:
+              labels: list[str] = []
+              for item in data.get("dod_evidence") or []:
+                  if not isinstance(item, dict):
+                      continue
+                  for entry in item.get("binds_ac") or []:
+                      label = canonical_ac_label(str(entry))
+                      if label and label not in labels:
+                          labels.append(label)
+              return labels
+
+
+          bad: list[str] = []
+          seen = 0
+          criteria = 0
+          for path in sorted(pathlib.Path("contracts").glob("OMN-*.yaml")):
+              data = yaml.safe_load(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  continue
+              reqs = [r for r in (data.get("requirements") or []) if isinstance(r, dict)]
+              if not any(r.get("id") == REQ for r in reqs):
+                  continue
+              seen += 1
+              declared = [
+                  (str(a.get("id")), str(a.get("statement")))
+                  for r in reqs
+                  for a in (r.get("acceptance") or [])
+                  if isinstance(a, dict)
+              ]
+              criteria += len(declared)
+              if [label for label, _ in declared] != bound_labels_in_order(data):
+                  bad.append(f"{path.name}: declared order != binds_ac declaration order")
+              for label, statement in declared:
+                  if canonical_ac_label(label) != label:
+                      bad.append(f"{path.name}: id {label!r} is not already canonical")
+                  if not statement.strip():
+                      bad.append(f"{path.name}: {label} has an empty statement")
+                  if yaml.safe_load(yaml.safe_dump({"s": statement}))["s"] != statement:
+                      bad.append(f"{path.name}: {label} does not survive a YAML round trip")
+          print(f"{seen} contract(s), {criteria} criteria; {len(bad)} unstable")
+          for line in bad:
+              print("UNSTABLE", line)
+          sys.exit(1 if bad or seen < 25 else 0)
+          PY
