@@ -84,6 +84,27 @@ jobs:
         run: uv run mypy src/ tests/
 
   tests-shadow:
+    # Fast, hermetic slice (OMN-19194): this job used to run the SAME unscoped
+    # full-suite command as ci.yml's required `Tests` job
+    # (`pytest --cov=onex_change_control --cov-report=term-missing`, no -m
+    # filter, no path scoping) under a job-local timeout-minutes: 45 while the
+    # required job carries no timeout-minutes at all (GitHub's 360-minute job
+    # default). The two jobs did identical work under different budgets, so
+    # once the suite's wall-clock cost grew past ~45 minutes (measured:
+    # ~20-22min on 2026-09-08 vs 45m20s cancelled / 45m53s success on
+    # 2026-09-22, PR #10816 run 35770887545) this job was guaranteed to be
+    # cancelled on every PR -- a report-only shadow that never finishes never
+    # reports a real verdict. The four sibling repos' shadows (omnibase_core,
+    # omnibase_infra, omnimarket, omniclaude) all scope tests-shadow to a
+    # narrow slice for exactly this reason rather than duplicating their
+    # repo's full suite; this repo already had the same dedicated slice file
+    # (test_product_reason_graph_omn14704.py, from the OMN-14704 Phase 3
+    # landing) but it was never wired in here. `-m unit`/`-m "not slow"`
+    # narrowing is not a safe substitute in this repo: those markers only
+    # cover 115/229 test files, so a marker filter would silently drop most
+    # of the suite rather than proving the same population the required
+    # `Tests` job proves.
+    #
     # The coverage dimension is folded into this job for the shadow surface — its
     # conclusion is passed as BOTH tests_conclusion and coverage_conclusion below.
     name: tests+coverage (shadow)
@@ -94,14 +115,14 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
-      - name: Tests with coverage
-        run: uv run pytest --cov=onex_change_control --cov-report=term-missing
+      - name: Unit tests (fast, hermetic slice)
+        run: uv run pytest tests/ci/test_product_reason_graph_omn14704.py -q --no-header
 
   # --- Typed reason-graph (ENFORCING on product defects) -------------------
   # NO occ-preflight in this needs-chain. Consumes the product subchecks'

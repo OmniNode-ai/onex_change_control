@@ -1,0 +1,73 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-19194"
+title: "product-readiness shadow coverage job times out before the suite finishes on onex_change_control"
+summary: >-
+  The tests+coverage (shadow) job in product-readiness-shadow.yml ran the same unscoped full-suite pytest
+  command as ci.yml's required Tests job, under a stricter timeout-minutes: 45 while the required job
+  carries no timeout at all. As the suite's wall-clock cost grew, the shadow job was guaranteed to be
+  cancelled on every PR (measured: 45m20s cancelled vs 45m53s success on PR #10816, run 35770887545).
+  Fix scopes tests-shadow to the dedicated tests/ci/test_product_reason_graph_omn14704.py slice, matching
+  the omnibase_core / omnibase_infra sibling shadow workflows, and drops timeout-minutes to 10.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "ci"
+    description: "PR #10828 CI green, including a completed (not cancelled) tests+coverage (shadow) job"
+    command: "gh pr checks ${PR_NUMBER} --repo ${REPO}"
+  - kind: "tests"
+    description: "The narrowed shadow slice passes locally at the fix commit"
+    command: "uv run pytest tests/ci/test_product_reason_graph_omn14704.py -q --no-header"
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-occ-self"
+    description: >-
+      PR #10828 on OmniNode-ai/onex_change_control — content-bound proof that the fix commit's product-readiness-shadow.yml
+      wires in the narrowed reason-graph slice.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/contents/.github/workflows/product-readiness-shadow.yml?ref=fd95aef8c7d8bb7cce8a816abd57df42d9fa8327 --jq '.content' | base64 -d | grep -c 'test_product_reason_graph_omn14704'
+  - id: "dod-omn19194-shadow-slice-passes"
+    description: >-
+      The narrowed tests-shadow slice (tests/ci/test_product_reason_graph_omn14704.py) passes, proving
+      the reason-graph wiring the shadow job checks (AC1, AC4).
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_product_reason_graph_omn14704.py -q --no-header"
+        cwd: "${OMNI_HOME}/onex_change_control"
+  - id: "dod-omn19194-shadow-job-completes"
+    description: >-
+      AC2: on the fix commit's own product-readiness-shadow.yml run (35777229761, PR #10828), tests+coverage
+      (shadow) completed with conclusion success in 21s (19:58:37Z-19:58:58Z) — versus cancelled at the
+      45-minute wall pre-fix (PR #10816, run 35770887545).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/actions/runs/35777229761/attempts/1/jobs --jq '.jobs[] | select(.name=="tests+coverage (shadow)") | .conclusion' | grep -qx success
+  - id: "dod-omn19194-reason-graph-completes"
+    description: >-
+      AC3: on the same fix-commit run (35777229761, PR #10828), reason-graph resolved to success off the
+      narrowed job (19:59:42Z-19:59:54Z), proving needs.tests-shadow.result still threads through correctly.
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          gh api repos/OmniNode-ai/onex_change_control/actions/runs/35777229761/attempts/1/jobs --jq '.jobs[] | select(.name=="reason-graph") | .conclusion' | grep -qx success
+  - id: "dod-omn19194-required-tests-untouched"
+    description: >-
+      AC4: the required Tests job's own full-suite selection is unchanged by this fix — ci.yml does not
+      appear among PR #10828's changed files, and the required Tests job on this PR's own CI run completed
+      successfully against the full, unscoped suite (unchanged from before this fix).
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          files="$(gh api repos/OmniNode-ai/onex_change_control/pulls/10828/files --jq '.[].filename')" && ! printf '%s' "$files" | grep -qF '.github/workflows/ci.yml'
