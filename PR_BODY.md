@@ -2,7 +2,7 @@
 Record the existing [OMN-17374](https://linear.app/omninode/issue/OMN-17374) PR #2259 behavior readback as manual OCC evidence so the contract no longer leaves that proof marked OWED.
 
 ## What changed
-Added one manual evidence item bound only to AC4 in `contracts/[OMN-17374](https://linear.app/omninode/issue/OMN-17374).yaml` and its durable receipt under `drift/dod_receipts/[OMN-17374](https://linear.app/omninode/issue/OMN-17374)/`. The receipt cites the recorded Sep 1 migration readback and Sep 22 staging run, including positive and negative controls and the migration checksum. No ticket status, application code, migration, or staging state changed.
+Added one manual evidence item bound only to AC4 in `contracts/OMN-17374.yaml` and its durable receipt under `drift/dod_receipts/OMN-17374/`. The receipt cites the recorded Sep 1 migration readback and Sep 22 staging run, including positive and negative controls and the migration checksum. No ticket status, application code, migration, or staging state changed.
 
 ## How it was verified
 - `scripts/validation/check_contract_dod_authoring.py contracts/[OMN-17374](https://linear.app/omninode/issue/OMN-17374).yaml` — PASS, 1 contract checked.
