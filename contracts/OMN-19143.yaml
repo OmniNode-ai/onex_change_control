@@ -1,0 +1,221 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19143
+title: "Backfill batch 1: 18 contracts, and the wall-clock reading that sizes the rest"
+summary: |-
+  Batch 1 of the OMN-19046 acceptance-criteria backfill. 18 contracts gain the
+  requirements[].acceptance[] their binds_ac entries have always named, applied
+  by onex-backfill-ac-requirements against ticket bodies fetched live on
+  2026-09-21. 300 insertions, zero deletions, because the producer splices a
+  block in rather than re-serializing the file.
+
+  BATCH NARROWED FROM 25 TO 18, and the reason is a property of the excluded
+  contracts rather than of this change. Seven of the original twenty-five --
+  OMN-16290, OMN-16493, OMN-16535, OMN-17083, OMN-17295, OMN-17304 and
+  OMN-17372 -- carry 32 pre-existing bindings the OMN-18577 proof-class rule
+  refuses: a dod_evidence item whose every check only reads the repository tree
+  is bound to a criterion settled by measuring a running system. The refusals
+  are not caused by the backfill. That rule reads only the ticket body and the
+  item's own checks, binds_ac and ac_bindings, and this change adds a
+  requirements block and deletes nothing, so the rule's inputs are byte
+  identical on both sides of the diff; touching those files merely pulls them
+  into the gate's changed-file scope. Repairing 32 bindings on seven other
+  tickets -- each needing evidence that measures a running system, or a
+  supersedes_ac_binding retirement -- is separate work with its own owner, and
+  doing it inside a backfill would un-prove seven tickets as a side effect.
+  They are excluded here and carried to a later batch.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: |-
+      Every contract in the batch declares exactly the criteria its own
+      binds_ac names, once both sides go through the canonical label reader,
+      and no byte outside the spliced block moved in any of the 18.
+    command: uv run python scripts/validation/check_contract_change_rebinds_receipts.py --self-test
+  - kind: ci
+    description: PR CI checks green
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: the-model-matches-the-binding-in-all-eighteen
+    description: |-
+      The claim the batch exists to make, asserted per file and not in
+      aggregate: for each of the 18 contracts the set of acceptance-criterion
+      ids equals the set of labels that contract's dod_evidence binds, with
+      both sides resolved through canonical_ac_label. The canonicalisation is
+      load-bearing rather than cosmetic and is the reason this check is not a
+      raw string comparison: OMN-15922 binds DoD1..DoD8 and receives
+      DOD1..DOD8, which a string comparison calls a mismatch and the gates do
+      not, because every consumer canonicalises before comparing. The
+      backfill writes the canonical spelling so that it and the OMN-19038
+      autobind producer, which uppercases from the same reader, cannot put two
+      spellings of one label into one corpus.
+
+      CHECK AMENDED by the certifying second actor, claim unchanged. As
+      authored this item ran tests/test_omn_19046_ac_requirements_backfill.py,
+      which lives on the OMN-19046 producer branch and does not exist at this
+      head -- this branch carries contracts and nothing else. Both the lane
+      and the Contract Compliance Check measured it as exit 4, file not found,
+      so the item could not be certified as written. The check below asserts
+      the same per-file property directly over the tree, selecting the batch
+      by the requirement id the producer writes and using the repository's own
+      canonical_ac_label, so it needs neither the producer module nor a
+      tracker credential. The count is a floor rather than an equality so that
+      later batches, which add contracts carrying the same block, do not
+      falsify it.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: |-
+          uv run python - <<'PY'
+          import pathlib, sys, yaml
+          from onex_change_control.validation.ac_criteria import canonical_ac_label
+
+          REQ = "req-transcribed-acceptance-criteria"
+          bad: list[str] = []
+          seen = 0
+          for path in sorted(pathlib.Path("contracts").glob("OMN-*.yaml")):
+              data = yaml.safe_load(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  continue
+              reqs = [r for r in (data.get("requirements") or []) if isinstance(r, dict)]
+              if not any(r.get("id") == REQ for r in reqs):
+                  continue
+              seen += 1
+              declared = {
+                  canonical_ac_label(str(a.get("id")))
+                  for r in reqs
+                  for a in (r.get("acceptance") or [])
+                  if isinstance(a, dict)
+              }
+              bound = {
+                  canonical_ac_label(str(e))
+                  for it in (data.get("dod_evidence") or [])
+                  if isinstance(it, dict)
+                  for e in (it.get("binds_ac") or [])
+              }
+              if not declared or declared != bound:
+                  bad.append(f"{path.name}: declared={sorted(declared)} binds_ac={sorted(bound)}")
+          print(f"{seen} contract(s) carry the transcribed block; {len(bad)} mismatched")
+          for line in bad:
+              print("MISMATCH", line)
+          sys.exit(1 if bad or seen < 18 else 0)
+          PY
+  - id: the-splice-touched-nothing-else
+    description: |-
+      A backfill that reformats contracts is a diff nobody reviews, so the
+      producer splices rather than re-serializes and this asserts it held
+      across the whole batch: deleting the inserted requirements block from
+      each of the 18 files reproduces that file's pre-change bytes exactly.
+      Measured before the commit, 18 of 18, and visible in the diff as 300
+      insertions against zero deletions.
+
+      CHECK REPLACED by the certifying second actor after it was caught
+      FAILING OPEN, claim unchanged. As authored the check counted deletion
+      lines in `gh pr diff` and compared the count to zero. When the actor
+      ran it the GitHub API answered HTTP 403, rate limit exceeded; `gh`
+      printed its error to stderr and nothing to stdout, `grep -c` counted
+      zero lines in an empty diff, and the check reported the property as
+      HELD without ever having read the diff. A check that cannot read the
+      diff must not certify the diff.
+
+      The replacement reads the same diff from the local object store, so it
+      needs no API at all and cannot be silenced by a quota. It resolves the
+      merge base, requires the expected file count, and sums the deletion
+      column across every changed contract. Each step is chained, so an
+      unresolvable base or an empty file list fails instead of passing.
+      Negative controls, both run: an unresolvable base exits 128, and
+      pointing the same command at a base whose range genuinely deletes a
+      line exits 1 rather than reporting zero.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: |-
+          base=$(git merge-base HEAD origin/dev) && test -n "$base" && test "$(git diff --numstat "$base" HEAD -- contracts/ | wc -l | tr -d ' ')" -ge 19 && test "$(git diff --numstat "$base" HEAD -- contracts/ | awk '{s+=$2} END {print s+0}')" = "0"
+  - id: re-running-the-producer-writes-nothing
+    description: |-
+      Idempotence under OMN-19054's rule, which is that the comparison goes
+      through the reader and never through bytes: Linear renormalises bullets
+      on save, so a byte comparison would rewrite every contract on every pass
+      forever. Re-running the producer over the merged batch with the same
+      ticket bodies must report zero changed.
+
+      CHECK AMENDED by the certifying second actor, and the amendment NARROWS
+      what this item proves, which is why it is written here rather than left
+      implicit. As authored the check ran the producer's own idempotence test
+      class, which lives on the OMN-19046 branch; at this head the module is
+      absent and the check was measured as exit 4, file not found. A full
+      re-run cannot be reconstructed here, because it needs both the producer
+      module and live ticket bodies, and neither is reachable from a
+      contracts-only branch in CI. What the check below asserts instead is the
+      part of idempotence that lives in the written file: the producer decides
+      a re-run by comparing an ORDERED (label, normalised statement) list, so
+      a re-run writes nothing only if the declared order is already the
+      binds_ac declaration order, every id is already canonical so the
+      reader's canonicalisation is a no-op, and every statement survives a
+      YAML round trip unchanged. Those are necessary conditions, they are the
+      ones the splice could have broken, and they are measured per file. The
+      sufficient condition, a full re-run reporting zero changed, is bound on
+      the producer's own ticket where the module and its test exist, and the
+      certifying actor ran the producer dry run over the whole bound corpus
+      there.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: |-
+          uv run python - <<'PY'
+          import pathlib, sys, yaml
+          from onex_change_control.validation.ac_criteria import canonical_ac_label
+
+          REQ = "req-transcribed-acceptance-criteria"
+
+
+          def bound_labels_in_order(data: dict) -> list[str]:
+              labels: list[str] = []
+              for item in data.get("dod_evidence") or []:
+                  if not isinstance(item, dict):
+                      continue
+                  for entry in item.get("binds_ac") or []:
+                      label = canonical_ac_label(str(entry))
+                      if label and label not in labels:
+                          labels.append(label)
+              return labels
+
+
+          bad: list[str] = []
+          seen = 0
+          criteria = 0
+          for path in sorted(pathlib.Path("contracts").glob("OMN-*.yaml")):
+              data = yaml.safe_load(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  continue
+              reqs = [r for r in (data.get("requirements") or []) if isinstance(r, dict)]
+              if not any(r.get("id") == REQ for r in reqs):
+                  continue
+              seen += 1
+              declared = [
+                  (str(a.get("id")), str(a.get("statement")))
+                  for r in reqs
+                  for a in (r.get("acceptance") or [])
+                  if isinstance(a, dict)
+              ]
+              criteria += len(declared)
+              if [label for label, _ in declared] != bound_labels_in_order(data):
+                  bad.append(f"{path.name}: declared order != binds_ac declaration order")
+              for label, statement in declared:
+                  if canonical_ac_label(label) != label:
+                      bad.append(f"{path.name}: id {label!r} is not already canonical")
+                  if not statement.strip():
+                      bad.append(f"{path.name}: {label} has an empty statement")
+                  if yaml.safe_load(yaml.safe_dump({"s": statement}))["s"] != statement:
+                      bad.append(f"{path.name}: {label} does not survive a YAML round trip")
+          print(f"{seen} contract(s), {criteria} criteria; {len(bad)} unstable")
+          for line in bad:
+              print("UNSTABLE", line)
+          sys.exit(1 if bad or seen < 18 else 0)
+          PY
