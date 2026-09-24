@@ -109,3 +109,71 @@ dod_evidence:
           && grep -Fqx '  migration_checksum: 334e08d6b09a0a7bb94e94a0f9f4496cd262a5c806115ad0fa15b7edf2485d33'
           drift/dod_receipts/OMN-17374/dod-OmniNode-ai-omnimarket-pr-2259-behavior-proof/command.yaml
           && printf 'PASS: AC4 source, controls, run and migration checksum match the durable receipt\n'
+  - id: "ac1-grant-delivery-gate-red-first"
+    description: >-
+      AC1 binding. The contract-derived test AC1 asks for is `scripts/validation/check_topology_grant_delivery.py`
+      with `tests/ci/test_topology_grant_delivery.py`, landed in OmniNode-ai/omnibase_infra#3098. It derives
+      every declared (principal, schema, table) grant from the topology the node contracts generate and
+      fails when no migration issues one. Its RED-first leg is `tests/ci/test_incident_replay_omn17374.py`:
+      it replays the exact pre-fix `0000_create_tenant_registry_mirror.sql` bytes the .201 dev lane applied
+      (sha256 5a5f3601...) and asserts the tenant_registry_mirror grant is reported undelivered, with
+      an accept control once the fix is present. Principal correction, stated rather than hidden: AC1's
+      text names `tenant_projection_writer`; both contracts that touch the relation classify it `omninode_internal`,
+      so the runtime reads it as `omninode_runtime`, and that is the grant the gate checks. Run at omnibase_infra
+      origin/dev 26ed39800f1a2028ba0026ba386453246767b716 on 2026-09-24: 84 passed.
+    source: "manual"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_topology_grant_delivery.py tests/ci/test_incident_replay_omn17374.py
+          -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac2-registry-mirror-grant-migration"
+    description: >-
+      AC2 binding. The migration is `node_projection_tenant_registry/migrations/0001_grant_omninode_runtime_tenant_registry_mirror.sql`
+      in omnimarket, the lineage that owns the relation (beside the 0000 that creates it), from OmniNode-ai/omnimarket#2259.
+      The check reads it from omnimarket `dev`, not a pinned sha, so it goes red if the file changes or
+      leaves `dev`. It asserts the SHA-256 the .201 dev lane and onex-dev both recorded as applied (334e08d6...)
+      and the literal grant line. Principal correction, stated rather than hidden: AC2's text names `tenant_projection_writer`;
+      the delivered grant is to `omninode_runtime`, the principal the runtime actually uses for this `omninode_internal`
+      relation, as the migration header documents. Negative controls run 2026-09-24: a wrong checksum
+      exits 1, and the same grant line naming `tenant_projection_writer` exits 1.
+    source: "manual"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          test "$(gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_tenant_registry/migrations/0001_grant_omninode_runtime_tenant_registry_mirror.sql?ref=dev'
+          --jq .content | base64 -d | shasum -a 256 | cut -d' ' -f1)" = '334e08d6b09a0a7bb94e94a0f9f4496cd262a5c806115ad0fa15b7edf2485d33'
+          && gh api 'repos/OmniNode-ai/omnimarket/contents/src/omnimarket/nodes/node_projection_tenant_registry/migrations/0001_grant_omninode_runtime_tenant_registry_mirror.sql?ref=dev'
+          --jq .content | base64 -d | grep -Fx 'GRANT SELECT, INSERT, UPDATE ON public.tenant_registry_mirror
+          TO omninode_runtime;' >/dev/null && printf 'PASS: AC2 omnimarket dev carries the registry-mirror
+          grant migration at its recorded checksum\n'
+  - id: "ac3-dev-lane-registry-resolution-readback"
+    description: >-
+      AC3 binding. Read-only readback taken 2026-09-24T02:56:48Z inside the deployed `omninode-runtime`
+      on the .201 dev lane (image revision 8c256f355dc9e370550f73b57cd0ed1092b3f310, omnimarket 0.4.212,
+      omnibase-infra 0.38.57), connected on the runtime's own OMNINODE_INTERNAL_DB_URL as `omninode_runtime`
+      with transaction_read_only on. `sync_registry_tenant_uuid` and `resolve_registry_tenant_uuid_or_none`
+      resolved `beta-omn16976-probe`, a slug outside `_LEGACY_TENANT_UUID_MAP`, to the mirrored 16976000-0000-4000-8000-0000000000aa
+      with no permission denied. Positive control `omninode` resolved to 820272f9-4aaf-5add-a2df-0af942852ab2;
+      negative control `omn17374-absent-slug-20260924` raised TenantRegistryResolutionError. The reader
+      passed to `sync_registry_tenant_uuid` was a read-only stand-in implementing `.query()`, the only
+      call that function makes, so the runtime's auto-wired operations object was not itself exercised.
+      Principal correction: AC3's premise names `tenant_projection_writer`; the runtime reads this relation
+      as `omninode_runtime`. This check verifies the durable receipt's fields; it does not re-run the
+      live probe.
+    source: "manual"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          grep -Fqx 'status: "PASS"' drift/dod_receipts/OMN-17374/ac3-dev-lane-registry-resolution-readback/command.yaml
+          && grep -Fqx 'evidence_item_id: "ac3-dev-lane-registry-resolution-readback"' drift/dod_receipts/OMN-17374/ac3-dev-lane-registry-resolution-readback/command.yaml
+          && grep -Fqx '  current_user: omninode_runtime' drift/dod_receipts/OMN-17374/ac3-dev-lane-registry-resolution-readback/command.yaml
+          && grep -Fqx '  outside_map: beta-omn16976-probe -> 16976000-0000-4000-8000-0000000000aa' drift/dod_receipts/OMN-17374/ac3-dev-lane-registry-resolution-readback/command.yaml
+          && grep -Fqx '  positive_control: omninode -> 820272f9-4aaf-5add-a2df-0af942852ab2' drift/dod_receipts/OMN-17374/ac3-dev-lane-registry-resolution-readback/command.yaml
+          && grep -Fqx '  negative_control: omn17374-absent-slug-20260924 -> TenantRegistryResolutionError'
+          drift/dod_receipts/OMN-17374/ac3-dev-lane-registry-resolution-readback/command.yaml && grep
+          -Fqx '  permission_denied: none' drift/dod_receipts/OMN-17374/ac3-dev-lane-registry-resolution-readback/command.yaml
+          && printf 'PASS: AC3 dev-lane registry resolution fields match the durable receipt\n'
