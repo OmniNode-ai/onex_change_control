@@ -450,3 +450,74 @@ dod_evidence:
           exec -i omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -v ON_ERROR_STOP=1'
           | grep -E '^AC4-OK [1-9][0-9]*$' >/dev/null && printf 'PASS: AC4 omninode_internal on the .201
           dev lane has no RLS, no policy, and no tenant-writer read\\n'"
+  - id: "ac4-internal-guc-denied-fleet-host"
+    description: >-
+      AC4 binding, re-issued so it can run where the closer runs. The identical read-only predicate to
+      `ac4-internal-no-tenant-guc-tenant-roles-denied` (onex_change_control#11045): every base table in
+      schema `omninode_internal` on the .201 dev lane has row-level security off, the schema carries zero
+      `pg_policy` rows, `tenant_projection_writer` holds SELECT on none of them, and the table count is
+      non-zero. The only change is the host. The original reached .201 through `onex-201`, an ssh alias
+      that exists on one laptop only, and the 2026-09-24T10:23:58Z autoclose sweep failed it with "Could
+      not resolve hostname onex-201". This item uses `jonah@192.168.86.201`, the form merged contracts
+      use. That form cannot be reached from the authoring laptop, so the byte-identical remote command
+      was run there over its own route on 2026-09-24T11:14:50Z: `AC4-OK`, exit 0; the same predicate on
+      schema `public` exits 1. execution_scope is local_done_gate (OMN-15392).
+    source: "manual"
+    execution_scope: "local_done_gate"
+    evidence_artifact: "supersedes_dod_evidence:ac4-internal-no-tenant-guc-tenant-roles-denied"
+    binds_ac: ["AC4"]
+    supersedes_ac_binding:
+      - item: "ac4-internal-no-tenant-guc-tenant-roles-denied"
+        label: "AC4"
+        reason: "Its check reached .201 through `onex-201`, an ssh alias that exists only on the authoring
+          laptop, so it could not run where the closer runs (autoclose sweep 2026-09-24T10:23:58Z: Could
+          not resolve hostname onex-201). Re-bound by ac4-internal-guc-denied-fleet-host with the identical
+          predicate and the fleet host form."
+    checks:
+      - check_type: "command"
+        check_value: "printf '%s\\n' \"BEGIN READ ONLY;\" \"SELECT CASE WHEN t.n > 0 AND t.rls = 0 AND
+          t.tpw = 0 AND q.pol = 0 THEN 'AC4-OK ' || t.n ELSE 'AC4-FAIL' END FROM (SELECT count(*) AS n,
+          count(*) FILTER (WHERE c.relrowsecurity) AS rls, count(*) FILTER (WHERE has_table_privilege('tenant_projection_writer',
+          c.oid, 'SELECT')) AS tpw FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE
+          s.nspname = 'omninode_internal' AND c.relkind IN ('r', 'p')) t, (SELECT count(*) AS pol FROM
+          pg_policy p JOIN pg_class c ON c.oid = p.polrelid JOIN pg_namespace s ON s.oid = c.relnamespace
+          WHERE s.nspname = 'omninode_internal') q;\" \"ROLLBACK;\" | ssh -o BatchMode=yes -o ConnectTimeout=15
+          jonah@192.168.86.201 'docker exec -i omnibase-infra-postgres psql -U postgres -d omnidash_analytics
+          -At -v ON_ERROR_STOP=1' | grep -E '^AC4-OK [1-9][0-9]*$' >/dev/null && printf 'PASS: AC4 omninode_internal
+          on the .201 dev lane has no RLS, no policy, and no tenant-writer read\\n'"
+  - id: "ac5-p5-handoff-received-no-source-moved"
+    description: >-
+      AC5 binding, in the shape Jonah Gray set on 2026-09-24 (no change to `criterion_is_live`). The check
+      has two halves. (1) The P5 handoff, `beta/handoffs/2026-09-04-omn-15359-p5-cutover-handoff.md` at
+      knowledge-base-internal#116 merge `9351c52c`, names all five successors: OMN-15426, OMN-15425, OMN-15424,
+      OMN-15358 and OMN-15360. (2) A READ ONLY query on the .201 dev lane passes only when schema `tenant`
+      and `tenant.delegation_events` do not exist, `public.live_events` exists, none of the 67 relations
+      in omnibase_infra's two `*_PHYSICALLY_IN_PUBLIC_UNTIL_OMN15359` bridge lists exists in `tenant`
+      or `omninode_internal`, and at least one of them is in `public`. On 2026-09-24T11:13:47Z, 63 of
+      the 67 are in `public`; the other four were never created on that lane. Is omnibase_infra#2704 a
+      cutover? Yes, in code: it created `omninode_internal.live_events`, copied the rows, and took `live_events`
+      off the bridge, which moves that relation's write target. It kept the source, and on .201 it is
+      not in effect: `public.live_events` holds 286,602 rows and `omninode_internal.live_events` holds
+      0 (2026-09-24T11:13:47Z). So this item binds what holds, that the P5 tickets received the handoff
+      and no source relation was dropped or moved, and does not assert that no write path moved. Negative
+      controls 2026-09-24T11:14:50Z: an absent relation in place of `public.live_events` exits 1, and
+      an absent ticket id in place of OMN-15426 exits 1. execution_scope is local_done_gate (OMN-15392).
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: "body=\"$(gh api 'repos/OmniNode-ai/knowledge-base-internal/contents/beta/handoffs/2026-09-04-omn-15359-p5-cutover-handoff.md?ref=9351c52cd5321c5b7d6db4c3e3e928324c8f385e'
+          --jq .content | base64 -d)\" && printf '%s' \"$body\" | grep -F 'OMN-15426' >/dev/null && printf
+          '%s' \"$body\" | grep -F 'OMN-15425' >/dev/null && printf '%s' \"$body\" | grep -F 'OMN-15424'
+          >/dev/null && printf '%s' \"$body\" | grep -F 'OMN-15358' >/dev/null && printf '%s' \"$body\"
+          | grep -F 'OMN-15360' >/dev/null && printf '%s\\n' \"BEGIN READ ONLY;\" \"SELECT CASE WHEN to_regnamespace('tenant')
+          IS NULL AND to_regclass('tenant.delegation_events') IS NULL AND to_regclass('public.live_events')
+          IS NOT NULL AND b.moved = 0 AND b.in_public > 0 THEN 'AC5-OK in_public=' || b.in_public ELSE
+          'AC5-FAIL' END FROM (SELECT count(*) FILTER (WHERE to_regclass('public.' || r) IS NOT NULL)
+          AS in_public, count(*) FILTER (WHERE to_regclass('tenant.' || r) IS NOT NULL OR to_regclass('omninode_internal.'
+          || r) IS NOT NULL) AS moved FROM unnest(ARRAY['agent_routing_decisions','baselines_breakdown','baselines_comparisons','baselines_quality_snapshots','baselines_roi_snapshots','baselines_snapshots','baselines_trend','capability_scores','capsule_store','context_roi_scores','contract_registry','cost_by_repo_snapshots','delegation_budget_state','delegation_events','delegation_judge_verdict_events','delegation_routing_tenant_overlay','delegation_shadow_comparisons','dep_health_findings','deployment_evidence_projection','deployment_readiness_projection','event_chain','evidence_correlation_trace_projection','evidence_dashboard_projection','evidence_readiness_aggregate_projection','gate_activity','gate_metrics','generation_events','hook_events','instruction_eval_aggregate_snapshots','intent_classification_events','ledger_chain','llm_call_metrics','llm_cost_aggregates','llm_delegation_daily_projection','llm_routing_decisions','mcp_tools','merge_state_transitions','nightly_loop_configs','nightly_loop_decisions','nightly_loop_iterations','node_service_registry','overnight_session_phases','overnight_sessions','pattern_learning_artifacts','pr_lifecycle_ledger_entries','pr_merged_events','projection_cost_savings_overview','projection_delegation_inference_response_text','projection_delegation_model_routing','projection_delegation_quality_gate','projection_delegation_savings','projection_delegation_savings_series','projection_delegation_summary','projection_delegation_token_usage','receipt_gate_rows','renderer_capability_projection','sandbox_decisions','savings_estimates','session_outcomes','session_replay_snapshots','skill_execution_snapshots','swarm_runs','tenant_inference_credentials','tenant_registry_mirror','traces','validation_event_ledger','voice_sessions'])
+          AS r) b;\" \"ROLLBACK;\" | ssh -o BatchMode=yes -o ConnectTimeout=15 jonah@192.168.86.201 'docker
+          exec -i omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -v ON_ERROR_STOP=1'
+          | grep -E '^AC5-OK in_public=[1-9][0-9]*$' >/dev/null && printf 'PASS: AC5 handoff names all
+          five successors; no bridged relation has moved; tenant schema absent; public.live_events present\\n'"
