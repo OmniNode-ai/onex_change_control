@@ -100,3 +100,112 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 10934 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-option-a-writer-binds-recorded-tenant"
+    description: >-
+      AC1 binding. The ruling was recorded before code on this ticket by Jonah Gray, 2026-09-01, comment
+      2e544ded: option (a), the writer sets `SET LOCAL app.tenant_id` from the attribution it is about
+      to write, on every tenant-relation write including the unbound-authority path. What it still buys,
+      as the ruling states it: the write is confined to the one tenant it declares, the read-before-write
+      probe is scoped to that tenant, and a tenant-less row leaves the GUC unset so the relation's own
+      policy denies it. No tenant is invented or defaulted. Options (b) and (c) were rejected in the same
+      comment. This item runs the writer's own behaviour tests from omnibase_infra#3088 (`test_projection_domain_adapters.py`,
+      selected by `unbound or recorded_write_scope`), which assert exactly that: the unbound write is
+      scoped to the recorded tenant on every tenant-GUC relation, a tenant-less or blank row opens no
+      scope, no tenant is ever invented, and the scope rolls back and never leaks on failure. Run at omnibase_infra
+      origin/dev 26ed39800f1a2028ba0026ba386453246767b716 on 2026-09-24: 26 passed (the two files are
+      unchanged at origin/dev 370adc5e5273c37e7472818978bfc66eab131904). RED control 2026-09-24: with
+      `_statement_tenant_scope`'s unbound branch reverted to the pre-fix `return None`, 18 of the 26 fail.
+      execution_scope is local_done_gate (OMN-15392) because the suite lives in omnibase_infra, which
+      the hosted gate does not check out.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/unit/runtime/auto_wiring/test_projection_domain_adapters.py
+          -q -k 'unbound or recorded_write_scope'"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac4-guc-parity-covers-every-tenant-relation"
+    description: >-
+      AC4 binding. `tests/ci/test_tenant_guc_domain_parity.py` (omnibase_infra#4004) drives `scripts/validation/check_tenant_guc_domain_parity.py`,
+      which enumerates every relation from the checked-in topology and migration corpus rather than a
+      hand list, and asserts the tree is clean and that the clean result is not vacuous (an empty topology
+      or a missing corpus raises instead of passing). Run at omnibase_infra origin/dev 26ed39800f1a2028ba0026ba386453246767b716
+      on 2026-09-24: 19 passed; the gate itself reports 0 violations.
+    source: "manual"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_tenant_guc_domain_parity.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac5-guc-parity-ratchet-incident-replay"
+    description: >-
+      AC5 binding, behaviour half. `tests/ci/test_incident_replay_omn17422.py` (omnibase_infra#4004) replays
+      the real captured 0027 migration bytes and asserts the ratchet rejects them, and asserts it accepts
+      the real 0043 remedy and does not read the remedy alone as a defect. Run at omnibase_infra origin/dev
+      26ed39800f1a2028ba0026ba386453246767b716 on 2026-09-24: 4 passed.
+    source: "manual"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_incident_replay_omn17422.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac5-guc-parity-ratchet-wired-in-ci"
+    description: >-
+      AC5 binding, enforcement half. AC5 asks for a check that fails closed, and detection that is not
+      a gate does not hold, so this asserts the ratchet runs in omnibase_infra `dev` CI (`.github/workflows/ci.yml`).
+      It reads `dev`, not a pinned sha, so it goes red if the step is removed. Negative control 2026-09-24:
+      the same check for a script name that is not wired exits 1.
+    source: "manual"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=dev' --jq .content
+          | base64 -d | grep -F 'run: uv run python scripts/validation/check_tenant_guc_domain_parity.py'
+          >/dev/null && printf 'PASS: AC5 the tenant GUC parity ratchet runs in omnibase_infra dev CI\n'
+  - id: "ac2-real-force-rls-dispatch-not-refused"
+    description: >-
+      AC2 binding. `TestRealPostgresRlsRefusesTheUnboundWriteAndAcceptsTheBoundOne` in omnimarket (omnimarket#2807)
+      drives a raw-wire event through the real dispatch seam into a relation with FORCE ROW LEVEL SECURITY
+      and a GUC-predicated policy, with no authority bound, against a real Postgres, and asserts the INSERT
+      is not refused; its red legs assert the unbound shape is refused. The check passes only when pytest's
+      last line starts with `5 passed`, so a run without Postgres credentials (5 skipped) is red, never
+      green. Run at omnimarket origin/dev 923b76baef5c013cefb79989f3f7d6626a2ad18c on 2026-09-24T06:40:28Z
+      against a disposable local Postgres 16.15: 5 passed in 4.10s. Negative control: credentials unset
+      gives 5 skipped and the check exits 1. The same five PASSED in omnimarket CI run 35868014833, job
+      "Tests (Split 10/20)". execution_scope is local_done_gate (OMN-15392): hosted CI has no Postgres,
+      and wherever the Done gate runs it needs INTEGRATION_POSTGRES_PASSWORD (and host/port) set.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          uv run pytest 'tests/test_omn17422_quality_gate_tenant_scope_binding.py::TestRealPostgresRlsRefusesTheUnboundWriteAndAcceptsTheBoundOne'
+          -q 2>&1 | tail -n 1 | grep -E '^5 passed' >/dev/null && printf 'PASS: AC2 the five real FORCE-RLS
+          dispatch tests passed against a real Postgres\n'
+        cwd: "${OMNI_HOME}/omnimarket"
+  - id: "ac3-live-delegation-lands-row-dlq-clean"
+    description: >-
+      AC3 binding. One delegation on the .201 dev lane, fired once through the sanctioned chain-canary
+      workflow (omnibase_infra run 35966603205, workflow_dispatch on dev ba4006b7f2b5831a5aa8dc0f2c7274781aecf2b3,
+      2026-09-24T06:52:08Z, PROBE-GREEN 5/5 links). Read back out of Postgres inside a READ ONLY transaction:
+      exactly one row changed during the run, tenant 820272f9-4aaf-5add-a2df-0af942852ab2, correlation
+      id fcdb0f37-2819-40cc-b496-6c176418bc6d, captured 06:52:49Z inside the job window, present in `recent_responses`,
+      and 1 row carries that id; an absent correlation id reads false. The DLQ `onex.dlq.omnimarket.projection-delegation-inference-response-malformed.v1`
+      high watermark was 1028 before (06:50:55Z) and 1028 after (06:53:43Z): zero new entries. The check
+      re-reads the run's conclusion from GitHub and then the recorded readback fields.
+    source: "manual"
+    binds_ac: ["AC3"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnibase_infra/actions/runs/35966603205 --jq '"\(.conclusion) \(.event)
+          \(.head_branch)"' | grep -Fx 'success workflow_dispatch dev' >/dev/null && grep -Fqx '  correlation_id:
+          fcdb0f37-2819-40cc-b496-6c176418bc6d' drift/dod_receipts/OMN-17422/ac3-live-delegation-lands-row-dlq-clean/command.yaml
+          && grep -Fqx '  rows_for_correlation_id: 1' drift/dod_receipts/OMN-17422/ac3-live-delegation-lands-row-dlq-clean/command.yaml
+          && grep -Fqx '  in_recent_responses: true' drift/dod_receipts/OMN-17422/ac3-live-delegation-lands-row-dlq-clean/command.yaml
+          && grep -Fqx '  dlq_high_watermark_before: 1028' drift/dod_receipts/OMN-17422/ac3-live-delegation-lands-row-dlq-clean/command.yaml
+          && grep -Fqx '  dlq_high_watermark_after: 1028' drift/dod_receipts/OMN-17422/ac3-live-delegation-lands-row-dlq-clean/command.yaml
+          && printf 'PASS: AC3 the dispatched delegation landed its row and the DLQ took no new entry\n'
