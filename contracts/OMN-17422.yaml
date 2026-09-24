@@ -100,3 +100,63 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 10934 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "ac1-option-a-writer-binds-recorded-tenant"
+    description: >-
+      AC1 binding. The ruling was recorded before code on this ticket by Jonah Gray, 2026-09-01, comment
+      2e544ded: option (a), the writer sets `SET LOCAL app.tenant_id` from the attribution it is about
+      to write, on every tenant-relation write including the unbound-authority path. What it still buys,
+      as the ruling states it: the write is confined to the one tenant it declares, the read-before-write
+      probe is scoped to that tenant, and a tenant-less row leaves the GUC unset so the relation's own
+      policy denies it. No tenant is invented or defaulted. Options (b) and (c) were rejected in the same
+      comment. The implementation is `_recorded_tenant_scope` and `_statement_tenant_scope` in omnibase_infra
+      `handler_wiring.py` (omnibase_infra#3088). This check reads the file from omnibase_infra `dev`,
+      not a pinned sha, so it goes red if either function is removed. Negative control 2026-09-24: a function
+      name that does not exist exits 1.
+    source: "manual"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev'
+          --jq .content | base64 -d | grep -Fq 'def _recorded_tenant_scope(' && gh api 'repos/OmniNode-ai/omnibase_infra/contents/src/omnibase_infra/runtime/auto_wiring/handler_wiring.py?ref=dev'
+          --jq .content | base64 -d | grep -Fq 'def _statement_tenant_scope(' && printf 'PASS: AC1 option
+          (a) is implemented on omnibase_infra dev: the writer binds the GUC from the attribution it writes\n'
+  - id: "ac4-guc-parity-covers-every-tenant-relation"
+    description: >-
+      AC4 binding. `tests/ci/test_tenant_guc_domain_parity.py` (omnibase_infra#4004) drives `scripts/validation/check_tenant_guc_domain_parity.py`,
+      which enumerates every relation from the checked-in topology and migration corpus rather than a
+      hand list, and asserts the tree is clean and that the clean result is not vacuous (an empty topology
+      or a missing corpus raises instead of passing). Run at omnibase_infra origin/dev 26ed39800f1a2028ba0026ba386453246767b716
+      on 2026-09-24: 19 passed; the gate itself reports 0 violations.
+    source: "manual"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_tenant_guc_domain_parity.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac5-guc-parity-ratchet-incident-replay"
+    description: >-
+      AC5 binding, behaviour half. `tests/ci/test_incident_replay_omn17422.py` (omnibase_infra#4004) replays
+      the real captured 0027 migration bytes and asserts the ratchet rejects them, and asserts it accepts
+      the real 0043 remedy and does not read the remedy alone as a defect. Run at omnibase_infra origin/dev
+      26ed39800f1a2028ba0026ba386453246767b716 on 2026-09-24: 4 passed.
+    source: "manual"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run pytest tests/ci/test_incident_replay_omn17422.py -q"
+        cwd: "${OMNI_HOME}/omnibase_infra"
+  - id: "ac5-guc-parity-ratchet-wired-in-ci"
+    description: >-
+      AC5 binding, enforcement half. AC5 asks for a check that fails closed, and detection that is not
+      a gate does not hold, so this asserts the ratchet runs in omnibase_infra `dev` CI (`.github/workflows/ci.yml`).
+      It reads `dev`, not a pinned sha, so it goes red if the step is removed. Negative control 2026-09-24:
+      the same check for a script name that is not wired exits 1.
+    source: "manual"
+    binds_ac: ["AC5"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh api 'repos/OmniNode-ai/omnibase_infra/contents/.github/workflows/ci.yml?ref=dev' --jq .content
+          | base64 -d | grep -Fq 'run: uv run python scripts/validation/check_tenant_guc_domain_parity.py'
+          && printf 'PASS: AC5 the tenant GUC parity ratchet runs in omnibase_infra dev CI\n'
