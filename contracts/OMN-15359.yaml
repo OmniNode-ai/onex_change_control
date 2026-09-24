@@ -399,3 +399,54 @@ dod_evidence:
           and .headRefOid == "0495f7f2db26a3b2c24eb4c1ee2434487bea24d9" and .mergeCommit.oid == "8c4bf7f22bad0d9cd50441b2095388bbb0e41b49"
           and ([.files[].path] | sort) == ["contracts/OMN-15359.yaml","drift/dod_receipts/OMN-15359/dod-OmniNode-ai-omnibase_infra-pr-2674-a9835bb8/command.yaml","drift/dod_receipts/OMN-15359/dod-source-proof-pr-2674-a9835bb8/command.yaml","drift/dod_receipts/OMN-15359/occ-self-bind-pr-6253/command.yaml"])
           then "true" else error("unexpected #6253 state, head, mergeCommit, or file set") end'''
+  - id: "ac1-omninode-internal-relation-family-record"
+    description: >-
+      AC1 binding, for the one relation family this ticket built. `reference/omninode-internal-relation-family.md`
+      in knowledge-base-internal (knowledge-base-internal#441, squash 8c32f5084a8cc21fc26ee11f7345f2068731f3a3,
+      merged 2026-09-14) is the transformation receipt AC1 names, regenerated from the corpus after the
+      original was deleted from omnibase_infra by the OMN-16607 scrub (65cb31cdf). It records, for all
+      50 omninode_internal relations, the owner, domain, migration stream, producer, consumer set, physical
+      location and creating migration. Scope stated plainly: the `tenant` and `platform_catalog` families
+      were descoped from this ticket into OMN-17887 on 2026-09-04 (handoff §4), so this binds AC1 for
+      `omninode_internal` only. The check reads the page from knowledge-base-internal `main`, not a pinned
+      sha, so it goes red if the page or its owner/domain/stream/producer/consumer structure is removed.
+      Negative control 2026-09-24: a heading the page does not carry exits 1.
+    source: "manual"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: "body=\"$(gh api 'repos/OmniNode-ai/knowledge-base-internal/contents/reference/omninode-internal-relation-family.md?ref=main'
+          --jq .content | base64 -d)\" && printf '%s' \"$body\" | grep -F '| Owner | `omnibase_infra`'
+          >/dev/null && printf '%s' \"$body\" | grep -F '| Domain | `OMNINODE_INTERNAL`' >/dev/null &&
+          printf '%s' \"$body\" | grep -F '| Migration stream |' >/dev/null && printf '%s' \"$body\" |
+          grep -F '| Relation | Producer (access=write / read_write) | Consumer (access=read) | Physical
+          location | Creating migration |' >/dev/null && printf '%s' \"$body\" | grep -Fx '## The consumer
+          set' >/dev/null && printf 'PASS: AC1 the omninode_internal relation family record carries owner,
+          domain, stream, per-relation producer and consumer\\n'"
+  - id: "ac4-internal-no-tenant-guc-tenant-roles-denied"
+    description: >-
+      AC4 binding, measured live. The check runs a READ ONLY transaction against `omnidash_analytics`
+      on the .201 dev lane (container `omnibase-infra-postgres`) and passes only when every base table
+      in schema `omninode_internal` has row-level security off, the schema carries zero `pg_policy` rows,
+      and `tenant_projection_writer` holds SELECT on none of them, with a non-zero table count so an empty
+      or missing schema cannot pass. That is AC4 as the 2026-09-04 and 2026-09-05 adjudications scored
+      it: no tenant GUC is needed to write or read, and the tenant role is denied. Run 2026-09-24T08:22:36Z:
+      `AC4-OK 18`. Negative controls the same run: the identical predicate on schema `public` reads `AC4-FAIL`
+      (11 RLS tables, 12 policies, 16 readable by the tenant writer), and on a schema that does not exist
+      it reads `AC4-FAIL` with n=0. execution_scope is local_done_gate (OMN-15392): the check needs ssh
+      to the lab host, which hosted CI does not have.
+    source: "manual"
+    execution_scope: "local_done_gate"
+    binds_ac: ["AC4"]
+    checks:
+      - check_type: "command"
+        check_value: "printf '%s\\n' \"BEGIN READ ONLY;\" \"SELECT CASE WHEN t.n > 0 AND t.rls = 0 AND
+          t.tpw = 0 AND q.pol = 0 THEN 'AC4-OK ' || t.n ELSE 'AC4-FAIL' END FROM (SELECT count(*) AS n,
+          count(*) FILTER (WHERE c.relrowsecurity) AS rls, count(*) FILTER (WHERE has_table_privilege('tenant_projection_writer',
+          c.oid, 'SELECT')) AS tpw FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE
+          s.nspname = 'omninode_internal' AND c.relkind IN ('r', 'p')) t, (SELECT count(*) AS pol FROM
+          pg_policy p JOIN pg_class c ON c.oid = p.polrelid JOIN pg_namespace s ON s.oid = c.relnamespace
+          WHERE s.nspname = 'omninode_internal') q;\" \"ROLLBACK;\" | ssh -o BatchMode=yes onex-201 'docker
+          exec -i omnibase-infra-postgres psql -U postgres -d omnidash_analytics -At -v ON_ERROR_STOP=1'
+          | grep -E '^AC4-OK [1-9][0-9]*$' >/dev/null && printf 'PASS: AC4 omninode_internal on the .201
+          dev lane has no RLS, no policy, and no tenant-writer read\\n'"
