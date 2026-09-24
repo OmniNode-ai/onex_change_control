@@ -29,6 +29,10 @@
 #        an EMPTY required_status_checks *and* an active ruleset restricting
 #        updates to refs/heads/main with a non-empty bypass-actor set.
 #   3. enforce_admins is true.
+#   3a. Every required_status_checks.checks[] entry names a reporting App
+#       (app_id is not null) — OMN-19511. A null app_id is GitHub's "Any
+#       source", satisfiable by any App or Action with checks:write, not just
+#       the intended CI producer.
 #
 # Main-only / repo-level checks (unchanged — the release boundary is not weakened):
 #   4. "verify / verify" Receipt Gate is a required status check
@@ -498,6 +502,33 @@ check_branch() {
   else
     echo "    [${branch}] FAIL: enforce_admins is not enabled"
     emit_jsonl "$repo" "$branch" "enforce_admins" "FAIL" "disabled"
+    REPO_OK=false
+    FAILURES=$((FAILURES + 1))
+  fi
+
+  # 3a. Every required status check is bound to a specific reporting App
+  #     (OMN-19511). `required_status_checks.checks[].app_id` names the App
+  #     GitHub will accept a check run with that context FROM; a null app_id
+  #     ("Any source") means ANY App or Action with `checks:write` on the repo
+  #     can satisfy the context, including one with no relation to the intended
+  #     CI producer. That is a spoofable required check, not an enforced one --
+  #     the same class of gap as an unbound `contexts[]` entry, just newer
+  #     surface (GitHub added per-check app binding after `contexts[]` was
+  #     deprecated). `.contexts[]` carries no app_id at all and is not judged
+  #     here; `.checks[]` is the field that can express and therefore leak this.
+  TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+  local unbound_contexts
+  unbound_contexts=$(printf '%s' "$protection" | jq -r '
+    (.required_status_checks.checks // [])
+    | map(select(.app_id == null) | .context)
+    | join(", ")
+  ')
+  if [[ -z "$unbound_contexts" ]]; then
+    echo "    [${branch}] PASS: every required status check is bound to a reporting App"
+    emit_jsonl "$repo" "$branch" "required_check_app_binding" "PASS" "all bound"
+  else
+    echo "    [${branch}] FAIL: required status check(s) with app_id=null (\"Any source\" -- satisfiable by any App, not just the intended CI producer): ${unbound_contexts}"
+    emit_jsonl "$repo" "$branch" "required_check_app_binding" "FAIL" "unbound contexts: ${unbound_contexts}"
     REPO_OK=false
     FAILURES=$((FAILURES + 1))
   fi
