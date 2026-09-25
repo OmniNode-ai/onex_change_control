@@ -62,7 +62,10 @@ _DEV_WITHOUT_LANE_IDENTITY = {
     "required_status_checks": {
         "strict": False,
         "contexts": ["CI Summary", "verify / verify"],
-        "checks": [{"context": "CI Summary"}, {"context": "verify / verify"}],
+        "checks": [
+            {"context": "CI Summary", "app_id": 15368},
+            {"context": "verify / verify", "app_id": 15368},
+        ],
     },
     "enforce_admins": {"enabled": True},
 }
@@ -71,9 +74,9 @@ _DEV_WITH_LANE_IDENTITY = {
         "strict": False,
         "contexts": ["CI Summary", "verify / verify", "Lane Identity Gate"],
         "checks": [
-            {"context": "CI Summary"},
-            {"context": "verify / verify"},
-            {"context": "Lane Identity Gate"},
+            {"context": "CI Summary", "app_id": 15368},
+            {"context": "verify / verify", "app_id": 15368},
+            {"context": "Lane Identity Gate", "app_id": 15368},
         ],
     },
     "enforce_admins": {"enabled": True},
