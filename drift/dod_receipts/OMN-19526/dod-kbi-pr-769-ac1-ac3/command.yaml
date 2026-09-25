@@ -1,0 +1,142 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19526
+evidence_item_id: dod-kbi-pr-769-ac1-ac3
+check_type: command
+check_value: |-
+  t=$(mktemp -d) && gh api "repos/OmniNode-ai/knowledge-base-internal/contents/reports/2026-09-25-delegation-capability-matrix.md?ref=eb8203fd387923410c2c7b49e86c36650a67025d" --jq .content | base64 -d > "$t/r.md" && [ -s "$t/r.md" ] && python3 - "$t/r.md" <<'PY'
+  """OMN-19526 AC1-AC3 checker. usage: verify_report.py <report.md>; exit 0 only if every AC passes."""
+  import re, sys, collections
+  T=open(sys.argv[1]).read(); fails=[]
+  def section(title):
+      m=re.search(r'^## '+re.escape(title)+r'.*?$(.*?)(?=^## |\Z)',T,re.M|re.S); return m.group(1) if m else ''
+  def table(sec):
+      out=[]
+      for l in sec.splitlines():
+          if l.startswith('| ') and not l.startswith('|---'):
+              out.append([c.strip() for c in l.strip().strip('|').split('|')])
+      return out
+  app=[r for r in table(section('Appendix A')) if r[0].startswith('dm-')]
+  key=lambda c: c.strip('`')
+  cnt=collections.defaultdict(collections.Counter)
+  for r in app: cnt[key(r[2])][r[9]]+=1; cnt['*'][r[9]]+=1
+  mat=table(section('Capability matrix'))
+  mrows=[r for r in mat if len(r)>=7 and (r[1].startswith('`') or r[0]=='**all**')]
+  if len(mrows)<3: fails.append('AC1: matrix table not found')
+  for r in mrows:
+      k='*' if r[0]=='**all**' else key(r[1]); c=cnt[k]
+      want=(int(r[3]),int(r[4]),int(r[5]),int(r[6]))
+      got=(sum(c.values()),c['PASS'],c['RIGHT_NO_RECEIPT'],c['FAIL'])
+      if want!=got: fails.append(f'AC1: {k} matrix {want} != recount {got}')
+  print('AC1 matrix rows checked:',len(mrows),'appendix trials:',len(app))
+  lanes4={'dm-docs','dm-fixes','dm-nodes','dm-tests'}
+  ftab=[r for r in table(section('Recurring failure classes')) if r[0].startswith('`')]
+  if not ftab: fails.append('AC2: failure table not found')
+  for r in ftab:
+      ks=set(key(r[0]).split('+')); n=sum(1 for a in app if a[0] in lanes4 and ks & set(re.findall(r'`([^`]+)`',a[10])))
+      if n!=int(r[2]): fails.append(f'AC2: {key(r[0])} table {r[2]} != recount {n}')
+      if not re.search(r'OMN-\d+',r[4]): fails.append(f'AC2: {key(r[0])} names no ticket')
+  print('AC2 failure rows checked:',len(ftab))
+  W={'zero':0,'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,'eleven':11,'twelve':12,'thirteen':13,'fourteen':14,'fifteen':15,'sixteen':16,'seventeen':17,'eighteen':18,'nineteen':19,'twenty':20,'thirty':30,'forty':40,'fifty':50,'sixty':60,'seventy':70}
+  TENS=r'\b(twenty|thirty|forty|fifty|sixty|seventy)[- ](one|two|three|four|five|six|seven|eight|nine)\b'
+  def nums(t):
+      s=set(int(x) for x in re.findall(r'(?<![\w.-])\d+(?![\w])',t.replace(',','')))
+      for m in re.finditer(TENS,t.lower()): s.add(W[m.group(1)]+W[m.group(2)])
+      for w in re.findall(r'\b[a-z]+\b',re.sub(TENS,'',t.lower())):
+          if w in W: s.add(W[w])
+      return s
+  prompts=dict(re.findall(r'^### (P\d+)\n\n```text\n(.*?)\n```',section('Appendix B'),re.M|re.S))
+  marks=re.findall(r'<!-- delegated run=([0-9a-f]{8}) prompt=(P\d+) words=(\d+)-(\d+) -->\n(.+)',T)
+  if not marks: fails.append('AC3: no delegated paragraphs found')
+  for run,p,lo,hi,para in marks:
+      P=prompts.get(p)
+      if P is None: fails.append(f'AC3: {run} prompt {p} missing'); continue
+      n=len(para.split())
+      if not int(lo)<=n<=int(hi): fails.append(f'AC3: {run} {n} words not in {lo}-{hi}')
+      extra=nums(para)-(nums(P)|{int(x) for x in re.findall(r'\d+',P)}|{1})
+      if extra: fails.append(f'AC3: {run} ungrounded numbers {sorted(extra)}')
+      ids=set(re.findall(r'OMN-\d+',para))-set(re.findall(r'OMN-\d+',P))
+      if ids: fails.append(f'AC3: {run} ungrounded ids {sorted(ids)}')
+      bt={b for b in re.findall(r'`([^`]+)`',para) if b not in P}
+      if bt: fails.append(f'AC3: {run} ungrounded code {sorted(bt)}')
+      if not any(a[4]==run and a[9]=='PASS' for a in app): fails.append(f'AC3: {run} not a PASS row in Appendix A')
+  print('AC3 delegated paragraphs checked:',len(marks))
+  print('\n'.join(fails) if fails else 'ALL PASS'); sys.exit(1 if fails else 0)
+  PY
+contract_sha256: sha256:43b1b2941a6f22600ebf31681cef15b0e9b6680905c9d3a961e1b1860331895a
+contract_entry_sha256: sha256:03f8cca47b26bf3766ca7de3466cad866751b80d53f6f37b406d2ebe0c0eb087
+status: PASS
+run_timestamp: '2026-09-25T02:57:16Z'
+commit_sha: eb8203fd387923410c2c7b49e86c36650a67025d
+runner: dm-report-kb-769-companion
+verifier: hand-authored-omn15247
+probe_command: |-
+  t=$(mktemp -d) && gh api "repos/OmniNode-ai/knowledge-base-internal/contents/reports/2026-09-25-delegation-capability-matrix.md?ref=eb8203fd387923410c2c7b49e86c36650a67025d" --jq .content | base64 -d > "$t/r.md" && [ -s "$t/r.md" ] && python3 - "$t/r.md" <<'PY'
+  """OMN-19526 AC1-AC3 checker. usage: verify_report.py <report.md>; exit 0 only if every AC passes."""
+  import re, sys, collections
+  T=open(sys.argv[1]).read(); fails=[]
+  def section(title):
+      m=re.search(r'^## '+re.escape(title)+r'.*?$(.*?)(?=^## |\Z)',T,re.M|re.S); return m.group(1) if m else ''
+  def table(sec):
+      out=[]
+      for l in sec.splitlines():
+          if l.startswith('| ') and not l.startswith('|---'):
+              out.append([c.strip() for c in l.strip().strip('|').split('|')])
+      return out
+  app=[r for r in table(section('Appendix A')) if r[0].startswith('dm-')]
+  key=lambda c: c.strip('`')
+  cnt=collections.defaultdict(collections.Counter)
+  for r in app: cnt[key(r[2])][r[9]]+=1; cnt['*'][r[9]]+=1
+  mat=table(section('Capability matrix'))
+  mrows=[r for r in mat if len(r)>=7 and (r[1].startswith('`') or r[0]=='**all**')]
+  if len(mrows)<3: fails.append('AC1: matrix table not found')
+  for r in mrows:
+      k='*' if r[0]=='**all**' else key(r[1]); c=cnt[k]
+      want=(int(r[3]),int(r[4]),int(r[5]),int(r[6]))
+      got=(sum(c.values()),c['PASS'],c['RIGHT_NO_RECEIPT'],c['FAIL'])
+      if want!=got: fails.append(f'AC1: {k} matrix {want} != recount {got}')
+  print('AC1 matrix rows checked:',len(mrows),'appendix trials:',len(app))
+  lanes4={'dm-docs','dm-fixes','dm-nodes','dm-tests'}
+  ftab=[r for r in table(section('Recurring failure classes')) if r[0].startswith('`')]
+  if not ftab: fails.append('AC2: failure table not found')
+  for r in ftab:
+      ks=set(key(r[0]).split('+')); n=sum(1 for a in app if a[0] in lanes4 and ks & set(re.findall(r'`([^`]+)`',a[10])))
+      if n!=int(r[2]): fails.append(f'AC2: {key(r[0])} table {r[2]} != recount {n}')
+      if not re.search(r'OMN-\d+',r[4]): fails.append(f'AC2: {key(r[0])} names no ticket')
+  print('AC2 failure rows checked:',len(ftab))
+  W={'zero':0,'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,'eleven':11,'twelve':12,'thirteen':13,'fourteen':14,'fifteen':15,'sixteen':16,'seventeen':17,'eighteen':18,'nineteen':19,'twenty':20,'thirty':30,'forty':40,'fifty':50,'sixty':60,'seventy':70}
+  TENS=r'\b(twenty|thirty|forty|fifty|sixty|seventy)[- ](one|two|three|four|five|six|seven|eight|nine)\b'
+  def nums(t):
+      s=set(int(x) for x in re.findall(r'(?<![\w.-])\d+(?![\w])',t.replace(',','')))
+      for m in re.finditer(TENS,t.lower()): s.add(W[m.group(1)]+W[m.group(2)])
+      for w in re.findall(r'\b[a-z]+\b',re.sub(TENS,'',t.lower())):
+          if w in W: s.add(W[w])
+      return s
+  prompts=dict(re.findall(r'^### (P\d+)\n\n```text\n(.*?)\n```',section('Appendix B'),re.M|re.S))
+  marks=re.findall(r'<!-- delegated run=([0-9a-f]{8}) prompt=(P\d+) words=(\d+)-(\d+) -->\n(.+)',T)
+  if not marks: fails.append('AC3: no delegated paragraphs found')
+  for run,p,lo,hi,para in marks:
+      P=prompts.get(p)
+      if P is None: fails.append(f'AC3: {run} prompt {p} missing'); continue
+      n=len(para.split())
+      if not int(lo)<=n<=int(hi): fails.append(f'AC3: {run} {n} words not in {lo}-{hi}')
+      extra=nums(para)-(nums(P)|{int(x) for x in re.findall(r'\d+',P)}|{1})
+      if extra: fails.append(f'AC3: {run} ungrounded numbers {sorted(extra)}')
+      ids=set(re.findall(r'OMN-\d+',para))-set(re.findall(r'OMN-\d+',P))
+      if ids: fails.append(f'AC3: {run} ungrounded ids {sorted(ids)}')
+      bt={b for b in re.findall(r'`([^`]+)`',para) if b not in P}
+      if bt: fails.append(f'AC3: {run} ungrounded code {sorted(bt)}')
+      if not any(a[4]==run and a[9]=='PASS' for a in app): fails.append(f'AC3: {run} not a PASS row in Appendix A')
+  print('AC3 delegated paragraphs checked:',len(marks))
+  print('\n'.join(fails) if fails else 'ALL PASS'); sys.exit(1 if fails else 0)
+  PY
+probe_stdout: |
+  AC1 matrix rows checked: 15 appendix trials: 76
+  AC2 failure rows checked: 11
+  AC3 delegated paragraphs checked: 4
+  ALL PASS
+actual_output: |-
+  PASS: the recount-and-grounding script exits 0 over the report read at PR head eb8203fd387923410c2c7b49e86c36650a67025d (15 matrix rows and 11 failure-class rows recounted from 76 appendix trials; 4 delegated paragraphs grounded in prompts P1 to P4, each run a PASS row). It exits 1 at the PR base 2d33476a99ea63a077642d651c8adf508afedd94, where the report does not exist (HTTP 404), and exits 1 on a copy of the head report with one planted matrix count change (pr_body 1 pass to 2), so the check can fail. Hand-authored under OMN-15247: knowledge-base-internal has no receipt gate and no autobind.
+exit_code: 0
+pr_number: 769
+branch: jonah/omn-19526-delegation-capability-matrix
