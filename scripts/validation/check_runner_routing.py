@@ -280,9 +280,7 @@ def _validate_job(
     # OMN-18031: a job whose runs-on reads a route job's output must declare
     # the `needs:` edge that makes that output reachable.
     violations.extend(
-        validate_route_consumer(
-            workflow_path=workflow_path, job_name=job_name, job=job
-        )
+        validate_route_consumer(workflow_path=workflow_path, job_name=job_name, job=job)
     )
     # OMN-16682: job-level env, plus every step's env, since a step env pins
     # the index just as effectively as a job env does.
@@ -305,7 +303,11 @@ def _validate_job(
     return violations
 
 
-def validate_workflows(repo_root: Path, labels: set[str] | None = None) -> list[str]:
+def validate_workflows(
+    repo_root: Path,
+    labels: set[str] | None = None,
+    workflows: list[Path] | None = None,
+) -> list[str]:
     """Validate every workflow job that references the public runner selector.
 
     ``labels`` defaults to whatever the live selector variables resolve to.
@@ -314,8 +316,10 @@ def validate_workflows(repo_root: Path, labels: set[str] | None = None) -> list[
         labels = routing_labels_from_env()
     violations: list[str] = []
     workflow_dir = repo_root / ".github/workflows"
-    workflows = sorted((*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")))
-    for workflow in workflows:
+    selected = workflows or sorted(
+        (*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml"))
+    )
+    for workflow in selected:
         raw_content = workflow.read_text(encoding="utf-8")
         workflow_path = str(workflow.relative_to(repo_root))
         if re.search(r"^  pull_request_target:", raw_content, re.MULTILINE):
@@ -347,9 +351,18 @@ def format_violations(violations: list[str]) -> str:
     return "\n".join(f"ERROR: {violation}" for violation in violations)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     repo_root = Path(__file__).resolve().parents[2]
-    violations = validate_workflows(repo_root)
+    raw_paths = argv if argv is not None else []
+    workflows: list[Path] | None = None
+    selected = [Path(raw).resolve() for raw in raw_paths]
+    workflow_dir = (repo_root / ".github" / "workflows").resolve()
+    if selected and all(
+        path.suffix in {".yml", ".yaml"} and path.parent == workflow_dir
+        for path in selected
+    ):
+        workflows = selected
+    violations = validate_workflows(repo_root, workflows=workflows)
     if violations:
         print(format_violations(violations))
         return 1
@@ -358,4 +371,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))
