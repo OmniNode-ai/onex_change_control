@@ -1,0 +1,75 @@
+---
+schema_version: 1.0.0
+ticket_id: OMN-19511
+title: audit_branch_protection.sh does not fail on a required status check whose app_id is null
+summary: |-
+  The audit script in onex_change_control previously verified only the presence
+  of named status contexts without validating their app_id bindings. This gap
+  allowed the advisory-job-gate context on omniclaude dev to be satisfied by any
+  application or action because its app_id was set to null. The fix introduces
+  check 3a, which fails the audit, naming each context, when any required status
+  context on an audited branch has a null app_id. Existing test fixtures were
+  updated to carry app_id values so they describe bound checks, and a
+  release-synced main whose required set is empty by design is unaffected.
+
+  Scope of this contract: it carries the evidence for the code change in
+  onex_change_control PR 11160, which is the ticket's first two acceptance
+  criteria. The third criterion, remediating the live omniclaude dev branch
+  protection so the advisory-job-gate context names a reporting App, is a
+  settings change on another repository and is NOT proven here. Its falsifier
+  still reads null as of 2026-09-25T04:45Z. This contract therefore binds no
+  criterion label, so the ticket stays held open for that criterion rather
+  than reading as fully bound.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: tests
+    description: |-
+      The app-binding audit tests pass, and the two existing audit suites whose
+      fixtures gained app_id values still pass.
+    command: uv run pytest tests/test_audit_branch_protection_app_binding.py tests/test_audit_branch_protection_lane_identity.py
+      tests/test_audit_branch_protection_release_synced.py -q
+  - kind: ci
+    description: PR CI checks green
+    command: gh pr checks ${PR_NUMBER} --repo ${REPO}
+emergency_bypass:
+  enabled: false
+  justification: ''
+  follow_up_ticket_id: ''
+dod_evidence:
+  - id: dod-omn19511-unbound-required-check-fails
+    description: |-
+      The defect itself. A dev branch whose required_status_checks.checks list
+      carries the live omniclaude shape, the advisory-job-gate context with
+      app_id null, makes audit_branch_protection.sh exit non-zero and name that
+      context. Before check 3a the same fixture passed, because the script only
+      looked for named contexts being present.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_audit_branch_protection_app_binding.py::test_dev_with_unbound_required_check_fails
+          -q
+  - id: dod-omn19511-bound-pass-release-main-unaffected
+    description: |-
+      The matched negative control. A dev branch where every required context
+      names a reporting App passes, and a release-synced main whose
+      required_status_checks is empty by design produces no app-binding
+      failure. A check that failed every branch would satisfy the positive test
+      above and be useless; these two prove it discriminates.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_audit_branch_protection_app_binding.py::test_dev_with_all_checks_bound_passes
+          tests/test_audit_branch_protection_app_binding.py::test_release_synced_main_is_unaffected -q
+  - id: dod-omn19511-existing-audit-suites-still-green
+    description: |-
+      No regression in the two audit suites this change touched. Their
+      fixtures previously listed required checks with no app_id at all, which
+      check 3a now reads as unbound, so they were updated to name app 15368.
+      Both suites pass in full at the fix commit.
+    source: manual
+    checks:
+      - check_type: command
+        check_value: uv run pytest tests/test_audit_branch_protection_lane_identity.py tests/test_audit_branch_protection_release_synced.py
+          -q

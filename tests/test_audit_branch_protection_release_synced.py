@@ -93,8 +93,8 @@ _PROTECTION_CI_SUMMARY = {
         "strict": False,
         "contexts": ["CI Summary", "verify / verify"],
         "checks": [
-            {"context": "CI Summary"},
-            {"context": "verify / verify"},
+            {"context": "CI Summary", "app_id": 15368},
+            {"context": "verify / verify", "app_id": 15368},
         ],
     },
     "enforce_admins": {"enabled": True},
