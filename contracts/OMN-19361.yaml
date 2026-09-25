@@ -27,6 +27,16 @@ requirements:
       - id: "AC6"
         statement: |-
           AC6: Neither handler imports an envelope type. -- falsifier: grep -n ModelEventEnvelope over both nodes finds a match.
+  - id: "req-omn19361-ac7-ac8-prompt-helpers"
+    statement: |-
+      AC7 and AC8, added to the ticket on 2026-09-25 by lane dm-tests (delegation-matrix-83b) before the delegated test for them was written, transcribed verbatim from the ticket body.
+    acceptance:
+      - id: "AC7"
+        statement: |-
+          AC7: The WRITE prompt names the importable module of a src-layout target: `src/omnimarket/a/b.py` is imported as `omnimarket.a.b`, and a package `src/omnimarket/a/__init__.py` as `omnimarket.a`. -- falsifier: `uv run pytest tests/nodes/node_delegated_test_prompt_compute/test_prompt_module_and_caps_omn19361.py -q` exits non-zero at the PR head, or exits 0 with the planted mutation that removes the `.removesuffix(".__init__")` call from `_module_name`.
+      - id: "AC8"
+        statement: |-
+          AC8: `_cap` leaves text of exactly the limit untouched (`truncated` false) and truncates one character over it with the marker (`truncated` true); the REPAIR prompt caps the previous test at `MAX_PREVIOUS_TEST_CHARS`. -- falsifier: the same pytest file exits non-zero at the PR head, or exits 0 with the planted mutation that changes `len(text) <= limit` to `len(text) < limit` in `_cap`.
 evidence_requirements:
   - kind: "ci"
     description: "PR #2826 product diff scope present"
@@ -171,3 +181,37 @@ dod_evidence:
     checks:
       - check_type: "command"
         check_value: "gh pr view 11183 --repo OmniNode-ai/onex_change_control --json number,state"
+  - id: "dod-omnimarket-pr-2877-ac7-ac8-tests-pass"
+    description: "PR #2877 on OmniNode-ai/omnimarket: the AC7/AC8 test file passes at the PR head (the
+      first half of both falsifiers). Hand-authored (OMN-15247) by lane dm-tests."
+    source: "manual"
+    checks:
+      - check_type: "test_passes"
+        check_value: |-
+          uv run pytest tests/nodes/node_delegated_test_prompt_compute/test_prompt_module_and_caps_omn19361.py -q
+        cwd: "${OMNI_HOME}/omnimarket"
+    binds_ac:
+      - "AC7"
+      - "AC8"
+  - id: "dod-omnimarket-pr-2877-ac7-mutation-control"
+    description: "PR #2877 on OmniNode-ai/omnimarket: AC7 planted mutation (the .__init__ strip removed
+      from _module_name) makes the test file exit non-zero, run in a fresh archive of the PR head. Hand-authored
+      (OMN-15247) by lane dm-tests."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d=$(mktemp -d) && git -C "${OMNI_HOME}/omnimarket" fetch -q origin 06d045954b1a18fa388d2ad073b0f27326fed6e7 && git -C "${OMNI_HOME}/omnimarket" archive 06d045954b1a18fa388d2ad073b0f27326fed6e7 | tar -x -C "$d" && cd "$d" && f=src/omnimarket/nodes/node_delegated_test_prompt_compute/handlers/handler_delegated_test_prompt.py && test "$(grep -c "removesuffix(\".__init__\")" "$f")" = 1 && sed -i.orig "s/\.removesuffix(\"\.__init__\")//" "$f" && test "$(grep -c "removesuffix(\".__init__\")" "$f")" = 0 && if uv run --quiet pytest tests/nodes/node_delegated_test_prompt_compute/test_prompt_module_and_caps_omn19361.py -q -p no:cacheprovider; then echo "AC7 FAIL: mutation M7 survived"; exit 1; else echo "AC7 PASS: mutation M7 (.__init__ strip removed) fails the test file"; fi
+    binds_ac:
+      - "AC7"
+  - id: "dod-omnimarket-pr-2877-ac8-mutation-control"
+    description: "PR #2877 on OmniNode-ai/omnimarket: AC8 planted mutation (<= to < in _cap) makes the
+      test file exit non-zero, run in a fresh archive of the PR head. Hand-authored (OMN-15247) by lane
+      dm-tests."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          d=$(mktemp -d) && git -C "${OMNI_HOME}/omnimarket" fetch -q origin 06d045954b1a18fa388d2ad073b0f27326fed6e7 && git -C "${OMNI_HOME}/omnimarket" archive 06d045954b1a18fa388d2ad073b0f27326fed6e7 | tar -x -C "$d" && cd "$d" && f=src/omnimarket/nodes/node_delegated_test_prompt_compute/handlers/handler_delegated_test_prompt.py && test "$(grep -c "if len(text) <= limit:" "$f")" = 1 && sed -i.orig "s/if len(text) <= limit:/if len(text) < limit:/" "$f" && test "$(grep -c "if len(text) < limit:" "$f")" = 1 && if uv run --quiet pytest tests/nodes/node_delegated_test_prompt_compute/test_prompt_module_and_caps_omn19361.py -q -p no:cacheprovider; then echo "AC8 FAIL: mutation M8 survived"; exit 1; else echo "AC8 PASS: mutation M8 (<= to <) fails the test file"; fi
+    binds_ac:
+      - "AC8"
