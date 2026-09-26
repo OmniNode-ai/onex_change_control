@@ -26,6 +26,7 @@ also fails, rather than only re-checking these two names forever.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -97,7 +98,7 @@ PRE_EXISTING_STAGED_HOOKS = frozenset(
 )
 
 
-def _load_yaml(path: Path) -> dict:
+def _load_yaml(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(loaded, dict), f"{path.name} did not parse to a mapping"
     return loaded
@@ -117,11 +118,18 @@ def _staged_scoped_hook_ids() -> set[str]:
     return ids
 
 
-def _job(workflow_path: Path, job_id: str) -> dict:
+def _job(workflow_path: Path, job_id: str) -> dict[str, Any]:
     workflow = _load_yaml(workflow_path)
     jobs = workflow["jobs"]
+    assert isinstance(jobs, dict), (
+        f"{workflow_path.name} `jobs` did not parse to a mapping"
+    )
     assert job_id in jobs, f"{workflow_path.name} has no `{job_id}` job"
-    return jobs[job_id]
+    job = jobs[job_id]
+    assert isinstance(job, dict), (
+        f"{workflow_path.name} job `{job_id}` did not parse to a mapping"
+    )
+    return job
 
 
 def _command_lines(workflow_path: Path, job_id: str) -> list[str]:
@@ -205,7 +213,7 @@ def test_ci_summary_itself_is_required_on_dev() -> None:
 
 def test_workflows_carry_no_pull_request_paths_filter() -> None:
     for workflow_path in {CI_WORKFLOW, STANDARDS_WORKFLOW}:
-        workflow = _load_yaml(workflow_path)
+        workflow: dict[Any, Any] = _load_yaml(workflow_path)
         triggers = workflow[True] if True in workflow else workflow["on"]
         pull_request = triggers.get("pull_request") or {}
         assert "paths" not in pull_request, (
