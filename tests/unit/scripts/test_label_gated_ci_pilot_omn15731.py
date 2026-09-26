@@ -160,7 +160,16 @@ class TestLabelGateWorkflowShape:
         named in the module docstring)."""
         job = _ci_yaml()["jobs"][_JOB_ID]
         condition = str(job["if"])
-        assert "always()" in condition
+        # The leading guard must still make this job run regardless of what
+        # `needs: [zone-filter]` reported. OMN-18580 changed its spelling from
+        # `always()` to `!cancelled()` -- identical on every run that is not
+        # cancelled, and required because a job-level `always()` runs even on
+        # a CANCELLED workflow, holding the concurrency group and stalling the
+        # successor run. `always()` must NOT come back here: this job is the
+        # longest in the workflow, so it is the one that costs the most when
+        # it survives its own cancellation.
+        assert "!cancelled()" in condition
+        assert "always()" not in condition
         assert "contains(github.event.pull_request.labels.*.name, 'ci:ready')" in (
             condition
         )

@@ -207,13 +207,19 @@ def test_no_job_carries_a_base_ref_dev_exemption() -> None:
         # intentional: see STRICT_GATE_JOBS's "Pre-commit" entry comment in
         # ci_summary_gate.py and TestDraftStateGateMigrationOmn15731Revision
         # in test_label_gated_ci_pilot_omn15731.py.
+        #
+        # OMN-18580 restructured the leading guard: a job-level `always()`
+        # runs even on a CANCELLED workflow, which held this repo's
+        # concurrency group and stalled the successor run. The non-dev arm
+        # this entry exists to allow is UNCHANGED in meaning and is now the
+        # first top-level disjunct -- deliberately outside the `!cancelled()`
+        # term, because `Pre-commit` is a REQUIRED context on `main` and a
+        # skipped required check reads as passing. The condition now spans two
+        # lines under a `>-` block scalar, so its two stripped source lines are
+        # allowlisted separately.
         (
             "ci.yml",
-            "if: always() && (github.event_name != 'pull_request' || "
-            "github.base_ref != 'dev' || "
-            "!github.event.pull_request.draft || "
-            "contains(github.event.pull_request"
-            ".labels.*.name, 'ci:ready'))",
+            "${{ (github.event_name != 'pull_request' || github.base_ref != 'dev')",
         ),
     }
     violations: list[str] = []

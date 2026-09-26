@@ -1,0 +1,49 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-18641"
+title: "Register the expiring DoD check before it lands"
+summary: >
+  The human-authored half of the OMN-18641 gate split registers the future expiring-DoD-check validator
+  path in the script exception allowlist. The implementation PR must land separately under the App identity
+  because the same PR cannot touch both authorization registry data and CI validation code without tripping
+  the repository author guards.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "manual"
+    description: "The allowlist entry exists and this PR does not add the validator implementation."
+    command: |-
+      uv run python - <<'PY'
+      import pathlib, sys, yaml
+      data = yaml.safe_load(pathlib.Path('allowlists/scripts_exceptions.yaml').read_text())
+      entries = data.get('exceptions') or data.get('scripts') or data
+      text = pathlib.Path('allowlists/scripts_exceptions.yaml').read_text()
+      ok = 'scripts/validation/check_expiring_dod_checks.py' in text and not pathlib.Path('scripts/validation/check_expiring_dod_checks.py').exists()
+      sys.exit(0 if ok else 1)
+      PY
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-OmniNode-ai-onex_change_control-pr-10122"
+    description: "PR #10122 on OmniNode-ai/onex_change_control registers the OMN-18641 validator path
+      before the App-authored implementation lands."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: |-
+          uv run python - <<'PY'
+          import pathlib, sys
+          text = pathlib.Path('allowlists/scripts_exceptions.yaml').read_text()
+          path_registered = 'scripts/validation/check_expiring_dod_checks.py' in text
+          implementation_absent = not pathlib.Path('scripts/validation/check_expiring_dod_checks.py').exists()
+          sys.exit(0 if path_registered and implementation_absent else 1)
+          PY
+  - id: "occ-self-bind-pr-10122"
+    description: "Binds OMN-18641 to OCC PR #10122."
+    source: "manual"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr view 10122 --repo OmniNode-ai/onex_change_control --json number,state,headRefName"
