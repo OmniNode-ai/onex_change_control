@@ -127,14 +127,18 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     "check-platform-leads-review-tripwire",
     "Contract Corpus Ratchets (OMN-15411)",
     "yamlfmt Contamination Ratchet (OMN-15479)",
+    "yamlfmt Sentinel Baseline One-way (OMN-19677) / anti-growth-baseline",
+    "yamlfmt Folded Scalar Baseline One-way (OMN-19677) / anti-growth-baseline",
     "Expiring DoD Check Gate (OMN-18641)",
     "Supersession Binding Ratchet (OMN-15459)",
+    "Supersession Baseline One-way (OMN-19677) / anti-growth-baseline",
     # OMN-13888. Two-way set equality between the whole orphan corpus and its
     # frozen shrink-only baseline. STRICT, not SKIPPABLE, and it carries no
     # evidence-only predicate: an evidence-only diff (contracts/**, drift/
     # dod_receipts/**) is exactly the diff shape that mints an orphan, so a
     # fast-lane skip would exempt the only PRs it exists to check.
     "Orphan Corpus Ratchet (OMN-13888)",
+    "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
     # Reusable-workflow caller; the job's own `name:` is set to this literal
     # composed string (Shape A), matching how GitHub surfaces the check-run.
     # A hold gate an unrelated upstream failure/predicate can cascade-skip is
