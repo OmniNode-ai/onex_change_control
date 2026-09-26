@@ -5,7 +5,16 @@ name: CI
 
 on:
   push:
-    branches: [main, "hotfix/**"]
+    # OMN-19635. `dev` added alongside main/hotfix so a whole-tree run (the
+    # full `pre-commit run --all-files` pass and the yamlfmt corpus ratchet)
+    # fires after every merge to dev, not only on release/hotfix branches.
+    # Per-PR passes on dev are diff-scoped (the "Run dev PR changed-file
+    # pre-commit" step, and after this PR the yamlfmt detector's own
+    # self-tests); this push trigger is the whole-tree backstop that makes
+    # that narrowing safe (root CLAUDE.md rule 5 / the audit's enforcement-
+    # risk finding, .claude_scratch/reports/ci-validator-scope-2026-09-25/
+    # REPORT.md section 4).
+    branches: [main, dev, "hotfix/**"]
   pull_request:
     branches: [main, dev, "hotfix/**"]
     # OMN-15731: default types (opened/synchronize/reopened) don't retrigger
@@ -2089,16 +2098,23 @@ jobs:
     # out of sync with the corpus at all.
     #
     # UNCONDITIONAL BY DESIGN (same reasoning as contract-corpus-ratchets
-    # above): no needs:, no if:, no paths filter. A skip here means something is
-    # wrong, not that the gate legitimately opted out -- the strict success-only
-    # check in ci-summary below fails closed on any non-success result.
+    # above): no needs:, no if:, no paths filter ON THE JOB. A skip of the
+    # JOB means something is wrong, not that the gate legitimately opted out
+    # -- the strict success-only check in ci-summary below fails closed on
+    # any non-success result. OMN-19635 gives exactly ONE step (the RED/GREEN
+    # self-test) its own `if:`, scoped to whether the diff touches the
+    # detector; the corpus scan and the wiring anchor stay job-unconditional,
+    # and that step's own fallback logic fails closed to a full run on
+    # anything but a resolvable pull_request diff (see its step comment).
     #
     # ANTI-REMOVAL ANCHOR: scripts/validation/check_yamlfmt_contamination.py
     # --check-wiring is a pre-commit hook scoped to this file AND the last step
     # of this job, so ANY edit to ci.yml re-asserts (a) the job exists, (b) it
     # is unconditional, (c) it runs the corpus ratchet and the gate's own
-    # RED/GREEN test module, and (d) ci-summary both needs it and applies a
-    # strict success-only check to it.
+    # RED/GREEN test module, (d) ci-summary both needs it and applies a
+    # strict success-only check to it, and (e) the RED/GREEN step's own `if:`
+    # still falls back to a full run on push/merge_group/workflow_dispatch --
+    # check_wiring() parses that condition, not just the run command text.
     #
     # The gate NEVER mutates a file. Formatter mutation is the disease, not the
     # cure -- an auto-fixing gate here would be the same class of defect.
@@ -2115,12 +2131,68 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # Full history: the detector-self-test scope step below needs a
+          # three-dot diff against the base ref (OMN-19635).
+          fetch-depth: 0
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
       - name: Rule S/F shrink-only corpus ratchet over the whole evidence corpus
         run: uv run python scripts/validation/check_yamlfmt_contamination.py --corpus
+      # OMN-19635. The RED/GREEN step below is 286s of this job's 436s
+      # (ci-validator-scope audit, 2026-09-25) and depends ONLY on the
+      # detector script and its own test module -- never on the evidence
+      # corpus, which the step above already scans whole-tree. Scoping it to
+      # "did the detector change" saves that time on every ordinary evidence
+      # PR without weakening the ratchet: the corpus scan and the wiring
+      # anchor below stay unconditional, so a broken detector still fails the
+      # job through those.
+      #
+      # FULL-RUN FALLBACK, not a narrowing: push, merge_group and
+      # workflow_dispatch always run the RED/GREEN suite (there is no PR diff
+      # to scope against, and push now includes dev per the trigger change
+      # above, so this is the whole-tree backstop). An unresolvable base
+      # (missing base_ref, unfetchable ref, or a diff git cannot compute)
+      # fails CLOSED to a full run, never silently to a skip -- root
+      # CLAUDE.md rule 5.
+      - name: Detector self-test scope (OMN-19635)
+        id: detector-scope
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: event is ${GITHUB_EVENT_NAME}, not pull_request."
+            exit 0
+          fi
+          base_ref="${BASE_REF:-}"
+          if [ -z "$base_ref" ]; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: base_ref did not resolve (failing closed)."
+            exit 0
+          fi
+          if ! git fetch origin "$base_ref" --no-tags --quiet; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: could not fetch origin/${base_ref} (failing closed)."
+            exit 0
+          fi
+          if ! changed=$(git diff --name-only "origin/${base_ref}...HEAD"); then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: diff against origin/${base_ref} did not resolve (failing closed)."
+            exit 0
+          fi
+          detector_pattern='^(scripts/validation/check_yamlfmt_contamination\.py|tests/unit/scripts/test_yamlfmt_contamination_gate\.py|\.pre-commit-config\.yaml|\.github/workflows/ci\.yml)$'
+          if printf '%s\n' "$changed" | grep -qE "$detector_pattern"; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: diff touches a detector-relevant path."
+          else
+            echo "run_selftest=false" >> "$GITHUB_OUTPUT"
+            echo "Scoped skip: diff touches no detector-relevant path."
+          fi
+        env:
+          BASE_REF: ${{ github.base_ref }}
       - name: Detector RED/GREEN controls and hook-fires-on-a-fixture assertions
+        if: steps.detector-scope.outputs.run_selftest == 'true'
         run: |
           uv run pytest \
             tests/unit/scripts/test_yamlfmt_contamination_gate.py \
