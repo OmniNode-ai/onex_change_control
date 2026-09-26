@@ -218,6 +218,79 @@ def test_page_array_of_clean_commits_passes() -> None:
 
 
 @pytest.mark.unit
+def test_compare_pages_fail_and_name_the_offending_commit() -> None:
+    sha = "2" * 40
+    pages = [
+        {
+            "ahead_by": 2,
+            "total_commits": 2,
+            "commits": [{"sha": "3" * 40, "commit": {"message": "clean\n"}}],
+        },
+        {
+            "ahead_by": 2,
+            "total_commits": 2,
+            "commits": [
+                {"sha": sha, "commit": {"message": f"subject\n\n{STRIPPED[0]}\n"}}
+            ],
+        },
+    ]
+    result = _run(json.dumps(pages))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert sha[:12] in result.stdout
+
+
+@pytest.mark.unit
+def test_clean_compare_pages_pass() -> None:
+    pages = [
+        {
+            "ahead_by": 2,
+            "total_commits": 2,
+            "commits": [{"sha": "4" * 40, "commit": {"message": "clean one\n"}}],
+        },
+        {
+            "ahead_by": 2,
+            "total_commits": 2,
+            "commits": [{"sha": "5" * 40, "commit": {"message": "clean two\n"}}],
+        },
+    ]
+    result = _run(json.dumps(pages))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "[PASS] 2 commit(s) checked" in result.stdout
+
+
+@pytest.mark.unit
+def test_truncated_compare_pages_fail_closed() -> None:
+    pages = [
+        {
+            "ahead_by": 2,
+            "total_commits": 2,
+            "commits": [{"sha": "6" * 40, "commit": {"message": "clean\n"}}],
+        }
+    ]
+    result = _run(json.dumps(pages))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "does not match total_commits" in result.stderr
+
+
+@pytest.mark.unit
+def test_compare_page_with_non_list_commits_fails_closed() -> None:
+    pages = [{"ahead_by": 1, "total_commits": 1, "commits": {"sha": "7" * 40}}]
+    result = _run(json.dumps(pages))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "commits is not a list" in result.stderr
+
+
+@pytest.mark.unit
+def test_workflow_uses_live_compare_endpoint() -> None:
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "no-ai-coauthor-trailer-reusable.yml"
+    ).read_text()
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in workflow
+    assert "compare/${BASE_REF}...${HEAD_SHA}?per_page=100" in workflow
+    assert "pulls/${PR_NUMBER}/commits" not in workflow
+
+
+@pytest.mark.unit
 def test_entry_in_tests_matches_the_shipped_hook() -> None:
     """If this repo's own hook entry drifts, the parity fixture above is stale."""
     config = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text())
