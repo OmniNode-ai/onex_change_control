@@ -16,7 +16,13 @@
 # their trailers. A commit-msg hook runs on `git commit`, on a workstation, so
 # it is not in that path at all.
 #
-# This gate reads the pull request's own commits, where the trailer still is.
+# This gate reads the branch's own commits against the live base branch tip,
+# where the trailer still is. The pulls/<n>/commits endpoint uses the pull
+# request's stored base.sha, which goes stale when a long-lived branch merges
+# the base branch; the compare endpoint computes the merge base live instead.
+# Fix for OMN-18426: the trailer gate now reads the branch's own commits
+# against the live base branch tip via the compare endpoint, not the stale
+# pulls/<n>/commits base.sha.
 #
 # Usage in a caller repo:
 #
@@ -71,6 +77,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           TARGET_REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
@@ -79,12 +87,20 @@ jobs:
             echo "[FAIL] PR_NUMBER is empty — this workflow must be called from a pull_request event."
             exit 1
           fi
+          if [[ -z "${BASE_REF:-}" ]]; then
+            echo "[FAIL] BASE_REF is empty — cannot compare against the live base branch tip."
+            exit 1
+          fi
+          if [[ -z "${HEAD_SHA:-}" ]]; then
+            echo "[FAIL] HEAD_SHA is empty — cannot identify the pull request head."
+            exit 1
+          fi
 
           # --slurp because --paginate alone concatenates one array per page,
           # which is not a single JSON document. gh refuses --slurp together
           # with --jq, so the payload is shaped in Python, which also removes
           # any dependency on jq being present on a self-hosted runner.
-          gh api "repos/${TARGET_REPO}/pulls/${PR_NUMBER}/commits" \
+          gh api "repos/${TARGET_REPO}/compare/${BASE_REF}...${HEAD_SHA}?per_page=100" \
             --paginate --slurp > commits.json
 
           # The checker exits 2 on an empty or malformed payload rather than
