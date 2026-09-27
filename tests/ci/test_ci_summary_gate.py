@@ -443,17 +443,18 @@ def test_failed_zone_filter_cascade_is_not_a_vacuous_success(zone_name: str) -> 
     """Regression pin for the PR #6435 verifier-reproduced fail-open.
 
     A FAILED zone-filter cascades every job that `needs:` it to `skipped`.
-    All 12 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
+    All 11 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
     SKIPPABLE tier tolerates `skipped` unconditionally -- so with zone-filter
     in SOFT_ALLOWLIST the gate returned SUCCESS with zero tests and zero
     type-checks having run. Parametrized over both name shapes GitHub can
     surface for a reusable caller (bare id, and `<caller> / <inner job>`).
     """
 
-    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:12])
+    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:11])
     assert {"Type Check", "Tests"} <= cascaded, (
         "docs_only tier reordered -- re-derive the cascaded slice"
     )
+    assert "Contract Sync Gate (Layer 3)" not in cascaded
     jobs = [_job(n, "success") for n in STRICT_GATE_JOBS]
     jobs += [
         _job(n, "skipped" if n in cascaded else "success") for n in SKIPPABLE_GATE_JOBS

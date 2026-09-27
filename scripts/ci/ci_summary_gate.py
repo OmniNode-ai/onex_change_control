@@ -161,6 +161,8 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # registration, which COMPOSED_NAME_OVERRIDES in tests/ci/
     # test_ci_summary_gate.py pins.
     "Runner Route (OMN-18031) / route",
+    # OMN-19612: unconditional whole-tree backstop; a skip is always a fail-open.
+    "No localhost env-var fallbacks in src/ (OMN-10737)",
 )
 
 # ---------------------------------------------------------------------------
@@ -179,7 +181,6 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     "Type Check",
     "Tests",
     "Schema Purity & Naming Check",
-    "No localhost env-var fallbacks in src/ (OMN-10737)",
     "Imperative Contract Guard",
     "AI-Slop Pattern Check (strict, PR diff)",
     "Context Integrity Contract Compliance",
@@ -194,7 +195,7 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     #
     # Promoting it to STRICT would therefore buy nothing on the failure path
     # and would wedge the skip path: this job carries the docs_only
-    # evidence-only `if:` like its 11 tier-mates, and STRICT treats `skipped`
+    # evidence-only `if:` like its 10 tier-mates, and STRICT treats `skipped`
     # as a failure -- every evidence-companion PR would go red in a repo whose
     # merge traffic is mostly evidence companions.
     #
@@ -331,7 +332,7 @@ CLASSIFICATION_ONLY: dict[str, str] = {
     "zone-filter": (
         "Structural reusable-workflow caller (zone-filter.yml@dev), not a "
         "validator -- so not a STRICT/SKIPPABLE gate. It is NOT soft-"
-        "allowlisted: all 12 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
+        "allowlisted: all 11 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
         "FAILED zone-filter cascades every one of them to `skipped`, which "
         "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
         "with zero tests and zero type-checks having run. The sweep catching "
