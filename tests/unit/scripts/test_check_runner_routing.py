@@ -403,3 +403,18 @@ def test_live_route_consumer_in_this_repository_declares_its_edge() -> None:
             validate_route_consumer(workflow_path="ci.yml", job_name=job_id, job=job)
             == []
         )
+
+
+def test_validate_workflows_only_reads_selected_files(tmp_path: Path) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    clean = workflows / "clean.yml"
+    dirty = workflows / "dirty.yml"
+    clean.write_text("jobs: {}\n", encoding="utf-8")
+    dirty.write_text("on:\n  pull_request_target:\njobs: {}\n", encoding="utf-8")
+
+    assert validate_workflows(tmp_path, labels=set(), workflows=[clean]) == []
+    assert any(
+        "pull_request_target" in violation
+        for violation in validate_workflows(tmp_path, labels=set(), workflows=[dirty])
+    )

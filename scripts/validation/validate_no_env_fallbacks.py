@@ -31,9 +31,15 @@ VIOLATION_PATTERNS = [
 SKIP_DIRS = {"tests", "__tests__", "test", "__pycache__"}
 
 
-def scan(root: Path) -> list[tuple[str, int, str]]:
+def scan_paths(paths: list[Path]) -> list[tuple[str, int, str]]:
     violations: list[tuple[str, int, str]] = []
-    for py_file in sorted(root.rglob("*.py")):
+    py_files: set[Path] = set()
+    for path in paths:
+        if path.is_file() and path.suffix == ".py":
+            py_files.add(path)
+        elif path.is_dir():
+            py_files.update(path.rglob("*.py"))
+    for py_file in sorted(py_files):
         if any(part in SKIP_DIRS for part in py_file.parts):
             continue
         try:
@@ -54,7 +60,14 @@ def main() -> int:
         print(f"ERROR: src directory not found at {src_dir}", file=sys.stderr)
         return 1
 
-    violations = scan(src_dir)
+    raw_paths = sys.argv[1:]
+    paths = [Path(raw).resolve() for raw in raw_paths] if raw_paths else [src_dir]
+    if any(
+        path.suffix != ".py" or path == Path(__file__).resolve()
+        for path in paths
+    ):
+        paths = [src_dir]
+    violations = scan_paths(paths)
     if violations:
         print(f"Found {len(violations)} localhost fallback(s):\n")
         for filepath, lineno, line in violations:

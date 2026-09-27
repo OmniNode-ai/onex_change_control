@@ -127,14 +127,18 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     "check-platform-leads-review-tripwire",
     "Contract Corpus Ratchets (OMN-15411)",
     "yamlfmt Contamination Ratchet (OMN-15479)",
+    "yamlfmt Sentinel Baseline One-way (OMN-19677) / anti-growth-baseline",
+    "yamlfmt Folded Scalar Baseline One-way (OMN-19677) / anti-growth-baseline",
     "Expiring DoD Check Gate (OMN-18641)",
     "Supersession Binding Ratchet (OMN-15459)",
+    "Supersession Baseline One-way (OMN-19677) / anti-growth-baseline",
     # OMN-13888. Two-way set equality between the whole orphan corpus and its
     # frozen shrink-only baseline. STRICT, not SKIPPABLE, and it carries no
     # evidence-only predicate: an evidence-only diff (contracts/**, drift/
     # dod_receipts/**) is exactly the diff shape that mints an orphan, so a
     # fast-lane skip would exempt the only PRs it exists to check.
     "Orphan Corpus Ratchet (OMN-13888)",
+    "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
     # Reusable-workflow caller; the job's own `name:` is set to this literal
     # composed string (Shape A), matching how GitHub surfaces the check-run.
     # A hold gate an unrelated upstream failure/predicate can cascade-skip is
@@ -161,6 +165,8 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # registration, which COMPOSED_NAME_OVERRIDES in tests/ci/
     # test_ci_summary_gate.py pins.
     "Runner Route (OMN-18031) / route",
+    # OMN-19612: unconditional whole-tree backstop; a skip is always a fail-open.
+    "No localhost env-var fallbacks in src/ (OMN-10737)",
 )
 
 # ---------------------------------------------------------------------------
@@ -179,7 +185,6 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     "Type Check",
     "Tests",
     "Schema Purity & Naming Check",
-    "No localhost env-var fallbacks in src/ (OMN-10737)",
     "Imperative Contract Guard",
     "AI-Slop Pattern Check (strict, PR diff)",
     "Context Integrity Contract Compliance",
@@ -194,7 +199,7 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     #
     # Promoting it to STRICT would therefore buy nothing on the failure path
     # and would wedge the skip path: this job carries the docs_only
-    # evidence-only `if:` like its 11 tier-mates, and STRICT treats `skipped`
+    # evidence-only `if:` like its 10 tier-mates, and STRICT treats `skipped`
     # as a failure -- every evidence-companion PR would go red in a repo whose
     # merge traffic is mostly evidence companions.
     #
@@ -331,7 +336,7 @@ CLASSIFICATION_ONLY: dict[str, str] = {
     "zone-filter": (
         "Structural reusable-workflow caller (zone-filter.yml@dev), not a "
         "validator -- so not a STRICT/SKIPPABLE gate. It is NOT soft-"
-        "allowlisted: all 12 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
+        "allowlisted: all 11 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
         "FAILED zone-filter cascades every one of them to `skipped`, which "
         "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
         "with zero tests and zero type-checks having run. The sweep catching "
