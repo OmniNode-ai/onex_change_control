@@ -1,0 +1,62 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-19031"
+evidence_item_id: "reaccept-ac2-writer-advance-readback-2026-09-25"
+check_type: "command"
+check_value: |-
+  curl -sS --fail https://api.linear.app/graphql -H 'Content-Type: application/json' -H "Authorization: ${LINEAR_API_KEY}" --data '{"query":"query{comment(id:\"33f5ca80-a57a-497b-97d9-cc5363d98e0e\"){body}}"}' | grep -F '19,772,102'
+contract_sha256: "sha256:fe1aa7037c3ca60f328f9ea433c7a291af708bffa7e7c6c68268ccced95e2f0c"
+contract_entry_sha256: "sha256:6cb88bc9fa4090b0000b0edfd627b8263ceed7961a7117e8a6b3fd4af7588b73"
+status: PASS
+# OMN-13024 A-2. The UI gate infers ui_dashboard from a bare curl in probe_command,
+# because the shape it rejects is a direct backend-port hit standing in for proof that
+# a dashboard renders. This is not that: it reads a Linear comment over the public
+# GraphQL API and makes no claim about any page, origin or proxy. `backend` is the
+# field the validator provides to say so.
+evidence_class: backend
+run_timestamp: "2026-09-25T22:31:08Z"
+commit_sha: "9f1f795a493e343bdccdc5c30d77965b7949c62c"
+runner: "claude-opus-5:occ-reaccept-19031-ac2"
+verifier: "linear-graphql-live-read"
+probe_command: |-
+  gh api repos/OmniNode-ai/omnimarket/commits/9f1f795a493e343bdccdc5c30d77965b7949c62c --jq .sha
+  curl -sS --fail https://api.linear.app/graphql -H 'Content-Type: application/json' -H "Authorization: ${LINEAR_API_KEY}" --data '{"query":"query{comment(id:\"33f5ca80-a57a-497b-97d9-cc5363d98e0e\"){body}}"}' | grep -c -F '19,772,102'
+probe_stdout: |
+  9f1f795a493e343bdccdc5c30d77965b7949c62c
+  1
+actual_output: |
+  PASS: the readback comment on OMN-19031 records the second row count.
+
+  WHY THE CRITERION WAS REWORDED. AC2's falsifier asked for a non-zero count of
+  rows in the TRAILING HOUR. A writer draining a backlog can never produce that:
+  `window_start` dates the DATA, not the write, so a writer five days behind
+  commits only five-day-old windows while working perfectly. The criterion now
+  measures the ADVANCE between two reads, which is decidable in both states.
+
+  THE READING, taken from the writer pod against OMNINODE_INTERNAL_DB_URL,
+  read-only via SSM on i-06169517a92b45f86, 2026-09-25:
+
+    read 1  21:24:55Z  max(window_start) 2026-09-20 21:04:53  rows 19,741,779
+    read 2  21:29:02Z  max(window_start) 2026-09-20 21:10:35  rows 19,747,900
+    read 3  21:47:21Z  max(window_start) 2026-09-20 21:42:53  rows 19,772,102
+
+  Outer pair 22.4 minutes apart: +38.0 minutes of window time and +30,323 rows,
+  which is 1.70x realtime sustained across three samples rather than a burst --
+  the thing AC2's "ten minutes apart" clause exists to exclude. Both quantities
+  advance strictly, and max(window_start) is well past the 2026-09-13T23:36:57Z
+  freeze this ticket was filed on.
+
+  WHAT THIS DOES NOT CLAIM. It does not claim the projection is CURRENT. It is
+  five days behind and closes around 2026-10-03 at the measured rate. That is
+  AC3's and AC4's subject, and both remain open.
+
+  WHY IT IS NOT BOUND TO pr-2754. AC2's previous binding sat on
+  `dod-OmniNode-ai-omnimarket-pr-2754`, a merge-state surrogate: the index PR
+  merging says nothing about whether the writer subsequently materialized rows,
+  in either direction. This item reads a recorded measurement instead.
+
+  THE LIMIT OF THIS CHECK, NAMED. A Linear comment is mutable, so this asserts
+  against a record rather than re-deriving the measurement. Re-deriving it needs
+  cluster access the OCC verifier does not have; the alternative was a
+  merge-state surrogate, which is what this replaces.
+exit_code: 0

@@ -153,6 +153,7 @@ def _extract_strict_gate_jobs(gate_module_path: Path) -> tuple[str, ...] | None:
             return value
     return None
 
+
 # The yamlfmt v0.21.0 internal line-marker sentinel. Its presence in a parsed
 # YAML value is never legitimate authored content.
 SENTINEL = "#magic___^_^___line"
@@ -171,6 +172,15 @@ _SELF_SCRIPT_NAME = "check_yamlfmt_contamination.py"
 _JOB_ID = "yamlfmt-contamination-ratchet"
 _SUMMARY_JOB_ID = "ci-summary"
 _RATCHET_TEST_MODULE = "tests/unit/scripts/test_yamlfmt_contamination_gate.py"
+
+# OMN-19635. The RED/GREEN step (which runs _RATCHET_TEST_MODULE) is allowed
+# exactly one narrowing: a step-level `if:` that skips it on a pull_request
+# diff which touches no detector-relevant path. These name the structural
+# properties that narrowing must keep, so check_wiring() can tell a safe
+# scope from a regression that quietly always skips.
+_SELFTEST_SCOPE_OUTPUT_KEY = "run_selftest"
+_SELFTEST_SCOPE_STEP_ID = "detector-scope"
+_SELFTEST_NON_PR_FALLBACK_MARKER = "GITHUB_EVENT_NAME"
 
 SENTINEL_BASELINE_REL = ".onex_ratchets/omn_15479_yamlfmt_sentinel_baseline.yaml"
 FOLDED_BASELINE_REL = ".onex_ratchets/omn_15479_folded_scalar_baseline.yaml"
@@ -724,9 +734,116 @@ def _collect_run_script(job: dict[str, Any]) -> str:
     )
 
 
-def check_wiring(
-    ci_yaml_path: Path, gate_module_path: Path | None = None
-) -> list[str]:
+def _find_step_running(job: dict[str, Any], needle: str) -> dict[str, Any] | None:
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return None
+    for step in steps:
+        if (
+            isinstance(step, dict)
+            and isinstance(step.get("run"), str)
+            and needle in step["run"]
+        ):
+            return step
+    return None
+
+
+def _find_step_by_id(job: dict[str, Any], step_id: str) -> dict[str, Any] | None:
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        return None
+    for step in steps:
+        if isinstance(step, dict) and step.get("id") == step_id:
+            return step
+    return None
+
+
+def _check_selftest_full_run_fallback(job: dict[str, Any]) -> list[str]:
+    """The RED/GREEN step (OMN-19635) may narrow itself to detector-touching
+    PRs, but ONLY behind a scope step that still runs the suite in full on
+    every non-pull_request event and fails closed on an unresolvable diff.
+
+    This does not re-derive the scope logic (that would just be a second copy
+    to drift out of sync); it asserts the structural properties a real
+    fallback must have, the same way the rest of check_wiring() asserts
+    structure rather than re-implementing the job.
+    """
+    step = _find_step_running(job, _RATCHET_TEST_MODULE)
+    if step is None:
+        # Absence is already reported by check_wiring()'s run_blob check.
+        return []
+
+    condition = step.get("if")
+    if condition is None:
+        # Fully unconditional is the most conservative shape and needs no
+        # further check.
+        return []
+
+    condition_text = str(condition)
+    match = re.search(r"steps\.([\w-]+)\.outputs\.([\w-]+)", condition_text)
+    if match is None:
+        return [
+            f"the RED/GREEN step's `if:` ({condition_text!r}) does not "
+            "reference a prior step's output. A narrowing here needs a scope "
+            "step whose full-run fallback this checker can verify, not an ad "
+            "hoc condition."
+        ]
+
+    scope_step_id, output_key = match.group(1), match.group(2)
+    if output_key != _SELFTEST_SCOPE_OUTPUT_KEY:
+        return [
+            f"the RED/GREEN step's `if:` reads output `{output_key}` from "
+            f"step `{scope_step_id}`, not the expected "
+            f"`{_SELFTEST_SCOPE_OUTPUT_KEY}`. Update this checker's "
+            "_SELFTEST_SCOPE_OUTPUT_KEY if the output was deliberately "
+            "renamed."
+        ]
+
+    scope_step = _find_step_by_id(job, scope_step_id)
+    if scope_step is None:
+        return [
+            f"the RED/GREEN step's `if:` references step `{scope_step_id}`, "
+            "but no step in this job declares that `id:`. The narrowing has "
+            "no scope step behind it -- it cannot ever fall back to a full "
+            "run."
+        ]
+
+    scope_run = scope_step.get("run")
+    if not isinstance(scope_run, str):
+        return [
+            f"scope step `{scope_step_id}` has no `run:` script to compute "
+            f"`{_SELFTEST_SCOPE_OUTPUT_KEY}` from."
+        ]
+
+    failures: list[str] = []
+    if _SELFTEST_NON_PR_FALLBACK_MARKER not in scope_run:
+        failures.append(
+            f"scope step `{scope_step_id}` never reads "
+            f"`{_SELFTEST_NON_PR_FALLBACK_MARKER}`, so it cannot tell a "
+            "pull_request diff from push/merge_group/workflow_dispatch -- "
+            "the full-run fallback for non-PR events would be gone."
+        )
+    if "pull_request" not in scope_run:
+        failures.append(
+            f"scope step `{scope_step_id}` never compares against "
+            "`pull_request`, so the pull_request-only narrowing this "
+            "checker expects is not actually there."
+        )
+    min_fallback_paths = 2  # non-pull_request event + at least one fail-closed case
+    true_assignments = scope_run.count(f"{_SELFTEST_SCOPE_OUTPUT_KEY}=true")
+    if true_assignments < min_fallback_paths:
+        failures.append(
+            f"scope step `{scope_step_id}` sets `{_SELFTEST_SCOPE_OUTPUT_KEY}"
+            f"=true` only {true_assignments} time(s). A real fallback needs "
+            "at least two paths to a full run (the non-pull_request event "
+            "case and at least one fail-closed-on-unresolvable-diff case), "
+            "not just the one case where the diff happens to touch the "
+            "detector."
+        )
+    return failures
+
+
+def check_wiring(ci_yaml_path: Path, gate_module_path: Path | None = None) -> list[str]:
     """Assert the ratchet job exists, is unconditional, and gates CI Summary.
 
     ``gate_module_path`` defaults to ``<repo_root>/scripts/ci/ci_summary_gate.py``;
@@ -782,6 +899,7 @@ def check_wiring(
             "--check-wiring`. The job must re-assert its own wiring on every PR, "
             "not only on PRs that edit ci.yml."
         )
+    failures.extend(_check_selftest_full_run_fallback(job))
 
     summary = jobs.get(_SUMMARY_JOB_ID)
     if not isinstance(summary, dict):

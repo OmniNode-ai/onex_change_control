@@ -97,7 +97,19 @@ def _live_corpus() -> tuple[dict[str, int], dict[str, int]]:
 
 @lru_cache(maxsize=1)
 def _tracked_paths() -> tuple[str, ...]:
-    """Every tracked + untracked-not-ignored path, exactly as the gate sees it."""
+    """Every tracked + untracked-not-ignored path, exactly as the gate sees it.
+
+    Scrubbed env (OMN-14891/OMN-18434): git exports GIT_DIR/GIT_WORK_TREE/
+    GIT_INDEX_FILE/GIT_COMMON_DIR into every hook environment, and those
+    override both `cwd=` and `-C`, so an unscrubbed call under a pre-push
+    hook would retarget the real invoking worktree instead of `_REPO_ROOT`.
+    """
+    import os
+
+    from omnibase_core.validators.no_unguarded_git_subprocess import (
+        scrub_git_location_env,
+    )
+
     completed = subprocess.run(
         [
             "git",
@@ -111,6 +123,7 @@ def _tracked_paths() -> tuple[str, ...]:
         capture_output=True,
         text=True,
         check=True,
+        env=scrub_git_location_env(os.environ),
     )
     return tuple(completed.stdout.splitlines())
 
@@ -853,6 +866,105 @@ def test_wiring_fails_when_ci_summary_declares_needs() -> None:
 
     failures = _wiring_failures(add_needs)
     assert any("declares `needs:`" in f for f in failures)
+
+
+def _selftest_step(jobs: dict[str, Any]) -> dict[str, Any]:
+    """Find the RED/GREEN pytest step in a (possibly mutated) jobs dict."""
+    steps: list[dict[str, Any]] = jobs["yamlfmt-contamination-ratchet"]["steps"]
+    for step in steps:
+        if gate._RATCHET_TEST_MODULE in step.get("run", ""):
+            return step
+    msg = "RED/GREEN step not found in yamlfmt-contamination-ratchet"
+    raise AssertionError(msg)
+
+
+def _scope_step(jobs: dict[str, Any]) -> dict[str, Any]:
+    steps: list[dict[str, Any]] = jobs["yamlfmt-contamination-ratchet"]["steps"]
+    for step in steps:
+        if step.get("id") == "detector-scope":
+            return step
+    msg = "detector-scope step not found"
+    raise AssertionError(msg)
+
+
+@pytest.mark.unit
+def test_wiring_passes_with_the_real_selftest_narrowing_and_its_fallback() -> None:
+    """GREEN control for OMN-19635's added check: the shipped ci.yml already
+    narrows the RED/GREEN step behind a scope step with a real fallback, and
+    that alone must not trip check_wiring()."""
+    assert gate.check_wiring(_CI_YAML) == []
+
+
+@pytest.mark.unit
+def test_wiring_fails_when_selftest_narrowing_has_no_scope_step() -> None:
+    """A step-level `if:` pointing at a step id that does not exist can never
+    fall back to a full run -- it is a permanent skip wearing a scope step's
+    clothes."""
+
+    def mutate(jobs: dict[str, Any]) -> None:
+        _selftest_step(jobs)["if"] = "steps.no-such-step.outputs.run_selftest == 'true'"
+
+    failures = _wiring_failures(mutate)
+    assert any("no step in this job declares that `id:`" in f for f in failures)
+
+
+@pytest.mark.unit
+def test_wiring_fails_when_selftest_narrowing_ignores_a_prior_step_output() -> None:
+    """An `if:` that is not a `steps.<id>.outputs.<key>` reference (a raw
+    branch/label condition, say) cannot be verified to have a full-run
+    fallback at all."""
+
+    def mutate(jobs: dict[str, Any]) -> None:
+        _selftest_step(jobs)["if"] = "github.event.pull_request.draft == false"
+
+    failures = _wiring_failures(mutate)
+    assert any("does not reference a prior step's output" in f for f in failures)
+
+
+@pytest.mark.unit
+def test_wiring_fails_when_the_scope_step_loses_its_non_pr_fallback() -> None:
+    """Strip the GITHUB_EVENT_NAME check out of the scope step: the result
+    always evaluates the pull_request-diff branch, so push/merge_group/
+    workflow_dispatch would silently stop running the self-tests too."""
+
+    def mutate(jobs: dict[str, Any]) -> None:
+        step = _scope_step(jobs)
+        step["run"] = step["run"].replace("GITHUB_EVENT_NAME", "SOME_OTHER_VAR")
+
+    failures = _wiring_failures(mutate)
+    assert any("never reads `GITHUB_EVENT_NAME`" in f for f in failures)
+
+
+@pytest.mark.unit
+def test_wiring_fails_when_the_scope_step_loses_its_failclosed_branches() -> None:
+    """Collapse every fallback branch to a single `run_selftest=true` (as if
+    only the "diff touches the detector" case were left): the checker must
+    catch that the non-PR and unresolvable-base fail-closed paths are gone,
+    not just that SOME path to true still exists."""
+
+    def mutate(jobs: dict[str, Any]) -> None:
+        step = _scope_step(jobs)
+        # Collapse the whole script to the one true-producing branch a
+        # careless rewrite might leave behind.
+        step["run"] = (
+            'echo "run_selftest=true" >> "$GITHUB_OUTPUT"\n'
+            'echo "pull_request GITHUB_EVENT_NAME collapsed shape"\n'
+        )
+
+    failures = _wiring_failures(mutate)
+    assert any("only 1 time(s)" in f for f in failures)
+
+
+@pytest.mark.unit
+def test_wiring_passes_when_the_selftest_step_is_fully_unconditional() -> None:
+    """A job author who decides NOT to narrow the step at all (no `if:` on
+    it) is the most conservative shape and must not be flagged -- narrowing
+    is optional, a broken narrowing is not."""
+
+    def mutate(jobs: dict[str, Any]) -> None:
+        del _selftest_step(jobs)["if"]
+
+    assert _wiring_failures(mutate) == []
 
 
 _GATE_MODULE = _REPO_ROOT / "scripts" / "ci" / "ci_summary_gate.py"

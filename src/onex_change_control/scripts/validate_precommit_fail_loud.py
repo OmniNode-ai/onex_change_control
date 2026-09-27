@@ -40,6 +40,7 @@ flagged line.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -71,6 +72,7 @@ _WINDOW = 6  # lines of look-back from an `exit 0` for a degrade signal
 _SKIP_ENV_VAR_RE = re.compile(
     r"\$\{?\b\w*(SKIP|BYPASS)\w*(?<!PATTERN)(?<!REGEX)\b", re.IGNORECASE
 )
+_GIT_ADDITIONAL_DEPENDENCY_RE = re.compile(r"git\+|@\s*git", re.IGNORECASE)
 
 
 def _is_suppressed(line: str) -> bool:
@@ -187,17 +189,51 @@ def check_stage_coverage(config: dict[str, Any]) -> list[str]:
     return violations
 
 
+def check_additional_dependencies(config: dict[str, Any]) -> list[str]:
+    """Reject VCS installs in hook environments.
+
+    During a commit, pre-commit inherits ``GIT_INDEX_FILE``. A package installer
+    that clones a VCS dependency can pass that worktree-specific index path to
+    the nested Git process and overwrite the committing repository's index.
+    Released package-index artifacts avoid that unsafe nested clone.
+    """
+    violations: list[str] = []
+    for repo in config.get("repos", []):
+        for hook in repo.get("hooks", []):
+            for dependency in hook.get("additional_dependencies") or []:
+                if isinstance(dependency, str) and _GIT_ADDITIONAL_DEPENDENCY_RE.search(
+                    dependency
+                ):
+                    hook_id = hook.get("id", "<unknown>")
+                    violations.append(
+                        f"hook {hook_id!r}: additional_dependencies must use a "
+                        f"released package-index artifact, got {dependency!r}"
+                    )
+    return violations
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH)
+    return parser.parse_args()
+
+
 def main() -> int:
-    if not CONFIG_PATH.is_file():
-        print(f"ERROR: {CONFIG_PATH} not found", file=sys.stderr)
+    config_path = _parse_args().config
+    if not config_path.is_file():
+        print(f"ERROR: {config_path} not found", file=sys.stderr)
         return 1
 
-    config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
-        print(f"ERROR: {CONFIG_PATH} did not parse to a mapping", file=sys.stderr)
+        print(f"ERROR: {config_path} did not parse to a mapping", file=sys.stderr)
         return 1
 
-    violations = check_fail_loud(config) + check_stage_coverage(config)
+    violations = (
+        check_fail_loud(config)
+        + check_stage_coverage(config)
+        + check_additional_dependencies(config)
+    )
 
     if violations:
         print(f"FAIL: {len(violations)} fail-loud meta-gate violation(s):\n")
@@ -207,7 +243,7 @@ def main() -> int:
 
     print(
         "OK: no false-green (exit-0-on-missing / env-var-bypass) or "
-        "stages-coverage violations found."
+        "stages-coverage violations, and no VCS additional_dependencies found."
     )
     return 0
 
