@@ -86,6 +86,22 @@ COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     # "Runner Route (OMN-18031)" and report the registered composed name as an
     # unclassified job.
     ("ci.yml", "route"): "Runner Route (OMN-18031) / route",
+    (
+        "ci.yml",
+        "supersession-baseline-oneway",
+    ): "Supersession Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "yamlfmt-sentinel-baseline-oneway",
+    ): "yamlfmt Sentinel Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "yamlfmt-folded-baseline-oneway",
+    ): "yamlfmt Folded Scalar Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "orphan-baseline-oneway",
+    ): "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
     # OMN-16260: these four jobs' original standalone files (call-occ-
     # autobind.yml, call-occ-companion-effect.yml, pr-title-check.yml,
     # required-check-skip-guard-caller.yml) were consolidated into
@@ -198,6 +214,13 @@ def test_every_strict_and_skippable_name_resolves_to_a_live_ci_yml_job() -> None
     # the COMPOSED check-run name, so resolve it through the override table the
     # same way.
     live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", "route")]] = "route"
+    for job_id in (
+        "supersession-baseline-oneway",
+        "yamlfmt-sentinel-baseline-oneway",
+        "yamlfmt-folded-baseline-oneway",
+        "orphan-baseline-oneway",
+    ):
+        live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", job_id)]] = job_id
 
     for name in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS:
         assert name in live_names, f"{name!r} does not match any live ci.yml job name"
@@ -443,17 +466,18 @@ def test_failed_zone_filter_cascade_is_not_a_vacuous_success(zone_name: str) -> 
     """Regression pin for the PR #6435 verifier-reproduced fail-open.
 
     A FAILED zone-filter cascades every job that `needs:` it to `skipped`.
-    All 12 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
+    All 11 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
     SKIPPABLE tier tolerates `skipped` unconditionally -- so with zone-filter
     in SOFT_ALLOWLIST the gate returned SUCCESS with zero tests and zero
     type-checks having run. Parametrized over both name shapes GitHub can
     surface for a reusable caller (bare id, and `<caller> / <inner job>`).
     """
 
-    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:12])
+    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:11])
     assert {"Type Check", "Tests"} <= cascaded, (
         "docs_only tier reordered -- re-derive the cascaded slice"
     )
+    assert "Contract Sync Gate (Layer 3)" not in cascaded
     jobs = [_job(n, "success") for n in STRICT_GATE_JOBS]
     jobs += [
         _job(n, "skipped" if n in cascaded else "success") for n in SKIPPABLE_GATE_JOBS

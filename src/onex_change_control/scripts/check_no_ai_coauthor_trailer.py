@@ -4,7 +4,8 @@
 """Fail a pull request whose commits carry an AI co-author trailer.
 
 Usage:
-    gh api "repos/$REPO/pulls/$N/commits" --paginate --slurp \
+    gh api "repos/$REPO/compare/$BASE_REF...$HEAD_SHA?per_page=100" \
+      --paginate --slurp \
       | python3 src/onex_change_control/scripts/check_no_ai_coauthor_trailer.py
 
     python3 src/onex_change_control/scripts/check_no_ai_coauthor_trailer.py \
@@ -115,22 +116,58 @@ def offending_lines(message: str) -> list[str]:
     return [line for line in message.splitlines() if _AI_COAUTHOR_RE.match(line)]
 
 
+def _flatten_compare_pages(
+    pages: list[object], first: dict[object, object]
+) -> list[object]:
+    """Flatten compare pages, rejecting malformed or truncated responses."""
+    expected_name = "total_commits" if "total_commits" in first else "ahead_by"
+    expected = first.get(expected_name)
+    if not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
+        msg = f"compare payload {expected_name} is not a non-negative integer"
+        raise TypeError(msg)
+
+    flat: list[object] = []
+    for page_number, page in enumerate(pages, start=1):
+        if not isinstance(page, dict):
+            msg = f"compare page {page_number} is not an object"
+            raise TypeError(msg)
+        page_commits = page.get("commits")
+        if not isinstance(page_commits, list):
+            msg = f"compare page {page_number} commits is not a list"
+            raise TypeError(msg)
+        flat.extend(page_commits)
+    if len(flat) != expected:
+        msg = (
+            f"flattened compare commit count {len(flat)} does not match "
+            f"{expected_name} {expected}"
+        )
+        raise TypeError(msg)
+    return flat
+
+
 def normalise(payload: object) -> list[dict[str, str]]:
     """Flatten whatever `gh api --paginate --slurp` produced into {sha, message}.
 
-    Three shapes reach this, and jq is not used to pre-shape them because it is
+    Four shapes reach this, and jq is not used to pre-shape them because it is
     not guaranteed on a self-hosted runner and `gh api --slurp` refuses `--jq`
     anyway:
       * a list of GitHub commit objects        {sha, commit: {message}}
       * a list of pages, each such a list      [[{...}], [{...}]]
       * the already-simplified {sha, message}  (what the tests and --message-file use)
+      * a list of compare page objects         [{commits: [{...}]}, ...]
     """
     if not isinstance(payload, list):
         msg = "commit payload must be a JSON array"
         raise TypeError(msg)
     flat: list[object] = []
-    for item in payload:
-        flat.extend(item) if isinstance(item, list) else flat.append(item)
+    first = payload[0] if payload else None
+    if isinstance(first, dict) and any(
+        key in first for key in ("commits", "total_commits", "ahead_by")
+    ):
+        flat = _flatten_compare_pages(payload, first)
+    else:
+        for item in payload:
+            flat.extend(item) if isinstance(item, list) else flat.append(item)
 
     commits: list[dict[str, str]] = []
     for item in flat:

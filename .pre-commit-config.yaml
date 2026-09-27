@@ -341,8 +341,8 @@ repos:
         name: Fork-aware GitHub Actions runner routing (OMN-15699)
         entry: uv run python scripts/validation/check_runner_routing.py
         language: system
-        pass_filenames: false
-        files: ^\.github/workflows/.*\.ya?ml$
+        pass_filenames: true
+        files: ^(\.github/workflows/.*\.ya?ml|\.pre-commit-config\.yaml|scripts/validation/check_runner_routing\.py)$
         stages: [pre-commit]
       - id: check-seam-contract-coverage
         name: Seam contract coverage
@@ -355,8 +355,9 @@ repos:
         name: No localhost env-var fallbacks in src/ (OMN-10737)
         language: system
         entry: uv run python scripts/validation/validate_no_env_fallbacks.py
-        pass_filenames: false
-        types: [python]
+        pass_filenames: true
+        types_or: [python, yaml]
+        files: ^(src/.*\.py|\.pre-commit-config\.yaml|scripts/validation/validate_no_env_fallbacks\.py)$
         stages: [pre-commit]
       - id: check-imperative-contracts-freestanding
         name: Imperative contract guard with freestanding reachability
@@ -859,7 +860,75 @@ repos:
         stages:
           - pre-commit
         additional_dependencies:
-          - omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core.git@5d562ab415bcbeb60eb852f5fb6d80b455da1624
+          - omnibase-core==0.47.22  # Match uv.lock; includes the 0.47.18 baseline fix.
+
+  # OMN-19666: VCS-backed additional_dependencies can inherit GIT_INDEX_FILE
+  # during a cold-cache commit and overwrite the committing worktree index.
+  - repo: local
+    # Configuration
+    # OMN-14672 (DRIFT-2a fix): every stage a hook uses MUST be installed by
+    # `pre-commit install`. Previously [pre-commit, pre-push] only, so the
+    # reject-deploy-gate-skip-token-commit-msg hook (stages:[commit-msg]) silently
+    # never installed locally — a false-green. The precommit-fail-loud-meta-gate
+    # above now fails closed if this drifts again.
+    hooks:
+      - id: no-git-precommit-additional-dependencies
+        name: Pre-commit additional dependencies come from package indexes (OMN-19666)
+        entry: bash tests/test_precommit_additional_dependencies_omn19666.sh
+        language: system
+        pass_filenames: false
+        files: ^(\.pre-commit-config\.yaml|src/onex_change_control/scripts/validate_precommit_fail_loud\.py|tests/test_precommit_additional_dependencies_omn19666\.sh|tests/fixtures/omn19666/.*)$
+        stages: [pre-commit]
+
+  # OMN-19677: baseline declarations are shrink-only contracts. These hooks
+  # and the required CI jobs execute one immutable shared implementation.
+  - repo: https://github.com/OmniNode-ai/omniclaude
+    rev: 3faefdcd5750b05f69d2efcb8cf200bc359483c3  # pragma: allowlist secret
+    hooks:
+      - id: anti-growth-baseline
+        alias: anti-growth-supersession-baseline
+        name: Supersession baseline can only shrink (OMN-19677)
+        args:
+          - --baseline
+          - .onex_ratchets/omn_15459_supersession_binding_baseline.yaml
+          - --parser
+          - yaml-list:violations
+          - --base-ref
+          - origin/dev
+        files: ^\.onex_ratchets/omn_15459_supersession_binding_baseline\.yaml$
+      - id: anti-growth-baseline
+        alias: anti-growth-yamlfmt-sentinel-baseline
+        name: yamlfmt sentinel baseline can only shrink (OMN-19677)
+        args:
+          - --baseline
+          - .onex_ratchets/omn_15479_yamlfmt_sentinel_baseline.yaml
+          - --parser
+          - yaml-count-map:baseline
+          - --base-ref
+          - origin/dev
+        files: ^\.onex_ratchets/omn_15479_yamlfmt_sentinel_baseline\.yaml$
+      - id: anti-growth-baseline
+        alias: anti-growth-yamlfmt-folded-baseline
+        name: yamlfmt folded-scalar baseline can only shrink (OMN-19677)
+        args:
+          - --baseline
+          - .onex_ratchets/omn_15479_folded_scalar_baseline.yaml
+          - --parser
+          - yaml-count-map:baseline
+          - --base-ref
+          - origin/dev
+        files: ^\.onex_ratchets/omn_15479_folded_scalar_baseline\.yaml$
+      - id: anti-growth-baseline
+        alias: anti-growth-orphan-baseline
+        name: Orphan corpus baseline can only shrink (OMN-19677)
+        args:
+          - --baseline
+          - .onex_ratchets/omn_13888_orphan_receipt_baseline.yaml
+          - --parser
+          - yaml-list-tree
+          - --base-ref
+          - origin/dev
+        files: ^\.onex_ratchets/omn_13888_orphan_receipt_baseline\.yaml$
 
 # Configuration
 # OMN-14672 (DRIFT-2a fix): every stage a hook uses MUST be installed by
