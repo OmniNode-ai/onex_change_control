@@ -1,35 +1,40 @@
 ## Summary
 
-Bind the replay-harness part of [OMN-15359](https://linear.app/omninode/issue/OMN-15359) AC3 to an executable check and its measured PASS receipt. This writer-App PR supersedes the human-authored [OCC #11691](https://github.com/OmniNode-ai/onex_change_control/pull/11691); the live two-lane replay is still owed.
+Add current-head PASS receipts for [OMN-15359](https://linear.app/omninode/issue/OMN-15359) product PRs [omnimarket #3042](https://github.com/OmniNode-ai/omnimarket/pull/3042) and [omnibase_infra #4240](https://github.com/OmniNode-ai/omnibase_infra/pull/4240). Their receipt gates currently report `pr_ticket_mismatch` because merged OCC #11708 predates these product heads.
 
 ## What changed
 
-- Append `ac3-replay-behaviour-proof` to `contracts/OMN-15359.yaml`, reusing the existing autobind check command for merged [omnimarket #2990](https://github.com/OmniNode-ai/omnimarket/pull/2990).
-- Add `drift/dod_receipts/OMN-15359/ac3-replay-behaviour-proof/test_passes.yaml`, attesting the exact check against current omnimarket dev `8db69992fc7a6d68feeb500c836e99a940e998b6`.
-- Allow only the root `PR_BODY.md` in this repo's strict KB doc gate. The writer-App workflow reads it as PR metadata; no other Markdown path is exempted.
-- Keep the contract's live lane-replay gap explicit. No existing evidence item is changed.
+- Append `dod-OmniNode-ai-omnimarket-pr-3042` to `contracts/OMN-15359.yaml` and add its exact-head command receipt.
+- Append `dod-OmniNode-ai-omnibase_infra-pr-4240` to the same contract and add its exact-head command receipt.
+- Bind each receipt to its product PR number, full head SHA, branch, and a content predicate that is absent at that PR's base.
+- Preserve every existing OMN-15359 contract item and receipt unchanged.
 
 ## How it was verified
 
-- The receipt probe resolved product commit `8db69992fc7a6d68feeb500c836e99a940e998b6` through GitHub, then ran `uv run pytest tests/test_omn15359_ac3_replay_falsifiers.py tests/test_omn15359_ac3_replay_real_postgres.py -q`: **12 passed in 3.22s**, exit 0, with PostgreSQL 16.15 and pytest 9.1.1. The test includes nonempty two-tenant key comparison and incomplete-read falsifiers.
-- The same test command separately passed at the current dev checkout: **12 passed in 3.10s**. The shared .201 writer's installed handler SHA-256 `5576f111356a02f1ce70e81ecc9eb5e98bfc286d9728003df87f99cbbeae64e7` equals that dev checkout's handler hash; this is version compatibility only, not a live replay receipt.
-- `yamlfmt` reached a fixed point. The signed commit's pre-commit hook passed, including receipt honesty, receipt hardening, acceptance-criterion binding and evidence-commit existence. The first hosted eligibility run found the receipt under the wrong filename. On corrected head `b71e203b`, hosted `occ-preflight / eligibility` and `verify / verify` passed after the writer App minted structural self-bind `e834bf23`.
-- The pinned KB doc validator `6ccd525e2` passed in strict mode after the exact `PR_BODY.md` allowance: 19 tracked Markdown files inspected. The previous hosted gate failed only because it classified the writer-App body input as documentation.
+- omnimarket head `d4e46ac64bbe0121aca42076c30bb4e5f200c9c6`: the GitHub Contents API probe requires the new `provision-target` action and returned `true`, exit 0. The same predicate at base `7352e78592985400851cf4793466130b7e5e0106` exited 1.
+- omnibase_infra head `d801a500586d345d2d877aaa9e0caa400d31af66`: the probe requires the new `projection-delegation-writer` service and returned `true`, exit 0. The same predicate at base `cd2cc37bd48852d195eb18d3d6b08b04d973f064` exited 1.
+- The two receipt check values are byte-identical to their contract entries. Recomputed per-entry hashes are `sha256:0cddd6daf30bb3def72a202893bd7e8b240473b1d3d9eb3e89e1020586bab305` and `sha256:90b24d673c2d118303d87ab7ba7ef3085f378fc63227b8f4202831e2dc4497b3`.
+- The repository pre-commit path passed after rebasing the diff onto current `origin/dev`, including receipt honesty, receipt hardening, append-only contract verification, exact commit-SHA existence, acceptance-criterion binding, normalization symmetry, and corpus ratchets.
 
 ## Failure paths
 
-This PR adds a static evidence receipt and no runtime receipt writer. The local mint script checks the exact contract command, clean product head, GitHub commit readback, exit 0 and a positive test summary before writing. A malformed first receipt was caught by the contamination gate, and an unresolvable probe commit was caught by receipt hardening; both were corrected before commit. Size: oversized output was not injected, and the short local output has no transport cap. No answer: a nonresponding process was not injected. Incomplete verdict: the committed receipt carries exit 0, a positive pass summary and the required hashes; receipt hardening passed.
+- Head moves: each probe pins the full product head SHA, and the receipt records the same SHA and PR number. A changed product head needs a new receipt.
+- Missing product change: each base-SHA negative control exits 1, so the predicate is not true before the feature exists.
+- No answer: GitHub API failure makes the command nonzero; it cannot produce PASS.
+- Incomplete or malformed receipt: the receipt honesty, schema, hash, repository-authority, and exact-SHA gates all passed and fail closed on those defects.
+- Size: each probe returns one boolean line; no large output or transport truncation path is involved.
 
 ## Open defects
 
-- AC3's live two-lane proof is outstanding. Read-only .201 checks found **0** `public.delegation_events` rows and no delegation projection writer container in the operator lane; the shared dev lane has **2,342** rows and a writer. The operator lane needs an owner-provided writer and sanctioned synthetic-event route before fixture publication. The live replay is not claimed by this PR.
-- AC2 remains with [OMN-17886](https://linear.app/omninode/issue/OMN-17886). Jake also identified a hosted `node_dod_verify` AC4/AC5 execution defect on [OMN-15359](https://linear.app/omninode/issue/OMN-15359); this PR does not repair that runner.
+- These receipts become available to the product gates only after this OCC follow-up merges. The product PR bodies must cite this follow-up PR as their `Evidence-Source`.
+- AC3's sanctioned live two-lane replay remains outstanding and is not claimed by these product-binding receipts.
+- AC2 remains owned by [OMN-17886](https://linear.app/omninode/issue/OMN-17886).
 
 ## Local gates
 
-- [x] No gate was bypassed — no `--no-verify`, no `SKIP=`, no `--no-gpg-sign`, no `core.hooksPath` override. The normal pre-commit and pre-push hooks ran.
-- [x] Any hook that failed was fixed at the input, not worked around.
+- [x] No gate was bypassed — no `--no-verify`, no `SKIP=`, no `--no-gpg-sign`, and no hooks override.
+- [x] Any hook that failed was fixed at the input and rerun through the normal path.
 
 ## Not in this change
 
-No synthetic event or replay copy was written on either .201 lane, no ACL was changed, and no ticket status was changed. Harness key/count parity does not prove full row-value equality or the required live replay.
+No product source, runtime, database, tenant, ACL, infrastructure, synthetic event, ticket status, or existing OCC evidence is changed.
