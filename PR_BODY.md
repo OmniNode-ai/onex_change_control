@@ -6,13 +6,15 @@ Bind the replay-harness part of [OMN-15359](https://linear.app/omninode/issue/OM
 
 - Append `ac3-replay-behaviour-proof` to `contracts/OMN-15359.yaml`, reusing the existing autobind check command for merged [omnimarket #2990](https://github.com/OmniNode-ai/omnimarket/pull/2990).
 - Add `drift/dod_receipts/OMN-15359/ac3-replay-behaviour-proof/test_passes.yaml`, attesting the exact check against current omnimarket dev `8db69992fc7a6d68feeb500c836e99a940e998b6`.
+- Allow only the root `PR_BODY.md` in this repo's strict KB doc gate. The writer-App workflow reads it as PR metadata; no other Markdown path is exempted.
 - Keep the contract's live lane-replay gap explicit. No existing evidence item is changed.
 
 ## How it was verified
 
 - The receipt probe resolved product commit `8db69992fc7a6d68feeb500c836e99a940e998b6` through GitHub, then ran `uv run pytest tests/test_omn15359_ac3_replay_falsifiers.py tests/test_omn15359_ac3_replay_real_postgres.py -q`: **12 passed in 3.22s**, exit 0, with PostgreSQL 16.15 and pytest 9.1.1. The test includes nonempty two-tenant key comparison and incomplete-read falsifiers.
 - The same test command separately passed at the current dev checkout: **12 passed in 3.10s**. The shared .201 writer's installed handler SHA-256 `5576f111356a02f1ce70e81ecc9eb5e98bfc286d9728003df87f99cbbeae64e7` equals that dev checkout's handler hash; this is version compatibility only, not a live replay receipt.
-- `yamlfmt` reached a fixed point. The signed commit's pre-commit hook passed, including receipt honesty, receipt hardening, acceptance-criterion binding and evidence-commit existence. The first hosted eligibility run found the receipt under the wrong filename; the corrected `test_passes.yaml` is now discovered by the same eligibility CLI locally. Hosted CI on the corrected commit is pending.
+- `yamlfmt` reached a fixed point. The signed commit's pre-commit hook passed, including receipt honesty, receipt hardening, acceptance-criterion binding and evidence-commit existence. The first hosted eligibility run found the receipt under the wrong filename. On corrected head `b71e203b`, hosted `occ-preflight / eligibility` and `verify / verify` passed after the writer App minted structural self-bind `e834bf23`.
+- The pinned KB doc validator `6ccd525e2` passed in strict mode after the exact `PR_BODY.md` allowance: 19 tracked Markdown files inspected. The previous hosted gate failed only because it classified the writer-App body input as documentation.
 
 ## Failure paths
 
