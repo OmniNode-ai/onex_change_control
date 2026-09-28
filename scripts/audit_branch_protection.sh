@@ -47,6 +47,13 @@
 #      there is no cross-repo inconsistency to be tolerant of.
 #   5. delete_branch_on_merge is true (repo setting — checked once per repo).
 #   6. A "Merge Queue" ruleset exists (public repos — checked once per repo).
+#   6a. Every ENFORCED ruleset carrying a merge_queue rule has an EMPTY
+#       bypass-actor list, read from the ruleset detail (OMN-19929). A bypass
+#       actor lets that identity merge outside the queue (omnibase_infra#4197,
+#       2026-09-28). A detail with no bypass_actors key (a token that cannot
+#       administer the repo) or a detail that cannot be fetched FAILS: an
+#       unreadable bypass list is not evidence of no bypass. The audit token
+#       must therefore be able to read bypass lists.
 #
 # DEV-EXEMPT repos (audited on `main` only): repos with no protected `dev` branch.
 #   omnistream — no `dev` branch exists.
@@ -609,6 +616,78 @@ check_branch() {
   fi
 }
 
+# merge_queue_bypass_verdict <ruleset-detail-json>   (OMN-19929, check 6a)
+#
+# Pure: takes one ruleset DETAIL document as its only argument and prints
+# exactly one verdict line:
+#   NOT_QUEUE          -- disabled, or carries no merge_queue rule
+#   NO_BYPASS          -- enforced merge-queue ruleset, bypass list read and empty
+#   BYPASS <actors>    -- enforced merge-queue ruleset with bypass actor(s),
+#                         each as <actor_type>:<actor_id>:<bypass_mode>
+#   UNREADABLE         -- not a ruleset document, no rules, or no bypass_actors
+#                         key (the token cannot read the list)
+merge_queue_bypass_verdict() {
+  local verdict
+  verdict=$(printf '%s' "$1" | jq -r '
+    if (type != "object") or (has("rules") | not) then "UNREADABLE"
+    elif (.enforcement // "") == "disabled" then "NOT_QUEUE"
+    elif ([.rules[]? | select(.type == "merge_queue")] | length) == 0 then "NOT_QUEUE"
+    elif (has("bypass_actors") | not) or (.bypass_actors == null) then "UNREADABLE"
+    elif (.bypass_actors | length) == 0 then "NO_BYPASS"
+    else "BYPASS " + ([.bypass_actors[] | "\(.actor_type // "-"):\(.actor_id // "-"):\(.bypass_mode // "-")"] | join(","))
+    end' 2>/dev/null) || verdict=""
+  printf '%s\n' "${verdict:-UNREADABLE}"
+}
+
+# check_merge_queue_bypass <repo> <rulesets-list-json>   (OMN-19929, check 6a)
+# The list endpoint carries neither rules nor bypass_actors, so every ruleset
+# that is not disabled is re-read by id and judged by merge_queue_bypass_verdict.
+check_merge_queue_bypass() {
+  local repo="$1"
+  local rulesets="$2"
+  local full="${ORG}/${repo}"
+  local ids rid detail verdict judged=0
+
+  ids=$(printf '%s' "$rulesets" | jq -r '.[] | select((.enforcement // "") != "disabled") | .id')
+  for rid in $ids; do
+    detail=$(gh api "repos/${full}/rulesets/${rid}" 2>/dev/null) || {
+      echo "  [repo] FAIL: ruleset ${rid} is unreadable, so whether it lets anyone merge outside the queue is unknown"
+      emit_jsonl "$repo" "-" "merge_queue_ruleset_no_bypass" "FAIL" "ruleset ${rid} detail not fetchable"
+      REPO_OK=false
+      FAILURES=$((FAILURES + 1))
+      judged=1
+      continue
+    }
+    verdict=$(merge_queue_bypass_verdict "$detail")
+    case "$verdict" in
+      NOT_QUEUE) ;;
+      NO_BYPASS)
+        echo "  [repo] PASS: merge-queue ruleset ${rid} has no bypass actor"
+        emit_jsonl "$repo" "-" "merge_queue_ruleset_no_bypass" "PASS" "ruleset ${rid}"
+        judged=1
+        ;;
+      BYPASS\ *)
+        echo "  [repo] FAIL: merge-queue ruleset ${rid} has bypass actor(s) ${verdict#BYPASS } -- that identity can merge outside the queue"
+        emit_jsonl "$repo" "-" "merge_queue_ruleset_no_bypass" "FAIL" "ruleset ${rid}; bypass ${verdict#BYPASS }"
+        REPO_OK=false
+        FAILURES=$((FAILURES + 1))
+        judged=1
+        ;;
+      *)
+        echo "  [repo] FAIL: the bypass list of ruleset ${rid} is unreadable (no bypass_actors in the response; the token cannot administer the repo), so the absence of a bypass cannot be claimed"
+        emit_jsonl "$repo" "-" "merge_queue_ruleset_no_bypass" "FAIL" "ruleset ${rid} bypass list unreadable"
+        REPO_OK=false
+        FAILURES=$((FAILURES + 1))
+        judged=1
+        ;;
+    esac
+  done
+  if [[ "$judged" -eq 0 ]]; then
+    echo "  [repo] PASS: no enforced merge-queue ruleset (nothing to bypass)"
+    emit_jsonl "$repo" "-" "merge_queue_ruleset_no_bypass" "PASS" "no enforced merge-queue ruleset"
+  fi
+}
+
 check_repo() {
   local repo="$1"
   local full="${ORG}/${repo}"
@@ -698,6 +777,9 @@ check_repo() {
         REPO_OK=false
         FAILURES=$((FAILURES + 1))
       fi
+      # 6a. No bypass actor on an enforced merge-queue ruleset (OMN-19929)
+      TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+      check_merge_queue_bypass "$repo" "$rulesets"
     fi
   fi
 
