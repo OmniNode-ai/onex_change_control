@@ -284,7 +284,12 @@ jobs:
       - name: Run full pre-commit
         if: needs.zone-filter.outputs.docs_only != 'true'
         env:
-          ONEX_SEAM_CONTRACT_BASE: origin/${{ github.base_ref }}
+          # OMN-17427: a push has no PR base (github.base_ref is empty), so the
+          # binding read 'origin/' and the seam hook failed closed on every
+          # non-docs-only push to dev. A push binds the trusted canonical
+          # branch instead: dev or main diff against themselves (empty, the PR
+          # already passed this gate), a hotfix push diffs against dev.
+          ONEX_SEAM_CONTRACT_BASE: origin/${{ github.base_ref || (github.ref_name == 'main' && 'main' || 'dev') }}
           ONEX_SEAM_CONTRACT_HEAD_REF: ${{ github.sha }}
           ONEX_SEAM_CONTRACT_TICKET_ID: ${{ github.head_ref || github.ref_name }}
         run: SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --all-files
@@ -1285,7 +1290,10 @@ jobs:
           fi
       - name: Check seam contract coverage
         env:
-          BASE: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD~1' }}
+          # OMN-17427: 'HEAD~1' is never a trusted base, so every push run
+          # failed closed. A push binds the trusted canonical branch (see the
+          # Run full pre-commit step).
+          BASE: origin/${{ github.base_ref || (github.ref_name == 'main' && 'main' || 'dev') }}
           EVENT_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
           EVENT_TICKET_ID: ${{ github.head_ref || github.ref_name }}
         run: |

@@ -178,7 +178,10 @@ def test_full_precommit_job_binds_canonical_pr_event_identity() -> None:
     )
 
     assert full_precommit["env"] == {
-        "ONEX_SEAM_CONTRACT_BASE": "origin/${{ github.base_ref }}",
+        "ONEX_SEAM_CONTRACT_BASE": (
+            "origin/${{ github.base_ref || "
+            "(github.ref_name == 'main' && 'main' || 'dev') }}"
+        ),
         "ONEX_SEAM_CONTRACT_HEAD_REF": "${{ github.sha }}",
         "ONEX_SEAM_CONTRACT_TICKET_ID": "${{ github.head_ref || github.ref_name }}",
     }
@@ -196,10 +199,11 @@ def test_seam_coverage_job_uses_pr_head_event_identity() -> None:
     )
     env = steps[-1]["env"]
 
-    assert (
-        env["BASE"]
-        == "${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD~1' }}"
+    assert env["BASE"] == (
+        "origin/${{ github.base_ref || "
+        "(github.ref_name == 'main' && 'main' || 'dev') }}"
     )
+    assert "HEAD~1" not in env["BASE"]
     assert (
         env["EVENT_HEAD_REF"]
         == "${{ github.event.pull_request.head.sha || github.sha }}"
