@@ -252,11 +252,86 @@ def test_workflow_dispatch_event_resolves_app_author_via_gh(tmp_path: Path) -> N
 
 
 def test_check_suite_without_prs_still_skips(tmp_path: Path) -> None:
-    """The pre-existing no-PR short-circuit is untouched by the widening."""
+    """With no payload PRs and no head branch to fall back on, still skip."""
     outputs, _ = _run_resolve_step(
         tmp_path,
         {"EVENT_NAME": "check_suite", "CHECK_SUITE_PRS": "[]"},
         gh_shim=_GH_SHIM_OCC_WRITER,
+    )
+    assert outputs == {"skip": "true"}
+
+
+# ---------------------------------------------------------------------------
+# 1b. OMN-19852: check_suite.pull_requests is empty for an App-created branch
+# (occ#11629, occ#11634, measured live 2026-09-27) -- fall back to a live
+# head-branch lookup so the check_suite re-attempt path actually re-fires.
+# ---------------------------------------------------------------------------
+
+_GH_SHIM_OCC_WRITER_HEAD_BRANCH_LOOKUP = """
+# Extends _GH_SHIM_OCC_WRITER with `gh pr list --head <branch> --state open
+# --json number --jq ...`, used by the check_suite empty-payload fallback.
+if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+  case "$*" in
+    *"--head ${SHIM_HEAD_BRANCH}"*) printf '%s' "${SHIM_LIST_RESULT}" ;;
+    *) echo "unexpected gh pr list args: $*" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  case "$*" in
+    *"--json author"*) echo "app/onexbot-occ-writer" ;;
+    *"--json title"*) echo "${SHIM_TITLE}" ;;
+    *) echo "unexpected gh args: $*" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"""
+
+
+def test_check_suite_empty_payload_falls_back_to_head_branch_lookup(
+    tmp_path: Path,
+) -> None:
+    """Empty `pull_requests` + a head branch resolves via `gh pr list --head`.
+
+    This is the exact shape measured live for occ#11629 (branch
+    auto/ticket-omn-19234-occ-autobind): the check_suite event carries
+    `pull_requests: []` although PR #11629 was open on that head branch.
+    """
+    outputs, _ = _run_resolve_step(
+        tmp_path,
+        {
+            "EVENT_NAME": "check_suite",
+            "CHECK_SUITE_PRS": "[]",
+            "CHECK_SUITE_HEAD_BRANCH": "auto/ticket-omn-19234-occ-autobind",
+            "SHIM_HEAD_BRANCH": "auto/ticket-omn-19234-occ-autobind",
+            "SHIM_LIST_RESULT": "11629",
+            "SHIM_TITLE": "evidence(OMN-19234): OCC batch companion",
+        },
+        gh_shim=_GH_SHIM_OCC_WRITER_HEAD_BRANCH_LOOKUP,
+    )
+    assert outputs["skip"] == "false"
+    assert outputs["pr"] == "11629"
+    assert outputs["actor"] == "app/onexbot-occ-writer"
+    assert outputs["arm"] == "true"
+    assert outputs["companion"] == "true"
+
+
+def test_check_suite_empty_payload_and_no_open_pr_on_branch_still_skips(
+    tmp_path: Path,
+) -> None:
+    """A closed/merged branch resolves to no PR and still skips cleanly."""
+    outputs, _ = _run_resolve_step(
+        tmp_path,
+        {
+            "EVENT_NAME": "check_suite",
+            "CHECK_SUITE_PRS": "[]",
+            "CHECK_SUITE_HEAD_BRANCH": "auto/ticket-omn-19234-occ-autobind",
+            "SHIM_HEAD_BRANCH": "auto/ticket-omn-19234-occ-autobind",
+            "SHIM_LIST_RESULT": "",
+        },
+        gh_shim=_GH_SHIM_OCC_WRITER_HEAD_BRANCH_LOOKUP,
     )
     assert outputs == {"skip": "true"}
 
