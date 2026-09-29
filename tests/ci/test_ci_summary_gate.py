@@ -86,6 +86,22 @@ COMPOSED_NAME_OVERRIDES: dict[tuple[str, str], str] = {
     # "Runner Route (OMN-18031)" and report the registered composed name as an
     # unclassified job.
     ("ci.yml", "route"): "Runner Route (OMN-18031) / route",
+    (
+        "ci.yml",
+        "supersession-baseline-oneway",
+    ): "Supersession Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "yamlfmt-sentinel-baseline-oneway",
+    ): "yamlfmt Sentinel Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "yamlfmt-folded-baseline-oneway",
+    ): "yamlfmt Folded Scalar Baseline One-way (OMN-19677) / anti-growth-baseline",
+    (
+        "ci.yml",
+        "orphan-baseline-oneway",
+    ): "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
     # OMN-16260: these four jobs' original standalone files (call-occ-
     # autobind.yml, call-occ-companion-effect.yml, pr-title-check.yml,
     # required-check-skip-guard-caller.yml) were consolidated into
@@ -198,6 +214,13 @@ def test_every_strict_and_skippable_name_resolves_to_a_live_ci_yml_job() -> None
     # the COMPOSED check-run name, so resolve it through the override table the
     # same way.
     live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", "route")]] = "route"
+    for job_id in (
+        "supersession-baseline-oneway",
+        "yamlfmt-sentinel-baseline-oneway",
+        "yamlfmt-folded-baseline-oneway",
+        "orphan-baseline-oneway",
+    ):
+        live_names[COMPOSED_NAME_OVERRIDES[("ci.yml", job_id)]] = job_id
 
     for name in STRICT_GATE_JOBS + SKIPPABLE_GATE_JOBS:
         assert name in live_names, f"{name!r} does not match any live ci.yml job name"
@@ -443,17 +466,18 @@ def test_failed_zone_filter_cascade_is_not_a_vacuous_success(zone_name: str) -> 
     """Regression pin for the PR #6435 verifier-reproduced fail-open.
 
     A FAILED zone-filter cascades every job that `needs:` it to `skipped`.
-    All 12 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
+    All 11 docs_only-tier SKIPPABLE jobs (Type Check, Tests, ...) do, and the
     SKIPPABLE tier tolerates `skipped` unconditionally -- so with zone-filter
     in SOFT_ALLOWLIST the gate returned SUCCESS with zero tests and zero
     type-checks having run. Parametrized over both name shapes GitHub can
     surface for a reusable caller (bare id, and `<caller> / <inner job>`).
     """
 
-    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:12])
+    cascaded = frozenset(SKIPPABLE_GATE_JOBS[:11])
     assert {"Type Check", "Tests"} <= cascaded, (
         "docs_only tier reordered -- re-derive the cascaded slice"
     )
+    assert "Contract Sync Gate (Layer 3)" not in cascaded
     jobs = [_job(n, "success") for n in STRICT_GATE_JOBS]
     jobs += [
         _job(n, "skipped" if n in cascaded else "success") for n in SKIPPABLE_GATE_JOBS
@@ -2058,3 +2082,131 @@ class TestSweepIsWiredIntoTheProductionPoller:
     ) -> None:
         assert ci_summary_gate._load_workflow_runs(str(tmp_path / "nope.json")) is None
         assert ci_summary_gate._load_workflow_runs(None) is None
+
+
+# ---------------------------------------------------------------------------
+# OMN-17427 — L5 must never judge a row THIS workflow run wrote.
+#
+# Replay of the false red measured on onex_change_control#11666, head
+# 940eaf2a, CI run 36331600130, attempt 1 (job 108654652016) and again on
+# attempt 2 (job 108661642069): Pre-commit completed at 16:08:33Z, GitHub
+# created the dependent skippable gate `Migration Inventory Sync` straight to
+# `skipped` (job 108655960886, created 16:08:34Z). The poller's jobs fetch
+# did not list it yet, so it was not in `in_run_names`; the check-runs fetch a
+# moment later did. The verdict at 16:08:36Z read "gates missing/pending:
+# Pre-commit, Migration Inventory Sync" AND "L5 sweep failures (red, and named
+# by NOTHING else): Migration Inventory Sync (skipped)", and exited FAILURE on
+# a run whose re-run (attempt 3) passed with no change to the head. The same
+# shape reds CI Summary on `Schema Purity & Naming Check (skipped)`; ten
+# attempts on 2026-09-27 alone.
+# ---------------------------------------------------------------------------
+
+_OMN17427_RUN_ID = 36331600130
+_OMN17427_ROW: dict[str, Any] = {
+    "id": 108655960886,
+    "name": "Migration Inventory Sync",
+    "status": "completed",
+    "conclusion": "skipped",
+    "started_at": "2026-09-27T16:08:34Z",
+    "completed_at": "2026-09-27T16:08:33Z",
+    "head_sha": "940eaf2a854eb1b007975cbd33a6af098c253c2d",
+    "html_url": (
+        "https://github.com/OmniNode-ai/onex_change_control/actions/runs/"
+        "36331600130/job/108655960886"
+    ),
+}
+
+
+def _omn17427_jobs(*, include_late_gate: bool) -> list[dict[str, object]]:
+    """This run's jobs payload, every gate green, each row carrying run_id."""
+    jobs = [
+        {**j, "run_id": _OMN17427_RUN_ID}
+        for j in _all_green_jobs()
+        if include_late_gate or j["name"] != _OMN17427_ROW["name"]
+    ]
+    if include_late_gate:
+        for j in jobs:
+            if j["name"] == _OMN17427_ROW["name"]:
+                j["conclusion"] = "skipped"
+    return jobs
+
+
+class TestOwnRunRowsAreNotSwept:
+    def test_the_captured_race_was_a_failure_before_the_fix(self) -> None:
+        """Falsifier: without the run's identity, L5 reds the run's own gate."""
+        rows = [*_all_green_check_runs(), _OMN17427_ROW]
+        jobs = [
+            {k: v for k, v in j.items() if k != "run_id"}
+            for j in _omn17427_jobs(include_late_gate=False)
+        ]
+        code, report = evaluate(
+            jobs,
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == EXIT_FAILURE_CODE, report
+        assert "Migration Inventory Sync (skipped)" in report
+
+    def test_the_captured_race_is_pending_then_success(self) -> None:
+        rows = [*_all_green_check_runs(), _OMN17427_ROW]
+        code, report = evaluate(
+            _omn17427_jobs(include_late_gate=False),
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == ci_summary_gate.EXIT_PENDING, report
+        assert "L5 sweep failures" not in report
+
+        code, report = evaluate(
+            _omn17427_jobs(include_late_gate=True),
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == EXIT_SUCCESS_CODE, report
+
+    def test_an_explicit_run_id_covers_an_empty_jobs_fetch(self) -> None:
+        """A retry-exhausted jobs fetch falls back to an empty payload; the
+        poller's --current-run-id still identifies the run's own rows."""
+        rows = [*_all_green_check_runs(), _OMN17427_ROW]
+        code, report = evaluate(
+            [],
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            current_run_id=_OMN17427_RUN_ID,
+            now=SWEEP_NOW,
+        )
+        assert code == ci_summary_gate.EXIT_PENDING, report
+
+    def test_the_same_red_from_another_run_is_still_swept(self) -> None:
+        """Positive control: only THIS run's rows leave the swept population."""
+        foreign = {
+            **_OMN17427_ROW,
+            "id": 1,
+            "html_url": (
+                "https://github.com/OmniNode-ai/onex_change_control/actions/runs/"
+                "1/job/1"
+            ),
+        }
+        rows = [*_all_green_check_runs(), foreign]
+        code, report = evaluate(
+            _omn17427_jobs(include_late_gate=False),
+            check_runs=rows,
+            external_contexts=EXPECTED_EXTERNAL_CONTEXTS,
+            sweep_external=True,
+            now=SWEEP_NOW,
+        )
+        assert code == EXIT_FAILURE_CODE, report
+        assert "Migration Inventory Sync (skipped)" in report
+
+    def test_the_poller_passes_its_own_run_id(self) -> None:
+        text = (
+            Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
+        ).read_text(encoding="utf-8")
+        assert '--current-run-id "${RUN_ID}"' in text

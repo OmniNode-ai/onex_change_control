@@ -127,14 +127,18 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     "check-platform-leads-review-tripwire",
     "Contract Corpus Ratchets (OMN-15411)",
     "yamlfmt Contamination Ratchet (OMN-15479)",
+    "yamlfmt Sentinel Baseline One-way (OMN-19677) / anti-growth-baseline",
+    "yamlfmt Folded Scalar Baseline One-way (OMN-19677) / anti-growth-baseline",
     "Expiring DoD Check Gate (OMN-18641)",
     "Supersession Binding Ratchet (OMN-15459)",
+    "Supersession Baseline One-way (OMN-19677) / anti-growth-baseline",
     # OMN-13888. Two-way set equality between the whole orphan corpus and its
     # frozen shrink-only baseline. STRICT, not SKIPPABLE, and it carries no
     # evidence-only predicate: an evidence-only diff (contracts/**, drift/
     # dod_receipts/**) is exactly the diff shape that mints an orphan, so a
     # fast-lane skip would exempt the only PRs it exists to check.
     "Orphan Corpus Ratchet (OMN-13888)",
+    "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
     # Reusable-workflow caller; the job's own `name:` is set to this literal
     # composed string (Shape A), matching how GitHub surfaces the check-run.
     # A hold gate an unrelated upstream failure/predicate can cascade-skip is
@@ -161,6 +165,8 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # registration, which COMPOSED_NAME_OVERRIDES in tests/ci/
     # test_ci_summary_gate.py pins.
     "Runner Route (OMN-18031) / route",
+    # OMN-19612: unconditional whole-tree backstop; a skip is always a fail-open.
+    "No localhost env-var fallbacks in src/ (OMN-10737)",
 )
 
 # ---------------------------------------------------------------------------
@@ -179,7 +185,6 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     "Type Check",
     "Tests",
     "Schema Purity & Naming Check",
-    "No localhost env-var fallbacks in src/ (OMN-10737)",
     "Imperative Contract Guard",
     "AI-Slop Pattern Check (strict, PR diff)",
     "Context Integrity Contract Compliance",
@@ -194,7 +199,7 @@ SKIPPABLE_GATE_JOBS: tuple[str, ...] = (
     #
     # Promoting it to STRICT would therefore buy nothing on the failure path
     # and would wedge the skip path: this job carries the docs_only
-    # evidence-only `if:` like its 11 tier-mates, and STRICT treats `skipped`
+    # evidence-only `if:` like its 10 tier-mates, and STRICT treats `skipped`
     # as a failure -- every evidence-companion PR would go red in a repo whose
     # merge traffic is mostly evidence companions.
     #
@@ -318,6 +323,11 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # protection context, so it must remain outside the gate tiers while
         # still being classified by the completeness anchor.
         "no-ai-coauthor-trailer",
+        # OMN-19183 plan task A3, ticket OMN-20005 -- advisory reusable-
+        # workflow caller. Required-check wiring in branch protection follows
+        # once the context has run green on dev, so it must not gate CI
+        # Summary until then.
+        "hardcoded-model-config",
     }
 )
 
@@ -331,7 +341,7 @@ CLASSIFICATION_ONLY: dict[str, str] = {
     "zone-filter": (
         "Structural reusable-workflow caller (zone-filter.yml@dev), not a "
         "validator -- so not a STRICT/SKIPPABLE gate. It is NOT soft-"
-        "allowlisted: all 12 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
+        "allowlisted: all 11 docs_only-tier SKIPPABLE jobs `needs:` it, and a "
         "FAILED zone-filter cascades every one of them to `skipped`, which "
         "the SKIPPABLE tier tolerates unconditionally -- a SUCCESS verdict "
         "with zero tests and zero type-checks having run. The sweep catching "
@@ -1128,6 +1138,45 @@ def check_run_event_index(
     return index
 
 
+def check_run_workflow_run_id(raw: dict[str, object]) -> int | None:
+    """The Actions workflow-run id that wrote this check-run, or ``None``.
+
+    Read from the row's own ``html_url``/``details_url``
+    (``.../actions/runs/<run id>/job/<job id>``). ``None`` for a row no
+    Actions run wrote (a third-party app) or whose URL is unreadable.
+    """
+
+    for key in ("html_url", "details_url"):
+        match = _RUN_ID_RE.search(str(raw.get(key) or ""))
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def own_workflow_run_ids(
+    jobs: list[dict[str, object]],
+    current_run_id: int | None = None,
+) -> frozenset[int]:
+    """The id of the workflow run this CI Summary job belongs to.
+
+    OMN-17427. Taken from the explicit ``--current-run-id`` when the poller
+    passes it, and from the ``run_id`` every row of the run's own jobs payload
+    carries, so a jobs fetch that came back empty still knows which run it is.
+    """
+
+    ids: set[int] = set()
+    if current_run_id:
+        ids.add(current_run_id)
+    for raw in jobs:
+        try:
+            run_id = int(str(raw.get("run_id") or 0))
+        except (TypeError, ValueError):
+            continue
+        if run_id:
+            ids.add(run_id)
+    return frozenset(ids)
+
+
 def resolve_check_run_event(
     raw: dict[str, object],
     events: dict[int, str],
@@ -1137,11 +1186,8 @@ def resolve_check_run_event(
     ``None`` is the fail-closed answer: the caller sweeps the row.
     """
 
-    for key in ("html_url", "details_url"):
-        match = _RUN_ID_RE.search(str(raw.get(key) or ""))
-        if match:
-            return events.get(int(match.group(1)))
-    return None
+    run_id = check_run_workflow_run_id(raw)
+    return None if run_id is None else events.get(run_id)
 
 
 def latest_check_run_rows(
@@ -1179,12 +1225,24 @@ def evaluate_external_sweep(
     *,
     expected: tuple[str, ...] = (),
     in_run_names: frozenset[str] = frozenset(),
+    own_run_ids: frozenset[int] = frozenset(),
     self_name: str = SELF_JOB_NAME,
     exclusions: dict[str, SweepExclusion] | None = None,
     events: dict[int, str] | None = None,
     now: datetime | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """L5 -- default-deny over every check-run nothing else accounts for.
+
+    A row written by THIS workflow run (``own_run_ids``, OMN-17427) is never
+    swept: it is one of this run's own jobs, which layers 1-3 judge from the
+    run's jobs payload, and a job not yet in that payload holds the verdict
+    PENDING there. ``in_run_names`` alone could not say that. It is the set
+    of names in the jobs payload at the moment it was fetched, and a job
+    created a second later -- a skippable gate whose ``needs:`` just finished
+    and which GitHub writes straight to ``skipped`` -- already has its
+    check-run on the head when the check-runs payload is fetched next. L5 then
+    judged the run's own skippable gate as a red "named by NOTHING else", and
+    the umbrella failed on a run whose every gate passed.
 
     Returns ``(failures, in_flight, swept, excluded)``. ``failures`` fail the
     umbrella; the rest are reporting, and ``swept`` is printed on every verdict
@@ -1219,6 +1277,8 @@ def evaluate_external_sweep(
     excluded: list[str] = []
     for name, raw in sorted(latest_check_run_rows(check_runs).items()):
         if name in accounted:
+            continue
+        if own_run_ids and check_run_workflow_run_id(raw) in own_run_ids:
             continue
         if resolve_check_run_event(raw, events) in SWEEP_NON_PR_EVENTS:
             continue
@@ -1290,6 +1350,7 @@ def evaluate(
     sweep_external: bool = False,
     sweep_exclusions: dict[str, SweepExclusion] | None = None,
     workflow_runs: list[dict[str, object]] | None = None,
+    current_run_id: int | None = None,
     now: datetime | None = None,
 ) -> tuple[int, str]:
     """Return ``(exit_code, human_report)`` for the current job snapshot.
@@ -1378,6 +1439,7 @@ def evaluate(
             check_runs,
             expected=external_contexts,
             in_run_names=frozenset(latest),
+            own_run_ids=own_workflow_run_ids(jobs, current_run_id),
             self_name=self_name,
             exclusions=sweep_exclusions,
             events=check_run_event_index(workflow_runs),
@@ -1658,6 +1720,14 @@ def main(argv: list[str] | None = None) -> int:
         "stricter reading, so a failed fetch cannot exempt anything.",
     )
     parser.add_argument(
+        "--current-run-id",
+        type=int,
+        default=None,
+        help="This workflow run's id (github.run_id). Check-runs this run "
+        "wrote are its own jobs, judged from --jobs-file, and the L5 sweep "
+        "never re-judges them (OMN-17427).",
+    )
+    parser.add_argument(
         "--event-name",
         default="pull_request",
         help="GitHub event name. External contexts are asserted on "
@@ -1678,6 +1748,7 @@ def main(argv: list[str] | None = None) -> int:
         external_contexts=external_contexts,
         sweep_external=args.event_name == "pull_request",
         workflow_runs=_load_workflow_runs(args.workflow_runs_file),
+        current_run_id=args.current_run_id,
         # The observation time the OMN-18972 exclusion expiries are judged
         # against. It is the process's own wall clock and has NO CLI surface,
         # deliberately: a caller-assertable time would let a spent exclusion
