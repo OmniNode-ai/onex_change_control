@@ -1,0 +1,78 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-19635"
+title: "Scope yamlfmt detector self-tests and add push-to-dev coverage"
+summary: |-
+  The yamlfmt contamination job keeps its corpus scan and wiring anchor unconditional while scoping
+  only the expensive detector RED/GREEN tests to detector-relevant pull-request diffs. Non-PR events
+  and unresolvable pull-request bases fail closed to a full self-test run, and pushes to dev now provide
+  the whole-tree post-merge backstop. This is CI tooling internal to onex_change_control; it changes no
+  cross-repository seam or public interface.
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Focused RED/GREEN wiring tests prove that the real workflow narrowing passes and that missing, malformed,
+      or fail-open fallback shapes are rejected.
+    command: >-
+      UV_CACHE_DIR="${TMPDIR:-/tmp}/omn-19635-uv-cache" uv run pytest tests/unit/scripts/test_yamlfmt_contamination_gate.py
+      -k wiring -q -p no:randomly
+  - kind: "ci"
+    description: >-
+      Strict static typing covers the detector implementation and its focused unit-test module.
+    command: >-
+      UV_CACHE_DIR="${TMPDIR:-/tmp}/omn-19635-uv-cache" uv run mypy scripts/validation/check_yamlfmt_contamination.py
+      tests/unit/scripts/test_yamlfmt_contamination_gate.py --strict
+  - kind: "ci"
+    description: >-
+      The detector's anti-removal checker validates the edited CI workflow, including the full-run fallback
+      and the unconditional corpus and wiring steps.
+    command: >-
+      UV_CACHE_DIR="${TMPDIR:-/tmp}/omn-19635-uv-cache" uv run python scripts/validation/check_yamlfmt_contamination.py
+      --check-wiring .github/workflows/ci.yml
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "yamlfmt-detector-scope-wiring-tests"
+    description: |-
+      The focused wiring test slice exercises the shipped detector-scope shape and its negative controls.
+      It proves that the real narrowing is accepted, that an unconditional self-test remains accepted,
+      and that a missing scope step, an ad hoc condition, a missing non-PR fallback, or too few fail-closed
+      paths is rejected. The check was executed at PR #11319 head
+      acd757da293c3313f01a2e28701bbc31ba6d6dfc and passed 16 tests.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          UV_CACHE_DIR="${TMPDIR:-/tmp}/omn-19635-uv-cache" uv run pytest tests/unit/scripts/test_yamlfmt_contamination_gate.py
+          -k wiring -q -p no:randomly
+  - id: "yamlfmt-detector-strict-typing"
+    description: |-
+      Strict mypy validation covers both touched Python files: the detector wiring implementation and
+      its focused test module. The check was executed at PR #11319 head
+      acd757da293c3313f01a2e28701bbc31ba6d6dfc and found no issues in either file.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          UV_CACHE_DIR="${TMPDIR:-/tmp}/omn-19635-uv-cache" uv run mypy scripts/validation/check_yamlfmt_contamination.py
+          tests/unit/scripts/test_yamlfmt_contamination_gate.py --strict
+  - id: "yamlfmt-detector-workflow-wiring-check"
+    description: |-
+      The detector's own anti-removal checker reads the edited workflow and verifies the unconditional
+      corpus scan and wiring anchor, strict CI-summary dependency, and detector self-test scope with a
+      non-PR and fail-closed full-run fallback. The check was executed at PR #11319 head
+      acd757da293c3313f01a2e28701bbc31ba6d6dfc and reported PASS.
+    source: "manual"
+    status: "verified"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          UV_CACHE_DIR="${TMPDIR:-/tmp}/omn-19635-uv-cache" uv run python scripts/validation/check_yamlfmt_contamination.py
+          --check-wiring .github/workflows/ci.yml

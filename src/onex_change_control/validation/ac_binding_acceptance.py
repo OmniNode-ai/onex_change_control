@@ -518,9 +518,14 @@ def check_contract_ac_bindings(
     re_accepted = _labels_pinned_to_current_text(contract, known, retired)
 
     for index, item in enumerate(_items(contract)):
-        subject = f"{ticket_id} {_item_id(item, index)}"
+        item_id = _item_id(item, index)
+        subject = f"{ticket_id} {item_id}"
         findings.extend(_unknown_criteria(ticket_id, subject, item, known))
-        findings.extend(_stale_pins(subject, item, known, re_accepted))
+        findings.extend(
+            _stale_pins(
+                subject, item, known, re_accepted, retired=retired, item_id=item_id
+            )
+        )
 
     # OMN-18577 -- the proof-class rule runs last: it is the only one that needs
     # both the resolved criterion text and the retirement set.
@@ -600,11 +605,14 @@ def _unknown_criteria(
     return findings
 
 
-def _stale_pins(
+def _stale_pins(  # noqa: PLR0913 -- retirement requires both item identity and retired pairs
     subject: str,
     item: dict[str, object],
     known: dict[str, str],
     re_accepted: set[str],
+    *,
+    retired: set[tuple[str, str]],
+    item_id: str,
 ) -> list[AcBindingFinding]:
     """Binding records pinned to a revision the criterion has moved past.
 
@@ -618,7 +626,7 @@ def _stale_pins(
     findings: list[AcBindingFinding] = []
     for binding in _bindings(item):
         label = canonical_ac_label(str(binding.get("label") or ""))
-        if not label or label in re_accepted:
+        if not label or label in re_accepted or (item_id, label) in retired:
             continue
         criterion = known.get(label)
         if criterion is None:

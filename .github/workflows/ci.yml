@@ -5,7 +5,16 @@ name: CI
 
 on:
   push:
-    branches: [main, "hotfix/**"]
+    # OMN-19635. `dev` added alongside main/hotfix so a whole-tree run (the
+    # full `pre-commit run --all-files` pass and the yamlfmt corpus ratchet)
+    # fires after every merge to dev, not only on release/hotfix branches.
+    # Per-PR passes on dev are diff-scoped (the "Run dev PR changed-file
+    # pre-commit" step, and after this PR the yamlfmt detector's own
+    # self-tests); this push trigger is the whole-tree backstop that makes
+    # that narrowing safe (root CLAUDE.md rule 5 / the audit's enforcement-
+    # risk finding, .claude_scratch/reports/ci-validator-scope-2026-09-25/
+    # REPORT.md section 4).
+    branches: [main, dev, "hotfix/**"]
   pull_request:
     branches: [main, dev, "hotfix/**"]
     # OMN-15731: default types (opened/synchronize/reopened) don't retrigger
@@ -275,7 +284,12 @@ jobs:
       - name: Run full pre-commit
         if: needs.zone-filter.outputs.docs_only != 'true'
         env:
-          ONEX_SEAM_CONTRACT_BASE: origin/${{ github.base_ref }}
+          # OMN-17427: a push has no PR base (github.base_ref is empty), so the
+          # binding read 'origin/' and the seam hook failed closed on every
+          # non-docs-only push to dev. A push binds the trusted canonical
+          # branch instead: dev or main diff against themselves (empty, the PR
+          # already passed this gate), a hotfix push diffs against dev.
+          ONEX_SEAM_CONTRACT_BASE: origin/${{ github.base_ref || (github.ref_name == 'main' && 'main' || 'dev') }}
           ONEX_SEAM_CONTRACT_HEAD_REF: ${{ github.sha }}
           ONEX_SEAM_CONTRACT_TICKET_ID: ${{ github.head_ref || github.ref_name }}
         run: SKIP=check-receipt-honesty,check-receipt-hardening,reject-required-check-skip-vector uv run pre-commit run --all-files
@@ -541,7 +555,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run tests with coverage
-        run: uv run pytest --cov=onex_change_control --cov-report=term-missing
+        # OMN-20039: the suite is ~4200 tests whose cost is a handful of
+        # whole-corpus scans (68k YAML files). Serial it took 30-53 minutes;
+        # `-n auto` spreads those scans across the runner's cores and
+        # `--dist loadfile` keeps each module on one worker so a module's
+        # cached corpus scan is still computed once, not once per test.
+        # Same tests, same coverage floor, nothing skipped or narrowed.
+        run: uv run pytest -n auto --dist loadfile --cov=onex_change_control --cov-report=term-missing
 
   schema-purity:
     name: Schema Purity & Naming Check
@@ -641,6 +661,11 @@ jobs:
       - name: Scan all workflows for the divergent-automation-PR anti-pattern
         run: uv run python scripts/validation/check_no_divergent_automation_pr.py --all --repo-root .
 
+  # OMN-19612: whole-tree backstop for the staged-scoped pre-commit hook.
+  # Deliberately unconditional: no needs and no if at either job or step level;
+  # this job is STRICT in CI Summary, so any skip is a fail-open. It also runs
+  # the backstop pin test so the pin executes on every PR even when Tests is
+  # skipped.
   no-localhost-fallbacks:
     name: No localhost env-var fallbacks in src/ (OMN-10737)
     runs-on: >-
@@ -650,8 +675,6 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, test]
-    if: needs.zone-filter.outputs.docs_only != 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-uv
@@ -659,6 +682,8 @@ jobs:
           python-version: "3.12"
       - name: Validate no localhost fallbacks
         run: uv run python scripts/validation/validate_no_env_fallbacks.py
+      - name: Pin OMN-19612 whole-tree backstops
+        run: uv run pytest tests/ci/test_precommit_ci_backstops_omn19612.py -q -p no:cacheprovider
 
   url-authority-gate:
     # OMN-13563 Wave 4: URL authority ratchet (non-blocking report; pre-commit hook is the
@@ -1271,7 +1296,10 @@ jobs:
           fi
       - name: Check seam contract coverage
         env:
-          BASE: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD~1' }}
+          # OMN-17427: 'HEAD~1' is never a trusted base, so every push run
+          # failed closed. A push binds the trusted canonical branch (see the
+          # Run full pre-commit step).
+          BASE: origin/${{ github.base_ref || (github.ref_name == 'main' && 'main' || 'dev') }}
           EVENT_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
           EVENT_TICKET_ID: ${{ github.head_ref || github.ref_name }}
         run: |
@@ -2024,6 +2052,35 @@ jobs:
       - name: Corpus-ratchet CI wiring is intact (anti-removal anchor)
         run: uv run python scripts/validation/check_corpus_ratchet_wiring.py
 
+  # Pinned to omniclaude#2359's merge commit on dev; the pre-commit rev below uses the same sha.
+  supersession-baseline-oneway:
+    name: Supersession Baseline One-way (OMN-19677)
+    uses: OmniNode-ai/omniclaude/.github/workflows/anti-growth-baseline-reusable.yml@3faefdcd5750b05f69d2efcb8cf200bc359483c3
+    with:
+      baseline-path: .onex_ratchets/omn_15459_supersession_binding_baseline.yaml
+      parser: yaml-list:violations
+
+  yamlfmt-sentinel-baseline-oneway:
+    name: yamlfmt Sentinel Baseline One-way (OMN-19677)
+    uses: OmniNode-ai/omniclaude/.github/workflows/anti-growth-baseline-reusable.yml@3faefdcd5750b05f69d2efcb8cf200bc359483c3
+    with:
+      baseline-path: .onex_ratchets/omn_15479_yamlfmt_sentinel_baseline.yaml
+      parser: yaml-count-map:baseline
+
+  yamlfmt-folded-baseline-oneway:
+    name: yamlfmt Folded Scalar Baseline One-way (OMN-19677)
+    uses: OmniNode-ai/omniclaude/.github/workflows/anti-growth-baseline-reusable.yml@3faefdcd5750b05f69d2efcb8cf200bc359483c3
+    with:
+      baseline-path: .onex_ratchets/omn_15479_folded_scalar_baseline.yaml
+      parser: yaml-count-map:baseline
+
+  orphan-baseline-oneway:
+    name: Orphan Corpus Baseline One-way (OMN-19677)
+    uses: OmniNode-ai/omniclaude/.github/workflows/anti-growth-baseline-reusable.yml@3faefdcd5750b05f69d2efcb8cf200bc359483c3
+    with:
+      baseline-path: .onex_ratchets/omn_13888_orphan_receipt_baseline.yaml
+      parser: yaml-list-tree
+
   yamlfmt-contamination-ratchet:
     name: yamlfmt Contamination Ratchet (OMN-15479)
     # OMN-15479. yamlfmt v0.21.0 (pinned in .pre-commit-config.yaml, running on
@@ -2060,16 +2117,23 @@ jobs:
     # out of sync with the corpus at all.
     #
     # UNCONDITIONAL BY DESIGN (same reasoning as contract-corpus-ratchets
-    # above): no needs:, no if:, no paths filter. A skip here means something is
-    # wrong, not that the gate legitimately opted out -- the strict success-only
-    # check in ci-summary below fails closed on any non-success result.
+    # above): no needs:, no if:, no paths filter ON THE JOB. A skip of the
+    # JOB means something is wrong, not that the gate legitimately opted out
+    # -- the strict success-only check in ci-summary below fails closed on
+    # any non-success result. OMN-19635 gives exactly ONE step (the RED/GREEN
+    # self-test) its own `if:`, scoped to whether the diff touches the
+    # detector; the corpus scan and the wiring anchor stay job-unconditional,
+    # and that step's own fallback logic fails closed to a full run on
+    # anything but a resolvable pull_request diff (see its step comment).
     #
     # ANTI-REMOVAL ANCHOR: scripts/validation/check_yamlfmt_contamination.py
     # --check-wiring is a pre-commit hook scoped to this file AND the last step
     # of this job, so ANY edit to ci.yml re-asserts (a) the job exists, (b) it
     # is unconditional, (c) it runs the corpus ratchet and the gate's own
-    # RED/GREEN test module, and (d) ci-summary both needs it and applies a
-    # strict success-only check to it.
+    # RED/GREEN test module, (d) ci-summary both needs it and applies a
+    # strict success-only check to it, and (e) the RED/GREEN step's own `if:`
+    # still falls back to a full run on push/merge_group/workflow_dispatch --
+    # check_wiring() parses that condition, not just the run command text.
     #
     # The gate NEVER mutates a file. Formatter mutation is the disease, not the
     # cure -- an auto-fixing gate here would be the same class of defect.
@@ -2086,12 +2150,68 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # Full history: the detector-self-test scope step below needs a
+          # three-dot diff against the base ref (OMN-19635).
+          fetch-depth: 0
       - uses: ./.github/actions/setup-uv
         with:
           python-version: "3.12"
       - name: Rule S/F shrink-only corpus ratchet over the whole evidence corpus
         run: uv run python scripts/validation/check_yamlfmt_contamination.py --corpus
+      # OMN-19635. The RED/GREEN step below is 286s of this job's 436s
+      # (ci-validator-scope audit, 2026-09-25) and depends ONLY on the
+      # detector script and its own test module -- never on the evidence
+      # corpus, which the step above already scans whole-tree. Scoping it to
+      # "did the detector change" saves that time on every ordinary evidence
+      # PR without weakening the ratchet: the corpus scan and the wiring
+      # anchor below stay unconditional, so a broken detector still fails the
+      # job through those.
+      #
+      # FULL-RUN FALLBACK, not a narrowing: push, merge_group and
+      # workflow_dispatch always run the RED/GREEN suite (there is no PR diff
+      # to scope against, and push now includes dev per the trigger change
+      # above, so this is the whole-tree backstop). An unresolvable base
+      # (missing base_ref, unfetchable ref, or a diff git cannot compute)
+      # fails CLOSED to a full run, never silently to a skip -- root
+      # CLAUDE.md rule 5.
+      - name: Detector self-test scope (OMN-19635)
+        id: detector-scope
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: event is ${GITHUB_EVENT_NAME}, not pull_request."
+            exit 0
+          fi
+          base_ref="${BASE_REF:-}"
+          if [ -z "$base_ref" ]; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: base_ref did not resolve (failing closed)."
+            exit 0
+          fi
+          if ! git fetch origin "$base_ref" --no-tags --quiet; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: could not fetch origin/${base_ref} (failing closed)."
+            exit 0
+          fi
+          if ! changed=$(git diff --name-only "origin/${base_ref}...HEAD"); then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: diff against origin/${base_ref} did not resolve (failing closed)."
+            exit 0
+          fi
+          detector_pattern='^(scripts/validation/check_yamlfmt_contamination\.py|tests/unit/scripts/test_yamlfmt_contamination_gate\.py|\.pre-commit-config\.yaml|\.github/workflows/ci\.yml)$'
+          if printf '%s\n' "$changed" | grep -qE "$detector_pattern"; then
+            echo "run_selftest=true" >> "$GITHUB_OUTPUT"
+            echo "Full run: diff touches a detector-relevant path."
+          else
+            echo "run_selftest=false" >> "$GITHUB_OUTPUT"
+            echo "Scoped skip: diff touches no detector-relevant path."
+          fi
+        env:
+          BASE_REF: ${{ github.base_ref }}
       - name: Detector RED/GREEN controls and hook-fires-on-a-fixture assertions
+        if: steps.detector-scope.outputs.run_selftest == 'true'
         run: |
           uv run pytest \
             tests/unit/scripts/test_yamlfmt_contamination_gate.py \
@@ -3292,12 +3412,16 @@ jobs:
                 '' || rm -f /tmp/ci_summary_workflow_runs.json
             fi
 
+            # OMN-17427: --current-run-id names this run, so the L5 sweep leaves
+            # the check-runs this run wrote to the in-run layers even when the
+            # jobs fetch above has not listed a just-created job yet.
             set +e
             uv run python scripts/ci/ci_summary_gate.py \
               --jobs-file /tmp/ci_summary_jobs.json \
               --run-attempt "${RUN_ATTEMPT}" \
               --check-runs-file /tmp/ci_summary_check_runs.json \
               --workflow-runs-file /tmp/ci_summary_workflow_runs.json \
+              --current-run-id "${RUN_ID}" \
               --event-name "${EVENT_NAME}"
             code=$?
             set -e
