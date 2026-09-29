@@ -323,6 +323,11 @@ SOFT_ALLOWLIST: frozenset[str] = frozenset(
         # protection context, so it must remain outside the gate tiers while
         # still being classified by the completeness anchor.
         "no-ai-coauthor-trailer",
+        # OMN-19183 plan task A3, ticket OMN-20005 -- advisory reusable-
+        # workflow caller. Required-check wiring in branch protection follows
+        # once the context has run green on dev, so it must not gate CI
+        # Summary until then.
+        "hardcoded-model-config",
     }
 )
 
