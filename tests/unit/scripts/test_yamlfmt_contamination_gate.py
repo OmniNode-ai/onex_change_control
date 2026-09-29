@@ -682,10 +682,29 @@ def test_baselines_are_frozen_debt_not_an_empty_formality() -> None:
 
 
 @pytest.mark.unit
-def test_corpus_mode_is_green_on_the_real_tree() -> None:
+def test_corpus_mode_is_green_on_the_real_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The 518 baselined files must NOT fail; a permanently-red gate is not a
     gate, it is an outage.
+
+    ``check_corpus`` re-runs ``scan_corpus`` over the whole corpus (about 2.5
+    minutes on a 68k-file tree). The ratchet tests above already computed that
+    exact scan for that exact root and scope, so it is served from the cache
+    instead of parsing every file a second time. Everything ``check_corpus``
+    does with the scan -- scope load, both baseline diffs, every failure
+    message -- still runs for real. The scan itself stays proven by the
+    sentinel and folded ratchet tests that consume the same cache.
     """
+    live = _live_corpus()
+
+    def _cached_scan(
+        repo_root: Path, _scope: object = None
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        assert repo_root == _REPO_ROOT
+        return live
+
+    monkeypatch.setattr(gate, "scan_corpus", _cached_scan)
     assert gate.check_corpus(_REPO_ROOT) == []
 
 
