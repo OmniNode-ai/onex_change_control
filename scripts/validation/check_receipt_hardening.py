@@ -1555,10 +1555,11 @@ def _commit_sha_unavailable_message(result: CommitShaResolution) -> str:
         )
     if result.detail is not None:
         metadata.append(f"detail={result.detail}")
-    if result.category is not None:
-        remedy = _UNAVAILABLE_REMEDIES.get(result.category)
-        if remedy is not None:
-            metadata.append(f"remedy={remedy}")
+    if (
+        result.category is not None
+        and (remedy := _UNAVAILABLE_REMEDIES.get(result.category)) is not None
+    ):
+        metadata.append(f"remedy={remedy}")
     return (
         "[INFRASTRUCTURE_UNAVAILABLE] commit SHA resolution unavailable ("
         + ", ".join(metadata)
@@ -3189,6 +3190,7 @@ def check_commit_sha_wiring(precommit_yaml: Path, ci_yaml: Path) -> list[str]:
         "fetch-depth: 0",
         "git diff --name-only -z --diff-filter=ACMRT",
         '--paths-file0 "$changed_paths_file"',
+        "--commit-sha-rest-budget",
     ):
         if required not in ci_text:
             failures.append(

@@ -2033,6 +2033,24 @@ def test_commit_sha_wiring_static_check_passes_for_repository_config() -> None:
     assert main(["--check-commit-sha-wiring"]) == 0
 
 
+def test_commit_sha_wiring_requires_rest_budget_flag(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    precommit_yaml = repo_root / ".pre-commit-config.yaml"
+    ci_text = (repo_root / ".github" / "workflows" / "ci.yml").read_text()
+    budget_argument = '--commit-sha-rest-budget "$rest_budget"'
+    assert budget_argument in ci_text
+
+    ci_yaml = tmp_path / "ci.yml"
+    ci_yaml.write_text(ci_text.replace(budget_argument, ""))
+    failures = check_receipt_hardening.check_commit_sha_wiring(precommit_yaml, ci_yaml)
+    assert any("--commit-sha-rest-budget" in failure for failure in failures)
+
+    ci_yaml.write_text(ci_text)
+    assert (
+        check_receipt_hardening.check_commit_sha_wiring(precommit_yaml, ci_yaml) == []
+    )
+
+
 def test_commit_sha_inventory_is_temp_only_and_resumable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
