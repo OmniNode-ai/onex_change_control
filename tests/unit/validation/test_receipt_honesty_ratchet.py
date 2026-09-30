@@ -12,6 +12,9 @@ from typing import Any
 
 import pytest
 import yaml
+from omnibase_core.validators.no_unguarded_git_subprocess import (
+    scrub_git_location_env,
+)
 
 from onex_change_control.validation import receipt_honesty_ratchet as ratchet
 
@@ -341,6 +344,7 @@ def _git_command(repo: Path, *args: str) -> str:
         capture_output=True,
         text=True,
         check=True,
+        env=scrub_git_location_env(os.environ),
     )
     return completed.stdout.strip()
 
@@ -348,13 +352,17 @@ def _git_command(repo: Path, *args: str) -> str:
 def _temporary_git_history(tmp_path: Path) -> tuple[Path, str]:
     remote = tmp_path / "origin.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     checkout = tmp_path / "checkout"
     subprocess.run(
         ["git", "init", "--initial-branch", "main", str(checkout)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(checkout, "config", "user.email", "ratchet@example.invalid")
     _git_command(checkout, "config", "user.name", "Receipt Ratchet Test")
@@ -428,7 +436,12 @@ def _single_rule_legacy_identity() -> Any:
 
 def _temporary_changed_receipt_repo(tmp_path: Path) -> tuple[Path, Any, bytes]:
     repo = tmp_path / "changed-receipt"
-    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", str(repo)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
+    )
     identity = _single_rule_legacy_identity()
     raw = (_REPO_ROOT / identity.path).read_bytes()
     receipt = repo / identity.path
@@ -561,6 +574,7 @@ def _missing_ledger_base_with_staged_attempt(
         ["git", "init", "--initial-branch", "main", str(repo)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(repo, "config", "user.email", "ratchet@example.invalid")
     _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
@@ -658,13 +672,17 @@ def test_local_corpus_base_uses_origin_head_not_feature_upstream(
 ) -> None:
     remote = tmp_path / "origin.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     repo = tmp_path / "checkout"
     subprocess.run(
         ["git", "init", "--initial-branch", "dev", str(repo)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(repo, "config", "user.email", "ratchet@example.invalid")
     _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
@@ -692,13 +710,17 @@ def test_local_corpus_base_hydrates_missing_origin_head_from_remote_default(
 ) -> None:
     remote = tmp_path / "origin.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     seed = tmp_path / "seed"
     subprocess.run(
         ["git", "init", "--initial-branch", "dev", str(seed)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(seed, "config", "user.email", "ratchet@example.invalid")
     _git_command(seed, "config", "user.name", "Receipt Ratchet Test")
@@ -714,6 +736,7 @@ def test_local_corpus_base_hydrates_missing_origin_head_from_remote_default(
         cwd=remote,
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
 
     checkout = tmp_path / "checkout"
@@ -721,6 +744,7 @@ def test_local_corpus_base_hydrates_missing_origin_head_from_remote_default(
         ["git", "clone", "--branch", "feature", str(remote), str(checkout)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(checkout, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
 
@@ -771,7 +795,12 @@ def test_changed_index_batch_uses_constant_git_subprocesses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "index-batch"
-    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", str(repo)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
+    )
     paths: list[PurePosixPath] = []
     for number in range(64):
         path = PurePosixPath(f"drift/dod_receipts/OMN-1/{number:03d}.yaml")
