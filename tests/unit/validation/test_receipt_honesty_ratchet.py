@@ -377,7 +377,7 @@ def test_scanner_adoption_is_atomic_and_source_mismatch_fails_closed(
     ) == [
         "imported receipt-honesty scanner is shadowed or outside the locked "
         f"distribution: imported={shadow.resolve()}, installed="
-        f"{importlib.metadata.distribution('omnibase-core').locate_file('omnibase_core/validation/validator_receipt_honesty.py').resolve()}"
+        f"{Path(str(importlib.metadata.distribution('omnibase-core').locate_file('omnibase_core/validation/validator_receipt_honesty.py'))).resolve()}"
     ]
 
     lock_data = (_REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
@@ -412,10 +412,10 @@ def test_scanner_rejects_direct_url_core_install(
             return installed.read_text(filename)
 
         def locate_file(self, path: str) -> Path:
-            return Path(installed.locate_file(path))
+            return Path(str(installed.locate_file(path)))
 
     monkeypatch.setattr(
-        ratchet.importlib.metadata,
+        importlib.metadata,
         "distribution",
         lambda _name: DirectUrlDistribution(),
     )
@@ -528,11 +528,10 @@ def test_ci_base_resolution_helper_executes_all_event_paths(tmp_path: Path) -> N
         )
         locked_version = package["version"]
         locked_hashes = sorted(wheel["hash"] for wheel in package["wheels"])
-        module_path = (
-            importlib.metadata.distribution("omnibase-core")
-            .locate_file("omnibase_core/validation/validator_receipt_honesty.py")
-            .resolve()
+        module_path = importlib.metadata.distribution("omnibase-core").locate_file(
+            "omnibase_core/validation/validator_receipt_honesty.py"
         )
+        module_path = Path(str(module_path)).resolve()
         assert output[0] == (
             "RECEIPT HONESTY CORE SOURCE PASSED "
             f"package=omnibase-core version={locked_version} "
