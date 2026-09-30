@@ -164,11 +164,25 @@
 # PR author from the payload, not the sender who flipped it), and the
 # Enable step returns early when the PR is already armed, so a ready flip
 # racing a check_suite or review event cannot arm twice.
+#
+# OMN-20042 (2026-09-30): ARM ON `synchronize` AND `reopened` TOO. A window
+# companion rewritten (force-pushed) during the `opened` run's 900s companion
+# eligibility wait loses the arm for good: the wait sees the eligibility run
+# cancelled, the run fails, and no later `pull_request` event re-ran it. 18 of
+# 53 window arming runs failed that way; OCC#11957 sat CLEAN and unarmed for 48
+# minutes until a workflow_dispatch (run 36746460030) armed it. A new push
+# now starts a fresh run that waits on the new head's eligibility. Safe because:
+# the OMN-18179 hold gate covers `synchronize` and `reopened` exactly as it
+# covers `ready_for_review` (a held PR is never armed); the concurrency group
+# is keyed per PR with cancel-in-progress, so the new run supersedes the old
+# run's wait; the Enable step returns early when the PR is already armed; and
+# the author gate reads the PR author from the payload, not the pusher.
+# Pinned by tests/ci/test_auto_merge_rearm_on_rewrite_omn20042.py.
 name: Auto-Merge
 
 on:
   pull_request:
-    types: [opened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
     types: [submitted, dismissed]
   check_suite:
