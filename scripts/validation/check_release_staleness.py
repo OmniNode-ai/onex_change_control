@@ -146,8 +146,9 @@ An empty result is not evidence of absence (CLAUDE.md rule 16). A sweep that
 errors, or whose path filter silently matches nothing, returns zero rows and
 reads exactly like a clean bill of health. So when the real sweep finds zero
 stale repos, this tool **automatically re-runs itself against a known-old base
-ref** (each repo's earliest release tag) and refuses to report GREEN unless
-that control produces rows. ``--positive-control`` runs that leg alone.
+ref** (a release tag ``CONTROL_TAG_DEPTH`` releases behind the newest, or the
+earliest when a repo has fewer) and refuses to report GREEN unless that control
+produces rows. ``--positive-control`` runs that leg alone.
 
 Deliberately stdlib-only apart from PyYAML (already a hard dependency of this
 package) and the ``gh`` CLI, so it runs identically in CI, in a worktree, and
@@ -1123,6 +1124,24 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 
+#: How many releases behind the newest tag the positive control measures from
+#: (OMN-20230). The control used to take each repo's EARLIEST tag, so the
+#: history it read grew with the repository's age: on 2026-09-30 omnimarket's
+#: ``src`` history since ``v0.2.0`` passed the ``_MAX_PAGES`` bound of 2,000
+#: commits and the control failed on every onex_change_control PR while the
+#: sweep itself passed. Thirty releases is days of history on the fastest repo
+#: in the roster (about 110 ``src`` commits for omnimarket, ``v0.4.239`` to
+#: ``dev``), old enough that its range carries packaged commits past the 24h
+#: window, and bounded however long the repository lives. A repo with fewer
+#: tags falls back to its earliest, which is the old behaviour.
+CONTROL_TAG_DEPTH = 30
+
+
+def control_base_tag(tags: Sequence[str]) -> str:
+    """The control's base: ``CONTROL_TAG_DEPTH`` releases behind the newest tag."""
+    return tags[max(0, len(tags) - 1 - CONTROL_TAG_DEPTH)]
+
+
 @dataclass
 class ControlResult:
     passed: bool
@@ -1135,12 +1154,19 @@ def run_positive_control(policy: Policy, *, now: datetime) -> ControlResult:
 
     A zero-row sweep is indistinguishable from a broken one, so a GREEN verdict
     is only reported once this control has produced rows. The injected base is
-    each repo's EARLIEST release tag — a real ref, months or years old, whose
-    range therefore contains packaged commits by construction. If the control
-    also returns zero, the sweep is blind and the run fails.
+    a real release tag ``CONTROL_TAG_DEPTH`` releases behind the newest (see
+    ``control_base_tag``), whose range therefore contains packaged commits by
+    construction. If the control returns rows but no stale one, the sweep is
+    blind and the run fails.
+
+    A repo whose control measurement could not be READ (an ``ERROR`` row: an
+    unreadable repo, a pagination bound) cannot speak for the sweep either
+    way, so the control moves on to the next policy repo (OMN-20230). Only a
+    readable measurement decides, and the control fails when no repo supplies
+    one. A readable measurement with no stale row still fails at once: that is
+    the blind-filter signature this control exists to catch, and it is never
+    skipped past.
     """
-    subject: RepoPolicy | None = None
-    base: str | None = None
     reasons: list[str] = []
     for policy_repo in policy.repos:
         try:
@@ -1149,40 +1175,49 @@ def run_positive_control(policy: Policy, *, now: datetime) -> ControlResult:
             reasons.append(str(exc))
             continue
         if len(tags) < 2:
-            reasons.append(f"{policy_repo.repo}: only {len(tags)} release tag(s), unusable as a control")
+            reasons.append(
+                f"{policy_repo.repo}: only {len(tags)} release tag(s), unusable as a control"
+            )
             continue
-        subject, base = policy_repo, tags[0]
-        break
-
-    if subject is None or base is None:
+        base = control_base_tag(tags)
+        rows = evaluate(policy, now=now, repos=(policy_repo,), base_override=base)
+        if rows and all(row.verdict == VERDICT_ERROR for row in rows):
+            reasons.append(
+                f"{policy_repo.repo} vs {base} unreadable: "
+                + "; ".join(row.detail for row in rows)
+            )
+            continue
+        stale_rows = [
+            row
+            for row in rows
+            if row.verdict in (VERDICT_STALE, VERDICT_STALE_UNENFORCED)
+        ]
+        if not stale_rows:
+            return ControlResult(
+                passed=False,
+                detail=(
+                    f"control FAILED: {policy_repo.repo} measured against tag {base} "
+                    f"produced no stale row ({rows[0].verdict if rows else 'no rows'}: "
+                    f"{rows[0].detail if rows else ''}) — the sweep cannot see staleness, "
+                    "so today's zero proves nothing"
+                ),
+                rows=rows,
+            )
+        row = stale_rows[0]
         return ControlResult(
-            passed=False,
-            detail="no repo could supply a known-old base tag: " + "; ".join(reasons),
-        )
-
-    rows = evaluate(policy, now=now, repos=(subject,), base_override=base)
-    stale_rows = [
-        row for row in rows if row.verdict in (VERDICT_STALE, VERDICT_STALE_UNENFORCED)
-    ]
-    if not stale_rows:
-        return ControlResult(
-            passed=False,
+            passed=True,
             detail=(
-                f"control FAILED: {subject.repo} measured against its earliest tag {base} "
-                f"produced no stale row ({rows[0].verdict if rows else 'no rows'}: "
-                f"{rows[0].detail if rows else ''}) — the sweep cannot see staleness, "
-                "so today's zero proves nothing"
+                f"control PASSED: {policy_repo.repo} vs tag {base} => "
+                f"{row.unreleased_packaged} packaged commit(s), oldest {row.oldest_packaged_at}"
+                + (f" (skipped: {'; '.join(reasons)})" if reasons else "")
             ),
             rows=rows,
         )
-    row = stale_rows[0]
+
     return ControlResult(
-        passed=True,
-        detail=(
-            f"control PASSED: {subject.repo} vs its earliest tag {base} => "
-            f"{row.unreleased_packaged} packaged commit(s), oldest {row.oldest_packaged_at}"
-        ),
-        rows=rows,
+        passed=False,
+        detail="control FAILED: no repo could supply a readable control measurement: "
+        + "; ".join(reasons),
     )
 
 
