@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.metadata
 import os
+import shutil
 import subprocess
+import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -264,11 +267,34 @@ def _honesty_ci_job() -> dict[str, Any]:
 
 
 @pytest.mark.unit
-def test_ci_wiring_red_controls_cover_dynamic_core_and_pythonpath() -> None:
+def test_same_scanner_source_ci_and_precommit_use_locked_artifact() -> None:
+    assert (
+        ratchet._check_fast_hook(
+            yaml.safe_load((_REPO_ROOT / ".pre-commit-config.yaml").read_text())
+        )
+        == []
+    )
     job = _honesty_ci_job()
-    job["steps"] = [step for step in job["steps"] if step.get("id") != "validator_ref"]
+    assert ratchet._check_ci_job(job, _REPO_ROOT) == []
+    locked_version, locked_hashes = ratchet._locked_core_artifact(_REPO_ROOT)
+    assert locked_version == importlib.metadata.version("omnibase-core")
+    assert locked_hashes
+    assert ratchet._check_installed_core_artifact(_REPO_ROOT) == []
+
+    job = _honesty_ci_job()
+    job["env"].pop("UV_LOCKED")
     failures = ratchet._check_ci_job(job, _REPO_ROOT)
-    assert any("dynamic omnibase_core ref resolver" in failure for failure in failures)
+    assert any("UV_LOCKED" in failure for failure in failures)
+
+    job = _honesty_ci_job()
+    job["steps"].append(
+        {
+            "uses": "actions/checkout@v7",
+            "with": {"repository": "OmniNode-ai/omnibase_core", "ref": "dev"},
+        }
+    )
+    failures = ratchet._check_ci_job(job, _REPO_ROOT)
+    assert any("must not checkout omnibase_core" in failure for failure in failures)
 
     job = _honesty_ci_job()
     corpus_step = next(
@@ -277,9 +303,28 @@ def test_ci_wiring_red_controls_cover_dynamic_core_and_pythonpath() -> None:
         if "python -m onex_change_control.validation.receipt_honesty_ratchet --corpus"
         in str(step.get("run"))
     )
-    corpus_step["env"].pop("PYTHONPATH")
+    corpus_step["env"]["PYTHONPATH"] = "foreign-core/src"
     failures = ratchet._check_ci_job(job, _REPO_ROOT)
-    assert any("PYTHONPATH" in failure for failure in failures)
+    assert any("must not set PYTHONPATH" in failure for failure in failures)
+
+    job = _honesty_ci_job()
+    corpus_step = next(
+        step
+        for step in job["steps"]
+        if "python -m onex_change_control.validation.receipt_honesty_ratchet --corpus"
+        in str(step.get("run"))
+    )
+    corpus_step["run"] = corpus_step["run"].replace("uv run --locked", "uv run")
+    failures = ratchet._check_ci_job(job, _REPO_ROOT)
+    assert any("uv run --locked" in failure for failure in failures)
+
+    hooks = yaml.safe_load((_REPO_ROOT / ".pre-commit-config.yaml").read_text())
+    for repo in hooks["repos"]:
+        for hook in repo.get("hooks", []):
+            if hook.get("id") == "receipt-honesty-corpus-ratchet":
+                hook["entry"] = hook["entry"].replace("uv run --locked", "uv run")
+    failures = ratchet._check_corpus_hook(hooks, _REPO_ROOT)
+    assert any("uv run --locked" in failure for failure in failures)
 
     job = _honesty_ci_job()
     corpus_step = next(
@@ -316,6 +361,66 @@ def test_ci_wiring_red_controls_cover_dynamic_core_and_pythonpath() -> None:
     )
     failures = ratchet._check_ci_job(job, _REPO_ROOT)
     assert any("not pass a base SHA" in failure for failure in failures)
+
+
+@pytest.mark.unit
+def test_scanner_adoption_is_atomic_and_source_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    job = _honesty_ci_job()
+    assert not ratchet._checks_out_core_repository(job["steps"])
+    assert job["env"]["UV_LOCKED"] == "1"
+
+    shadow = tmp_path / "omnibase_core" / "validation" / "validator_receipt_honesty.py"
+    assert ratchet._check_installed_core_artifact(
+        _REPO_ROOT, imported_module_path=shadow
+    ) == [
+        "imported receipt-honesty scanner is shadowed or outside the locked "
+        f"distribution: imported={shadow.resolve()}, installed="
+        f"{importlib.metadata.distribution('omnibase-core').locate_file('omnibase_core/validation/validator_receipt_honesty.py').resolve()}"
+    ]
+
+    lock_data = (_REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    locked_version, _locked_hashes = ratchet._locked_core_artifact(_REPO_ROOT)
+    core_start = lock_data.index('name = "omnibase-core"')
+    version_text = f'version = "{locked_version}"'
+    version_start = lock_data.index(version_text, core_start)
+    mismatched_lock = tmp_path / "uv.lock"
+    mismatched_lock.write_text(
+        lock_data[:version_start]
+        + 'version = "0.0.0"'
+        + lock_data[version_start + len(version_text) :],
+        encoding="utf-8",
+    )
+    assert (
+        "does not match uv.lock" in ratchet._check_installed_core_artifact(tmp_path)[0]
+    )
+
+
+@pytest.mark.unit
+def test_scanner_rejects_direct_url_core_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = importlib.metadata.distribution("omnibase-core")
+
+    class DirectUrlDistribution:
+        version = installed.version
+
+        def read_text(self, filename: str) -> str | None:
+            if filename == "direct_url.json":
+                return '{"url":"file:///untrusted/omnibase_core"}'
+            return installed.read_text(filename)
+
+        def locate_file(self, path: str) -> Path:
+            return Path(installed.locate_file(path))
+
+    monkeypatch.setattr(
+        ratchet.importlib.metadata,
+        "distribution",
+        lambda _name: DirectUrlDistribution(),
+    )
+    failures = ratchet._check_installed_core_artifact(_REPO_ROOT)
+    assert any("direct/editable source" in failure for failure in failures)
 
 
 @pytest.mark.unit
@@ -360,6 +465,7 @@ def _temporary_git_history(tmp_path: Path) -> tuple[Path, str]:
         capture_output=True,
         env=scrub_git_location_env(os.environ),
     )
+    shutil.copyfile(_REPO_ROOT / "uv.lock", checkout / "uv.lock")
     _git_command(checkout, "config", "user.email", "ratchet@example.invalid")
     _git_command(checkout, "config", "user.name", "Receipt Ratchet Test")
     _git_command(checkout, "remote", "add", "origin", str(remote))
@@ -379,6 +485,7 @@ def _resolve_ci_base_cli(
     command = [
         "uv",
         "run",
+        "--locked",
         "python",
         "-m",
         "onex_change_control.validation.receipt_honesty_ratchet",
@@ -411,7 +518,27 @@ def test_ci_base_resolution_helper_executes_all_event_paths(tmp_path: Path) -> N
     for arguments in cases:
         result = _resolve_ci_base_cli(repo, **arguments)
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == base
+        output = result.stdout.splitlines()
+        package = next(
+            package
+            for package in tomllib.loads(
+                (repo / "uv.lock").read_text(encoding="utf-8")
+            )["package"]
+            if package["name"] == "omnibase-core"
+        )
+        locked_version = package["version"]
+        locked_hashes = sorted(wheel["hash"] for wheel in package["wheels"])
+        module_path = (
+            importlib.metadata.distribution("omnibase-core")
+            .locate_file("omnibase_core/validation/validator_receipt_honesty.py")
+            .resolve()
+        )
+        assert output[0] == (
+            "RECEIPT HONESTY CORE SOURCE PASSED "
+            f"package=omnibase-core version={locked_version} "
+            f"wheel_hashes={','.join(locked_hashes)} module={module_path}"
+        )
+        assert output[-1] == base
 
     missing_pr_branch = _resolve_ci_base_cli(repo, event_name="pull_request")
     assert missing_pr_branch.returncode == 1
@@ -438,6 +565,7 @@ def _temporary_changed_receipt_repo(tmp_path: Path) -> tuple[Path, Any, bytes]:
         capture_output=True,
         env=scrub_git_location_env(os.environ),
     )
+    shutil.copyfile(_REPO_ROOT / "uv.lock", repo / "uv.lock")
     identity = _single_rule_legacy_identity()
     raw = (_REPO_ROOT / identity.path).read_bytes()
     receipt = repo / identity.path
@@ -456,6 +584,7 @@ def _changed_receipt_cli(
         [
             "uv",
             "run",
+            "--locked",
             "python",
             "-m",
             "onex_change_control.validation.receipt_honesty_ratchet",

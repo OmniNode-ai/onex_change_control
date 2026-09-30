@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: MIT
 """Receipt-honesty persistent-debt ratchet for OCC (OMN-17495).
 
-The locked :mod:`omnibase_core.validation.validator_receipt_honesty` module is
-the only source of honesty-rule semantics.  It deliberately scans every
+The :mod:`omnibase_core.validation.validator_receipt_honesty` module selected
+by this repository's ``uv.lock`` is the only source of honesty-rule semantics.
+CI and local pre-commit run this wrapper through locked ``uv`` commands; the
+runtime provenance check verifies the imported module belongs to that locked
+registry distribution.  OCC adopts core scanner changes only with a lock and
+ledger update in the same OCC change.  The scanner deliberately scans every
 parseable ``*.yaml`` receipt, including superseded receipt bases.  That is an
 important limitation: this first control is a truthful persistent-debt
 migration guard, not a claimed burn-down of active receipt debt.  Making the
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import io
 import os
 import re
@@ -37,6 +42,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
@@ -1257,10 +1263,11 @@ def _check_fast_hook(config: dict[str, Any]) -> list[str]:
         entry = hook.get("entry")
         if (
             not isinstance(entry, str)
-            or f"python -m {_MODULE} --changed --index" not in entry
+            or f"uv run --locked python -m {_MODULE} --changed --index" not in entry
         ):
             failures.append(
-                "fast receipt-honesty hook does not invoke wrapper --changed --index"
+                "fast receipt-honesty hook must use `uv run --locked` with "
+                "wrapper --changed --index"
             )
         if hook.get("pass_filenames") is False:
             failures.append(
@@ -1286,9 +1293,13 @@ def _check_corpus_hook(config: dict[str, Any], repo_root: Path) -> list[str]:
     else:
         hook = corpus_hooks[0]
         entry = hook.get("entry")
-        if not isinstance(entry, str) or f"python -m {_MODULE} --corpus" not in entry:
+        if (
+            not isinstance(entry, str)
+            or f"uv run --locked python -m {_MODULE} --corpus" not in entry
+        ):
             failures.append(
-                "authoritative receipt-honesty hook does not invoke wrapper --corpus"
+                "authoritative receipt-honesty hook must use `uv run --locked` "
+                "with wrapper --corpus"
             )
         if hook.get("pass_filenames") is not False:
             failures.append(
@@ -1326,20 +1337,140 @@ def _step_with_id(steps: list[Any], step_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _core_checkout_is_dynamic(steps: list[Any]) -> bool:
+def _checks_out_core_repository(steps: list[Any]) -> bool:
     for step in steps:
         if not isinstance(step, dict) or step.get("uses") != "actions/checkout@v7":
             continue
         options = step.get("with")
         if not isinstance(options, dict):
             continue
-        if (
-            options.get("repository") == "OmniNode-ai/omnibase_core"
-            and options.get("ref") == "${{ steps.validator_ref.outputs.ref }}"
-            and options.get("path") == "omnibase_core_source"
-        ):
+        if options.get("repository") == "OmniNode-ai/omnibase_core":
             return True
     return False
+
+
+def _locked_core_artifact(repo_root: Path) -> tuple[str, tuple[str, ...]]:
+    """Read the sole registry-backed omnibase-core identity from uv.lock."""
+    lock_path = repo_root / "uv.lock"
+    try:
+        lock_data = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        msg = f"unable to read valid uv.lock for receipt-honesty provenance: {exc}"
+        raise RatchetError(msg) from exc
+    packages = lock_data.get("package")
+    if not isinstance(packages, list):
+        msg = "uv.lock package table is missing or malformed"
+        raise RatchetError(msg)
+    matches = [
+        package
+        for package in packages
+        if isinstance(package, dict)
+        and isinstance(package.get("name"), str)
+        and package["name"].replace("_", "-").lower() == "omnibase-core"
+    ]
+    if len(matches) != 1:
+        msg = (
+            "uv.lock must declare exactly one omnibase-core package, "
+            f"found {len(matches)}"
+        )
+        raise RatchetError(msg)
+    package = matches[0]
+    version = package.get("version")
+    source = package.get("source")
+    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        msg = "uv.lock omnibase-core version must be a basic numeric SemVer string"
+        raise RatchetError(msg)
+    # Compare the registry recorded in uv.lock only; this does not open a connection.
+    if source != {
+        "registry": "https://pypi.org/simple"  # url-authority-ok: lock metadata
+    }:
+        msg = "uv.lock omnibase-core must resolve from the canonical PyPI registry"
+        raise RatchetError(msg)
+    wheels = package.get("wheels")
+    if not isinstance(wheels, list) or not wheels:
+        msg = "uv.lock omnibase-core registry artifact has no pinned wheel hashes"
+        raise RatchetError(msg)
+    hashes = tuple(
+        sorted(
+            wheel["hash"]
+            for wheel in wheels
+            if isinstance(wheel, dict)
+            and isinstance(wheel.get("hash"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", wheel["hash"])
+        )
+    )
+    if len(hashes) != len(wheels):
+        msg = "uv.lock omnibase-core contains an unpinned registry wheel"
+        raise RatchetError(msg)
+    return version, hashes
+
+
+def _check_installed_core_artifact(
+    repo_root: Path, imported_module_path: Path | None = None
+) -> list[str]:
+    """Bind the loaded scanner to the exact lock-selected installed distribution."""
+    failures: list[str] = []
+    try:
+        locked_version, locked_hashes = _locked_core_artifact(repo_root)
+    except RatchetError as exc:
+        return [str(exc)]
+    try:
+        distribution = importlib.metadata.distribution("omnibase-core")
+    except importlib.metadata.PackageNotFoundError:
+        failures.append(
+            "locked omnibase-core distribution is not installed in the active "
+            "uv environment"
+        )
+    else:
+        if distribution.version != locked_version:
+            failures.append(
+                "installed omnibase-core version does not match uv.lock: "
+                f"installed={distribution.version}, locked={locked_version}"
+            )
+        if distribution.read_text("direct_url.json") is not None:
+            failures.append(
+                "installed omnibase-core is a direct/editable source, "
+                "not the locked registry artifact"
+            )
+        else:
+            module_relative_path = (
+                "omnibase_core/validation/validator_receipt_honesty.py"
+            )
+            distribution_files = distribution.files
+            if distribution_files is None or not any(
+                str(file_path) == module_relative_path
+                for file_path in distribution_files
+            ):
+                failures.append(
+                    "locked omnibase-core distribution does not own "
+                    "the receipt scanner file"
+                )
+            expected_module = Path(
+                str(distribution.locate_file(module_relative_path))
+            ).resolve()
+            actual_module = (
+                imported_module_path
+                if imported_module_path is not None
+                else Path(scan_receipts_directory.__code__.co_filename)
+            ).resolve()
+            if actual_module != expected_module:
+                failures.append(
+                    "imported receipt-honesty scanner is shadowed or outside "
+                    "the locked distribution: "
+                    f"imported={actual_module}, installed={expected_module}"
+                )
+            else:
+                distribution_root = Path(str(distribution.locate_file(""))).resolve()
+                try:
+                    actual_module.relative_to(distribution_root)
+                except ValueError:
+                    failures.append(
+                        "imported receipt-honesty scanner is outside installed "
+                        "site-packages"
+                    )
+        if not locked_hashes:
+            failures.append("uv.lock core artifact has no usable pinned wheel digest")
+    return failures
 
 
 def _uses_uv_python_312(steps: list[Any]) -> bool:
@@ -1355,10 +1486,141 @@ def _uses_uv_python_312(steps: list[Any]) -> bool:
     return False
 
 
+def _check_ci_import_environment(job: dict[str, Any], steps: list[Any]) -> list[str]:
+    """Reject workflow-level overrides that can replace the locked core import."""
+    failures: list[str] = []
+    job_environment = job.get("env")
+    if not isinstance(job_environment, dict) or str(
+        job_environment.get("UV_LOCKED", "")
+    ).lower() not in {"1", "true"}:
+        failures.append("Receipt Honesty Gate must set UV_LOCKED before setup-uv runs")
+    if isinstance(job_environment, dict) and "PYTHONPATH" in job_environment:
+        failures.append(
+            "Receipt Honesty Gate must not set PYTHONPATH or shadow locked core imports"
+        )
+    defaults = job.get("defaults")
+    run_defaults = defaults.get("run") if isinstance(defaults, dict) else None
+    if isinstance(run_defaults, dict) and run_defaults.get("working-directory") not in (
+        None,
+        ".",
+    ):
+        failures.append("Receipt Honesty Gate must run from the OCC uv.lock root")
+    if _checks_out_core_repository(steps):
+        failures.append(
+            "Receipt Honesty Gate must not checkout omnibase_core "
+            "independently of uv.lock"
+        )
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        env = step.get("env")
+        run = str(step.get("run", ""))
+        if (isinstance(env, dict) and "PYTHONPATH" in env) or "PYTHONPATH" in run:
+            failures.append(
+                "Receipt Honesty Gate must not set PYTHONPATH or shadow "
+                "locked core imports"
+            )
+    return failures
+
+
+def _check_setup_uv_action(repo_root: Path) -> list[str]:
+    """Ensure setup-uv syncs the lock and does not override the caller's lock mode."""
+    failures: list[str] = []
+    setup_action_path = repo_root / ".github" / "actions" / "setup-uv" / "action.yml"
+    try:
+        setup_action = _load_workflow(setup_action_path)
+    except RatchetError as exc:
+        failures.append(str(exc))
+    else:
+        runs = setup_action.get("runs")
+        action_steps = runs.get("steps") if isinstance(runs, dict) else None
+        action_runs = "\n".join(
+            step["run"]
+            for step in action_steps or []
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        )
+        if any(
+            isinstance(step, dict)
+            and isinstance(step.get("env"), dict)
+            and "UV_LOCKED" in step["env"]
+            for step in action_steps or []
+        ):
+            failures.append(
+                "Receipt Honesty Gate setup action must inherit UV_LOCKED "
+                "without overriding it"
+            )
+        if "uv sync --all-groups" not in action_runs:
+            failures.append(
+                "Receipt Honesty Gate setup action must sync the OCC "
+                "uv.lock environment"
+            )
+    return failures
+
+
+def _check_ci_setup_order(steps: list[Any], repo_root: Path) -> list[str]:
+    """Ensure locked uv setup runs from the OCC root before either scanner call."""
+    failures: list[str] = []
+    setup_index = next(
+        (
+            index
+            for index, step in enumerate(steps)
+            if isinstance(step, dict)
+            and step.get("uses") == "./.github/actions/setup-uv"
+        ),
+        None,
+    )
+    scanner_indices = [
+        index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict)
+        and f"python -m {_MODULE} --corpus" in str(step.get("run", ""))
+    ]
+    if setup_index is None or not scanner_indices or setup_index > min(scanner_indices):
+        failures.append(
+            "Receipt Honesty Gate must install its uv.lock environment before scanning"
+        )
+    locked_commands = (
+        f"python -m {_MODULE} --corpus",
+        f"python -m {_MODULE} --check-wiring",
+        "pytest tests/unit/validation/test_receipt_honesty_ratchet.py",
+    )
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+            continue
+        lines = [line.strip() for line in step["run"].splitlines()]
+        for command in locked_commands:
+            if any(command in line and "uv run --locked" not in line for line in lines):
+                failures.append(
+                    f"Receipt Honesty Gate commands must use uv run --locked: {command}"
+                )
+                break
+    if any(
+        isinstance(step, dict) and step.get("working-directory") is not None
+        for step in steps
+        if "--corpus" in str(step.get("run", ""))
+        or "--check-wiring" in str(step.get("run", ""))
+    ):
+        failures.append(
+            "Receipt Honesty Gate scanner commands must run from the OCC lock root"
+        )
+    failures.extend(_check_setup_uv_action(repo_root))
+    return failures
+
+
+def _check_ci_locked_source(
+    job: dict[str, Any], steps: list[Any], repo_root: Path
+) -> list[str]:
+    """Ensure setup, scanning, and local execution share the OCC locked environment."""
+    return [
+        *_check_ci_import_environment(job, steps),
+        *_check_ci_setup_order(steps, repo_root),
+    ]
+
+
 def _check_ci_job(  # noqa: C901, PLR0912 -- static fail-closed wiring vectors share one report
     job: dict[str, Any], repo_root: Path
 ) -> list[str]:
-    """Assert unconditional dynamic-core CI enforcement and event-correct bases."""
+    """Assert unconditional CI enforcement against the locked OCC core artifact."""
     failures: list[str] = []
     if job.get("name") != "Receipt Honesty Gate":
         failures.append(
@@ -1369,19 +1631,9 @@ def _check_ci_job(  # noqa: C901, PLR0912 -- static fail-closed wiring vectors s
     steps = job.get("steps")
     if not isinstance(steps, list):
         return [*failures, "Receipt Honesty Gate has no steps list"]
-    validator_ref = _step_with_id(steps, "validator_ref")
-    if validator_ref is None or "Resolve omnibase_core validator ref" not in str(
-        validator_ref.get("name")
-    ):
-        failures.append(
-            "Receipt Honesty Gate lacks the dynamic omnibase_core ref resolver"
-        )
-    if not _core_checkout_is_dynamic(steps):
-        failures.append(
-            "Receipt Honesty Gate lacks dynamic omnibase_core checkout/ref wiring"
-        )
     if not _uses_uv_python_312(steps):
         failures.append("Receipt Honesty Gate must use setup-uv with Python 3.12")
+    failures.extend(_check_ci_locked_source(job, steps, repo_root))
 
     run_blob = _run_blob(job)
     required_fragments = (
@@ -1390,8 +1642,8 @@ def _check_ci_job(  # noqa: C901, PLR0912 -- static fail-closed wiring vectors s
         "BEFORE_SHA",
         "test_receipt_honesty_ratchet.py",
         f"python -m {_MODULE} --check-wiring",
-        "uv run python",
-        "uv run pytest",
+        "uv run --locked python",
+        "uv run --locked pytest",
         "gh api",
         "default_branch",
         "PR_BASE_REF",
@@ -1456,13 +1708,6 @@ def _check_ci_job(  # noqa: C901, PLR0912 -- static fail-closed wiring vectors s
             "Receipt Honesty Gate must use an explicit merge_group base ref"
         )
     if not isinstance(corpus_environment, dict) or corpus_environment.get(
-        "PYTHONPATH"
-    ) != ("${{ github.workspace }}/omnibase_core_source/src"):
-        failures.append(
-            "Receipt Honesty Gate corpus step must set PYTHONPATH to "
-            "omnibase_core_source/src"
-        )
-    if not isinstance(corpus_environment, dict) or corpus_environment.get(
         "GH_TOKEN"
     ) != ("${{ github.token }}"):
         failures.append("Receipt Honesty Gate default-branch lookup must have GH_TOKEN")
@@ -1484,6 +1729,10 @@ def check_wiring(repo_root: Path) -> list[str]:
         return [str(exc)]
     failures = _check_fast_hook(precommit)
     failures.extend(_check_corpus_hook(precommit, repo_root))
+    try:
+        _locked_core_artifact(repo_root)
+    except RatchetError as exc:
+        failures.append(str(exc))
 
     try:
         ci = _load_workflow(ci_path)
@@ -1507,6 +1756,23 @@ def _check_wiring_or_raise(repo_root: Path) -> None:
             + "\n".join(f"- {item}" for item in failures)
         )
     sys.stdout.write("RECEIPT HONESTY RATCHET WIRING PASSED\n")
+
+
+def _check_core_runtime_or_raise(repo_root: Path) -> None:
+    """Fail if the imported scanner is not the registry artifact pinned by uv.lock."""
+    failures = _check_installed_core_artifact(repo_root)
+    if failures:
+        raise RatchetError(
+            "RECEIPT HONESTY CORE SOURCE FAILED:\n"
+            + "\n".join(f"- {failure}" for failure in failures)
+        )
+    version, hashes = _locked_core_artifact(repo_root)
+    module_path = Path(scan_receipts_directory.__code__.co_filename).resolve()
+    sys.stdout.write(
+        "RECEIPT HONESTY CORE SOURCE PASSED "
+        f"package=omnibase-core version={version} "
+        f"wheel_hashes={','.join(hashes)} module={module_path}\n"
+    )
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -1620,6 +1886,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         root = _repo_root(args.repo_root)
+        _check_core_runtime_or_raise(root)
         _run_mode(args, root)
     except RatchetError as exc:
         sys.stderr.write(f"{exc}\n")
