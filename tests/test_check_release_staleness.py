@@ -36,11 +36,13 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -1216,3 +1218,97 @@ def test_module_docstring_names_the_measured_failure() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
     assert "OMN-18010" in source
     assert textwrap.dedent("omnimarket#2304") in source
+
+
+# ---------------------------------------------------------------------------
+# The positive control must stay inside the pagination bound (OMN-18010)
+# ---------------------------------------------------------------------------
+
+
+def _load_module() -> Any:
+    spec = importlib.util.spec_from_file_location("_staleness_bound_under_test", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+def test_positive_control_base_stays_inside_the_history_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RED on 2026-09-30: omnimarket history since its earliest tag passed 2000.
+
+    Every onex_change_control PR failed ``release-staleness`` with ``control
+    FAILED ... graphql history pagination exceeded 20 rounds`` because the
+    control measured the first policy repo against its earliest tag, and the
+    batched ``history(path:, since:)`` read for that range needs more than
+    ``_MAX_PAGES`` pages. The cap is a hang guard and stays; the control must
+    pick a base whose range fits inside it, however long the repo's history is.
+    """
+    module = _load_module()
+    per_release = 50
+    releases = 60
+    tags = [f"v0.1.{i}" for i in range(releases)]
+    now = datetime.now(UTC)
+    # 3,000 commits, newest first, 1 hour apart and all older than the window.
+    everything = [
+        module.CommitRef(sha=f"c{i:05d}", committed_at=now - timedelta(hours=30 + i))
+        for i in range(per_release * releases)
+    ]
+
+    def fake_tags(_repo: str) -> list[str]:
+        return tags
+
+    def fake_compare(_repo: str, base: str, _head: str) -> list[object]:
+        behind = releases - 1 - tags.index(base)
+        return everything[: behind * per_release]
+
+    def fake_graphql(document: str) -> dict[str, object]:
+        since_match = re.search(r'since: "([^"]+)"', document)
+        assert since_match is not None
+        since = datetime.strptime(since_match.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
+        cursor = re.search(r'after: "(\d+)"', document)
+        offset = int(cursor.group(1)) if cursor else 0
+        eligible = [c for c in everything if c.committed_at >= since]
+        page = eligible[offset : offset + 100]
+        more = offset + 100 < len(eligible)
+        return {
+            "data": {
+                "q0": {
+                    "object": {
+                        "history": {
+                            "pageInfo": {
+                                "hasNextPage": more,
+                                "endCursor": str(offset + 100) if more else None,
+                            },
+                            "nodes": [{"oid": c.sha} for c in page],
+                        }
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(module, "list_release_tags", fake_tags)
+    monkeypatch.setattr(module, "compare_commits", fake_compare)
+    monkeypatch.setattr(module, "_gh_graphql", fake_graphql)
+    repo = module.RepoPolicy(
+        repo="omnimarket",
+        branch="dev",
+        packaged_paths=("src",),
+        enforced=True,
+        deferral_ticket="",
+        deferral_reason="",
+    )
+    policy = module.Policy(max_age_hours=24.0, repos=(repo,))
+
+    result = module.run_positive_control(policy, now=now)
+
+    assert result.passed, result.detail
+    assert "v0.1.0" not in result.detail

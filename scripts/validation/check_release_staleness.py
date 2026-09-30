@@ -187,7 +187,9 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY = _REPO_ROOT / "scripts" / "validation" / "release_staleness_policy.yaml"
 DEFAULT_BASELINE = (
-    _REPO_ROOT / ".onex_ratchets" / "omn_18010_release_staleness_unenforced_baseline.yaml"
+    _REPO_ROOT
+    / ".onex_ratchets"
+    / "omn_18010_release_staleness_unenforced_baseline.yaml"
 )
 
 ORG = "OmniNode-ai"
@@ -430,17 +432,19 @@ def load_unenforced_baseline(path: Path) -> tuple[str, ...]:
     if not isinstance(raw, dict):
         raise PolicyError(f"baseline file must be a mapping: {path}")
     entries = raw.get("unenforced")
-    if not isinstance(entries, list) or not all(isinstance(e, str) and e for e in entries):
-        raise PolicyError(f"baseline: `unenforced` must be a list of repo names: {path}")
+    if not isinstance(entries, list) or not all(
+        isinstance(e, str) and e for e in entries
+    ):
+        raise PolicyError(
+            f"baseline: `unenforced` must be a list of repo names: {path}"
+        )
     return tuple(sorted(set(entries)))
 
 
 def check_roster(policy: Policy, baseline: tuple[str, ...]) -> list[str]:
     """Ratchet: the unenforced roster may only SHRINK. Returns violation lines."""
     added = sorted(set(policy.unenforced) - set(baseline))
-    stale_entries = sorted(
-        set(baseline) - {repo.repo for repo in policy.repos}
-    )
+    stale_entries = sorted(set(baseline) - {repo.repo for repo in policy.repos})
     violations = []
     for repo in added:
         violations.append(
@@ -552,6 +556,16 @@ _GRAPHQL_PAGE = 100
 #: needs more should fail loudly rather than spin.
 _MAX_PAGES = 20
 
+#: How many releases back from the newest tag the positive control measures.
+#: The control only needs a real ref whose range holds packaged commits older
+#: than the window; it does not need the oldest one. Measuring from the
+#: earliest tag made the control's own history read grow without bound, and on
+#: 2026-09-30 omnimarket's ``src`` history since v0.2.0 passed ``_MAX_PAGES``
+#: pages, so every ``onex_change_control`` PR failed its own control. A fixed
+#: distance in releases keeps the range bounded however long the repo lives,
+#: and twenty releases is days of history for the fastest releaser here.
+_CONTROL_RELEASES_BACK = 20
+
 
 def request_count() -> int:
     """Total GitHub requests issued this process. Read by the budget test."""
@@ -583,7 +597,9 @@ def _gh_graphql(document: str) -> dict[str, Any]:
     return payload
 
 
-def _graphql_alias_errors(payload: dict[str, Any], aliases: dict[str, str]) -> dict[str, str]:
+def _graphql_alias_errors(
+    payload: dict[str, Any], aliases: dict[str, str]
+) -> dict[str, str]:
     """Map GraphQL errors back to the repo whose alias they name.
 
     An error with no usable path is attributed to EVERY alias in the document
@@ -631,7 +647,7 @@ def fetch_release_tags(repos: Sequence[str]) -> dict[str, list[str] | str]:
     """
     collected: dict[str, list[str]] = {repo: [] for repo in repos}
     failed: dict[str, str] = {}
-    cursors: dict[str, str | None] = {repo: None for repo in repos}
+    cursors: dict[str, str | None] = dict.fromkeys(repos)
     pending = list(repos)
 
     for _ in range(_MAX_PAGES):
@@ -726,7 +742,9 @@ def compare_commits(repo: str, base: str, head: str) -> list[CommitRef]:
     try:
         total = int(totals)
     except ValueError as exc:
-        raise ProbeError(f"{repo}: compare {base}...{head} returned no total_commits") from exc
+        raise ProbeError(
+            f"{repo}: compare {base}...{head} returned no total_commits"
+        ) from exc
     if total == 0:
         return []
 
@@ -736,7 +754,7 @@ def compare_commits(repo: str, base: str, head: str) -> list[CommitRef]:
             "--paginate",
             f"repos/{ORG}/{repo}/compare/{base}...{head}?per_page=100",
             "--jq",
-            '.commits[] | [.sha, .commit.committer.date] | @tsv',
+            ".commits[] | [.sha, .commit.committer.date] | @tsv",
         ]
     )
     commits: list[CommitRef] = []
@@ -746,7 +764,9 @@ def compare_commits(repo: str, base: str, head: str) -> list[CommitRef]:
         sha, _, date = line.partition("\t")
         if not sha or not date:
             raise ProbeError(f"{repo}: malformed compare row: {line!r}")
-        commits.append(CommitRef(sha=sha, committed_at=_parse_ts(date, f"{repo}: commit {sha}")))
+        commits.append(
+            CommitRef(sha=sha, committed_at=_parse_ts(date, f"{repo}: commit {sha}"))
+        )
     if len(commits) < total:
         raise ProbeError(
             f"{repo}: compare {base}...{head} reported {total} commits but only "
@@ -781,7 +801,7 @@ def fetch_path_commits(
     keys = [(repo, path) for repo, _, path, _ in wanted]
     collected: dict[tuple[str, str], set[str]] = {key: set() for key in keys}
     failed: dict[tuple[str, str], str] = {}
-    cursors: dict[tuple[str, str], str | None] = {key: None for key in keys}
+    cursors: dict[tuple[str, str], str | None] = dict.fromkeys(keys)
     by_key = {(repo, path): (branch, since) for repo, branch, path, since in wanted}
     pending = list(keys)
 
@@ -804,7 +824,9 @@ def fetch_path_commits(
                 f"pageInfo {{ hasNextPage endCursor }} nodes {{ oid }} }} }} }} }}"
             )
         payload = _gh_graphql("query { " + " ".join(parts) + " }")
-        errors = _graphql_alias_errors(payload, {a: f"{k[0]}:{k[1]}" for a, k in aliases.items()})
+        errors = _graphql_alias_errors(
+            payload, {a: f"{k[0]}:{k[1]}" for a, k in aliases.items()}
+        )
         data = payload.get("data") or {}
 
         still_pending: list[tuple[str, str]] = []
@@ -1037,7 +1059,8 @@ def evaluate(
         # rather than against none. Reporting it against none would leave the
         # run looking like a clean sweep of an empty roster.
         return [
-            Finding(repo=r.repo, verdict=VERDICT_ERROR, detail=str(exc)) for r in targets
+            Finding(repo=r.repo, verdict=VERDICT_ERROR, detail=str(exc))
+            for r in targets
         ]
     for policy_repo in targets:
         if policy_repo.repo in probe_errors:
@@ -1135,8 +1158,10 @@ def run_positive_control(policy: Policy, *, now: datetime) -> ControlResult:
 
     A zero-row sweep is indistinguishable from a broken one, so a GREEN verdict
     is only reported once this control has produced rows. The injected base is
-    each repo's EARLIEST release tag — a real ref, months or years old, whose
-    range therefore contains packaged commits by construction. If the control
+    a release tag ``_CONTROL_RELEASES_BACK`` releases behind the newest (the
+    earliest tag for a repo with fewer) — a real ref whose
+    range therefore contains packaged commits by construction and stays inside
+    the pagination bound. If the control
     also returns zero, the sweep is blind and the run fails.
     """
     subject: RepoPolicy | None = None
@@ -1149,9 +1174,14 @@ def run_positive_control(policy: Policy, *, now: datetime) -> ControlResult:
             reasons.append(str(exc))
             continue
         if len(tags) < 2:
-            reasons.append(f"{policy_repo.repo}: only {len(tags)} release tag(s), unusable as a control")
+            reasons.append(
+                f"{policy_repo.repo}: only {len(tags)} release tag(s), unusable as a control"
+            )
             continue
-        subject, base = policy_repo, tags[0]
+        subject, base = (
+            policy_repo,
+            tags[max(0, len(tags) - 1 - _CONTROL_RELEASES_BACK)],
+        )
         break
 
     if subject is None or base is None:
@@ -1168,7 +1198,7 @@ def run_positive_control(policy: Policy, *, now: datetime) -> ControlResult:
         return ControlResult(
             passed=False,
             detail=(
-                f"control FAILED: {subject.repo} measured against its earliest tag {base} "
+                f"control FAILED: {subject.repo} measured against known-old tag {base} "
                 f"produced no stale row ({rows[0].verdict if rows else 'no rows'}: "
                 f"{rows[0].detail if rows else ''}) — the sweep cannot see staleness, "
                 "so today's zero proves nothing"
@@ -1179,7 +1209,7 @@ def run_positive_control(policy: Policy, *, now: datetime) -> ControlResult:
     return ControlResult(
         passed=True,
         detail=(
-            f"control PASSED: {subject.repo} vs its earliest tag {base} => "
+            f"control PASSED: {subject.repo} vs known-old tag {base} => "
             f"{row.unreleased_packaged} packaged commit(s), oldest {row.oldest_packaged_at}"
         ),
         rows=rows,
@@ -1216,7 +1246,9 @@ def render_table(findings: list[Finding]) -> str:
             age,
         )
         lines.append(
-            " ".join(cell.ljust(width) for cell, (_, width) in zip(cells, _COLUMNS)).rstrip()
+            " ".join(
+                cell.ljust(width) for cell, (_, width) in zip(cells, _COLUMNS)
+            ).rstrip()
         )
     for finding in findings:
         if finding.verdict != VERDICT_FRESH:
@@ -1238,8 +1270,12 @@ def _write_step_summary(text: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY, help="policy YAML path")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--policy", type=Path, default=DEFAULT_POLICY, help="policy YAML path"
+    )
     parser.add_argument(
         "--baseline",
         type=Path,
@@ -1267,7 +1303,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override the policy's staleness window (hours)",
     )
-    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON"
+    )
     parser.add_argument(
         "--positive-control",
         action="store_true",
@@ -1322,7 +1360,8 @@ def main(argv: list[str] | None = None) -> int:
         unknown = [name for name in args.repo if name not in by_name]
         if unknown:
             print(
-                f"ERROR: not in the publishing set: {', '.join(unknown)}", file=sys.stderr
+                f"ERROR: not in the publishing set: {', '.join(unknown)}",
+                file=sys.stderr,
             )
             return 2
         selected = tuple(by_name[name] for name in args.repo)
@@ -1393,7 +1432,11 @@ def main(argv: list[str] | None = None) -> int:
                         (f.quota_reset_at for f in quota if f.quota_reset_at), ""
                     ),
                     "positive_control": (
-                        {"ran": True, "passed": control.passed, "detail": control.detail}
+                        {
+                            "ran": True,
+                            "passed": control.passed,
+                            "detail": control.detail,
+                        }
                         if control is not None
                         else {"ran": False, "passed": None, "detail": "not required"}
                     ),
@@ -1429,7 +1472,9 @@ def main(argv: list[str] | None = None) -> int:
                 "to the saturated bucket. Wait for the reset."
             )
         if errors:
-            print(f"REFUSED: {len(errors)} repo(s) could not be read. A blind sweep is not a pass.")
+            print(
+                f"REFUSED: {len(errors)} repo(s) could not be read. A blind sweep is not a pass."
+            )
         if stale:
             print(
                 f"FAIL: {len(stale)} repo(s) carry unreleased packaged-source commits older "
