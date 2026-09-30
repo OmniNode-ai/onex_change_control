@@ -47,8 +47,14 @@ def _identity(
 @pytest.mark.unit
 def test_live_baseline_is_exact_seed_census_and_deterministic() -> None:
     baseline = ratchet.load_baseline(_REPO_ROOT)
-    assert len(baseline.findings) == 1142
-    assert len({item.path for item in baseline.findings}) == 1055
+    # The ledger only shrinks: a finding leaves it when the locked core scanner
+    # stops reporting it.  The seed census stays frozen in the metadata.
+    assert ratchet._SEED_FINDING_COUNT == 1142
+    assert ratchet._SEED_RECEIPT_PATH_COUNT == 1055
+    assert len(baseline.findings) <= ratchet._SEED_FINDING_COUNT
+    assert len({item.path for item in baseline.findings}) <= (
+        ratchet._SEED_RECEIPT_PATH_COUNT
+    )
     assert list(baseline.findings) == sorted(baseline.findings)
 
 
@@ -173,7 +179,9 @@ def test_base_ledger_growth_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> Non
         lambda _root, _base: ratchet.Baseline((base_identity,)),
     )
     monkeypatch.setattr(
-        ratchet, "_validate_provenance", lambda _root, _baseline: frozenset()
+        ratchet,
+        "_validate_provenance",
+        lambda _root, _baseline, **_kwargs: frozenset(),
     )
     with pytest.raises(ratchet.RatchetError, match="growth is forbidden"):
         ratchet._assert_base_monotonic(
@@ -608,8 +616,9 @@ def test_ledger_containing_base_uses_normal_non_growth_routing(
     validated: list[ratchet.Baseline] = []
 
     def record_provenance(
-        _root: Path, value: ratchet.Baseline
+        _root: Path, value: ratchet.Baseline, *, retained_by: ratchet.Baseline
     ) -> frozenset[ratchet.FindingIdentity]:
+        assert retained_by == baseline
         validated.append(value)
         return frozenset({identity})
 
@@ -843,3 +852,46 @@ def test_corpus_rejects_executable_receipt_before_scanning(tmp_path: Path) -> No
 
     with pytest.raises(ratchet.RatchetError, match="regular non-executable YAML"):
         ratchet.current_identities(root)
+
+
+def _shed_identity_pair() -> tuple[Any, Any]:
+    known = _identity()
+    shed = _identity(
+        path="drift/dod_receipts/OMN-2/dod-001/command.yaml",
+        sha256="c" * 64,
+        blob_oid="d" * 40,
+    )
+    return known, shed
+
+
+@pytest.mark.unit
+def test_base_provenance_tolerates_identity_shed_by_current_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known, shed = _shed_identity_pair()
+    monkeypatch.setattr(ratchet, "origin_identities", lambda _root: frozenset({known}))
+    monkeypatch.setattr(
+        ratchet,
+        "_baseline_at_commit",
+        lambda _root, _base: ratchet.Baseline((known, shed)),
+    )
+    ratchet._assert_base_monotonic(_REPO_ROOT, ratchet.Baseline((known,)), "a" * 40)
+
+
+@pytest.mark.unit
+def test_base_provenance_rejects_unknown_identity_retained_by_current_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known, shed = _shed_identity_pair()
+    monkeypatch.setattr(ratchet, "origin_identities", lambda _root: frozenset({known}))
+    monkeypatch.setattr(
+        ratchet,
+        "_baseline_at_commit",
+        lambda _root, _base: ratchet.Baseline((known, shed)),
+    )
+    with pytest.raises(
+        ratchet.RatchetError, match="not committed by the immutable origin tree"
+    ):
+        ratchet._assert_base_monotonic(
+            _REPO_ROOT, ratchet.Baseline((known, shed)), "a" * 40
+        )

@@ -967,11 +967,23 @@ def current_identities(repo_root: Path) -> frozenset[FindingIdentity]:
 
 
 def _validate_provenance(
-    repo_root: Path, baseline: Baseline
+    repo_root: Path,
+    baseline: Baseline,
+    *,
+    retained_by: Baseline | None = None,
 ) -> frozenset[FindingIdentity]:
-    """Verify every ledger line's origin tree, object, raw-byte, and rule commitment."""
+    """Verify every ledger line's origin tree, object, raw-byte, and rule commitment.
+
+    ``retained_by`` narrows the check to the identities a successor ledger still
+    carries.  A base ledger line that the locked core scanner has stopped
+    reporting is a legitimate shrink candidate, so it only fails when the
+    successor keeps it; otherwise a scanner-side fix would leave the committed
+    base permanently unprovable and no PR could remove the stale lines.
+    """
     origin = origin_identities(repo_root)
     unknown = baseline.identities - origin
+    if retained_by is not None:
+        unknown &= retained_by.identities
     if unknown:
         msg = "baseline contains findings not committed by the immutable origin tree"
         raise RatchetError(_identity_report(msg, unknown))
@@ -1017,7 +1029,7 @@ def _assert_base_monotonic(
         msg = "receipt-honesty bootstrap sealed: base must contain ledger"
         raise RatchetError(msg)
 
-    _validate_provenance(repo_root, committed_baseline)
+    _validate_provenance(repo_root, committed_baseline, retained_by=baseline)
     growth = baseline.identities - committed_baseline.identities
     if growth:
         raise RatchetError(
