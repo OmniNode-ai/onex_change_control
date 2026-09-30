@@ -1,31 +1,28 @@
 ---
-schema_version: "1.0.0"
-ticket_id: "OMN-20136"
+schema_version: 1.0.0
+ticket_id: OMN-20136
 title: "Lock the OCC receipt-honesty ratchet to the uv.lock core scanner"
-summary: |-
-  The Receipt Honesty Gate stops checking out omnibase_core dev and runs the
-  receipt-honesty scanner from the omnibase-core distribution pinned by this
-  repo's uv.lock, so CI and pre-commit run one scanner. This is CI tooling
-  internal to onex_change_control; it changes no cross-repository seam or
-  public interface.
+summary: Receipt Honesty CI and local pre-commit resolve the scanner from the same omnibase-core registry
+  artifact pinned by OCC uv.lock. A Core dev-only change cannot affect OCC until OCC adopts the locked
+  artifact and its receipt ledger together; wiring checks fail closed on source mismatch.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
+contract_completeness: ENRICHED
 evidence_requirements:
-  - kind: "ci"
-    description: >-
-      The ratchet's wiring check resolves the scanner from the locked omnibase-core distribution and passes.
-    command: >-
-      uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet --check-wiring
-  - kind: "ci"
-    description: >-
-      The honesty-gate job in ci.yml sets UV_LOCKED so a stale lock fails closed.
-    command: >-
-      grep -cF 'UV_LOCKED: "1"' .github/workflows/ci.yml
+  - kind: tests
+    description: Run the exact locked-source, adoption/ledger, and wiring falsifiers for this change.
+    command: uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py -q -k same_scanner_source_ci_and_precommit_use_locked_artifact
+      && uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py -q -k 'scanner_adoption_is_atomic_and_source_mismatch_fails_closed
+      or live_set_equality_reports_new_and_stale_for_one_byte_change or base_ledger_growth_is_forbidden'
+      && uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet --check-wiring
+  - kind: ci
+    description: The ordinary pull-request checks pass on the immutable source head.
+    command: gh pr checks 11901 --repo OmniNode-ai/onex_change_control
 emergency_bypass:
   enabled: false
-  justification: ""
-  follow_up_ticket_id: ""
+  justification: ''
+  follow_up_ticket_id: ''
 dod_evidence:
   - id: "ratchet-wiring-locked-core-scanner"
     description: |-
@@ -48,3 +45,25 @@ dod_evidence:
       - check_type: "command"
         check_value: >-
           grep -cF 'UV_LOCKED: "1"' .github/workflows/ci.yml
+  - id: dod-same-locked-scanner-source
+    description: 'AC1: Receipt Honesty CI and corpus pre-commit resolve the scanner from the same Core
+      registry artifact pinned in OCC uv.lock; the wiring regression rejects source or lock disagreement.'
+    source: manual
+    execution_scope: hosted_and_local
+    status: pending
+    checks:
+      - check_type: test_passes
+        check_value: uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py -q -k
+          same_scanner_source_ci_and_precommit_use_locked_artifact
+  - id: dod-atomic-core-adoption-and-ledger
+    description: 'AC2: A Core development-only scanner change cannot alter OCC''s verdict. The locked-source
+      mismatch/shadow test is paired with the live-set equality and base-ledger-growth tests, which require
+      the adopted scanner output to equal the committed ledger without allowing ledger growth.'
+    source: manual
+    execution_scope: hosted_and_local
+    status: pending
+    checks:
+      - check_type: test_passes
+        check_value: uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py -q -k
+          'scanner_adoption_is_atomic_and_source_mismatch_fails_closed or live_set_equality_reports_new_and_stale_for_one_byte_change
+          or base_ledger_growth_is_forbidden'
