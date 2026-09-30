@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -12,6 +13,9 @@ from typing import Any
 
 import pytest
 import yaml
+from omnibase_core.validators.no_unguarded_git_subprocess import (
+    scrub_git_location_env,
+)
 
 from onex_change_control.validation import receipt_honesty_ratchet as ratchet
 
@@ -173,13 +177,16 @@ def test_base_ledger_growth_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> Non
         lambda _root, _base: ratchet.Baseline((base_identity,)),
     )
     monkeypatch.setattr(
-        ratchet, "_validate_provenance", lambda _root, _baseline: frozenset()
+        ratchet,
+        "_validate_provenance",
+        lambda _root, _baseline, **_kwargs: frozenset(),
     )
     with pytest.raises(ratchet.RatchetError, match="growth is forbidden"):
         ratchet._assert_base_monotonic(
             _REPO_ROOT,
             ratchet.Baseline((base_identity, grown_identity)),
             "a" * 40,
+            live=frozenset(),
         )
 
 
@@ -333,6 +340,7 @@ def _git_command(repo: Path, *args: str) -> str:
         capture_output=True,
         text=True,
         check=True,
+        env=scrub_git_location_env(os.environ),
     )
     return completed.stdout.strip()
 
@@ -340,13 +348,17 @@ def _git_command(repo: Path, *args: str) -> str:
 def _temporary_git_history(tmp_path: Path) -> tuple[Path, str]:
     remote = tmp_path / "origin.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     checkout = tmp_path / "checkout"
     subprocess.run(
         ["git", "init", "--initial-branch", "main", str(checkout)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(checkout, "config", "user.email", "ratchet@example.invalid")
     _git_command(checkout, "config", "user.name", "Receipt Ratchet Test")
@@ -420,7 +432,12 @@ def _single_rule_legacy_identity() -> Any:
 
 def _temporary_changed_receipt_repo(tmp_path: Path) -> tuple[Path, Any, bytes]:
     repo = tmp_path / "changed-receipt"
-    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", str(repo)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
+    )
     identity = _single_rule_legacy_identity()
     raw = (_REPO_ROOT / identity.path).read_bytes()
     receipt = repo / identity.path
@@ -553,6 +570,7 @@ def _missing_ledger_base_with_staged_attempt(
         ["git", "init", "--initial-branch", "main", str(repo)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(repo, "config", "user.email", "ratchet@example.invalid")
     _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
@@ -596,7 +614,9 @@ def test_missing_ledger_base_is_sealed_despite_staged_genesis_attempt(
     with pytest.raises(
         ratchet.RatchetError, match="bootstrap sealed: base must contain ledger"
     ):
-        ratchet._assert_base_monotonic(repo, ratchet.Baseline(()), base)
+        ratchet._assert_base_monotonic(
+            repo, ratchet.Baseline(()), base, live=frozenset()
+        )
 
 
 @pytest.mark.unit
@@ -608,14 +628,20 @@ def test_ledger_containing_base_uses_normal_non_growth_routing(
     validated: list[ratchet.Baseline] = []
 
     def record_provenance(
-        _root: Path, value: ratchet.Baseline
+        _root: Path,
+        value: ratchet.Baseline,
+        *,
+        live: frozenset[ratchet.FindingIdentity],
     ) -> frozenset[ratchet.FindingIdentity]:
+        assert live == frozenset({identity})
         validated.append(value)
-        return frozenset({identity})
+        return frozenset()
 
     monkeypatch.setattr(ratchet, "_baseline_at_commit", lambda *_args: baseline)
     monkeypatch.setattr(ratchet, "_validate_provenance", record_provenance)
-    ratchet._assert_base_monotonic(_REPO_ROOT, baseline, "a" * 40)
+    ratchet._assert_base_monotonic(
+        _REPO_ROOT, baseline, "a" * 40, live=frozenset({identity})
+    )
     assert validated == [baseline]
 
 
@@ -649,13 +675,17 @@ def test_local_corpus_base_uses_origin_head_not_feature_upstream(
 ) -> None:
     remote = tmp_path / "origin.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     repo = tmp_path / "checkout"
     subprocess.run(
         ["git", "init", "--initial-branch", "dev", str(repo)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(repo, "config", "user.email", "ratchet@example.invalid")
     _git_command(repo, "config", "user.name", "Receipt Ratchet Test")
@@ -683,13 +713,17 @@ def test_local_corpus_base_hydrates_missing_origin_head_from_remote_default(
 ) -> None:
     remote = tmp_path / "origin.git"
     subprocess.run(
-        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+        ["git", "init", "--bare", str(remote)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     seed = tmp_path / "seed"
     subprocess.run(
         ["git", "init", "--initial-branch", "dev", str(seed)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(seed, "config", "user.email", "ratchet@example.invalid")
     _git_command(seed, "config", "user.name", "Receipt Ratchet Test")
@@ -705,6 +739,7 @@ def test_local_corpus_base_hydrates_missing_origin_head_from_remote_default(
         cwd=remote,
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
 
     checkout = tmp_path / "checkout"
@@ -712,6 +747,7 @@ def test_local_corpus_base_hydrates_missing_origin_head_from_remote_default(
         ["git", "clone", "--branch", "feature", str(remote), str(checkout)],
         check=True,
         capture_output=True,
+        env=scrub_git_location_env(os.environ),
     )
     _git_command(checkout, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
 
@@ -762,7 +798,12 @@ def test_changed_index_batch_uses_constant_git_subprocesses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "index-batch"
-    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", str(repo)],
+        check=True,
+        capture_output=True,
+        env=scrub_git_location_env(os.environ),
+    )
     paths: list[PurePosixPath] = []
     for number in range(64):
         path = PurePosixPath(f"drift/dod_receipts/OMN-1/{number:03d}.yaml")
@@ -843,3 +884,101 @@ def test_corpus_rejects_executable_receipt_before_scanning(tmp_path: Path) -> No
 
     with pytest.raises(ratchet.RatchetError, match="regular non-executable YAML"):
         ratchet.current_identities(root)
+
+
+_RETIRED_RAW = b"status: PASS\nrun: check for TODO FIXME HACK...Passed\n"
+
+
+def _retired_identity_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    origin_blob: str | None = None,
+    origin_bytes: bytes = _RETIRED_RAW,
+) -> tuple[Any, Any]:
+    """Pin the origin scan and origin tree around a known and a retired line."""
+    known = _identity()
+    retired = _identity(
+        path="drift/dod_receipts/OMN-2/dod-001/command.yaml",
+        rule="PENDING_IN_PASS",
+        sha256=hashlib.sha256(_RETIRED_RAW).hexdigest(),
+        blob_oid="d" * 40,
+    )
+    blobs = {
+        known.path: known.blob_oid,
+        retired.path: origin_blob or retired.blob_oid,
+    }
+    monkeypatch.setattr(ratchet, "origin_identities", lambda _root: frozenset({known}))
+    monkeypatch.setattr(ratchet, "_tree_blobs", lambda _root, _commit: blobs)
+    monkeypatch.setattr(ratchet, "_git", lambda *_args, **_kwargs: origin_bytes)
+    return known, retired
+
+
+@pytest.mark.unit
+def test_scanner_retired_line_is_tolerated_in_ledger_and_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known, retired = _retired_identity_fixture(monkeypatch)
+    baseline = ratchet.Baseline((known, retired))
+    live = frozenset({known})
+
+    assert ratchet._validate_provenance(_REPO_ROOT, baseline, live=live) == {retired}
+    ratchet._assert_live_equals_baseline(live, baseline, retired=frozenset({retired}))
+    monkeypatch.setattr(ratchet, "_baseline_at_commit", lambda *_args: baseline)
+    ratchet._assert_base_monotonic(_REPO_ROOT, baseline, "a" * 40, live=live)
+    # The ledger may later shed the retired line without tripping the base.
+    ratchet._assert_base_monotonic(
+        _REPO_ROOT, ratchet.Baseline((known,)), "a" * 40, live=live
+    )
+
+
+@pytest.mark.unit
+def test_unknown_line_still_reported_live_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known, retired = _retired_identity_fixture(monkeypatch)
+    with pytest.raises(
+        ratchet.RatchetError, match="not committed by the immutable origin tree"
+    ):
+        ratchet._validate_provenance(
+            _REPO_ROOT,
+            ratchet.Baseline((known, retired)),
+            live=frozenset({known, retired}),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("origin_blob", "origin_bytes"),
+    [("e" * 40, _RETIRED_RAW), (None, b"status: PASS\nedited\n")],
+    ids=["foreign-origin-blob", "changed-origin-bytes"],
+)
+def test_unknown_line_without_exact_origin_bytes_is_refused(
+    monkeypatch: pytest.MonkeyPatch, origin_blob: str | None, origin_bytes: bytes
+) -> None:
+    known, retired = _retired_identity_fixture(
+        monkeypatch, origin_blob=origin_blob, origin_bytes=origin_bytes
+    )
+    baseline = ratchet.Baseline((known, retired))
+    with pytest.raises(
+        ratchet.RatchetError, match="not committed by the immutable origin tree"
+    ):
+        ratchet._validate_provenance(_REPO_ROOT, baseline, live=frozenset({known}))
+    monkeypatch.setattr(ratchet, "_baseline_at_commit", lambda *_args: baseline)
+    with pytest.raises(
+        ratchet.RatchetError, match="not committed by the immutable origin tree"
+    ):
+        ratchet._assert_base_monotonic(
+            _REPO_ROOT, ratchet.Baseline((known,)), "a" * 40, live=frozenset({known})
+        )
+
+
+@pytest.mark.unit
+def test_repaired_receipt_keeps_its_origin_finding_and_reads_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known, _retired = _retired_identity_fixture(monkeypatch)
+    baseline = ratchet.Baseline((known,))
+    retired = ratchet._validate_provenance(_REPO_ROOT, baseline, live=frozenset())
+    assert retired == frozenset()
+    with pytest.raises(ratchet.RatchetError, match="stale ledger"):
+        ratchet._assert_live_equals_baseline(frozenset(), baseline, retired=retired)
