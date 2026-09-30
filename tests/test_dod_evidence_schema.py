@@ -318,7 +318,11 @@ class TestDodEvidenceRoundtripYaml:
                         {
                             "check_type": "file_exists",
                             "check_value": "config/*.yaml",
-                        }
+                        },
+                        {
+                            "check_type": "command",
+                            "check_value": "uv run python -c 'import config'",
+                        },
                     ],
                     "status": "pending",
                 },
