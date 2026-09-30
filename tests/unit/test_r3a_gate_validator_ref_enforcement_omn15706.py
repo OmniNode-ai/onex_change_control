@@ -41,7 +41,8 @@ Scope (operator ruling 2026-08-04, OMN-15689 comment 70b00b79 / cae2bf98):
 R3a covers exactly the gate-validator-ref class -- the omnibase_core /
 omnibase_compat checkouts consumed by the receipt-gate and OCC-eligibility
 validators in call-receipt-gate.yml, call-occ-preflight.yml, ci.yml's
-honesty-gate + append-only-gate jobs, and validate-validator-requirements.yml.
+append-only-gate job (honesty-gate until OMN-20136), and
+validate-validator-requirements.yml.
 The 10-item cross-repo reusable-workflow (`uses:`) pin inventory documented in
 that ticket (omniclaude zone-filter/skip-guard callers, omnibase_core
 zone-filter/validate-docs callers, the omnimarket merge-hold-gate pin, and the
@@ -63,13 +64,14 @@ import yaml
 WORKFLOWS_DIR = Path(".github/workflows")
 
 # (workflow file, job key) pairs that carry an in-scope `validator_ref` step,
-# per the R3a-scoped inventory above. Each entry names exactly one job; ci.yml
-# carries two distinct in-scope jobs (honesty-gate, append-only-gate).
+# per the R3a-scoped inventory above. Each entry names exactly one job.
+# ci.yml's honesty-gate left this inventory in OMN-20136: it no longer checks
+# out omnibase_core at all -- its scanner is the uv.lock-pinned registry
+# distribution (see test_honesty_gate_has_no_live_core_checkout below).
 GATE_JOBS: list[tuple[str, str]] = [
     ("call-receipt-gate.yml", "verify"),
     ("call-occ-preflight.yml", "occ-preflight"),
     ("validate-validator-requirements.yml", "validate-validator-requirements"),
-    ("ci.yml", "honesty-gate"),
     ("ci.yml", "append-only-gate"),
 ]
 
@@ -144,6 +146,24 @@ def test_gate_job_inventory_has_no_unaccounted_validator_ref_steps() -> None:
                     "landing (a new gate-validator-ref site with no enforcement "
                     "coverage is exactly the gap R3a exists to close)."
                 )
+
+
+@pytest.mark.unit
+def test_honesty_gate_has_no_live_core_checkout() -> None:
+    """OMN-20136: honesty-gate runs the uv.lock-pinned scanner, not a core checkout."""
+    job = _load_workflow(WORKFLOWS_DIR / "ci.yml")["jobs"]["honesty-gate"]
+    for step in job.get("steps", []):
+        repo = (step.get("with") or {}).get("repository")
+        assert repo not in GATE_DEPENDENCY_REPOS, (
+            f"ci.yml honesty-gate checks out {repo}; the receipt-honesty scanner "
+            "must come from the OCC uv.lock (OMN-20136), not a live checkout."
+        )
+        assert "omnibase_core_source" not in str(step.get("env") or {}), (
+            "ci.yml honesty-gate points PYTHONPATH at a core source checkout"
+        )
+    assert str((job.get("env") or {}).get("UV_LOCKED")) == "1", (
+        "ci.yml honesty-gate must set UV_LOCKED=1 so a stale lock fails closed"
+    )
 
 
 # ---------------------------------------------------------------------------
