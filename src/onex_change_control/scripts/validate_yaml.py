@@ -31,6 +31,9 @@ from onex_change_control.kafka.governance_emitter import emit_governance_check_c
 from onex_change_control.models import ModelDayClose, ModelTicketContract
 from onex_change_control.models.model_dod_check import ModelDodEvidenceItem
 from onex_change_control.validation.contract_shape_v1 import V1_DIR
+from onex_change_control.validation.legacy_sole_file_exists import (
+    LEGACY_SOLE_FILE_EXISTS_ITEMS,
+)
 
 # CLI version (increment when CLI logic changes)
 CLI_VERSION = "1.0.0"
@@ -280,6 +283,55 @@ def withhold_unreleased_binds_ac(data: dict[str, object]) -> dict[str, object]:
     return {**data, "dod_evidence": withheld}
 
 
+def _is_sole_file_exists_item(item: object) -> bool:
+    """Whether a raw ``dod_evidence`` item's only check type is ``file_exists``."""
+    if not isinstance(item, dict):
+        return False
+    checks = item.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return False
+    return all(
+        isinstance(check, dict) and check.get("check_type") == "file_exists"
+        for check in checks
+    )
+
+
+def withhold_legacy_sole_file_exists(
+    data: dict[str, object], contract_id: str
+) -> dict[str, object]:
+    """Hide the checks of frozen legacy sole-``file_exists`` items from core.
+
+    omnibase_core 0.47.26 refuses a ``dod_evidence`` item whose only check type
+    is ``file_exists`` (``DOD_EVIDENCE_FILE_EXISTS_SOLE_CHECK``). The contracts
+    named in ``LEGACY_SOLE_FILE_EXISTS_ITEMS`` predate that rule and are
+    append-only history, so for exactly those ``<ticket>:<item id>`` pairs core
+    is handed the item without ``checks`` (valid in core) and every other field
+    is still validated. An item outside the baseline, or one in it that is no
+    longer sole ``file_exists``, is passed through untouched and core refuses it.
+
+    This is a burn-down baseline, not a loosening for new work: see
+    ``onex_change_control.validation.legacy_sole_file_exists``.
+    """
+    items = data.get("dod_evidence")
+    if not isinstance(items, list):
+        return data
+    withheld: list[object] = []
+    changed = False
+    for item in items:
+        if (
+            isinstance(item, dict)
+            and f"{contract_id}:{item.get('id')}" in LEGACY_SOLE_FILE_EXISTS_ITEMS
+            and _is_sole_file_exists_item(item)
+        ):
+            withheld.append({k: v for k, v in item.items() if k != "checks"})
+            changed = True
+        else:
+            withheld.append(item)
+    if not changed:
+        return data
+    return {**data, "dod_evidence": withheld}
+
+
 def _load_yaml_file(file_path: Path) -> dict[str, object] | None:
     """Load and parse a YAML file.
 
@@ -376,6 +428,7 @@ def validate_file(file_path: Path) -> bool:
     try:
         if schema_type != "day_close":
             data = withhold_unreleased_binds_ac(data)
+            data = withhold_legacy_sole_file_exists(data, file_path.stem)
         model_class.model_validate(data)
     except ValidationError as e:
         print_error(f"Validation failed for '{file_path}' ({schema_type}):")
