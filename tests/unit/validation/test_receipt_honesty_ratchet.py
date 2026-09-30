@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -50,14 +51,8 @@ def _identity(
 @pytest.mark.unit
 def test_live_baseline_is_exact_seed_census_and_deterministic() -> None:
     baseline = ratchet.load_baseline(_REPO_ROOT)
-    # The ledger only shrinks: a finding leaves it when the locked core scanner
-    # stops reporting it.  The seed census stays frozen in the metadata.
-    assert ratchet._SEED_FINDING_COUNT == 1142
-    assert ratchet._SEED_RECEIPT_PATH_COUNT == 1055
-    assert len(baseline.findings) <= ratchet._SEED_FINDING_COUNT
-    assert len({item.path for item in baseline.findings}) <= (
-        ratchet._SEED_RECEIPT_PATH_COUNT
-    )
+    assert len(baseline.findings) == 1142
+    assert len({item.path for item in baseline.findings}) == 1055
     assert list(baseline.findings) == sorted(baseline.findings)
 
 
@@ -191,6 +186,7 @@ def test_base_ledger_growth_is_forbidden(monkeypatch: pytest.MonkeyPatch) -> Non
             _REPO_ROOT,
             ratchet.Baseline((base_identity, grown_identity)),
             "a" * 40,
+            live=frozenset(),
         )
 
 
@@ -618,7 +614,9 @@ def test_missing_ledger_base_is_sealed_despite_staged_genesis_attempt(
     with pytest.raises(
         ratchet.RatchetError, match="bootstrap sealed: base must contain ledger"
     ):
-        ratchet._assert_base_monotonic(repo, ratchet.Baseline(()), base)
+        ratchet._assert_base_monotonic(
+            repo, ratchet.Baseline(()), base, live=frozenset()
+        )
 
 
 @pytest.mark.unit
@@ -630,15 +628,20 @@ def test_ledger_containing_base_uses_normal_non_growth_routing(
     validated: list[ratchet.Baseline] = []
 
     def record_provenance(
-        _root: Path, value: ratchet.Baseline, *, retained_by: ratchet.Baseline
+        _root: Path,
+        value: ratchet.Baseline,
+        *,
+        live: frozenset[ratchet.FindingIdentity],
     ) -> frozenset[ratchet.FindingIdentity]:
-        assert retained_by == baseline
+        assert live == frozenset({identity})
         validated.append(value)
-        return frozenset({identity})
+        return frozenset()
 
     monkeypatch.setattr(ratchet, "_baseline_at_commit", lambda *_args: baseline)
     monkeypatch.setattr(ratchet, "_validate_provenance", record_provenance)
-    ratchet._assert_base_monotonic(_REPO_ROOT, baseline, "a" * 40)
+    ratchet._assert_base_monotonic(
+        _REPO_ROOT, baseline, "a" * 40, live=frozenset({identity})
+    )
     assert validated == [baseline]
 
 
@@ -883,44 +886,99 @@ def test_corpus_rejects_executable_receipt_before_scanning(tmp_path: Path) -> No
         ratchet.current_identities(root)
 
 
-def _shed_identity_pair() -> tuple[Any, Any]:
+_RETIRED_RAW = b"status: PASS\nrun: check for TODO FIXME HACK...Passed\n"
+
+
+def _retired_identity_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    origin_blob: str | None = None,
+    origin_bytes: bytes = _RETIRED_RAW,
+) -> tuple[Any, Any]:
+    """Pin the origin scan and origin tree around a known and a retired line."""
     known = _identity()
-    shed = _identity(
+    retired = _identity(
         path="drift/dod_receipts/OMN-2/dod-001/command.yaml",
-        sha256="c" * 64,
+        rule="PENDING_IN_PASS",
+        sha256=hashlib.sha256(_RETIRED_RAW).hexdigest(),
         blob_oid="d" * 40,
     )
-    return known, shed
+    blobs = {
+        known.path: known.blob_oid,
+        retired.path: origin_blob or retired.blob_oid,
+    }
+    monkeypatch.setattr(ratchet, "origin_identities", lambda _root: frozenset({known}))
+    monkeypatch.setattr(ratchet, "_tree_blobs", lambda _root, _commit: blobs)
+    monkeypatch.setattr(ratchet, "_git", lambda *_args, **_kwargs: origin_bytes)
+    return known, retired
 
 
 @pytest.mark.unit
-def test_base_provenance_tolerates_identity_shed_by_current_ledger(
+def test_scanner_retired_line_is_tolerated_in_ledger_and_base(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    known, shed = _shed_identity_pair()
-    monkeypatch.setattr(ratchet, "origin_identities", lambda _root: frozenset({known}))
-    monkeypatch.setattr(
-        ratchet,
-        "_baseline_at_commit",
-        lambda _root, _base: ratchet.Baseline((known, shed)),
+    known, retired = _retired_identity_fixture(monkeypatch)
+    baseline = ratchet.Baseline((known, retired))
+    live = frozenset({known})
+
+    assert ratchet._validate_provenance(_REPO_ROOT, baseline, live=live) == {retired}
+    ratchet._assert_live_equals_baseline(live, baseline, retired=frozenset({retired}))
+    monkeypatch.setattr(ratchet, "_baseline_at_commit", lambda *_args: baseline)
+    ratchet._assert_base_monotonic(_REPO_ROOT, baseline, "a" * 40, live=live)
+    # The ledger may later shed the retired line without tripping the base.
+    ratchet._assert_base_monotonic(
+        _REPO_ROOT, ratchet.Baseline((known,)), "a" * 40, live=live
     )
-    ratchet._assert_base_monotonic(_REPO_ROOT, ratchet.Baseline((known,)), "a" * 40)
 
 
 @pytest.mark.unit
-def test_base_provenance_rejects_unknown_identity_retained_by_current_ledger(
+def test_unknown_line_still_reported_live_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    known, shed = _shed_identity_pair()
-    monkeypatch.setattr(ratchet, "origin_identities", lambda _root: frozenset({known}))
-    monkeypatch.setattr(
-        ratchet,
-        "_baseline_at_commit",
-        lambda _root, _base: ratchet.Baseline((known, shed)),
+    known, retired = _retired_identity_fixture(monkeypatch)
+    with pytest.raises(
+        ratchet.RatchetError, match="not committed by the immutable origin tree"
+    ):
+        ratchet._validate_provenance(
+            _REPO_ROOT,
+            ratchet.Baseline((known, retired)),
+            live=frozenset({known, retired}),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("origin_blob", "origin_bytes"),
+    [("e" * 40, _RETIRED_RAW), (None, b"status: PASS\nedited\n")],
+    ids=["foreign-origin-blob", "changed-origin-bytes"],
+)
+def test_unknown_line_without_exact_origin_bytes_is_refused(
+    monkeypatch: pytest.MonkeyPatch, origin_blob: str | None, origin_bytes: bytes
+) -> None:
+    known, retired = _retired_identity_fixture(
+        monkeypatch, origin_blob=origin_blob, origin_bytes=origin_bytes
     )
+    baseline = ratchet.Baseline((known, retired))
+    with pytest.raises(
+        ratchet.RatchetError, match="not committed by the immutable origin tree"
+    ):
+        ratchet._validate_provenance(_REPO_ROOT, baseline, live=frozenset({known}))
+    monkeypatch.setattr(ratchet, "_baseline_at_commit", lambda *_args: baseline)
     with pytest.raises(
         ratchet.RatchetError, match="not committed by the immutable origin tree"
     ):
         ratchet._assert_base_monotonic(
-            _REPO_ROOT, ratchet.Baseline((known, shed)), "a" * 40
+            _REPO_ROOT, ratchet.Baseline((known,)), "a" * 40, live=frozenset({known})
         )
+
+
+@pytest.mark.unit
+def test_repaired_receipt_keeps_its_origin_finding_and_reads_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known, _retired = _retired_identity_fixture(monkeypatch)
+    baseline = ratchet.Baseline((known,))
+    retired = ratchet._validate_provenance(_REPO_ROOT, baseline, live=frozenset())
+    assert retired == frozenset()
+    with pytest.raises(ratchet.RatchetError, match="stale ledger"):
+        ratchet._assert_live_equals_baseline(frozenset(), baseline, retired=retired)

@@ -966,28 +966,57 @@ def current_identities(repo_root: Path) -> frozenset[FindingIdentity]:
     return _scan_directory_identities(repo_root, receipts_dir)
 
 
+def _scanner_retired(
+    repo_root: Path,
+    candidates: frozenset[FindingIdentity],
+    live: frozenset[FindingIdentity],
+) -> frozenset[FindingIdentity]:
+    """Return the ledger lines the locked core scanner itself has stopped reporting.
+
+    A line is retired only when all of these hold: the scanner reports it
+    neither at the frozen origin (the caller passes only such candidates) nor
+    in the live corpus, the origin tree still binds its path to its exact blob
+    OID, and that blob's raw bytes still hash to its SHA-256.  The receipt
+    bytes are then provably unchanged, so the only thing that moved is the
+    scanner's verdict on them.  A retired line hides no live finding: equality
+    still refuses every live identity the ledger lacks, and a repaired receipt
+    keeps its origin finding, so it still reads as a stale ledger line.
+    """
+    if not candidates:
+        return frozenset()
+    blobs = _tree_blobs(repo_root, _ORIGIN_COMMIT)
+    retired: set[FindingIdentity] = set()
+    for item in candidates:
+        if item in live or blobs.get(item.path) != item.blob_oid:
+            continue
+        raw = _git(repo_root, "cat-file", "blob", item.blob_oid)
+        if hashlib.sha256(raw).hexdigest() == item.sha256:
+            retired.add(item)
+    return frozenset(retired)
+
+
 def _validate_provenance(
     repo_root: Path,
     baseline: Baseline,
     *,
-    retained_by: Baseline | None = None,
+    live: frozenset[FindingIdentity],
 ) -> frozenset[FindingIdentity]:
     """Verify every ledger line's origin tree, object, raw-byte, and rule commitment.
 
-    ``retained_by`` narrows the check to the identities a successor ledger still
-    carries.  A base ledger line that the locked core scanner has stopped
-    reporting is a legitimate shrink candidate, so it only fails when the
-    successor keeps it; otherwise a scanner-side fix would leave the committed
-    base permanently unprovable and no PR could remove the stale lines.
+    Returns the ledger lines the scanner has retired (see ``_scanner_retired``).
+    The CI gate scans with omnibase_core at the base branch while pre-commit
+    scans with the locked release, so one ledger must hold under both until
+    OMN-20136 gives them one source; a scanner-side fix therefore retires lines
+    instead of making every ledger unprovable.
     """
     origin = origin_identities(repo_root)
     unknown = baseline.identities - origin
-    if retained_by is not None:
-        unknown &= retained_by.identities
+    retired = _scanner_retired(repo_root, unknown, live)
+    unknown -= retired
     if unknown:
         msg = "baseline contains findings not committed by the immutable origin tree"
         raise RatchetError(_identity_report(msg, unknown))
-    return origin
+    return retired
 
 
 def _identity_report(
@@ -1001,11 +1030,14 @@ def _identity_report(
 
 
 def _assert_live_equals_baseline(
-    live: frozenset[FindingIdentity], baseline: Baseline
+    live: frozenset[FindingIdentity],
+    baseline: Baseline,
+    *,
+    retired: frozenset[FindingIdentity] = frozenset(),
 ) -> None:
     """Reject both directions: no new/modified identity and no stale ledger line."""
     new = live - baseline.identities
-    stale = baseline.identities - live
+    stale = baseline.identities - live - retired
     if not new and not stale:
         return
     reports: list[str] = [
@@ -1022,6 +1054,8 @@ def _assert_base_monotonic(
     repo_root: Path,
     baseline: Baseline,
     base_commit: str,
+    *,
+    live: frozenset[FindingIdentity],
 ) -> None:
     """Forbid ledger growth and require every comparison base to carry the ledger."""
     committed_baseline = _baseline_at_commit(repo_root, base_commit)
@@ -1029,7 +1063,7 @@ def _assert_base_monotonic(
         msg = "receipt-honesty bootstrap sealed: base must contain ledger"
         raise RatchetError(msg)
 
-    _validate_provenance(repo_root, committed_baseline, retained_by=baseline)
+    _validate_provenance(repo_root, committed_baseline, live=live)
     growth = baseline.identities - committed_baseline.identities
     if growth:
         raise RatchetError(
@@ -1051,15 +1085,15 @@ def enforce_corpus(repo_root: Path, request: CiBaseRequest | None = None) -> Non
     if baseline != indexed_baseline:
         msg = "receipt-honesty baseline changed after working-tree validation"
         raise RatchetError(msg)
-    _validate_provenance(repo_root, baseline)
     live = current_identities(repo_root)
-    _assert_live_equals_baseline(live, baseline)
+    retired = _validate_provenance(repo_root, baseline, live=live)
+    _assert_live_equals_baseline(live, baseline, retired=retired)
     normalized_base = (
         resolve_ci_base(repo_root, request)
         if request is not None
         else resolve_local_base(repo_root)
     )
-    _assert_base_monotonic(repo_root, baseline, normalized_base)
+    _assert_base_monotonic(repo_root, baseline, normalized_base, live=live)
     sys.stdout.write(
         "RECEIPT HONESTY RATCHET PASSED: "
         f"{len(live)} findings across "
