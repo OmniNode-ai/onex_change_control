@@ -499,6 +499,9 @@ from typing import TYPE_CHECKING, NamedTuple
 import yaml
 from omnibase_core.enums.ticket.enum_receipt_status import EnumReceiptStatus
 from omnibase_core.models.contracts.ticket.model_dod_receipt import ModelDodReceipt
+from omnibase_core.models.contracts.ticket.model_receipt_supersession import (
+    ModelReceiptSupersession,
+)
 from omnibase_core.validation.validator_receipt_gate import (
     ContractEntryNotFoundError,
     compute_contract_entry_sha256,
@@ -1140,8 +1143,10 @@ _KNOWN_REPO_HINTS: frozenset[str] = frozenset(
         "knowledge-base",
         "knowledge-base-internal",
         "omniclaude",
+        "omniclaude-internal",
         "omnibase_core",
         "omnibase_infra",
+        "omnibase_internal",
         "omnibase_spi",
         "omnidash",
         "omnidash-archived",
@@ -1895,6 +1900,15 @@ def _receipt_binding_violations(
     return violations
 
 
+def _tombstone_errors(candidate: Path, raw: dict[str, object]) -> list[str]:
+    """Validate an invalidation through the shared supersession contract."""
+    try:
+        ModelReceiptSupersession.model_validate(raw)
+    except ValidationError as exc:
+        return [f"{candidate}: invalid tombstone supersession: {exc}"]
+    return []
+
+
 def _valid_supersession_replacement(
     receipt_path: Path,
     contracts_dir: Path,
@@ -1922,6 +1936,10 @@ def _valid_supersession_replacement(
         return False, [f"{candidate}: unreadable supersession YAML: {exc}"]
     if not isinstance(raw, dict):
         return False, [f"{candidate}: supersession YAML is not a mapping"]
+    if raw.get("tombstone") is True:
+        errors = _tombstone_errors(candidate, raw)
+        # A tombstone invalidates the key; it cannot carry a PASS replacement.
+        return not errors, errors
     replacement = raw.get("replacement")
     if not isinstance(replacement, dict):
         return False, [f"{candidate}: supersession has no mapping replacement"]
