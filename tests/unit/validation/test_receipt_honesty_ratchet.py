@@ -564,14 +564,19 @@ def _temporary_changed_receipt_repo(tmp_path: Path) -> tuple[Path, Any, bytes]:
         capture_output=True,
         env=scrub_git_location_env(os.environ),
     )
-    object_directory = subprocess.run(
-        ["git", "rev-parse", "--git-path", "objects"],
-        cwd=_REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-        env=scrub_git_location_env(os.environ),
-    ).stdout.strip()
+    # `--git-path` is relative to cwd in a plain checkout (".git/objects"); the
+    # alternates file needs an absolute path or it resolves inside the temp repo.
+    object_directory = (
+        _REPO_ROOT
+        / subprocess.run(
+            ["git", "rev-parse", "--git-path", "objects"],
+            cwd=_REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=scrub_git_location_env(os.environ),
+        ).stdout.strip()
+    )
     (repo / ".git" / "objects" / "info" / "alternates").write_text(
         f"{object_directory}\n", encoding="utf-8"
     )
