@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
 
 WORKFLOW_PATH = Path(".github/workflows/call-receipt-gate.yml")
@@ -71,3 +74,55 @@ def test_receipt_gate_caller_validates_pr_head_occ_evidence() -> None:
     assert "steps.evidence.outputs.contracts_dir" in receipt_gate_step["run"]
     assert "--receipts-dir" in receipt_gate_step["run"]
     assert "steps.evidence.outputs.receipts_dir" in receipt_gate_step["run"]
+
+
+@pytest.mark.parametrize(
+    "commit_texts", [[], ["fix(OMN-20315): bind late ticket; $(false)"]]
+)
+def test_receipt_gate_forwards_authenticated_snapshot_commit_texts(
+    tmp_path: Path, commit_texts: list[str]
+) -> None:
+    """Execute the caller step: late tickets bind through captured commit messages."""
+    steps = _load_workflow()["jobs"]["verify"]["steps"]
+    step = next(step for step in steps if step.get("name") == "Run Receipt-Gate")
+    for field, value in {
+        "body": "Evidence-Ticket: OMN-20315",
+        "title": "fix(OMN-20315): bounded evidence",
+        "branch": "jonah/omn-19626-caller-evidence",
+        "author": "onexbot-occ-writer[bot]",
+        "number": "12196",
+        "created_at": "2026-10-01T16:50:37Z",
+        "commit_texts": "".join(f"{text}\n" for text in commit_texts),
+    }.items():
+        (tmp_path / f"pr_{field}.txt").write_text(value, encoding="utf-8")
+    script = re.sub(
+        r'(/[^\s"]*/)(pr_\w+\.txt)',
+        lambda match: str(tmp_path / match[2]),
+        step["run"],
+    )
+    script = script.replace(
+        "${{ github.repository }}", "OmniNode-ai/onex_change_control"
+    )
+    script = re.sub(r"\$\{\{.*?\}\}", str(tmp_path), script)
+    script = script.replace(
+        '"$RECEIPT_GATE_PY" -m omnibase_core.validation.validator_receipt_gate_cli',
+        "capture_receipt_gate",
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-e",
+            "-c",
+            "capture_receipt_gate() { printf '%s\\0' \"$@\"; }\n" + script,
+        ],
+        capture_output=True,
+        check=True,
+    )
+    args = result.stdout.decode().split("\0")[:-1]
+    forwarded = [
+        args[index + 1]
+        for index, value in enumerate(args)
+        if value == "--pr-commit-text"
+    ]
+    assert forwarded == commit_texts
+    assert args[args.index("--branch-name") + 1] == "jonah/omn-19626-caller-evidence"
