@@ -400,6 +400,78 @@ def test_zero_stale_rows_with_a_blind_control_is_not_green(tmp_path: Path) -> No
     assert "control FAILED" in result.stdout
 
 
+def test_control_measures_a_bounded_depth_behind_the_newest_tag(
+    tmp_path: Path,
+) -> None:
+    """OMN-20230. The control's base is a bounded depth back, not the first tag.
+
+    Measuring from the earliest tag made the history the control reads grow with
+    the repository's age, until omnimarket's ``src`` history passed the 2,000
+    commit page bound and the control failed on every onex_change_control PR.
+    Here the earliest tag has no canned compare answer at all, so a control that
+    still reached for it would read an ERROR, never a PASS.
+    """
+    tags = [f"v0.1.{n}" for n in range(41)]
+    rules = _repo_rules(
+        "omnimarket",
+        tags=tags,
+        compare={
+            "v0.1.40": [("bbbb222", _iso(2))],
+            "v0.1.10": [("cccc333", _iso(300)), ("bbbb222", _iso(2))],
+        },
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "control PASSED: omnimarket vs tag v0.1.10" in result.stdout
+    assert "v0.1.0..." not in (tmp_path / "gh_calls.log").read_text(encoding="utf-8")
+
+
+def test_control_skips_an_unreadable_repo_and_uses_the_next(tmp_path: Path) -> None:
+    """OMN-20230. An unreadable control measurement cannot speak for the sweep.
+
+    The first repo is fresh, but its control range cannot be read (the shape a
+    pagination bound produces). The control moves to the next repo, whose
+    readable measurement decides, and the skipped repo is named in the detail.
+    """
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.1.0", "v0.4.22"],
+        compare={"v0.4.22": [("bbbb222", _iso(2))]},
+    ) + _repo_rules(
+        "omnibase_core",
+        tags=["v0.1.0", "v0.2.0"],
+        compare={
+            "v0.2.0": [],
+            "v0.1.0": [("eeee555", _iso(900))],
+        },
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    policy = _policy(tmp_path, [_enforced("omnimarket"), _enforced("omnibase_core")])
+    result = _run(env, "--policy", str(policy))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "control PASSED: omnibase_core vs tag v0.1.0" in result.stdout
+    assert "skipped: omnimarket vs v0.1.0 unreadable" in result.stdout
+
+
+def test_control_fails_when_no_repo_supplies_a_readable_measurement(
+    tmp_path: Path,
+) -> None:
+    """OMN-20230. Skipping unreadable repos never turns into a pass by elimination."""
+    rules = _repo_rules(
+        "omnimarket",
+        tags=["v0.1.0", "v0.4.22"],
+        compare={"v0.4.22": [("bbbb222", _iso(2))]},
+    )
+    env = _install_gh_stub(tmp_path, rules)
+    result = _run(env, "--policy", str(_policy(tmp_path, [_enforced("omnimarket")])))
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "no repo could supply a readable control measurement" in result.stdout
+
+
 def test_unreadable_repo_is_an_error_row_not_a_silent_zero(tmp_path: Path) -> None:
     env = _install_gh_stub(
         tmp_path,
