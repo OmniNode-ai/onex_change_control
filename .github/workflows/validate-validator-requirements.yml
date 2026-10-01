@@ -40,32 +40,28 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v7
 
-      - name: Resolve omnibase_core validator ref
+      # OMN-20001: the omnibase_core ref is the release tag of the omnibase-core
+      # version this repo's own uv.lock pins -- never the sibling's live branch
+      # (PR base, merge_group base, hotfix/* fallback to its default branch), so
+      # a merge in omnibase_core cannot turn this gate red. A new core version
+      # is integration-tested here by the PR that bumps uv.lock; that PR's own
+      # gate run reads the bumped lock from its head checkout.
+      # Supersedes the OMN-15689 R3a / OMN-15698 dynamic base-branch design.
+      - name: Resolve pinned omnibase_core validator ref (uv.lock)
         id: validator_ref
-        env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
-          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          normalize_branch() {
-            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
-          }
-
-          if [ -n "${PR_BASE_REF:-}" ]; then
-            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
-          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
-            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
-          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
-            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
-          else
-            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+          core_version="$(awk '$0 == "name = \"omnibase-core\"" { found = 1; next } found && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' uv.lock)"
+          if [ -z "${core_version}" ]; then
+            echo "::error::OMN-20001: no omnibase-core version found in uv.lock; refusing to fall back to a live omnibase_core branch."
             exit 1
           fi
+          core_ref="v${core_version}"
 
-          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
-          echo "::notice::OMN-15689: omnibase_core validator ref (validate-validator-requirements) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+          echo "ref=${core_ref}" >> "$GITHUB_OUTPUT"
+          echo "core_ref=${core_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-20001: omnibase_core pinned to '${core_ref}' (uv.lock)."
 
       - name: Checkout omnibase_core
         env:

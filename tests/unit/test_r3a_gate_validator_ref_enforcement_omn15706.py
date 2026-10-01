@@ -1,7 +1,16 @@
 # SPDX-FileCopyrightText: 2025 OmniNode.ai Inc.
 # SPDX-License-Identifier: MIT
 
-"""R3a enforcement tests (OMN-15706).
+"""Gate-validator-ref enforcement tests (OMN-15706, amended by OMN-20001).
+
+OMN-20001 supersedes the R3a "resolve from the PR base branch" rule below: the
+omnibase_core / omnibase_compat checkouts now read the version this repo has
+PINNED (the tag of the omnibase-core version in uv.lock; a recorded compat
+tag), never a sibling's live branch, so a merge in a sibling cannot turn a gate
+red. The structural rule (every checkout consumes a step output, never a
+literal) is unchanged; the liveness tests below now prove the ref follows
+uv.lock and ignores the PR base ref. The text from here down is the original
+R3a rationale, kept for the history of the two mutations.
 
 Ruling R3a (OMN-15689) forbids ANY hardcoded gate-validator ref (@main, @dev, or
 a literal SHA) anywhere in OCC's gate workflows -- the omnibase_core /
@@ -221,40 +230,29 @@ def _extract_validator_ref_step(workflow_path: Path, job_key: str) -> dict[str, 
 
 
 def _run_validator_ref_script(
-    step: dict[str, Any], env_overrides: dict[str, str]
+    step: dict[str, Any], env_overrides: dict[str, str], lock_text: str
 ) -> str:
     """Execute the validator_ref step's `run:` body in a bash subshell.
 
-    Mirrors the GitHub Actions step-output contract closely enough to prove
-    liveness: `$GITHUB_OUTPUT` is a real temp file, the declared step `env:`
-    entries not present in `env_overrides` are exported as empty strings (as
-    GitHub Actions does for an unset expression), and the script's own
-    `set -euo pipefail` is honored by running it through `bash -c` directly
-    (no shell wrapping that could swallow a nonzero exit).
+    Runs in a temp dir holding `uv.lock` (as the PR-head checkout does).
+    `$GITHUB_OUTPUT` is a real temp file; declared step `env:` entries keep
+    their declared value unless overridden.
     """
     script = step["run"]
-    declared_env_names = list(step.get("env", {}).keys())
-
     with tempfile.TemporaryDirectory() as tmpdir:
         github_output = Path(tmpdir) / "github_output"
         github_output.write_text("", encoding="utf-8")
+        (Path(tmpdir) / "uv.lock").write_text(lock_text, encoding="utf-8")
 
         run_env = dict(os.environ)
-        # Actions substitutes an unresolved `${{ ... }}` expression with an
-        # empty string, not an unset var -- match that for every declared env
-        # name so the script's `[ -n "${VAR:-}" ]` checks behave identically.
-        for name in declared_env_names:
-            run_env[name] = ""
-        # GITHUB_EVENT_NAME is a GitHub Actions default env var (not a
-        # step-declared one) that ci.yml's notice line interpolates; set it
-        # so `set -u` doesn't trip on an unrelated, non-R3a variable.
-        run_env.setdefault("GITHUB_EVENT_NAME", "pull_request")
+        run_env.update({k: str(v) for k, v in step.get("env", {}).items()})
         run_env.update(env_overrides)
         run_env["GITHUB_OUTPUT"] = str(github_output)
 
         result = subprocess.run(
             ["bash", "-c", script],
             env=run_env,
+            cwd=tmpdir,
             capture_output=True,
             text=True,
             timeout=30,
@@ -267,62 +265,80 @@ def _run_validator_ref_script(
         return github_output.read_text(encoding="utf-8")
 
 
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("filename", "job_key"), GATE_JOBS, ids=[f"{f}::{j}" for f, j in GATE_JOBS]
+_LOCK_TEMPLATE = (
+    '[[package]]\nname = "omnibase-compat"\nversion = "9.9.9"\n\n'
+    '[[package]]\nname = "omnibase-core"\nversion = "{version}"\n'
+    'source = {{ registry = "https://pypi.org/simple" }}\n'
 )
-def test_validator_ref_resolution_is_live_for_pr_base_ref(
-    filename: str, job_key: str
-) -> None:
-    """A real (non-hardcoded) PR_BASE_REF must drive the resolved ref."""
-    step = _extract_validator_ref_step(WORKFLOWS_DIR / filename, job_key)
-    sentinel = "r3a-sentinel-branch-omn-15706-pr-base"
-
-    output = _run_validator_ref_script(step, {"PR_BASE_REF": sentinel})
-
-    assert f"ref={sentinel}" in output, (
-        f"{filename} job '{job_key}': validator_ref step did not emit "
-        f"'ref={sentinel}' for PR_BASE_REF={sentinel!r} — actual output:\n"
-        f"{output!r}\n"
-        'A hardcoded resolved_ref (e.g. resolved_ref="main") that ignores '
-        "PR_BASE_REF would fail this exact assertion (Mutation B)."
-    )
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("filename", "job_key"), GATE_JOBS, ids=[f"{f}::{j}" for f, j in GATE_JOBS]
 )
-def test_validator_ref_resolution_is_live_for_merge_group_base_ref(
+def test_validator_ref_follows_uv_lock_and_ignores_live_branches(
     filename: str, job_key: str
 ) -> None:
-    """With PR_BASE_REF absent, a real MERGE_GROUP_BASE_REF must drive the ref."""
-    step = _extract_validator_ref_step(WORKFLOWS_DIR / filename, job_key)
-    sentinel = "r3a-sentinel-branch-omn-15706-merge-group"
+    """The ref is v<uv.lock omnibase-core version>, whatever the PR base is.
 
-    output = _run_validator_ref_script(step, {"MERGE_GROUP_BASE_REF": sentinel})
-
-    assert f"ref={sentinel}" in output, (
-        f"{filename} job '{job_key}': validator_ref step did not emit "
-        f"'ref={sentinel}' for MERGE_GROUP_BASE_REF={sentinel!r} (PR_BASE_REF "
-        f"absent) — actual output:\n{output!r}"
-    )
-
-
-@pytest.mark.unit
-def test_validator_ref_resolution_normalizes_refs_heads_prefix() -> None:
-    """A `refs/heads/<branch>` form base ref must normalize to `<branch>`.
-
-    Guards the `normalize_branch` helper each validator_ref step defines --
-    covered once against call-receipt-gate.yml's copy since all five copies
-    share byte-identical normalize_branch bodies (verified structurally by
-    test_gate_job_inventory_has_no_unaccounted_validator_ref_steps' file
-    coverage plus the parametrized liveness tests above).
+    Falsifier: a step that still resolves from the PR base / merge_group base /
+    push ref (the pre-OMN-20001 behavior) would emit the sentinel branch name
+    here instead of the lock's tag.
     """
-    step = _extract_validator_ref_step(
-        WORKFLOWS_DIR / "call-receipt-gate.yml", "verify"
-    )
+    step = _extract_validator_ref_step(WORKFLOWS_DIR / filename, job_key)
+    sentinel = "sibling-live-branch-sentinel-omn-20001"
     output = _run_validator_ref_script(
-        step, {"PR_BASE_REF": "refs/heads/r3a-normalize-check"}
+        step,
+        {
+            "PR_BASE_REF": sentinel,
+            "MERGE_GROUP_BASE_REF": sentinel,
+            "PUSH_OR_DISPATCH_REF_NAME": sentinel,
+        },
+        _LOCK_TEMPLATE.format(version="1.2.3"),
     )
-    assert "ref=r3a-normalize-check" in output
+    assert "ref=v1.2.3\n" in output, output
+    assert sentinel not in output, output
+    # A second lock version moves the ref (the pin is read, not hardcoded).
+    output = _run_validator_ref_script(step, {}, _LOCK_TEMPLATE.format(version="4.5.6"))
+    assert "ref=v4.5.6\n" in output, output
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("filename", "job_key"), GATE_JOBS, ids=[f"{f}::{j}" for f, j in GATE_JOBS]
+)
+def test_validator_ref_fails_closed_without_a_lock_pin(
+    filename: str, job_key: str
+) -> None:
+    """No omnibase-core entry in uv.lock fails the step; no live-branch fallback."""
+    step = _extract_validator_ref_step(WORKFLOWS_DIR / filename, job_key)
+    script = step["run"]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "uv.lock").write_text(
+            '[[package]]\nname = "other"\nversion = "1"\n', encoding="utf-8"
+        )
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={**os.environ, "GITHUB_OUTPUT": str(Path(tmpdir) / "out")},
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    assert result.returncode != 0, result.stdout
+    assert "OMN-20001" in result.stdout
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "filename", ["call-receipt-gate.yml", "call-occ-preflight.yml"]
+)
+def test_compat_pin_is_a_recorded_tag(filename: str) -> None:
+    """The compat ref is a pinned release tag, not a branch name."""
+    job_key = next(j for f, j in GATE_JOBS if f == filename)
+    step = _extract_validator_ref_step(WORKFLOWS_DIR / filename, job_key)
+    output = _run_validator_ref_script(step, {}, _LOCK_TEMPLATE.format(version="1.2.3"))
+    pin = step["env"]["OMNIBASE_COMPAT_PIN"]
+    assert pin.startswith("v"), pin
+    assert f"compat_ref={pin}\n" in output

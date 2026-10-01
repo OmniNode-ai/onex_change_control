@@ -46,15 +46,17 @@ def test_receipt_gate_caller_preserves_required_check_name() -> None:
     assert verify_job["name"] == "verify / verify"
 
 
-def test_receipt_gate_caller_resolves_validator_from_pr_base_ref() -> None:
+def test_receipt_gate_caller_resolves_validator_from_pinned_lock() -> None:
     workflow = _load_workflow()
 
     verify_job = workflow["jobs"]["verify"]
     step_by_id = {step["id"]: step for step in verify_job["steps"] if "id" in step}
     validator_ref = step_by_id["validator_ref"]
-    assert "PR_BASE_REF" in validator_ref["env"]
-    assert "MERGE_GROUP_BASE_REF" in validator_ref["env"]
-    assert "ref=${resolved_ref}" in validator_ref["run"]
+    # OMN-20001: the ref is pinned (uv.lock tag), never read from the PR base.
+    assert "PR_BASE_REF" not in validator_ref.get("env", {})
+    assert "MERGE_GROUP_BASE_REF" not in validator_ref.get("env", {})
+    assert "uv.lock" in validator_ref["run"]
+    assert 'echo "ref=${core_ref}"' in validator_ref["run"]
 
 
 def test_receipt_gate_caller_validates_pr_head_occ_evidence() -> None:
