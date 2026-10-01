@@ -123,6 +123,7 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     "OCC Append-Only Gate",
     "validate-prod-promotion-grants",
     "validate-staging-namespace-grants",
+    "validate-governed-lane-grants",
     "validate-pre-execution-action-authorizations",
     "check-platform-leads-review-tripwire",
     "Contract Corpus Ratchets (OMN-15411)",

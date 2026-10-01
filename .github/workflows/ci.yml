@@ -2586,6 +2586,61 @@ jobs:
           set -euo pipefail
           uv run validate-staging-namespace-grants --file grants/staging_namespace_grants.yaml
 
+  validate-governed-lane-grants:
+    name: validate-governed-lane-grants
+    # OMN-20260: the governed-lane compose-config grant anchor
+    # (grants/governed_lane_grants.yaml). A separate anchor from the prod and
+    # staging files for the same reason as validate-staging-namespace-grants:
+    # every prod-anchor consumer treats an entry without image_digest as
+    # malformed, so a compose entry there would block every prod promotion.
+    # Unconditional (no `needs:`, no `if:`); ci-summary lists it in
+    # STRICT_GATE_JOBS. The PR author is read from the live API and passed as
+    # --requester, so an entry this PR adds cannot be approved by its author.
+    runs-on: >-
+      ${{
+        (
+        github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        )
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate governed-lane grant anchor (OMN-20260)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          args=(--file grants/governed_lane_grants.yaml)
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            pr_author="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}" --jq '.user.login')"
+            if [ -z "${pr_author}" ]; then
+              echo "::error::pull_request event with no resolvable PR author. Failing closed."
+              exit 1
+            fi
+            args+=(--requester "${pr_author}")
+            base_grants="$(mktemp)"
+            if gh api \
+                 "repos/${{ github.repository }}/contents/grants/governed_lane_grants.yaml?ref=${BASE_SHA}" \
+                 --jq '.content' | base64 -d > "${base_grants}"; then
+              args+=(--base-file "${base_grants}")
+            else
+              echo "::warning::no readable base copy of the anchor; every entry is treated as NEW (fail closed)."
+            fi
+          fi
+          uv run validate-governed-lane-grants "${args[@]}"
+
   validate-pre-execution-action-authorizations:
     name: validate-pre-execution-action-authorizations
     # OMN-17462: a separate anchor for bounded, execute-disabled action
