@@ -98,7 +98,7 @@ jobs:
   # declarative-evidence-only PRs. Most OCC traffic is contract+receipt
   # YAML in contracts/ and drift/dod_receipts/, both DOCS zone now.
   zone-filter:
-    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@dev
+    uses: OmniNode-ai/omnibase_core/.github/workflows/zone-filter.yml@d17f5be8be88a8d35fc6a69e13cb8c1896c3025b
     permissions:
       contents: read
       pull-requests: read
@@ -1255,14 +1255,21 @@ jobs:
         if: steps.dep_scope.outputs.workflow_only != 'true'
         env:
           OMNI_REPO_CLONE_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          # OMN-20001: omnidash is read at this pinned tag, never its live
+          # branch, so a merge in omnidash cannot turn this job red. The tag is
+          # the newest omnidash ref that still carries shared/schemas/
+          # event-envelope.ts (omnidash dev no longer has it, so a live clone
+          # made the test skip). Bump in a PR that runs this job against the new
+          # ref; an omnidash release notifies this repo through that PR.
+          OMNIDASH_PIN_REF: omnidash-legacy-deployed-483939d1
         run: |
           clone_omnidash() {
             rm -rf ../omnidash
             if [ -n "${OMNI_REPO_CLONE_TOKEN:-}" ]; then
               auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${OMNI_REPO_CLONE_TOKEN}" | base64 | tr -d '\n')"
-              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+              git -c "http.https://github.com/.extraheader=${auth_header}" clone --depth=1 --branch "${OMNIDASH_PIN_REF}" https://github.com/OmniNode-ai/omnidash.git ../omnidash
             else
-              git clone --depth=1 https://github.com/OmniNode-ai/omnidash.git ../omnidash
+              git clone --depth=1 --branch "${OMNIDASH_PIN_REF}" https://github.com/OmniNode-ai/omnidash.git ../omnidash
             fi
           }
           for attempt in 1 2 3; do
@@ -1682,37 +1689,28 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # OMN-15689 (R3a AC(e) residual): same dynamic resolution as honesty-gate
-      # above, duplicated per-job (not a composite action) to match this repo's
-      # existing per-job inline pattern in call-receipt-gate.yml /
-      # call-occ-preflight.yml. See honesty-gate's "Resolve omnibase_core
-      # validator ref" step for the full event-matrix rationale. No fallback ref.
-      - name: Resolve omnibase_core validator ref
+      # OMN-20001: the omnibase_core ref is the release tag of the omnibase-core
+      # version this repo's own uv.lock pins -- never the sibling's live branch
+      # (PR base, merge_group base, hotfix/* fallback to its default branch), so
+      # a merge in omnibase_core cannot turn this gate red. A new core version
+      # is integration-tested here by the PR that bumps uv.lock; that PR's own
+      # gate run reads the bumped lock from its head checkout.
+      # Supersedes the OMN-15689 R3a / OMN-15698 dynamic base-branch design.
+      - name: Resolve pinned omnibase_core validator ref (uv.lock)
         id: validator_ref
-        env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
-          PUSH_OR_DISPATCH_REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          normalize_branch() {
-            printf '%s' "$1" | sed -E 's@^refs/heads/@@; s@^heads/@@'
-          }
-
-          if [ -n "${PR_BASE_REF:-}" ]; then
-            resolved_ref="$(normalize_branch "$PR_BASE_REF")"
-          elif [ -n "${MERGE_GROUP_BASE_REF:-}" ]; then
-            resolved_ref="$(normalize_branch "$MERGE_GROUP_BASE_REF")"
-          elif [ -n "${PUSH_OR_DISPATCH_REF_NAME:-}" ]; then
-            resolved_ref="$(normalize_branch "$PUSH_OR_DISPATCH_REF_NAME")"
-          else
-            echo "::error::OMN-15689: cannot resolve a PR base ref, merge_group base ref, or push/workflow_dispatch ref — refusing to fall back to any hardcoded omnibase_core ref."
+          core_version="$(awk '$0 == "name = \"omnibase-core\"" { found = 1; next } found && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' uv.lock)"
+          if [ -z "${core_version}" ]; then
+            echo "::error::OMN-20001: no omnibase-core version found in uv.lock; refusing to fall back to a live omnibase_core branch."
             exit 1
           fi
+          core_ref="v${core_version}"
 
-          echo "ref=${resolved_ref}" >> "$GITHUB_OUTPUT"
-          echo "::notice::OMN-15689: omnibase_core validator ref (append-only-gate) resolved dynamically to '${resolved_ref}' (event=${GITHUB_EVENT_NAME})."
+          echo "ref=${core_ref}" >> "$GITHUB_OUTPUT"
+          echo "core_ref=${core_ref}" >> "$GITHUB_OUTPUT"
+          echo "::notice::OMN-20001: omnibase_core pinned to '${core_ref}' (uv.lock)."
 
       - uses: actions/checkout@v7
         with:
