@@ -18,6 +18,7 @@ import yaml
 from onex_change_control.scripts.validate_governed_lane_grants import (
     ALLOWED_LANES,
     main,
+    parse_iso8601,
     validate_governed_lane_grants,
 )
 
@@ -63,10 +64,22 @@ def _validate(tmp_path: Path, entries: list[Any], **kw: Any) -> list[str]:
 
 
 @pytest.mark.unit
-def test_committed_anchor_is_valid_and_at_rest() -> None:
-    result = validate_governed_lane_grants(ANCHOR)
-    assert result.passed, result.errors
-    assert result.entry_count == 0
+def test_committed_anchor_entries_are_each_valid(tmp_path: Path) -> None:
+    """Validate every committed entry, whether the anchor is at rest or granted.
+
+    Each entry is checked as of its own ``created_at`` so the test does not turn
+    red when a grant expires; expiry is enforced by the CLI validator in CI.
+    """
+    entries = yaml.safe_load(ANCHOR.read_text(encoding="utf-8"))["entries"]
+    assert isinstance(entries, list)
+    for idx, entry in enumerate(entries):
+        created = parse_iso8601(entry["created_at"])
+        assert created is not None, f"Entry[{idx}]: created_at is not ISO-8601"
+        result = validate_governed_lane_grants(
+            _write(tmp_path, [entry], name=f"entry-{idx}.yaml"), now=created
+        )
+        assert result.passed, f"Entry[{idx}]: {result.errors}"
+        assert result.entry_count == 1
 
 
 @pytest.mark.unit
