@@ -282,6 +282,52 @@ def test_minimal_supersession_record_is_not_plain_receipt_hardened(
     assert check_receipt_file(supersession, tmp_path / "contracts") == []
 
 
+@pytest.mark.parametrize("malformed", [None, "replacement", "missing_reason"])
+def test_tombstone_invalidates_receipt_without_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed: str | None
+) -> None:
+    """A valid invalidation needs no PASS replacement; malformed ones fail closed."""
+    from omnibase_core.validation.validator_receipt_supersession import (
+        resolve_supersession,
+    )
+
+    contract = _write_contract(tmp_path)
+    base = _write_receipt(
+        tmp_path, _receipt_data(contract_sha256=_contract_sha(contract))
+    )
+    record: dict[str, object] = {
+        "schema_version": "1.0.0",
+        "ticket_id": "OMN-13060",
+        "evidence_item_id": "dod-001",
+        "check_type": "command",
+        "supersedes": "drift/dod_receipts/OMN-13060/dod-001/command.yaml",
+        "reason": "The inherited probe did not prove the declared acceptance.",
+        "superseder": "independent-reviewer",
+        "created_at": POST_CUTOFF_TS,
+        "tombstone": True,
+    }
+    if malformed == "replacement":
+        record["replacement"] = _receipt_data()
+    elif malformed == "missing_reason":
+        del record["reason"]
+    tombstone = base.with_name("command.supersede.20315.yaml")
+    tombstone.write_text(yaml.safe_dump(record))
+    monkeypatch.chdir(tmp_path)
+    violations = check_receipt_file(tombstone.relative_to(tmp_path), Path("contracts"))
+    resolution = resolve_supersession(
+        tmp_path / "drift" / "dod_receipts", "OMN-13060", "dod-001", "command"
+    )
+    assert resolution is not None
+    if malformed is None:
+        assert violations == []
+        assert check_receipt_file(base.relative_to(tmp_path), Path("contracts")) == []
+        assert resolution.tombstoned
+        assert resolution.receipt is None
+    else:
+        assert violations
+        assert resolution.error is not None
+
+
 def test_timestamp_less_receipt_is_exempt(tmp_path: Path) -> None:
     """No timestamp anywhere = pre-schema legacy artifact; the receipt
     gate already rejects it as NONPASS, so this hook exempts it."""
@@ -1640,6 +1686,31 @@ def test_repo_authority_extracts_owner_repo_from_probe_fields() -> None:
     assert (
         check_receipt_hardening._repo_authority(receipt) == "OmniNode-ai/omnibase_infra"
     )
+
+
+@pytest.mark.parametrize("repo", ["omnibase_internal", "omniclaude-internal"])
+@pytest.mark.parametrize("remote_status", [200, 404])
+def test_packaged_caller_repository_requires_remote_commit(
+    repo: str, remote_status: int
+) -> None:
+    """Canonical private callers still require the exact remote Git object."""
+    canonical_repo = f"OmniNode-ai/{repo}"
+    receipt = _receipt_model(
+        commit_sha=FULL_REMOTE_SHA,
+        check_value="uv run pytest tests/ -q",
+        probe_command=f"gh api repos/{canonical_repo}/commits/{FULL_REMOTE_SHA}",
+    )
+    assert check_receipt_hardening._repo_authority(receipt) == canonical_repo
+    resolver = _commit_resolver(
+        remote_statuses={(canonical_repo, FULL_REMOTE_SHA): remote_status}
+    )
+    violations = check_receipt_hardening._commit_sha_existence_violations(
+        receipt, resolver, []
+    )
+    if remote_status == 200:
+        assert violations == []
+    else:
+        assert any("[COMMIT_SHA_EXISTS]" in violation for violation in violations)
 
 
 def test_repo_authority_returns_none_when_absent() -> None:

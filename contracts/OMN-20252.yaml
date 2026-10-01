@@ -1,0 +1,159 @@
+---
+schema_version: "1.0.0"
+ticket_id: "OMN-20252"
+title: "Source-bound evidence for the OMN-20252 receipt honesty classifier fix"
+summary: >-
+  Companion evidence for the OCC source change in PR #12115. The fast changed-path classifier now uses
+  the same frozen scanner-retirement classification as the authoritative corpus gate, while unknown and
+  mutated identities remain fail-closed.
+contract_completeness: ENRICHED
+is_seam_ticket: false
+interface_change: false
+interfaces_touched: []
+requirements:
+  - id: "req-changed-path-classifier-parity"
+    statement: >-
+      The fast changed-path receipt honesty gate must apply the frozen corpus scanner-retirement rule
+      to the same immutable origin receipt identity and exact bytes. Unknown identities, pending receipts,
+      copied identities, and mutated retired bytes remain findings.
+    acceptance:
+      - id: "AC1"
+        statement: >-
+          AC1: A selected receipt retired by the frozen origin scanner yields the same finding classification
+          in changed-path evaluation as in corpus evaluation. Falsifier: `uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py::test_changed_gate_tolerates_only_exact_scanner_retired_identity
+          -q` fails, or an exact frozen retired receipt remains an unexpected fast-gate finding.
+      - id: "AC2"
+        statement: >-
+          AC2: Mutating a frozen scanner-retired receipt does not inherit retirement, and a new or unknown
+          identity remains fail-closed. Falsifier: `uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py::test_changed_gate_rejects_mutated_scanner_retired_receipt
+          -q` admits the mutation.
+evidence_requirements:
+  - kind: "tests"
+    description: "The complete receipt honesty ratchet suite passes at the exact source tree."
+    command: "uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py -q"
+  - kind: "tests"
+    description: "The exact scanner-retired identity selector passes at the source PR tree."
+    command: "uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py::test_changed_gate_tolerates_only_exact_scanner_retired_identity
+      -q"
+  - kind: "tests"
+    description: "The mutated retired receipt selector remains fail-closed at the source PR tree."
+    command: "uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py::test_changed_gate_rejects_mutated_scanner_retired_receipt
+      -q"
+  - kind: "ci"
+    description: "The authoritative frozen receipt corpus classifier passes at the exact source tree."
+    command: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet --corpus"
+  - kind: "ci"
+    description: "The changed-path and corpus classifier wiring check passes at the exact source tree."
+    command: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet --check-wiring"
+  - kind: "ci"
+    description: "Each corpus-confirmed retired receipt identity is accepted by the fast changed-path
+      gate."
+    command: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet --changed
+      drift/dod_receipts/OMN-12659/dod-precommit/command.yaml"
+  - kind: "ci"
+    description: "The OMN-7466 local-verification retired identity is accepted by the fast changed-path
+      gate."
+    command: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet --changed
+      drift/dod_receipts/OMN-7466/dod-omnimarket-pr-951-local-verification/command.yaml"
+  - kind: "ci"
+    description: "The OMN-9743 pre-commit retired identity is accepted by the fast changed-path gate."
+    command: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet --changed
+      drift/dod_receipts/OMN-9743/dod-precommit/command.yaml"
+  - kind: "ci"
+    description: "All required OCC pre-commit hooks pass on the clean source commit."
+    command: "uv run --locked pre-commit run --all-files"
+  - kind: "ci"
+    description: >-
+      Hosted Tests, Type Check, and Pre-commit jobs pass on the actual e804 source PR workflow run; the
+      relevant source and test blobs are independently confirmed identical to the source-bound c1 tree.
+    command: "gh run view 36853236339 --repo OmniNode-ai/onex_change_control --json headSha,jobs"
+  - kind: "ci"
+    description: "The source and test blobs on c1 and the hosted e804 commit are identical."
+    command: >-
+      git ls-tree c1fb0f65bdad745455a21c1ccdad3ac7470049cf -- src/onex_change_control/validation/receipt_honesty_ratchet.py
+      tests/unit/validation/test_receipt_honesty_ratchet.py && git ls-tree e80414b52d70a7f6f75104279c2c0f9c81abb1fa
+      -- src/onex_change_control/validation/receipt_honesty_ratchet.py tests/unit/validation/test_receipt_honesty_ratchet.py
+emergency_bypass:
+  enabled: false
+  justification: ""
+  follow_up_ticket_id: ""
+dod_evidence:
+  - id: "dod-20252-ac1-exact-retired-identity"
+    description: >-
+      AC1's exact scanner-retired identity selector passed on source PR commit 4c4938ff49cdea95c68ae4e65c936e5269a22099,
+      tree 4426316bde186e514c55b7782555244556c96d21.
+    source: "generated"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py::test_changed_gate_tolerates_only_exact_scanner_retired_identity
+          -q"
+  - id: "dod-20252-ac2-mutated-retired-fail-closed"
+    description: >-
+      AC2's mutation refusal selector passed on source PR commit 4c4938ff49cdea95c68ae4e65c936e5269a22099,
+      tree 4426316bde186e514c55b7782555244556c96d21.
+    source: "generated"
+    binds_ac: ["AC2"]
+    checks:
+      - check_type: "test_passes"
+        check_value: "uv run --locked pytest tests/unit/validation/test_receipt_honesty_ratchet.py::test_changed_gate_rejects_mutated_scanner_retired_receipt
+          -q"
+  - id: "dod-20252-wiring"
+    description: >-
+      Static anti-removal and classifier wiring check on source tree 4426316bde186e514c55b7782555244556c96d21.
+    source: "generated"
+    binds_ac: ["AC1", "AC2"]
+    checks:
+      - check_type: "command"
+        check_value: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet
+          --check-wiring"
+  - id: "dod-20252-omn12659-fast-retired"
+    description: "OMN-12659/dod-precommit: exact frozen retired identity accepted by the fast gate (zero
+      findings)."
+    source: "generated"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet
+          --changed drift/dod_receipts/OMN-12659/dod-precommit/command.yaml"
+  - id: "dod-20252-omn7466-fast-retired"
+    description: "OMN-7466/dod-omnimarket-pr-951-local-verification: exact frozen retired identity accepted
+      by the fast gate (zero findings)."
+    source: "generated"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet
+          --changed drift/dod_receipts/OMN-7466/dod-omnimarket-pr-951-local-verification/command.yaml"
+  - id: "dod-20252-omn9743-fast-retired"
+    description: "OMN-9743/dod-precommit: exact frozen retired identity accepted by the fast gate (zero
+      findings)."
+    source: "generated"
+    binds_ac: ["AC1"]
+    checks:
+      - check_type: "command"
+        check_value: "uv run --locked python -m onex_change_control.validation.receipt_honesty_ratchet
+          --changed drift/dod_receipts/OMN-9743/dod-precommit/command.yaml"
+  - id: "dod-20252-hosted-tests-precommit-e804"
+    description: >-
+      Hosted Tests, Type Check, and Pre-commit all succeeded on actual source PR workflow run 36853236339
+      at e80414b52d70a7f6f75104279c2c0f9c81abb1fa. The code/test blob identities are separately recorded;
+      this is not a claim that the hosted jobs ran at c1.
+    source: "generated"
+    binds_ac: ["AC1", "AC2"]
+    checks:
+      - check_type: "command"
+        check_value: "gh run view 36853236339 --repo OmniNode-ai/onex_change_control --json headSha,jobs"
+  - id: "dod-20252-source-blob-identity"
+    description: >-
+      Git object lookup confirms the source and test file blob IDs are identical at c1 and e804, even
+      though the full e804 tree also contained the misplaced contract and scope receipt that were removed
+      from source PR head 4c4938f.
+    source: "generated"
+    binds_ac: ["AC1", "AC2"]
+    checks:
+      - check_type: "command"
+        check_value: >-
+          git ls-tree c1fb0f65bdad745455a21c1ccdad3ac7470049cf -- src/onex_change_control/validation/receipt_honesty_ratchet.py
+          tests/unit/validation/test_receipt_honesty_ratchet.py && git ls-tree e80414b52d70a7f6f75104279c2c0f9c81abb1fa
+          -- src/onex_change_control/validation/receipt_honesty_ratchet.py tests/unit/validation/test_receipt_honesty_ratchet.py

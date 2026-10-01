@@ -812,8 +812,13 @@ def _tree_blobs(repo_root: Path, commit: str) -> dict[str, str]:
     return blobs
 
 
-def _extract_origin_receipts(repo_root: Path, destination: Path) -> None:
+def _extract_origin_receipts(
+    repo_root: Path,
+    destination: Path,
+    receipt_paths: tuple[str, ...] | None = None,
+) -> None:
     """Spool the frozen archive to disk and copy each member in bounded chunks."""
+    paths = receipt_paths or (_RECEIPTS_RELPATH.as_posix(),)
     try:
         with tempfile.TemporaryFile() as archive, tempfile.TemporaryFile() as errors:
             _git(
@@ -822,7 +827,7 @@ def _extract_origin_receipts(repo_root: Path, destination: Path) -> None:
                 "--format=tar",
                 _ORIGIN_COMMIT,
                 "--",
-                _RECEIPTS_RELPATH.as_posix(),
+                *paths,
                 stdout_file=archive,
                 stderr_file=errors,
             )
@@ -958,15 +963,25 @@ def _scan_explicit_identities(
     return frozenset(findings)
 
 
-def origin_identities(repo_root: Path) -> frozenset[FindingIdentity]:
-    """Scan the exact frozen provenance tree with the locked core scanner."""
+def origin_identities(
+    repo_root: Path, receipt_paths: list[str] | None = None
+) -> frozenset[FindingIdentity]:
+    """Scan the exact frozen provenance tree, optionally for selected paths."""
     if not _commit_exists(repo_root, _ORIGIN_COMMIT):
         msg = f"immutable origin commit is unavailable: {_ORIGIN_COMMIT}"
         raise RatchetError(msg)
     blobs = _tree_blobs(repo_root, _ORIGIN_COMMIT)
+    selected_paths: tuple[str, ...] | None = None
+    if receipt_paths is not None:
+        canonical = tuple(
+            sorted({_canonical_receipt_path(value) for value in receipt_paths})
+        )
+        selected_paths = tuple(path for path in canonical if path in blobs)
+        if not selected_paths:
+            return frozenset()
     with tempfile.TemporaryDirectory(prefix="omn-17495-receipt-honesty-") as temporary:
         root = Path(temporary)
-        _extract_origin_receipts(repo_root, root)
+        _extract_origin_receipts(repo_root, root, selected_paths)
         receipts_dir = root / Path(_RECEIPTS_RELPATH)
         if not receipts_dir.is_dir():
             msg = (
@@ -1020,7 +1035,13 @@ def _scanner_retired(
         if item in live or blobs.get(item.path) != item.blob_oid:
             continue
         raw = _git(repo_root, "cat-file", "blob", item.blob_oid)
-        if hashlib.sha256(raw).hexdigest() == item.sha256:
+        current = _read_regular_worktree_file(
+            repo_root, PurePosixPath(item.path), "scanner-retired receipt"
+        )
+        if (
+            hashlib.sha256(raw).hexdigest() == item.sha256
+            and hashlib.sha256(current).hexdigest() == item.sha256
+        ):
             retired.add(item)
     return frozenset(retired)
 
@@ -1143,8 +1164,12 @@ def enforce_changed(
     existing = frozenset(
         item for item in baseline.identities if item.path in requested_paths
     )
+    absent = existing - live
+    origin = origin_identities(repo_root, sorted({item.path for item in absent}))
+    retired_candidates = absent - origin
+    retired = _scanner_retired(repo_root, retired_candidates, live)
     new = live - baseline.identities
-    stale = existing - live
+    stale = absent - retired
     if new or stale:
         reports = [
             "RECEIPT HONESTY FAST RATCHET FAILED: changed receipt identity "
