@@ -1,12 +1,78 @@
 ---
 schema_version: "1.0.0"
 ticket_id: "OMN-20234"
-title: "Autobind OCC evidence for OMN-20234"
-summary: "OCC Evidence-Source autobind companion (OMN-13317 F1) for PR #555."
+title: "Migrate legacy handler routing entries and retire the extra-ignore waiver"
+summary: >-
+  Migrate the remaining supported consumer contracts and adapters from legacy handler-routing entries
+  to the canonical typed ModelHandlerRoutingEntry shape, preserve routing behavior, then retire the expired
+  Core extra='ignore' waiver. Memory and Infra source slices have separate evidence below. A passing slice
+  does not complete this fleet-wide ticket or assert that the Core waiver has been retired.
 is_seam_ticket: false
 interface_change: false
 interfaces_touched: []
+contract_completeness: ENRICHED
+requirements:
+  - id: "req-fleet-migration"
+    statement: >-
+      Migrate every supported consumer contract and adapter from legacy handler_routing.handlers[] keys
+      (routing_key, handler_key, priority, output_events, callable, lazy_import) to the canonical typed
+      ModelHandlerRoutingEntry shape; retire the expired Core extra='ignore' waiver only after compatibility
+      tests prove the migration.
+    acceptance:
+      - id: "AC1"
+        statement: >-
+          Fleet search with positive control finds no active legacy-shape handler-routing entries in registered
+          consumer repos; canonical parsing and dispatch tests cover each migrated consumer; the Core
+          extra-forbid ratchet passes with no waiver for this model -- falsifier: a registered consumer
+          still requires a legacy key or ignores an extra routing field, a migrated route changes, or
+          Core still has an active waiver for ModelHandlerRoutingEntry.
+      - id: "AC2"
+        statement: >-
+          The exact OmniMemory source slice in PR #555 uses canonical handler-routing entries without
+          changing the resolved route map -- falsifier: the focused wiring/contract selectors miss any
+          test or an existing route disappears or changes owner.
+      - id: "AC3"
+        statement: >-
+          The exact Infra source slice removes the 36 ignored output_events values from its 15 active
+          node contracts without changing the resolved route map -- falsifier: a migrated contract fails
+          strict parsing or any of the 42 Infra routes changes.
 evidence_requirements:
+  - kind: "tests"
+    description: >-
+      Memory PR #555 focused CI-mode contract, wiring, boot-resolvability, and route-selector tests at
+      exact source head 873091692aa402876fab691c64f2e6d318b10957.
+    command: >-
+      gh api repos/OmniNode-ai/omnimemory/commits/873091692aa402876fab691c64f2e6d318b10957 --jq '.sha'
+      && CI=true uv run pytest tests/unit/runtime/test_wiring.py tests/test_contract_validation.py tests/unit/nodes/test_handler_routing_boot_resolvable.py
+      tests/nodes/node_similarity_compute/test_similarity_compute.py -q -rN
+  - kind: "ci"
+    description: >-
+      All ten hosted PR test shards, Tests Gate, and CI Summary pass at the exact Memory PR #555 head
+      873091692aa402876fab691c64f2e6d318b10957.
+    command: "gh run view 36804536499 --repo OmniNode-ai/omnimemory"
+  - kind: "ci"
+    description: >-
+      The exact current source head resolves Evidence-Source and passes OCC eligibility. A later gate
+      run must bind the expanded OMN-20234 contract and evidence inventory introduced here.
+    command: "gh pr checks 555 --repo OmniNode-ai/omnimemory"
+  - kind: "tests"
+    description: >-
+      Infra handler-routing loader, typed loader, integration, wiring-entry, and topic-category tests
+      on the exact source head after resolving the separately tracked OMN-20243 subscribe-wiring-health
+      prerequisite.
+    command: >-
+      uv run pytest tests/unit/runtime/contract_loaders/test_handler_routing_loader.py tests/unit/runtime/contract_loaders/test_handler_routing_loader_typed.py
+      tests/integration/runtime/test_handler_routing_loader_typed_integration.py tests/integration/runtime/test_handler_wiring_entry_keys_integration.py
+      tests/ci/test_contract_topic_category_gate.py -q
+  - kind: "tests"
+    description: "The full Infra contract validation succeeds on the exact source head."
+    command: "uv run python scripts/validate.py contracts"
+  - kind: "ci"
+    description: "All required Infra PR contexts pass on its exact source head."
+    command: "gh pr checks ${PR_NUMBER} --repo OmniNode-ai/omnibase_infra"
+  - kind: "manual"
+    description: "The registered consumer fleet search uses an in-scope positive control."
+    command: "rg -n 'routing_key|handler_key|priority|output_events|callable|lazy_import'"
   - kind: "ci"
     description: "PR #555 product diff scope present"
     command: "gh pr view ${PR_NUMBER} --repo ${REPO} --json files"
@@ -47,6 +113,97 @@ dod_evidence:
         check_value: |-
           uv run pytest tests/test_contract_validation.py tests/unit/nodes/test_handler_routing_boot_resolvable.py tests/unit/runtime/test_wiring.py -q
         cwd: "${OMNI_HOME}/omnimemory"
+  - id: "dod-omnimemory-pr-555-focus-8730916"
+    description: >-
+      AC2 focused proof at exact merged OmniMemory PR #555 head 873091692aa402876fab691c64f2e6d318b10957:
+      CI-mode selectors completed with 145 passed and 58 intentional skips. This proves only the Memory
+      source slice; the full fleet migration and Core waiver retirement remain pending.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          gh api repos/OmniNode-ai/omnimemory/commits/873091692aa402876fab691c64f2e6d318b10957 --jq '.sha'
+          && CI=true uv run pytest tests/unit/runtime/test_wiring.py tests/test_contract_validation.py
+          tests/unit/nodes/test_handler_routing_boot_resolvable.py tests/nodes/node_similarity_compute/test_similarity_compute.py
+          -q -rN
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-20234/omnimemory"
+  - id: "dod-omnimemory-pr-555-ci-test-matrix-8730916"
+    description: >-
+      AC2 hosted test-matrix proof at exact current PR #555 head 873091692aa402876fab691c64f2e6d318b10957:
+      all ten test shards, Tests Gate, and CI Summary completed successfully. The latest OCC preflight
+      passed against the prior companion contract hash and does not verify the expanded contract in this
+      change; the fleet migration remains incomplete.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    status: "verified"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: >-
+          gh run view 36804536499 --repo OmniNode-ai/omnimemory --json status,conclusion,headSha,jobs
+          --jq '{status:.status,conclusion:.conclusion,headSha:.headSha,required_jobs:[.jobs[] | select(.name
+          == "Tests (1/10)" or .name == "Tests (2/10)" or .name == "Tests (3/10)" or .name == "Tests (4/10)"
+          or .name == "Tests (5/10)" or .name == "Tests (6/10)" or .name == "Tests (7/10)" or .name ==
+          "Tests (8/10)" or .name == "Tests (9/10)" or .name == "Tests (10/10)" or .name == "Tests Gate"
+          or .name == "CI Summary") | {name,conclusion}]}'
+  - id: "dod-omnimemory-pr-555-new-occ-preflight"
+    description: >-
+      Pending: workflow run 36805512712 passed eligibility at OCC SHA 215bffe08ec12d195d80777440538a4b8f3bc858,
+      but its recognized contract hash was the previous autobind companion hash sha256:67f31e0f23b9224518240fbcc2e9c3d056a601367b63636164ee0967b9f6821b.
+      This expanded contract needs a fresh Evidence-Source binding and eligibility result before its new
+      evidence inventory is claimed.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    status: "pending"
+    binds_ac:
+      - "AC2"
+    checks:
+      - check_type: "command"
+        check_value: "gh pr checks 555 --repo OmniNode-ai/omnimemory"
+  - id: "dod-omnibase-infra-handler-routing-slice"
+    description: >-
+      Pending behind OMN-20243: its subscribe-wiring-health gate reports 22 expired allowlist entries
+      and 58 orphan-publisher findings, reproduced with this migration diff reverted to origin/dev. The
+      current prepared Infra diff removes 36 inert output_events values from 15 contracts, but there is
+      no source PR or all-files pre-commit pass. After OMN-20243 resolves publisher-evidence prerequisites,
+      verify the Infra source PR exact diff, focused loader/dispatch tests, route-map equivalence, full
+      contract validation, and required source CI. The local test result is not promoted to PASS evidence
+      until bound to the final source head.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    status: "pending"
+    binds_ac:
+      - "AC3"
+    checks:
+      - check_type: "test_passes"
+        check_value: >-
+          uv run pytest tests/unit/runtime/contract_loaders/test_handler_routing_loader.py tests/unit/runtime/contract_loaders/test_handler_routing_loader_typed.py
+          tests/integration/runtime/test_handler_routing_loader_typed_integration.py tests/integration/runtime/test_handler_wiring_entry_keys_integration.py
+          tests/ci/test_contract_topic_category_gate.py -q
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-20234/omnibase_infra"
+      - check_type: "test_passes"
+        check_value: "uv run python scripts/validate.py contracts"
+        cwd: "${OMNI_HOME}/omni_worktrees/OMN-20234/omnibase_infra"
+      - check_type: "command"
+        check_value: "gh pr checks ${PR_NUMBER} --repo OmniNode-ai/omnibase_infra"
+  - id: "dod-registered-fleet-and-core-waiver-retirement"
+    description: >-
+      Pending: prove all registered consumer repositories have no active legacy routing keys, all supported
+      routes retain their behavior, and Core's ModelHandlerRoutingEntry waiver has been removed with the
+      strict extra-forbid ratchet passing. Neither current source slice completes AC1.
+    source: "manual"
+    execution_scope: "hosted_and_local"
+    status: "pending"
+    binds_ac:
+      - "AC1"
+    checks:
+      - check_type: "command"
+        check_value: "rg -n 'routing_key|handler_key|priority|output_events|callable|lazy_import'"
   - id: "dod-OmniNode-ai-omnimarket-pr-3156"
     description: "PR #3156 on OmniNode-ai/omnimarket — Evidence-Source companion."
     source: "generated"
