@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
-import io
 import os
 import re
 import shutil
@@ -51,6 +50,7 @@ import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from typing import BinaryIO
 from omnibase_core.validation.validator_receipt_honesty import (
     EnumHonestyRule,
     scan_receipt_files,
@@ -163,8 +163,17 @@ def _repo_root(value: Path) -> Path:
     return root
 
 
-def _git(repo_root: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
+def _git(
+    repo_root: Path,
+    *args: str,
+    input_bytes: bytes | None = None,
+    stdout_file: BinaryIO | None = None,
+    stderr_file: BinaryIO | None = None,
+) -> bytes:
     """Run Git without a shell; errors are gate failures, never fallbacks."""
+    if (stdout_file is None) != (stderr_file is None):
+        msg = "Git output files must be supplied together"
+        raise RatchetError(msg)
     if _GIT_EXECUTABLE is None:
         msg = "Git executable is unavailable for receipt-honesty provenance validation"
         raise RatchetError(msg)
@@ -172,16 +181,22 @@ def _git(repo_root: Path, *args: str, input_bytes: bytes | None = None) -> bytes
         [_GIT_EXECUTABLE, *args],
         cwd=repo_root,
         input=input_bytes,
-        capture_output=True,
+        capture_output=stdout_file is None,
+        stdout=stdout_file,
+        stderr=stderr_file,
         check=False,
     )
     if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        if stderr_file is not None:
+            stderr_file.seek(0)
+            detail = stderr_file.read(4096).decode("utf-8", errors="replace").strip()
+        else:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
         msg = f"git {' '.join(args)} failed"
         if detail:
             msg = f"{msg}: {detail}"
         raise RatchetError(msg)
-    return result.stdout
+    return b"" if stdout_file is not None else result.stdout
 
 
 def _commit_exists(repo_root: Path, commit: str) -> bool:
@@ -802,42 +817,51 @@ def _extract_origin_receipts(
     destination: Path,
     receipt_paths: tuple[str, ...] | None = None,
 ) -> None:
-    """Materialize the frozen receipt tree or selected files in isolation."""
+    """Spool the frozen archive to disk and copy each member in bounded chunks."""
     paths = receipt_paths or (_RECEIPTS_RELPATH.as_posix(),)
-    archive = _git(
-        repo_root,
-        "archive",
-        "--format=tar",
-        _ORIGIN_COMMIT,
-        "--",
-        *paths,
-    )
     try:
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-            for member in tar.getmembers():
-                if member.isdir():
-                    continue
-                if not member.isfile():
-                    msg = (
-                        "frozen receipt archive contains unsupported member: "
-                        f"{member.name}"
-                    )
-                    raise RatchetError(msg)
-                target = (destination / member.name).resolve()
-                try:
-                    target.relative_to(destination.resolve())
-                except ValueError as exc:
-                    msg = (
-                        "frozen receipt archive contains traversal member: "
-                        f"{member.name}"
-                    )
-                    raise RatchetError(msg) from exc
-                payload = tar.extractfile(member)
-                if payload is None:
-                    msg = f"frozen receipt archive member is unreadable: {member.name}"
-                    raise RatchetError(msg)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(payload.read())
+        with tempfile.TemporaryFile() as archive, tempfile.TemporaryFile() as errors:
+            _git(
+                repo_root,
+                "archive",
+                "--format=tar",
+                _ORIGIN_COMMIT,
+                "--",
+                *paths,
+                stdout_file=archive,
+                stderr_file=errors,
+            )
+            archive.seek(0)
+            with tarfile.open(fileobj=archive, mode="r|") as tar:
+                while (member := tar.next()) is not None:
+                    cast("list[tarfile.TarInfo]", vars(tar)["members"]).clear()
+                    if member.isdir():
+                        continue
+                    if not member.isfile():
+                        msg = (
+                            "frozen receipt archive contains unsupported member: "
+                            f"{member.name}"
+                        )
+                        raise RatchetError(msg)
+                    target = (destination / member.name).resolve()
+                    try:
+                        target.relative_to(destination.resolve())
+                    except ValueError as exc:
+                        msg = (
+                            "frozen receipt archive contains traversal member: "
+                            f"{member.name}"
+                        )
+                        raise RatchetError(msg) from exc
+                    payload = tar.extractfile(member)
+                    if payload is None:
+                        msg = (
+                            "frozen receipt archive member is unreadable: "
+                            f"{member.name}"
+                        )
+                        raise RatchetError(msg)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with payload, target.open("wb") as output:
+                        shutil.copyfileobj(payload, output, length=64 * 1024)
     except (tarfile.TarError, OSError) as exc:
         msg = "unable to materialize frozen receipt corpus for provenance validation"
         raise RatchetError(msg) from exc
