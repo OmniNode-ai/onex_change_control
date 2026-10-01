@@ -564,6 +564,17 @@ def _temporary_changed_receipt_repo(tmp_path: Path) -> tuple[Path, Any, bytes]:
         capture_output=True,
         env=scrub_git_location_env(os.environ),
     )
+    object_directory = subprocess.run(
+        ["git", "rev-parse", "--git-path", "objects"],
+        cwd=_REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=scrub_git_location_env(os.environ),
+    ).stdout.strip()
+    (repo / ".git" / "objects" / "info" / "alternates").write_text(
+        f"{object_directory}\n", encoding="utf-8"
+    )
     shutil.copyfile(_REPO_ROOT / "uv.lock", repo / "uv.lock")
     identity = _single_rule_legacy_identity()
     raw = (_REPO_ROOT / identity.path).read_bytes()
@@ -603,6 +614,9 @@ def _changed_receipt_cli(
 def test_real_filesystem_changed_cli_rejects_mutation_copy_rule_and_malformed_live(
     tmp_path: Path,
 ) -> None:
+    if not ratchet._commit_exists(_REPO_ROOT, ratchet._ORIGIN_COMMIT):
+        pytest.skip("real frozen-origin CLI fixture requires complete Git history")
+
     repo, identity, raw = _temporary_changed_receipt_repo(tmp_path / "mutation")
     green = _changed_receipt_cli(repo, identity.path)
     assert green.returncode == 0, green.stderr
@@ -1035,9 +1049,18 @@ def _retired_identity_fixture(
         known.path: known.blob_oid,
         retired.path: origin_blob or retired.blob_oid,
     }
-    monkeypatch.setattr(ratchet, "origin_identities", lambda _root: frozenset({known}))
+    monkeypatch.setattr(
+        ratchet,
+        "origin_identities",
+        lambda _root, _receipt_paths=None: frozenset({known}),
+    )
     monkeypatch.setattr(ratchet, "_tree_blobs", lambda _root, _commit: blobs)
     monkeypatch.setattr(ratchet, "_git", lambda *_args, **_kwargs: origin_bytes)
+    monkeypatch.setattr(
+        ratchet,
+        "_read_regular_worktree_file",
+        lambda *_args, **_kwargs: origin_bytes,
+    )
     return known, retired
 
 
@@ -1110,3 +1133,43 @@ def test_repaired_receipt_keeps_its_origin_finding_and_reads_stale(
     assert retired == frozenset()
     with pytest.raises(ratchet.RatchetError, match="stale ledger"):
         ratchet._assert_live_equals_baseline(frozenset(), baseline, retired=retired)
+
+
+@pytest.mark.unit
+def test_changed_gate_tolerates_only_exact_scanner_retired_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _known, retired = _retired_identity_fixture(monkeypatch)
+    monkeypatch.setattr(
+        ratchet, "load_baseline", lambda _root: ratchet.Baseline((retired,))
+    )
+    monkeypatch.setattr(
+        ratchet,
+        "_scan_explicit_identities",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+
+    ratchet.enforce_changed(_REPO_ROOT, [retired.path])
+
+
+@pytest.mark.unit
+def test_changed_gate_rejects_mutated_scanner_retired_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _known, retired = _retired_identity_fixture(monkeypatch)
+    monkeypatch.setattr(
+        ratchet, "load_baseline", lambda _root: ratchet.Baseline((retired,))
+    )
+    monkeypatch.setattr(
+        ratchet,
+        "_scan_explicit_identities",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+    monkeypatch.setattr(
+        ratchet,
+        "_read_regular_worktree_file",
+        lambda *_args, **_kwargs: b"status: PASS\nrepaired\n",
+    )
+
+    with pytest.raises(ratchet.RatchetError, match="stale ledger"):
+        ratchet.enforce_changed(_REPO_ROOT, [retired.path])
