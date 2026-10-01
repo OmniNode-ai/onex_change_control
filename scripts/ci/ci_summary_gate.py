@@ -139,6 +139,7 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     # fast-lane skip would exempt the only PRs it exists to check.
     "Orphan Corpus Ratchet (OMN-13888)",
     "Orphan Corpus Baseline One-way (OMN-19677) / anti-growth-baseline",
+    "Shape-Gate Independence (OMN-20298)",  # shape-gate-independence
     # Reusable-workflow caller; the job's own `name:` is set to this literal
     # composed string (Shape A), matching how GitHub surfaces the check-run.
     # A hold gate an unrelated upstream failure/predicate can cascade-skip is
