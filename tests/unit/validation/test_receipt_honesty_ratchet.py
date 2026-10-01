@@ -565,7 +565,7 @@ def _temporary_changed_receipt_repo(tmp_path: Path) -> tuple[Path, Any, bytes]:
         env=scrub_git_location_env(os.environ),
     )
     object_directory = subprocess.run(
-        ["git", "rev-parse", "--git-path", "objects"],
+        ["git", "rev-parse", "--path-format=absolute", "--git-path", "objects"],
         cwd=_REPO_ROOT,
         check=True,
         capture_output=True,
