@@ -787,6 +787,57 @@ jobs:
             --requester "${PR_AUTHOR}" \
             "${base_args[@]}"
 
+  governed-lane-grants:
+    name: Governed Lane Grants
+    permissions:
+      contents: read
+    # OMN-20260. Schema and authoring-time self-approval check for
+    # grants/governed_lane_grants.yaml, the compose-config grant anchor for the
+    # governed .201 lanes (stability-test, judge). Same placement reasoning as
+    # prod-promotion-grant-self-approval above: grants are authored by hotfix/*
+    # PRs to this branch, and a job held by ci-summary blocks without a branch
+    # protection change. Unconditional: no `needs:`, no `if:`, no paths filter.
+    runs-on: >-
+      ${{
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name != github.repository)
+        && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
+        || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
+      }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-uv
+        with:
+          python-version: "3.12"
+      - name: Validate the governed-lane grant anchor (OMN-20260)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GRANTS_FILE: grants/governed_lane_grants.yaml
+        run: |
+          set -euo pipefail
+          args=(--file "${GRANTS_FILE}")
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            if [[ -z "${PR_AUTHOR}" ]]; then
+              echo "::error::the pull-request author is empty; failing closed."
+              exit 1
+            fi
+            args+=(--requester "${PR_AUTHOR}")
+            base_file="${RUNNER_TEMP:-/tmp}/base_governed_lane_grants.yaml"
+            if gh api "repos/${GITHUB_REPOSITORY}/contents/${GRANTS_FILE}?ref=${BASE_REF}" \
+                 --header "Accept: application/vnd.github.raw" > "${base_file}" 2>/dev/null; then
+              args+=(--base-file "${base_file}")
+            else
+              echo "::warning::no readable base copy of ${GRANTS_FILE}; every entry is treated as NEW (fail closed)."
+            fi
+          fi
+          uv run validate-governed-lane-grants "${args[@]}"
+
   ci-summary:
     name: CI Summary
     runs-on: >-
@@ -796,7 +847,7 @@ jobs:
         && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]')
         || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]')
       }}
-    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, prod-promotion-grant-self-approval]
+    needs: [zone-filter, pre-commit, type-check, test, schema-purity, no-localhost-fallbacks, imperative-contract-guard, context-integrity-contracts, migration-conflicts, migration-inventory, kafka-boundary-parity, cross-repo-null-contract, seam-contract-coverage, contract-sync-gate, validate-contracts, honesty-gate, prod-promotion-grant-self-approval, governed-lane-grants]
     if: always()
     steps:
       - name: Check all jobs passed
