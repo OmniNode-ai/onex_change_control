@@ -1810,7 +1810,7 @@ def _contract_hash_violation(
         return None
 
     orphan = _orphan_binding_violation(
-        receipt.evidence_item_id, receipt.ticket_id, contract_path
+        receipt.evidence_item_id, receipt.ticket_id or contract_path.stem, contract_path
     )
     if orphan is not None:
         return orphan
