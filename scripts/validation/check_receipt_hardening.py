@@ -1140,6 +1140,7 @@ _KNOWN_REPO_HINTS: frozenset[str] = frozenset(
         "knowledge-base",
         "knowledge-base-internal",
         "omniclaude",
+        "omniclaude-internal",
         "omnibase_core",
         "omnibase_infra",
         "omnibase_spi",
