@@ -1805,7 +1805,7 @@ jobs:
       - name: Ratchet non-canonical lifecycle-word classes against frozen allowlist (OMN-14350)
         run: |
           uv run --no-project \
-            --with 'omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core@63635097705d832e0ee9c4811093efb31349105c' \
+            --with 'omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core@a3b56675fda87a1ba8cf7e19d8e60a7d0ab6c4ee' \
             python -m omnibase_core.validators.no_noncanonical_lifecycle_classes \
             --check-stale \
             --allowlist .onex_ratchets/noncanonical_class_allowlist.yaml \
@@ -3189,6 +3189,75 @@ jobs:
           uv run check-ac-binding-acceptance \
             --ticket-bodies /tmp/ac_ticket_bodies.json \
             $(cat /tmp/ac_changed.txt)
+
+  # Canonical-file-shape ratchet (OMN-20304). Operator ruling 2026-10-01: no
+  # new scripts, plugins or exceptions in any repository. Refuses a new code
+  # file outside src/<pkg>/{nodes,handlers,models,protocols,contracts,enums}/,
+  # tests/ and docs/, new imperative lines in a SKILL.md, and any new baseline,
+  # allowlist, waiver or suppression entry. Existing files sit in the
+  # shrink-only .onex_ratchets/canonical_file_shape_baseline.txt. Same module
+  # and same omnibase_core commit as the canonical-file-shape pre-commit hook.
+  # Unconditional: no `if:`, no `needs:`. The positive-control step plants a
+  # bad sample on every run and fails unless the ratchet refuses it.
+  canonical-file-shape:
+    name: Canonical File Shape (OMN-20304)
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && fromJSON(vars.OMNI_PUBLIC_PR_RUNS_ON_JSON || '["ubuntu-latest"]') || fromJSON(vars.OMNI_TRUSTED_CI_RUNS_ON_JSON || '["self-hosted","omnibase-ci"]') }}
+    timeout-minutes: 15
+    env:
+      CANONICAL_FILE_SHAPE_CORE: "omnibase-core @ git+https://github.com/OmniNode-ai/omnibase_core@a3b56675fda87a1ba8cf7e19d8e60a7d0ab6c4ee"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.8.3"
+      - name: Positive control (planted bad sample refused, clean sample accepted)
+        run: |
+          set -u
+          ratchet() {
+            uv run --no-project --with "$CANONICAL_FILE_SHAPE_CORE" \
+              python -m omnibase_core.validators.canonical_file_shape "$@"
+          }
+          mkdir -p bin tests
+          printf '#!/bin/sh\necho planted\n' > bin/zz_canary_planted
+          git add bin/zz_canary_planted
+          if ratchet; then
+            echo "POSITIVE CONTROL FAILED: planted bin/zz_canary_planted was accepted"
+            exit 1
+          fi
+          echo "positive control: planted bad sample refused"
+          git rm -q --cached bin/zz_canary_planted
+          rm bin/zz_canary_planted
+          printf 'def test_canary() -> None:\n    assert True\n' > tests/zz_canary_clean.py
+          git add tests/zz_canary_clean.py
+          ratchet
+          echo "positive control: clean sample accepted"
+          git rm -q --cached tests/zz_canary_clean.py
+          rm tests/zz_canary_clean.py
+      - name: Refuse new non-canonical files and new exceptions
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -u
+          base="${PR_BASE:-${MQ_BASE:-${PUSH_BEFORE:-}}}"
+          if [ -n "$base" ] && git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="$(git merge-base "$base" HEAD)"
+            uv run --no-project --with "$CANONICAL_FILE_SHAPE_CORE" \
+              python -m omnibase_core.validators.canonical_file_shape --base "$base" --head HEAD
+          else
+            echo "no base revision on this event; checking the tree against the baseline only"
+            uv run --no-project --with "$CANONICAL_FILE_SHAPE_CORE" \
+              python -m omnibase_core.validators.canonical_file_shape --head HEAD
+          fi
 
   ci-summary:
     name: CI Summary
