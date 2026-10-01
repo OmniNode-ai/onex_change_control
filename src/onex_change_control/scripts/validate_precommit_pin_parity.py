@@ -60,6 +60,12 @@ PIN_PAIRS: tuple[tuple[str, str, str, str], ...] = (
         ".github/workflows/ci.yml",
         "no_noncanonical_lifecycle_classes",
     ),
+    (
+        "canonical-file-shape",
+        "https://github.com/OmniNode-ai/omnibase_core",
+        ".github/workflows/ci.yml",
+        "canonical_file_shape",
+    ),
 )
 
 _CI_PIN_RE = re.compile(

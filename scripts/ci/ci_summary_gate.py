@@ -167,6 +167,11 @@ STRICT_GATE_JOBS: tuple[str, ...] = (
     "Runner Route (OMN-18031) / route",
     # OMN-19612: unconditional whole-tree backstop; a skip is always a fail-open.
     "No localhost env-var fallbacks in src/ (OMN-10737)",
+    # OMN-20304: canonical-file-shape ratchet. Unconditional in ci.yml (no
+    # needs/if) and whole-tree: an evidence-only diff can add a new
+    # allowlist or baseline entry, which is one of the shapes it refuses, so
+    # it is STRICT and never SKIPPABLE.
+    "Canonical File Shape (OMN-20304)",
 )
 
 # ---------------------------------------------------------------------------
